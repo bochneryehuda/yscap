@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
+import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
 
 /* Canonical borrower profile — the single home for personal information so the
    loan application can skip the personal section entirely and pull from here.
@@ -123,7 +124,7 @@ export default function Profile() {
           <div className="field"><label>Email</label>
             <input className="input" value={p.email || ''} disabled title="Contact us to change your account email" /></div>
           <div className="field"><label>Cell phone</label>
-            <input className="input" autoComplete="off" value={p.cell_phone || ''} onChange={e => set('cell_phone', e.target.value)} /></div>
+            <PhoneInput value={p.cell_phone || ''} onChange={v => set('cell_phone', v)} /></div>
         </div>
       </div>
 
@@ -190,7 +191,7 @@ export default function Profile() {
               <option value="own_free_clear">Own free &amp; clear</option>
             </select></div>
           <div className="field"><label>Monthly housing payment</label>
-            <input className="input" autoComplete="off" value={p.housing_payment || ''} onChange={e => set('housing_payment', e.target.value)} placeholder="$ / month" /></div>
+            <MoneyInput value={p.housing_payment || ''} onChange={v => set('housing_payment', v)} /></div>
           <div className="field"><label>Time at residence</label>
             <div className="row" style={{ gap: 6 }}>
               <input className="input" type="number" min="0" style={{ maxWidth: 90 }} value={p.years_at_residence ?? ''} onChange={e => set('years_at_residence', e.target.value)} placeholder="Years" />
