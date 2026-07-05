@@ -256,6 +256,11 @@ export default function StaffApplication() {
       setErr(e.message || 'Could not update status');
     }
   }
+  async function nudge() {
+    setErr('');
+    try { const r = await api.staffNudge(id); flash(`Reminder sent — ${r.count} outstanding item${r.count === 1 ? '' : 's'}.`); }
+    catch (e) { setErr(e.message || 'Could not send reminder'); }
+  }
   async function setClosing(field, value) {
     setErr('');
     try { await api.staffSetClosingDate(id, { [field]: value || null }); flash(field === 'expectedClosing' ? 'Expected closing saved — borrower notified.' : 'Actual closing saved.'); await load(); }
@@ -340,6 +345,7 @@ export default function StaffApplication() {
         })()}
         <div className="spacer" />
         <button className="btn ghost" onClick={jumpToChat}>💬 Message</button>
+        <button className="btn ghost" onClick={nudge} title="Email the borrower a reminder of their outstanding items">🔔 Remind</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
           title="Email the borrower an invite to join this file in the portal">
           {inviteBusy ? 'Sending…' : 'Invite borrower'}

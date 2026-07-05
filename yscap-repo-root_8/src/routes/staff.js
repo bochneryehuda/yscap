@@ -820,6 +820,31 @@ router.get('/applications/:id/status-history', async (req, res) => {
   res.json(r.rows);
 });
 
+// Nudge the borrower with a friendly reminder of what's still outstanding on
+// their file (borrower-facing checklist items + open borrower conditions).
+router.post('/applications/:id/nudge', async (req, res) => {
+  try {
+    const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+    if (!a.rows[0] || !a.rows[0].borrower_id) return res.status(404).json({ error: 'no borrower on file' });
+    const items = await db.query(
+      `SELECT COALESCE(borrower_label,label) AS label FROM checklist_items
+        WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('outstanding','requested','issue')
+        ORDER BY sort_order LIMIT 20`, [req.params.id]);
+    const conds = await db.query(
+      `SELECT COALESCE(borrower_title,title) AS title FROM conditions
+        WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('open','borrower_responded') LIMIT 20`, [req.params.id]);
+    const list = [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
+    if (!list.length) return res.status(400).json({ error: 'nothing outstanding to remind about' });
+    const shown = list.slice(0, 8).join('; ') + (list.length > 8 ? `; +${list.length - 8} more` : '');
+    await notify.notifyBorrower(a.rows[0].borrower_id, {
+      type: 'reminder', title: 'A friendly reminder on your loan file',
+      body: `Still needed to keep things moving: ${shown}.`,
+      applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items' });
+    await audit(req, 'nudge_borrower', 'application', req.params.id, { count: list.length });
+    res.json({ ok: true, count: list.length });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Set the file's expected / actual closing date. Setting an estimated closing
 // notifies the borrower so they can plan.
 router.post('/applications/:id/closing-date', async (req, res) => {
