@@ -9,6 +9,7 @@ import ProductRegistration from '../components/ProductRegistration.jsx';
 import TrackRecord from '../components/TrackRecord.jsx';
 import RehabBudget, { RehabBudgetView } from '../components/RehabBudget.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
+import EditFileDetails from '../components/EditFileDetails.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -545,6 +546,7 @@ export default function StaffApplication() {
         </div>
       </div>
 
+      <EditFileDetails app={app} onSaved={load} />
       {app.borrower_id && <TrackRecord mode="staff" borrowerId={app.borrower_id} />}
       <div className="panel" style={{ marginTop: 18 }}>
         <h3 style={{ marginBottom: 10 }}>Rehab budget / scope of work</h3>

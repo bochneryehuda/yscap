@@ -242,19 +242,30 @@ router.post('/applications', async (req, res) => {
     // (otherwise they'd immediately lose sight of the file they just created).
     if (!processorId && req.actor.role === 'processor') processorId = req.actor.id;
 
+    // Assignment purchases: capture the underlying price + fee (like the
+    // borrower path) so leverage/pricing size off seller price + fee and the
+    // assignment doc is generated.
+    const isAssignment = !!b.isAssignment && Number(b.underlyingContractPrice) > 0;
+    const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
+    const assignFee = isAssignment ? (b.assignmentFee || null) : null;
+    const purchasePrice = isAssignment
+      ? (Number(b.underlyingContractPrice || 0) + Number(b.assignmentFee || 0))
+      : (b.purchasePrice || null);
+
     const ins = await db.query(
       `INSERT INTO applications
          (borrower_id,property_address,property_type,units,program,loan_type,
           purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
-          processor_id,source,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'staff','new',now())
+          processor_id,is_assignment,underlying_contract_price,assignment_fee,source,status,submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
-       b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
-       b.arv || null, b.rehabBudget || null, officerId, officerName, processorId]);
+       b.program || null, b.loanType || null, purchasePrice, b.asIsValue || null,
+       b.arv || null, b.rehabBudget || null, officerId, officerName, processorId,
+       isAssignment, underlying, assignFee]);
     const appId = ins.rows[0].id;
 
-    try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType); }
+    try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType, { isAssignment }); }
     catch (e) { console.error('[staff-origination] checklist failed:', db.describeError(e)); }
     await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId });
 
@@ -827,6 +838,32 @@ router.get('/applications/:id/status-history', async (req, res) => {
        FROM application_status_history h LEFT JOIN staff_users s ON s.id=h.changed_by
       WHERE h.application_id=$1 ORDER BY h.created_at`, [req.params.id]);
   res.json(r.rows);
+});
+
+// Edit core loan-file data after creation (fix a typo'd price, wrong property
+// type, omitted assignment flag, etc.). Scoped by the /applications/:id guard
+// to admins + the assigned officer/processor. Money/unit fields are coerced.
+router.patch('/applications/:id/details', async (req, res) => {
+  const b = req.body || {};
+  const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
+    arv: 'arv', rehabBudget: 'rehab_budget', underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
+  const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy' };
+  const sets = [], vals = []; let i = 1;
+  for (const [k, col] of Object.entries(NUM)) if (k in b) {
+    const n = b[k] === '' || b[k] == null ? null : Number(b[k]);
+    if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
+    sets.push(`${col}=$${i++}`); vals.push(n);
+  }
+  for (const [k, col] of Object.entries(STR)) if (k in b) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : String(b[k]).slice(0, 200)); }
+  if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); }
+  if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? JSON.stringify(b.propertyAddress) : null); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  try {
+    await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    await audit(req, 'edit_application', 'application', req.params.id, { fields: Object.keys(b) });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // Nudge the borrower with a friendly reminder of what's still outstanding on
