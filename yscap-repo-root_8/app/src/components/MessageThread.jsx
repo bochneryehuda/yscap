@@ -97,7 +97,7 @@ function Attachment({ m, download }) {
 }
 
 export default function MessageThread({ mine, fetchMessages, send, downloadAttachment,
-  react, fetchMentionables, onOpenApplication,
+  react, fetchMentionables, onOpenApplication, pin, edit, del,
   title = 'Messages', header = null, hint = '', taskOption = false, bare = false }) {
   const [msgs, setMsgs] = useState(null);
   const [body, setBody] = useState('');
@@ -206,6 +206,17 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
     if (!react) return;
     try { await react(mid, emoji); await load(); } catch { /* non-fatal */ }
   }
+  async function doPin(m) { if (!pin) return; try { await pin(m.id); await load(); } catch { /* non-fatal */ } }
+  async function doEdit(m) {
+    if (!edit) return;
+    const next = window.prompt('Edit your message:', m.body || '');
+    if (next == null || !next.trim()) return;
+    try { await edit(m.id, next.trim()); await load(); } catch (e) { alert(e.message || 'Could not edit'); }
+  }
+  async function doDelete(m) {
+    if (!del || !window.confirm('Delete this message? This cannot be undone.')) return;
+    try { await del(m.id); await load(); } catch (e) { alert(e.message || 'Could not delete'); }
+  }
   function onRefClick(ref) {
     if (ref.type === 'document' && downloadAttachment) {
       downloadAttachment(ref.id).then(({ blob, filename }) => {
@@ -233,15 +244,24 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
               return (
                 <div key={m.id} className={`msg-row ${isMine ? 'me' : 'them'}`}>
                   <div className={`msg-bubble ${isMine ? 'me' : 'them'}`}>
+                    {m.pinned && <div className="msg-from" style={{ color: 'var(--gold)' }}>📌 Pinned</div>}
                     {!isMine && <div className="msg-from">{m.sender_name || (m.sender_kind === 'staff' ? 'Loan team' : 'Borrower')}</div>}
                     <Attachment m={m} download={downloadAttachment} />
-                    {m.body && <div className="msg-body">{renderBody(m.body, m.entity_refs, onRefClick)}</div>}
+                    {m.body && <div className="msg-body" style={m.deleted_at ? { fontStyle: 'italic', opacity: .6 } : undefined}>{renderBody(m.body, m.entity_refs, onRefClick)}</div>}
                     {m.checklist_item_id && (
                       <div className="msg-task">✦ Saved as task{m.task_label ? `: ${m.task_label.slice(0, 60)}` : ''}{m.task_status ? ` · ${m.task_status}` : ''}</div>
                     )}
                     <div className="msg-time">
                       {new Date(m.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      {m.edited_at && ' · edited'}
                       {isMine && <span className="msg-receipt">{m.read_at ? ' · ✓✓ Seen' : ' · ✓ Sent'}</span>}
+                      {!m.deleted_at && (
+                        <span className="msg-actions">
+                          {pin && <button title={m.pinned ? 'Unpin' : 'Pin'} onClick={() => doPin(m)}>📌</button>}
+                          {edit && isMine && <button title="Edit" onClick={() => doEdit(m)}>✎</button>}
+                          {del && isMine && <button title="Delete" onClick={() => doDelete(m)}>🗑</button>}
+                        </span>
+                      )}
                     </div>
                     {(rx.length > 0 || react) && (
                       <div className="msg-rx-row">

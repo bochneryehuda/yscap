@@ -335,6 +335,8 @@ export default function Application() {
         send={(body, opts) => api.postMessage(id, body, { attachment: opts?.attachment, entityRefs: opts?.entityRefs })}
         downloadAttachment={(docId) => api.downloadDoc(docId)}
         react={(mid, emoji) => api.react(mid, emoji)}
+        edit={(mid, body) => api.editMessage(mid, body)}
+        del={(mid) => api.deleteMessage(mid)}
         fetchMentionables={() => api.mentionables(id)}
         onOpenApplication={(aid) => { window.location.hash = '#/app/' + aid; }} />
 

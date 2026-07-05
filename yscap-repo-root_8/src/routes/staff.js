@@ -721,6 +721,49 @@ router.post('/messages/:mid/react', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Pin / unpin a message (any staffer on the file).
+router.post('/messages/:mid/pin', async (req, res) => {
+  try {
+    const m = await db.query(`SELECT application_id, pinned FROM messages WHERE id=$1`, [req.params.mid]);
+    if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, m.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+    const next = !m.rows[0].pinned;
+    await db.query(`UPDATE messages SET pinned=$2::boolean, pinned_by=CASE WHEN $2 THEN $3::uuid ELSE NULL END, pinned_at=CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`, [req.params.mid, next, req.actor.id]);
+    res.json({ ok: true, pinned: next });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// Edit a staff message (own, within 15 min) — or admin any time.
+router.patch('/messages/:mid', async (req, res) => {
+  const body = String((req.body || {}).body || '').trim();
+  if (!body) return res.status(400).json({ error: 'body required' });
+  try {
+    const m = await db.query(`SELECT application_id, sender_id, sender_kind, created_at, deleted_at FROM messages WHERE id=$1`, [req.params.mid]);
+    const row = m.rows[0];
+    if (!row || row.deleted_at) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
+    const mine = row.sender_kind === 'staff' && row.sender_id === req.actor.id;
+    const fresh = (Date.now() - new Date(row.created_at).getTime()) < 15 * 60 * 1000;
+    if (!(seesAll(req) || (mine && fresh))) return res.status(403).json({ error: 'can only edit your own recent message' });
+    await db.query(`UPDATE messages SET body=$2, edited_at=now() WHERE id=$1`, [req.params.mid, body.slice(0, 4000)]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// Soft-delete a message (own, or admin/underwriter as moderator).
+router.delete('/messages/:mid', async (req, res) => {
+  try {
+    const m = await db.query(`SELECT application_id, sender_id, sender_kind FROM messages WHERE id=$1`, [req.params.mid]);
+    const row = m.rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
+    const mine = row.sender_kind === 'staff' && row.sender_id === req.actor.id;
+    if (!(seesAll(req) || mine)) return res.status(403).json({ error: 'forbidden' });
+    await db.query(`UPDATE messages SET deleted_at=now(), body='[message removed]', pinned=false WHERE id=$1`, [req.params.mid]);
+    await db.query(`DELETE FROM message_reactions WHERE message_id=$1`, [req.params.mid]);
+    await audit(req, 'delete_message', 'application', row.application_id, { messageId: req.params.mid });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- collaboration messaging (per file, two channels) ----------------
 // channel 'borrower' = borrower <-> loan team; channel 'internal' = LO <->
 // processor <-> underwriter <-> admin, never visible to the borrower.
@@ -730,7 +773,7 @@ router.get('/applications/:id/messages', async (req, res) => {
   try {
     const r = await db.query(
       `SELECT m.id, m.sender_kind, m.sender_id, m.body, m.channel, m.checklist_item_id,
-              m.is_task_request, m.read_at, m.created_at,
+              m.is_task_request, m.read_at, m.created_at, m.pinned, m.edited_at, m.deleted_at,
               m.attachment_document_id, m.attachment_kind, m.entity_refs,
               d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
               COALESCE((SELECT json_agg(json_build_object('emoji', r.emoji, 'kind', r.actor_kind, 'actor', r.actor_id))

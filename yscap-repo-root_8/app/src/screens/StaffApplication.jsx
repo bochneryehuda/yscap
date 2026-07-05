@@ -589,6 +589,9 @@ function ChatPanel({ appId, onTaskCreated }) {
         fetchMessages={() => api.staffMessages(appId, channel)}
         downloadAttachment={(docId) => api.staffDownloadDoc(docId)}
         react={(mid, emoji) => api.staffReact(mid, emoji)}
+        pin={(mid) => api.staffPinMessage(mid)}
+        edit={(mid, body) => api.staffEditMessage(mid, body)}
+        del={(mid) => api.staffDeleteMessage(mid)}
         fetchMentionables={() => api.staffMentionables(appId)}
         onOpenApplication={(id) => { window.location.hash = '#/staff/app/' + id; }}
         send={async (body, opts) => {
