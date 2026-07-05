@@ -113,6 +113,7 @@ export default function Application() {
   const [msg, setMsg] = useState('');
   const fileRef = useRef(null);
   const [target, setTarget] = useState(null);
+  const [docFilter, setDocFilter] = useState('all');
 
   const load = () => Promise.all([api.application(id), api.checklist(id), api.documents(id).catch(() => [])])
     .then(([a, c, d]) => { setApp(a); setItems(c || []); setUploads(d || []); }).catch(e => setErr(e.message));
@@ -238,15 +239,25 @@ export default function Application() {
       )}
 
       <div className="panel" style={{ marginTop: 18 }}>
-        <div className="row" style={{ marginBottom: 6 }}>
+        <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Documents &amp; conditions</h3>
           <div className="spacer" />
+          <select className="input" style={{ maxWidth: 170 }} value={docFilter} onChange={e => setDocFilter(e.target.value)}>
+            <option value="all">All ({docs.length})</option>
+            <option value="todo">To do</option>
+            <option value="review">In review</option>
+            <option value="attention">Needs attention</option>
+            <option value="done">Completed</option>
+          </select>
           <button className="btn ghost" onClick={() => pick(null)}>Upload a document</button>
         </div>
         <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onFile} />
-        {docs.length === 0
-          ? <p className="muted small">No items requested yet. Your coordinator will post your checklist here.</p>
-          : docs.map(it => {
+        {(() => {
+          const bucket = (s) => s === 'issue' ? 'attention' : s === 'received' ? 'review' : (s === 'satisfied' || s === 'done') ? 'done' : 'todo';
+          const shown = docFilter === 'all' ? docs : docs.filter(it => bucket(it.status) === docFilter);
+          return shown.length === 0
+          ? <p className="muted small">{docs.length === 0 ? 'No items requested yet. Your coordinator will post your checklist here.' : 'Nothing in this view.'}</p>
+          : shown.map(it => {
             const needsFix = it.status === 'issue';
             return (
             <div className="checkitem" key={it.id} style={{ alignItems: 'flex-start' }}>
@@ -266,7 +277,8 @@ export default function Application() {
               <button className="btn link" onClick={() => pick(it.id)}>{needsFix ? 'Re-upload' : 'Upload'}</button>
             </div>
             );
-          })}
+          });
+        })()}
       </div>
 
       {uploads.length > 0 && (

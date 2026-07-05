@@ -244,13 +244,16 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Failed'); }
   }
 
+  const [itemFilter, setItemFilter] = useState('all');
+  const bucketOf = (s) => s === 'issue' ? 'rejected' : s === 'received' ? 'submitted' : s === 'satisfied' ? 'satisfied' : 'outstanding';
   const phases = useMemo(() => {
     const groups = {};
-    for (const it of items) { const k = it.phase || 'general'; (groups[k] = groups[k] || []).push(it); }
+    const src = itemFilter === 'all' ? items : items.filter(it => bucketOf(it.status) === itemFilter);
+    for (const it of src) { const k = it.phase || 'general'; (groups[k] = groups[k] || []).push(it); }
     return Object.entries(groups)
       .map(([k, arr]) => [k, arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))])
       .sort((a, b) => (a[1][0].sort_order || 0) - (b[1][0].sort_order || 0));
-  }, [items]);
+  }, [items, itemFilter]);
 
   if (err && !app) return <div className="notice err">{err}</div>;
   if (!app) return <div className="panel muted">Loading…</div>;
@@ -340,9 +343,16 @@ export default function StaffApplication() {
       <Completeness app={app} borrower={borrower} />
 
       <div className="panel" style={{ marginTop: 18 }}>
-        <div className="row" style={{ marginBottom: 6 }}>
+        <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Checklist</h3>
           <div className="spacer" />
+          <select className="input" style={{ maxWidth: 160 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
+            <option value="all">All ({items.length})</option>
+            <option value="outstanding">Outstanding</option>
+            <option value="submitted">Submitted (in review)</option>
+            <option value="rejected">Needs attention</option>
+            <option value="satisfied">Satisfied</option>
+          </select>
           <span className="muted small">{items.filter(i => i.signed_off_at).length}/{items.length} signed off</span>
         </div>
         {phases.length === 0
