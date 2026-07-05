@@ -991,20 +991,29 @@
     STATES.forEach(function (s) { html += '<option value="' + s + '">' + s + '</option>'; });
     sel.innerHTML = html;
   });
-  (function fillOfficers() {
+  // The officer dropdown is driven by the LIVE team roster (/api/roster) so a
+  // loan officer added in the portal shows up here automatically. If the API is
+  // unreachable, we fall back to the static sales list above so the form never
+  // breaks. CURRENT_OFFICERS is the array the selection indexes into.
+  var CURRENT_OFFICERS = OFFICER_GROUPS
+    .filter(function (g) { return g.group === "Sales & Loan Coordinators"; })
+    .reduce(function (a, g) { return a.concat(g.people); }, []);
+  function renderOfficers(list) {
+    CURRENT_OFFICERS = list;
     var sel = el("loOfficerSel"); if (!sel) return;
-    // Sales team only (exclude Operations & Back Office). idx tracks position in LOAN_OFFICERS.
-    var html = '<option value="">Select your loan officer…</option>', idx = 0;
-    OFFICER_GROUPS.forEach(function (g) {
-      var isSales = g.group === "Sales & Loan Coordinators";
-      g.people.forEach(function (p) {
-        if (isSales) html += '<option value="' + idx + '">' + p.name + " \u2014 " + p.title + '</option>';
-        idx++;
-      });
+    var prev = val("loOfficer");
+    var html = '<option value="">Select your loan officer</option>';
+    list.forEach(function (p, i) {
+      html += '<option value="' + i + '">' + p.name + (p.title ? " - " + p.title : "") + '</option>';
     });
     sel.innerHTML = html;
+    if (prev !== "" && list[parseInt(prev, 10)]) sel.value = prev;
+  }
+  (function initOfficers() {
+    var sel = el("loOfficerSel"); if (!sel) return;
+    renderOfficers(CURRENT_OFFICERS);
     sel.addEventListener("change", function () {
-      el("loOfficer").value = sel.value;          // index into LOAN_OFFICERS (sales only)
+      el("loOfficer").value = sel.value;
       setErr("loOfficer", false);
     });
     var tog = el("hasOfficer");
@@ -1012,10 +1021,23 @@
       if (!tog.checked) { sel.value = ""; el("loOfficer").value = ""; setErr("loOfficer", false); }
       if (typeof updateConditionals === "function") updateConditionals();
     });
+    try {
+      fetch("/api/roster", { headers: { Accept: "application/json" } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data) return;
+          var sales = (data.groups || []).filter(function (g) { return g.department === "sales"; })
+            .reduce(function (a, g) { return a.concat(g.people || []); }, []);
+          if (!sales.length && data.people) sales = data.people;
+          var people = sales.map(function (p) { return { name: p.name, title: p.title || "", email: p.email }; });
+          if (people.length) renderOfficers(people);
+        })
+        .catch(function () {});
+    } catch (e) {}
   })();
   function selectedOfficer() {
     var i = parseInt(val("loOfficer"), 10);
-    return (i >= 0 && LOAN_OFFICERS[i]) ? LOAN_OFFICERS[i] : null;
+    return (i >= 0 && CURRENT_OFFICERS[i]) ? CURRENT_OFFICERS[i] : null;
   }
 
   /* ---------------- borrower count ---------------- */

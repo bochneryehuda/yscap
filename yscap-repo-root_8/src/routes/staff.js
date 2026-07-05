@@ -241,7 +241,8 @@ router.post('/notifications/:id/read', async (req, res) => {
 // Active staff roster — used to populate LO / processor assignment dropdowns.
 router.get('/team', async (req, res) => {
   const r = await db.query(
-    `SELECT id, full_name, email, role FROM staff_users WHERE is_active=true ORDER BY role, full_name`);
+    `SELECT id, full_name, email, role, title, department FROM staff_users
+      WHERE is_active=true ORDER BY department NULLS LAST, sort_order, full_name`);
   res.json(r.rows);
 });
 

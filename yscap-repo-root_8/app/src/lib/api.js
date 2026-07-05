@@ -73,4 +73,12 @@ export const api = {
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
   staffAssign:      (appId, b) => req('POST', `/api/staff/applications/${appId}/assign`, b),
   staffNotifs:      () => req('GET', '/api/staff/notifications'),
+
+  // ---- admin: team / staff management ----
+  adminStaff:        () => req('GET', '/api/admin/staff'),
+  adminCreateStaff:  (b) => req('POST', '/api/admin/staff', b),
+  adminUpdateStaff:  (id, b) => req('PATCH', `/api/admin/staff/${id}`, b),
+  adminSetStaffPassword: (id, password) => req('POST', `/api/admin/staff/${id}/password`, { password }),
+  adminTestEmail:    (to) => req('POST', '/api/admin/test-email', { to }),
+  roster:            () => req('GET', '/api/roster'),
 };
