@@ -89,8 +89,9 @@ if (require.main === module) {
     // makes a fresh database usable without a manual `npm run migrate` step.
     if (cfg.databaseUrl) {
       try {
-        const { ensureSchema } = require('./migrate-boot');
+        const { ensureSchema, bootstrapAdmin } = require('./migrate-boot');
         await ensureSchema();
+        await bootstrapAdmin();   // opt-in: seeds first admin when ADMIN_EMAIL/PASSWORD set
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }

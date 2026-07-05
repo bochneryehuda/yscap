@@ -61,6 +61,13 @@ enough, `EMAIL_PROVIDER=auto` detects it. Then:
   Resend error (bad key, unverified domain) verbatim. The boot logs also print
   the active provider and warn if it's misconfigured.
 
+**3. First staff login.** Borrowers self-register, but the staff console needs a
+seeded admin. Either set `ADMIN_EMAIL` + `ADMIN_PASSWORD` (optionally
+`ADMIN_NAME`, `ADMIN_ROLE`) in the environment — the app upserts that super-admin
+on boot and logs it — then remove `ADMIN_PASSWORD` once you're in; or run
+`npm run create-admin -- you@yscapgroup.com "StrongPass" super_admin "Your Name"`
+from the Render Shell. Log in at `/portal/#/staff/login`.
+
 ## Notifications — which tokens you need
 - **In-app notifications** (bell/inbox): **no token.** Stored in Postgres,
   routed to the loan officer on a new application, or to all admins (Lead
