@@ -17,17 +17,22 @@ function kindOf(contentType, filename) {
   return 'file';
 }
 
-async function saveChatAttachment({ applicationId, borrowerId, filename, contentType, dataBase64, byKind, byId }) {
+// `channel` decides visibility: an attachment on the borrower channel is
+// borrower-visible; anything on an internal (staff-only) channel is locked to
+// staff and MUST never reach a borrower surface. source_type='chat_attachment'
+// keeps these out of the borrower document library (they render inside chat).
+async function saveChatAttachment({ applicationId, borrowerId, filename, contentType, dataBase64, byKind, byId, channel }) {
   const buf = Buffer.from(String(dataBase64 || ''), 'base64');
   if (!buf.length) { const e = new Error('empty attachment'); e.status = 400; throw e; }
   const max = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > max) { const e = new Error(`attachment too large (max ${cfg.maxUploadMb} MB)`); e.status = 413; throw e; }
+  const visibility = channel === 'borrower' ? 'borrower' : 'staff_only';
   const { ref, provider } = await storage.save(buf, { filename });
   const r = await db.query(
-    `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+    `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'chat_attachment',$10) RETURNING id`,
     [applicationId || null, borrowerId || null, String(filename || 'attachment').slice(0, 300),
-     contentType || 'application/octet-stream', buf.length, provider, ref, byKind, byId]);
+     contentType || 'application/octet-stream', buf.length, provider, ref, byKind, byId, visibility]);
   return { documentId: r.rows[0].id, kind: kindOf(contentType, filename), size: buf.length };
 }
 

@@ -546,7 +546,7 @@ router.post('/applications/:id/messages', async (req, res) => {
         attDoc = await require('../lib/chat-attach').saveChatAttachment({
           applicationId: req.params.id, borrowerId: a.borrower_id,
           filename: att.filename, contentType: att.contentType, dataBase64: att.dataBase64,
-          byKind: 'staff', byId: req.actor.id });
+          byKind: 'staff', byId: req.actor.id, channel });
       } catch (e2) { return res.status(e2.status || 500).json({ error: e2.message }); }
     }
 
@@ -575,6 +575,9 @@ router.post('/applications/:id/messages', async (req, res) => {
       [req.params.id, a.borrower_id, req.actor.id, String(body || '').slice(0, 4000), channel, taskId,
        attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null,
        refs && refs.length ? JSON.stringify(refs) : null]);
+    // Link the stored attachment back to its message (visibility was already
+    // set from the channel at save time — this is just the back-reference).
+    if (attDoc) await db.query(`UPDATE documents SET message_id=$1 WHERE id=$2`, [ins.rows[0].id, attDoc.documentId]);
     await audit(req, 'post_message', 'application', req.params.id, { channel, taskId, attachment: !!attDoc });
 
     try {
@@ -639,14 +642,18 @@ router.patch('/leads/:id', async (req, res) => {
 // List documents on a file. The /applications/:id middleware already enforced
 // that this staffer may see this application.
 router.get('/applications/:id/documents', async (req, res) => {
+  // Formal documents only — chat attachments live in the conversation, not the
+  // review queue. source_type/visibility are returned so the UI can badge.
   const r = await db.query(
     `SELECT d.id,d.filename,d.content_type,d.size_bytes,d.checklist_item_id,d.uploaded_by_kind,d.created_at,
             d.review_status,d.rejection_reason,d.reviewed_at,d.is_current,d.replaces_document_id,
+            d.source_type,d.visibility,
             s.full_name AS reviewed_by_name, ci.label AS item_label
        FROM documents d
        LEFT JOIN staff_users s ON s.id=d.reviewed_by
        LEFT JOIN checklist_items ci ON ci.id=d.checklist_item_id
-      WHERE d.application_id=$1 ORDER BY d.is_current DESC, d.created_at DESC`, [req.params.id]);
+      WHERE d.application_id=$1 AND d.source_type <> 'chat_attachment'
+      ORDER BY d.is_current DESC, d.created_at DESC`, [req.params.id]);
   res.json(r.rows);
 });
 
