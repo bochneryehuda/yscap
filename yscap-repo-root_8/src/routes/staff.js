@@ -9,6 +9,7 @@ const router = express.Router();
 const db = require('../db');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
+const { serveDocument } = require('../lib/serve-document');
 const { requireAuth, requireRole } = require('../auth');
 
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
@@ -224,6 +225,49 @@ router.post('/track-records/:id/verify', async (req, res) => {
     [tr.rows[0].borrower_id]);
   await audit(req, 'verify_track_record', 'track_record', req.params.id);
   res.json({ ok: true });
+});
+
+// ---------------- documents ----------------
+// List documents on a file. The /applications/:id middleware already enforced
+// that this staffer may see this application.
+router.get('/applications/:id/documents', async (req, res) => {
+  const r = await db.query(
+    `SELECT id,filename,content_type,size_bytes,checklist_item_id,uploaded_by_kind,created_at
+       FROM documents WHERE application_id=$1 ORDER BY created_at DESC`, [req.params.id]);
+  res.json(r.rows);
+});
+
+// Can this staffer access a given document? seesAll -> yes. Otherwise they must
+// be assigned to the document's application, or (for borrower/llc-scoped docs)
+// to some application belonging to that borrower.
+async function canSeeDocument(req, doc) {
+  if (seesAll(req)) return true;
+  if (doc.application_id) {
+    const r = await db.query(
+      `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`,
+      [doc.application_id, req.actor.id]);
+    if (r.rows[0]) return true;
+  }
+  if (doc.borrower_id) {
+    const r = await db.query(
+      `SELECT 1 FROM applications WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+      [doc.borrower_id, req.actor.id]);
+    if (r.rows[0]) return true;
+  }
+  return false;
+}
+
+router.get('/documents/:id/download', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id,filename,content_type,storage_ref,application_id,borrower_id,llc_id FROM documents WHERE id=$1`,
+      [req.params.id]);
+    const doc = r.rows[0];
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
+    await audit(req, 'download_document', 'document', doc.id);
+    return serveDocument(res, doc, { inline: req.query.inline === '1' });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- notifications ----------------

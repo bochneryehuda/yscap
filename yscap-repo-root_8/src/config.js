@@ -104,7 +104,10 @@ module.exports = {
 
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
+  // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)
+  // so documents survive deploys — the default filesystem is ephemeral.
   storageDir:      process.env.STORAGE_DIR || 'uploads',
+  maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '20', 10),   // per-file cap
 
   // --- ClickUp (deferred; server-side token only) ---
   clickupToken:  process.env.CLICKUP_API_TOKEN,

@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
 const STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
 const PHASE_LABEL = {
@@ -74,6 +75,8 @@ export default function StaffApplication() {
   const { id } = useParams();
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
+  const [docs, setDocs] = useState([]);
+  const [dlBusy, setDlBusy] = useState(null);
   const [borrower, setBorrower] = useState(null);
   const [team, setTeam] = useState([]);
   const [err, setErr] = useState('');
@@ -92,8 +95,8 @@ export default function StaffApplication() {
     try {
       const a = await api.staffApplication(id);
       setApp(a);
-      const [c, t] = await Promise.all([api.staffChecklist(id), api.staffTeam()]);
-      setItems(c || []); setTeam(t || []);
+      const [c, t, d] = await Promise.all([api.staffChecklist(id), api.staffTeam(), api.staffAppDocuments(id).catch(() => [])]);
+      setItems(c || []); setTeam(t || []); setDocs(d || []);
       if (a.borrower_id) api.staffBorrower(a.borrower_id).then(setBorrower).catch(() => {});
     } catch (e) { setErr(e.message); }
   }
@@ -111,6 +114,12 @@ export default function StaffApplication() {
   async function patch(itemId, body) {
     try { await api.staffPatchItem(itemId, body); flash('Saved ✓'); await load(); }
     catch (e) { setErr(e.message || 'Update failed'); }
+  }
+  async function downloadDoc(doc) {
+    setDlBusy(doc.id);
+    try { const { blob, filename } = await api.staffDownloadDoc(doc.id); saveBlob(blob, filename || doc.filename); }
+    catch (e) { setErr(e.message || 'Download failed'); }
+    finally { setDlBusy(null); }
   }
   async function assign() {
     if (!lo && !proc) return;
@@ -218,6 +227,30 @@ export default function StaffApplication() {
             <div key={k} style={{ marginTop: 10 }}>
               <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
               {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} />)}
+            </div>
+          ))}
+      </div>
+
+      <div className="panel" style={{ marginTop: 18 }}>
+        <div className="row" style={{ marginBottom: 6 }}>
+          <h3>Documents</h3>
+          <div className="spacer" />
+          <span className="muted small">{docs.length} uploaded</span>
+        </div>
+        {docs.length === 0
+          ? <p className="muted small">No documents uploaded yet. Request one below and the borrower will see it on their checklist.</p>
+          : docs.map(d => (
+            <div className="checkitem" key={d.id}>
+              <span className="dot done" />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>{d.filename}</div>
+                <div className="muted small">
+                  {kb(d.size_bytes)} · uploaded by {d.uploaded_by_kind} · {new Date(d.created_at).toLocaleDateString()}
+                </div>
+              </div>
+              <button className="btn ghost" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                {dlBusy === d.id ? 'Downloading…' : 'Download'}
+              </button>
             </div>
           ))}
       </div>

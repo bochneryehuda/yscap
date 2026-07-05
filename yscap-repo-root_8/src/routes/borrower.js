@@ -7,11 +7,13 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const cfg = require('../config');
 const C = require('../lib/crypto');
 const storage = require('../lib/storage');
 const { requireAuth, requireBorrower } = require('../auth');
 const notify = require('../lib/notify');
 const { redactPII } = require('../lib/redact');
+const { serveDocument } = require('../lib/serve-document');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -181,6 +183,9 @@ router.post('/documents', async (req, res) => {
     if (!o.rows[0]) return res.status(404).json({ error: 'llc not found' });
   }
   const buf = Buffer.from(b.dataBase64, 'base64');
+  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
     `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id)
@@ -191,6 +196,27 @@ router.post('/documents', async (req, res) => {
     await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
+});
+
+// List the borrower's own documents (optionally scoped to one application).
+router.get('/documents', async (req, res) => {
+  const r = await db.query(
+    `SELECT id,filename,content_type,size_bytes,application_id,llc_id,checklist_item_id,created_at
+       FROM documents
+      WHERE borrower_id=$1 AND ($2::uuid IS NULL OR application_id=$2)
+      ORDER BY created_at DESC`,
+    [me(req), req.query.applicationId || null]);
+  res.json(r.rows);
+});
+
+// Download one of the borrower's own documents.
+router.get('/documents/:id/download', async (req, res) => {
+  const r = await db.query(
+    `SELECT id,filename,content_type,storage_ref FROM documents WHERE id=$1 AND borrower_id=$2`,
+    [req.params.id, me(req)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  await audit(req, 'download_document', 'document', r.rows[0].id);
+  return serveDocument(res, r.rows[0], { inline: req.query.inline === '1' });
 });
 
 // ---------------- NOTIFICATIONS ----------------
