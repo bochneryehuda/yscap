@@ -103,6 +103,7 @@ export const api = {
   // reusable LLC / vesting-entity database
   llcs:         () => req('GET', '/api/borrower/llcs'),
   createLlc:    (b) => req('POST', '/api/borrower/llcs', b),
+  updateLlc:    (id, b) => req('PATCH', `/api/borrower/llcs/${id}`, b),
 
   // investment track record (experience) — drives the pricing tier
   trackRecords:    () => req('GET', '/api/borrower/track-records'),
@@ -154,6 +155,7 @@ export const api = {
   staffPatchPostClosing: (pid, b) => req('PATCH', `/api/staff/post-closing/${pid}`, b),
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
+  staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
   staffRegisterProduct: (appId, program, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides }),

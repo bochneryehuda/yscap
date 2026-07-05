@@ -200,7 +200,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
             COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date, ci.notes,
-            ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted,
+            ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             (SELECT d.rejection_reason FROM documents d
               WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
               ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1) AS rejection_reason
@@ -226,6 +226,32 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, status='received', notes=COALESCE($3,notes), updated_at=now()
       WHERE id=$1`, [req.params.itemId, JSON.stringify(payload), notes]);
+  // The rehab-budget tool's grand total IS the file's rehab budget, which feeds
+  // the pricing engine — sync it onto the application so terms reflect the SOW.
+  if (it.rows[0].tool_key === 'rehab_budget') {
+    const total = Number(payload && payload.total);
+    if (isFinite(total) && total >= 0) {
+      await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
+    }
+  }
+  // Let the assigned loan team know the borrower completed this task.
+  try {
+    const a = await db.query(
+      `SELECT a.loan_officer_id, a.processor_id, a.ys_loan_number, b.first_name, b.last_name
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
+    const row = a.rows[0];
+    if (row) {
+      const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+      const label = it.rows[0].tool_key === 'rehab_budget' ? 'rehab budget' : 'task';
+      const extra = it.rows[0].tool_key === 'rehab_budget' && isFinite(Number(payload.total))
+        ? ` — $${Math.round(Number(payload.total)).toLocaleString('en-US')}` : '';
+      for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
+        await notify.notifyStaff(sid, {
+          type: 'tool_submitted', title: `${who} submitted their ${label}`,
+          body: `${row.ys_loan_number || 'A file'}${extra}`, applicationId: req.params.id });
+      }
+    }
+  } catch (_) { /* notification is best-effort */ }
   res.json({ ok: true, status: 'received' });
 });
 
@@ -246,6 +272,21 @@ router.post('/llcs', async (req, res) => {
   // Requesting an LLC pulls its document requirements: EIN letter, formation docs, operating agreement.
   try { await generateLlcChecklist(r.rows[0].id); } catch (_) {}
   res.status(201).json({ ok: true, llcId: r.rows[0].id });
+});
+// Fill in / correct an own entity's details (EIN, formation, ownership) — e.g.
+// after creating it by name in the application picker. The name and verified
+// status are not editable here (renaming a verified entity would mislead).
+router.patch('/llcs/:id', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  const map = { ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id); vals.push(me(req));
+  await db.query(`UPDATE llcs SET ${sets.join(',')} WHERE id=$${i++} AND borrower_id=$${i}`, vals);
+  res.json({ ok: true });
 });
 router.get('/llcs/:id/documents', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);

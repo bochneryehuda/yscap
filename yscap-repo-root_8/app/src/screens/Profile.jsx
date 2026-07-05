@@ -4,6 +4,7 @@ import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
 import TrackRecord from '../components/TrackRecord.jsx';
+import Entities from '../components/Entities.jsx';
 
 /* Canonical borrower profile — the single home for personal information so the
    loan application can skip the personal section entirely and pull from here.
@@ -225,6 +226,7 @@ export default function Profile() {
         </div>
       )}
 
+      <Entities />
       <TrackRecord mode="borrower" />
 
       <div className="row" style={{ marginTop: 8 }}>
