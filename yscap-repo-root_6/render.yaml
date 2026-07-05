@@ -1,0 +1,33 @@
+# Render Blueprint. package.json is at the REPO ROOT, so no Root Directory
+# override is needed. If your repo nests the project in a subfolder, set
+# `rootDir:` below (or the dashboard's Root Directory) to that folder.
+services:
+  - type: web
+    name: ys-capital-portal
+    runtime: node
+    plan: starter
+    # rootDir: ys-capital-portal        # uncomment ONLY if the project is nested
+    buildCommand: npm install
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase: { name: ys-capital-db, property: connectionString }
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SSN_ENCRYPTION_KEY
+        generateValue: true
+      - key: INTAKE_API_KEY
+        generateValue: true
+      - key: EMAIL_PROVIDER
+        value: none
+      - key: NOTIFY_FROM
+        value: no-reply@yscapitalgroup.com
+      # Fill these in the dashboard when you wire notifications / ClickUp:
+      # NOTIFY_ADMINS, MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET,
+      # RESEND_API_KEY, CLICKUP_API_TOKEN
+databases:
+  - name: ys-capital-db
+    plan: basic-256mb

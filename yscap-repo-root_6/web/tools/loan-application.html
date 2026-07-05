@@ -1,0 +1,1815 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<script src="../theme.js?v=n1"></script>
+<script src="../brand.js?v=n1"></script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YS Capital — Loan Application | Fix &amp; Flip · Bridge · Rental</title>
+<meta name="description" content="Apply for a YS Capital fix &amp; flip, bridge, or rental loan. A fast, guided two-part application — borrower profile and property/project details — with a live deal snapshot.">
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/images/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../assets/images/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="../assets/images/favicon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com/">
+<link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css?v=n1">
+<style>
+/* ===========================================================
+   BORROWER APPLICATION — page-specific components
+   (everything else inherits from suite.css?v=n1)
+   =========================================================== */
+.app-wrap{ max-width:920px; margin:0 auto; padding:0 1.5rem; }
+.app-wrap.wide{ max-width:var(--maxw); }
+
+/* ---- progress stepper ---- */
+.stepper{ display:flex; align-items:flex-start; max-width:760px; margin:0 auto 2rem; padding:0 .5rem; }
+.step{ display:flex; flex-direction:column; align-items:center; gap:.55rem; text-align:center; cursor:default; flex:0 0 auto; width:120px; }
+.step[data-reached="1"]{ cursor:pointer; }
+.step .dot{
+    width:36px; height:36px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    border:1px solid var(--line); background:var(--ink-2); color:var(--muted); font-family:var(--font-d);
+    font-size:1rem; transition:all .3s var(--ease); position:relative;
+}
+.step .dot svg{ width:17px; height:17px; stroke:var(--ink); fill:none; stroke-width:2.4; }
+.step.active .dot{ border-color:var(--teal); color:var(--teal-br); box-shadow:0 0 0 4px var(--teal-glow); }
+.step.done .dot{ background:var(--teal); border-color:var(--teal); color:var(--on-accent); }
+.step .lab{ font-size:.82rem; color:var(--muted); line-height:1.25; transition:color .3s; }
+.step .lab b{ display:block; font-weight:600; }
+.step.active .lab{ color:var(--ivory); }
+.step.done .lab{ color:var(--ivory-soft); }
+.step-line{ flex:1 1 auto; height:1px; background:var(--line); margin-top:18px; min-width:18px; transition:background .3s; }
+.step-line.done{ background:var(--teal-dp); }
+@media (max-width:560px){
+    .stepper{ max-width:none; padding:0; }
+    .step{ width:auto; flex:1 1 0; min-width:0; gap:.4rem; }
+    .step .lab{ font-size:.7rem; }
+    .step .lab b{ font-size:.78rem; }
+    .step-line{ min-width:6px; }
+}
+@media (max-width:560px){
+    .wizard-nav{ flex-direction:column-reverse; align-items:stretch; gap:.7rem; }
+    .wizard-nav .spacer{ display:none; }
+    .wizard-nav .btn{ width:100%; justify-content:center; }
+    .wizard-nav > div{ display:flex; flex-direction:column; gap:.7rem; width:100%; }
+}
+
+/* ---- wizard steps ---- */
+.wizard-step{ display:none; }
+.wizard-step.is-active{ display:block; animation:fadeStep .45s var(--ease); }
+@keyframes fadeStep{ from{ opacity:0; transform:translateY(10px); } to{ opacity:1; transform:none; } }
+.step-intro{ color:var(--muted); max-width:64ch; margin:-.2rem 0 1.4rem; font-size:.95rem; }
+.step-intro .mins{ color:var(--teal-br); font-weight:600; }
+
+/* ---- required / help / errors ---- */
+.req{ color:var(--teal-br); font-weight:700; margin-left:1px; }
+.help{ font-size:.74rem; color:var(--muted-2); margin-top:.05rem; line-height:1.45; }
+.help.trust{ display:flex; gap:.4rem; align-items:flex-start; }
+.help.trust svg{ width:12px; height:12px; stroke:var(--teal); fill:none; stroke-width:1.8; flex:0 0 auto; margin-top:.18rem; }
+.field-err{ color:var(--bad); font-size:.74rem; display:none; }
+.field.invalid .input{ border-color:var(--bad); box-shadow:0 0 0 3px rgba(201,138,106,.14); }
+.field.invalid .field-err{ display:block; }
+.input textarea{
+    flex:1; width:100%; background:none; border:0; outline:none; color:var(--ivory); resize:vertical;
+    font-family:var(--font-b); font-size:1rem; font-weight:500; padding:.72rem .5rem; min-height:92px; min-width:0;
+}
+
+/* ---- toggle switch ---- */
+.switch{ display:inline-flex; align-items:center; gap:.75rem; cursor:pointer; }
+.switch input{ position:absolute; opacity:0; width:0; height:0; }
+.switch .track{ width:46px; height:27px; border-radius:100px; background:var(--ink-3); border:1px solid var(--line); position:relative; flex:0 0 auto; transition:.25s; }
+.switch .track::after{ content:""; position:absolute; top:2px; left:2px; width:21px; height:21px; border-radius:50%; background:var(--muted); transition:.25s; }
+.switch input:checked + .track{ background:var(--teal-dp); border-color:var(--teal); }
+.switch input:checked + .track::after{ transform:translateX(19px); background:var(--ivory); }
+.switch input:focus-visible + .track{ box-shadow:0 0 0 3px var(--teal-glow); }
+.switch .sw-lab{ font-size:.92rem; color:var(--ivory-soft); }
+.toggle-card{ border:1px solid var(--line); border-radius:12px; padding:.95rem 1.1rem; background:var(--ink); display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.toggle-card .tc-text{ font-size:.85rem; color:var(--muted); }
+.toggle-card .tc-text b{ color:var(--ivory-soft); font-weight:600; display:block; font-size:.92rem; }
+
+/* ---- segmented radios ---- */
+.seg{ display:grid; gap:.5rem; }
+.seg.three{ grid-template-columns:repeat(3,1fr); }
+.seg.two{ grid-template-columns:repeat(2,1fr); }
+.seg label{
+    position:relative; border:1px solid var(--line); border-radius:11px; padding:.75rem .7rem; text-align:center;
+    cursor:pointer; font-size:.9rem; color:var(--ivory-soft); background:var(--ink); transition:.2s; user-select:none;
+}
+.seg label .sub{ display:block; font-size:.72rem; color:var(--muted-2); margin-top:.15rem; }
+.seg input{ position:absolute; opacity:0; inset:0; cursor:pointer; }
+.seg label:hover{ border-color:var(--teal-dp); }
+.seg label:has(input:checked){ border-color:var(--teal); background:rgba(127,169,176,.09); color:var(--teal-br); }
+.seg label:has(input:focus-visible){ box-shadow:0 0 0 3px var(--teal-glow); }
+@media (max-width:520px){ .seg.three{ grid-template-columns:1fr; } }
+
+/* ---- review ---- */
+.review-sec{ margin-bottom:1.3rem; }
+.review-sec h3{ font-family:var(--font-d); font-weight:500; font-size:1.1rem; margin-bottom:.7rem; display:flex; align-items:center; gap:.6rem; }
+.review-sec h3 .edit{ margin-left:auto; font-size:.78rem; color:var(--teal-br); cursor:pointer; font-family:var(--font-b); font-weight:600; border:1px solid var(--line); border-radius:100px; padding:.25rem .8rem; }
+.review-sec h3 .edit:hover{ border-color:var(--teal); }
+.review-grid{ display:grid; grid-template-columns:1fr 1fr; gap:.55rem 1.6rem; }
+@media (max-width:560px){ .review-grid{ grid-template-columns:1fr; } }
+.rv{ display:flex; flex-direction:column; padding:.4rem 0; border-bottom:1px solid var(--line-2); }
+.rv dt{ font-size:.72rem; color:var(--muted-2); letter-spacing:.02em; }
+.rv dd{ margin:.1rem 0 0; color:var(--ivory); font-weight:500; font-size:.95rem; }
+.rv dd.empty{ color:var(--muted-2); font-weight:400; font-style:italic; }
+
+/* ---- consent ---- */
+.consent{ display:flex; gap:.7rem; align-items:flex-start; font-size:.82rem; color:var(--muted); margin-top:.4rem; }
+.consent input{ margin-top:.25rem; width:16px; height:16px; accent-color:var(--teal); flex:0 0 auto; }
+
+/* ---- wizard nav ---- */
+.wizard-nav{ display:flex; justify-content:space-between; gap:1rem; margin-top:1.5rem; }
+.wizard-nav .spacer{ flex:1; }
+
+/* ---- deal snapshot (step 2) ---- */
+.snap-constraint{ display:inline-block; margin-top:.9rem; font-size:.8rem; font-weight:600; padding:.35rem .85rem; border-radius:100px; border:1px solid var(--teal-dp); color:var(--teal-br); background:rgba(127,169,176,.08); }
+.trust-badge{ display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; margin:.55rem 0 .2rem; font-size:.78rem; font-weight:600; letter-spacing:.01em; color:var(--muted,#9cabb2); }
+.trust-badge i{ width:4px; height:4px; border-radius:50%; background:var(--gold,#c9a86a); opacity:.7; }
+.handoff{ margin-top:.9rem; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.5rem .9rem; padding:.75rem .9rem; border:1px solid var(--line,rgba(255,255,255,.12)); border-radius:12px; background:rgba(127,169,176,.04); }
+.handoff-q{ font-size:.8rem; color:var(--muted,#9cabb2); }
+.handoff-links{ display:flex; gap:.9rem; flex-wrap:wrap; }
+.handoff-links a{ font-size:.8rem; font-weight:700; color:var(--teal-br,#a8d2d7); text-decoration:none; white-space:nowrap; }
+.handoff-links a:hover{ text-decoration:underline; }
+@media (max-width:460px){ .handoff{ flex-direction:column; align-items:flex-start; } }
+.limits-row{ display:flex; gap:.6rem; flex-wrap:wrap; margin-top:.4rem; }
+.sn-elig{ display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; margin-top:1rem; }
+.sn-rate{ font-family:var(--font-d); font-weight:600; color:var(--teal-br); font-size:1.02rem; }
+.sn-rate:empty{ display:none; }
+.reasons{ list-style:none; margin:.7rem 0 0; padding:0; display:flex; flex-direction:column; gap:.35rem; }
+.reasons .reason{ font-size:.8rem; line-height:1.45; padding-left:1.1rem; position:relative; color:var(--muted); }
+.reasons .reason::before{ content:"•"; position:absolute; left:.25rem; }
+.reasons .reason.good{ color:var(--good); } .reasons .reason.good::before{ color:var(--good); }
+.reasons .reason.warn{ color:var(--warn); } .reasons .reason.warn::before{ color:var(--warn); }
+.reasons .reason.bad{ color:var(--bad); } .reasons .reason.bad::before{ color:var(--bad); }
+.limit-chip{ font-size:.74rem; color:var(--muted); border:1px solid var(--line); border-radius:100px; padding:.3rem .8rem; background:rgba(127,169,176,.04); }
+.limit-chip b{ color:var(--teal-br); font-weight:600; }
+
+/* ---- confirmation ---- */
+.app-done{ text-align:center; border:1px solid var(--teal-dp); border-radius:18px; padding:2.4rem 1.8rem;
+    background:radial-gradient(130% 130% at 50% 0%,rgba(127,169,176,.16),var(--ink-1) 62%); }
+.app-done .check{ width:58px; height:58px; border-radius:50%; margin:0 auto 1rem; display:flex; align-items:center; justify-content:center;
+    background:var(--teal); }
+.app-done .check svg{ width:30px; height:30px; stroke:var(--ink); fill:none; stroke-width:2.6; }
+.app-done h2{ font-family:var(--font-d); font-weight:500; font-size:1.7rem; }
+.app-done p{ color:var(--muted); margin:.7rem auto 0; max-width:52ch; }
+.app-done .done-actions{ display:flex; gap:.7rem; justify-content:center; flex-wrap:wrap; margin-top:1.5rem; }
+
+@media print{
+    .topbar, .suite-footer, .orb, .grain, .stepper, .wizard-nav, .step-intro, .apply-strip, .results-col{ display:none !important; }
+    .wizard-step{ display:block !important; }
+    body{ background:#fff; color:#000; }
+    .panel{ border-color:#ccc; background:#fff; break-inside:avoid; }
+}
+
+/* ---- v2 additions (multi-borrower, vesting, exports) ---- */
+.hidden{ display:none !important; }
+.field-rows.two-col:has(> .field.hidden){ grid-template-columns:1fr; }
+.panel-num svg{ width:15px; height:15px; stroke:var(--ink); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.borrower-block{ position:relative; }
+.borrower-tag{ font-family:var(--font-d); font-weight:500; }
+.remove-borrower{ position:absolute; top:1.15rem; right:1.15rem; font-family:var(--font-b); font-size:.76rem; color:var(--muted); background:none; border:1px solid var(--line); border-radius:100px; padding:.3rem .8rem; cursor:pointer; transition:.2s; display:inline-flex; align-items:center; gap:.35rem; }
+.remove-borrower:hover{ border-color:var(--bad); color:var(--bad); }
+.remove-borrower svg{ width:12px; height:12px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; }
+.add-btn{ width:100%; border:1px dashed var(--teal-dp); background:rgba(127,169,176,.05); color:var(--teal-br); border-radius:14px; padding:.95rem 1.1rem; margin-top:.2rem; font-family:var(--font-b); font-weight:600; font-size:.95rem; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:.55rem; transition:.2s; }
+.add-btn:hover{ border-color:var(--teal); background:rgba(127,169,176,.1); }
+.add-btn svg{ width:18px; height:18px; stroke:currentColor; fill:none; stroke-width:2.2; stroke-linecap:round; }
+.own-row{ display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.5rem 0; border-bottom:1px solid var(--line-2); }
+.own-row:last-of-type{ border-bottom:0; }
+.own-name{ font-size:.92rem; color:var(--ivory-soft); font-weight:500; min-width:0; overflow-wrap:anywhere; }
+.own-row .input{ width:150px; flex:0 0 auto; }
+.own-total{ margin-top:.85rem; font-size:.86rem; font-weight:600; }
+.own-total.ok{ color:var(--good); }
+.own-total.bad{ color:var(--bad); }
+
+
+/* ---- v2 additions (multi-borrower, vesting, exports) ---- */
+.hidden{ display:none !important; }
+.panel-num svg{ width:15px; height:15px; stroke:var(--ink); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.borrower-block{ position:relative; }
+.borrower-tag{ font-family:var(--font-d); font-weight:500; }
+.remove-borrower{ position:absolute; top:1.15rem; right:1.15rem; font-family:var(--font-b); font-size:.76rem; color:var(--muted); background:none; border:1px solid var(--line); border-radius:100px; padding:.3rem .8rem; cursor:pointer; transition:.2s; display:inline-flex; align-items:center; gap:.35rem; }
+.remove-borrower:hover{ border-color:var(--bad); color:var(--bad); }
+.remove-borrower svg{ width:12px; height:12px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; }
+.add-btn{ width:100%; border:1px dashed var(--teal-dp); background:rgba(127,169,176,.05); color:var(--teal-br); border-radius:14px; padding:.95rem 1.1rem; margin-top:.2rem; font-family:var(--font-b); font-weight:600; font-size:.95rem; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:.55rem; transition:.2s; }
+.add-btn:hover{ border-color:var(--teal); background:rgba(127,169,176,.1); }
+.add-btn svg{ width:18px; height:18px; stroke:currentColor; fill:none; stroke-width:2.2; stroke-linecap:round; }
+.own-row{ display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.5rem 0; border-bottom:1px solid var(--line-2); }
+.own-row:last-of-type{ border-bottom:0; }
+.own-name{ font-size:.92rem; color:var(--ivory-soft); font-weight:500; min-width:0; overflow-wrap:anywhere; }
+.own-row .input{ width:150px; flex:0 0 auto; }
+.own-total{ margin-top:.85rem; font-size:.86rem; font-weight:600; }
+.own-total.ok{ color:var(--good); }
+.own-total.bad{ color:var(--bad); }
+
+
+/* ---- v2 additions (multi-borrower, vesting, exports) ---- */
+.hidden{ display:none !important; }
+.panel-num svg{ width:15px; height:15px; stroke:var(--ink); fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.borrower-block{ position:relative; }
+.borrower-tag{ font-family:var(--font-d); font-weight:500; }
+.remove-borrower{ position:absolute; top:1.15rem; right:1.15rem; font-family:var(--font-b); font-size:.76rem; color:var(--muted); background:none; border:1px solid var(--line); border-radius:100px; padding:.3rem .8rem; cursor:pointer; transition:.2s; display:inline-flex; align-items:center; gap:.35rem; }
+.remove-borrower:hover{ border-color:var(--bad); color:var(--bad); }
+.remove-borrower svg{ width:12px; height:12px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; }
+.add-btn{ width:100%; border:1px dashed var(--teal-dp); background:rgba(127,169,176,.05); color:var(--teal-br); border-radius:14px; padding:.95rem 1.1rem; margin-top:.2rem; font-family:var(--font-b); font-weight:600; font-size:.95rem; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:.55rem; transition:.2s; }
+.add-btn:hover{ border-color:var(--teal); background:rgba(127,169,176,.1); }
+.add-btn svg{ width:18px; height:18px; stroke:currentColor; fill:none; stroke-width:2.2; stroke-linecap:round; }
+.own-row{ display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.5rem 0; border-bottom:1px solid var(--line-2); }
+.own-row:last-of-type{ border-bottom:0; }
+.own-name{ font-size:.92rem; color:var(--ivory-soft); font-weight:500; min-width:0; overflow-wrap:anywhere; }
+.own-row .input{ width:150px; flex:0 0 auto; }
+.own-total{ margin-top:.85rem; font-size:.86rem; font-weight:600; }
+.own-total.ok{ color:var(--good); }
+.own-total.bad{ color:var(--bad); }
+.exp-total{ display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-top:1rem; padding:.7rem 1rem; border:1px solid var(--teal-dp); border-radius:12px; background:rgba(127,169,176,.06); }
+.exp-total-lbl{ font-size:.78rem; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+.exp-total-val{ font-family:var(--font-d); font-weight:600; font-size:1.05rem; color:var(--teal-br); }
+
+/* loan-officer picker */
+.off-picker{ margin-top:.4rem; }
+.off-group{ font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--gold); font-weight:700; margin:1.1rem 0 .55rem; }
+.off-group:first-child{ margin-top:.2rem; }
+.off-people{ display:grid; grid-template-columns:repeat(3,1fr); gap:.55rem; }
+.off-card{ text-align:left; background:var(--ink); border:1px solid var(--line); border-radius:12px; padding:.7rem .85rem; cursor:pointer; display:flex; flex-direction:column; gap:.16rem; transition:.15s; font:inherit; position:relative; }
+.off-card:hover{ border-color:var(--teal); background:rgba(127,169,176,.1); transform:translateY(-1px); }
+.off-card.is-sel{ border-color:var(--teal); background:rgba(127,169,176,.16); box-shadow:0 0 0 1px var(--teal) inset; }
+.off-card.is-sel::after{ content:"✓"; position:absolute; top:.55rem; right:.7rem; color:var(--teal-br); font-weight:800; font-size:.8rem; }
+.off-nm{ font-weight:600; color:var(--ivory); font-size:.88rem; }
+.off-rl{ font-size:.72rem; color:var(--muted-2); }
+@media (max-width:760px){ .off-people{ grid-template-columns:repeat(2,1fr); } }
+@media (max-width:460px){ .off-people{ grid-template-columns:1fr; } }
+/* assignment note + read-only field */
+.input.is-ro{ opacity:.85; background:rgba(255,255,255,.02); }
+.input.is-ro input{ color:var(--muted); cursor:default; }
+.assign-note{ margin-top:.7rem; padding:.7rem .9rem; border-radius:10px; font-size:.82rem; line-height:1.45; border:1px solid var(--line); }
+.assign-note.ok{ color:var(--muted); border-color:rgba(127,169,176,.35); background:rgba(127,169,176,.08); }
+.assign-note.warn{ color:var(--ivory-soft); border-color:rgba(201,168,106,.5); background:rgba(201,168,106,.1); }
+.assign-note b{ color:var(--ivory); }
+/* ---- snapshot: missing fields / state overlay / manual review / reserve note ---- */
+.sn-missing{ margin-bottom:1rem; padding:.85rem 1rem; border:1px solid rgba(201,168,106,.55); background:rgba(201,168,106,.09); border-radius:14px; }
+.sn-missing .tm-h{ font-weight:600; color:var(--ivory); font-size:.86rem; margin-bottom:.45rem; }
+.sn-missing .tm-list{ list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:.4rem .55rem; }
+.sn-missing .tm-list li{ font-size:.8rem; color:var(--ivory-soft); padding:.2rem .6rem; border:1px solid rgba(201,168,106,.5); border-radius:999px; background:rgba(201,168,106,.1); }
+.sn-state-note{ margin-top:.8rem; padding:.6rem .85rem; border-radius:10px; font-size:.8rem; line-height:1.45; color:var(--ivory-soft); border:1px solid rgba(127,169,176,.4); background:rgba(127,169,176,.08); }
+.sn-manual{ margin-top:.85rem; }
+.sn-manual .tmv-lead{ font-size:.82rem; color:var(--muted); line-height:1.45; margin:0 0 .55rem; }
+.sn-manual .btn{ width:100%; justify-content:center; }
+.sn-irnote{ margin-top:1rem; padding:.7rem .9rem; border-radius:10px; font-size:.82rem; line-height:1.5; color:var(--ivory-soft); border:1px solid rgba(201,168,106,.45); background:rgba(201,168,106,.08); }
+.sn-irnote strong{ color:var(--ivory); }
+.field.need .input{ border-color:rgba(201,168,106,.7); box-shadow:0 0 0 2px rgba(201,168,106,.14); border-radius:10px; }
+/* loan-amount logic explainer */
+.loan-logic{ margin:1.1rem 0 .2rem; padding:.9rem 1.1rem; border:1px solid var(--line); border-left:3px solid var(--teal); border-radius:11px; background:rgba(127,169,176,.05); }
+.loan-logic .ll-h{ font-family:var(--font-d); font-size:.75rem; text-transform:uppercase; letter-spacing:.1em; color:var(--teal-br); font-weight:700; margin-bottom:.45rem; }
+.loan-logic p{ font-size:.85rem; color:var(--muted); margin:.3rem 0; line-height:1.5; }
+.loan-logic ol{ margin:.45rem 0 .45rem 1.15rem; padding:0; }
+.loan-logic li{ font-size:.85rem; color:var(--muted); margin:.3rem 0; line-height:1.45; }
+.loan-logic strong{ color:var(--ivory-soft); }
+.loan-logic .ll-bind{ color:var(--teal-br); font-weight:600; }
+.loan-logic .ll-bind:empty{ display:none; }
+
+/* ---- admin mode (pricing overrides) ---- */
+.la-admin-zone{ margin-top:1.5rem; }
+.la-admin-zone [hidden]{ display:none !important; }
+.la-admin-trigger{ background:none; border:0; padding:.3rem 0; font-family:var(--font-b); font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted-2); opacity:.5; cursor:pointer; transition:opacity .15s, color .15s; }
+.la-admin-trigger:hover{ opacity:1; color:var(--teal-br); }
+.la-admin-lock{ margin-top:.55rem; max-width:320px; }
+.la-admin-lock-lbl{ display:block; font-size:.78rem; color:var(--muted); margin-bottom:.3rem; }
+.la-admin-lock-row{ display:flex; gap:.5rem; }
+.la-admin-lock-row input{ flex:1; }
+.la-admin-lock-row button{ border:1px solid var(--teal-dp); background:var(--teal-dp); color:var(--on-accent,#fff); border-radius:9px; padding:.5rem .9rem; font-family:var(--font-b); font-size:.82rem; font-weight:600; cursor:pointer; }
+.la-admin-lock-row button:hover{ filter:brightness(1.08); }
+.la-admin-err{ color:var(--warn,#c0533b); font-size:.78rem; margin:.4rem 0 0; }
+.la-admin-panel{ margin-top:.75rem; border:1px solid var(--teal-dp); border-radius:14px; padding:1.05rem 1.15rem; background:linear-gradient(160deg, rgba(63,123,132,.11), rgba(63,123,132,.02)); max-width:440px; }
+.la-admin-head{ font-family:var(--font-d); font-size:1rem; font-weight:600; color:var(--ivory,#eee); display:flex; align-items:center; gap:.5rem; }
+.la-admin-badge{ font-family:var(--font-b); font-size:.6rem; letter-spacing:.1em; text-transform:uppercase; background:var(--teal-dp); color:var(--on-accent,#fff); padding:.16rem .4rem; border-radius:5px; }
+.la-admin-sub{ font-size:.8rem; color:var(--muted); margin:.5rem 0 .2rem; line-height:1.45; }
+.la-admin-group{ font-family:var(--font-b); font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--teal-br); margin:.95rem 0 .5rem; }
+.la-admin-grid2{ display:grid; grid-template-columns:1fr 1fr; gap:.55rem .6rem; }
+.la-admin-grid2 .field label{ font-size:.75rem; color:var(--muted); margin-bottom:.28rem; display:block; }
+.la-admin-lockbtn{ margin-top:1rem; width:100%; background:none; color:var(--muted); border:1px solid var(--ink-3,#333); border-radius:9px; padding:.55rem .9rem; font-family:var(--font-b); font-size:.82rem; font-weight:600; cursor:pointer; }
+.la-admin-lockbtn:hover{ color:var(--ivory,#eee); }
+</style>
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<span class="orb orb-1" aria-hidden="true"></span>
+<span class="orb orb-2" aria-hidden="true"></span>
+
+<header class="topbar">
+    <div class="topbar-inner">
+        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+        <span class="topbar-sep"></span>
+        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Loan Application</span></div>
+        <div class="topbar-actions">
+            <a class="back" href="../suite.html">← All tools</a>
+            <button class="btn btn-line" type="button" onclick="APP.share(this)" title="Copy a link that saves everything you've entered so you can finish later">Share link 🔗</button>
+            <button class="btn btn-line" type="button" onclick="APP.exportXlsx(this)" title="Download a branded Excel copy that imports right back">Export ⤓</button>
+            <label class="btn btn-line" style="cursor:pointer" title="Import a previously exported YS application">Import ⤒<input id="app-import" type="file" accept=".xlsx" class="hidden" onchange="APP.importXlsx(this)"></label>
+        </div>
+    </div>
+</header>
+
+<main>
+<section class="tool-hero" style="padding-bottom:1rem">
+    <div class="suite-eyebrow">Fix &amp; Flip · Bridge · Rental</div>
+    <h1>Loan Application</h1>
+    <p class="tool-tagline">The lender serious investors say YES to.</p>
+    <div class="trust-badge" aria-label="How applying works">
+      <span>⚡ Live estimate</span><i></i><span>🔒 No credit pull to start</span><i></i><span>💾 Save &amp; resume anytime</span>
+    </div>
+    <p class="tool-intro">A fast, guided application in two parts — your borrower profile, then the property and project. Numbers size your estimated loan live as you go. Add a co-borrower, save and resume, or export a branded Excel or PDF at any point. Takes about <strong style="color:var(--teal-br)">10–12 minutes</strong>.</p>
+</section>
+
+<div class="app-wrap" style="margin-bottom:.5rem">
+    <nav class="stepper" id="stepper" aria-label="Application progress">
+        <div class="step active" data-step="1" data-reached="1" role="button" tabindex="0" aria-current="step"><span class="dot" data-num="1">1</span><span class="lab"><b>Borrower</b>Your profile</span></div>
+        <div class="step-line" data-line="1"></div>
+        <div class="step" data-step="2" role="button" tabindex="0"><span class="dot" data-num="2">2</span><span class="lab"><b>Property</b>&amp; project</span></div>
+        <div class="step-line" data-line="2"></div>
+        <div class="step" data-step="3" role="button" tabindex="0"><span class="dot" data-num="3">3</span><span class="lab"><b>Review</b>&amp; submit</span></div>
+    </nav>
+</div>
+
+<form id="appForm" novalidate>
+<input type="hidden" id="__step" value="1">
+<input type="hidden" id="borrowerCount" value="1">
+
+<!-- ===================== STEP 1 — BORROWER(S) ===================== -->
+<section class="wizard-step is-active app-wrap" data-step="1">
+    <p class="step-intro">Tell us who's borrowing. You can add a co-borrower or up to four total. <span class="mins">~4 min.</span></p>
+
+    <div class="panel">
+        <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M9 11.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM3 20c.7-3 3-4.6 6-4.6 1.3 0 2.5.3 3.5.9M15.5 18l2 2 4-4"/></svg></span> Your loan officer</h2>
+        <p class="panel-note">Already working with someone on our team? Flip this on and pick them — your application routes straight to them. No preference is fine — leave it off and our loan desk will pick it up.</p>
+        <label class="toggle-card switch" for="hasOfficer" style="cursor:pointer">
+            <span class="tc-text"><b>I'm already working with someone on the YS team</b>Leave off and our loan desk will route your file.</span>
+            <span style="display:inline-flex;align-items:center"><input type="checkbox" id="hasOfficer"><span class="track"></span></span>
+        </label>
+        <div class="field cond hidden" data-cond="hasOfficer" style="margin-top:1rem;max-width:440px">
+            <label for="loOfficerSel">Your loan officer</label>
+            <div class="input"><select id="loOfficerSel"><option value="">Select your loan officer…</option></select></div>
+        </div>
+        <input type="hidden" id="loOfficer" value="">
+        <span class="field-err" id="loOfficerErr" style="display:none">Select your loan officer, or switch the toggle off.</span>
+    </div>
+
+  <div class="panel borrower-block" data-borrower="1">
+    <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M12 12.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM5.5 19c.7-3 3.3-4.6 6.5-4.6s5.8 1.6 6.5 4.6"/></svg></span> <span class="borrower-tag">Primary borrower</span></h2>
+    <div class="field-rows">
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b1First">First name <span class="req">*</span></label><div class="input"><input id="b1First" type="text" autocomplete="given-name"></div><span class="field-err">Enter a first name.</span></div>
+        <div class="field"><label for="b1Last">Last name <span class="req">*</span></label><div class="input"><input id="b1Last" type="text" autocomplete="family-name"></div><span class="field-err">Enter a last name.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b1Middle">Middle name <em>(optional)</em></label><div class="input"><input id="b1Middle" type="text"></div></div>
+        <div class="field"><label for="b1Dob">Date of birth <span class="req">*</span></label><div class="input"><input id="b1Dob" type="date"></div><span class="field-err">Enter a date of birth.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field cond" data-cond="b1ssn"><label for="b1Ssn">Social Security number <span class="req">*</span></label><div class="input"><input id="b1Ssn" type="text" inputmode="numeric" placeholder="###-##-####" maxlength="11" autocomplete="off"></div><span class="field-err">Enter a 9-digit SSN.</span><span class="help trust"><svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V7l7-4z"></path></svg> Used to run a soft credit check during pre-qualification — a soft inquiry won't affect your score. Your SSN is included in the application you save, share, or send to us, so keep your link and exported files private and share them only with YS Capital.</span></div>
+        <div class="field"><label for="b1Citizen">Citizenship <em>(optional)</em></label><div class="input"><select id="b1Citizen"><option value="">Select…</option><option>U.S. Citizen</option><option>Permanent Resident</option><option>Foreign National</option></select></div><span class="help">Foreign nationals can qualify — it just changes the document path.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b1Phone">Mobile phone <span class="req">*</span></label><div class="input"><input id="b1Phone" type="tel" inputmode="tel" placeholder="(###) ###-####" autocomplete="tel"></div><span class="field-err">Enter a valid phone number.</span></div>
+        <div class="field"><label for="b1Email">Email <span class="req">*</span></label><div class="input"><input id="b1Email" type="email" inputmode="email" placeholder="you@email.com"></div><span class="field-err">Enter a valid email.</span></div>
+      </div>
+
+      <div class="subhead">Primary residence <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— where this borrower lives, not the subject property</em></div>
+      <div class="field"><label for="b1Street">Street address <span class="req">*</span></label><div class="input"><input id="b1Street" type="text" autocomplete="address-line1"></div><span class="field-err">Enter a street address.</span></div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b1Unit">Unit / Apt <em>(optional)</em></label><div class="input"><input id="b1Unit" type="text"></div></div>
+        <div class="field"><label for="b1City">City <span class="req">*</span></label><div class="input"><input id="b1City" type="text"></div><span class="field-err">Enter a city.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b1State">State <span class="req">*</span></label><div class="input"><select id="b1State" class="us-state"></select></div><span class="field-err">Select a state.</span></div>
+        <div class="field"><label for="b1Zip">ZIP <span class="req">*</span></label><div class="input"><input id="b1Zip" type="text" inputmode="numeric" maxlength="10"></div><span class="field-err">Enter a ZIP code.</span></div>
+      </div>
+
+      <div class="subhead">Time at this address</div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b1Years">Years</label><div class="input"><input id="b1Years" type="number" inputmode="numeric" min="0" value="0"></div></div>
+        <div class="field"><label for="b1Months">Months</label><div class="input"><input id="b1Months" type="number" inputmode="numeric" min="0" max="11" value="0"></div></div>
+      </div>
+
+      <div class="subhead">Housing status <span class="req">*</span></div>
+      <div class="seg three" role="radiogroup" aria-label="Housing status">
+        <label><input type="radio" name="b1Housing" value="Own"><span>Own</span></label>
+        <label><input type="radio" name="b1Housing" value="Rent"><span>Rent</span></label>
+        <label><input type="radio" name="b1Housing" value="Rent-free"><span>Rent-free<span class="sub">living w/ family</span></span></label>
+      </div>
+      <span class="field-err" data-houserr="1">Choose a housing status.</span>
+      <div class="field cond hidden" data-cond="b1mort" style="margin-top:.3rem;max-width:340px"><label for="b1MortAmt">Monthly mortgage payment</label><div class="input"><span class="adorn">$</span><input id="b1MortAmt" type="number" inputmode="decimal" placeholder="0"></div></div>
+      <div class="field cond hidden" data-cond="b1rent" style="margin-top:.3rem;max-width:340px"><label for="b1RentAmt">Monthly rent</label><div class="input"><span class="adorn">$</span><input id="b1RentAmt" type="number" inputmode="decimal" placeholder="0"></div></div>
+
+      <div class="cond hidden" data-cond="b1former">
+        <div class="subhead">Previous address <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— required when under 2 years at the current address</em></div>
+        <div class="field"><label for="b1FStreet">Street address</label><div class="input"><input id="b1FStreet" type="text"></div></div>
+        <div class="field-rows two-col" style="margin:0">
+          <div class="field"><label for="b1FCity">City</label><div class="input"><input id="b1FCity" type="text"></div></div>
+          <div class="field"><label for="b1FState">State</label><div class="input"><select id="b1FState" class="us-state"></select></div></div>
+        </div>
+        <div class="field" style="max-width:220px"><label for="b1FZip">ZIP</label><div class="input"><input id="b1FZip" type="text" inputmode="numeric" maxlength="10"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel borrower-block hidden" data-borrower="2">
+    <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M12 12.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM5.5 19c.7-3 3.3-4.6 6.5-4.6s5.8 1.6 6.5 4.6"/></svg></span> <span class="borrower-tag">Co-borrower 2</span><button type="button" class="remove-borrower" data-remove="2"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg> Remove</button></h2>
+    <div class="field-rows">
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b2First">First name <span class="req">*</span></label><div class="input"><input id="b2First" type="text" autocomplete="given-name"></div><span class="field-err">Enter a first name.</span></div>
+        <div class="field"><label for="b2Last">Last name <span class="req">*</span></label><div class="input"><input id="b2Last" type="text" autocomplete="family-name"></div><span class="field-err">Enter a last name.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b2Middle">Middle name <em>(optional)</em></label><div class="input"><input id="b2Middle" type="text"></div></div>
+        <div class="field"><label for="b2Dob">Date of birth <span class="req">*</span></label><div class="input"><input id="b2Dob" type="date"></div><span class="field-err">Enter a date of birth.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field cond" data-cond="b2ssn"><label for="b2Ssn">Social Security number <span class="req">*</span></label><div class="input"><input id="b2Ssn" type="text" inputmode="numeric" placeholder="###-##-####" maxlength="11" autocomplete="off"></div><span class="field-err">Enter a 9-digit SSN.</span><span class="help trust"><svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V7l7-4z"></path></svg> Used to run a soft credit check during pre-qualification — a soft inquiry won't affect your score. Your SSN is included in the application you save, share, or send to us, so keep your link and exported files private and share them only with YS Capital.</span></div>
+        <div class="field"><label for="b2Citizen">Citizenship <em>(optional)</em></label><div class="input"><select id="b2Citizen"><option value="">Select…</option><option>U.S. Citizen</option><option>Permanent Resident</option><option>Foreign National</option></select></div><span class="help">Foreign nationals can qualify — it just changes the document path.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b2Phone">Mobile phone <span class="req">*</span></label><div class="input"><input id="b2Phone" type="tel" inputmode="tel" placeholder="(###) ###-####" autocomplete="tel"></div><span class="field-err">Enter a valid phone number.</span></div>
+        <div class="field"><label for="b2Email">Email <span class="req">*</span></label><div class="input"><input id="b2Email" type="email" inputmode="email" placeholder="you@email.com"></div><span class="field-err">Enter a valid email.</span></div>
+      </div>
+
+      <div class="subhead">Primary residence <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— where this borrower lives, not the subject property</em></div>
+      <div class="field"><label for="b2Street">Street address <span class="req">*</span></label><div class="input"><input id="b2Street" type="text" autocomplete="address-line1"></div><span class="field-err">Enter a street address.</span></div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b2Unit">Unit / Apt <em>(optional)</em></label><div class="input"><input id="b2Unit" type="text"></div></div>
+        <div class="field"><label for="b2City">City <span class="req">*</span></label><div class="input"><input id="b2City" type="text"></div><span class="field-err">Enter a city.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b2State">State <span class="req">*</span></label><div class="input"><select id="b2State" class="us-state"></select></div><span class="field-err">Select a state.</span></div>
+        <div class="field"><label for="b2Zip">ZIP <span class="req">*</span></label><div class="input"><input id="b2Zip" type="text" inputmode="numeric" maxlength="10"></div><span class="field-err">Enter a ZIP code.</span></div>
+      </div>
+
+      <div class="subhead">Time at this address</div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b2Years">Years</label><div class="input"><input id="b2Years" type="number" inputmode="numeric" min="0" value="0"></div></div>
+        <div class="field"><label for="b2Months">Months</label><div class="input"><input id="b2Months" type="number" inputmode="numeric" min="0" max="11" value="0"></div></div>
+      </div>
+
+      <div class="subhead">Housing status <span class="req">*</span></div>
+      <div class="seg three" role="radiogroup" aria-label="Housing status">
+        <label><input type="radio" name="b2Housing" value="Own"><span>Own</span></label>
+        <label><input type="radio" name="b2Housing" value="Rent"><span>Rent</span></label>
+        <label><input type="radio" name="b2Housing" value="Rent-free"><span>Rent-free<span class="sub">living w/ family</span></span></label>
+      </div>
+      <span class="field-err" data-houserr="2">Choose a housing status.</span>
+      <div class="field cond hidden" data-cond="b2mort" style="margin-top:.3rem;max-width:340px"><label for="b2MortAmt">Monthly mortgage payment</label><div class="input"><span class="adorn">$</span><input id="b2MortAmt" type="number" inputmode="decimal" placeholder="0"></div></div>
+      <div class="field cond hidden" data-cond="b2rent" style="margin-top:.3rem;max-width:340px"><label for="b2RentAmt">Monthly rent</label><div class="input"><span class="adorn">$</span><input id="b2RentAmt" type="number" inputmode="decimal" placeholder="0"></div></div>
+
+      <div class="cond hidden" data-cond="b2former">
+        <div class="subhead">Previous address <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— required when under 2 years at the current address</em></div>
+        <div class="field"><label for="b2FStreet">Street address</label><div class="input"><input id="b2FStreet" type="text"></div></div>
+        <div class="field-rows two-col" style="margin:0">
+          <div class="field"><label for="b2FCity">City</label><div class="input"><input id="b2FCity" type="text"></div></div>
+          <div class="field"><label for="b2FState">State</label><div class="input"><select id="b2FState" class="us-state"></select></div></div>
+        </div>
+        <div class="field" style="max-width:220px"><label for="b2FZip">ZIP</label><div class="input"><input id="b2FZip" type="text" inputmode="numeric" maxlength="10"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel borrower-block hidden" data-borrower="3">
+    <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M12 12.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM5.5 19c.7-3 3.3-4.6 6.5-4.6s5.8 1.6 6.5 4.6"/></svg></span> <span class="borrower-tag">Co-borrower 3</span><button type="button" class="remove-borrower" data-remove="3"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg> Remove</button></h2>
+    <div class="field-rows">
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b3First">First name <span class="req">*</span></label><div class="input"><input id="b3First" type="text" autocomplete="given-name"></div><span class="field-err">Enter a first name.</span></div>
+        <div class="field"><label for="b3Last">Last name <span class="req">*</span></label><div class="input"><input id="b3Last" type="text" autocomplete="family-name"></div><span class="field-err">Enter a last name.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b3Middle">Middle name <em>(optional)</em></label><div class="input"><input id="b3Middle" type="text"></div></div>
+        <div class="field"><label for="b3Dob">Date of birth <span class="req">*</span></label><div class="input"><input id="b3Dob" type="date"></div><span class="field-err">Enter a date of birth.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field cond" data-cond="b3ssn"><label for="b3Ssn">Social Security number <span class="req">*</span></label><div class="input"><input id="b3Ssn" type="text" inputmode="numeric" placeholder="###-##-####" maxlength="11" autocomplete="off"></div><span class="field-err">Enter a 9-digit SSN.</span><span class="help trust"><svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V7l7-4z"></path></svg> Used to run a soft credit check during pre-qualification — a soft inquiry won't affect your score. Your SSN is included in the application you save, share, or send to us, so keep your link and exported files private and share them only with YS Capital.</span></div>
+        <div class="field"><label for="b3Citizen">Citizenship <em>(optional)</em></label><div class="input"><select id="b3Citizen"><option value="">Select…</option><option>U.S. Citizen</option><option>Permanent Resident</option><option>Foreign National</option></select></div><span class="help">Foreign nationals can qualify — it just changes the document path.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b3Phone">Mobile phone <span class="req">*</span></label><div class="input"><input id="b3Phone" type="tel" inputmode="tel" placeholder="(###) ###-####" autocomplete="tel"></div><span class="field-err">Enter a valid phone number.</span></div>
+        <div class="field"><label for="b3Email">Email <span class="req">*</span></label><div class="input"><input id="b3Email" type="email" inputmode="email" placeholder="you@email.com"></div><span class="field-err">Enter a valid email.</span></div>
+      </div>
+
+      <div class="subhead">Primary residence <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— where this borrower lives, not the subject property</em></div>
+      <div class="field"><label for="b3Street">Street address <span class="req">*</span></label><div class="input"><input id="b3Street" type="text" autocomplete="address-line1"></div><span class="field-err">Enter a street address.</span></div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b3Unit">Unit / Apt <em>(optional)</em></label><div class="input"><input id="b3Unit" type="text"></div></div>
+        <div class="field"><label for="b3City">City <span class="req">*</span></label><div class="input"><input id="b3City" type="text"></div><span class="field-err">Enter a city.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b3State">State <span class="req">*</span></label><div class="input"><select id="b3State" class="us-state"></select></div><span class="field-err">Select a state.</span></div>
+        <div class="field"><label for="b3Zip">ZIP <span class="req">*</span></label><div class="input"><input id="b3Zip" type="text" inputmode="numeric" maxlength="10"></div><span class="field-err">Enter a ZIP code.</span></div>
+      </div>
+
+      <div class="subhead">Time at this address</div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b3Years">Years</label><div class="input"><input id="b3Years" type="number" inputmode="numeric" min="0" value="0"></div></div>
+        <div class="field"><label for="b3Months">Months</label><div class="input"><input id="b3Months" type="number" inputmode="numeric" min="0" max="11" value="0"></div></div>
+      </div>
+
+      <div class="subhead">Housing status <span class="req">*</span></div>
+      <div class="seg three" role="radiogroup" aria-label="Housing status">
+        <label><input type="radio" name="b3Housing" value="Own"><span>Own</span></label>
+        <label><input type="radio" name="b3Housing" value="Rent"><span>Rent</span></label>
+        <label><input type="radio" name="b3Housing" value="Rent-free"><span>Rent-free<span class="sub">living w/ family</span></span></label>
+      </div>
+      <span class="field-err" data-houserr="3">Choose a housing status.</span>
+      <div class="field cond hidden" data-cond="b3mort" style="margin-top:.3rem;max-width:340px"><label for="b3MortAmt">Monthly mortgage payment</label><div class="input"><span class="adorn">$</span><input id="b3MortAmt" type="number" inputmode="decimal" placeholder="0"></div></div>
+      <div class="field cond hidden" data-cond="b3rent" style="margin-top:.3rem;max-width:340px"><label for="b3RentAmt">Monthly rent</label><div class="input"><span class="adorn">$</span><input id="b3RentAmt" type="number" inputmode="decimal" placeholder="0"></div></div>
+
+      <div class="cond hidden" data-cond="b3former">
+        <div class="subhead">Previous address <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— required when under 2 years at the current address</em></div>
+        <div class="field"><label for="b3FStreet">Street address</label><div class="input"><input id="b3FStreet" type="text"></div></div>
+        <div class="field-rows two-col" style="margin:0">
+          <div class="field"><label for="b3FCity">City</label><div class="input"><input id="b3FCity" type="text"></div></div>
+          <div class="field"><label for="b3FState">State</label><div class="input"><select id="b3FState" class="us-state"></select></div></div>
+        </div>
+        <div class="field" style="max-width:220px"><label for="b3FZip">ZIP</label><div class="input"><input id="b3FZip" type="text" inputmode="numeric" maxlength="10"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel borrower-block hidden" data-borrower="4">
+    <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M12 12.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM5.5 19c.7-3 3.3-4.6 6.5-4.6s5.8 1.6 6.5 4.6"/></svg></span> <span class="borrower-tag">Co-borrower 4</span><button type="button" class="remove-borrower" data-remove="4"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg> Remove</button></h2>
+    <div class="field-rows">
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b4First">First name <span class="req">*</span></label><div class="input"><input id="b4First" type="text" autocomplete="given-name"></div><span class="field-err">Enter a first name.</span></div>
+        <div class="field"><label for="b4Last">Last name <span class="req">*</span></label><div class="input"><input id="b4Last" type="text" autocomplete="family-name"></div><span class="field-err">Enter a last name.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b4Middle">Middle name <em>(optional)</em></label><div class="input"><input id="b4Middle" type="text"></div></div>
+        <div class="field"><label for="b4Dob">Date of birth <span class="req">*</span></label><div class="input"><input id="b4Dob" type="date"></div><span class="field-err">Enter a date of birth.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field cond" data-cond="b4ssn"><label for="b4Ssn">Social Security number <span class="req">*</span></label><div class="input"><input id="b4Ssn" type="text" inputmode="numeric" placeholder="###-##-####" maxlength="11" autocomplete="off"></div><span class="field-err">Enter a 9-digit SSN.</span><span class="help trust"><svg viewBox="0 0 24 24"><path d="M12 3l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V7l7-4z"></path></svg> Used to run a soft credit check during pre-qualification — a soft inquiry won't affect your score. Your SSN is included in the application you save, share, or send to us, so keep your link and exported files private and share them only with YS Capital.</span></div>
+        <div class="field"><label for="b4Citizen">Citizenship <em>(optional)</em></label><div class="input"><select id="b4Citizen"><option value="">Select…</option><option>U.S. Citizen</option><option>Permanent Resident</option><option>Foreign National</option></select></div><span class="help">Foreign nationals can qualify — it just changes the document path.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b4Phone">Mobile phone <span class="req">*</span></label><div class="input"><input id="b4Phone" type="tel" inputmode="tel" placeholder="(###) ###-####" autocomplete="tel"></div><span class="field-err">Enter a valid phone number.</span></div>
+        <div class="field"><label for="b4Email">Email <span class="req">*</span></label><div class="input"><input id="b4Email" type="email" inputmode="email" placeholder="you@email.com"></div><span class="field-err">Enter a valid email.</span></div>
+      </div>
+
+      <div class="subhead">Primary residence <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— where this borrower lives, not the subject property</em></div>
+      <div class="field"><label for="b4Street">Street address <span class="req">*</span></label><div class="input"><input id="b4Street" type="text" autocomplete="address-line1"></div><span class="field-err">Enter a street address.</span></div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b4Unit">Unit / Apt <em>(optional)</em></label><div class="input"><input id="b4Unit" type="text"></div></div>
+        <div class="field"><label for="b4City">City <span class="req">*</span></label><div class="input"><input id="b4City" type="text"></div><span class="field-err">Enter a city.</span></div>
+      </div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b4State">State <span class="req">*</span></label><div class="input"><select id="b4State" class="us-state"></select></div><span class="field-err">Select a state.</span></div>
+        <div class="field"><label for="b4Zip">ZIP <span class="req">*</span></label><div class="input"><input id="b4Zip" type="text" inputmode="numeric" maxlength="10"></div><span class="field-err">Enter a ZIP code.</span></div>
+      </div>
+
+      <div class="subhead">Time at this address</div>
+      <div class="field-rows two-col" style="margin:0">
+        <div class="field"><label for="b4Years">Years</label><div class="input"><input id="b4Years" type="number" inputmode="numeric" min="0" value="0"></div></div>
+        <div class="field"><label for="b4Months">Months</label><div class="input"><input id="b4Months" type="number" inputmode="numeric" min="0" max="11" value="0"></div></div>
+      </div>
+
+      <div class="subhead">Housing status <span class="req">*</span></div>
+      <div class="seg three" role="radiogroup" aria-label="Housing status">
+        <label><input type="radio" name="b4Housing" value="Own"><span>Own</span></label>
+        <label><input type="radio" name="b4Housing" value="Rent"><span>Rent</span></label>
+        <label><input type="radio" name="b4Housing" value="Rent-free"><span>Rent-free<span class="sub">living w/ family</span></span></label>
+      </div>
+      <span class="field-err" data-houserr="4">Choose a housing status.</span>
+      <div class="field cond hidden" data-cond="b4mort" style="margin-top:.3rem;max-width:340px"><label for="b4MortAmt">Monthly mortgage payment</label><div class="input"><span class="adorn">$</span><input id="b4MortAmt" type="number" inputmode="decimal" placeholder="0"></div></div>
+      <div class="field cond hidden" data-cond="b4rent" style="margin-top:.3rem;max-width:340px"><label for="b4RentAmt">Monthly rent</label><div class="input"><span class="adorn">$</span><input id="b4RentAmt" type="number" inputmode="decimal" placeholder="0"></div></div>
+
+      <div class="cond hidden" data-cond="b4former">
+        <div class="subhead">Previous address <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— required when under 2 years at the current address</em></div>
+        <div class="field"><label for="b4FStreet">Street address</label><div class="input"><input id="b4FStreet" type="text"></div></div>
+        <div class="field-rows two-col" style="margin:0">
+          <div class="field"><label for="b4FCity">City</label><div class="input"><input id="b4FCity" type="text"></div></div>
+          <div class="field"><label for="b4FState">State</label><div class="input"><select id="b4FState" class="us-state"></select></div></div>
+        </div>
+        <div class="field" style="max-width:220px"><label for="b4FZip">ZIP</label><div class="input"><input id="b4FZip" type="text" inputmode="numeric" maxlength="10"></div></div>
+      </div>
+    </div>
+  </div>
+    <button type="button" class="add-btn" id="addBorrowerBtn"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="add-lbl">Add a co-borrower</span></button>
+
+    <div class="wizard-nav"><span class="spacer"></span><button type="button" class="btn btn-solid btn-lg" data-next="2">Continue to property →</button></div>
+</section>
+
+<!-- ===================== STEP 2 — PROPERTY & PROJECT ===================== -->
+<section class="wizard-step app-wrap wide" data-step="2">
+    <p class="step-intro">Now the deal. As you fill this in, the <span class="mins">Deal Snapshot</span> sizes your estimated loan against our program limits — live. <span class="mins">~6 min.</span></p>
+    <div class="tool-grid">
+        <div class="inputs-col">
+
+            <div class="panel">
+                <h2><span class="panel-num">1</span> Loan &amp; strategy</h2>
+                <div class="field-rows">
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field"><label for="dealType">Deal / project type <span class="req">*</span></label><div class="input"><select id="dealType"><option value="Fix &amp; Flip">Fix &amp; Flip</option><option value="Fix &amp; Hold (BRRRR)">Fix &amp; Hold (BRRRR)</option><option value="Bridge / Stabilized">Bridge / Stabilized</option><option value="Ground-up Construction">Ground-up Construction</option></select></div></div>
+                        <div class="field" id="rehabTypeField"><label for="rehabType">Rehab type <span class="req">*</span></label><div class="input"><select id="rehabType"><option value="Cosmetic">Cosmetic (paint, floors, fixtures)</option><option value="Moderate">Moderate (kitchens, baths, systems)</option><option value="Heavy">Heavy (full gut)</option><option value="Adding square footage">Adding square footage</option><option value="Ground-up">Ground-up build</option></select></div></div>
+                    </div>
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field"><label for="exitStrategy">Exit strategy <span class="req">*</span></label><div class="input"><select id="exitStrategy"><option value="Sale">Sale</option><option value="Refinance &amp; hold">Refinance &amp; hold</option><option value="Rent">Rent</option></select></div></div>
+                        <div class="field"><label>Purpose of loan <span class="req">*</span></label>
+                            <div class="seg three" role="radiogroup" aria-label="Purpose of loan">
+                                <label><input type="radio" name="purpose" value="Purchase" checked><span>Purchase</span></label>
+                                <label><input type="radio" name="purpose" value="Rate &amp; Term Refi"><span>Rate &amp; Term<span class="sub">refinance</span></span></label>
+                                <label><input type="radio" name="purpose" value="Cash-Out Refi"><span>Cash-Out<span class="sub">refinance</span></span></label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2><span class="panel-num">2</span> Vesting &amp; ownership</h2>
+                <p class="panel-note">Most investors take title to the property in an entity (an LLC). Tell us how you'll hold this one.</p>
+                <label class="toggle-card switch" for="vestEntity" style="cursor:pointer">
+                    <span class="tc-text"><b>Taking title in an entity (LLC / Corp)</b>Leave off to borrow as an individual.</span>
+                    <span style="display:inline-flex;align-items:center"><input type="checkbox" id="vestEntity"><span class="track"></span></span>
+                </label>
+                <div class="field-rows cond hidden" data-cond="vestEntity" style="margin-top:1rem">
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field"><label for="eName">Entity name</label><div class="input"><input id="eName" type="text" placeholder="e.g. 123 Main Holdings LLC"></div></div>
+                        <div class="field"><label for="eType">Entity type</label><div class="input"><select id="eType"><option value="">Select…</option><option>LLC</option><option>Corporation (Inc / S-Corp)</option><option>Limited Partnership</option><option>Other</option></select></div></div>
+                    </div>
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field"><label for="eState">State of formation</label><div class="input"><input id="eState" type="text" placeholder="e.g. NY"></div></div>
+                        <div class="field"><label for="eEin">EIN <em>(optional)</em></label><div class="input"><input id="eEin" type="text" inputmode="numeric" placeholder="##-#######"></div></div>
+                    </div>
+                </div>
+                <div class="cond hidden" data-cond="ownership" style="margin-top:1.1rem">
+                    <div class="subhead">LLC ownership split <em style="text-transform:none;letter-spacing:0;color:var(--muted-2)">— must total 100%; enter one for two borrowers and we'll balance the other</em></div>
+                    <div class="own-row" data-own="1"><span class="own-name" data-ownname="1">Primary borrower</span><div class="input"><input id="b1Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
+                    <div class="own-row" data-own="2"><span class="own-name" data-ownname="2">Borrower 2</span><div class="input"><input id="b2Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
+                    <div class="own-row" data-own="3"><span class="own-name" data-ownname="3">Borrower 3</span><div class="input"><input id="b3Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
+                    <div class="own-row" data-own="4"><span class="own-name" data-ownname="4">Borrower 4</span><div class="input"><input id="b4Own" type="number" inputmode="decimal" min="0" max="100" placeholder="0"><span class="adorn">%</span></div></div>
+                    <div class="own-total" id="ownTotal"></div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2><span class="panel-num">3</span> Subject property</h2>
+                <div class="field-rows">
+                    <div class="field"><label for="pStreet">Street address <span class="req">*</span></label><div class="input"><input id="pStreet" type="text"></div><span class="field-err">Enter the property address.</span></div>
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field"><label for="pUnit">Unit <em>(optional)</em></label><div class="input"><input id="pUnit" type="text"></div></div>
+                        <div class="field"><label for="pCity">City <span class="req">*</span></label><div class="input"><input id="pCity" type="text"></div><span class="field-err">Enter a city.</span></div>
+                    </div>
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field"><label for="pState">State <span class="req">*</span></label><div class="input"><select id="pState" class="us-state"></select></div><span class="field-err">Select a state.</span></div>
+                        <div class="field"><label for="pZip">ZIP <span class="req">*</span></label><div class="input"><input id="pZip" type="text" inputmode="numeric" maxlength="10"></div><span class="field-err">Enter a ZIP.</span></div>
+                    </div>
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field"><label for="pCounty">County</label><div class="input"><input id="pCounty" type="text"></div></div>
+                        <div class="field"><label for="propType">Property type <span class="req">*</span></label><div class="input"><select id="propType"><option value="Single-Family (SFR)">Single-Family (SFR)</option><option value="2–4 Unit">2–4 Unit</option><option value="Condo">Condo</option><option value="Townhouse">Townhouse</option><option value="PUD">PUD</option><option value="Multifamily 5+">Multifamily 5+</option><option value="Mixed-Use">Mixed-Use</option></select></div></div>
+                    </div>
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field cond hidden" data-cond="units24"><label for="units24"># of units <span class="req">*</span></label><div class="input"><select id="units24"><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></div></div>
+                        <div class="field cond hidden" data-cond="unitsN"><label for="unitsN"># of units <span class="req">*</span></label><div class="input"><input id="unitsN" type="number" inputmode="numeric" min="5" placeholder="e.g. 8"></div></div>
+                        <div class="field"><label for="beds">Beds / baths</label><div style="display:flex;gap:.5rem"><div class="input" style="flex:1"><input id="beds" type="number" inputmode="numeric" min="0" placeholder="Beds"></div><div class="input" style="flex:1"><input id="baths" type="number" inputmode="decimal" min="0" step="0.5" placeholder="Baths"></div></div></div>
+                    </div>
+                    <div class="field cond hidden" data-cond="sqftOne" style="max-width:340px"><label for="sqftCurrent">Current / estimated sq ft</label><div class="input"><input id="sqftCurrent" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+                    <div class="field-rows two-col cond hidden" data-cond="sqftSplit" style="margin:0">
+                        <div class="field"><label for="sqftPre">Pre-rehab sq ft</label><div class="input"><input id="sqftPre" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+                        <div class="field"><label for="sqftPost">Post-rehab sq ft</label><div class="input"><input id="sqftPost" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2><span class="panel-num">4</span> Acquisition</h2>
+                <div class="field-rows">
+                    <div class="cond" data-cond="isPurchase">
+                        <div class="field"><label for="price">Purchase price <span class="req">*</span></label><div class="input"><span class="adorn">$</span><input id="price" type="number" inputmode="decimal" placeholder="0"></div><span class="help">The final total price you're buying at — including any assignment fee.</span><span class="field-err">Enter the purchase price.</span></div>
+                        <label class="toggle-card switch" for="isAssign" style="cursor:pointer;margin-top:.9rem">
+                            <span class="tc-text"><b>This is an assignment / wholesale contract</b>You're buying the contract from a wholesaler.</span>
+                            <span style="display:inline-flex;align-items:center"><input type="checkbox" id="isAssign"><span class="track"></span></span>
+                        </label>
+                        <div class="cond hidden" data-cond="isAssign" style="margin-top:1rem">
+                          <div class="field-rows two-col" style="margin:0">
+                            <div class="field"><label for="origPrice">Seller's contract price <span class="req">*</span></label><div class="input"><span class="adorn">$</span><input id="origPrice" type="number" inputmode="decimal" placeholder="0"></div><span class="help">What the seller has the property under contract for (before the wholesaler's fee).</span><span class="field-err" id="origErr">Enter the seller's price.</span></div>
+                            <div class="field"><label for="assignFee">Assignment fee <em>(auto)</em></label><div class="input is-ro"><span class="adorn">$</span><input id="assignFee" type="number" tabindex="-1" readonly placeholder="0"></div><span class="help">Purchase price minus the seller's price.</span></div>
+                          </div>
+                          <div id="assignNote" class="assign-note" style="display:none"></div>
+                        </div>
+                        <span class="field-err" id="assignErr" style="display:none;margin-top:.5rem">The seller's price can't be more than the purchase price.</span>
+                    </div>
+                    <div class="cond hidden" data-cond="isRefi">
+                        <div class="field-rows two-col" style="margin:0">
+                            <div class="field"><label for="payoff">Current loan payoff</label><div class="input"><span class="adorn">$</span><input id="payoff" type="number" inputmode="decimal" placeholder="0"></div></div>
+                            <div class="field"><label for="origPrice2">Original purchase price</label><div class="input"><span class="adorn">$</span><input id="origPrice2" type="number" inputmode="decimal" placeholder="0"></div></div>
+                        </div>
+                        <div class="field" style="max-width:260px"><label for="acqDate">Date acquired</label><div class="input"><input id="acqDate" type="date"></div></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2><span class="panel-num">5</span> Valuation</h2>
+                <div class="field-rows two-col">
+                    <div class="field"><label for="asIs">As-is value <em>(est.)</em></label><div class="input"><span class="adorn">$</span><input id="asIs" type="number" inputmode="decimal" placeholder="0"></div></div>
+                    <div class="field" id="arvFieldApp"><label for="arv">After-repair value (ARV) <span class="req">*</span></label><div class="input"><span class="adorn">$</span><input id="arv" type="number" inputmode="decimal" placeholder="0"></div><span class="field-err">Enter the ARV.</span></div>
+                </div>
+            </div>
+
+            <div class="panel" id="rehabPanel">
+                <h2><span class="panel-num">6</span> Rehab budget</h2>
+                <p class="panel-note">Just the total here — itemize the full scope any time in our <a href="rehab-budget.html" style="color:var(--teal-br)">Rehab Budget</a> tool.</p>
+                <div class="field-rows">
+                    <div class="field" style="max-width:340px"><label for="rehab">Total rehab budget</label><div class="input"><span class="adorn">$</span><input id="rehab" type="number" inputmode="decimal" placeholder="0"></div></div>
+                    <label class="toggle-card switch" for="finReserve" style="cursor:pointer">
+                        <span class="tc-text"><b>Interest reserve — if available</b>If our program allows it on this deal, we can roll a few months of interest into the loan instead of you paying out of pocket.</span>
+                        <span style="display:inline-flex;align-items:center"><input type="checkbox" id="finReserve"><span class="track"></span></span>
+                    </label>
+                    <div class="field cond hidden" data-cond="finReserve" style="max-width:260px"><label for="resMonths">Months of reserve</label><div class="input"><input id="resMonths" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2><span class="panel-num">7</span> Timeline &amp; term</h2>
+                <div class="field-rows two-col">
+                    <div class="field"><label for="projMonths">Estimated project length <em>(months)</em></label><div class="input"><input id="projMonths" type="number" inputmode="numeric" min="1" value="6"></div></div>
+                    <div class="field"><label for="termMonths">Requested loan term <em>(months)</em></label><div class="input"><input id="termMonths" type="number" inputmode="numeric" min="1" value="12"></div></div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2><span class="panel-num">8</span> Experience &amp; credit</h2>
+                <p class="panel-note">Completed projects in the <strong>last 36 months</strong> — experience is the single biggest driver of your rate and leverage, so count everything (even deals financed elsewhere). For ground-up loans we count your ground-up projects.</p>
+                <div class="field-rows two-col">
+                    <div class="field"><label for="expFlips">Fix &amp; flips completed</label><div class="input"><input id="expFlips" type="number" inputmode="numeric" min="0" value="0"></div></div>
+                    <div class="field"><label for="expBrrrr">BRRRR / rentals stabilized</label><div class="input"><input id="expBrrrr" type="number" inputmode="numeric" min="0" value="0"></div></div>
+                    <div class="field"><label for="expRentals">Rental / REO properties owned now</label><div class="input"><input id="expRentals" type="number" inputmode="numeric" min="0" value="0"></div></div>
+                    <div class="field"><label for="expGround">Ground-up builds completed</label><div class="input"><input id="expGround" type="number" inputmode="numeric" min="0" value="0"></div></div>
+                </div>
+                <div class="exp-total"><span class="exp-total-lbl">Total experience</span><span class="exp-total-val" id="expTotal">0 projects · last 36 mo</span></div>
+                <div class="field-rows two-col" style="margin-top:.5rem">
+                    <div class="field"><label for="fico">Estimated FICO <em>(qualifying borrower)</em></label><div class="input"><input id="fico" type="number" inputmode="numeric" min="300" max="850" placeholder="e.g. 720"></div><span class="help">Your best estimate of the qualifying borrower's middle credit score — used for eligibility &amp; pricing.</span></div>
+                    <div class="field"></div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2><span class="panel-num">9</span> Closing contacts <em style="font-family:var(--font-b);font-size:.8rem;color:var(--muted-2);font-weight:400">(optional)</em></h2>
+                <p class="panel-note">The professionals on your file. Leave blank any that aren't lined up yet — you can add them before closing.</p>
+                <div class="field-rows">
+                    <div class="subhead">Title company</div>
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field"><label for="titleCoName">Title company name</label><div class="input"><input id="titleCoName" type="text" autocomplete="organization"></div></div>
+                        <div class="field"><label for="titleCoEmail">Title company email</label><div class="input"><input id="titleCoEmail" type="email" inputmode="email" placeholder="title@company.com"></div></div>
+                    </div>
+                    <div class="subhead">Hazard insurance agent</div>
+                    <div class="field-rows two-col" style="margin:0">
+                        <div class="field"><label for="hazardName">Agent name</label><div class="input"><input id="hazardName" type="text"></div></div>
+                        <div class="field"><label for="hazardEmail">Agent email</label><div class="input"><input id="hazardEmail" type="email" inputmode="email" placeholder="agent@insurer.com"></div></div>
+                    </div>
+                    <div class="cond" data-cond="attyPurchase">
+                        <div class="subhead">Borrower's attorney</div>
+                        <div class="field-rows two-col" style="margin:0">
+                            <div class="field"><label for="attyName">Attorney name</label><div class="input"><input id="attyName" type="text"></div></div>
+                            <div class="field"><label for="attyEmail">Attorney email</label><div class="input"><input id="attyEmail" type="email" inputmode="email" placeholder="attorney@firm.com"></div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2><span class="panel-num">10</span> Scope of work <em style="font-family:var(--font-b);font-size:.8rem;color:var(--muted-2);font-weight:400">(optional)</em></h2>
+                <div class="field"><div class="input"><textarea id="scope" placeholder="Brief overview of the project — what you're renovating, your plan, and anything that makes this deal strong."></textarea></div></div>
+            </div>
+
+            <div class="wizard-nav">
+                <button type="button" class="btn btn-line btn-lg" data-back="1">← Borrower</button>
+                <button type="button" class="btn btn-solid btn-lg" data-next="3">Review application →</button>
+            </div>
+        </div>
+
+        <div class="results-col">
+            <div class="sn-missing" id="snMissing" style="display:none"></div>
+            <div class="result-hero">
+                <div class="rh-label">Estimated max loan</div>
+                <div class="rh-value tealed" id="snMaxLoan">$0</div>
+                <div class="rh-sub">Indicative only — sized against YS program limits. Final terms set by underwriting.</div>
+                <span class="snap-constraint" id="snConstraint">Enter a price &amp; ARV to begin</span>
+                <div class="limits-row">
+                    <span class="limit-chip">Max as-is <b id="snMaxLtv">—</b></span>
+                    <span class="limit-chip">Max ARV <b id="snMaxArv">—</b></span>
+                    <span class="limit-chip">Max LTC <b id="snMaxLtc">—</b></span>
+                </div>
+                <div class="sn-elig"><span class="verdict" id="snStatus">—</span><span class="sn-rate" id="snRate"></span></div>
+                <ul class="reasons" id="snReasons"></ul>
+                <div class="sn-state-note" id="snStateNote" style="display:none"></div>
+                <div class="sn-manual" id="snManualWrap" style="display:none"></div>
+            </div>
+            <div class="handoff" id="appHandoff">
+                <span class="handoff-q">Questions as you apply? Talk to a real person.</span>
+                <div class="handoff-links">
+                    <a href="https://wa.me/message/SR7AK2L5DOCNJ1" target="_blank" rel="noopener">💬 WhatsApp</a>
+                    <a href="tel:+17188312168">📞 718-831-2168</a>
+                    <a href="mailto:sales@yscapgroup.com">✉️ Email</a>
+                </div>
+            </div>
+            <div class="result-grid">
+                <div class="result"><div class="r-label">Effective purchase price</div><div class="r-value" id="snEffPrice">$0</div><div class="r-hint" id="snEffHint">price you pay</div></div>
+                <div class="result"><div class="r-label">Total rehab budget</div><div class="r-value" id="snRehab">$0</div></div>
+                <div class="result"><div class="r-label">Total project cost</div><div class="r-value" id="snTotalCost">$0</div><div class="r-hint">purchase + rehab</div></div>
+                <div class="result"><div class="r-label">Experience tier</div><div class="r-value" id="snTier" style="font-size:1.02rem">—</div></div>
+                <div class="result"><div class="r-label">Initial advance</div><div class="r-value" id="snInitial">$0</div><div class="r-hint">at closing</div></div>
+                <div class="result"><div class="r-label">Rehab holdback</div><div class="r-value" id="snHoldback">$0</div><div class="r-hint">100% financed, in draws</div></div>
+                <div class="result"><div class="r-label">Est. down payment</div><div class="r-value" id="snDown">$0</div></div>
+                <div class="result"><div class="r-label">Est. title / escrow</div><div class="r-value" id="snTitle">—</div><div class="r-hint">rough estimate — depends on your title vendor</div></div>
+                <div class="result"><div class="r-label">Est. cash to close</div><div class="r-value" id="snCash">$0</div><div class="r-hint">down payment + fees + est. title</div></div>
+                <div class="result"><div class="r-label">Financed interest reserve</div><div class="r-value" id="snIR">—</div><div class="r-hint">rolled into the loan</div></div>
+                <div class="result"><div class="r-label">Loan-to-cost</div><div class="r-value" id="snLtc">0%</div></div>
+                <div class="result"><div class="r-label">Loan-to-ARV</div><div class="r-value" id="snArvPct">0%</div></div>
+                <div class="result"><div class="r-label">As-is advance</div><div class="r-value" id="snLtvPct">0%</div></div>
+            </div>
+            <div class="sn-irnote" id="snIRnote" style="display:none"></div>
+            <div class="loan-logic">
+                <div class="ll-h">How this loan amount is built</div>
+                <p>Your maximum is the <strong>lesser</strong> of four limits — the tightest one sets your number:</p>
+                <ol>
+                    <li><strong>Initial advance</strong> — up to your max as-is % of the lower of purchase price or as-is value.</li>
+                    <li><strong>Rehab</strong> — 100% financed, released in draws as work is verified and reimbursed after completion.</li>
+                    <li><strong>Loan-to-cost</strong> — total can't exceed your max LTC of purchase + rehab.</li>
+                    <li><strong>Loan-to-ARV</strong> — total can't exceed your max % of the after-repair value.</li>
+                </ol>
+                <p class="ll-bind" id="snBindNote"></p>
+            </div>
+            <div class="apply-strip" style="margin-top:1.2rem">
+                <p>Want to pressure-test the numbers first? Run the full model.</p>
+                <a class="btn btn-line" href="flip-analyzer.html">Open Flip Analyzer →</a>
+            </div>
+
+            <div class="la-admin-zone">
+                <button type="button" class="la-admin-trigger" id="laAdminTrigger" aria-expanded="false">Admin mode</button>
+                <div class="la-admin-lock" id="laAdminLock" hidden>
+                    <label for="laAdminPw" class="la-admin-lock-lbl">Enter admin password</label>
+                    <div class="la-admin-lock-row">
+                        <input id="laAdminPw" data-noshare type="password" autocomplete="off" placeholder="Password">
+                        <button type="button" id="laAdminGo">Unlock</button>
+                    </div>
+                    <p class="la-admin-err" id="laAdminErr" hidden>Incorrect password.</p>
+                </div>
+                <div class="la-admin-panel" id="laAdminPanel" hidden>
+                    <div class="la-admin-head">Pricing controls <span class="la-admin-badge">Admin</span></div>
+                    <p class="la-admin-sub">Overrides the live Deal Snapshot — the borrower note rate and estimated cash to close. Nothing here is saved with the application, emailed, or shown to the borrower.</p>
+                    <div class="la-admin-group">Rate markup / YSP</div>
+                    <div class="la-admin-grid2">
+                        <div class="field"><label for="laYspStd">Standard (%)</label><div class="input"><input id="laYspStd" data-noshare type="number" inputmode="decimal" step="0.05" min="0" value="0.5"></div></div>
+                        <div class="field"><label for="laOrigStd">Origination points (%)</label><div class="input"><input id="laOrigStd" data-noshare type="number" inputmode="decimal" step="0.25" min="0" value="1.25"></div></div>
+                    </div>
+                    <div class="la-admin-group">Closing-cost overrides</div>
+                    <div class="la-admin-grid2">
+                        <div class="field"><label for="laFeeUW">UW / processing / legal ($)</label><div class="input"><input id="laFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" value="2195"></div></div>
+                        <div class="field"><label for="laFeeCredit">Credit report ($)</label><div class="input"><input id="laFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" value="150"></div></div>
+                        <div class="field"><label for="laFeeTitle">Title / escrow ($)</label><div class="input"><input id="laFeeTitle" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto-estimate"></div></div>
+                    </div>
+                    <button type="button" class="la-admin-lockbtn" id="laAdminHide">Lock admin mode &amp; reset to defaults</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ===================== STEP 3 — REVIEW & SUBMIT ===================== -->
+<section class="wizard-step app-wrap" data-step="3">
+    <p class="step-intro">Almost done. Give everything a once-over — tap <em>Edit</em> on any section to jump back — then submit, or download a branded copy. <span class="mins">~1 min.</span></p>
+    <div class="panel" id="reviewPanel"><div id="reviewBody"></div></div>
+    <div class="panel">
+        <h2><span class="panel-num">✓</span> Authorization</h2>
+        <label class="consent"><input type="checkbox" id="consent">
+            <span>I certify the information above is accurate to the best of my knowledge, that this loan is for <strong>business / investment purposes only</strong> (not a primary residence), and I authorize YS Capital Group to contact me and obtain the credit and verification reports needed to evaluate this request. Where more than one borrower is listed, each authorizes the same.</span>
+        </label>
+        <span class="field-err" id="consentErr" style="margin-top:.5rem">Please confirm to submit.</span>
+        <label class="consent" style="margin-top:.9rem">
+            <input type="checkbox" id="smsConsent">
+            <span><strong>SMS updates (optional).</strong> I agree to receive conversational and account-related text messages from YS Capital Group at the mobile number(s) provided. Message frequency varies. Msg &amp; data rates may apply. Reply STOP to opt out or HELP for help. SMS consent is not shared with third parties or affiliates for marketing purposes. Consent to texts is not required to apply or to obtain financing. See our <a href="../privacy.html" target="_blank" rel="noopener">Privacy Policy</a> &amp; <a href="../sms-terms.html" target="_blank" rel="noopener">SMS Terms</a>.</span>
+        </label>
+    </div>
+    <div class="wizard-nav">
+        <button type="button" class="btn btn-line btn-lg" data-back="2">← Property</button>
+        <div style="display:flex;gap:.7rem;flex-wrap:wrap">
+            <button type="button" class="btn btn-line btn-lg" onclick="APP.exportPdf(this)">Download PDF ⤓</button>
+            <button type="button" class="btn btn-line btn-lg" onclick="APP.exportXlsx(this)">Export Excel ⤓</button>
+            <button type="button" class="btn btn-solid btn-lg" id="submitBtn">Submit application</button>
+        </div>
+    </div>
+</section>
+
+<!-- ===================== CONFIRMATION ===================== -->
+<section class="wizard-step app-wrap" data-step="4">
+    <div class="app-done">
+        <div class="check"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"></path></svg></div>
+        <h2>Application received</h2>
+        <p id="doneMsg">Thank you — your application is on its way to our team. A YS Capital loan officer will reach out shortly to confirm details and walk you through next steps.</p>
+        <div class="done-actions">
+            <a class="btn btn-solid btn-lg" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&amp;lar=admin&amp;workFlowId=241919" target="_blank" rel="noopener">Complete formal application →</a>
+            <button class="btn btn-line btn-lg" type="button" onclick="APP.exportPdf(this)">Download my copy (PDF) ⤓</button>
+            <a class="btn btn-line btn-lg" href="../suite.html">Back to tools</a>
+        </div>
+    </div>
+</section>
+
+</form>
+</main>
+
+<footer class="suite-footer">
+    <div class="sf-inner">
+        <div class="sf-top">
+            <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">
+            <span class="sf-tag">The answer is yes.™</span>
+            <div class="sf-marks"><img src="../assets/images/eho-lender.png" alt="Equal Housing Lender"><img src="../assets/images/nmls.svg" alt="NMLS ID 2609746"></div>
+        </div>
+        <div class="sf-meta">YS Capital Group · <a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">NMLS ID 2609746</a> · 5 New Montrose Ave, Bsmt, Brooklyn, NY 11211 · <a href="tel:7188312168">718-831-2168</a> · <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a></div>
+        <p class="sf-disc"><strong>Business-purpose financing only.</strong> This application is an inquiry, not an offer, approval, or commitment to lend. All terms, leverage, and the estimated figures shown are indicative and subject to underwriting, appraisal, and final credit approval. Submitting does not guarantee financing.</p>
+        <p class="sf-copy">© 2026 YS Capital Group. All rights reserved. Equal Housing Lender.</p>
+    </div>
+</footer>
+
+<script src="../suite.js?v=admin8"></script>
+<script src="rb-logo.js?v=admin8"></script>
+<script src="standard-program.js?v=admin12"></script>
+<script src="title-cost.js?v=admin8"></script>
+<script>
+/* =====================================================================
+   YS LOAN APPLICATION — wizard logic (v2)
+   Shared YS helpers: num, opt, fmtUSD, fmtPct, put, syncURL,
+   readState, applyState, collectState, shareLink.
+   Program limits (editable): initial LTV 90% · ARV 75% · LTC 92.5%
+   ===================================================================== */
+(function () {
+  "use strict";
+
+  /* ---------------- CONFIG (edit these) ---------------- */
+  /* leverage, pricing & eligibility now come from the shared engine (window.YSP / standard-program.js) */
+  var SUBMIT_ENDPOINT = "";                       // POST URL (Formspree/Netlify/your API). Blank = email handoff.
+  var SALES_EMAIL = "sales@yscapgroup.com";       // always CC'd as a backstop
+  // Loan-officer roster — mirrors the team directory shown on the home page.
+  var OFFICER_GROUPS = [
+    { group: "Sales & Loan Coordinators", people: [
+      { name: "Yehuda Bochner",     title: "President",          email: "Yehuda@yscapgroup.com" },
+      { name: "Mendel Bochner",     title: "Sales Manager",      email: "Mendelb@yscapgroup.com" },
+      { name: "Solomon Katz",       title: "Loan Coordinator",   email: "Solomon@yscapgroup.com" },
+      { name: "Yosef Cohen",        title: "Loan Coordinator",   email: "Yosef@yscapgroup.com" },
+      { name: "Moshe Mermelstein",  title: "Loan Coordinator",   email: "Moshe@yscapgroup.com" },
+      { name: "Shia Kaff",          title: "Loan Coordinator",   email: "Shia@yscapgroup.com" },
+      { name: "Joshua Friedlander", title: "Loan Coordinator",   email: "Joshua@yscapgroup.com" },
+      { name: "Abraham Eisen",      title: "Loan Coordinator",   email: "Abraham@yscapgroup.com" },
+      { name: "Mendel Schwimmer",   title: "Loan Coordinator",   email: "Mendel@yscapgroup.com" },
+      { name: "Solomon Weiss",      title: "Loan Coordinator",   email: "Sol@yscapgroup.com" },
+      { name: "Isaac Zadmehr",      title: "Loan Coordinator",   email: "Isaac@yscapgroup.com" },
+      { name: "Josef Schnitzler",   title: "Loan Coordinator",   email: "Josef@yscapgroup.com" },
+      { name: "Chaim Lebowitz",     title: "Loan Coordinator",   email: "Chaim@yscapgroup.com" },
+      { name: "Pinchus Wieder",     title: "Loan Coordinator",   email: "Pinchus@yscapgroup.com" },
+      { name: "Yisroel Weinstock",  title: "Loan Coordinator",   email: "Yisroel@yscapgroup.com" },
+      { name: "Simcha Shedrowitzky",title: "Loan Coordinator",   email: "Simcha@yscapgroup.com" } ] },
+    { group: "Operations & Back Office", people: [
+      { name: "Esther Bochner",     title: "MLO & Operations Manager", email: "Esther@yscapgroup.com" },
+      { name: "Malky Katz",         title: "Closer & Funder Manager",  email: "Malky@yscapgroup.com" },
+      { name: "Yonah Rapapaort",    title: "Processing Manager",       email: "Yonah@yscapgroup.com" },
+      { name: "Goldy Rosenberg",    title: "Senior Loan Processor",    email: "Goldy@yscapgroup.com" },
+      { name: "Ezra Green",         title: "RTL Loan Processor",       email: "Ezra@yscapgroup.com" },
+      { name: "Sarah Amsel",        title: "Loan Processor",           email: "Sarah@yscapgroup.com" },
+      { name: "Chaya Gruber",       title: "Loan Setup",               email: "Chaya@yscapgroup.com" },
+      { name: "Lisa Katz",          title: "Draw Coordinator",         email: "Lisa@yscapgroup.com" } ] }
+  ];
+  var LOAN_OFFICERS = OFFICER_GROUPS.reduce(function (a, g) { return a.concat(g.people); }, []);
+  var MAX_BORROWERS = 4;
+
+  var $  = function (s, c) { return (c || document).querySelector(s); };
+  var $$ = function (s, c) { return Array.prototype.slice.call((c || document).querySelectorAll(s)); };
+  var el  = function (id) { return document.getElementById(id); };
+  var val = function (id) { var e = el(id); return e ? String(e.value).trim() : ""; };
+  var num = function (id) { return YS.num(id); };
+  function digits(s) { return (s || "").replace(/\D/g, ""); }
+  function clampPct(n) { n = +n; if (!isFinite(n)) n = 0; return Math.max(0, Math.min(100, n)); }
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  /* ---- US states + loan officers ---- */
+  var STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"];
+  $$(".us-state").forEach(function (sel) {
+    var html = '<option value="">State…</option>';
+    STATES.forEach(function (s) { html += '<option value="' + s + '">' + s + '</option>'; });
+    sel.innerHTML = html;
+  });
+  (function fillOfficers() {
+    var sel = el("loOfficerSel"); if (!sel) return;
+    // Sales team only (exclude Operations & Back Office). idx tracks position in LOAN_OFFICERS.
+    var html = '<option value="">Select your loan officer…</option>', idx = 0;
+    OFFICER_GROUPS.forEach(function (g) {
+      var isSales = g.group === "Sales & Loan Coordinators";
+      g.people.forEach(function (p) {
+        if (isSales) html += '<option value="' + idx + '">' + p.name + " \u2014 " + p.title + '</option>';
+        idx++;
+      });
+    });
+    sel.innerHTML = html;
+    sel.addEventListener("change", function () {
+      el("loOfficer").value = sel.value;          // index into LOAN_OFFICERS (sales only)
+      setErr("loOfficer", false);
+    });
+    var tog = el("hasOfficer");
+    if (tog) tog.addEventListener("change", function () {
+      if (!tog.checked) { sel.value = ""; el("loOfficer").value = ""; setErr("loOfficer", false); }
+      if (typeof updateConditionals === "function") updateConditionals();
+    });
+  })();
+  function selectedOfficer() {
+    var i = parseInt(val("loOfficer"), 10);
+    return (i >= 0 && LOAN_OFFICERS[i]) ? LOAN_OFFICERS[i] : null;
+  }
+
+  /* ---------------- borrower count ---------------- */
+  function bCount() { var n = parseInt(val("borrowerCount"), 10); return (n >= 1 && n <= MAX_BORROWERS) ? n : 1; }
+  function setBCount(n) { n = Math.max(1, Math.min(MAX_BORROWERS, n)); if (el("borrowerCount")) el("borrowerCount").value = n; }
+
+  /* ---------------- step navigation ---------------- */
+  var TOTAL_INPUT_STEPS = 3;
+  var reached = { 1: true, 2: false, 3: false };
+  function setStep(n, opts) {
+    opts = opts || {};
+    $$(".wizard-step").forEach(function (s) { s.classList.toggle("is-active", +s.getAttribute("data-step") === n); });
+    var st = el("__step"); if (st && n <= TOTAL_INPUT_STEPS) st.value = n;
+    $$("#stepper .step").forEach(function (e) {
+      var s = +e.getAttribute("data-step");
+      if (s < n) reached[s] = true;
+      e.classList.toggle("active", s === n);
+      e.classList.toggle("done", s < n);
+      var dot = $(".dot", e);
+      if (s < n) dot.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>';
+      else dot.textContent = dot.getAttribute("data-num");
+      if (reached[s]) e.setAttribute("data-reached", "1");
+      e.setAttribute("aria-current", s === n ? "step" : "false");
+    });
+    $$("#stepper .step-line").forEach(function (ln) { ln.classList.toggle("done", +ln.getAttribute("data-line") < n); });
+    if (n <= TOTAL_INPUT_STEPS) reached[n] = true;
+    if (n === 3) renderReview();
+    if (!opts.noScroll) window.scrollTo({ top: 0, behavior: "smooth" });
+    try { YS.syncURL(); } catch (e) {}
+  }
+
+  /* ---------------- field helpers ---------------- */
+  function purpose() { var r = $('input[name="purpose"]:checked'); return r ? r.value : "Purchase"; }
+  function isRefi() { return purpose().indexOf("Refi") > -1; }
+  function housing(i) { var r = $('input[name="b' + i + 'Housing"]:checked'); return r ? r.value : ""; }
+  function monthsAt(i) { return num("b" + i + "Years") * 12 + num("b" + i + "Months"); }
+  function propType() { return val("propType"); }
+  function unitsMode() {
+    var t = propType();
+    if (t === "2\u20134 Unit") return "24";
+    if (t === "Multifamily 5+" || t === "Mixed-Use") return "many";
+    return "one"; // SFR / Condo / Townhouse / PUD
+  }
+  function unitsVal() { var m = unitsMode(); if (m === "one") return 1; if (m === "24") return num("units24") || 2; return num("unitsN") || 1; }
+  function rehabType() { return val("rehabType"); }
+  function sqftSplit() { var t = rehabType(); return t === "Heavy" || t === "Adding square footage" || t === "Ground-up"; }
+  function effPurchase() {
+    if (isRefi()) { var ov = num("payoff"); return ov > 0 ? ov : num("origPrice2"); }
+    return num("price"); // total purchase price (seller price + assignment fee always reconcile to this)
+  }
+  function rehabTotal() { return num("rehab"); }
+  function citizen(i) { return val("b" + i + "Citizen"); }
+  function isForeign(i) { return citizen(i) === "Foreign National"; }
+  function dealType() { return val("dealType"); }
+  function isGroundUp() { return dealType().indexOf("Ground-up") > -1 || rehabType() === "Ground-up"; }
+  function experienceTotal() {
+    if (isGroundUp()) return num("expGround");
+    return num("expFlips") + num("expBrrrr") + num("expGround");
+  }
+  function ficoVal() { return num("fico"); }
+
+  function show(node, on) { if (node) node.classList.toggle("hidden", !on); }
+  function updateConditionals() {
+    var n = bCount();
+    show($('[data-cond="vestEntity"]'), el("vestEntity").checked);
+    if (el("hasOfficer")) show($('[data-cond="hasOfficer"]'), el("hasOfficer").checked);
+    // borrowers
+    for (var i = 1; i <= MAX_BORROWERS; i++) {
+      var blk = $('[data-borrower="' + i + '"]'); if (blk) blk.classList.toggle("hidden", i > n);
+      show($('[data-cond="b' + i + 'mort"]'), housing(i) === "Own");
+      show($('[data-cond="b' + i + 'rent"]'), housing(i) === "Rent");
+      show($('[data-cond="b' + i + 'former"]'), monthsAt(i) > 0 && monthsAt(i) < 24);
+      show($('[data-cond="b' + i + 'ssn"]'), !isForeign(i));
+      show($('[data-own="' + i + '"]'), el("vestEntity").checked && n > 1 && i <= n);
+      var onl = $('[data-ownname="' + i + '"]'); if (onl) onl.textContent = bName(i) || (i === 1 ? "Primary borrower" : "Borrower " + i);
+    }
+    show($('[data-cond="ownership"]'), el("vestEntity").checked && n > 1);
+    show(el("addBorrowerBtn"), n < MAX_BORROWERS);
+    if (el("addBorrowerBtn")) el("addBorrowerBtn").querySelector(".add-lbl").textContent = n === 1 ? "Add a co-borrower" : "Add another borrower";
+    // property
+    var um = unitsMode();
+    // Bridge / Stabilized is acquisition-only — no rehab budget, no ARV, no rehab type
+    var isBridgeApp = dealType().indexOf("Bridge") > -1;
+    if (el("rehabPanel")) el("rehabPanel").classList.toggle("hidden", isBridgeApp);
+    if (el("arvFieldApp")) el("arvFieldApp").classList.toggle("hidden", isBridgeApp);
+    if (el("rehabTypeField")) el("rehabTypeField").classList.toggle("hidden", isBridgeApp);
+    if (isBridgeApp) { ["rehab", "arv"].forEach(function (id) { if (el(id) && el(id).value) el(id).value = ""; }); }
+    show($('[data-cond="units24"]'), um === "24");
+    show($('[data-cond="unitsN"]'), um === "many");
+    show($('[data-cond="sqftSplit"]'), sqftSplit());
+    show($('[data-cond="sqftOne"]'), !sqftSplit());
+    // acquisition
+    show($('[data-cond="isPurchase"]'), !isRefi());
+    show($('[data-cond="isRefi"]'), isRefi());
+    show($('[data-cond="isAssign"]'), el("isAssign").checked && !isRefi());
+    // rehab / contacts
+    show($('[data-cond="finReserve"]'), el("finReserve").checked);
+    show($('[data-cond="attyPurchase"]'), !isRefi());
+    // total experience readout (ground-up counts only ground-up experience)
+    var et = el("expTotal");
+    if (et) {
+      var tot = experienceTotal();
+      et.textContent = tot + (tot === 1 ? " project" : " projects") + (isGroundUp() ? " · ground-up only" : " · last 36 mo");
+    }
+    // live-clear the assignment mismatch error once it resolves (never shows here — only validateStep shows it)
+    var ae = el("assignErr");
+    if (ae && ae.style.display === "block") {
+      var okMatch = !(el("isAssign").checked && !isRefi()) || num("origPrice") <= num("price") + 1;
+      if (okMatch) ae.style.display = "none";
+    }
+    updateOwnTotal();
+  }
+
+  /* ---------------- LLC ownership ---------------- */
+  function balanceOwnership(changedId) {
+    if (!el("vestEntity").checked) return;
+    if (bCount() === 2) {
+      if (changedId === "b1Own") el("b2Own").value = clampPct(100 - num("b1Own"));
+      else if (changedId === "b2Own") el("b1Own").value = clampPct(100 - num("b2Own"));
+    }
+    updateOwnTotal();
+  }
+  function updateOwnTotal() {
+    var box = el("ownTotal"); if (!box) return;
+    if (!(el("vestEntity").checked && bCount() > 1)) { box.textContent = ""; box.className = "own-total"; return; }
+    var n = bCount(), tot = 0; for (var i = 1; i <= n; i++) tot += num("b" + i + "Own");
+    var ok = Math.abs(tot - 100) < 0.5;
+    box.textContent = "Total LLC ownership entered: " + (Math.round(tot * 100) / 100) + "%" + (ok ? "  \u2713" : "  \u2014 must total 100%");
+    box.className = "own-total " + (ok ? "ok" : "bad");
+  }
+
+  /* ---------------- live deal snapshot (engine-driven) ---------------- */
+  function snStrategy() { return isGroundUp() ? "Ground-up Construction" : dealType(); }
+  function isCashOut() { return purpose().indexOf("Cash-Out") > -1; }
+  function detectCity() { var a = (val("pCity") || "").toLowerCase(); var L = ["baltimore", "philadelphia", "detroit", "chicago"]; for (var i = 0; i < L.length; i++) if (a.indexOf(L[i]) > -1) return L[i]; return ""; }
+  function propTypeToken() { var t = propType(); if (t === "Mixed-Use") return "mixed-use"; if (t === "Multifamily 5+") return "multifamily 5+"; return ""; }
+
+  // Required to PRICE a scenario: state + FICO + the core values. Strategy/purpose carry defaults.
+  function appMissingFields() {
+    var miss = [];
+    if (!val("pState")) miss.push("Property state");
+    if (!(num("fico") > 0)) miss.push("Estimated FICO");
+    if (isRefi()) { if (!(num("asIs") > 0)) miss.push("As-is value"); }
+    else if (!(num("price") > 0)) miss.push("Purchase price");
+    if (!(num("arv") > 0)) miss.push("After-repair value (ARV)");
+    if (!(rehabTotal() > 0)) miss.push("Total rehab budget");
+    return miss;
+  }
+  var APP_STATE_NAMES = { FL: "Florida", CA: "California", NY: "New York" };
+  function appStateOverlayNote(st) {
+    st = (st || "").toUpperCase();
+    if (st === "FL" || st === "CA" || st === "NY") {
+      return "Per the " + APP_STATE_NAMES[st] + " program overlay, maximum leverage and loan limits are reduced and fix & flip / fix & hold refinances \u2014 both rate-and-term and cash-out \u2014 are not eligible. Your terms reflect the " + APP_STATE_NAMES[st] + " limits.";
+    }
+    return "";
+  }
+  function appManualMailto(R, s, inp, totalLoan) {
+    var L = [];
+    L.push("Please review the following scenario for manual underwriting:");
+    L.push("");
+    L.push("Deal purpose: " + (isRefi() ? (isCashOut() ? "Cash-out refinance" : "Rate/term refinance") : "Purchase"));
+    L.push("Strategy: " + (snStrategy() || "\u2014"));
+    L.push("Property state: " + (val("pState") || "\u2014"));
+    if (!isRefi()) { L.push("Purchase price: " + (num("price") ? YS.fmtUSD(num("price")) : "\u2014")); if (el("isAssign") && el("isAssign").checked) L.push("Seller's contract price: " + (num("origPrice") ? YS.fmtUSD(num("origPrice")) : "\u2014")); }
+    L.push("As-is value: " + (num("asIs") ? YS.fmtUSD(num("asIs")) : "\u2014"));
+    L.push("ARV: " + (num("arv") ? YS.fmtUSD(num("arv")) : "\u2014"));
+    L.push("Rehab budget: " + (rehabTotal() ? YS.fmtUSD(rehabTotal()) : "$0"));
+    L.push("Interest reserve: " + ((el("finReserve") && el("finReserve").checked) ? (num("resMonths") + " months requested") : "Paid out of pocket"));
+    L.push("Estimated FICO: " + (num("fico") || "\u2014"));
+    L.push("Experience (36 mo): flips " + (num("expFlips") || 0) + ", holds/BRRRR " + (num("expBrrrr") || 0) + ", ground-up " + (num("expGround") || 0));
+    if (totalLoan > 0) L.push("Indicated loan amount: " + YS.fmtUSD(totalLoan));
+    L.push("");
+    var probs = (R.reasons || []).filter(function (r) { return r.level !== "ELIGIBLE"; }).map(function (r) { return "\u2022 " + r.msg; });
+    if (probs.length) { L.push("Flagged:"); L.push(probs.join("\n")); L.push(""); }
+    L.push("Please advise on options. Thank you.");
+    var subj = "Manual review request \u2014 " + (snStrategy() || "scenario") + (val("pState") ? " (" + val("pState") + ")" : "");
+    return "mailto:sales@yscapgroup.com?subject=" + encodeURIComponent(subj) + "&body=" + encodeURIComponent(L.join("\n"));
+  }
+
+  /* ---------------- admin pricing overrides (soft-gated; Standard-only page) ---------------- */
+  var ADMIN_HASH = 6019969998889003;   // cyrb53("Yscg@12345"). Soft gate only — obfuscation, not security.
+  function cyrb53(str, seed) {
+    seed = seed >>> 0; var h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+    for (var i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+  }
+  function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : dflt; }
+  function adminOrigPct() { return adminNum("laOrigStd", 1.25) / 100; }           // fraction; default 1.25%
+  function adminFeeUW() { return adminNum("laFeeUW", 2195); }
+  function adminFeeCredit() { return adminNum("laFeeCredit", 150); }
+  function adminTitle() { var e = el("laFeeTitle"); if (!e) return null; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : null; }  // null = use estimate
+  function syncAdminMarkup() { try { if (typeof YSP !== "undefined" && YSP.setMarkup) YSP.setMarkup(adminNum("laYspStd", 0.5) / 100); } catch (e) {} }
+  function wireAdmin() {
+    var trig = el("laAdminTrigger"), lock = el("laAdminLock"), panel = el("laAdminPanel"),
+        pw = el("laAdminPw"), go = el("laAdminGo"), err = el("laAdminErr"), hide = el("laAdminHide");
+    if (!trig) return;
+    function openLock() { if (lock) lock.hidden = false; if (panel) panel.hidden = true; trig.setAttribute("aria-expanded", "true"); if (err) err.hidden = true; if (pw) { pw.value = ""; pw.focus(); } }
+    function attempt() {
+      if (!pw) return;
+      if (cyrb53(pw.value, 0) === ADMIN_HASH) { if (lock) lock.hidden = true; if (panel) panel.hidden = false; trig.hidden = true; if (err) err.hidden = true; pw.value = ""; }
+      else { if (err) err.hidden = false; if (pw.select) pw.select(); }
+    }
+    function setVal(id, v) { var e = el(id); if (e) e.value = v; }
+    function lockDown() {
+      if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
+      setVal("laYspStd", "0.5"); setVal("laOrigStd", "1.25"); setVal("laFeeUW", "2195"); setVal("laFeeCredit", "150"); setVal("laFeeTitle", "");
+      recompute();
+    }
+    trig.addEventListener("click", openLock);
+    if (go) go.addEventListener("click", attempt);
+    if (pw) pw.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); attempt(); } });
+    if (hide) hide.addEventListener("click", lockDown);
+  }
+
+  function recompute() {
+    syncAdminMarkup();
+    var isAssign = el("isAssign").checked && !isRefi();
+    var totalPrice = effPurchase();                 // total purchase price
+    var seller = num("origPrice");
+    // assignment fee is derived so seller + fee always reconcile to the total
+    if (isAssign) { var feeEl = el("assignFee"); if (feeEl) feeEl.value = Math.max(0, totalPrice - seller) || ""; }
+    var rehab = rehabTotal(), arv = num("arv");
+    var fico = num("fico");
+    var resMonths = (el("finReserve") && el("finReserve").checked) ? num("resMonths") : 0;
+    var inp = {
+      loanType: isRefi() ? "Refinance" : "Purchase",
+      cashOut: isCashOut(),
+      strategy: snStrategy(),
+      state: val("pState"),
+      city: detectCity(),
+      fico: fico,
+      expFlips: num("expFlips"), expHolds: num("expBrrrr"), expGround: num("expGround"),
+      purchasePrice: isRefi() ? num("asIs") : totalPrice,
+      asIsValue: num("asIs"),
+      arv: arv,
+      rehabBudget: rehab,
+      term: 12, irMonths: resMonths, accrual: "Non-Dutch", reserveInCost: true,
+      sqftAddition: rehabType() === "Adding square footage" && !isGroundUp(),
+      heavyRehab: rehabType() === "Heavy",
+      propertyType: propTypeToken(),
+      isAssignment: isAssign, sellerPrice: seller
+    };
+    var R = YSP.evaluate(inp), s = R.sizing || {}, c = R.caps;
+    var asg = R.assignment;
+    var basisPrice = (asg ? asg.recognizedPrice : totalPrice);   // price leverage is sized on
+    var totalCost = basisPrice + rehab;
+    var totalLoan = s.totalLoan || 0, sized = totalLoan > 0 && R.status !== "INELIGIBLE";
+
+    // ----- gating: don't surface pricing / leverage / loan until required fields exist -----
+    var miss = appMissingFields();
+    var ready = miss.length === 0;                  // state + FICO + price/asIs + ARV present
+    var EM = "\u2014";
+    var rate = (R.noteRate || 0) * 100;
+    var origFee = totalLoan * adminOrigPct();
+    var excessOOP = (s.assignmentExcessOOP || 0);
+    var titleEst = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(val("pState"), totalLoan, isRefi() ? "Refinance" : "Purchase") : { total: 0 };
+    var titleOvr = adminTitle();
+    var titleCost = (titleOvr != null) ? titleOvr : (titleEst.total || 0);
+    var cashToClose = (s.downPayment || 0) + excessOOP + origFee + adminFeeUW() + adminFeeCredit() + titleCost;   // fees admin-overridable; reserve never brought to table; appraisal is POC
+    var financedIR = s.financedIR || 0;
+    var totalCostDisp = totalCost + financedIR;
+
+    YS.put("snEffPrice", YS.fmtUSD(basisPrice));
+    YS.put("snEffHint", isAssign ? (asg && asg.overLimit ? "recognized price (seller + max 15%)" : "seller + assignment fee") : (isRefi() ? "current payoff" : "price you pay"));
+    YS.put("snRehab", YS.fmtUSD(rehab));
+    YS.put("snTotalCost", YS.fmtUSD(totalCostDisp));
+    YS.put("snMaxLoan", (ready && sized) ? YS.fmtUSD(totalLoan) : EM);
+    YS.put("snInitial", ready ? YS.fmtUSD(s.acquisition || 0) : EM);
+    YS.put("snHoldback", ready ? YS.fmtUSD(s.rehabLoan || 0) : EM);
+    YS.put("snDown", ready ? YS.fmtUSD(s.downPayment || 0) : EM);
+    YS.put("snTitle", (ready && titleCost > 0) ? YS.fmtUSD(titleCost) : EM);
+    YS.put("snCash", ready ? YS.fmtUSD(cashToClose) : EM);
+    YS.put("snIR", (ready && financedIR > 0) ? YS.fmtUSD(financedIR) : EM);
+    YS.put("snLtc", (ready && s.ltcPct) ? YS.fmtPct(s.ltcPct, 1) : EM);
+    YS.put("snArvPct", (ready && s.arvPct) ? YS.fmtPct(s.arvPct, 1) : EM);
+    YS.put("snLtvPct", (ready && s.acqLtvPct) ? YS.fmtPct(s.acqLtvPct, 1) : EM);
+    YS.put("snTier", R.tierLabel || EM);
+    // leverage caps appear only once FICO is in (per program: pricing & limits need a representative score)
+    YS.put("snMaxLtv", (R.pricingReady && c) ? YS.fmtPct(c.maxAcqLTV, 0) : EM);
+    YS.put("snMaxArv", (R.pricingReady && c) ? YS.fmtPct(c.maxARLTV, 0) : EM);
+    YS.put("snMaxLtc", (R.pricingReady && c) ? YS.fmtPct(c.maxLTC, (c.maxLTC * 100 % 1) ? 1 : 0) : EM);
+
+    // assignment note (financeable vs out-of-pocket)
+    var an = el("assignNote");
+    if (an) {
+      if (isAssign && seller > 0 && totalPrice > seller) {
+        var fee = Math.max(0, totalPrice - seller);
+        if (asg && asg.overLimit) {
+          an.style.display = "";
+          an.className = "assign-note warn";
+          an.innerHTML = "<b>Assignment fee exceeds the 15% program limit.</b> Up to " + YS.fmtUSD(asg.maxFee) + " (15% of the " + YS.fmtUSD(totalPrice) +
+            " purchase price) is financeable. Your fee is " + YS.fmtUSD(fee) +
+            ", so <b>" + YS.fmtUSD(asg.excessOOP) + " is paid out of pocket at closing</b> and terms are sized on the recognized price of " +
+            YS.fmtUSD(asg.recognizedPrice) + ". A higher limit can be requested as an exception.";
+        } else {
+          an.style.display = "";
+          an.className = "assign-note ok";
+          an.innerHTML = "Assignment fee of " + YS.fmtUSD(fee) + " is within the 15% limit (" + YS.fmtUSD(asg ? asg.maxFee : 0.15 * totalPrice) + " max, 15% of the purchase price) — fully financeable.";
+        }
+      } else { an.style.display = "none"; }
+    }
+
+    // ----- "what's still missing for pricing" box -----
+    var mbox = el("snMissing");
+    if (mbox) {
+      if (!ready) {
+        mbox.style.display = "";
+        mbox.innerHTML = "<div class=\"tm-h\">To price this scenario, add:</div><ul class=\"tm-list\">" +
+          miss.map(function (m) { return "<li>" + m + "</li>"; }).join("") + "</ul>";
+      } else { mbox.style.display = "none"; mbox.innerHTML = ""; }
+    }
+
+    var rt = el("snRate"); if (rt) rt.textContent = (ready && sized && rate > 0) ? rate.toFixed(2) + "% rate" : "";
+    var st = el("snStatus");
+    if (st) {
+      if (!ready) { st.textContent = "Add required fields"; st.className = "verdict"; }
+      else { st.textContent = R.status === "ELIGIBLE" ? "Eligible" : R.status === "MANUAL" ? "Eligible \u2014 manual underwrite" : "Not eligible as entered";
+        st.className = "verdict " + (R.status === "ELIGIBLE" ? "good" : R.status === "MANUAL" ? "warn" : "bad"); }
+    }
+    var rl = el("snReasons");
+    if (rl) { rl.innerHTML = "";
+      if (!ready) { var li0 = document.createElement("li"); li0.className = "reason"; li0.textContent = "Complete state, FICO, price and ARV to see pricing, leverage and your loan amount."; rl.appendChild(li0); }
+      else (R.reasons || []).forEach(function (r) { var li = document.createElement("li"); li.className = "reason " + (r.level === "ELIGIBLE" ? "good" : r.level === "MANUAL" ? "warn" : "bad"); li.textContent = r.msg; rl.appendChild(li); }); }
+
+    // ----- state overlay note (only when a limiting state is chosen) -----
+    var sStateN = el("snStateNote");
+    if (sStateN) { var snt = ready ? appStateOverlayNote(inp.state) : ""; if (snt) { sStateN.style.display = ""; sStateN.textContent = snt; } else { sStateN.style.display = "none"; sStateN.textContent = ""; } }
+
+    // ----- manual-review email (ineligible or manual underwrite) -----
+    var mwrap = el("snManualWrap");
+    if (mwrap) {
+      var needsManual = ready && (R.status === "INELIGIBLE" || R.status === "MANUAL");
+      if (needsManual) {
+        mwrap.style.display = "";
+        var lead = R.status === "INELIGIBLE" ? "This scenario falls outside the standard program as entered." : "This scenario needs a manual underwrite.";
+        mwrap.innerHTML = "<p class=\"tmv-lead\">" + lead + " Send it to our team for a manual review.</p>" +
+          "<a class=\"btn btn-line\" href=\"" + appManualMailto(R, s, inp, totalLoan) + "\">Submit for manual review \u2709</a>";
+      } else { mwrap.style.display = "none"; mwrap.innerHTML = ""; }
+    }
+
+    // ----- interest-reserve cap note -----
+    var sIRn = el("snIRnote");
+    if (sIRn) {
+      if (ready && s.reserveCapped) {
+        sIRn.style.display = "";
+        sIRn.innerHTML = "<strong>Maximum eligible interest reserve: " + YS.fmtUSD(s.maxReserve || 0) +
+          "</strong> (\u2248 " + (s.maxReserveMonths || 0).toFixed(1) + " months). The requested " + resMonths +
+          " months exceed what " + (s.reserveCapBy || "the program") + " allows; the maximum eligible amount has been applied and the remainder isn't eligible to finance.";
+      } else { sIRn.style.display = "none"; sIRn.innerHTML = ""; }
+    }
+
+    var con = el("snConstraint");
+    if (con) con.textContent = !ready ? "Complete the highlighted fields to see your terms" : (R.status === "INELIGIBLE" ? "See eligibility below" : (R.cityReview ? "Confirm the property location — see below" : (totalLoan > 0 ? "Limited by " + (s.binding || "program leverage") : "Enter a price & ARV to begin")));
+    var sbn = el("snBindNote");
+    if (sbn) sbn.textContent = (ready && sized && s.binding) ? ("On this deal, " + s.binding + " is the binding limit.") : "";
+
+    // highlight any missing required inputs
+    var RMAP = { "Property state": "pState", "Estimated FICO": "fico", "As-is value": "asIs", "Purchase price": "price", "After-repair value (ARV)": "arv", "Total rehab budget": "rehab" };
+    Object.keys(RMAP).forEach(function (lbl) { var e = el(RMAP[lbl]); var w = e && (e.closest ? e.closest(".field") : null); if (w) w.classList.toggle("need", miss.indexOf(lbl) > -1); });
+  }
+
+  /* ---------------- validation ---------------- */
+  function setErr(id, bad) { var e = el(id); if (!e) return; var f = e.closest(".field"); if (f) f.classList.toggle("invalid", !!bad); }
+  var STEP_REQUIRED = {
+    1: function () {
+      var bad = [], n = bCount();
+      for (var i = 1; i <= n; i++) {
+        var p = "b" + i;
+        [p + "First", p + "Last", p + "Dob", p + "Street", p + "City", p + "State"].forEach(function (id) {
+          var ok = val(id) !== ""; setErr(id, !ok); if (!ok) bad.push(id);
+        });
+        if (!isForeign(i)) { var sok = digits(val(p + "Ssn")).length === 9; setErr(p + "Ssn", !sok); if (!sok) bad.push(p + "Ssn"); } else setErr(p + "Ssn", false);
+        var phok = digits(val(p + "Phone")).length >= 10; setErr(p + "Phone", !phok); if (!phok) bad.push(p + "Phone");
+        var emok = EMAIL_RE.test(val(p + "Email")); setErr(p + "Email", !emok); if (!emok) bad.push(p + "Email");
+        var zok = digits(val(p + "Zip")).length >= 5; setErr(p + "Zip", !zok); if (!zok) bad.push(p + "Zip");
+        var hok = housing(i) !== ""; var hs = $('[data-houserr="' + i + '"]'); if (hs) hs.style.display = hok ? "none" : "block"; if (!hok) bad.push(p + "Housing");
+      }
+      setErr("loOfficer", false); // loan officer is optional
+      return bad;
+    },
+    2: function () {
+      var bad = [], n = bCount();
+      // vesting/ownership now lives in step 2
+      if (el("vestEntity").checked && n > 1) {
+        var tot = 0; for (var j = 1; j <= n; j++) tot += num("b" + j + "Own");
+        if (Math.abs(tot - 100) > 0.5) { bad.push("ownership"); updateOwnTotal(); }
+      }
+      ["pStreet", "pCity", "pState"].forEach(function (id) { var ok = val(id) !== ""; setErr(id, !ok); if (!ok) bad.push(id); });
+      var zok = digits(val("pZip")).length >= 5; setErr("pZip", !zok); if (!zok) bad.push("pZip");
+      var arvOk = (dealType().indexOf("Bridge") > -1) || num("arv") > 0; setErr("arv", !arvOk); if (!arvOk) bad.push("arv");
+      if (!isRefi()) {
+        var prOk = num("price") > 0; setErr("price", !prOk); if (!prOk) bad.push("price");
+        if (el("isAssign").checked) {
+          var oOk = num("origPrice") > 0; setErr("origPrice", !oOk); if (!oOk) bad.push("origPrice");
+          var within = num("origPrice") <= num("price") + 1;       // seller can't exceed the total
+          var ae = el("assignErr"); if (ae) ae.style.display = (oOk && !within) ? "block" : "none";
+          if (oOk && !within) { setErr("origPrice", true); bad.push("assignMatch"); }
+        }
+      }
+      return bad;
+    },
+    3: function () { return []; }
+  };
+  function validateStep(n) {
+    var bad = STEP_REQUIRED[n] ? STEP_REQUIRED[n]() : [];
+    if (bad.length) {
+      var t = el(bad[0]) || (bad[0] === "ownership" ? el("ownTotal") : null) || (bad[0] === "assignMatch" ? el("assignErr") : null) || document.querySelector(".invalid");
+      if (t) { var f = t.closest(".field") || t; f.scrollIntoView({ behavior: "smooth", block: "center" }); }
+    }
+    return bad.length === 0;
+  }
+
+  /* ---------------- shared value helpers ---------------- */
+  function money(id) { var n = num(id); return n ? YS.fmtUSD(n) : ""; }
+  function bName(i) { var p = "b" + i; return [val(p + "First"), val(p + "Middle"), val(p + "Last")].filter(Boolean).join(" "); }
+  function ssnMask(p) { var d = digits(val(p + "Ssn")); return d.length === 9 ? "\u2022\u2022\u2022-\u2022\u2022-" + d.slice(5) : ""; }
+  function addrJoin(street, unit, city, state, zip) {
+    var a = val(street); if (unit && val(unit)) a += " " + val(unit);
+    var l2 = [val(city), val(state), val(zip)].filter(Boolean).join(", ");
+    return [a, l2].filter(function (x) { return x && x.trim(); }).join(", ");
+  }
+  function addrOf(p) { return addrJoin(p + "Street", p + "Unit", p + "City", p + "State", p + "Zip"); }
+  function addrFormer(p) { return addrJoin(p + "FStreet", null, p + "FCity", p + "FState", p + "FZip"); }
+  function addrSubject() { return addrJoin("pStreet", "pUnit", "pCity", "pState", "pZip"); }
+  function houseAmt(i) {
+    var h = housing(i);
+    if (h === "Own" && num("b" + i + "MortAmt")) return " \u00b7 " + YS.fmtUSD(num("b" + i + "MortAmt")) + "/mo mortgage";
+    if (h === "Rent" && num("b" + i + "RentAmt")) return " \u00b7 " + YS.fmtUSD(num("b" + i + "RentAmt")) + "/mo rent";
+    return "";
+  }
+  function joinNE(arr) { return arr.filter(Boolean).join(" \u00b7 "); }
+
+  /* ---------------- structured sections (drives review, excel, pdf, email) ---------------- */
+  function buildSections() {
+    var S = [], n = bCount(), off = selectedOfficer();
+    S.push({ title: "Loan officer", step: 1, items: [
+      ["Loan officer", off ? (off.name + (off.title ? " — " + off.title : "")) : "No preference — routed to loan desk"]
+    ]});
+    var v = [["Vesting", el("vestEntity").checked ? "Entity (LLC / Corp)" : "Individual"]];
+    if (el("vestEntity").checked) { v.push(["Entity name", val("eName")]); v.push(["Entity type", val("eType")]); v.push(["State of formation", val("eState")]); v.push(["EIN", val("eEin")]); }
+    S.push({ title: "Vesting", step: 1, items: v });
+    for (var i = 1; i <= n; i++) {
+      var p = "b" + i, items = [
+        ["Name", bName(i)], ["Date of birth", val(p + "Dob")], ["SSN", isForeign(i) ? "Foreign national \u2014 passport / ITIN" : ssnMask(p)], ["Citizenship", val(p + "Citizen")],
+        ["Phone", val(p + "Phone")], ["Email", val(p + "Email")], ["Residence", addrOf(p)],
+        ["Time at address", num(p + "Years") + "y " + num(p + "Months") + "m"], ["Housing", housing(i) + houseAmt(i)]
+      ];
+      if (monthsAt(i) > 0 && monthsAt(i) < 24) items.push(["Previous address", addrFormer(p)]);
+      if (el("vestEntity").checked && n > 1) items.push(["LLC ownership", num(p + "Own") + "%"]);
+      S.push({ title: (i === 1 ? "Primary borrower" : "Co-borrower " + i), step: 1, items: items });
+    }
+    S.push({ title: "Property & project", step: 2, items: [
+      ["Deal type", val("dealType").replace(/&amp;/g, "&")], ["Rehab type", val("rehabType")],
+      ["Exit strategy", val("exitStrategy").replace(/&amp;/g, "&")], ["Purpose", purpose().replace(/&amp;/g, "&")],
+      ["Subject property", addrSubject()], ["County", val("pCounty")], ["Property type", val("propType")],
+      ["Units", String(unitsVal())], ["Beds / baths", (val("beds") || "\u2014") + " / " + (val("baths") || "\u2014")],
+      sqftSplit() ? ["Sq ft (pre \u2192 post)", (val("sqftPre") || "\u2014") + " \u2192 " + (val("sqftPost") || "\u2014")] : ["Sq ft (est.)", (val("sqftCurrent") || "")]
+    ]});
+    var a = [];
+    if (!isRefi()) { a.push(["Purchase price", money("price")]); if (el("isAssign").checked) { a.push(["Assignment / wholesale", "Yes"]); a.push(["Seller's contract price", money("origPrice")]); a.push(["Assignment fee", money("assignFee")]); } }
+    else { a.push(["Current loan payoff", money("payoff")]); a.push(["Original purchase price", money("origPrice2")]); a.push(["Date acquired", val("acqDate")]); }
+    a.push(["As-is value", money("asIs")]); a.push(["ARV", money("arv")]);
+    S.push({ title: "Acquisition & valuation", step: 2, items: a });
+    S.push({ title: "Rehab, timeline & experience", step: 2, items: [
+      ["Total rehab budget", money("rehab")],
+      ["Interest reserve", el("finReserve").checked ? (num("resMonths") + " months requested (if available)") : "Paid out of pocket"],
+      ["Project length", (val("projMonths") || "\u2014") + " months"], ["Requested term", (val("termMonths") || "\u2014") + " months"],
+      ["Total experience", experienceTotal() + (experienceTotal() === 1 ? " project " : " projects ") + (isGroundUp() ? "(ground-up only)" : "(last 36 mo)") + (num("expRentals") ? " \u00b7 " + num("expRentals") + " rentals owned" : "")],
+      ["Estimated FICO", ficoVal() ? String(ficoVal()) : ""]
+    ]});
+    var c = [["Title company", joinNE([val("titleCoName"), val("titleCoEmail")])], ["Hazard insurance agent", joinNE([val("hazardName"), val("hazardEmail")])]];
+    if (!isRefi()) c.push(["Borrower's attorney", joinNE([val("attyName"), val("attyEmail")])]);
+    if (val("scope")) c.push(["Scope of work", val("scope")]);
+    S.push({ title: "Closing contacts & scope", step: 2, items: c });
+    var termItems = [
+      ["Total project cost", el("snTotalCost").textContent], ["Estimated max loan", el("snMaxLoan").textContent + " (" + el("snConstraint").textContent + ")"],
+      ["Est. down payment", el("snDown").textContent]
+    ];
+    if (el("finReserve").checked && el("snIR").textContent && el("snIR").textContent !== "\u2014") termItems.push(["Financed interest reserve", el("snIR").textContent]);
+    termItems.push(["Loan-to-cost", el("snLtc").textContent], ["Loan-to-ARV", el("snArvPct").textContent]);
+    S.push({ title: "Estimated terms (indicative)", step: 2, items: termItems });
+    return S;
+  }
+
+  /* ---------------- review render ---------------- */
+  function renderReview() {
+    recompute();
+    var S = buildSections(), H = "";
+    S.forEach(function (sec) {
+      H += '<div class="review-sec"><h3>' + sec.title + ' <span class="edit" data-go="' + sec.step + '">Edit</span></h3><div class="review-grid">';
+      sec.items.forEach(function (it) {
+        var empty = (it[1] === "" || it[1] == null);
+        H += '<div class="rv"><dt>' + it[0] + '</dt><dd' + (empty ? ' class="empty"' : '') + '>' + (empty ? "\u2014" : esc(it[1])) + '</dd></div>';
+      });
+      H += '</div></div>';
+    });
+    el("reviewBody").innerHTML = H;
+    $$("#reviewBody .edit").forEach(function (b) { b.addEventListener("click", function () { setStep(+b.getAttribute("data-go")); }); });
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]; }); }
+
+  /* ---------------- email summary ---------------- */
+  function buildSummary() {
+    var L = ["YS CAPITAL \u2014 LOAN APPLICATION", "Submitted: " + new Date().toLocaleString()];
+    var off = selectedOfficer(); if (off) L.push("Routed to loan officer: " + off.name + " <" + off.email + ">");
+    L.push("");
+    buildSections().forEach(function (sec) {
+      L.push("== " + sec.title.toUpperCase() + " ==");
+      sec.items.forEach(function (it) { if (it[1] !== "" && it[1] != null) L.push(it[0] + ": " + it[1]); });
+      L.push("");
+    });
+    try { L.push("Saved scenario link: " + location.href); } catch (e) {}
+    return L.join("\n");
+  }
+
+  /* ===================== LIBRARY LOADERS (CDN, lazy) ===================== */
+  function loadScript(src) { return new Promise(function (res, rej) { var s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+  async function ensureXLSX() {
+    if (window.XLSX && window.XLSX.utils) return;
+    try { await loadScript("https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
+    catch (e) { await loadScript("https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
+    if (!(window.XLSX && window.XLSX.utils)) throw new Error("spreadsheet library failed to load");
+  }
+  async function ensurePDF() {
+    if (window.jspdf && window.jspdf.jsPDF) return;
+    try { await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"); }
+    catch (e) { await loadScript("https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"); }
+    if (!(window.jspdf && window.jspdf.jsPDF)) throw new Error("pdf library failed to load");
+  }
+  function logoData() {
+    try {
+      if (!window.RB_LOGO) return null;
+      return { dataURI: "data:image/png;base64," + window.RB_LOGO.b64, w: window.RB_LOGO.w, h: window.RB_LOGO.h };
+    } catch (e) { return null; }
+  }
+  function pdfSafe(s) { return String(s == null ? "" : s).replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/[\u2013\u2014]/g, "-").replace(/\u2022/g, "*").replace(/\u2192/g, "->").replace(/\u2713/g, "(ok)").replace(/[^\x00-\xFF]/g, ""); }
+  function fileStem() {
+    var nm = bName(1).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "Applicant";
+    return "YS_Loan_Application_" + nm + "_" + new Date().toISOString().slice(0, 10);
+  }
+
+  /* ===================== EXCEL EXPORT / IMPORT ===================== */
+  function flash(msg) { try { if (YS && YS.showToast) YS.showToast(msg); } catch (e) {} 
+    var t = el("app-toast"); if (!t) { t = document.createElement("div"); t.id = "app-toast"; t.className = "ys-toast"; document.body.appendChild(t); }
+    t.textContent = msg; t.classList.add("show"); clearTimeout(flash._t); flash._t = setTimeout(function () { t.classList.remove("show"); }, 2600);
+  }
+  async function exportXlsx(btn) {
+    var o = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Exporting\u2026"; btn.disabled = true; }
+    try {
+      await ensureXLSX(); var X = window.XLSX;
+      var INK = "0B1014", TEAL = "1F3A40", GOLD = "6E5417", LINE = "D8D2C4";
+      var aoa = [], merges = [];
+      function row(cells) { aoa.push(cells); }
+      function titleRow(text, fill, color, size) {
+        row([{ v: text, s: { font: { bold: true, sz: size || 11, color: { rgb: color || "FFFFFF" } }, fill: { fgColor: { rgb: fill } }, alignment: { vertical: "center" } } }, { v: "" }]);
+        merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: 1 } });
+      }
+      titleRow("YS CAPITAL GROUP  \u2014  LOAN APPLICATION", INK, "FFFFFF", 13);
+      titleRow("Generated " + new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) + "   \u00b7   NMLS ID 2609746", INK, "C9A86A", 9);
+      row([{ v: "" }, { v: "" }]);
+      buildSections().forEach(function (sec) {
+        titleRow(sec.title.toUpperCase(), TEAL, "FFFFFF", 10);
+        sec.items.forEach(function (it) {
+          row([
+            { v: it[0], s: { font: { color: { rgb: "5B6770" }, sz: 10 }, alignment: { vertical: "top" } } },
+            { v: (it[1] == null ? "" : String(it[1])), s: { font: { bold: true, color: { rgb: "13201C" }, sz: 10 }, alignment: { vertical: "top", wrapText: true } } }
+          ]);
+        });
+        row([{ v: "" }, { v: "" }]);
+      });
+      row([{ v: "Borrower signature: ______________________________   Date: ____________", s: { font: { italic: true, color: { rgb: "5B6770" }, sz: 10 } } }, { v: "" }]);
+      var ws = X.utils.aoa_to_sheet(aoa); ws["!cols"] = [{ wch: 30 }, { wch: 66 }]; ws["!merges"] = merges;
+      var wb = X.utils.book_new(); X.utils.book_append_sheet(wb, ws, "Loan Application");
+      // hidden lossless state sheet
+      var enc = "YSLOAN1\u0001" + JSON.stringify(YS.collectState());
+      var chunks = []; for (var p = 0; p < enc.length; p += 30000) chunks.push(enc.slice(p, p + 30000));
+      var aoa2 = [["YSLOANSTATE", chunks.length]]; chunks.forEach(function (ch) { aoa2.push([ch]); });
+      var ws2 = X.utils.aoa_to_sheet(aoa2); X.utils.book_append_sheet(wb, ws2, "_ys");
+      wb.Workbook = { Sheets: [{ Hidden: 0 }, { Hidden: 2 }] };
+      X.writeFile(wb, fileStem() + ".xlsx");
+      flash("Excel exported.");
+    } catch (e) { flash("Excel export needs an internet connection (loads the spreadsheet engine)."); }
+    finally { if (btn) { btn.textContent = o; btn.disabled = false; } }
+  }
+  async function importXlsx(input) {
+    var file = input && input.files && input.files[0]; if (!file) return;
+    try {
+      await ensureXLSX(); var X = window.XLSX; var buf = await file.arrayBuffer(); var wb = X.read(buf, { type: "array" });
+      var st = null;
+      if (wb.SheetNames.indexOf("_ys") > -1) {
+        var aoa = X.utils.sheet_to_json(wb.Sheets["_ys"], { header: 1 });
+        if (aoa[0] && String(aoa[0][0]) === "YSLOANSTATE") {
+          var nch = parseInt(aoa[0][1], 10), s = "";
+          for (var i = 1; i <= nch; i++) s += (aoa[i] && aoa[i][0] != null) ? aoa[i][0] : "";
+          var ix = s.indexOf("\u0001"); if (ix > -1) st = JSON.parse(s.slice(ix + 1));
+        }
+      }
+      if (!st) { flash("That file has no saved YS application data to import."); input.value = ""; return; }
+      YS.applyState(st);
+      if (st.v && st.v.borrowerCount) setBCount(parseInt(st.v.borrowerCount, 10));
+      updateConditionals(); recompute();
+      if (+($(".wizard-step.is-active") || { getAttribute: function () { return 1; } }).getAttribute("data-step") === 3) renderReview();
+      flash("Application imported.");
+    } catch (e) { flash("Could not read that file."); }
+    finally { if (input) input.value = ""; }
+  }
+
+  /* ===================== PDF EXPORT (branded, signable) ===================== */
+  async function exportPdf(btn) {
+    var o = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Building PDF\u2026"; btn.disabled = true; }
+    try {
+      await ensurePDF(); var jsPDF = window.jspdf.jsPDF;
+      var doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
+      var W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 44;
+      var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [91, 103, 112], DARK = [19, 32, 28];
+      function header() {
+        doc.setFillColor(INK[0], INK[1], INK[2]); doc.rect(0, 0, W, 70, "F");
+        doc.setFillColor(GOLD[0], GOLD[1], GOLD[2]); doc.rect(0, 70, W, 2, "F");
+        var lg = logoData(); if (lg) { var h = 30, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 21, w, h); } catch (e) {} }
+        doc.setTextColor(243, 239, 230); doc.setFont("times", "bold"); doc.setFontSize(17); doc.text("Loan Application", W - M, 34, { align: "right" });
+        doc.setFont("times", "italic"); doc.setFontSize(9.5); doc.setTextColor(GOLD[0], GOLD[1], GOLD[2]); doc.text("Fix & Flip \u00b7 Bridge \u00b7 Rental", W - M, 50, { align: "right" });
+        doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(170, 178, 182);
+        doc.text("YS Capital Group \u00b7 NMLS 2609746 \u00b7 " + new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), W - M, 62, { align: "right" });
+      }
+      function footer() {
+        doc.setFontSize(7); doc.setTextColor(150, 158, 162); doc.setFont("helvetica", "normal");
+        doc.text("Business-purpose financing only. This application is an inquiry, not an offer, approval, or commitment to lend. Estimated figures are indicative and subject to underwriting.", M, H - 26, { maxWidth: W - 2 * M });
+      }
+      var y = 92;
+      function ensureSpace(need) { if (y + need > H - 56) { footer(); doc.addPage(); header(); y = 92; } }
+      function sectionTitle(t) {
+        ensureSpace(34);
+        doc.setFillColor(TEAL[0], TEAL[1], TEAL[2]); doc.roundedRect(M, y, W - 2 * M, 20, 3, 3, "F");
+        doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(255, 255, 255); doc.text(pdfSafe(t.toUpperCase()), M + 8, y + 13.5); y += 28;
+      }
+      function kv(k, v) {
+        v = (v == null ? "" : String(v)); if (v === "") v = "\u2014";
+        var lines = doc.splitTextToSize(pdfSafe(v), W - 2 * M - 150);
+        var need = Math.max(15, lines.length * 11 + 4); ensureSpace(need);
+        doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(GRAY[0], GRAY[1], GRAY[2]); doc.text(pdfSafe(k), M + 4, y + 9);
+        doc.setFont("helvetica", "bold"); doc.setTextColor(DARK[0], DARK[1], DARK[2]); doc.text(lines, M + 150, y + 9);
+        y += need; doc.setDrawColor(232, 228, 218); doc.setLineWidth(0.5); doc.line(M + 4, y - 2, W - M - 4, y - 2);
+      }
+      header();
+      buildSections().forEach(function (sec) {
+        sectionTitle(sec.title);
+        sec.items.forEach(function (it) { kv(it[0], it[1]); });
+        y += 6;
+      });
+      // signatures
+      sectionTitle("Borrower acknowledgement & signatures");
+      ensureSpace(34);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(70, 78, 82);
+      doc.text(doc.splitTextToSize("I certify the information in this application is accurate to the best of my knowledge, that this loan is for business / investment purposes only (not a primary residence), and I authorize YS Capital Group to obtain the credit and verification reports needed to evaluate this request.", W - 2 * M), M + 2, y + 8);
+      y += 38;
+      var n = bCount();
+      for (var i = 1; i <= n; i++) {
+        ensureSpace(60);
+        doc.setDrawColor(120, 128, 132); doc.setLineWidth(0.8);
+        doc.line(M + 4, y + 26, M + 250, y + 26);
+        doc.line(W - M - 150, y + 26, W - M - 4, y + 26);
+        doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(GRAY[0], GRAY[1], GRAY[2]);
+        doc.text("Signature \u2014 " + (i === 1 ? "Primary borrower" : "Co-borrower " + i), M + 4, y + 38);
+        doc.text("Date", W - M - 150, y + 38);
+        doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(DARK[0], DARK[1], DARK[2]);
+        doc.text(pdfSafe(bName(i) || "________________"), M + 4, y + 18);
+        y += 64;
+      }
+      footer();
+      doc.save(fileStem() + ".pdf");
+      flash("PDF downloaded.");
+    } catch (e) { flash("PDF export needs an internet connection (loads the PDF engine)."); }
+    finally { if (btn) { btn.textContent = o; btn.disabled = false; } }
+  }
+
+  /* ===================== SUBMIT ===================== */
+  function doSubmit() {
+    if (!el("consent").checked) {
+      el("consentErr").style.display = "block";
+      el("consent").closest(".consent").scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    el("consentErr").style.display = "none";
+    var summary = buildSummary();
+    var subject = "New Loan Application \u2014 " + bName(1) + " \u2014 " + addrJoin("pStreet", null, "pCity", "pState", null);
+    var off = selectedOfficer();
+    var to = off ? off.email : SALES_EMAIL;
+    var cc = (off && off.email !== SALES_EMAIL) ? SALES_EMAIL : "";
+    if (SUBMIT_ENDPOINT) {
+      var btn = el("submitBtn"), oo = btn.textContent; btn.textContent = "Submitting\u2026"; btn.disabled = true;
+      fetch(SUBMIT_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: to, cc: cc, subject: subject, summary: summary, officer: off ? off.name : "", fields: YS.collectState() }) })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); finish(off); })
+        .catch(function () { mailto(to, cc, subject, summary); finish(off); })
+        .finally(function () { btn.textContent = oo; btn.disabled = false; });
+    } else { mailto(to, cc, subject, summary); finish(off); }
+  }
+  function mailto(to, cc, subject, body) {
+    var href = "mailto:" + to + "?" + (cc ? "cc=" + encodeURIComponent(cc) + "&" : "") + "subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+    window.location.href = href;
+  }
+  function finish(off) {
+    var name = val("b1First");
+    el("doneMsg").textContent = (name ? name + ", thank you \u2014 " : "Thank you \u2014 ") +
+      "your application is on its way" + (off ? " to " + off.name : "") + ". A YS Capital loan officer will reach out shortly to confirm details and walk you through next steps. We've also opened your email so you can send your copy directly.";
+    setStep(4, {});
+  }
+
+  /* ===================== WIRING ===================== */
+  function wire() {
+    try { YS.applyState(YS.readState()); } catch (e) {}
+    setBCount(bCount());
+
+    $$("#appForm input, #appForm select, #appForm textarea").forEach(function (inp) {
+      var handler = function () {
+        updateConditionals(); recompute();
+        var f = inp.closest && inp.closest(".field"); if (f) f.classList.remove("invalid");
+        try { YS.syncURL(); } catch (e) {}
+      };
+      inp.addEventListener("input", handler);
+      inp.addEventListener("change", handler);
+    });
+
+    wireAdmin();
+
+    // SSN formatting for every borrower
+    for (var i = 1; i <= MAX_BORROWERS; i++) (function (p) {
+      var ssn = el(p + "Ssn");
+      if (ssn) ssn.addEventListener("input", function () {
+        var d = digits(ssn.value).slice(0, 9), out = d;
+        if (d.length > 5) out = d.slice(0, 3) + "-" + d.slice(3, 5) + "-" + d.slice(5);
+        else if (d.length > 3) out = d.slice(0, 3) + "-" + d.slice(3);
+        ssn.value = out;
+      });
+      var ow = el(p + "Own"); if (ow) ow.addEventListener("input", function () { balanceOwnership(p + "Own"); });
+    })("b" + i);
+
+    // add / remove borrower
+    if (el("addBorrowerBtn")) el("addBorrowerBtn").addEventListener("click", function () {
+      var n = bCount(); if (n < MAX_BORROWERS) { setBCount(n + 1); updateConditionals(); recompute();
+        var blk = $('[data-borrower="' + (n + 1) + '"]'); if (blk) blk.scrollIntoView({ behavior: "smooth", block: "center" });
+        try { YS.syncURL(); } catch (e) {} }
+    });
+    $$("[data-remove]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var idx = +b.getAttribute("data-remove"), n = bCount();
+        // shift fields up from idx..n so removal is clean
+        for (var k = idx; k < n; k++) copyBorrower(k + 1, k);
+        clearBorrower(n);
+        setBCount(n - 1); updateConditionals(); recompute(); try { YS.syncURL(); } catch (e) {}
+      });
+    });
+
+    // next / back / stepper
+    $$("[data-next]").forEach(function (b) { b.addEventListener("click", function () {
+      var cur = +($(".wizard-step.is-active").getAttribute("data-step"));
+      if (validateStep(cur)) setStep(+b.getAttribute("data-next"));
+    }); });
+    $$("[data-back]").forEach(function (b) { b.addEventListener("click", function () { setStep(+b.getAttribute("data-back")); }); });
+    $$("#stepper .step").forEach(function (e) {
+      var go = function () {
+        var target = +e.getAttribute("data-step"), cur = +($(".wizard-step.is-active").getAttribute("data-step"));
+        if (target <= cur) { setStep(target); return; }
+        if (reached[target] || validateStep(cur)) setStep(target);
+      };
+      e.addEventListener("click", go);
+      e.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); go(); } });
+    });
+    el("submitBtn").addEventListener("click", doSubmit);
+
+    updateConditionals(); recompute();
+    var saved = parseInt(val("__step"), 10);
+    setStep(saved >= 1 && saved <= TOTAL_INPUT_STEPS ? saved : 1, { noScroll: true });
+  }
+
+  var BF = ["First","Middle","Last","Dob","Ssn","Citizen","Phone","Email","Street","Unit","City","State","Zip","Years","Months","MortAmt","RentAmt","FStreet","FCity","FState","FZip","Own"];
+  function copyBorrower(from, to) {
+    BF.forEach(function (f) { var a = el("b" + from + f), b = el("b" + to + f); if (a && b) b.value = a.value; });
+    var fr = $('input[name="b' + from + 'Housing"]:checked'); var want = fr ? fr.value : "";
+    $$('input[name="b' + to + 'Housing"]').forEach(function (r) { r.checked = (r.value === want); });
+  }
+  function clearBorrower(n) {
+    BF.forEach(function (f) { var e = el("b" + n + f); if (e) e.value = (f === "Years" || f === "Months") ? "0" : ""; });
+    $$('input[name="b' + n + 'Housing"]').forEach(function (r) { r.checked = false; });
+  }
+
+  window.APP = { share: function (b) { try { YS.shareLink(b); } catch (e) {} }, exportXlsx: exportXlsx, importXlsx: importXlsx, exportPdf: exportPdf };
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
+})();
+
+</script>
+<script src="../float-actions.js?v=admin8"></script>
+</body>
+</html>

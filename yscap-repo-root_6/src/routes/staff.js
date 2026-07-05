@@ -1,0 +1,230 @@
+/**
+ * Staff API (loan officers, processors, underwriters, admins).
+ * Officers see their assigned pipeline; admins see everything. They add
+ * conditions + document requests, update checklist status, verify LLCs and
+ * track records, and assign Lead-Capture (unassigned) applications.
+ */
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+const C = require('../lib/crypto');
+const notify = require('../lib/notify');
+const { requireAuth, requireRole } = require('../auth');
+
+router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
+// admins + super-admins + underwriters (risk) see every file;
+// loan officers and processors see only files they are assigned to.
+const seesAll = (req) => ['admin', 'super_admin', 'underwriter'].includes(req.actor.role);
+const isAdmin = (req) => ['admin', 'super_admin'].includes(req.actor.role);
+
+async function audit(req, action, entity_type, entity_id, detail) {
+  await db.query(
+    `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+     VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
+    [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, detail || null]);
+}
+// officers/processors only see their files; admins/super-admins/underwriters see all
+function scopeClause(req, alias = 'a') {
+  if (seesAll(req)) return { where: '', params: [] };
+  return { where: `AND (${alias}.loan_officer_id=$SCOPE OR ${alias}.processor_id=$SCOPE)`, params: [req.actor.id] };
+}
+
+// Guard every /applications/:id* route: a non-privileged staffer may only touch
+// a file they are the loan officer or processor on. (Borrower :id routes live
+// under /borrowers/:id and are unaffected by this path-scoped middleware.)
+router.use('/applications/:id', async (req, res, next) => {
+  try {
+    if (seesAll(req)) return next();
+    const r = await db.query(
+      `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`,
+      [req.params.id, req.actor.id]);
+    if (!r.rows[0]) return res.status(403).json({ error: 'forbidden' });
+    next();
+  } catch (e) { next(e); }
+});
+
+// ---------------- pipeline ----------------
+router.get('/applications', async (req, res) => {
+  const s = scopeClause(req);
+  const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.property_address,
+                      a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.created_at,
+                      b.first_name,b.last_name,b.email
+               FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+               WHERE 1=1 ${s.where.replace(/\$SCOPE/g, '$1')} ORDER BY a.created_at DESC`;
+  const r = await db.query(sql, s.params);
+  res.json(r.rows);
+});
+
+router.get('/lead-capture', async (req, res) => {
+  const r = await db.query(
+    `SELECT a.id,a.ys_loan_number,a.program,a.property_address,a.created_at,b.first_name,b.last_name,b.email
+     FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+     WHERE a.loan_officer_id IS NULL ORDER BY a.created_at DESC`);
+  res.json(r.rows);
+});
+
+router.get('/applications/:id', async (req, res) => {
+  const r = await db.query(
+    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico
+     FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(r.rows[0]);
+});
+
+router.get('/applications/:id/checklist', async (req, res) => {
+  const r = await db.query(
+    `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
+            ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
+            ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
+            ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
+            ci.assignee_staff_id, asg.full_name AS assignee_name,
+            ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at
+       FROM checklist_items ci
+       LEFT JOIN staff_users asg ON asg.id = ci.assignee_staff_id
+       LEFT JOIN staff_users so  ON so.id  = ci.signed_off_by
+      WHERE ci.application_id=$1
+      ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+
+// add a borrower-facing document request
+router.post('/applications/:id/checklist', async (req, res) => {
+  const b = req.body || {};
+  if (!b.label) return res.status(400).json({ error: 'label required' });
+  const r = await db.query(
+    `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
+     VALUES ('application',$1,$2,$3,'document',$4,$5,'staff',$6) RETURNING id`,
+    [req.params.id, b.label, b.audience || 'borrower', b.isRequired !== false, b.dueDate || null, req.actor.id]);
+  const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+  if (app.rows[0]) await notify.notifyBorrower(app.rows[0].borrower_id, {
+    type: 'condition_added', title: 'New document requested', body: b.label, applicationId: req.params.id });
+  await audit(req, 'add_checklist_item', 'application', req.params.id, { label: b.label });
+  res.status(201).json({ ok: true, itemId: r.rows[0].id });
+});
+
+// add an internal condition (staff-facing by default)
+router.post('/applications/:id/conditions', async (req, res) => {
+  const b = req.body || {};
+  if (!b.label) return res.status(400).json({ error: 'label required' });
+  const r = await db.query(
+    `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,is_required,notes,created_by_kind,created_by_id)
+     VALUES ('application',$1,$2,$3,'condition',$4,$5,'staff',$6) RETURNING id`,
+    [req.params.id, b.label, b.audience || 'staff', b.isRequired !== false, b.notes || null, req.actor.id]);
+  await audit(req, 'add_condition', 'application', req.params.id, { label: b.label });
+  res.status(201).json({ ok: true, itemId: r.rows[0].id });
+});
+
+router.patch('/checklist/:itemId', async (req, res) => {
+  // access guard: non-privileged staff may only edit items on their own files
+  if (!seesAll(req)) {
+    const own = await db.query(
+      `SELECT 1 FROM checklist_items ci JOIN applications a ON a.id=ci.application_id
+        WHERE ci.id=$1 AND (a.loan_officer_id=$2 OR a.processor_id=$2)`,
+      [req.params.itemId, req.actor.id]);
+    if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
+  }
+  const b = req.body || {};
+  const allowed = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
+  if (b.status && !allowed.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+
+  const sets = ['updated_at=now()'];
+  const params = [req.params.itemId];
+  const add = (frag, val) => { params.push(val); sets.push(frag.replace('?', '$' + params.length)); };
+
+  if (b.status) add('status=?', b.status);
+  if (b.notes != null) add('notes=?', b.notes);
+  if ('assigneeStaffId' in b) add('assignee_staff_id=?', b.assigneeStaffId || null);
+
+  // Sign-off marks the item satisfied and stamps who/when; un-sign clears it.
+  if (b.signedOff === true) {
+    add('signed_off_by=?', req.actor.id);
+    sets.push("signed_off_at=now()", "status='satisfied'");
+  } else if (b.signedOff === false) {
+    sets.push('signed_off_by=NULL', 'signed_off_at=NULL');
+  }
+
+  await db.query(`UPDATE checklist_items SET ${sets.join(', ')} WHERE id=$1`, params);
+  res.json({ ok: true });
+});
+
+// ---------------- assign a Lead-Capture application ----------------
+router.post('/applications/:id/assign', async (req, res) => {
+  const { loanOfficerId, processorId } = req.body || {};
+  if (!loanOfficerId && !processorId) return res.status(400).json({ error: 'loanOfficerId or processorId required' });
+  try {
+    if (loanOfficerId) {
+      const off = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true`, [loanOfficerId]);
+      if (!off.rows[0]) return res.status(404).json({ error: 'officer not found' });
+      await db.query(`UPDATE applications SET loan_officer_id=$2, loan_officer_name=$3, updated_at=now() WHERE id=$1`,
+        [req.params.id, loanOfficerId, off.rows[0].full_name]);
+      await notify.notifyStaff(loanOfficerId, {
+        type: 'assignment', title: 'Application assigned to you', applicationId: req.params.id,
+        link: `/staff/applications/${req.params.id}` });
+      await audit(req, 'assign_application', 'application', req.params.id, { loanOfficerId });
+    }
+    if (processorId) {
+      const p = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [processorId]);
+      if (!p.rows[0]) return res.status(404).json({ error: 'processor not found' });
+      await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
+        [req.params.id, processorId]);
+      await notify.notifyStaff(processorId, {
+        type: 'assignment', title: 'File assigned to you for processing', applicationId: req.params.id,
+        link: `/staff/applications/${req.params.id}` });
+      await audit(req, 'assign_processor', 'application', req.params.id, { processorId });
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------------- borrower profile view + SSN reveal (audited) ----------------
+router.get('/borrowers/:id', async (req, res) => {
+  const r = await db.query(
+    `SELECT id,first_name,last_name,email,cell_phone,date_of_birth,ssn_last4,fico,citizenship,tier FROM borrowers WHERE id=$1`,
+    [req.params.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json(r.rows[0]);
+});
+router.get('/borrowers/:id/ssn', async (req, res) => {
+  const r = await db.query(`SELECT ssn_encrypted FROM borrowers WHERE id=$1`, [req.params.id]);
+  if (!r.rows[0]?.ssn_encrypted) return res.status(404).json({ error: 'no ssn on file' });
+  await audit(req, 'view_ssn', 'borrower', req.params.id);
+  res.json({ ssn: C.decryptSSN(r.rows[0].ssn_encrypted) });
+});
+
+// ---------------- verify LLC / track record ----------------
+router.post('/llcs/:id/verify', async (req, res) => {
+  await db.query(`UPDATE llcs SET is_verified=true, verified_at=now(), verified_by=$2 WHERE id=$1`, [req.params.id, req.actor.id]);
+  await audit(req, 'verify_llc', 'llc', req.params.id);
+  res.json({ ok: true });
+});
+router.post('/track-records/:id/verify', async (req, res) => {
+  await db.query(`UPDATE track_records SET is_verified=true, verified_at=now(), verified_by=$2 WHERE id=$1`, [req.params.id, req.actor.id]);
+  // recompute borrower tier = count of verified track records
+  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+  if (tr.rows[0]) await db.query(
+    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
+    [tr.rows[0].borrower_id]);
+  await audit(req, 'verify_track_record', 'track_record', req.params.id);
+  res.json({ ok: true });
+});
+
+// ---------------- notifications ----------------
+router.get('/notifications', async (req, res) => {
+  const r = await db.query(
+    `SELECT id,type,title,body,application_id,link,read_at,created_at FROM notifications
+     WHERE staff_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.actor.id]);
+  res.json(r.rows);
+});
+router.post('/notifications/:id/read', async (req, res) => {
+  await db.query(`UPDATE notifications SET read_at=now() WHERE id=$1 AND staff_id=$2`, [req.params.id, req.actor.id]);
+  res.json({ ok: true });
+});
+
+// Active staff roster — used to populate LO / processor assignment dropdowns.
+router.get('/team', async (req, res) => {
+  const r = await db.query(
+    `SELECT id, full_name, email, role FROM staff_users WHERE is_active=true ORDER BY role, full_name`);
+  res.json(r.rows);
+});
+
+module.exports = router;

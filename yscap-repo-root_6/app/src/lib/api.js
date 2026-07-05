@@ -1,0 +1,76 @@
+/* Thin fetch wrapper. Token lives in localStorage; every call is same-origin
+   against the Express backend (/auth, /api/borrower). */
+const KEY = 'ys_portal_token';
+export const getToken = () => localStorage.getItem(KEY) || '';
+export const setToken = (t) => t ? localStorage.setItem(KEY, t) : localStorage.removeItem(KEY);
+export const clearToken = () => localStorage.removeItem(KEY);
+
+async function req(method, path, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  const t = getToken();
+  if (t) headers.Authorization = `Bearer ${t}`;
+  const res = await fetch(path, {
+    method, headers, body: body != null ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* empty */ }
+  if (!res.ok) {
+    const err = new Error((data && data.error) || `HTTP ${res.status}`);
+    err.status = res.status; err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+export const api = {
+  get:  (p) => req('GET', p),
+  post: (p, b) => req('POST', p, b),
+  put:  (p, b) => req('PUT', p, b),
+  del:  (p) => req('DELETE', p),
+
+  login: (email, password) => req('POST', '/auth/borrower/login', { email, password }),
+  mfaVerify: (challenge, code) => req('POST', '/auth/borrower/mfa/verify', { challenge, code }),
+  register: (b) => req('POST', '/auth/borrower/register', b),
+
+  verifyEmail:        (b) => req('POST', '/auth/borrower/verify', b),          // {token} or {email,code}
+  resendVerification: (email) => req('POST', '/auth/borrower/resend-verification', { email }),
+  forgotPassword:     (email) => req('POST', '/auth/borrower/forgot', { email }),
+  resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
+  acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
+
+  profile:      () => req('GET', '/api/borrower/profile'),
+  saveProfile:  (b) => req('PUT', '/api/borrower/profile', b),
+  applications: () => req('GET', '/api/borrower/applications'),
+  application:  (id) => req('GET', `/api/borrower/applications/${id}`),
+  checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
+  notifications:() => req('GET', '/api/borrower/notifications'),
+  readNotif:    (id) => req('POST', `/api/borrower/notifications/${id}/read`),
+  uploadDoc:    (b) => req('POST', '/api/borrower/documents', b),
+  // borrower completes an in-portal tool task (Rehab Budget / Track Record)
+  completeTool: (appId, itemId, payload, notes) =>
+    req('POST', `/api/borrower/applications/${appId}/checklist/${itemId}/tool`, { payload, notes }),
+
+  drafts:       () => req('GET', '/api/borrower/drafts'),
+  createDraft:  (b) => req('POST', '/api/borrower/drafts', b),
+  draft:        (id) => req('GET', `/api/borrower/drafts/${id}`),
+  saveDraft:    (id, b) => req('PUT', `/api/borrower/drafts/${id}`, b),
+  deleteDraft:  (id) => req('DELETE', `/api/borrower/drafts/${id}`),
+  submitDraft:  (id, b) => req('POST', `/api/borrower/drafts/${id}/submit`, b),
+
+  // ---- staff portal (loan officer / processor / underwriter / admin) ----
+  staffLogin:     (email, password) => req('POST', '/auth/staff/login', { email, password }),
+  staffMfaVerify: (challenge, code) => req('POST', '/auth/staff/mfa/verify', { challenge, code }),
+  me:             () => req('GET', '/auth/me'),
+  staffTeam:        () => req('GET', '/api/staff/team'),
+  staffApplications:() => req('GET', '/api/staff/applications'),
+  staffLeadCapture: () => req('GET', '/api/staff/lead-capture'),
+  staffApplication: (id) => req('GET', `/api/staff/applications/${id}`),
+  staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+  staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
+  staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
+  staffPatchItem:   (itemId, b) => req('PATCH', `/api/staff/checklist/${itemId}`, b),
+  staffRequestDoc:  (appId, b) => req('POST', `/api/staff/applications/${appId}/checklist`, b),
+  staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
+  staffAssign:      (appId, b) => req('POST', `/api/staff/applications/${appId}/assign`, b),
+  staffNotifs:      () => req('GET', '/api/staff/notifications'),
+};
