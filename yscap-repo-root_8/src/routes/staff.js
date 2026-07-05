@@ -12,6 +12,7 @@ const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
 const { requireAuth, requireRole } = require('../auth');
+const pricing = require('../lib/pricing');
 
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
 // admins + super-admins + underwriters (risk) see every file;
@@ -318,6 +319,118 @@ router.get('/applications/:id', async (req, res) => {
      LEFT JOIN llcs l ON l.id=a.llc_id WHERE a.id=$1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
+});
+
+/* ---------------- Product registration / term sheet ----------------
+   Pricing is computed here on the server from the same FROZEN engines the
+   browser loads, so a registered product is always authoritative. */
+
+// Load a joined application row + count the borrower's track record into the
+// experience buckets the engines expect (flips / holds / ground-up).
+async function loadFileForPricing(appId) {
+  const a = await db.query(
+    `SELECT a.*, b.fico FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+  const app = a.rows[0];
+  if (!app) return null;
+  const tr = await db.query(
+    `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
+       FROM track_records WHERE borrower_id=$1 GROUP BY 1`, [app.borrower_id]);
+  const exp = { flips: 0, holds: 0, ground: 0 };
+  for (const row of tr.rows) {
+    if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
+    else if (row.dt.indexOf('flip') > -1) exp.flips += row.n;
+    else exp.holds += row.n;   // fix-and-hold, rental, anything else
+  }
+  return { app, exp };
+}
+
+// Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
+router.post('/applications/:id/pricing/quote', async (req, res) => {
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const f = await loadFileForPricing(req.params.id);
+    if (!f) return res.status(404).json({ error: 'not found' });
+    const overrides = (req.body && req.body.overrides) || {};
+    const out = pricing.quoteAll(f.app, f.exp, overrides);
+    res.json({ ...out, experience: f.exp });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// Current registered product + history, plus a fresh default quote for the panel.
+router.get('/applications/:id/pricing', async (req, res) => {
+  try {
+    const f = await loadFileForPricing(req.params.id);
+    if (!f) return res.status(404).json({ error: 'not found' });
+    const hist = await db.query(
+      `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
+              r.is_current, r.created_at, r.quote, s.full_name AS registered_by_name
+         FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
+        WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
+    const current = hist.rows.find((x) => x.is_current) || null;
+    let quote = null;
+    if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
+    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady() });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// Register a product: recompute authoritatively, persist as the current terms,
+// sync loan_amount / rate_pct onto the file, audit + notify the team.
+router.post('/applications/:id/pricing/register', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const b = req.body || {};
+    const program = b.program === 'gold' ? 'gold' : 'standard';
+    const f = await loadFileForPricing(appId);
+    if (!f) return res.status(404).json({ error: 'not found' });
+
+    const inputs = pricing.buildInputs(f.app, f.exp, b.overrides || {});
+    const quote = pricing.quoteProgram(program, inputs);
+    if (quote.status === 'INELIGIBLE' && !(b.overrides && b.overrides.forcePrice)) {
+      return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
+    }
+    const total = quote.sizing ? quote.sizing.totalLoan : 0;
+    if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote });
+
+    const client = await db.getClient();
+    let regId;
+    try {
+      await client.query('BEGIN');
+      await client.query(`UPDATE product_registrations SET is_current=false WHERE application_id=$1 AND is_current`, [appId]);
+      const ins = await client.query(
+        `INSERT INTO product_registrations
+           (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10) RETURNING id`,
+        [appId, program, quote.productLabel || null, quote.status, quote.noteRate, total,
+         inputs.targetLTC || null, JSON.stringify(inputs), JSON.stringify(quote), req.actor.id]);
+      regId = ins.rows[0].id;
+      // The registered product IS the file's terms now.
+      await client.query(
+        `UPDATE applications SET loan_amount=$2, rate_pct=$3, updated_at=now() WHERE id=$1`,
+        [appId, total, quote.noteRate != null ? (quote.noteRate * 100) : null]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+
+    await audit(req, 'register_product', 'application', appId,
+      { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null });
+
+    // Notify the assigned team (LO + processor), not the borrower.
+    try {
+      const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
+      const row = t.rows[0] || {};
+      const pctRate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : '—';
+      const dollars = '$' + Math.round(total).toLocaleString('en-US');
+      const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''}`;
+      for (const sid of [row.loan_officer_id, row.processor_id]) {
+        if (sid && sid !== req.actor.id) await notify.notifyStaff(sid, {
+          type: 'product_registered', title: 'Product registered on ' + (row.ys_loan_number || 'a file'),
+          body, applicationId: appId });
+      }
+    } catch (_) { /* notification is best-effort */ }
+
+    res.status(201).json({ ok: true, registrationId: regId, quote });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
 router.get('/applications/:id/checklist', async (req, res) => {

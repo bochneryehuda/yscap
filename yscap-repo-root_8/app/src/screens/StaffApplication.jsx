@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
+import ProductRegistration from '../components/ProductRegistration.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -484,6 +485,7 @@ export default function StaffApplication() {
         </div>
       </div>
 
+      <ProductRegistration appId={id} app={app} onRegistered={load} />
       {app.status === 'funded' && <PostClosing appId={id} />}
       <TprExport appId={id} />
       <ChatPanel appId={id} onTaskCreated={load} />

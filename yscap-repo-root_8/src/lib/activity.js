@@ -33,6 +33,10 @@ async function fileActivity(appId, onlySafe) {
         SELECT status_changed_at, 'status', 'staff', true,
                'moved the file to '||status, NULL
           FROM applications WHERE id=$1 AND status_changed_at IS NOT NULL
+        UNION ALL
+        SELECT created_at, 'product', 'staff', false,
+               'registered a product', COALESCE(product_label, initcap(program)||' Program')
+          FROM product_registrations WHERE application_id=$1
      ) q
      WHERE (NOT $2::bool OR q.borrower_safe)
      ORDER BY at DESC NULLS LAST LIMIT 100`, [appId, !!onlySafe]);
