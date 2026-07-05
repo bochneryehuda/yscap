@@ -47,6 +47,7 @@ export default function Layout({ children }) {
             <NavLink to="/dashboard">Dashboard</NavLink>
             <NavLink to="/apply">New application</NavLink>
             <NavLink to="/profile">Profile</NavLink>
+            <NavLink to="/settings/notifications" title="Notification settings">Alerts</NavLink>
             <Link to="/dashboard" className="bell" title="Notifications">
               🔔{unread > 0 && <span className="badge">{unread}</span>}
             </Link>

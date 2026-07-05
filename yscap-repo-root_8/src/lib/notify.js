@@ -60,14 +60,37 @@ async function notifyStaff(staffId, opts) {
   return id;
 }
 
-/** Notify a borrower. */
+// Map a notification `type` onto a user-facing preference category.
+const CATEGORY_OF = {
+  message: 'messages',
+  status_change: 'status_updates',
+  doc_rejected: 'documents', doc_accepted: 'documents', doc_uploaded: 'documents',
+  condition_added: 'conditions',
+  draw: 'draws', draw_request: 'draws',
+};
+// These always reach the borrower in-app even if the category is muted — they
+// require action and can't be silently dropped (email can still be turned off).
+const ALWAYS_IN_APP = new Set(['doc_rejected', 'condition_added', 'security', 'account']);
+const NOTIFY_CATEGORIES = ['messages', 'status_updates', 'documents', 'conditions', 'draws', 'other'];
+const categoryOf = (type) => CATEGORY_OF[type] || 'other';
+
+/** Notify a borrower, respecting their per-category preferences. */
 async function notifyBorrower(borrowerId, opts) {
+  const cat = categoryOf(opts.type);
+  let pref = { in_app: true, email: true };
+  try {
+    const pr = await db.query(`SELECT in_app,email FROM notification_prefs WHERE borrower_id=$1 AND category=$2`, [borrowerId, cat]);
+    if (pr.rows[0]) pref = pr.rows[0];
+  } catch (_) { /* prefs table always exists after migration; default to on */ }
+  // Muted in-app and not a must-see? Drop it entirely — this is the borrower
+  // choosing to quiet a nervous-making category.
+  if (!pref.in_app && !ALWAYS_IN_APP.has(opts.type)) return null;
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)
      VALUES ('borrower',$1,$2,$3,$4,$5,$6) RETURNING id`,
     [borrowerId, opts.type, opts.title, opts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
-  const to = opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId);
+  const to = pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [];
   _emailRow(id, to, opts, 'borrower');
   return id;
 }
@@ -89,4 +112,4 @@ async function notifyAdmins(opts) {
 async function _staffEmail(id)    { const r = await db.query(`SELECT email FROM staff_users WHERE id=$1`, [id]); return r.rows[0]?.email ? [r.rows[0].email] : []; }
 async function _borrowerEmail(id) { const r = await db.query(`SELECT email FROM borrowers   WHERE id=$1`, [id]); return r.rows[0]?.email ? [r.rows[0].email] : []; }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAdmins, buildEmail };
+module.exports = { notifyStaff, notifyBorrower, notifyAdmins, buildEmail, NOTIFY_CATEGORIES, ALWAYS_IN_APP };

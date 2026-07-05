@@ -466,6 +466,31 @@ router.post('/notifications/:id/read', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Notification preferences: the borrower can quiet categories. Critical ones
+// (documents, conditions) stay in-app; only their email can be turned off.
+const CRITICAL_INAPP = new Set(['documents', 'conditions']);
+router.get('/notification-prefs', async (req, res) => {
+  const saved = await db.query(`SELECT category,in_app,email FROM notification_prefs WHERE borrower_id=$1`, [me(req)]);
+  const byCat = Object.fromEntries(saved.rows.map(r => [r.category, r]));
+  const cats = notify.NOTIFY_CATEGORIES.map(category => ({
+    category,
+    in_app: byCat[category] ? byCat[category].in_app : true,
+    email: byCat[category] ? byCat[category].email : true,
+    inAppLocked: CRITICAL_INAPP.has(category),   // can't turn off in-app for these
+  }));
+  res.json(cats);
+});
+router.put('/notification-prefs', async (req, res) => {
+  const b = req.body || {};
+  if (!notify.NOTIFY_CATEGORIES.includes(b.category)) return res.status(400).json({ error: 'bad category' });
+  const inApp = CRITICAL_INAPP.has(b.category) ? true : b.in_app !== false;  // critical stays in-app
+  await db.query(
+    `INSERT INTO notification_prefs (borrower_id,category,in_app,email) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (borrower_id,category) DO UPDATE SET in_app=EXCLUDED.in_app, email=EXCLUDED.email`,
+    [me(req), b.category, inApp, b.email !== false]);
+  res.json({ ok: true });
+});
+
 // ---------------- MESSAGES (per application) ----------------
 router.get('/messages', async (req, res) => {
   const r = await db.query(
