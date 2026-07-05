@@ -332,9 +332,13 @@ async function loadFileForPricing(appId) {
     `SELECT a.*, b.fico FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
   const app = a.rows[0];
   if (!app) return null;
+  // Only VERIFIED deals count toward experience/tier — the same basis the
+  // borrowers.tier recompute uses. Unverified, borrower-claimed deals must not
+  // inflate the authoritative pricing tier. Staff can still override the exp*
+  // inputs in the panel for a what-if.
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
-       FROM track_records WHERE borrower_id=$1 GROUP BY 1`, [app.borrower_id]);
+       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
   const exp = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
@@ -344,13 +348,26 @@ async function loadFileForPricing(appId) {
   return { app, exp };
 }
 
+// Admin-only pricing overrides: setting the qualifying basis/rate directly or
+// forcing a price past ineligibility bypasses the frozen-engine guardrails, so
+// only admins/super-admins may supply them. For anyone else these keys are
+// stripped (a loan officer/processor can what-if the deal inputs, not override
+// the caps or rate). Returns { overrides, strippedAdminKeys }.
+const ADMIN_OVERRIDE_KEYS = ['ovrRate', 'ovrLTC', 'ovrAcqLTV', 'ovrARLTV', 'forcePrice'];
+function sanitizeOverrides(req, raw) {
+  const o = { ...(raw || {}) };
+  let stripped = false;
+  if (!isAdmin(req)) for (const k of ADMIN_OVERRIDE_KEYS) if (k in o) { delete o[k]; stripped = true; }
+  return { overrides: o, strippedAdminKeys: stripped };
+}
+
 // Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
 router.post('/applications/:id/pricing/quote', async (req, res) => {
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const f = await loadFileForPricing(req.params.id);
     if (!f) return res.status(404).json({ error: 'not found' });
-    const overrides = (req.body && req.body.overrides) || {};
+    const { overrides } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
     const out = pricing.quoteAll(f.app, f.exp, overrides);
     res.json({ ...out, experience: f.exp });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
@@ -384,9 +401,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
-    const inputs = pricing.buildInputs(f.app, f.exp, b.overrides || {});
+    const { overrides } = sanitizeOverrides(req, b.overrides || {});
+    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     const quote = pricing.quoteProgram(program, inputs);
-    if (quote.status === 'INELIGIBLE' && !(b.overrides && b.overrides.forcePrice)) {
+    if (quote.status === 'INELIGIBLE' && !overrides.forcePrice) {
       return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
     }
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
@@ -660,14 +678,18 @@ router.post('/applications/:id/assign', async (req, res) => {
 // they actually work with — i.e. one on a file they are assigned to. admins,
 // super_admins and underwriters (seesAll) may see any. This is the GLBA / PII
 // horizontal-authorization gate.
-async function canSeeBorrower(req) {
+// May the actor see a specific borrower? seesAll (admin/super_admin/underwriter)
+// always; otherwise only if assigned to one of that borrower's files.
+async function canSeeBorrowerId(req, borrowerId) {
   if (seesAll(req)) return true;
+  if (!borrowerId) return false;
   const r = await db.query(
     `SELECT 1 FROM applications
       WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
-    [req.params.id, req.actor.id]);
+    [borrowerId, req.actor.id]);
   return !!r.rows[0];
 }
+async function canSeeBorrower(req) { return canSeeBorrowerId(req, req.params.id); }
 router.get('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -705,15 +727,20 @@ router.get('/borrowers/:id/ssn', async (req, res) => {
 
 // ---------------- verify LLC / track record ----------------
 router.post('/llcs/:id/verify', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   await db.query(`UPDATE llcs SET is_verified=true, verified_at=now(), verified_by=$2 WHERE id=$1`, [req.params.id, req.actor.id]);
   await audit(req, 'verify_llc', 'llc', req.params.id);
   res.json({ ok: true });
 });
 router.post('/track-records/:id/verify', async (req, res) => {
+  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+  if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   await db.query(`UPDATE track_records SET is_verified=true, verified_at=now(), verified_by=$2 WHERE id=$1`, [req.params.id, req.actor.id]);
   // recompute borrower tier = count of verified track records
-  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
-  if (tr.rows[0]) await db.query(
+  await db.query(
     `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
     [tr.rows[0].borrower_id]);
   await audit(req, 'verify_track_record', 'track_record', req.params.id);
@@ -869,9 +896,13 @@ router.patch('/messages/:mid', async (req, res) => {
     const row = m.rows[0];
     if (!row || row.deleted_at) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
+    // Editing changes the author's words, so it is restricted to one's OWN
+    // message (never a borrower's or another staffer's). Non-admins are also
+    // held to a 15-minute window; admins may edit their own past it. Removing
+    // someone else's message is handled by soft-delete (moderation) below.
     const mine = row.sender_kind === 'staff' && row.sender_id === req.actor.id;
     const fresh = (Date.now() - new Date(row.created_at).getTime()) < 15 * 60 * 1000;
-    if (!(seesAll(req) || (mine && fresh))) return res.status(403).json({ error: 'can only edit your own recent message' });
+    if (!(mine && (fresh || isAdmin(req)))) return res.status(403).json({ error: 'can only edit your own recent message' });
     await db.query(`UPDATE messages SET body=$2, edited_at=now() WHERE id=$1`, [req.params.mid, body.slice(0, 4000)]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }

@@ -174,10 +174,13 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
   const userEdited = useRef(false);
   const timer = useRef(null);
 
-  // Initial load.
+  // Initial load. Re-seeds from the file whenever the file changes; the
+  // userEdited flag is reset so a stale, edited what-if from a previous file
+  // never reprices against the new file.
   useEffect(() => {
     let alive = true;
-    setBusy(true); setErr('');
+    userEdited.current = false;
+    setBusy(true); setErr(''); setQ(null); setOv(null);
     api.staffPricing(appId).then((d) => {
       if (!alive) return;
       setData(d);
@@ -188,18 +191,21 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
     return () => { alive = false; };
   }, [appId]);
 
-  // Debounced server reprice whenever the staff edits an input.
+  // Debounced server reprice whenever the staff edits an input. An alive guard
+  // drops a late response so it can't overwrite newer state (or set state after
+  // unmount / a file switch).
   useEffect(() => {
     if (!ov || !userEdited.current) return;
+    let alive = true;
     if (timer.current) clearTimeout(timer.current);
     setRepricing(true);
     timer.current = setTimeout(() => {
       api.staffPricingQuote(appId, ov)
-        .then((d) => setQ(d))
-        .catch((e) => setErr(e.message || 'Pricing failed'))
-        .finally(() => setRepricing(false));
+        .then((d) => { if (alive) setQ(d); })
+        .catch((e) => { if (alive) setErr(e.message || 'Pricing failed'); })
+        .finally(() => { if (alive) setRepricing(false); });
     }, 450);
-    return () => timer.current && clearTimeout(timer.current);
+    return () => { alive = false; if (timer.current) clearTimeout(timer.current); };
   }, [ov, appId]);
 
   function set(k, v) { userEdited.current = true; setOv((o) => ({ ...o, [k]: v })); }
