@@ -22,7 +22,12 @@ const Ctx = createContext(null);
 export function AuthProvider({ children }) {
   const [token, setTok] = useState(getToken());
   const signIn  = useCallback((t) => { setToken(t); setTok(t); }, []);
-  const signOut = useCallback(() => { clearToken(); setTok(''); }, []);
+  const signOut = useCallback(() => {
+    clearToken(); setTok('');
+    // Defense-in-depth: wipe the PWA shell cache on logout (it never holds PII,
+    // but this keeps a shared device clean).
+    try { navigator.serviceWorker?.controller?.postMessage('ys-clear-cache'); } catch { /* ignore */ }
+  }, []);
   const actor = actorFromToken(token);
   return (
     <Ctx.Provider value={{

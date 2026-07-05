@@ -109,7 +109,7 @@ router.get('/applications', async (req, res) => {
             a.loan_officer_name,a.submitted_at,a.created_at,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both')) AS borrower_total,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('received','satisfied')) AS borrower_done
-     FROM applications a WHERE a.borrower_id=$1 OR a.co_borrower_id=$1 ORDER BY a.created_at DESC`, [me(req)]);
+     FROM applications a WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ORDER BY a.created_at DESC`, [me(req)]);
   res.json(r.rows);
 });
 
@@ -166,7 +166,7 @@ router.post('/applications', async (req, res) => {
 });
 
 router.get('/applications/:id', async (req, res) => {
-  const r = await db.query(`SELECT * FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const r = await db.query(`SELECT * FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
 });

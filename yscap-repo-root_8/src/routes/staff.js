@@ -88,7 +88,7 @@ router.get('/applications', async (req, res) => {
                       (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
                          AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
                FROM applications a JOIN borrowers b ON b.id=a.borrower_id
-               WHERE 1=1 ${s.where.replace(/\$SCOPE/g, '$1')} ORDER BY a.created_at DESC`;
+               WHERE a.deleted_at IS NULL ${s.where.replace(/\$SCOPE/g, '$1')} ORDER BY a.created_at DESC`;
   const r = await db.query(sql, s.params);
   res.json(r.rows);
 });
@@ -435,6 +435,27 @@ router.patch('/applications/:id', async (req, res) => {
           applicationId: req.params.id, link: `/staff/app/${req.params.id}` });
     } catch (_) { /* notify best-effort */ }
     res.json({ ok: true, status });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Admin: soft-delete a file (keeps the row + audit trail; it disappears from
+// every borrower and staff surface). Restore reverses it. Admin/super_admin only.
+router.delete('/applications/:id', async (req, res) => {
+  if (!['admin', 'super_admin'].includes(req.actor.role)) return res.status(403).json({ error: 'admin only' });
+  try {
+    const r = await db.query(`UPDATE applications SET deleted_at=now(), updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'delete_application', 'application', req.params.id, { reason: (req.body && req.body.reason) || null });
+    res.json({ ok: true, deleted: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/applications/:id/restore', async (req, res) => {
+  if (!['admin', 'super_admin'].includes(req.actor.role)) return res.status(403).json({ error: 'admin only' });
+  try {
+    const r = await db.query(`UPDATE applications SET deleted_at=NULL, updated_at=now() WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'restore_application', 'application', req.params.id);
+    res.json({ ok: true, restored: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
