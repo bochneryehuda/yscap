@@ -5,6 +5,7 @@ import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import RehabBudget from '../components/RehabBudget.jsx';
+import StatusTimeline from '../components/StatusTimeline.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
@@ -201,6 +202,8 @@ export default function Application() {
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
         </div>
       </div>
+
+      <StatusTimeline appId={id} status={app.status} />
 
       {toolTasks.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>

@@ -384,3 +384,16 @@ a.checkitem:hover{transform:translateY(-1px)}
 .ent-main{flex:1;min-width:0}
 .ent-name{font-weight:700;font-size:13.5px}
 .ent-act{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+
+/* ===== Loan status timeline ===== */
+.timeline{list-style:none;margin:0;padding:0}
+.tl-step{display:flex;gap:14px;position:relative;padding-bottom:16px}
+.tl-step:not(:last-child)::before{content:'';position:absolute;left:7px;top:16px;bottom:0;width:2px;background:var(--line)}
+.tl-step.done:not(:last-child)::before{background:var(--ok)}
+.tl-dot{width:16px;height:16px;border-radius:50%;border:2px solid var(--line);background:var(--ink-1);flex:0 0 auto;margin-top:1px;z-index:1}
+.tl-step.done .tl-dot{background:var(--ok);border-color:var(--ok)}
+.tl-step.current .tl-dot{background:var(--gold);border-color:var(--gold);box-shadow:0 0 0 4px rgba(201,168,106,.2)}
+.tl-step.terminal .tl-dot{background:var(--danger);border-color:var(--danger)}
+.tl-label{font-weight:600;font-size:14px}
+.tl-step.upcoming .tl-label{color:var(--muted);font-weight:500}
+.tl-step.current .tl-label{color:var(--gold)}

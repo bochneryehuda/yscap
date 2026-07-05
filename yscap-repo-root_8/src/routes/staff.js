@@ -812,6 +812,14 @@ router.get('/applications/:id/gating', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+router.get('/applications/:id/status-history', async (req, res) => {
+  const r = await db.query(
+    `SELECT h.from_status, h.to_status, h.forced, h.created_at, s.full_name AS changed_by_name
+       FROM application_status_history h LEFT JOIN staff_users s ON s.id=h.changed_by
+      WHERE h.application_id=$1 ORDER BY h.created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+
 router.patch('/applications/:id', async (req, res) => {
   const { status } = req.body || {};
   const force = !!(req.body && req.body.force);
@@ -832,6 +840,10 @@ router.patch('/applications/:id', async (req, res) => {
     }
     await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
+    // Record the transition on the file's timeline.
+    await db.query(
+      `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
+       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, status, req.actor.id, forced]);
     // Funding seeds the post-closing trailing-doc checklist.
     if (status === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
