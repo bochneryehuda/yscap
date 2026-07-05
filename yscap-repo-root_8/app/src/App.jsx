@@ -17,6 +17,7 @@ import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
 import StaffApplication from './screens/StaffApplication.jsx';
 import StaffTeam from './screens/StaffTeam.jsx';
+import StaffLeads from './screens/StaffLeads.jsx';
 
 /* Borrower-only area. Staff who land here are bounced to their console. */
 function Private({ children }) {
@@ -69,6 +70,7 @@ export default function App() {
           <Route path="/staff" element={<StaffPrivate><StaffQueue /></StaffPrivate>} />
           <Route path="/staff/app/:id" element={<StaffPrivate><StaffApplication /></StaffPrivate>} />
           <Route path="/staff/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
+          <Route path="/staff/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
 
           <Route path="*" element={<Fallback />} />
         </Routes>

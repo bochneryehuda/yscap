@@ -21,6 +21,7 @@ export default function StaffLayout({ children }) {
           </Link>
           <nav className="nav">
             <NavLink to="/staff">Pipeline</NavLink>
+            <NavLink to="/staff/leads">Leads</NavLink>
             {(role === 'admin' || role === 'super_admin') && <NavLink to="/staff/team">Team</NavLink>}
             <span className="pill" title="Your role">{ROLE_LABEL[role] || role || 'Staff'}</span>
             <button className="btn link" onClick={() => { signOut(); nav('/staff/login'); }}>Sign out</button>

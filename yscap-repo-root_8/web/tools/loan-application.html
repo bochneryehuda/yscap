@@ -1747,23 +1747,41 @@
     var off = selectedOfficer();
     var to = off ? off.email : SALES_EMAIL;
     var cc = (off && off.email !== SALES_EMAIL) ? SALES_EMAIL : "";
-    if (SUBMIT_ENDPOINT) {
-      var btn = el("submitBtn"), oo = btn.textContent; btn.textContent = "Submitting\u2026"; btn.disabled = true;
-      fetch(SUBMIT_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: to, cc: cc, subject: subject, summary: summary, officer: off ? off.name : "", fields: YS.collectState() }) })
-        .then(function (r) { if (!r.ok) throw new Error(r.status); finish(off); })
-        .catch(function () { mailto(to, cc, subject, summary); finish(off); })
-        .finally(function () { btn.textContent = oo; btn.disabled = false; });
-    } else { mailto(to, cc, subject, summary); finish(off); }
+    var officerCode = (off && off.email) ? off.email.split("@")[0].toLowerCase()
+      : ((new URLSearchParams(location.search).get("lo")) || "");
+    var lead = {
+      tool: "loan_application",
+      name: bName(1),
+      email: val("b1Email"),
+      phone: val("b1Phone"),
+      officerCode: officerCode,
+      subject: subject,
+      message: summary,
+      payload: YS.collectState()
+    };
+    var btn = el("submitBtn"), oo = btn ? btn.textContent : "";
+    if (btn) { btn.textContent = "Submitting\u2026"; btn.disabled = true; }
+    // Submit to the BACKEND: it saves the application and emails the routed
+    // officer (and a confirmation to the borrower) server-side. Only if the
+    // server is unreachable do we fall back to the legacy email handoff so a
+    // submission is never lost.
+    fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lead) })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function () { finish(off, true); })
+      .catch(function () { mailto(to, cc, subject, summary); finish(off, false); })
+      .finally(function () { if (btn) { btn.textContent = oo; btn.disabled = false; } });
   }
   function mailto(to, cc, subject, body) {
     var href = "mailto:" + to + "?" + (cc ? "cc=" + encodeURIComponent(cc) + "&" : "") + "subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
     window.location.href = href;
   }
-  function finish(off) {
+  function finish(off, backendOk) {
     var name = val("b1First");
-    el("doneMsg").textContent = (name ? name + ", thank you \u2014 " : "Thank you \u2014 ") +
-      "your application is on its way" + (off ? " to " + off.name : "") + ". A YS Capital loan officer will reach out shortly to confirm details and walk you through next steps. We've also opened your email so you can send your copy directly.";
+    var base = (name ? name + ", thank you \u2014 " : "Thank you \u2014 ") +
+      "your application has been " + (backendOk ? "received by" : "sent to") + " YS Capital Group" +
+      (off ? " and routed to " + off.name : "") + ". A loan officer will reach out shortly to confirm details and walk you through next steps.";
+    if (backendOk) base += " A confirmation is on its way to your email.";
+    el("doneMsg").textContent = base;
     setStep(4, {});
   }
 

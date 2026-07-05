@@ -98,6 +98,8 @@ export const api = {
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
   staffAssign:      (appId, b) => req('POST', `/api/staff/applications/${appId}/assign`, b),
   staffNotifs:      () => req('GET', '/api/staff/notifications'),
+  staffLeads:       () => req('GET', '/api/staff/leads'),
+  staffUpdateLead:  (id, b) => req('PATCH', `/api/staff/leads/${id}`, b),
 
   // ---- admin: team / staff management ----
   adminStaff:        () => req('GET', '/api/admin/staff'),
