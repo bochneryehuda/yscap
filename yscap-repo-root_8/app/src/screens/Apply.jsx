@@ -104,7 +104,7 @@ export default function Apply() {
     });
   };
   const setAddr = (k, v) => mergeAddr({ [k]: v });
-  const pickAddr = (a) => mergeAddr({ street: a.line1 || '', unit: a.unit || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
+  const pickAddr = (a) => mergeAddr({ street: a.line1 || '', unit: a.unit || '', city: a.city || '', state: a.state || '', zip: a.zip || '', county: a.county || '' });
   const setNested = (key) => (k, v) => setForm(f => {
     const obj = { ...((f && f[key]) || {}), [k]: v };
     save({ data: { [key]: obj } });
