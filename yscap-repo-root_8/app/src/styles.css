@@ -377,3 +377,10 @@ a.checkitem:hover{transform:translateY(-1px)}
 .rb-view-line{display:flex;justify-content:space-between;gap:12px;padding:2px 0}
 .rb-view-total{border-top:1px solid var(--line);margin-top:6px;padding-top:6px;font-weight:700}
 .rb-view-total span:last-child{color:var(--gold)}
+
+/* ===== Entities (LLC) list ===== */
+.ent-list{display:flex;flex-direction:column;gap:8px}
+.ent-row{display:flex;align-items:flex-start;gap:12px;background:var(--ink-2);border:1px solid var(--line);border-radius:9px;padding:10px 14px}
+.ent-main{flex:1;min-width:0}
+.ent-name{font-weight:700;font-size:13.5px}
+.ent-act{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}

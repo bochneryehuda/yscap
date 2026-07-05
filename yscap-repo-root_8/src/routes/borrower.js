@@ -273,6 +273,21 @@ router.post('/llcs', async (req, res) => {
   try { await generateLlcChecklist(r.rows[0].id); } catch (_) {}
   res.status(201).json({ ok: true, llcId: r.rows[0].id });
 });
+// Fill in / correct an own entity's details (EIN, formation, ownership) — e.g.
+// after creating it by name in the application picker. The name and verified
+// status are not editable here (renaming a verified entity would mislead).
+router.patch('/llcs/:id', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  const map = { ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id); vals.push(me(req));
+  await db.query(`UPDATE llcs SET ${sets.join(',')} WHERE id=$${i++} AND borrower_id=$${i}`, vals);
+  res.json({ ok: true });
+});
 router.get('/llcs/:id/documents', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });

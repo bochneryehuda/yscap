@@ -103,6 +103,7 @@ export const api = {
   // reusable LLC / vesting-entity database
   llcs:         () => req('GET', '/api/borrower/llcs'),
   createLlc:    (b) => req('POST', '/api/borrower/llcs', b),
+  updateLlc:    (id, b) => req('PATCH', `/api/borrower/llcs/${id}`, b),
 
   // investment track record (experience) — drives the pricing tier
   trackRecords:    () => req('GET', '/api/borrower/track-records'),
