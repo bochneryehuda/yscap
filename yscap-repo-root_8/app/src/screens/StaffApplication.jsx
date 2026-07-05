@@ -318,7 +318,14 @@ export default function StaffApplication() {
         </div>
         <div className="panel">
           <h3 style={{ marginBottom: 12 }}>Loan & assignment</h3>
+          <div className="metrow"><span className="k">Property</span><span className="v">{app.property_type || '—'}{app.units ? ` · ${app.units} unit${app.units > 1 ? 's' : ''}` : ''}</span></div>
+          <div className="metrow"><span className="k">Entity</span><span className="v">{app.entity_name || (app.llc_id ? 'LLC on file' : '—')}</span></div>
           <div className="metrow"><span className="k">Purchase</span><span className="v">{money(app.purchase_price)}</span></div>
+          {app.is_assignment && <>
+            <div className="metrow"><span className="k">Assignment</span><span className="v" style={{ color: 'var(--teal)' }}>Yes</span></div>
+            <div className="metrow"><span className="k">Underlying price</span><span className="v">{money(app.underlying_contract_price)}</span></div>
+            <div className="metrow"><span className="k">Assignment fee</span><span className="v">{money(app.assignment_fee)}</span></div>
+          </>}
           <div className="metrow"><span className="k">As-is</span><span className="v">{money(app.as_is_value)}</span></div>
           <div className="metrow"><span className="k">ARV</span><span className="v">{money(app.arv)}</span></div>
           <div className="metrow"><span className="k">Rehab</span><span className="v">{money(app.rehab_budget)}</span></div>

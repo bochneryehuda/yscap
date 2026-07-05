@@ -246,8 +246,9 @@ router.post('/applications/:id/invite-borrower', async (req, res) => {
 
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
-    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico
-     FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
+    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico, l.llc_name AS entity_name
+     FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+     LEFT JOIN llcs l ON l.id=a.llc_id WHERE a.id=$1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
 });
