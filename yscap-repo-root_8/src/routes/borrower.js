@@ -226,7 +226,8 @@ router.post('/llcs', async (req, res) => {
 router.get('/llcs/:id/documents', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
-  const r = await db.query(`SELECT id,filename,content_type,size_bytes,created_at FROM documents WHERE llc_id=$1 ORDER BY created_at`, [req.params.id]);
+  const r = await db.query(`SELECT id,filename,content_type,size_bytes,created_at FROM documents
+     WHERE llc_id=$1 AND visibility='borrower' AND source_type <> 'chat_attachment' ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
 });
 
@@ -314,24 +315,28 @@ router.post('/documents', async (req, res) => {
 });
 
 // List the borrower's own documents (optionally scoped to one application).
+// Only borrower-visible items, and never chat attachments — those render inside
+// the conversation, not the document library (see 014_document_visibility).
 router.get('/documents', async (req, res) => {
   const r = await db.query(
     `SELECT id,filename,content_type,size_bytes,application_id,llc_id,checklist_item_id,created_at,
             review_status,rejection_reason,is_current
        FROM documents
       WHERE borrower_id=$1 AND ($2::uuid IS NULL OR application_id=$2)
+        AND visibility='borrower' AND source_type <> 'chat_attachment'
       ORDER BY is_current DESC, created_at DESC`,
     [me(req), req.query.applicationId || null]);
   res.json(r.rows);
 });
 
-// Download a document the borrower may see: their own uploads, plus anything
-// (e.g. chat attachments from staff or a co-borrower) on an application they
-// are the borrower or co-borrower on.
+// Download a document the borrower may see: their own uploads plus staff files
+// shared with them on the borrower channel, on an application they own or
+// co-borrow. visibility='borrower' is mandatory — a borrower must never be able
+// to fetch a staff-only / internal document even with a guessed id.
 router.get('/documents/:id/download', async (req, res) => {
   const r = await db.query(
     `SELECT id,filename,content_type,storage_ref FROM documents
-      WHERE id=$1 AND (borrower_id=$2 OR application_id IN
+      WHERE id=$1 AND visibility='borrower' AND (borrower_id=$2 OR application_id IN
         (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2))`,
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -415,7 +420,7 @@ router.post('/messages', async (req, res) => {
       attDoc = await require('../lib/chat-attach').saveChatAttachment({
         applicationId: b.applicationId, borrowerId: me(req),
         filename: att.filename, contentType: att.contentType, dataBase64: att.dataBase64,
-        byKind: 'borrower', byId: me(req) });
+        byKind: 'borrower', byId: me(req), channel: 'borrower' });
     } catch (e2) { return res.status(e2.status || 500).json({ error: e2.message }); }
   }
   const refs = Array.isArray(b.entityRefs)
@@ -430,6 +435,7 @@ router.post('/messages', async (req, res) => {
     [b.applicationId || null, me(req), String(b.body || '').slice(0, 4000), !!b.isTaskRequest,
      attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null,
      refs && refs.length ? JSON.stringify(refs) : null]);
+  if (attDoc) await db.query(`UPDATE documents SET message_id=$1 WHERE id=$2`, [r.rows[0].id, attDoc.documentId]);
   res.status(201).json({ ok: true, messageId: r.rows[0].id });
 
   // Notify the file's loan officer + processor of the new borrower message.
@@ -485,7 +491,9 @@ router.get('/applications/:id/mentionables', async (req, res) => {
                WHERE a.id=$1 AND s.is_active=true`, [req.params.id]),
     db.query(`SELECT id, label, status FROM checklist_items
                WHERE application_id=$1 AND audience IN ('borrower','both') ORDER BY sort_order LIMIT 200`, [req.params.id]),
-    db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
+    db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1
+                AND visibility='borrower' AND source_type <> 'chat_attachment'
+              ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
     db.query(`SELECT id, COALESCE(property_address->>'oneLine', property_address->>'street', 'Application') AS label
                 FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1`, [me(req)]),
   ]);
