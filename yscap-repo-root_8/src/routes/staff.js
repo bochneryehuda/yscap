@@ -778,19 +778,63 @@ router.post('/track-records/:id/verify', async (req, res) => {
 // ---------------- advance application status ----------------
 const APP_STATUS = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
 const STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+// Conditions-to-close gating. Reaching "clear to close" requires every open
+// prior-to-docs (and standard) condition cleared/waived and every gate item
+// signed off; "funded" additionally requires prior-to-funding conditions.
+// post_closing conditions never block. An admin may force past blockers.
+const CTC_SEVERITIES = ['standard', 'prior_to_docs'];
+const FUND_SEVERITIES = ['standard', 'prior_to_docs', 'prior_to_funding'];
+async function advancementBlockers(appId, target) {
+  const sevs = target === 'funded' ? FUND_SEVERITIES : CTC_SEVERITIES;
+  const conds = await db.query(
+    `SELECT id, COALESCE(borrower_title, title) AS title, severity
+       FROM conditions
+      WHERE application_id=$1 AND status IN ('open','borrower_responded') AND severity = ANY($2::text[])
+      ORDER BY severity, created_at`, [appId, sevs]);
+  const gates = await db.query(
+    `SELECT id, label FROM checklist_items
+      WHERE application_id=$1 AND is_gate=true AND NOT (signed_off_at IS NOT NULL OR status='satisfied')
+      ORDER BY sort_order, created_at`, [appId]);
+  return { conditions: conds.rows, gates: gates.rows };
+}
+
+// Readiness for the gated transitions — powers the "conditions to close" widget.
+router.get('/applications/:id/gating', async (req, res) => {
+  try {
+    const [ctc, fund] = await Promise.all([
+      advancementBlockers(req.params.id, 'clear_to_close'),
+      advancementBlockers(req.params.id, 'funded'),
+    ]);
+    res.json({
+      clear_to_close: { ready: !ctc.conditions.length && !ctc.gates.length, ...ctc },
+      funded: { ready: !fund.conditions.length && !fund.gates.length, ...fund },
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 router.patch('/applications/:id', async (req, res) => {
   const { status } = req.body || {};
+  const force = !!(req.body && req.body.force);
   if (!status || !APP_STATUS.includes(status)) return res.status(400).json({ error: 'bad status' });
   try {
     const cur = await db.query(
       `SELECT status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
     if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
+    // Gate the underwriting-critical transitions on conditions-to-close + gate items.
+    let forced = false;
+    if (status === 'clear_to_close' || status === 'funded') {
+      const blockers = await advancementBlockers(req.params.id, status);
+      if (blockers.conditions.length || blockers.gates.length) {
+        if (!(force && isAdmin(req))) return res.status(409).json({ error: 'blocked', target: status, blockers });
+        forced = true;
+      }
+    }
     await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
     // Funding seeds the post-closing trailing-doc checklist.
     if (status === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
-    await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status });
+    await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
     const label = STATUS_LABEL[status] || status;
     try {
       if (cur.rows[0].borrower_id)

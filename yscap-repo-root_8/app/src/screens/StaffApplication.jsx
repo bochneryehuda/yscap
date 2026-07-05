@@ -150,6 +150,7 @@ export default function StaffApplication() {
   const [newDoc, setNewDoc] = useState('');
   const [newCond, setNewCond] = useState('');
   const [conds, setConds] = useState([]);
+  const [gating, setGating] = useState(null);
   const [cForm, setCForm] = useState({ title: '', audience: 'staff', severity: 'standard' });
   const [ssnFull, setSsnFull] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
@@ -185,6 +186,7 @@ export default function StaffApplication() {
       const [c, t, d, cn] = await Promise.all([api.staffChecklist(id), api.staffTeam(), api.staffAppDocuments(id).catch(() => []), api.staffConditions(id).catch(() => [])]);
       setItems(c || []); setTeam(t || []); setDocs(d || []); setConds(cn || []);
       if (a.borrower_id) api.staffBorrower(a.borrower_id).then(setBorrower).catch(() => {});
+      api.staffGating(id).then(setGating).catch(() => setGating(null));
     } catch (e) { setErr(e.message); }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
@@ -227,8 +229,31 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Could not delete'); }
   }
   async function changeStatus(status) {
-    try { await api.staffSetStatus(id, status); flash(`Status → ${APP_STATUS_LABEL[status] || status}. Borrower & team notified.`); await load(); }
-    catch (e) { setErr(e.message || 'Could not update status'); }
+    setErr('');
+    try {
+      await api.staffSetStatus(id, status);
+      flash(`Status → ${APP_STATUS_LABEL[status] || status}. Borrower & team notified.`);
+      await load();
+    } catch (e) {
+      // Conditions-to-close gating: the server refuses clear-to-close / funded
+      // while blockers remain. Admins may override; others see what's outstanding.
+      if (e.status === 409 && e.data && e.data.blockers) {
+        const b = e.data.blockers;
+        const lines = [
+          ...b.conditions.map(c => `• Condition: ${c.title} (${String(c.severity).replace(/_/g, ' ')})`),
+          ...b.gates.map(g => `• Gate: ${g.label}`),
+        ].join('\n');
+        if (isAdmin && window.confirm(`This file isn't ready for "${APP_STATUS_LABEL[status]}":\n\n${lines}\n\nOverride as admin and advance anyway?`)) {
+          try { await api.staffSetStatus(id, status, true); flash(`Status → ${APP_STATUS_LABEL[status]} (admin override).`); await load(); }
+          catch (e2) { setErr(e2.message || 'Could not update status'); }
+        } else {
+          setErr(`Not ready for "${APP_STATUS_LABEL[status]}" — ${b.conditions.length} condition(s) and ${b.gates.length} gate(s) outstanding.`);
+          api.staffGating(id).then(setGating).catch(() => {});
+        }
+        return;
+      }
+      setErr(e.message || 'Could not update status');
+    }
   }
   async function assign() {
     // Only send what actually changed, so re-opening a file and clicking Assign
@@ -299,6 +324,13 @@ export default function StaffApplication() {
           {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
         </select>
         <span className="muted small">Notifies the borrower &amp; assigned team.</span>
+        {gating && (() => {
+          const g = gating.clear_to_close || {};
+          const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
+          return g.ready
+            ? <span className="ts-badge ok" title="All prior-to-docs conditions cleared and gates satisfied">Clear-to-close ready</span>
+            : <span className="ts-badge warn" title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.label)].join(' · ')}>{n} to clear before CTC</span>;
+        })()}
         <div className="spacer" />
         <button className="btn ghost" onClick={jumpToChat}>💬 Message</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
