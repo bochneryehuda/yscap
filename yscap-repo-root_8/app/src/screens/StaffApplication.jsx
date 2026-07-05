@@ -6,6 +6,8 @@ const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US',
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
 const STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
+const APP_STATUSES = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
+const APP_STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -121,6 +123,10 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Download failed'); }
     finally { setDlBusy(null); }
   }
+  async function changeStatus(status) {
+    try { await api.staffSetStatus(id, status); flash(`Status → ${APP_STATUS_LABEL[status] || status}. Borrower & team notified.`); await load(); }
+    catch (e) { setErr(e.message || 'Could not update status'); }
+  }
   async function assign() {
     if (!lo && !proc) return;
     try {
@@ -161,7 +167,14 @@ export default function StaffApplication() {
         <span className={`pill ${app.status}`}>{app.status}</span>
       </div>
       <h1 style={{ marginBottom: 4 }}>{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>
-      <p className="muted small" style={{ marginBottom: 16 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
+      <p className="muted small" style={{ marginBottom: 12 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
+      <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16 }}>
+        <span className="muted small">Advance status</span>
+        <select className="input" style={{ maxWidth: 190 }} value={app.status} onChange={e => changeStatus(e.target.value)}>
+          {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
+        </select>
+        <span className="muted small">Notifies the borrower &amp; assigned team.</span>
+      </div>
 
       {msg && <div className="notice ok">{msg}</div>}
       {err && app && <div className="notice err">{err}</div>}

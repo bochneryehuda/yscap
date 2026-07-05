@@ -97,6 +97,7 @@ export const api = {
   staffRequestDoc:  (appId, b) => req('POST', `/api/staff/applications/${appId}/checklist`, b),
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
   staffAssign:      (appId, b) => req('POST', `/api/staff/applications/${appId}/assign`, b),
+  staffSetStatus:   (appId, status) => req('PATCH', `/api/staff/applications/${appId}`, { status }),
   staffNotifs:      () => req('GET', '/api/staff/notifications'),
   staffLeads:       () => req('GET', '/api/staff/leads'),
   staffUpdateLead:  (id, b) => req('PATCH', `/api/staff/leads/${id}`, b),
