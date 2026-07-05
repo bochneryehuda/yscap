@@ -95,6 +95,18 @@ async function notifyBorrower(borrowerId, opts) {
   return id;
 }
 
+/** Notify BOTH borrowers on a file (primary + co-borrower), de-duplicated.
+    Use for file-wide events (status change, closing date, conditions) so an
+    invited co-borrower who can see the file also hears about it. */
+async function notifyAppBorrowers(appId, opts) {
+  const { rows } = await db.query(`SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1`, [appId]);
+  const a = rows[0]; if (!a) return [];
+  const ids = [...new Set([a.borrower_id, a.co_borrower_id].filter(Boolean))];
+  const out = [];
+  for (const id of ids) out.push(await notifyBorrower(id, opts));
+  return out;
+}
+
 /** Notify every active admin (used when an application has no loan officer). */
 async function notifyAdmins(opts) {
   const { rows } = await db.query(
@@ -112,4 +124,4 @@ async function notifyAdmins(opts) {
 async function _staffEmail(id)    { const r = await db.query(`SELECT email FROM staff_users WHERE id=$1`, [id]); return r.rows[0]?.email ? [r.rows[0].email] : []; }
 async function _borrowerEmail(id) { const r = await db.query(`SELECT email FROM borrowers   WHERE id=$1`, [id]); return r.rows[0]?.email ? [r.rows[0].email] : []; }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAdmins, buildEmail, NOTIFY_CATEGORIES, ALWAYS_IN_APP };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAdmins, buildEmail, NOTIFY_CATEGORIES, ALWAYS_IN_APP };

@@ -167,7 +167,13 @@ router.post('/applications', async (req, res) => {
 });
 
 router.get('/applications/:id', async (req, res) => {
-  const r = await db.query(`SELECT * FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);
+  const r = await db.query(
+    `SELECT a.*,
+            EXISTS(SELECT 1 FROM staff_users s
+                    WHERE s.id IN (a.loan_officer_id, a.processor_id)
+                      AND s.last_seen_at > now() - interval '2 minutes') AS team_online
+       FROM applications a
+      WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND a.deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
 });

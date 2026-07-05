@@ -153,6 +153,7 @@ export default function StaffApplication() {
   const [newCond, setNewCond] = useState('');
   const [conds, setConds] = useState([]);
   const [gating, setGating] = useState(null);
+  const [condFilter, setCondFilter] = useState('all');
   const [cForm, setCForm] = useState({ title: '', audience: 'staff', severity: 'standard' });
   const [ssnFull, setSsnFull] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
@@ -500,14 +501,24 @@ export default function StaffApplication() {
           <p className="muted small" style={{ marginTop: 6 }}>Appears on the borrower's checklist and notifies them.</p>
         </div>
         <div className="panel">
-          <div className="row" style={{ marginBottom: 8 }}>
+          <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
             <h3>Conditions</h3>
             <div className="spacer" />
-            <span className="muted small">{conds.filter(c => c.status === 'open').length} open</span>
+            <span className="muted small" style={{ marginRight: 8 }}>{conds.filter(c => c.status === 'open').length} open</span>
+            <select className="input" style={{ maxWidth: 130 }} value={condFilter} onChange={e => setCondFilter(e.target.value)}>
+              <option value="all">All</option>
+              <option value="open">Open</option>
+              <option value="cleared">Cleared</option>
+              <option value="waived">Waived</option>
+            </select>
           </div>
-          {conds.length === 0
-            ? <p className="muted small">No conditions yet.</p>
-            : conds.map(c => {
+          {(() => {
+            const shownConds = condFilter === 'all' ? conds
+              : condFilter === 'open' ? conds.filter(c => c.status === 'open' || c.status === 'borrower_responded')
+              : conds.filter(c => c.status === condFilter);
+          return shownConds.length === 0
+            ? <p className="muted small">{conds.length === 0 ? 'No conditions yet.' : 'None match this filter.'}</p>
+            : shownConds.map(c => {
               const sev = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' }[c.severity] || c.severity;
               const open = c.status === 'open' || c.status === 'borrower_responded';
               return (
@@ -525,7 +536,8 @@ export default function StaffApplication() {
                   {open && isAdmin && <button className="btn link small" onClick={() => waiveCond(c.id)}>Waive</button>}
                 </div>
               );
-            })}
+            });
+          })()}
           <div className="gold-rule" style={{ margin: '10px 0' }} />
           <input className="input" placeholder="New condition — e.g. Verify owner of record on REO #3" value={cForm.title}
             onChange={e => setCForm({ ...cForm, title: e.target.value })} onKeyDown={e => e.key === 'Enter' && addLoanCondition()} style={{ marginBottom: 8 }} />

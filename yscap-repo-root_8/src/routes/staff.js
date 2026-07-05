@@ -625,7 +625,7 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
       const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
       if (a.rows[0]?.borrower_id) {
         try {
-          await notify.notifyBorrower(a.rows[0].borrower_id, {
+          await notify.notifyAppBorrowers(req.params.id, {
             type: 'condition_added', title: 'A new item needs your attention',
             // Never surface the internal title to the borrower — use the
             // borrower-facing wording, or a generic prompt if none was given.
@@ -886,7 +886,7 @@ router.post('/applications/:id/nudge', async (req, res) => {
     const list = [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
     if (!list.length) return res.status(400).json({ error: 'nothing outstanding to remind about' });
     const shown = list.slice(0, 8).join('; ') + (list.length > 8 ? `; +${list.length - 8} more` : '');
-    await notify.notifyBorrower(a.rows[0].borrower_id, {
+    await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items' });
@@ -921,7 +921,7 @@ router.post('/applications/:id/closing-date', async (req, res) => {
       const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
       if (a.rows[0] && a.rows[0].borrower_id) {
         const nice = new Date(b.expectedClosing + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-        await notify.notifyBorrower(a.rows[0].borrower_id, {
+        await notify.notifyAppBorrowers(req.params.id, {
           type: 'closing_date', title: 'Estimated closing date set',
           body: `Your loan is now targeting ${nice}. We'll keep you posted as it approaches.`,
           applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
@@ -960,11 +960,10 @@ router.patch('/applications/:id', async (req, res) => {
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
     const label = STATUS_LABEL[status] || status;
     try {
-      if (cur.rows[0].borrower_id)
-        await notify.notifyBorrower(cur.rows[0].borrower_id, {
-          type: 'status_change', title: `Your loan status: ${label}`,
-          body: `Your application has moved to "${label}". Sign in to see the latest.`,
-          applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
+      await notify.notifyAppBorrowers(req.params.id, {
+        type: 'status_change', title: `Your loan status: ${label}`,
+        body: `Your application has moved to "${label}". Sign in to see the latest.`,
+        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
       const team = new Set([cur.rows[0].loan_officer_id, cur.rows[0].processor_id].filter(Boolean).filter(x => x !== req.actor.id));
       for (const sid of team)
         await notify.notifyStaff(sid, {

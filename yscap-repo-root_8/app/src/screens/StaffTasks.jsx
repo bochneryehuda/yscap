@@ -11,6 +11,7 @@ export default function StaffTasks() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [filter, setFilter] = useState('all'); // all | mine | overdue
+  const [statusFilter, setStatusFilter] = useState('all'); // all | outstanding | requested | received | issue
 
   useEffect(() => { api.staffMyTasks().then(setRows).catch(e => setErr(e.message)); }, []);
 
@@ -19,8 +20,9 @@ export default function StaffTasks() {
     const today = new Date().toISOString().slice(0, 10);
     return rows.filter(r =>
       (filter !== 'mine' || r.assigned_to_me) &&
-      (filter !== 'overdue' || (r.due_date && r.due_date < today)));
-  }, [rows, filter]);
+      (filter !== 'overdue' || (r.due_date && r.due_date < today)) &&
+      (statusFilter === 'all' || r.status === statusFilter));
+  }, [rows, filter, statusFilter]);
 
   const byFile = useMemo(() => {
     const g = {};
@@ -36,12 +38,16 @@ export default function StaffTasks() {
       <div className="row" style={{ marginBottom: 16, alignItems: 'center' }}>
         <h1>My tasks</h1>
         <div className="spacer" />
-        <div className="row" style={{ gap: 6 }}>
+        <div className="row" style={{ gap: 6, alignItems: 'center' }}>
           {['all', 'mine', 'overdue'].map(f => (
             <button key={f} className={`btn ${filter === f ? 'primary' : 'ghost'}`} onClick={() => setFilter(f)}>
               {f === 'all' ? 'All' : f === 'mine' ? 'Assigned to me' : 'Overdue'}
             </button>
           ))}
+          <select className="input" style={{ maxWidth: 150 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+            <option value="all">Any status</option>
+            {Object.entries(STATUS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
         </div>
       </div>
       {byFile.length === 0
