@@ -151,6 +151,26 @@ function newSignIn({ firstName, when, ip } = {}) {
   });
 }
 
+/** Confirmation to a website visitor who submitted a tool (application, rehab
+ *  budget, term-sheet request, …). Sent from the server, not the browser. */
+function leadReceived({ firstName, toolLabel, officerName } = {}) {
+  const tool = toolLabel || 'request';
+  return render({
+    audience: 'borrower',
+    title: 'We received your ' + tool.toLowerCase(),
+    preheader: 'Your submission reached the YS Capital team.',
+    greeting: greet(firstName),
+    intro: 'Thank you — your ' + tool.toLowerCase() + ' has been received by YS Capital Group.',
+    lines: [
+      officerName
+        ? officerName + ' will review it and follow up with you shortly to walk through next steps.'
+        : 'A member of our loan team will review it and follow up with you shortly to walk through next steps.',
+      'If you need anything in the meantime, just reply to this email or call us.',
+    ],
+    note: 'You are receiving this because you submitted a request on yscapgroup.com.',
+  });
+}
+
 /* =====================================================================
    STAFF — TEAM ONBOARDING
    ===================================================================== */
@@ -179,7 +199,7 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
 const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
-  staffInvite,
+  staffInvite, leadReceived,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients. */

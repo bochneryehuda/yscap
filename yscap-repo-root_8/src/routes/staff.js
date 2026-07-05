@@ -227,6 +227,35 @@ router.post('/track-records/:id/verify', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------------- leads (marketing-site submissions) ----------------
+// admins/underwriters see all; a loan officer sees leads routed to them plus
+// unrouted ones (the shared desk).
+router.get('/leads', async (req, res) => {
+  try {
+    const where = seesAll(req) ? '' : 'WHERE (officer_id=$1 OR officer_id IS NULL)';
+    const params = seesAll(req) ? [] : [req.actor.id];
+    const r = await db.query(
+      `SELECT l.id,l.tool,l.name,l.email,l.phone,l.subject,l.message,l.payload,l.status,
+              l.officer_id,l.created_at, s.full_name AS officer_name
+         FROM leads l LEFT JOIN staff_users s ON s.id=l.officer_id
+         ${where} ORDER BY l.created_at DESC LIMIT 300`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.patch('/leads/:id', async (req, res) => {
+  const b = req.body || {};
+  const STATUSES = ['new', 'contacted', 'working', 'converted', 'archived'];
+  if (b.status && !STATUSES.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+  const sets = [], vals = []; let i = 1;
+  if (b.status !== undefined) { sets.push(`status=$${i++}`); vals.push(b.status); }
+  if (b.officerId !== undefined) { sets.push(`officer_id=$${i++}`); vals.push(b.officerId || null); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  try { await db.query(`UPDATE leads SET ${sets.join(',')} WHERE id=$${i}`, vals); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- documents ----------------
 // List documents on a file. The /applications/:id middleware already enforced
 // that this staffer may see this application.

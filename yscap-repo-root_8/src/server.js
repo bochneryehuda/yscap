@@ -45,6 +45,7 @@ app.get('/api/health', async (req, res) => {
 });
 app.use('/auth', require('./auth').router);
 app.use('/api/roster', require('./routes/roster'));   // public team roster (site dropdown + ?lo branding)
+app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/intake', require('./routes/intake'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/staff', require('./routes/staff'));
