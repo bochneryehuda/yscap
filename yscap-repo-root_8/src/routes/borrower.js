@@ -172,6 +172,14 @@ router.get('/applications/:id', async (req, res) => {
   res.json(r.rows[0]);
 });
 
+// Borrower-safe file activity feed (never internal chat/notes/conditions).
+router.get('/applications/:id/activity', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  try { res.json(await require('../lib/activity').fileActivity(req.params.id, true)); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Borrower-visible conditions (object model) — open/unresolved, borrower wording.
 router.get('/applications/:id/conditions', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);

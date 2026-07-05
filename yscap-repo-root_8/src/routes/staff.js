@@ -303,6 +303,12 @@ router.post('/applications/:id/conditions', async (req, res) => {
   res.status(201).json({ ok: true, itemId: r.rows[0].id });
 });
 
+// Full file activity feed (staff sees everything, including internal).
+router.get('/applications/:id/activity', async (req, res) => {
+  try { res.json(await require('../lib/activity').fileActivity(req.params.id, false)); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---- first-class conditions (object model) ----
 router.get('/applications/:id/conditions', async (req, res) => {
   const r = await db.query(

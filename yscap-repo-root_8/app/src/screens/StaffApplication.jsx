@@ -1,9 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
+import ActivityFeed from '../components/ActivityFeed.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -150,6 +151,7 @@ export default function StaffApplication() {
   const [inviteBusy, setInviteBusy] = useState(false);
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
+  const activityFetcher = useCallback(() => api.staffActivity(id), [id]);
 
   async function inviteBorrower() {
     setInviteBusy(true); setErr('');
@@ -483,6 +485,7 @@ export default function StaffApplication() {
       </div>
 
       <ChatPanel appId={id} onTaskCreated={load} />
+      <ActivityFeed fetcher={activityFetcher} title="File activity" />
     </>
   );
 }

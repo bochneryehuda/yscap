@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
+import ActivityFeed from '../components/ActivityFeed.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
@@ -116,6 +117,7 @@ export default function Application() {
   const [target, setTarget] = useState(null);
   const [docFilter, setDocFilter] = useState('all');
 
+  const activityFetcher = useCallback(() => api.activity(id), [id]);
   const load = () => Promise.all([api.application(id), api.checklist(id), api.documents(id).catch(() => []), api.conditions(id).catch(() => [])])
     .then(([a, c, d, cn]) => { setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); }).catch(e => setErr(e.message));
 
@@ -335,6 +337,8 @@ export default function Application() {
         react={(mid, emoji) => api.react(mid, emoji)}
         fetchMentionables={() => api.mentionables(id)}
         onOpenApplication={(aid) => { window.location.hash = '#/app/' + aid; }} />
+
+      <ActivityFeed fetcher={activityFetcher} />
     </>
   );
 }
