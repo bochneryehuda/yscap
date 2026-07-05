@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
+import LlcPicker from '../components/LlcPicker.jsx';
 
 const STEPS = ['Property', 'Loan', 'Borrower & submit'];
 // Ground-Up is a PROGRAM (not a loan type/purpose). DSCR Rental is intentionally
@@ -329,7 +330,9 @@ export default function Apply() {
 
             <h3 style={{ margin: '18px 0 14px' }}>Entity &amp; officer</h3>
             <div className="field"><label>Vesting entity / LLC (if any)</label>
-              <input className="input" autoComplete="off" value={form.entityName || ''} onChange={e => set('entityName', e.target.value)} placeholder="e.g. 1420 Bedford Holdings LLC" /></div>
+              <LlcPicker value={form.entityName || ''} placeholder="e.g. 1420 Bedford Holdings LLC"
+                onPick={({ id, name }) => setForm(f => { const next = { ...(f || {}), entityName: name, llcId: id }; save({ data: { entityName: name, llcId: id } }); return next; })} />
+              <p className="muted small" style={{ marginTop: 4 }}>Reuse an LLC you've used before, or create a new one — we'll ask for its EIN letter, formation docs, and operating agreement once.</p></div>
             <div className="field"><label>Requested loan officer</label>
               <select value={form.loanOfficerName || ''} onChange={e => pickOfficer(e.target.value)}>
                 <option value="">No preference — send to Lead Capture</option>
