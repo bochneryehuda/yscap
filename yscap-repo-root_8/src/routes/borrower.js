@@ -12,6 +12,7 @@ const C = require('../lib/crypto');
 const storage = require('../lib/storage');
 const { requireAuth, requireBorrower } = require('../auth');
 const notify = require('../lib/notify');
+const mail = require('../lib/email/catalog');
 const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
 
@@ -64,7 +65,7 @@ router.get('/applications', async (req, res) => {
   const r = await db.query(
     `SELECT id,ys_loan_number,program,loan_type,status,property_address,loan_amount,
             loan_officer_name,submitted_at,created_at
-     FROM applications WHERE borrower_id=$1 ORDER BY created_at DESC`, [me(req)]);
+     FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1 ORDER BY created_at DESC`, [me(req)]);
   res.json(r.rows);
 });
 
@@ -86,14 +87,14 @@ router.post('/applications', async (req, res) => {
 });
 
 router.get('/applications/:id', async (req, res) => {
-  const r = await db.query(`SELECT * FROM applications WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  const r = await db.query(`SELECT * FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
 });
 
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
 router.get('/applications/:id/checklist', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
     `SELECT id,label,status,item_kind,phase,hint,is_required,due_date,notes,
@@ -108,7 +109,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
 // portal. Stores the exported payload and moves the item to 'received' so staff
 // can verify and sign off. The borrower is doing "their part" of the file here.
 router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const it = await db.query(
     `SELECT id,tool_key FROM checklist_items
@@ -175,7 +176,7 @@ router.post('/documents', async (req, res) => {
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   // ownership check for whichever owner is supplied
   if (b.applicationId) {
-    const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND borrower_id=$2`, [b.applicationId, me(req)]);
+    const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
     if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
   }
   if (b.llcId) {
@@ -298,7 +299,7 @@ router.post('/messages', async (req, res) => {
   // If tied to an application, it must be the borrower's own — never let a
   // borrower post onto another borrower's file by guessing its id.
   if (b.applicationId) {
-    const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND borrower_id=$2`, [b.applicationId, me(req)]);
+    const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
     if (!own.rows[0]) return res.status(404).json({ error: 'application not found' });
   }
   const r = await db.query(
@@ -387,6 +388,72 @@ router.delete('/drafts/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * Personal info flows BOTH ways: the profile prefills the application, and
+ * anything the borrower fills during the application is saved back to their
+ * profile — but only into fields that are still empty, so the profile (the
+ * canonical record) is never silently overwritten by a later application.
+ */
+async function syncProfileFromApplication(borrowerId, b) {
+  const p = b.personal || {};
+  const hasAny = ['cellPhone', 'dateOfBirth', 'citizenship', 'maritalStatus', 'employmentType', 'employer', 'fico']
+    .some(k => p[k] != null && p[k] !== '');
+  if (!hasAny && !b.ssn) return;
+  await db.query(
+    `UPDATE borrowers SET
+       cell_phone      = COALESCE(cell_phone, NULLIF($2,'')),
+       date_of_birth   = COALESCE(date_of_birth, NULLIF($3,'')::date),
+       citizenship     = COALESCE(citizenship, NULLIF($4,'')),
+       marital_status  = COALESCE(marital_status, NULLIF($5,'')),
+       employment_type = COALESCE(employment_type, NULLIF($6,'')),
+       employer        = COALESCE(employer, NULLIF($7,'')),
+       fico            = COALESCE(fico, $8),
+       updated_at      = now()
+     WHERE id=$1`,
+    [borrowerId, p.cellPhone || '', p.dateOfBirth || '', p.citizenship || '', p.maritalStatus || '',
+     p.employmentType || '', p.employer || '', p.fico ? parseInt(p.fico, 10) || null : null]);
+  if (b.ssn) {
+    await db.query(
+      `UPDATE borrowers SET ssn_encrypted = COALESCE(ssn_encrypted, $2),
+              ssn_last4 = COALESCE(ssn_last4, $3), updated_at=now() WHERE id=$1`,
+      [borrowerId, C.encryptSSN(b.ssn), String(b.ssn).replace(/\D/g, '').slice(-4)]);
+  }
+}
+
+/**
+ * A co-borrower named on the application becomes a real borrower: their record
+ * is created (or matched by email), linked to the application, and they get an
+ * emailed invitation to set up portal access — from which they can follow the
+ * whole file (access is granted via co_borrower_id scoping on the app routes).
+ */
+async function inviteCoBorrower(appId, primaryName, co) {
+  if (!co || !co.email) return null;
+  const cb = await db.query(
+    `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
+    [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null]);
+  const coId = cb.rows[0].id;
+  await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1`, [appId, coId]);
+  // Existing login? They already have access via co_borrower_id — just notify.
+  const hasAuth = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [coId]);
+  const token = C.randomToken(24);
+  if (!hasAuth.rows[0]) {
+    await db.query(
+      `INSERT INTO invite_tokens (token_hash,kind,email,expires_at)
+       VALUES ($1,'borrower',$2, now() + interval '14 days')`, [C.sha256(token), co.email]);
+  }
+  try {
+    await mail.send('coBorrowerInvite', co.email, {
+      firstName: co.firstName || '',
+      primaryName: primaryName || 'your co-borrower',
+      acceptUrl: hasAuth.rows[0] ? mail.link('/login') : mail.link('/accept?token=' + token),
+      hasAccount: !!hasAuth.rows[0],
+    });
+  } catch (_) {}
+  return coId;
+}
+
 // Convert a draft into a real application (mirrors POST /applications), fire the
 // staff notification (assigned officer, else Lead Capture admins), then stamp
 // the draft so it drops out of the open list but stays for audit.
@@ -423,6 +490,16 @@ router.post('/drafts/:id/submit', async (req, res) => {
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null, JSON.stringify(redactPII(b))]);
   const appId = ins.rows[0].id;
+
+  // Personal info entered during the application is saved to the borrower's
+  // profile (empty fields only) so it never has to be typed again.
+  try { await syncProfileFromApplication(me(req), b); } catch (e) { console.error('[apply] profile sync failed:', db.describeError(e)); }
+  // A named co-borrower is created, linked, and invited to the portal.
+  try {
+    const primary = await db.query(`SELECT first_name,last_name FROM borrowers WHERE id=$1`, [me(req)]);
+    const pn = primary.rows[0] ? `${primary.rows[0].first_name} ${primary.rows[0].last_name}`.trim() : '';
+    await inviteCoBorrower(appId, pn, b.coBorrower);
+  } catch (e) { console.error('[apply] co-borrower invite failed:', db.describeError(e)); }
 
   await generateChecklist(appId, me(req), b.program, b.loanType);
   await db.query(`UPDATE application_drafts SET submitted_application_id=$1, updated_at=now() WHERE id=$2 AND borrower_id=$3`,

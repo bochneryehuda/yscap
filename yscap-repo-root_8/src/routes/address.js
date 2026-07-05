@@ -142,4 +142,26 @@ router.get('/parse', (req, res) => {
   res.json({ address: parseAddress(String(req.query.q || '')) });
 });
 
+// Property photo — proxies Google Street View Static so the key stays
+// server-side. 404s cleanly when no key is set (or no imagery exists), so the
+// UI can simply hide the image. Activate with GOOGLE_MAPS_API_KEY (or the
+// Places key with "Street View Static API" enabled).
+router.get('/photo', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: 'q required' });
+  if (!cfg.googleMapsKey) return res.status(404).json({ error: 'property photos not enabled' });
+  try {
+    // Metadata first (free) — only fetch the image if imagery actually exists.
+    const meta = await fetchJson('https://maps.googleapis.com/maps/api/streetview/metadata?location='
+      + encodeURIComponent(q) + '&key=' + encodeURIComponent(cfg.googleMapsKey));
+    if (meta.status !== 'OK') return res.status(404).json({ error: 'no imagery for this address' });
+    const img = await fetch('https://maps.googleapis.com/maps/api/streetview?size=640x400&location='
+      + encodeURIComponent(q) + '&key=' + encodeURIComponent(cfg.googleMapsKey));
+    if (!img.ok) return res.status(404).json({ error: 'no imagery' });
+    res.set('Content-Type', img.headers.get('content-type') || 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(Buffer.from(await img.arrayBuffer()));
+  } catch (e) { res.status(404).json({ error: 'photo unavailable' }); }
+});
+
 module.exports = router;

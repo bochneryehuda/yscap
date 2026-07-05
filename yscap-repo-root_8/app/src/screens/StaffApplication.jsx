@@ -2,6 +2,46 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import MessageThread from '../components/MessageThread.jsx';
+import PropertyPhoto from '../components/PropertyPhoto.jsx';
+
+/* What the borrower has and hasn't completed — so the officer sees at a glance
+   what still needs chasing without opening every panel. */
+function Completeness({ app, borrower }) {
+  const checks = [
+    ['Property address', !!(app.property_address && (app.property_address.oneLine || app.property_address.street))],
+    ['Property type', !!app.property_type],
+    ['Program', !!app.program],
+    ['Loan type', !!app.loan_type],
+    ['Purchase price', app.purchase_price != null],
+    ['ARV', app.arv != null],
+    ['Rehab budget', app.rehab_budget != null],
+    ['Borrower phone', !!(borrower && borrower.cell_phone)],
+    ['Date of birth', !!(borrower && borrower.date_of_birth)],
+    ['SSN on file', !!(borrower && borrower.ssn_last4)],
+    ['FICO', !!(borrower && borrower.fico)],
+    ['Citizenship', !!(borrower && borrower.citizenship)],
+  ];
+  const done = checks.filter(([, ok]) => ok).length;
+  const missing = checks.filter(([, ok]) => !ok);
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <h3>Application completeness</h3>
+        <div className="spacer" />
+        <span className={`pill ${missing.length ? '' : 'done'}`}>{done}/{checks.length} complete</span>
+      </div>
+      {missing.length === 0
+        ? <p className="muted small">Everything the application asks for has been provided.</p>
+        : (
+          <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+            {missing.map(([label]) => (
+              <span key={label} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>Missing: {label}</span>
+            ))}
+          </div>
+        )}
+    </div>
+  );
+}
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
@@ -180,6 +220,8 @@ export default function StaffApplication() {
       {msg && <div className="notice ok">{msg}</div>}
       {err && app && <div className="notice err">{err}</div>}
 
+      <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
+
       <div className="grid cols-2">
         <div className="panel">
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>
@@ -228,6 +270,8 @@ export default function StaffApplication() {
           <button className="btn primary" onClick={assign} disabled={!lo && !proc}>Assign</button>
         </div>
       </div>
+
+      <Completeness app={app} borrower={borrower} />
 
       <div className="panel" style={{ marginTop: 18 }}>
         <div className="row" style={{ marginBottom: 6 }}>

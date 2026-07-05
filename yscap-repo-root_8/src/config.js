@@ -121,6 +121,9 @@ module.exports = {
                     (process.env.GOOGLE_PLACES_API_KEY ? 'google'
                      : process.env.SMARTY_AUTH_ID ? 'smarty' : 'osm')).toLowerCase(),
   googlePlacesKey: process.env.GOOGLE_PLACES_API_KEY,
+  // Street View property photos (can be the same Google key with the
+  // "Street View Static API" enabled, or a dedicated one).
+  googleMapsKey:   process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY,
   smartyAuthId:    process.env.SMARTY_AUTH_ID,
   smartyAuthToken: process.env.SMARTY_AUTH_TOKEN,
   // Nominatim asks every app to identify itself (email/URL) in the User-Agent.

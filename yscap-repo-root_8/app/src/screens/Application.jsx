@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import MessageThread from '../components/MessageThread.jsx';
+import PropertyPhoto from '../components/PropertyPhoto.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
@@ -106,6 +107,8 @@ export default function Application() {
       <p className="muted small" style={{ marginBottom: 20 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
 
       {msg && <div className="notice ok">{msg}</div>}
+
+      <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
 
       <div className="grid cols-2">
         <div className="panel">
