@@ -49,6 +49,9 @@ async function authenticate(req, res, next) {
   const raw = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
   const claims = C.verifyJwt(raw);
   if (!claims) return res.status(401).json({ error: 'unauthenticated' });
+  // A pending-MFA challenge is NOT an access token — it only authorizes the
+  // /mfa/verify step. Reject it here or the second factor is bypassable.
+  if (claims.mfa) return res.status(401).json({ error: 'mfa not completed' });
   // token_version check (revocation)
   const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
   const idCol = claims.kind === 'staff' ? 'id' : 'borrower_id';

@@ -21,11 +21,18 @@ const provider = require('./index');          // active email provider (.sendMai
 const { render } = require('./template');
 const cfg = require('../../config');
 
-/* absolute portal URL for a hash-route path, e.g. link('/verify?token=abc') */
+/* Absolute portal URL for a hash-route path, e.g. link('/verify?token=abc') ->
+   https://host/portal/#/verify?token=abc . The SPA lives under cfg.portalPath
+   ('/portal') with a HashRouter, so the path MUST be included or the link opens
+   the marketing site instead of the portal. Absolute URLs pass through. */
 function link(path) {
   const base = (cfg.appUrl || '').replace(/\/+$/, '');
-  const p = String(path || '');
-  return base + (p.startsWith('/#') ? p : '/#' + (p.startsWith('/') ? p : '/' + p));
+  const portal = (cfg.portalPath || '/portal').replace(/\/+$/, '');
+  let p = String(path || '');
+  if (/^https?:/i.test(p)) return p;
+  p = p.replace(/^\/#/, '');                 // tolerate a pre-hashed input
+  if (!p.startsWith('/')) p = '/' + p;
+  return base + portal + '/#' + p;
 }
 
 const ROLE_LABEL = {

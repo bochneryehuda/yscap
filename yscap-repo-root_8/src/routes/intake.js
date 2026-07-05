@@ -12,11 +12,18 @@ const db = require('../db');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const cfg = require('../config');
+const { redactPII } = require('../lib/redact');
 const { generateChecklist } = require('./borrower');
 
 router.post('/', async (req, res) => {
-  if (cfg.intakeApiKey && req.get('x-intake-key') !== cfg.intakeApiKey)
+  // Fail CLOSED: with no key configured this endpoint would accept anonymous
+  // writes (spoofed borrowers/applications). Allow that only outside production.
+  if (!cfg.intakeApiKey) {
+    if (cfg.env === 'production')
+      return res.status(503).json({ error: 'intake not configured (INTAKE_API_KEY unset)' });
+  } else if (req.get('x-intake-key') !== cfg.intakeApiKey) {
     return res.status(401).json({ error: 'bad intake key' });
+  }
   const p = req.body || {};
   const email = p.email || p.b1Email;
   if (!email) return res.status(400).json({ error: 'borrower email required' });
@@ -56,7 +63,7 @@ router.post('/', async (req, res) => {
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, p.units || p.units24 || p.unitsN || null,
        p.purchasePrice || p.price || null, p.asIsValue || p.asIs || null, p.arv || null,
-       p.rehabBudget || p.rehab || null, p.loanAmount || null, p.ltv || null, JSON.stringify(p)]);
+       p.rehabBudget || p.rehab || null, p.loanAmount || null, p.ltv || null, JSON.stringify(redactPII(p))]);
     const appId = a.rows[0].id;
     await client.query('COMMIT');
 
@@ -67,12 +74,12 @@ router.post('/', async (req, res) => {
       await notify.notifyStaff(officerId, {
         type: 'new_application', title: 'New application assigned to you',
         body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
-        link: `/staff/applications/${appId}` });
+        link: `/staff/app/${appId}` });
     } else {
       await notify.notifyAdmins({
         type: 'unassigned_application', title: 'New application needs assignment (Lead Capture)',
         body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
-        link: `/staff/lead-capture` });
+        link: `/staff` });
     }
     res.status(201).json({ ok: true, borrowerId, applicationId: appId, assigned: !!officerId });
   } catch (e) {

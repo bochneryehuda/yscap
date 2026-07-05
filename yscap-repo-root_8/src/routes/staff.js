@@ -159,7 +159,7 @@ router.post('/applications/:id/assign', async (req, res) => {
         [req.params.id, loanOfficerId, off.rows[0].full_name]);
       await notify.notifyStaff(loanOfficerId, {
         type: 'assignment', title: 'Application assigned to you', applicationId: req.params.id,
-        link: `/staff/applications/${req.params.id}` });
+        link: `/staff/app/${req.params.id}` });
       await audit(req, 'assign_application', 'application', req.params.id, { loanOfficerId });
     }
     if (processorId) {
@@ -169,7 +169,7 @@ router.post('/applications/:id/assign', async (req, res) => {
         [req.params.id, processorId]);
       await notify.notifyStaff(processorId, {
         type: 'assignment', title: 'File assigned to you for processing', applicationId: req.params.id,
-        link: `/staff/applications/${req.params.id}` });
+        link: `/staff/app/${req.params.id}` });
       await audit(req, 'assign_processor', 'application', req.params.id, { processorId });
     }
     res.json({ ok: true });
@@ -177,18 +177,36 @@ router.post('/applications/:id/assign', async (req, res) => {
 });
 
 // ---------------- borrower profile view + SSN reveal (audited) ----------------
-router.get('/borrowers/:id', async (req, res) => {
+// A non-privileged staffer (loan_officer / processor) may only see a borrower
+// they actually work with — i.e. one on a file they are assigned to. admins,
+// super_admins and underwriters (seesAll) may see any. This is the GLBA / PII
+// horizontal-authorization gate.
+async function canSeeBorrower(req) {
+  if (seesAll(req)) return true;
   const r = await db.query(
-    `SELECT id,first_name,last_name,email,cell_phone,date_of_birth,ssn_last4,fico,citizenship,tier FROM borrowers WHERE id=$1`,
-    [req.params.id]);
-  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-  res.json(r.rows[0]);
+    `SELECT 1 FROM applications
+      WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+    [req.params.id, req.actor.id]);
+  return !!r.rows[0];
+}
+router.get('/borrowers/:id', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT id,first_name,last_name,email,cell_phone,date_of_birth,ssn_last4,fico,citizenship,tier FROM borrowers WHERE id=$1`,
+      [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.get('/borrowers/:id/ssn', async (req, res) => {
-  const r = await db.query(`SELECT ssn_encrypted FROM borrowers WHERE id=$1`, [req.params.id]);
-  if (!r.rows[0]?.ssn_encrypted) return res.status(404).json({ error: 'no ssn on file' });
-  await audit(req, 'view_ssn', 'borrower', req.params.id);
-  res.json({ ssn: C.decryptSSN(r.rows[0].ssn_encrypted) });
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(`SELECT ssn_encrypted FROM borrowers WHERE id=$1`, [req.params.id]);
+    if (!r.rows[0]?.ssn_encrypted) return res.status(404).json({ error: 'no ssn on file' });
+    await audit(req, 'view_ssn', 'borrower', req.params.id);
+    res.json({ ssn: C.decryptSSN(r.rows[0].ssn_encrypted) });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- verify LLC / track record ----------------

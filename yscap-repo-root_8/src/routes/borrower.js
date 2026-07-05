@@ -11,6 +11,7 @@ const C = require('../lib/crypto');
 const storage = require('../lib/storage');
 const { requireAuth, requireBorrower } = require('../auth');
 const notify = require('../lib/notify');
+const { redactPII } = require('../lib/redact');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -33,14 +34,17 @@ router.get('/profile', async (req, res) => {
 
 router.put('/profile', async (req, res) => {
   const b = req.body || {};
+  // Only columns actually present in the request are updated. Using `|| null`
+  // here would turn every ABSENT field into an explicit NULL and wipe stored
+  // PII on every partial save — so keep absent fields `undefined` and skip them.
   const fields = {
     first_name: b.firstName, last_name: b.lastName, cell_phone: b.cellPhone,
-    date_of_birth: b.dateOfBirth || null, fico: b.fico || null,
-    current_address: b.currentAddress ? JSON.stringify(b.currentAddress) : null,
-    years_at_residence: b.yearsAtResidence || null,
-    prior_address: b.priorAddress ? JSON.stringify(b.priorAddress) : null,
+    date_of_birth: b.dateOfBirth, fico: b.fico,
+    current_address: b.currentAddress !== undefined ? JSON.stringify(b.currentAddress) : undefined,
+    years_at_residence: b.yearsAtResidence,
+    prior_address: b.priorAddress !== undefined ? JSON.stringify(b.priorAddress) : undefined,
     citizenship: b.citizenship, marital_status: b.maritalStatus,
-    dependents_count: b.dependentsCount || null,
+    dependents_count: b.dependentsCount,
     employment_type: b.employmentType, employer: b.employer,
   };
   const sets = [], vals = []; let i = 1;
@@ -72,7 +76,7 @@ router.post('/applications', async (req, res) => {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'portal',$12,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
-     b.arv || null, b.rehabBudget || null, b.loanOfficerName || null, JSON.stringify(b)]);
+     b.arv || null, b.rehabBudget || null, b.loanOfficerName || null, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
   await generateChecklist(appId, me(req), b.program, b.loanType);
   await audit(req, 'create_application', 'application', appId);
@@ -149,6 +153,11 @@ router.get('/track-records', async (req, res) => {
 });
 router.post('/track-records', async (req, res) => {
   const b = req.body || {};
+  // An LLC reference must be one of the borrower's own entities.
+  if (b.llcId) {
+    const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'llc not found' });
+  }
   const r = await db.query(
     `INSERT INTO track_records (borrower_id,llc_id,property_address,deal_type,purchase_price,sale_price,rehab_amount,purchase_date,sale_date)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
@@ -207,6 +216,12 @@ router.get('/messages', async (req, res) => {
 router.post('/messages', async (req, res) => {
   const b = req.body || {};
   if (!b.body) return res.status(400).json({ error: 'body required' });
+  // If tied to an application, it must be the borrower's own — never let a
+  // borrower post onto another borrower's file by guessing its id.
+  if (b.applicationId) {
+    const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND borrower_id=$2`, [b.applicationId, me(req)]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'application not found' });
+  }
   const r = await db.query(
     `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,is_task_request)
      VALUES ($1,$2,'borrower',$2,$3,$4) RETURNING id`,
@@ -289,11 +304,11 @@ router.post('/drafts/:id/submit', async (req, res) => {
   // resolve officer (by email, else by name) -> null means Lead Capture
   let officerId = null, officerRow = null;
   if (b.loanOfficerEmail) {
-    const o = await db.query(`SELECT id,email,name FROM staff_users WHERE lower(email)=lower($1) AND is_active=true`, [b.loanOfficerEmail]);
+    const o = await db.query(`SELECT id,email,full_name FROM staff_users WHERE lower(email)=lower($1) AND is_active=true`, [b.loanOfficerEmail]);
     officerRow = o.rows[0] || null;
   }
   if (!officerRow && b.loanOfficerName) {
-    const o = await db.query(`SELECT id,email,name FROM staff_users WHERE lower(name)=lower($1) AND is_active=true`, [b.loanOfficerName]);
+    const o = await db.query(`SELECT id,email,full_name FROM staff_users WHERE lower(full_name)=lower($1) AND is_active=true`, [b.loanOfficerName]);
     officerRow = o.rows[0] || null;
   }
   if (officerRow) officerId = officerRow.id;
@@ -307,7 +322,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
      RETURNING id,ys_loan_number`,
     [me(req), JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
-     b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null, JSON.stringify(b)]);
+     b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null, JSON.stringify(redactPII(b))]);
   const appId = ins.rows[0].id;
 
   await generateChecklist(appId, me(req), b.program, b.loanType);
@@ -332,7 +347,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
       await notify.notifyAdmins({
         type: 'unassigned_application', title: 'New application — Lead Capture',
         body: 'A borrower submitted a new application with no loan officer selected. It is in Lead Capture.',
-        applicationId: appId, link: `/staff/lead-capture`, meta, ctaLabel: 'Open Lead Capture',
+        applicationId: appId, link: `/staff`, meta, ctaLabel: 'Open Lead Capture',
       });
     }
   } catch (e) { /* notification failure never blocks submission */ }
