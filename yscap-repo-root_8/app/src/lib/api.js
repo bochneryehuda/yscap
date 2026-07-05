@@ -26,6 +26,19 @@ export function saveBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
+// Normalize any upload payload: the backend stores raw base64 (dataBase64), so
+// if a caller passes a full `data:` URL we strip the prefix here. This keeps a
+// single upload contract and prevents "filename + dataBase64 required" errors.
+function normalizeUpload(b) {
+  if (b && b.dataUrl && !b.dataBase64) {
+    const s = String(b.dataUrl);
+    const i = s.indexOf(',');
+    const { dataUrl, ...rest } = b;
+    return { ...rest, dataBase64: i >= 0 ? s.slice(i + 1) : s };
+  }
+  return b;
+}
+
 async function req(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
   const t = getToken();
@@ -61,6 +74,7 @@ export const api = {
 
   profile:      () => req('GET', '/api/borrower/profile'),
   saveProfile:  (b) => req('PUT', '/api/borrower/profile', b),
+  uploadPhotoId:(b) => req('POST', '/api/borrower/profile/photo-id', normalizeUpload(b)),
   applications: () => req('GET', '/api/borrower/applications'),
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
@@ -70,7 +84,7 @@ export const api = {
   mentionables: (appId) => req('GET', `/api/borrower/applications/${appId}/mentionables`),
   postMessage:  (appId, body, opts = {}) => req('POST', '/api/borrower/messages', { applicationId: appId, body, ...opts }),
   readNotif:    (id) => req('POST', `/api/borrower/notifications/${id}/read`),
-  uploadDoc:    (b) => req('POST', '/api/borrower/documents', b),
+  uploadDoc:    (b) => req('POST', '/api/borrower/documents', normalizeUpload(b)),
   documents:    (appId) => req('GET', `/api/borrower/documents${appId ? `?applicationId=${appId}` : ''}`),
   downloadDoc:  (id) => download(`/api/borrower/documents/${id}/download`),
   // borrower completes an in-portal tool task (Rehab Budget / Track Record)
@@ -112,6 +126,7 @@ export const api = {
   staffReact:       (msgId, emoji) => req('POST', `/api/staff/messages/${msgId}/react`, { emoji }),
   staffMentionables:(appId) => req('GET', `/api/staff/applications/${appId}/mentionables`),
   adminWelcome:     (id) => req('POST', `/api/admin/staff/${id}/welcome`),
+  adminResetStaffEmail: (id) => req('POST', `/api/admin/staff/${id}/reset-email`),
   adminWelcomeAll:  (all) => req('POST', '/api/admin/staff/welcome-all', { onlyWithoutLogin: !all }),
   chatInbox:        () => req('GET', '/api/borrower/chat/inbox'),
   staffMessages:    (appId, channel = 'borrower') => req('GET', `/api/staff/applications/${appId}/messages?channel=${channel}`),

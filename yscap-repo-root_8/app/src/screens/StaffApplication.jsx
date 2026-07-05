@@ -154,6 +154,10 @@ export default function StaffApplication() {
     try {
       const a = await api.staffApplication(id);
       setApp(a);
+      // Prefill the assignment selectors from what's already on the file, so an
+      // assigned file never reads as "nobody assigned" after a reload.
+      setLo(a.loan_officer_id || '');
+      setProc(a.processor_id || '');
       const [c, t, d] = await Promise.all([api.staffChecklist(id), api.staffTeam(), api.staffAppDocuments(id).catch(() => [])]);
       setItems(c || []); setTeam(t || []); setDocs(d || []);
       if (a.borrower_id) api.staffBorrower(a.borrower_id).then(setBorrower).catch(() => {});
@@ -185,10 +189,15 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Could not update status'); }
   }
   async function assign() {
-    if (!lo && !proc) return;
+    // Only send what actually changed, so re-opening a file and clicking Assign
+    // doesn't re-notify the same people. Keep the selectors populated afterward.
+    const body = {};
+    if (lo && lo !== (app.loan_officer_id || '')) body.loanOfficerId = lo;
+    if (proc && proc !== (app.processor_id || '')) body.processorId = proc;
+    if (!body.loanOfficerId && !body.processorId) { flash('No assignment change.'); return; }
     try {
-      await api.staffAssign(id, { loanOfficerId: lo || undefined, processorId: proc || undefined });
-      setLo(''); setProc(''); flash('Assigned ✓'); await load();
+      await api.staffAssign(id, body);
+      flash('Assigned ✓'); await load();
     } catch (e) { setErr(e.message || 'Assign failed'); }
   }
   async function requestDoc() {

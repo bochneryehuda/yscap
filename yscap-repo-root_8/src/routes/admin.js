@@ -198,6 +198,26 @@ router.post('/staff/:id/welcome', async (req, res) => {
     res.json({ ok: true, sent, email: r.rows[0].email });
   } catch (e) { res.status(502).json({ error: 'could not send welcome email' }); }
 });
+// Email a staff member a "set a new password" link. Works whether or not they
+// already have a login — accepting the token resets their password (the /accept
+// staff path does ON CONFLICT DO UPDATE password_hash). super_admin-protected.
+router.post('/staff/:id/reset-email', async (req, res) => {
+  const g = roleGuard(req, await targetRole(req.params.id));
+  if (g) return res.status(g.code).json({ error: g.error });
+  const r = await db.query(`SELECT email, full_name, role FROM staff_users WHERE id=$1 AND is_active=true`, [req.params.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'staff not found' });
+  try {
+    const token = C.randomToken(24);
+    await db.query(
+      `INSERT INTO invite_tokens (token_hash,kind,email,role,created_by,expires_at)
+       VALUES ($1,'staff',$2,$3,$4, now() + interval '7 days')`,
+      [C.sha256(token), r.rows[0].email, r.rows[0].role, req.actor.id]);
+    const sent = await mail.send('staffPasswordReset', r.rows[0].email, {
+      fullName: r.rows[0].full_name, url: mail.link('/accept?token=' + token), days: 7 });
+    res.json({ ok: true, sent: !!(sent && sent.ok), email: r.rows[0].email });
+  } catch (e) { res.status(502).json({ error: 'could not send reset email' }); }
+});
+
 router.post('/staff/welcome-all', async (req, res) => {
   const onlyNoLogin = (req.body || {}).onlyWithoutLogin !== false;   // default: those who can't log in yet
   const r = await db.query(

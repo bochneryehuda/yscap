@@ -178,6 +178,10 @@ export default function StaffTeam() {
                     onClick={async () => { setErr(''); try { const r = await api.adminWelcome(s.id); flash(r.sent ? `Welcome email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } }}>
                     Send welcome
                   </button>
+                  <button className="btn link" title="Email them a link to set a new password"
+                    onClick={async () => { setErr(''); try { const r = await api.adminResetStaffEmail(s.id); flash(r.sent ? `Password-reset email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } }}>
+                    Send password reset
+                  </button>
                 </div>
                 {pwFor === s.id && (
                   <div className="row" style={{ gap: 8, width: '100%', marginTop: 8 }}>

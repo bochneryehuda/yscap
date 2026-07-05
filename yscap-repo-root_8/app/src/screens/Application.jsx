@@ -69,9 +69,11 @@ export default function Application() {
       const dataUrl = await new Promise((res, rej) => {
         const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file);
       });
+      // The server stores raw base64 (dataBase64), not the full data: URL.
       await api.uploadDoc({
         applicationId: id, checklistItemId: target || undefined,
-        filename: file.name, contentType: file.type, size: file.size, dataUrl,
+        filename: file.name, contentType: file.type, size: file.size,
+        dataBase64: String(dataUrl).split(',')[1],
       });
       setMsg('Uploaded ✓'); setTarget(null); await load();
       setTimeout(() => setMsg(''), 2500);

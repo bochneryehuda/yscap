@@ -8,6 +8,13 @@ const STEPS = ['Property', 'Loan', 'Borrower & submit'];
 const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground Up Construction', 'DSCR Rental', 'Not sure yet'];
 const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Ground up'];
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
+const CITIZENSHIP = ['US Citizen', 'Permanent Resident', 'Foreign National'];
+
+// Fix & Flip / Ground-Up / construction files use ARV + rehab budget; a straight
+// Bridge or DSCR rental does not, so those fields are hidden for them.
+const needsRehab = (program) => !program || /flip|ground|construction|rehab|not sure/i.test(program);
+// An assignment only applies to a purchase.
+const isPurchase = (loanType) => !loanType || /purchase/i.test(loanType);
 
 function SaveChip({ status }) {
   const map = { idle: '', saving: 'Saving…', saved: 'All changes saved', error: 'Save failed — retrying' };
@@ -22,12 +29,14 @@ export default function Apply() {
   const [step, setStep] = useState(1);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [officers, setOfficers] = useState([]);
   const idRef = useRef(id);
   idRef.current = id;
 
   // load existing draft, or create a fresh one — then prefill the personal
   // section from the borrower's saved profile (empty fields only), so repeat
-  // applicants never retype what the portal already knows.
+  // applicants never retype what the portal already knows. Employment is not
+  // collected (no-doc / no-income).
   useEffect(() => {
     let live = true;
     (async () => {
@@ -51,15 +60,22 @@ export default function Apply() {
             cellPhone: cur.cellPhone || p.cell_phone || '',
             dateOfBirth: cur.dateOfBirth || (p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : ''),
             citizenship: cur.citizenship || p.citizenship || '',
-            employmentType: cur.employmentType || p.employment_type || '',
-            employer: cur.employer || p.employer || '',
+            fico: cur.fico || p.fico || '',
           };
+          if (data.ssnOnFile === undefined) data.ssnOnFile = !!p.ssn_last4;
         } catch { /* profile prefill is best-effort */ }
         setForm(data); setStep(stepN);
       } catch (e) { if (live) setErr(e.message); }
     })();
     return () => { live = false; };
   }, [draftId, nav]);
+
+  // The requested-officer dropdown is fed live from the public roster (sales
+  // team). We store the chosen officer's name + email; the borrower never types
+  // an email, and the backend resolves the officer from it.
+  useEffect(() => {
+    api.roster().then(r => setOfficers((r.people || []).filter(x => x && x.name))).catch(() => {});
+  }, []);
 
   const doSave = useCallback((patch) => api.saveDraft(idRef.current, patch), []);
   const { status, save, flush } = useAutosave(doSave, 800);
@@ -77,9 +93,7 @@ export default function Apply() {
     });
   };
   const setAddr = (k, v) => mergeAddr({ [k]: v });
-  // Autocomplete returns divided components (street/unit/city/state/zip).
   const pickAddr = (a) => mergeAddr({ street: a.line1 || '', unit: a.unit || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
-  // Nested-object setters for the personal-info and co-borrower sections.
   const setNested = (key) => (k, v) => setForm(f => {
     const obj = { ...((f && f[key]) || {}), [k]: v };
     save({ data: { [key]: obj } });
@@ -87,6 +101,12 @@ export default function Apply() {
   });
   const setPersonal = setNested('personal');
   const setCo = setNested('coBorrower');
+
+  const pickOfficer = (name) => {
+    const o = officers.find(x => x.name === name);
+    setForm(f => ({ ...(f || {}), loanOfficerName: name || '', loanOfficerEmail: (o && o.email) || '' }));
+    save({ data: { loanOfficerName: name || '', loanOfficerEmail: (o && o.email) || '' } });
+  };
 
   const goStep = async (n) => { await flush(); setStep(n); save({ step: n }); };
 
@@ -102,6 +122,8 @@ export default function Apply() {
   if (err && !form) return <div className="notice err">{err}</div>;
   if (!form) return <div className="panel muted">Loading your application…</div>;
   const a = form.propertyAddress || {};
+  const showRehab = needsRehab(form.program);
+  const step1Ready = !!a.street && !!form.propertyType && !!form.units;
 
   return (
     <>
@@ -122,33 +144,36 @@ export default function Apply() {
 
       {err && <div className="notice err">{err}</div>}
 
-      <div className="panel">
+      {/* autoComplete off on the whole form so the browser never treats the
+          subject-property address as the applicant's own contact card. */}
+      <form className="panel" autoComplete="off" onSubmit={e => e.preventDefault()}>
         {step === 1 && (
           <>
             <h3 style={{ marginBottom: 14 }}>Subject property</h3>
-            <div className="field"><label>Street address</label>
+            <div className="field"><label>Street address *</label>
               <AddressAutocomplete value={a.street || ''} placeholder="Start typing the property address…"
                 onChange={v => setAddr('street', v)} onPick={pickAddr} /></div>
             <div className="grid cols-2">
               <div className="field"><label>Apt / Unit</label>
-                <input className="input" value={a.unit || ''} onChange={e => setAddr('unit', e.target.value)} placeholder="Optional" /></div>
+                <input className="input" autoComplete="off" value={a.unit || ''} onChange={e => setAddr('unit', e.target.value)} placeholder="Optional" /></div>
               <div className="field"><label>City</label>
-                <input className="input" value={a.city || ''} onChange={e => setAddr('city', e.target.value)} /></div>
+                <input className="input" autoComplete="off" value={a.city || ''} onChange={e => setAddr('city', e.target.value)} /></div>
             </div>
             <div className="grid cols-2">
               <div className="field"><label>State</label>
-                <input className="input" maxLength={2} value={a.state || ''} onChange={e => setAddr('state', e.target.value.toUpperCase())} placeholder="NY" /></div>
+                <input className="input" autoComplete="off" maxLength={2} value={a.state || ''} onChange={e => setAddr('state', e.target.value.toUpperCase())} placeholder="NY" /></div>
               <div className="field"><label>ZIP</label>
-                <input className="input" value={a.zip || ''} onChange={e => setAddr('zip', e.target.value)} /></div>
+                <input className="input" autoComplete="off" value={a.zip || ''} onChange={e => setAddr('zip', e.target.value)} /></div>
             </div>
             <div className="grid cols-2">
-              <div className="field"><label>Property type</label>
+              <div className="field"><label>Property type *</label>
                 <select value={form.propertyType || ''} onChange={e => set('propertyType', e.target.value)}>
                   <option value="">Select…</option>{PROP_TYPES.map(p => <option key={p}>{p}</option>)}
                 </select></div>
-              <div className="field"><label>Units</label>
+              <div className="field"><label>Units *</label>
                 <input className="input" type="number" min="1" value={form.units || ''} onChange={e => set('units', e.target.value)} /></div>
             </div>
+            {!step1Ready && <p className="muted small">Property address, type, and number of units are required to continue.</p>}
           </>
         )}
 
@@ -171,12 +196,25 @@ export default function Apply() {
               <div className="field"><label>As-is value</label>
                 <input className="input" type="number" value={form.asIsValue || ''} onChange={e => set('asIsValue', e.target.value)} /></div>
             </div>
-            <div className="grid cols-2">
-              <div className="field"><label>ARV (after-repair value)</label>
-                <input className="input" type="number" value={form.arv || ''} onChange={e => set('arv', e.target.value)} /></div>
-              <div className="field"><label>Rehab budget</label>
-                <input className="input" type="number" value={form.rehabBudget || ''} onChange={e => set('rehabBudget', e.target.value)} /></div>
-            </div>
+            {isPurchase(form.loanType) && (
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', margin: '2px 0 12px' }}>
+                <input type="checkbox" checked={!!form.isAssignment} onChange={e => set('isAssignment', e.target.checked)} />
+                <span>This purchase is an <strong>assignment</strong> of contract</span>
+              </label>
+            )}
+            {form.isAssignment && (
+              <p className="muted small" style={{ marginBottom: 12 }}>
+                We'll ask for the <strong>assignment contract</strong> and the <strong>underlying purchase contract</strong> on your file.
+              </p>
+            )}
+            {showRehab && (
+              <div className="grid cols-2">
+                <div className="field"><label>ARV (after-repair value)</label>
+                  <input className="input" type="number" value={form.arv || ''} onChange={e => set('arv', e.target.value)} /></div>
+                <div className="field"><label>Rehab budget</label>
+                  <input className="input" type="number" value={form.rehabBudget || ''} onChange={e => set('rehabBudget', e.target.value)} /></div>
+              </div>
+            )}
             <p className="muted small">Final pricing and leverage are confirmed by your loan officer against program guidelines — these figures start the file.</p>
           </>
         )}
@@ -192,56 +230,62 @@ export default function Apply() {
               <>
                 <div className="grid cols-2">
                   <div className="field"><label>Cell phone</label>
-                    <input className="input" value={p.cellPhone || ''} onChange={e => setPersonal('cellPhone', e.target.value)} /></div>
+                    <input className="input" autoComplete="off" value={p.cellPhone || ''} onChange={e => setPersonal('cellPhone', e.target.value)} /></div>
                   <div className="field"><label>Date of birth</label>
                     <input className="input" type="date" value={p.dateOfBirth || ''} onChange={e => setPersonal('dateOfBirth', e.target.value)} /></div>
                 </div>
                 <div className="grid cols-3">
+                  <div className="field"><label>Social Security Number</label>
+                    <input className="input" autoComplete="off" value={form.ssn || ''} onChange={e => set('ssn', e.target.value)}
+                      placeholder={form.ssnOnFile ? 'On file — leave blank' : '•••-••-••••'} /></div>
+                  <div className="field"><label>Estimated FICO</label>
+                    <input className="input" type="number" min="300" max="850" value={p.fico || ''} onChange={e => setPersonal('fico', e.target.value)} placeholder="e.g. 720" /></div>
                   <div className="field"><label>Citizenship</label>
                     <select value={p.citizenship || ''} onChange={e => setPersonal('citizenship', e.target.value)}>
-                      <option value="">Select…</option><option>US Citizen</option><option>Permanent Resident</option><option>Foreign National</option>
+                      <option value="">Select…</option>{CITIZENSHIP.map(c => <option key={c}>{c}</option>)}
                     </select></div>
-                  <div className="field"><label>Employment</label>
-                    <select value={p.employmentType || ''} onChange={e => setPersonal('employmentType', e.target.value)}>
-                      <option value="">Select…</option><option>Self employed</option><option>W-2</option><option>1099</option><option>Business owner</option>
-                    </select></div>
-                  <div className="field"><label>Employer / business</label>
-                    <input className="input" value={p.employer || ''} onChange={e => setPersonal('employer', e.target.value)} /></div>
                 </div>
               </>
             ); })()}
 
-            <h3 style={{ margin: '18px 0 4px' }}>Co-borrower <span className="muted small">(optional)</span></h3>
-            <p className="muted small" style={{ marginBottom: 12 }}>
-              Add a co-borrower and we'll email them an invitation to the portal — they'll see this
-              loan and can upload their own documents.
-            </p>
-            {(() => { const c = form.coBorrower || {}; return (
+            <div className="row" style={{ margin: '18px 0 6px', alignItems: 'center' }}>
+              <h3 style={{ margin: 0 }}>Co-borrower</h3>
+              <span className="muted small">(optional)</span>
+              <div className="spacer" />
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!form.hasCoBorrower} onChange={e => set('hasCoBorrower', e.target.checked)} />
+                <span className="small">Add a co-borrower</span>
+              </label>
+            </div>
+            {form.hasCoBorrower && (() => { const c = form.coBorrower || {}; return (
               <>
+                <p className="muted small" style={{ marginBottom: 12 }}>
+                  We'll email them an invitation to the portal to join this loan — they can add their own
+                  personal information and upload their documents themselves.
+                </p>
                 <div className="grid cols-2">
                   <div className="field"><label>First name</label>
-                    <input className="input" value={c.firstName || ''} onChange={e => setCo('firstName', e.target.value)} /></div>
+                    <input className="input" autoComplete="off" value={c.firstName || ''} onChange={e => setCo('firstName', e.target.value)} /></div>
                   <div className="field"><label>Last name</label>
-                    <input className="input" value={c.lastName || ''} onChange={e => setCo('lastName', e.target.value)} /></div>
+                    <input className="input" autoComplete="off" value={c.lastName || ''} onChange={e => setCo('lastName', e.target.value)} /></div>
                 </div>
                 <div className="grid cols-2">
                   <div className="field"><label>Email</label>
-                    <input className="input" type="email" value={c.email || ''} onChange={e => setCo('email', e.target.value)} placeholder="They'll receive a portal invitation" /></div>
+                    <input className="input" autoComplete="off" value={c.email || ''} onChange={e => setCo('email', e.target.value)} placeholder="They'll receive a portal invitation" /></div>
                   <div className="field"><label>Phone</label>
-                    <input className="input" value={c.phone || ''} onChange={e => setCo('phone', e.target.value)} /></div>
+                    <input className="input" autoComplete="off" value={c.phone || ''} onChange={e => setCo('phone', e.target.value)} /></div>
                 </div>
               </>
             ); })()}
 
             <h3 style={{ margin: '18px 0 14px' }}>Entity &amp; officer</h3>
             <div className="field"><label>Vesting entity / LLC (if any)</label>
-              <input className="input" value={form.entityName || ''} onChange={e => set('entityName', e.target.value)} placeholder="e.g. 1420 Bedford Holdings LLC" /></div>
-            <div className="grid cols-2">
-              <div className="field"><label>Requested loan officer (name)</label>
-                <input className="input" value={form.loanOfficerName || ''} onChange={e => set('loanOfficerName', e.target.value)} placeholder="Optional" /></div>
-              <div className="field"><label>Loan officer email</label>
-                <input className="input" type="email" value={form.loanOfficerEmail || ''} onChange={e => set('loanOfficerEmail', e.target.value)} placeholder="Optional" /></div>
-            </div>
+              <input className="input" autoComplete="off" value={form.entityName || ''} onChange={e => set('entityName', e.target.value)} placeholder="e.g. 1420 Bedford Holdings LLC" /></div>
+            <div className="field"><label>Requested loan officer</label>
+              <select value={form.loanOfficerName || ''} onChange={e => pickOfficer(e.target.value)}>
+                <option value="">No preference — send to Lead Capture</option>
+                {officers.map(o => <option key={o.email || o.name} value={o.name}>{o.name}{o.title ? ` — ${o.title}` : ''}</option>)}
+              </select></div>
             <p className="muted small">Leave the officer blank and your file goes to our Lead Capture desk for prompt assignment.</p>
             <div className="panel" style={{ background: 'var(--ink-2)', marginTop: 8 }}>
               <div className="metrow"><span className="k">Property</span><span className="v">{a.oneLine || '—'}</span></div>
@@ -252,13 +296,13 @@ export default function Apply() {
         )}
 
         <div className="row" style={{ marginTop: 18 }}>
-          {step > 1 && <button className="btn ghost" onClick={() => goStep(step - 1)}>Back</button>}
+          {step > 1 && <button className="btn ghost" type="button" onClick={() => goStep(step - 1)}>Back</button>}
           <div className="spacer" />
           <SaveChip status={status} />
-          {step < 3 && <button className="btn primary" onClick={() => goStep(step + 1)} disabled={step === 1 && !a.street}>Continue</button>}
-          {step === 3 && <button className="btn primary" onClick={submit} disabled={busy || !a.street}>Submit application</button>}
+          {step < 3 && <button className="btn primary" type="button" onClick={() => goStep(step + 1)} disabled={step === 1 && !step1Ready}>Continue</button>}
+          {step === 3 && <button className="btn primary" type="button" onClick={submit} disabled={busy || !a.street}>Submit application</button>}
         </div>
-      </div>
+      </form>
     </>
   );
 }
