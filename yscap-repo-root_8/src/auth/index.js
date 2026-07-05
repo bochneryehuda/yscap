@@ -59,6 +59,10 @@ async function authenticate(req, res, next) {
   if (!r.rows[0] || r.rows[0].token_version !== (claims.tv || 0))
     return res.status(401).json({ error: 'session expired' });
   req.actor = { id: claims.sub, kind: claims.kind, role: claims.role };
+  // Presence heartbeat (best-effort, non-blocking, throttled to ~1 write/min per
+  // user) so chat can show who is currently online.
+  const ptbl = claims.kind === 'staff' ? 'staff_users' : 'borrowers';
+  db.query(`UPDATE ${ptbl} SET last_seen_at=now() WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '60 seconds')`, [claims.sub]).catch(() => {});
   next();
 }
 function requireRole(...roles) {

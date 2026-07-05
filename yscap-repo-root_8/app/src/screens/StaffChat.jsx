@@ -81,10 +81,13 @@ export default function StaffChat() {
                 const unread = r.unread_borrower + r.unread_internal;
                 return (
                   <Link key={r.id} to={`/staff/app/${r.id}`} className={`chat-row ${unread ? 'unread' : ''}`}>
-                    <div className="chat-ava">{(r.first_name || '?')[0]}{(r.last_name || '')[0]}</div>
+                    <div className="chat-ava" style={{ position: 'relative' }}>{(r.first_name || '?')[0]}{(r.last_name || '')[0]}
+                      {r.borrower_online && <span className="presence-dot" title="Borrower is online now" />}
+                    </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
                         <span className="chat-name">{r.first_name} {r.last_name}</span>
+                        {r.borrower_online && <span className="muted small" style={{ color: '#4ccf8f' }}>● online</span>}
                         <span className="muted small" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{addrLine(r.property_address)}</span>
                         <div className="spacer" />
                         <span className="muted small">{ago(r.last_at)}</span>
