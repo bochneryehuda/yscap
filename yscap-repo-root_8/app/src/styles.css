@@ -211,8 +211,18 @@ textarea{min-height:90px;resize:vertical}
 .progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--teal),var(--gold));transition:width .3s}
 
 /* brand: GROUP suffix styled like the lockup */
-.brand-word .brand-group{font-style:normal;font-family:Hanken Grotesk,system-ui,sans-serif;font-size:.62em;
+.brand-word .brand-group{font-style:normal;font-family:Hanken Grotesk,system-ui,sans-serif;font-size:.6em;
   letter-spacing:.32em;color:var(--teal,#7FA9B0);font-weight:600;vertical-align:middle}
+/* Bigger, more confident wordmark; console label sits under it, quiet. */
+.brand{align-items:center}
+.brand-word{font-size:23px;letter-spacing:2.5px}
+.brand .sub{font-size:10px;letter-spacing:2.5px}
+/* SSN reveal eye toggle */
+.eye-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:24px;
+  padding:0;border:1px solid var(--line);border-radius:6px;background:var(--ink-2);color:var(--teal);
+  cursor:pointer;transition:background .12s,color .12s,border-color .12s}
+.eye-btn:hover:not(:disabled){background:var(--ink-3);color:var(--ivory)}
+.eye-btn:disabled{opacity:.5;cursor:default}
 
 /* =====================================================================
    POLISH — depth, sticky chrome, and a sharper institutional feel.

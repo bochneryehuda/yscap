@@ -152,13 +152,15 @@ router.post('/applications', async (req, res) => {
   const r = await db.query(
     `INSERT INTO applications
        (borrower_id,property_address,property_type,units,program,loan_type,
-        purchase_price,as_is_value,arv,rehab_budget,loan_officer_name,source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'portal',$12,'new',now()) RETURNING id,ys_loan_number`,
+        purchase_price,as_is_value,arv,rehab_budget,loan_officer_name,
+        is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'portal',$15,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
-     b.arv || null, b.rehabBudget || null, b.loanOfficerName || null, JSON.stringify(redactPII(b))]);
+     b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
+     !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
-  await generateChecklist(appId, me(req), b.program, b.loanType);
+  await generateChecklist(appId, me(req), b.program, b.loanType, { isAssignment: !!b.isAssignment });
   await audit(req, 'create_application', 'application', appId);
   res.status(201).json({ ok: true, applicationId: appId });
 });
@@ -669,12 +671,14 @@ router.post('/drafts/:id/submit', async (req, res) => {
     `INSERT INTO applications
        (borrower_id,property_address,property_type,units,program,loan_type,
         purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
+        is_assignment,underlying_contract_price,assignment_fee,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'portal',$13,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'portal',$16,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
-     b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null, JSON.stringify(redactPII(b))]);
+     b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
+     !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
   const appId = ins.rows[0].id;
 
   // Personal info entered during the application is saved to the borrower's
@@ -690,7 +694,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
     } catch (e) { console.error('[apply] co-borrower invite failed:', db.describeError(e)); }
   }
 
-  await generateChecklist(appId, me(req), b.program, b.loanType);
+  await generateChecklist(appId, me(req), b.program, b.loanType, { isAssignment: !!b.isAssignment });
   await db.query(`UPDATE application_drafts SET submitted_application_id=$1, updated_at=now() WHERE id=$2 AND borrower_id=$3`,
     [appId, req.params.id, me(req)]);
   await audit(req, 'submit_application', 'application', appId);
@@ -743,7 +747,7 @@ async function insertFromTemplate(tpl, owner) {
   await db.query(`INSERT INTO checklist_items (${cols.join(',')}) VALUES (${ph})`, vals);
 }
 
-async function generateChecklist(appId, borrowerId, program, loanType) {
+async function generateChecklist(appId, borrowerId, program, loanType, opts = {}) {
   const track = normLoanType([program, loanType].join(' '));
   const t = await db.query(
     `SELECT * FROM checklist_templates WHERE is_active=true AND scope IN ('application','borrower_profile')
@@ -751,6 +755,8 @@ async function generateChecklist(appId, borrowerId, program, loanType) {
        AND (applies_loan_type IS NULL OR applies_loan_type=$2)
      ORDER BY sort_order`, [program || null, track]);
   for (const tpl of t.rows) {
+    // Assignment paperwork is only required when the purchase is an assignment.
+    if (tpl.code === 'rtl_p5_assign' && !opts.isAssignment) continue;
     const owner = tpl.scope === 'application' ? { application_id: appId }
                 : tpl.scope === 'borrower_profile' ? { borrower_id: borrowerId }
                 : null; // llc-scoped items are created when an LLC is linked
