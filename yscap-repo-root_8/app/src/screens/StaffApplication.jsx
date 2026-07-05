@@ -484,6 +484,7 @@ export default function StaffApplication() {
         </div>
       </div>
 
+      {app.status === 'funded' && <PostClosing appId={id} />}
       <TprExport appId={id} />
       <ChatPanel appId={id} onTaskCreated={load} />
       <ActivityFeed fetcher={activityFetcher} title="File activity" />
@@ -494,6 +495,42 @@ export default function StaffApplication() {
 /* Two collaboration channels per file: the borrower-facing thread, and an
    internal team channel (LO / processor / underwriter / admin) the borrower
    never sees — where a message can be saved straight onto the file as a task. */
+/* Post-closing trailing-doc tracking — appears once a file is funded. */
+const PC_STATUS = ['pending', 'ordered', 'received', 'accepted', 'exception'];
+const PC_LABEL = { pending: 'Pending', ordered: 'Ordered', received: 'Received', accepted: 'Accepted', exception: 'Exception' };
+function PostClosing({ appId }) {
+  const [rows, setRows] = useState(null);
+  const reload = () => api.staffPostClosing(appId).then(setRows).catch(() => setRows([]));
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [appId]);
+  async function seed() { try { await api.staffSeedPostClosing(appId); await reload(); } catch (_) {} }
+  async function setStatus(pid, status) {
+    setRows(rs => rs.map(r => r.id === pid ? { ...r, status } : r));
+    try { await api.staffPatchPostClosing(pid, { status }); } catch (_) { reload(); }
+  }
+  if (!rows) return null;
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <h3>Post-closing</h3>
+        <div className="spacer" />
+        {rows.length === 0 && <button className="btn ghost small" onClick={seed}>Create trailing-doc list</button>}
+        {rows.length > 0 && <span className="muted small">{rows.filter(r => r.status === 'accepted').length}/{rows.length} accepted</span>}
+      </div>
+      {rows.length === 0
+        ? <p className="muted small">No post-closing items yet.</p>
+        : rows.map(r => (
+          <div className="checkitem" key={r.id} style={{ alignItems: 'center' }}>
+            <span className={`dot ${r.status === 'accepted' ? 'done' : r.status === 'exception' ? '' : 'outstanding'}`} style={r.status === 'exception' ? { background: 'var(--danger)' } : undefined} />
+            <div style={{ flex: 1 }}>{r.label}</div>
+            <select className="input" style={{ maxWidth: 150 }} value={r.status} onChange={e => setStatus(r.id, e.target.value)}>
+              {PC_STATUS.map(s => <option key={s} value={s}>{PC_LABEL[s]}</option>)}
+            </select>
+          </div>
+        ))}
+    </div>
+  );
+}
+
 /* TPR / clean-file export — shows readiness (accepted docs + what's still
    missing) and downloads a stacked, manifested ZIP of the clean set. */
 function TprExport({ appId }) {

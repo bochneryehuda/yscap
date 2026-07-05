@@ -17,6 +17,24 @@ router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'under
 // admins + super-admins + underwriters (risk) see every file;
 // loan officers and processors see only files they are assigned to.
 const seesAll = (req) => ['admin', 'super_admin', 'underwriter'].includes(req.actor.role);
+// The standard post-closing trailing-doc set, seeded when a file funds.
+const POST_CLOSING_SET = [
+  ['note', 'Final executed note'],
+  ['mortgage', 'Recorded mortgage / deed of trust'],
+  ['title_policy', 'Final title policy'],
+  ['settlement', 'Settlement statement (final CD/HUD)'],
+  ['closing_package', 'Full executed closing package'],
+  ['funding_confirmation', 'Funding confirmation'],
+  ['trailing_docs', 'Recorded trailing documents'],
+];
+async function seedPostClosing(appId) {
+  for (const [code, label] of POST_CLOSING_SET) {
+    await db.query(
+      `INSERT INTO post_closing_items (application_id,code,label) VALUES ($1,$2,$3)
+       ON CONFLICT (application_id,code) DO NOTHING`, [appId, code, label]);
+  }
+}
+
 // May this staffer act on a given application? (for routes not under the
 // /applications/:id path-scope middleware, e.g. /loan-conditions/:cid/*).
 async function canTouchApp(req, appId) {
@@ -303,6 +321,37 @@ router.post('/applications/:id/conditions', async (req, res) => {
   res.status(201).json({ ok: true, itemId: r.rows[0].id });
 });
 
+// ---- post-closing ----
+router.get('/applications/:id/post-closing', async (req, res) => {
+  const r = await db.query(
+    `SELECT p.*, s.full_name AS assignee_name FROM post_closing_items p
+       LEFT JOIN staff_users s ON s.id=p.assigned_staff_id
+      WHERE p.application_id=$1 ORDER BY p.created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/applications/:id/post-closing/seed', async (req, res) => {
+  try { await seedPostClosing(req.params.id); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.patch('/post-closing/:pid', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const c = await db.query(`SELECT application_id FROM post_closing_items WHERE id=$1`, [req.params.pid]);
+    if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+    const status = ['pending', 'ordered', 'received', 'accepted', 'exception'].includes(b.status) ? b.status : null;
+    await db.query(
+      `UPDATE post_closing_items SET
+         status=COALESCE($2,status),
+         exception_note=CASE WHEN $3::text IS NOT NULL THEN $3 ELSE exception_note END,
+         assigned_staff_id=CASE WHEN $4::uuid IS NOT NULL THEN $4 ELSE assigned_staff_id END,
+         updated_at=now() WHERE id=$1`,
+      [req.params.pid, status, b.exceptionNote ?? null, b.assigneeStaffId || null]);
+    await audit(req, 'post_closing_update', 'application', c.rows[0].application_id, { pid: req.params.pid, status });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // TPR / clean-file export — streams a stacked ZIP of the accepted+current
 // document set with a manifest. Staff-only (path middleware already scoped it).
 router.get('/applications/:id/export/tpr', async (req, res) => {
@@ -514,6 +563,8 @@ router.patch('/applications/:id', async (req, res) => {
     if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
     await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
+    // Funding seeds the post-closing trailing-doc checklist.
+    if (status === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status });
     const label = STATUS_LABEL[status] || status;
     try {
