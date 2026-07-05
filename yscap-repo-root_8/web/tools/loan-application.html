@@ -929,6 +929,7 @@
 <script src="rb-logo.js?v=admin8"></script>
 <script src="standard-program.js?v=admin12"></script>
 <script src="title-cost.js?v=admin8"></script>
+<script src="address-autocomplete.js?v=admin8"></script>
 <script>
 /* =====================================================================
    YS LOAN APPLICATION — wizard logic (v2)
@@ -991,20 +992,47 @@
     STATES.forEach(function (s) { html += '<option value="' + s + '">' + s + '</option>'; });
     sel.innerHTML = html;
   });
-  (function fillOfficers() {
+
+  /* ---- Address autocomplete on every address group (property + borrowers) ---- */
+  function fillAddr(pfx, a) {
+    var setV = function (id, v) { var e = el(id); if (e && v != null && v !== "") e.value = v; };
+    setV(pfx + "Street", a.line1); setV(pfx + "City", a.city); setV(pfx + "Zip", a.zip);
+    var st = el(pfx + "State"); if (st && a.state) st.value = a.state;
+    ["Street", "City", "State", "Zip"].forEach(function (f) {
+      var e = el(pfx + f);
+      if (e) { if (typeof setErr === "function") setErr(pfx + f, false); e.dispatchEvent(new Event("change", { bubbles: true })); }
+    });
+  }
+  (function initAddressAutocomplete() {
+    if (!window.YSAddr) return;
+    ["b1", "b1F", "b2", "b2F", "b3", "b3F", "b4", "b4F", "p"].forEach(function (pfx) {
+      var street = el(pfx + "Street");
+      if (street) window.YSAddr.attach(street, function (a) { fillAddr(pfx, a); });
+    });
+  })();
+  // The officer dropdown is driven by the LIVE team roster (/api/roster) so a
+  // loan officer added in the portal shows up here automatically. If the API is
+  // unreachable, we fall back to the static sales list above so the form never
+  // breaks. CURRENT_OFFICERS is the array the selection indexes into.
+  var CURRENT_OFFICERS = OFFICER_GROUPS
+    .filter(function (g) { return g.group === "Sales & Loan Coordinators"; })
+    .reduce(function (a, g) { return a.concat(g.people); }, []);
+  function renderOfficers(list) {
+    CURRENT_OFFICERS = list;
     var sel = el("loOfficerSel"); if (!sel) return;
-    // Sales team only (exclude Operations & Back Office). idx tracks position in LOAN_OFFICERS.
-    var html = '<option value="">Select your loan officer…</option>', idx = 0;
-    OFFICER_GROUPS.forEach(function (g) {
-      var isSales = g.group === "Sales & Loan Coordinators";
-      g.people.forEach(function (p) {
-        if (isSales) html += '<option value="' + idx + '">' + p.name + " \u2014 " + p.title + '</option>';
-        idx++;
-      });
+    var prev = val("loOfficer");
+    var html = '<option value="">Select your loan officer</option>';
+    list.forEach(function (p, i) {
+      html += '<option value="' + i + '">' + p.name + (p.title ? " - " + p.title : "") + '</option>';
     });
     sel.innerHTML = html;
+    if (prev !== "" && list[parseInt(prev, 10)]) sel.value = prev;
+  }
+  (function initOfficers() {
+    var sel = el("loOfficerSel"); if (!sel) return;
+    renderOfficers(CURRENT_OFFICERS);
     sel.addEventListener("change", function () {
-      el("loOfficer").value = sel.value;          // index into LOAN_OFFICERS (sales only)
+      el("loOfficer").value = sel.value;
       setErr("loOfficer", false);
     });
     var tog = el("hasOfficer");
@@ -1012,10 +1040,23 @@
       if (!tog.checked) { sel.value = ""; el("loOfficer").value = ""; setErr("loOfficer", false); }
       if (typeof updateConditionals === "function") updateConditionals();
     });
+    try {
+      fetch("/api/roster", { headers: { Accept: "application/json" } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data) return;
+          var sales = (data.groups || []).filter(function (g) { return g.department === "sales"; })
+            .reduce(function (a, g) { return a.concat(g.people || []); }, []);
+          if (!sales.length && data.people) sales = data.people;
+          var people = sales.map(function (p) { return { name: p.name, title: p.title || "", email: p.email }; });
+          if (people.length) renderOfficers(people);
+        })
+        .catch(function () {});
+    } catch (e) {}
   })();
   function selectedOfficer() {
     var i = parseInt(val("loOfficer"), 10);
-    return (i >= 0 && LOAN_OFFICERS[i]) ? LOAN_OFFICERS[i] : null;
+    return (i >= 0 && CURRENT_OFFICERS[i]) ? CURRENT_OFFICERS[i] : null;
   }
 
   /* ---------------- borrower count ---------------- */
@@ -1706,23 +1747,41 @@
     var off = selectedOfficer();
     var to = off ? off.email : SALES_EMAIL;
     var cc = (off && off.email !== SALES_EMAIL) ? SALES_EMAIL : "";
-    if (SUBMIT_ENDPOINT) {
-      var btn = el("submitBtn"), oo = btn.textContent; btn.textContent = "Submitting\u2026"; btn.disabled = true;
-      fetch(SUBMIT_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: to, cc: cc, subject: subject, summary: summary, officer: off ? off.name : "", fields: YS.collectState() }) })
-        .then(function (r) { if (!r.ok) throw new Error(r.status); finish(off); })
-        .catch(function () { mailto(to, cc, subject, summary); finish(off); })
-        .finally(function () { btn.textContent = oo; btn.disabled = false; });
-    } else { mailto(to, cc, subject, summary); finish(off); }
+    var officerCode = (off && off.email) ? off.email.split("@")[0].toLowerCase()
+      : ((new URLSearchParams(location.search).get("lo")) || "");
+    var lead = {
+      tool: "loan_application",
+      name: bName(1),
+      email: val("b1Email"),
+      phone: val("b1Phone"),
+      officerCode: officerCode,
+      subject: subject,
+      message: summary,
+      payload: YS.collectState()
+    };
+    var btn = el("submitBtn"), oo = btn ? btn.textContent : "";
+    if (btn) { btn.textContent = "Submitting\u2026"; btn.disabled = true; }
+    // Submit to the BACKEND: it saves the application and emails the routed
+    // officer (and a confirmation to the borrower) server-side. Only if the
+    // server is unreachable do we fall back to the legacy email handoff so a
+    // submission is never lost.
+    fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(lead) })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function () { finish(off, true); })
+      .catch(function () { mailto(to, cc, subject, summary); finish(off, false); })
+      .finally(function () { if (btn) { btn.textContent = oo; btn.disabled = false; } });
   }
   function mailto(to, cc, subject, body) {
     var href = "mailto:" + to + "?" + (cc ? "cc=" + encodeURIComponent(cc) + "&" : "") + "subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
     window.location.href = href;
   }
-  function finish(off) {
+  function finish(off, backendOk) {
     var name = val("b1First");
-    el("doneMsg").textContent = (name ? name + ", thank you \u2014 " : "Thank you \u2014 ") +
-      "your application is on its way" + (off ? " to " + off.name : "") + ". A YS Capital loan officer will reach out shortly to confirm details and walk you through next steps. We've also opened your email so you can send your copy directly.";
+    var base = (name ? name + ", thank you \u2014 " : "Thank you \u2014 ") +
+      "your application has been " + (backendOk ? "received by" : "sent to") + " YS Capital Group" +
+      (off ? " and routed to " + off.name : "") + ". A loan officer will reach out shortly to confirm details and walk you through next steps.";
+    if (backendOk) base += " A confirmation is on its way to your email.";
+    el("doneMsg").textContent = base;
     setStep(4, {});
   }
 

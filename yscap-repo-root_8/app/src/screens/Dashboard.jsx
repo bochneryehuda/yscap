@@ -12,11 +12,16 @@ export default function Dashboard() {
   const [drafts, setDrafts] = useState([]);
   const [notifs, setNotifs] = useState([]);
   const [err, setErr] = useState('');
+  const [unread, setUnread] = useState({});
 
   useEffect(() => {
     Promise.all([api.applications(), api.drafts(), api.notifications()])
       .then(([a, d, n]) => { setApps(a || []); setDrafts(d || []); setNotifs(n || []); })
       .catch(e => setErr(e.message));
+    api.chatInbox().then(rows => {
+      const map = {}; (rows || []).forEach(r => { if (r.unread > 0) map[r.id] = r.unread; });
+      setUnread(map);
+    }).catch(() => {});
   }, []);
 
   async function newApplication() {
@@ -65,6 +70,7 @@ export default function Dashboard() {
               <Link to={`/app/${a.id}`} key={a.id} className="panel" style={{ textDecoration: 'none', color: 'inherit' }}>
                 <div className="row" style={{ marginBottom: 10 }}>
                   <span className={`pill ${a.status}`}>{String(a.status || 'new').replace(/_/g, ' ')}</span>
+                  {unread[a.id] && <span className="chat-badge" style={{ marginLeft: 8 }} title="New messages">💬 {unread[a.id]}</span>}
                   <div className="spacer" />
                   <span className="muted small">{a.ys_loan_number || 'Pending #'}</span>
                 </div>

@@ -7,6 +7,29 @@ const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US',
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
 const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 const seesAll = (role) => ['admin', 'super_admin', 'underwriter'].includes(role);
+const bigMoney = (n) => n == null ? '$0' : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? '$' + Math.round(n / 1e3) + 'K' : '$' + n;
+
+function Kpis({ d }) {
+  if (!d) return null;
+  const tiles = [
+    { k: 'Active files', v: d.active },
+    { k: 'Pipeline value', v: bigMoney(d.pipelineValue) },
+    { k: 'New this week', v: d.newThisWeek },
+    { k: 'Open leads', v: d.openLeads },
+    { k: 'Funded', v: d.funded },
+    { k: 'Needs attention', v: d.stale, alert: d.stale > 0 },
+  ];
+  return (
+    <div className="kpi-row">
+      {tiles.map(t => (
+        <div key={t.k} className={`kpi${t.alert ? ' alert' : ''}`}>
+          <div className="kpi-v">{t.v}</div>
+          <div className="kpi-k">{t.k}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function Row({ a }) {
   return (
@@ -28,11 +51,13 @@ export default function StaffQueue() {
   const [tab, setTab] = useState('mine');       // mine | leads
   const [mine, setMine] = useState(null);
   const [leads, setLeads] = useState(null);
+  const [dash, setDash] = useState(null);
   const [err, setErr] = useState('');
 
   useEffect(() => {
     api.staffApplications().then(setMine).catch(e => setErr(e.message));
     api.staffLeadCapture().then(setLeads).catch(() => setLeads([]));
+    api.staffDashboard().then(setDash).catch(() => {});
   }, []);
 
   const list = tab === 'mine' ? mine : leads;
@@ -54,6 +79,7 @@ export default function StaffQueue() {
       </div>
 
       {err && <div className="notice err">{err}</div>}
+      <Kpis d={dash} />
       {tab === 'leads' && (
         <p className="muted small" style={{ marginBottom: 12 }}>
           New applications with no loan officer assigned yet. Open one to assign an officer and processor.

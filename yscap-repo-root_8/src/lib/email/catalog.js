@@ -151,6 +151,46 @@ function newSignIn({ firstName, when, ip } = {}) {
   });
 }
 
+/** Confirmation to a website visitor who submitted a tool (application, rehab
+ *  budget, term-sheet request, …). Sent from the server, not the browser. */
+function leadReceived({ firstName, toolLabel, officerName } = {}) {
+  const tool = toolLabel || 'request';
+  return render({
+    audience: 'borrower',
+    title: 'We received your ' + tool.toLowerCase(),
+    preheader: 'Your submission reached the YS Capital team.',
+    greeting: greet(firstName),
+    intro: 'Thank you — your ' + tool.toLowerCase() + ' has been received by YS Capital Group.',
+    lines: [
+      officerName
+        ? officerName + ' will review it and follow up with you shortly to walk through next steps.'
+        : 'A member of our loan team will review it and follow up with you shortly to walk through next steps.',
+      'If you need anything in the meantime, just reply to this email or call us.',
+    ],
+    note: 'You are receiving this because you submitted a request on yscapgroup.com.',
+  });
+}
+
+/** Invitation sent to a co-borrower named on an application: set up portal
+ *  access (or just sign in, if they already have an account) to follow the
+ *  loan file alongside the primary borrower. */
+function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount } = {}) {
+  return render({
+    audience: 'borrower',
+    title: 'You have been added to a loan application',
+    preheader: 'Set up portal access to follow the file with ' + (primaryName || 'your co-borrower') + '.',
+    greeting: greet(firstName),
+    intro: (primaryName || 'Your co-borrower') + ' has named you as a co-borrower on a YS Capital Group loan application.',
+    lines: [
+      hasAccount
+        ? 'Your existing portal account now has access to this loan file — sign in to review the application, upload documents, and follow every milestone.'
+        : 'Set up your portal access below to review the application, upload your documents, and follow every milestone through closing. This invitation expires in 14 days.',
+    ],
+    cta: acceptUrl ? { label: hasAccount ? 'Sign in to the portal' : 'Set up your access', url: acceptUrl } : null,
+    note: 'If you were not expecting this, you can disregard it and no access will be created.',
+  });
+}
+
 /* =====================================================================
    STAFF — TEAM ONBOARDING
    ===================================================================== */
@@ -179,7 +219,7 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
 const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
-  staffInvite,
+  staffInvite, leadReceived, coBorrowerInvite,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients. */

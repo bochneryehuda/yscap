@@ -10,9 +10,19 @@ services:
     buildCommand: npm install
     startCommand: npm run start
     healthCheckPath: /api/health
+    # Persistent disk for uploaded documents. Render's default filesystem is
+    # ephemeral (wiped on every deploy); this volume survives deploys/restarts.
+    # Note: a service with a disk runs a single instance (no horizontal scaling).
+    disk:
+      name: yscap-uploads
+      mountPath: /var/data
+      sizeGB: 5
     envVars:
       - key: NODE_ENV
         value: production
+      # Store documents on the persistent disk mounted above.
+      - key: STORAGE_DIR
+        value: /var/data/uploads
       # DATABASE_URL must point at your Postgres instance (named "yscap").
       # - Blueprint-managed services: the fromDatabase link below wires it
       #   automatically to the matching database in the `databases:` block.

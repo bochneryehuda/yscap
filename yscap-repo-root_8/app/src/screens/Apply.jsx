@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAutosave } from '../lib/useAutosave.js';
+import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 
 const STEPS = ['Property', 'Loan', 'Borrower & submit'];
 const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground Up Construction', 'DSCR Rental', 'Not sure yet'];
@@ -24,21 +25,37 @@ export default function Apply() {
   const idRef = useRef(id);
   idRef.current = id;
 
-  // load existing draft, or create a fresh one
+  // load existing draft, or create a fresh one — then prefill the personal
+  // section from the borrower's saved profile (empty fields only), so repeat
+  // applicants never retype what the portal already knows.
   useEffect(() => {
     let live = true;
     (async () => {
       try {
+        let data = {}, stepN = 1;
         if (draftId) {
           const d = await api.draft(draftId);
           if (!live) return;
-          setForm(d.data || {}); setStep(d.step || 1); setId(draftId);
+          data = d.data || {}; stepN = d.step || 1; setId(draftId);
         } else {
           const d = await api.createDraft({ label: 'New application', data: {}, step: 1 });
           if (!live) return;
-          setId(d.id); setForm({});
+          setId(d.id);
           nav(`/apply/${d.id}`, { replace: true });
         }
+        try {
+          const p = await api.profile();
+          if (!live) return;
+          const cur = data.personal || {};
+          data.personal = {
+            cellPhone: cur.cellPhone || p.cell_phone || '',
+            dateOfBirth: cur.dateOfBirth || (p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : ''),
+            citizenship: cur.citizenship || p.citizenship || '',
+            employmentType: cur.employmentType || p.employment_type || '',
+            employer: cur.employer || p.employer || '',
+          };
+        } catch { /* profile prefill is best-effort */ }
+        setForm(data); setStep(stepN);
       } catch (e) { if (live) setErr(e.message); }
     })();
     return () => { live = false; };
@@ -51,14 +68,25 @@ export default function Apply() {
     setForm(f => ({ ...(f || {}), [k]: v }));
     save({ data: { [k]: v } });
   };
-  const setAddr = (k, v) => {
+  const mergeAddr = (patch) => {
     setForm(f => {
-      const address = { ...((f && f.propertyAddress) || {}), [k]: v };
-      address.oneLine = [address.street, address.city, address.state, address.zip].filter(Boolean).join(', ');
+      const address = { ...((f && f.propertyAddress) || {}), ...patch };
+      address.oneLine = [[address.street, address.unit].filter(Boolean).join(' '), address.city, [address.state, address.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
       save({ data: { propertyAddress: address } });
       return { ...(f || {}), propertyAddress: address };
     });
   };
+  const setAddr = (k, v) => mergeAddr({ [k]: v });
+  // Autocomplete returns divided components (street/unit/city/state/zip).
+  const pickAddr = (a) => mergeAddr({ street: a.line1 || '', unit: a.unit || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
+  // Nested-object setters for the personal-info and co-borrower sections.
+  const setNested = (key) => (k, v) => setForm(f => {
+    const obj = { ...((f && f[key]) || {}), [k]: v };
+    save({ data: { [key]: obj } });
+    return { ...(f || {}), [key]: obj };
+  });
+  const setPersonal = setNested('personal');
+  const setCo = setNested('coBorrower');
 
   const goStep = async (n) => { await flush(); setStep(n); save({ step: n }); };
 
@@ -99,10 +127,15 @@ export default function Apply() {
           <>
             <h3 style={{ marginBottom: 14 }}>Subject property</h3>
             <div className="field"><label>Street address</label>
-              <input className="input" value={a.street || ''} onChange={e => setAddr('street', e.target.value)} placeholder="1420 Bedford Ave" /></div>
-            <div className="grid cols-3">
+              <AddressAutocomplete value={a.street || ''} placeholder="Start typing the property address…"
+                onChange={v => setAddr('street', v)} onPick={pickAddr} /></div>
+            <div className="grid cols-2">
+              <div className="field"><label>Apt / Unit</label>
+                <input className="input" value={a.unit || ''} onChange={e => setAddr('unit', e.target.value)} placeholder="Optional" /></div>
               <div className="field"><label>City</label>
                 <input className="input" value={a.city || ''} onChange={e => setAddr('city', e.target.value)} /></div>
+            </div>
+            <div className="grid cols-2">
               <div className="field"><label>State</label>
                 <input className="input" maxLength={2} value={a.state || ''} onChange={e => setAddr('state', e.target.value.toUpperCase())} placeholder="NY" /></div>
               <div className="field"><label>ZIP</label>
@@ -150,7 +183,57 @@ export default function Apply() {
 
         {step === 3 && (
           <>
-            <h3 style={{ marginBottom: 14 }}>Borrower &amp; entity</h3>
+            <h3 style={{ marginBottom: 4 }}>Your information</h3>
+            <p className="muted small" style={{ marginBottom: 12 }}>
+              Pulled from your profile where we have it — anything you add here is saved to your
+              profile automatically, so you never fill it twice.
+            </p>
+            {(() => { const p = form.personal || {}; return (
+              <>
+                <div className="grid cols-2">
+                  <div className="field"><label>Cell phone</label>
+                    <input className="input" value={p.cellPhone || ''} onChange={e => setPersonal('cellPhone', e.target.value)} /></div>
+                  <div className="field"><label>Date of birth</label>
+                    <input className="input" type="date" value={p.dateOfBirth || ''} onChange={e => setPersonal('dateOfBirth', e.target.value)} /></div>
+                </div>
+                <div className="grid cols-3">
+                  <div className="field"><label>Citizenship</label>
+                    <select value={p.citizenship || ''} onChange={e => setPersonal('citizenship', e.target.value)}>
+                      <option value="">Select…</option><option>US Citizen</option><option>Permanent Resident</option><option>Foreign National</option>
+                    </select></div>
+                  <div className="field"><label>Employment</label>
+                    <select value={p.employmentType || ''} onChange={e => setPersonal('employmentType', e.target.value)}>
+                      <option value="">Select…</option><option>Self employed</option><option>W-2</option><option>1099</option><option>Business owner</option>
+                    </select></div>
+                  <div className="field"><label>Employer / business</label>
+                    <input className="input" value={p.employer || ''} onChange={e => setPersonal('employer', e.target.value)} /></div>
+                </div>
+              </>
+            ); })()}
+
+            <h3 style={{ margin: '18px 0 4px' }}>Co-borrower <span className="muted small">(optional)</span></h3>
+            <p className="muted small" style={{ marginBottom: 12 }}>
+              Add a co-borrower and we'll email them an invitation to the portal — they'll see this
+              loan and can upload their own documents.
+            </p>
+            {(() => { const c = form.coBorrower || {}; return (
+              <>
+                <div className="grid cols-2">
+                  <div className="field"><label>First name</label>
+                    <input className="input" value={c.firstName || ''} onChange={e => setCo('firstName', e.target.value)} /></div>
+                  <div className="field"><label>Last name</label>
+                    <input className="input" value={c.lastName || ''} onChange={e => setCo('lastName', e.target.value)} /></div>
+                </div>
+                <div className="grid cols-2">
+                  <div className="field"><label>Email</label>
+                    <input className="input" type="email" value={c.email || ''} onChange={e => setCo('email', e.target.value)} placeholder="They'll receive a portal invitation" /></div>
+                  <div className="field"><label>Phone</label>
+                    <input className="input" value={c.phone || ''} onChange={e => setCo('phone', e.target.value)} /></div>
+                </div>
+              </>
+            ); })()}
+
+            <h3 style={{ margin: '18px 0 14px' }}>Entity &amp; officer</h3>
             <div className="field"><label>Vesting entity / LLC (if any)</label>
               <input className="input" value={form.entityName || ''} onChange={e => set('entityName', e.target.value)} placeholder="e.g. 1420 Bedford Holdings LLC" /></div>
             <div className="grid cols-2">

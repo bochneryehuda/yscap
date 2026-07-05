@@ -104,8 +104,52 @@ module.exports = {
 
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
+  // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)
+  // so documents survive deploys — the default filesystem is ephemeral.
   storageDir:      process.env.STORAGE_DIR || 'uploads',
+  maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '20', 10),   // per-file cap
 
   // --- ClickUp (deferred; server-side token only) ---
   clickupToken:  process.env.CLICKUP_API_TOKEN,
+
+  // --- address autocomplete / verification (server-side proxy) ---
+  // The frontend calls OUR /api/address/*; any real key lives only here, never
+  // in the public site bundle. Provider auto-detects: Google if a key is set,
+  // else Smarty if configured, else 'osm' (OpenStreetMap Nominatim) — which is
+  // KEYLESS and works out of the box, so autocomplete is live with zero setup.
+  addressProvider: (process.env.ADDRESS_PROVIDER ||
+                    (process.env.GOOGLE_PLACES_API_KEY ? 'google'
+                     : process.env.SMARTY_AUTH_ID ? 'smarty' : 'osm')).toLowerCase(),
+  googlePlacesKey: process.env.GOOGLE_PLACES_API_KEY,
+  // Street View property photos (can be the same Google key with the
+  // "Street View Static API" enabled, or a dedicated one).
+  googleMapsKey:   process.env.GOOGLE_MAPS_API_KEY || process.env.GOOGLE_PLACES_API_KEY,
+  smartyAuthId:    process.env.SMARTY_AUTH_ID,
+  smartyAuthToken: process.env.SMARTY_AUTH_TOKEN,
+  // Nominatim asks every app to identify itself (email/URL) in the User-Agent.
+  osmContact:      process.env.OSM_CONTACT || 'admin@yscapgroup.com',
+
+  // --- third-party integrations (frameworks; add keys to activate) ---
+  // DocuSign eSignature (JWT Grant / server-to-server auth):
+  docusign: {
+    integrationKey: process.env.DOCUSIGN_INTEGRATION_KEY,   // OAuth client id
+    userId:         process.env.DOCUSIGN_USER_ID,           // impersonated user GUID
+    accountId:      process.env.DOCUSIGN_ACCOUNT_ID,
+    privateKey:     process.env.DOCUSIGN_PRIVATE_KEY,       // RSA private key (PEM)
+    baseUri:        process.env.DOCUSIGN_BASE_URI  || 'https://demo.docusign.net/restapi',
+    oauthBase:      process.env.DOCUSIGN_OAUTH_BASE || 'account-d.docusign.com', // account.docusign.com in prod
+  },
+  // Plaid (bank / asset verification):
+  plaid: {
+    clientId: process.env.PLAID_CLIENT_ID,
+    secret:   process.env.PLAID_SECRET,
+    env:      (process.env.PLAID_ENV || 'sandbox').toLowerCase(),  // sandbox | development | production
+  },
+  // Xactus (credit reports) — B2B credentials:
+  xactus: {
+    username: process.env.XACTUS_USERNAME,
+    password: process.env.XACTUS_PASSWORD,
+    clientId: process.env.XACTUS_CLIENT_ID,
+    endpoint: process.env.XACTUS_ENDPOINT,   // your assigned API base URL
+  },
 };

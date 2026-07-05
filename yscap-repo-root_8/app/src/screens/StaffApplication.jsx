@@ -1,10 +1,54 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
+import MessageThread from '../components/MessageThread.jsx';
+import PropertyPhoto from '../components/PropertyPhoto.jsx';
+
+/* What the borrower has and hasn't completed — so the officer sees at a glance
+   what still needs chasing without opening every panel. */
+function Completeness({ app, borrower }) {
+  const checks = [
+    ['Property address', !!(app.property_address && (app.property_address.oneLine || app.property_address.street))],
+    ['Property type', !!app.property_type],
+    ['Program', !!app.program],
+    ['Loan type', !!app.loan_type],
+    ['Purchase price', app.purchase_price != null],
+    ['ARV', app.arv != null],
+    ['Rehab budget', app.rehab_budget != null],
+    ['Borrower phone', !!(borrower && borrower.cell_phone)],
+    ['Date of birth', !!(borrower && borrower.date_of_birth)],
+    ['SSN on file', !!(borrower && borrower.ssn_last4)],
+    ['FICO', !!(borrower && borrower.fico)],
+    ['Citizenship', !!(borrower && borrower.citizenship)],
+  ];
+  const done = checks.filter(([, ok]) => ok).length;
+  const missing = checks.filter(([, ok]) => !ok);
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <h3>Application completeness</h3>
+        <div className="spacer" />
+        <span className={`pill ${missing.length ? '' : 'done'}`}>{done}/{checks.length} complete</span>
+      </div>
+      {missing.length === 0
+        ? <p className="muted small">Everything the application asks for has been provided.</p>
+        : (
+          <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+            {missing.map(([label]) => (
+              <span key={label} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>Missing: {label}</span>
+            ))}
+          </div>
+        )}
+    </div>
+  );
+}
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
 const STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
+const APP_STATUSES = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
+const APP_STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -74,6 +118,8 @@ export default function StaffApplication() {
   const { id } = useParams();
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
+  const [docs, setDocs] = useState([]);
+  const [dlBusy, setDlBusy] = useState(null);
   const [borrower, setBorrower] = useState(null);
   const [team, setTeam] = useState([]);
   const [err, setErr] = useState('');
@@ -92,8 +138,8 @@ export default function StaffApplication() {
     try {
       const a = await api.staffApplication(id);
       setApp(a);
-      const [c, t] = await Promise.all([api.staffChecklist(id), api.staffTeam()]);
-      setItems(c || []); setTeam(t || []);
+      const [c, t, d] = await Promise.all([api.staffChecklist(id), api.staffTeam(), api.staffAppDocuments(id).catch(() => [])]);
+      setItems(c || []); setTeam(t || []); setDocs(d || []);
       if (a.borrower_id) api.staffBorrower(a.borrower_id).then(setBorrower).catch(() => {});
     } catch (e) { setErr(e.message); }
   }
@@ -111,6 +157,16 @@ export default function StaffApplication() {
   async function patch(itemId, body) {
     try { await api.staffPatchItem(itemId, body); flash('Saved ✓'); await load(); }
     catch (e) { setErr(e.message || 'Update failed'); }
+  }
+  async function downloadDoc(doc) {
+    setDlBusy(doc.id);
+    try { const { blob, filename } = await api.staffDownloadDoc(doc.id); saveBlob(blob, filename || doc.filename); }
+    catch (e) { setErr(e.message || 'Download failed'); }
+    finally { setDlBusy(null); }
+  }
+  async function changeStatus(status) {
+    try { await api.staffSetStatus(id, status); flash(`Status → ${APP_STATUS_LABEL[status] || status}. Borrower & team notified.`); await load(); }
+    catch (e) { setErr(e.message || 'Could not update status'); }
   }
   async function assign() {
     if (!lo && !proc) return;
@@ -152,10 +208,19 @@ export default function StaffApplication() {
         <span className={`pill ${app.status}`}>{app.status}</span>
       </div>
       <h1 style={{ marginBottom: 4 }}>{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>
-      <p className="muted small" style={{ marginBottom: 16 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
+      <p className="muted small" style={{ marginBottom: 12 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
+      <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16 }}>
+        <span className="muted small">Advance status</span>
+        <select className="input" style={{ maxWidth: 190 }} value={app.status} onChange={e => changeStatus(e.target.value)}>
+          {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
+        </select>
+        <span className="muted small">Notifies the borrower &amp; assigned team.</span>
+      </div>
 
       {msg && <div className="notice ok">{msg}</div>}
       {err && app && <div className="notice err">{err}</div>}
+
+      <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
 
       <div className="grid cols-2">
         <div className="panel">
@@ -206,6 +271,8 @@ export default function StaffApplication() {
         </div>
       </div>
 
+      <Completeness app={app} borrower={borrower} />
+
       <div className="panel" style={{ marginTop: 18 }}>
         <div className="row" style={{ marginBottom: 6 }}>
           <h3>Checklist</h3>
@@ -218,6 +285,30 @@ export default function StaffApplication() {
             <div key={k} style={{ marginTop: 10 }}>
               <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
               {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} />)}
+            </div>
+          ))}
+      </div>
+
+      <div className="panel" style={{ marginTop: 18 }}>
+        <div className="row" style={{ marginBottom: 6 }}>
+          <h3>Documents</h3>
+          <div className="spacer" />
+          <span className="muted small">{docs.length} uploaded</span>
+        </div>
+        {docs.length === 0
+          ? <p className="muted small">No documents uploaded yet. Request one below and the borrower will see it on their checklist.</p>
+          : docs.map(d => (
+            <div className="checkitem" key={d.id}>
+              <span className="dot done" />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>{d.filename}</div>
+                <div className="muted small">
+                  {kb(d.size_bytes)} · uploaded by {d.uploaded_by_kind} · {new Date(d.created_at).toLocaleDateString()}
+                </div>
+              </div>
+              <button className="btn ghost" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                {dlBusy === d.id ? 'Downloading…' : 'Download'}
+              </button>
             </div>
           ))}
       </div>
@@ -242,6 +333,42 @@ export default function StaffApplication() {
           <p className="muted small" style={{ marginTop: 6 }}>Staff-only — not shown to the borrower.</p>
         </div>
       </div>
+
+      <ChatPanel appId={id} onTaskCreated={load} />
     </>
+  );
+}
+
+/* Two collaboration channels per file: the borrower-facing thread, and an
+   internal team channel (LO / processor / underwriter / admin) the borrower
+   never sees — where a message can be saved straight onto the file as a task. */
+function ChatPanel({ appId, onTaskCreated }) {
+  const [channel, setChannel] = useState('borrower');
+  const internal = channel === 'internal';
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 10, alignItems: 'center' }}>
+        <h3 style={{ margin: 0 }}>Conversations</h3>
+        <div className="spacer" />
+        <div className="row" style={{ gap: 6 }}>
+          <button className={`btn ${!internal ? 'primary' : 'ghost'}`} onClick={() => setChannel('borrower')}>Borrower</button>
+          <button className={`btn ${internal ? 'primary' : 'ghost'}`} onClick={() => setChannel('internal')}>Team (internal)</button>
+        </div>
+      </div>
+      <MessageThread key={channel} mine="staff" bare
+        header={<span />}
+        hint={internal
+          ? 'Internal channel — loan officer, processor, underwriting and admin only. The borrower can never see these messages. Tick the box to also save a message as a task on the file.'
+          : 'This thread is shared with the borrower.'}
+        taskOption={internal}
+        fetchMessages={() => api.staffMessages(appId, channel)}
+        downloadAttachment={(docId) => api.staffDownloadDoc(docId)}
+        send={async (body, opts) => {
+          const r = await api.staffPostMessage(appId, body, {
+            channel, makeTask: internal && opts?.makeTask, attachment: opts?.attachment });
+          if (r && r.taskId && onTaskCreated) onTaskCreated();
+          return r;
+        }} />
+    </div>
   );
 }

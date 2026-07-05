@@ -1,6 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
+import MessageThread from '../components/MessageThread.jsx';
+import PropertyPhoto from '../components/PropertyPhoto.jsx';
+
+const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
@@ -39,13 +43,22 @@ export default function Application() {
   const { id } = useParams();
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
+  const [uploads, setUploads] = useState([]);
+  const [dlBusy, setDlBusy] = useState(null);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const fileRef = useRef(null);
   const [target, setTarget] = useState(null);
 
-  const load = () => Promise.all([api.application(id), api.checklist(id)])
-    .then(([a, c]) => { setApp(a); setItems(c || []); }).catch(e => setErr(e.message));
+  const load = () => Promise.all([api.application(id), api.checklist(id), api.documents(id).catch(() => [])])
+    .then(([a, c, d]) => { setApp(a); setItems(c || []); setUploads(d || []); }).catch(e => setErr(e.message));
+
+  async function downloadDoc(doc) {
+    setDlBusy(doc.id);
+    try { const { blob, filename } = await api.downloadDoc(doc.id); saveBlob(blob, filename || doc.filename); }
+    catch (e) { setErr(e.message || 'Download failed'); }
+    finally { setDlBusy(null); }
+  }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
 
   async function onFile(e) {
@@ -94,6 +107,8 @@ export default function Application() {
       <p className="muted small" style={{ marginBottom: 20 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
 
       {msg && <div className="notice ok">{msg}</div>}
+
+      <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
 
       <div className="grid cols-2">
         <div className="panel">
@@ -166,6 +181,33 @@ export default function Application() {
             </div>
           ))}
       </div>
+
+      {uploads.length > 0 && (
+        <div className="panel" style={{ marginTop: 18 }}>
+          <div className="row" style={{ marginBottom: 6 }}>
+            <h3>Your uploaded documents</h3>
+            <div className="spacer" />
+            <span className="muted small">{uploads.length} file{uploads.length === 1 ? '' : 's'}</span>
+          </div>
+          {uploads.map(d => (
+            <div className="checkitem" key={d.id}>
+              <span className="dot done" />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>{d.filename}</div>
+                <div className="muted small">{kb(d.size_bytes)} · {new Date(d.created_at).toLocaleDateString()}</div>
+              </div>
+              <button className="btn ghost" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                {dlBusy === d.id ? 'Downloading…' : 'Download'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <MessageThread mine="borrower" title="Messages with your loan team"
+        fetchMessages={() => api.messages(id)}
+        send={(body, opts) => api.postMessage(id, body, { attachment: opts?.attachment })}
+        downloadAttachment={(docId) => api.downloadDoc(docId)} />
     </>
   );
 }

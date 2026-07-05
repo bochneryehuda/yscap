@@ -9,6 +9,7 @@ const router = express.Router();
 const db = require('../db');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
+const { serveDocument } = require('../lib/serve-document');
 const { requireAuth, requireRole } = require('../auth');
 
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
@@ -41,6 +42,39 @@ router.use('/applications/:id', async (req, res, next) => {
     if (!r.rows[0]) return res.status(403).json({ error: 'forbidden' });
     next();
   } catch (e) { next(e); }
+});
+
+// ---------------- dashboard KPIs ----------------
+router.get('/dashboard', async (req, res) => {
+  try {
+    const s = scopeClause(req);
+    const w = s.where.replace(/\$SCOPE/g, '$1');
+    const [byStatus, totals, leads, aging] = await Promise.all([
+      db.query(`SELECT status, count(*)::int c, COALESCE(sum(loan_amount),0)::bigint v
+                  FROM applications a WHERE 1=1 ${w} GROUP BY status`, s.params),
+      db.query(`SELECT count(*)::int total,
+                       COALESCE(sum(loan_amount),0)::bigint pipeline_value,
+                       count(*) FILTER (WHERE created_at > now() - interval '7 days')::int new_week,
+                       count(*) FILTER (WHERE status='funded')::int funded,
+                       count(*) FILTER (WHERE status NOT IN ('funded','declined','withdrawn'))::int active
+                  FROM applications a WHERE 1=1 ${w}`, s.params),
+      seesAll(req)
+        ? db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived')`)
+        : db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived') AND (officer_id=$1 OR officer_id IS NULL)`, [req.actor.id]),
+      db.query(`SELECT count(*)::int c FROM applications a
+                 WHERE status NOT IN ('funded','declined','withdrawn')
+                   AND updated_at < now() - interval '5 days' ${w}`, s.params),
+    ]);
+    const t = totals.rows[0];
+    res.json({
+      byStatus: byStatus.rows,
+      total: t.total, pipelineValue: Number(t.pipeline_value), active: t.active,
+      funded: t.funded, newThisWeek: t.new_week,
+      openLeads: leads.rows[0].c,
+      stale: aging.rows[0].c,           // active files untouched > 5 days
+      conversion: t.total ? Math.round((t.funded / t.total) * 100) : 0,
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- pipeline ----------------
@@ -226,6 +260,236 @@ router.post('/track-records/:id/verify', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------------- advance application status ----------------
+const APP_STATUS = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
+const STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+router.patch('/applications/:id', async (req, res) => {
+  const { status } = req.body || {};
+  if (!status || !APP_STATUS.includes(status)) return res.status(400).json({ error: 'bad status' });
+  try {
+    const cur = await db.query(
+      `SELECT status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
+    await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+      [req.params.id, status]);
+    await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status });
+    const label = STATUS_LABEL[status] || status;
+    try {
+      if (cur.rows[0].borrower_id)
+        await notify.notifyBorrower(cur.rows[0].borrower_id, {
+          type: 'status_change', title: `Your loan status: ${label}`,
+          body: `Your application has moved to "${label}". Sign in to see the latest.`,
+          applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
+      const team = new Set([cur.rows[0].loan_officer_id, cur.rows[0].processor_id].filter(Boolean).filter(x => x !== req.actor.id));
+      for (const sid of team)
+        await notify.notifyStaff(sid, {
+          type: 'status_change', title: `File moved to ${label}`,
+          applicationId: req.params.id, link: `/staff/app/${req.params.id}` });
+    } catch (_) { /* notify best-effort */ }
+    res.json({ ok: true, status });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- chat inbox (Slack-style: which files have new messages) ----------------
+router.get('/chat/inbox', async (req, res) => {
+  try {
+    const scoped = !seesAll(req);
+    const params = [req.actor.id];
+    const r = await db.query(
+      `SELECT a.id, a.ys_loan_number, a.status, a.property_address,
+              b.first_name, b.last_name,
+              lm.body AS last_body, lm.channel AS last_channel, lm.sender_kind AS last_sender_kind,
+              lm.attachment_kind AS last_attachment_kind, lm.created_at AS last_at,
+              (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
+                 AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL) AS unread_borrower,
+              (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
+                 AND m.channel='internal' AND m.read_at IS NULL
+                 AND (m.sender_id IS NULL OR m.sender_id<>$1)) AS unread_internal
+         FROM applications a
+         JOIN borrowers b ON b.id=a.borrower_id
+         JOIN LATERAL (SELECT body, channel, sender_kind, attachment_kind, created_at
+                         FROM messages m WHERE m.application_id=a.id
+                        ORDER BY created_at DESC LIMIT 1) lm ON true
+        WHERE 1=1 ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
+        ORDER BY lm.created_at DESC LIMIT 100`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- collaboration messaging (per file, two channels) ----------------
+// channel 'borrower' = borrower <-> loan team; channel 'internal' = LO <->
+// processor <-> underwriter <-> admin, never visible to the borrower.
+// Guarded by the /applications/:id middleware (staffer must see this file).
+router.get('/applications/:id/messages', async (req, res) => {
+  const channel = req.query.channel === 'internal' ? 'internal' : 'borrower';
+  try {
+    const r = await db.query(
+      `SELECT m.id, m.sender_kind, m.sender_id, m.body, m.channel, m.checklist_item_id,
+              m.is_task_request, m.read_at, m.created_at,
+              m.attachment_document_id, m.attachment_kind,
+              d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
+              CASE WHEN m.sender_kind='staff' THEN s.full_name
+                   WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
+                   ELSE 'System' END AS sender_name,
+              ci.label AS task_label, ci.status AS task_status
+         FROM messages m
+         LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+         LEFT JOIN borrowers  b ON b.id=m.borrower_id
+         LEFT JOIN checklist_items ci ON ci.id=m.checklist_item_id
+         LEFT JOIN documents d ON d.id=m.attachment_document_id
+        WHERE m.application_id=$1 AND m.channel=$2 ORDER BY m.created_at`, [req.params.id, channel]);
+    // Opening a channel marks the other side's messages as read (receipts).
+    if (channel === 'borrower')
+      await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND channel='borrower' AND sender_kind='borrower' AND read_at IS NULL`, [req.params.id]);
+    else
+      await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND channel='internal' AND sender_id<>$2 AND read_at IS NULL`, [req.params.id, req.actor.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/applications/:id/messages', async (req, res) => {
+  const b = req.body || {};
+  const body = b.body;
+  const channel = b.channel === 'internal' ? 'internal' : 'borrower';
+  const att = b.attachment && b.attachment.dataBase64 ? b.attachment : null;
+  if ((!body || !String(body).trim()) && !att) return res.status(400).json({ error: 'message body or attachment required' });
+  try {
+    const appRow = await db.query(
+      `SELECT borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
+    if (!appRow.rows[0]) return res.status(404).json({ error: 'not found' });
+    const a = appRow.rows[0];
+
+    // Store any attachment (photo, video, voice note, PDF, file) first.
+    let attDoc = null;
+    if (att) {
+      try {
+        attDoc = await require('../lib/chat-attach').saveChatAttachment({
+          applicationId: req.params.id, borrowerId: a.borrower_id,
+          filename: att.filename, contentType: att.contentType, dataBase64: att.dataBase64,
+          byKind: 'staff', byId: req.actor.id });
+      } catch (e2) { return res.status(e2.status || 500).json({ error: e2.message }); }
+    }
+
+    // Optionally promote the message into a real task on the application
+    // (staff-audience checklist item), so decisions in chat become work items.
+    let taskId = null;
+    if (b.makeTask && channel === 'internal') {
+      const t = await db.query(
+        `INSERT INTO checklist_items
+           (application_id, scope, audience, item_kind, label, status, created_by_kind, created_by_id, assignee_staff_id)
+         VALUES ($1,'application','staff','task',$2,'outstanding','staff',$3,$4) RETURNING id`,
+        [req.params.id, String(b.taskLabel || body).slice(0, 300), req.actor.id, b.assigneeStaffId || null]);
+      taskId = t.rows[0].id;
+    }
+
+    const ins = await db.query(
+      `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,channel,checklist_item_id,attachment_document_id,attachment_kind)
+       VALUES ($1,$2,'staff',$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [req.params.id, a.borrower_id, req.actor.id, String(body || '').slice(0, 4000), channel, taskId,
+       attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null]);
+    await audit(req, 'post_message', 'application', req.params.id, { channel, taskId, attachment: !!attDoc });
+
+    try {
+      if (channel === 'borrower' && a.borrower_id) {
+        await notify.notifyBorrower(a.borrower_id, {
+          type: 'message', title: 'New message from your loan team',
+          body: String(body).slice(0, 140), applicationId: req.params.id,
+          link: `/app/${req.params.id}`, ctaLabel: 'Open the conversation' });
+      } else if (channel === 'internal') {
+        // Notify the rest of the file's team (assigned LO/processor + a task
+        // assignee if any) — never the borrower, never the sender.
+        const team = new Set([a.loan_officer_id, a.processor_id, b.assigneeStaffId].filter(Boolean));
+        team.delete(req.actor.id);
+        for (const sid of team)
+          await notify.notifyStaff(sid, {
+            type: 'message', title: taskId ? 'New task from team chat' : 'New internal note on a file',
+            body: String(body).slice(0, 140), applicationId: req.params.id,
+            link: `/staff/app/${req.params.id}`, ctaLabel: 'Open the file' });
+      }
+      // @mentions get a direct ping regardless of channel/assignment.
+      if (body) {
+        const meRow = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+        await require('../lib/mentions').notifyMentions({
+          body, applicationId: req.params.id, senderId: req.actor.id,
+          senderName: meRow.rows[0]?.full_name || 'A teammate' });
+      }
+    } catch (_) {}
+    res.status(201).json({ ok: true, messageId: ins.rows[0].id, taskId });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- leads (marketing-site submissions) ----------------
+// admins/underwriters see all; a loan officer sees leads routed to them plus
+// unrouted ones (the shared desk).
+router.get('/leads', async (req, res) => {
+  try {
+    const where = seesAll(req) ? '' : 'WHERE (officer_id=$1 OR officer_id IS NULL)';
+    const params = seesAll(req) ? [] : [req.actor.id];
+    const r = await db.query(
+      `SELECT l.id,l.tool,l.name,l.email,l.phone,l.subject,l.message,l.payload,l.status,
+              l.officer_id,l.created_at, s.full_name AS officer_name
+         FROM leads l LEFT JOIN staff_users s ON s.id=l.officer_id
+         ${where} ORDER BY l.created_at DESC LIMIT 300`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.patch('/leads/:id', async (req, res) => {
+  const b = req.body || {};
+  const STATUSES = ['new', 'contacted', 'working', 'converted', 'archived'];
+  if (b.status && !STATUSES.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+  const sets = [], vals = []; let i = 1;
+  if (b.status !== undefined) { sets.push(`status=$${i++}`); vals.push(b.status); }
+  if (b.officerId !== undefined) { sets.push(`officer_id=$${i++}`); vals.push(b.officerId || null); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  try { await db.query(`UPDATE leads SET ${sets.join(',')} WHERE id=$${i}`, vals); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- documents ----------------
+// List documents on a file. The /applications/:id middleware already enforced
+// that this staffer may see this application.
+router.get('/applications/:id/documents', async (req, res) => {
+  const r = await db.query(
+    `SELECT id,filename,content_type,size_bytes,checklist_item_id,uploaded_by_kind,created_at
+       FROM documents WHERE application_id=$1 ORDER BY created_at DESC`, [req.params.id]);
+  res.json(r.rows);
+});
+
+// Can this staffer access a given document? seesAll -> yes. Otherwise they must
+// be assigned to the document's application, or (for borrower/llc-scoped docs)
+// to some application belonging to that borrower.
+async function canSeeDocument(req, doc) {
+  if (seesAll(req)) return true;
+  if (doc.application_id) {
+    const r = await db.query(
+      `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`,
+      [doc.application_id, req.actor.id]);
+    if (r.rows[0]) return true;
+  }
+  if (doc.borrower_id) {
+    const r = await db.query(
+      `SELECT 1 FROM applications WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+      [doc.borrower_id, req.actor.id]);
+    if (r.rows[0]) return true;
+  }
+  return false;
+}
+
+router.get('/documents/:id/download', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id,filename,content_type,storage_ref,application_id,borrower_id,llc_id FROM documents WHERE id=$1`,
+      [req.params.id]);
+    const doc = r.rows[0];
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
+    await audit(req, 'download_document', 'document', doc.id);
+    return serveDocument(res, doc, { inline: req.query.inline === '1' });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- notifications ----------------
 router.get('/notifications', async (req, res) => {
   const r = await db.query(
@@ -241,7 +505,8 @@ router.post('/notifications/:id/read', async (req, res) => {
 // Active staff roster — used to populate LO / processor assignment dropdowns.
 router.get('/team', async (req, res) => {
   const r = await db.query(
-    `SELECT id, full_name, email, role FROM staff_users WHERE is_active=true ORDER BY role, full_name`);
+    `SELECT id, full_name, email, role, title, department FROM staff_users
+      WHERE is_active=true ORDER BY department NULLS LAST, sort_order, full_name`);
   res.json(r.rows);
 });
 
