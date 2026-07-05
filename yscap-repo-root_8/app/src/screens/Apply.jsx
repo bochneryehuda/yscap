@@ -5,16 +5,27 @@ import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 
 const STEPS = ['Property', 'Loan', 'Borrower & submit'];
-const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground Up Construction', 'DSCR Rental', 'Not sure yet'];
-const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Ground up'];
+// Ground-Up is a PROGRAM (not a loan type/purpose). DSCR Rental is intentionally
+// not offered here for now.
+const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'Not sure yet'];
+const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'];
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
 const CITIZENSHIP = ['US Citizen', 'Permanent Resident', 'Foreign National'];
 
 // Fix & Flip / Ground-Up / construction files use ARV + rehab budget; a straight
-// Bridge or DSCR rental does not, so those fields are hidden for them.
+// Bridge does not, so those fields are hidden for them.
 const needsRehab = (program) => !program || /flip|ground|construction|rehab|not sure/i.test(program);
 // An assignment only applies to a purchase.
 const isPurchase = (loanType) => !loanType || /purchase/i.test(loanType);
+
+// Property type drives the unit-count control. Single-unit types default to 1
+// and never ask; 2–4 offers a dropdown; 5+ / mixed-use take a number.
+function unitsMode(propType) {
+  if (/2.?4/.test(propType || '')) return 'select24';
+  if (/5\+|mixed/i.test(propType || '')) return 'multi';
+  return 'single'; // SFR / Condo / Townhouse
+}
+const money = (n) => (n || n === 0) ? '$' + Number(n).toLocaleString() : '—';
 
 function SaveChip({ status }) {
   const map = { idle: '', saving: 'Saving…', saved: 'All changes saved', error: 'Save failed — retrying' };
@@ -93,7 +104,7 @@ export default function Apply() {
     });
   };
   const setAddr = (k, v) => mergeAddr({ [k]: v });
-  const pickAddr = (a) => mergeAddr({ street: a.line1 || '', unit: a.unit || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
+  const pickAddr = (a) => mergeAddr({ street: a.line1 || '', unit: a.unit || '', city: a.city || '', state: a.state || '', zip: a.zip || '', county: a.county || '' });
   const setNested = (key) => (k, v) => setForm(f => {
     const obj = { ...((f && f[key]) || {}), [k]: v };
     save({ data: { [key]: obj } });
@@ -101,6 +112,18 @@ export default function Apply() {
   });
   const setPersonal = setNested('personal');
   const setCo = setNested('coBorrower');
+
+  // Choosing the property type auto-resolves units for single-unit types so the
+  // borrower never has to answer "units" for a single-family / condo / townhouse.
+  const setPropertyType = (v) => {
+    setForm(f => {
+      const next = { ...(f || {}), propertyType: v };
+      if (unitsMode(v) === 'single') next.units = '1';
+      else if (String((f || {}).units) === '1') next.units = ''; // clear the auto value when switching to multi
+      save({ data: { propertyType: v, units: next.units } });
+      return next;
+    });
+  };
 
   const pickOfficer = (name) => {
     const o = officers.find(x => x.name === name);
@@ -167,13 +190,25 @@ export default function Apply() {
             </div>
             <div className="grid cols-2">
               <div className="field"><label>Property type *</label>
-                <select value={form.propertyType || ''} onChange={e => set('propertyType', e.target.value)}>
+                <select value={form.propertyType || ''} onChange={e => setPropertyType(e.target.value)}>
                   <option value="">Select…</option>{PROP_TYPES.map(p => <option key={p}>{p}</option>)}
                 </select></div>
-              <div className="field"><label>Units *</label>
-                <input className="input" type="number" min="1" value={form.units || ''} onChange={e => set('units', e.target.value)} /></div>
+              {unitsMode(form.propertyType) === 'select24' && (
+                <div className="field"><label>Number of units *</label>
+                  <select value={form.units || ''} onChange={e => set('units', e.target.value)}>
+                    <option value="">Select…</option><option>2</option><option>3</option><option>4</option>
+                  </select></div>
+              )}
+              {unitsMode(form.propertyType) === 'multi' && (
+                <div className="field"><label>Number of units *</label>
+                  <input className="input" type="number" min="5" value={form.units || ''} onChange={e => set('units', e.target.value)} placeholder="5 or more" /></div>
+              )}
+              {unitsMode(form.propertyType) === 'single' && form.propertyType && (
+                <div className="field"><label>Number of units</label>
+                  <input className="input" value="1 unit" disabled readOnly /></div>
+              )}
             </div>
-            {!step1Ready && <p className="muted small">Property address, type, and number of units are required to continue.</p>}
+            {!step1Ready && <p className="muted small">Property address and type are required to continue{unitsMode(form.propertyType) !== 'single' ? ', plus the number of units' : ''}.</p>}
           </>
         )}
 
@@ -203,9 +238,18 @@ export default function Apply() {
               </label>
             )}
             {form.isAssignment && (
-              <p className="muted small" style={{ marginBottom: 12 }}>
-                We'll ask for the <strong>assignment contract</strong> and the <strong>underlying purchase contract</strong> on your file.
-              </p>
+              <>
+                <div className="grid cols-2">
+                  <div className="field"><label>Underlying contract price</label>
+                    <input className="input" type="number" value={form.underlyingContractPrice || ''} onChange={e => set('underlyingContractPrice', e.target.value)} placeholder="Price on the original contract" /></div>
+                  <div className="field"><label>Assignment fee</label>
+                    <input className="input" type="number" value={form.assignmentFee || ''} onChange={e => set('assignmentFee', e.target.value)} placeholder="Your assignment fee" /></div>
+                </div>
+                <p className="muted small" style={{ marginBottom: 12 }}>
+                  Total purchase price: <strong>{money((Number(form.underlyingContractPrice) || 0) + (Number(form.assignmentFee) || 0))}</strong>.
+                  We'll ask for the <strong>assignment contract</strong> and the <strong>underlying purchase contract</strong> on your file.
+                </p>
+              </>
             )}
             {showRehab && (
               <div className="grid cols-2">

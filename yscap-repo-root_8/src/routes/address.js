@@ -51,22 +51,28 @@ function osmAddress(a = {}) {
   return normalizeAddress({
     line1: line1 || a.neighbourhood || '',
     unit: '',
-    city: a.city || a.town || a.village || a.hamlet || a.county || '',
+    city: a.city || a.town || a.village || a.hamlet || '',
     state: stateAbbr(a.state || ''),
     zip: a.postcode || '',
+    county: (a.county || '').replace(/\s+County$/i, ''),  // kept for backend only
     country: (a.country_code || 'us').toUpperCase(),
   });
+}
+// A clean, tight label — street, city, ST ZIP — so the borrower isn't shown the
+// county / country / raw provider noise in the suggestion list.
+function cleanLabel(addr) {
+  return [[addr.line1, addr.unit].filter(Boolean).join(' '), addr.city,
+    [addr.state, addr.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
 }
 async function osmSuggest(q) {
   const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&countrycodes=us&q=' + encodeURIComponent(q);
   const rows = await osmThrottle(() => fetchJson(url, {
     headers: { 'User-Agent': `YSCapitalPortal/1.0 (${cfg.osmContact})`, 'Accept-Language': 'en-US' },
   }));
-  return (rows || []).map((r) => ({
-    id: 'osm:' + r.place_id,
-    label: r.display_name,
-    address: osmAddress(r.address),
-  }));
+  return (rows || []).map((r) => {
+    const address = osmAddress(r.address);
+    return { id: 'osm:' + r.place_id, label: cleanLabel(address) || r.display_name, address };
+  });
 }
 
 // ---- Google Places ----
@@ -90,6 +96,7 @@ async function googleDetails(placeId) {
     city: (get('locality') || get('sublocality') || get('postal_town') || {}).long_name || '',
     state: (get('administrative_area_level_1') || {}).short_name || '',
     zip: (get('postal_code') || {}).long_name || '',
+    county: ((get('administrative_area_level_2') || {}).long_name || '').replace(/\s+County$/i, ''),
     country: (get('country') || {}).short_name || 'US',
   });
 }

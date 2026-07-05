@@ -23,7 +23,9 @@ function splitUnit(street) {
   return { line1: line1 || s, unit };
 }
 
-const empty = () => ({ line1: '', unit: '', city: '', state: '', zip: '', country: 'US' });
+// county is captured for underwriting but is intentionally NOT part of the
+// visible autocomplete label or oneLine — it lives in the backend record only.
+const empty = () => ({ line1: '', unit: '', city: '', state: '', zip: '', county: '', country: 'US' });
 
 /** Parse a free-text US address string into components. */
 function parseAddress(raw) {

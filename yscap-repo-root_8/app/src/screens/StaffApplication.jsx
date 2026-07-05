@@ -4,6 +4,17 @@ import { api, saveBlob } from '../lib/api.js';
 import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 
+// Small inline eye toggle for the SSN reveal (revealing is server-audited).
+const Eye = (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+);
+const EyeOff = (
+  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+    <line x1="1" y1="1" x2="23" y2="23" /></svg>
+);
+
 /* What the borrower has and hasn't completed — so the officer sees at a glance
    what still needs chasing without opening every panel. */
 function Completeness({ app, borrower }) {
@@ -281,9 +292,10 @@ export default function StaffApplication() {
                   {ssnFull || (borrower.ssn_last4 ? `•••-••-${borrower.ssn_last4}` : '—')}
                 </span>
                 {borrower.ssn_last4 && (
-                  <button className="btn link small" onClick={revealSsn} disabled={ssnBusy}
-                    title={ssnFull ? 'Hide the full number' : 'Show the full number'}>
-                    {ssnFull ? 'Hide' : (ssnBusy ? '…' : 'Show')}
+                  <button className="eye-btn" onClick={revealSsn} disabled={ssnBusy}
+                    aria-label={ssnFull ? 'Hide the full Social Security number' : 'Reveal the full Social Security number'}
+                    title={ssnFull ? 'Hide the full number' : 'Reveal the full number (logged)'}>
+                    {ssnBusy ? '…' : (ssnFull ? EyeOff : Eye)}
                   </button>
                 )}
               </span>
