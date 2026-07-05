@@ -243,6 +243,27 @@ router.get('/documents/:id/download', async (req, res) => {
   return serveDocument(res, r.rows[0], { inline: req.query.inline === '1' });
 });
 
+// ---------------- bank verification (Plaid framework) ----------------
+// Manual bank-statement upload always works via the documents flow above; these
+// enable instant verification once Plaid keys are added.
+router.post('/plaid/link-token', async (req, res) => {
+  const plaid = require('../lib/integrations').plaid;
+  if (!plaid.configured()) return res.status(503).json({ error: 'Instant bank verification is not enabled yet — please upload statements instead.' });
+  try { res.json(await plaid.createLinkToken({ userId: me(req) })); }
+  catch (e) { res.status(502).json({ error: e.message }); }
+});
+router.post('/plaid/exchange', async (req, res) => {
+  const plaid = require('../lib/integrations').plaid;
+  if (!plaid.configured()) return res.status(503).json({ error: 'not enabled' });
+  const { publicToken } = req.body || {};
+  if (!publicToken) return res.status(400).json({ error: 'publicToken required' });
+  try {
+    await plaid.exchangePublicToken(publicToken);   // access token handling wired when keys arrive
+    await audit(req, 'link_bank', 'borrower', me(req));
+    res.json({ ok: true, linked: true });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 // ---------------- NOTIFICATIONS ----------------
 router.get('/notifications', async (req, res) => {
   const r = await db.query(
@@ -258,9 +279,17 @@ router.post('/notifications/:id/read', async (req, res) => {
 // ---------------- MESSAGES (per application) ----------------
 router.get('/messages', async (req, res) => {
   const r = await db.query(
-    `SELECT id,application_id,sender_kind,body,is_task_request,read_at,created_at FROM messages
-     WHERE borrower_id=$1 AND ($2::uuid IS NULL OR application_id=$2) ORDER BY created_at`,
+    `SELECT m.id,m.application_id,m.sender_kind,m.body,m.is_task_request,m.read_at,m.created_at,
+            CASE WHEN m.sender_kind='staff' THEN COALESCE(s.full_name,'Your loan team')
+                 WHEN m.sender_kind='borrower' THEN 'You'
+                 ELSE 'System' END AS sender_name
+       FROM messages m LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+      WHERE m.borrower_id=$1 AND ($2::uuid IS NULL OR m.application_id=$2) ORDER BY m.created_at`,
     [me(req), req.query.applicationId || null]);
+  // Opening the thread clears the "new message" badge for staff replies.
+  if (req.query.applicationId)
+    await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND borrower_id=$2 AND sender_kind='staff' AND read_at IS NULL`,
+      [req.query.applicationId, me(req)]);
   res.json(r.rows);
 });
 router.post('/messages', async (req, res) => {
@@ -277,6 +306,26 @@ router.post('/messages', async (req, res) => {
      VALUES ($1,$2,'borrower',$2,$3,$4) RETURNING id`,
     [b.applicationId || null, me(req), b.body, !!b.isTaskRequest]);
   res.status(201).json({ ok: true, messageId: r.rows[0].id });
+
+  // Notify the file's loan officer + processor of the new borrower message.
+  if (b.applicationId) {
+    try {
+      const a = await db.query(
+        `SELECT a.loan_officer_id, a.processor_id, bo.first_name, bo.last_name
+           FROM applications a JOIN borrowers bo ON bo.id=a.borrower_id WHERE a.id=$1`, [b.applicationId]);
+      const row = a.rows[0];
+      if (row) {
+        const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
+        const opts = {
+          type: 'message', title: `New message from ${who}`,
+          body: String(b.body).slice(0, 140), applicationId: b.applicationId,
+          link: `/staff/app/${b.applicationId}`, ctaLabel: 'Open the conversation',
+        };
+        for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
+          await notify.notifyStaff(sid, opts);
+      }
+    } catch (_) {}
+  }
 });
 
 // ---------------- shared: auto-generate checklist from templates ----------------

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
+import MessageThread from '../components/MessageThread.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
@@ -199,6 +200,10 @@ export default function Application() {
           ))}
         </div>
       )}
+
+      <MessageThread mine="borrower" title="Messages with your loan team"
+        fetchMessages={() => api.messages(id)}
+        send={(body) => api.postMessage(id, body)} />
     </>
   );
 }

@@ -44,6 +44,39 @@ router.use('/applications/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------------- dashboard KPIs ----------------
+router.get('/dashboard', async (req, res) => {
+  try {
+    const s = scopeClause(req);
+    const w = s.where.replace(/\$SCOPE/g, '$1');
+    const [byStatus, totals, leads, aging] = await Promise.all([
+      db.query(`SELECT status, count(*)::int c, COALESCE(sum(loan_amount),0)::bigint v
+                  FROM applications a WHERE 1=1 ${w} GROUP BY status`, s.params),
+      db.query(`SELECT count(*)::int total,
+                       COALESCE(sum(loan_amount),0)::bigint pipeline_value,
+                       count(*) FILTER (WHERE created_at > now() - interval '7 days')::int new_week,
+                       count(*) FILTER (WHERE status='funded')::int funded,
+                       count(*) FILTER (WHERE status NOT IN ('funded','declined','withdrawn'))::int active
+                  FROM applications a WHERE 1=1 ${w}`, s.params),
+      seesAll(req)
+        ? db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived')`)
+        : db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived') AND (officer_id=$1 OR officer_id IS NULL)`, [req.actor.id]),
+      db.query(`SELECT count(*)::int c FROM applications a
+                 WHERE status NOT IN ('funded','declined','withdrawn')
+                   AND updated_at < now() - interval '5 days' ${w}`, s.params),
+    ]);
+    const t = totals.rows[0];
+    res.json({
+      byStatus: byStatus.rows,
+      total: t.total, pipelineValue: Number(t.pipeline_value), active: t.active,
+      funded: t.funded, newThisWeek: t.new_week,
+      openLeads: leads.rows[0].c,
+      stale: aging.rows[0].c,           // active files untouched > 5 days
+      conversion: t.total ? Math.round((t.funded / t.total) * 100) : 0,
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- pipeline ----------------
 router.get('/applications', async (req, res) => {
   const s = scopeClause(req);
@@ -255,6 +288,47 @@ router.patch('/applications/:id', async (req, res) => {
           applicationId: req.params.id, link: `/staff/app/${req.params.id}` });
     } catch (_) { /* notify best-effort */ }
     res.json({ ok: true, status });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- secure messaging (borrower <-> staff, per file) ----------------
+// Guarded by the /applications/:id middleware (staffer must see this file).
+router.get('/applications/:id/messages', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT m.id, m.sender_kind, m.sender_id, m.body, m.is_task_request, m.read_at, m.created_at,
+              CASE WHEN m.sender_kind='staff' THEN s.full_name
+                   WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
+                   ELSE 'System' END AS sender_name
+         FROM messages m
+         LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+         LEFT JOIN borrowers  b ON b.id=m.borrower_id
+        WHERE m.application_id=$1 ORDER BY m.created_at`, [req.params.id]);
+    // Mark borrower messages as read now that staff has opened the thread.
+    await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND sender_kind='borrower' AND read_at IS NULL`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/applications/:id/messages', async (req, res) => {
+  const body = (req.body || {}).body;
+  if (!body || !String(body).trim()) return res.status(400).json({ error: 'message body required' });
+  try {
+    const appRow = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+    if (!appRow.rows[0]) return res.status(404).json({ error: 'not found' });
+    const ins = await db.query(
+      `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body)
+       VALUES ($1,$2,'staff',$3,$4) RETURNING id`,
+      [req.params.id, appRow.rows[0].borrower_id, req.actor.id, String(body).slice(0, 4000)]);
+    await audit(req, 'post_message', 'application', req.params.id);
+    // Notify the borrower a message is waiting.
+    try {
+      if (appRow.rows[0].borrower_id)
+        await notify.notifyBorrower(appRow.rows[0].borrower_id, {
+          type: 'message', title: 'New message from your loan team',
+          body: String(body).slice(0, 140), applicationId: req.params.id,
+          link: `/app/${req.params.id}`, ctaLabel: 'Open the conversation' });
+    } catch (_) {}
+    res.status(201).json({ ok: true, messageId: ins.rows[0].id });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

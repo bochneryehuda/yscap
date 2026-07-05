@@ -179,4 +179,9 @@ router.get('/borrowers', async (req, res) => {
   res.json(r.rows);
 });
 
+// Which third-party integrations are configured (keys present) vs pending.
+router.get('/integrations', (req, res) => {
+  res.json(require('../lib/integrations').status());
+});
+
 module.exports = router;

@@ -65,6 +65,8 @@ export const api = {
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   notifications:() => req('GET', '/api/borrower/notifications'),
+  messages:     (appId) => req('GET', `/api/borrower/messages?applicationId=${appId}`),
+  postMessage:  (appId, body) => req('POST', '/api/borrower/messages', { applicationId: appId, body }),
   readNotif:    (id) => req('POST', `/api/borrower/notifications/${id}/read`),
   uploadDoc:    (b) => req('POST', '/api/borrower/documents', b),
   documents:    (appId) => req('GET', `/api/borrower/documents${appId ? `?applicationId=${appId}` : ''}`),
@@ -101,6 +103,10 @@ export const api = {
   staffNotifs:      () => req('GET', '/api/staff/notifications'),
   staffLeads:       () => req('GET', '/api/staff/leads'),
   staffUpdateLead:  (id, b) => req('PATCH', `/api/staff/leads/${id}`, b),
+  staffDashboard:   () => req('GET', '/api/staff/dashboard'),
+  staffMessages:    (appId) => req('GET', `/api/staff/applications/${appId}/messages`),
+  staffPostMessage: (appId, body) => req('POST', `/api/staff/applications/${appId}/messages`, { body }),
+  adminIntegrations:() => req('GET', '/api/admin/integrations'),
 
   // ---- admin: team / staff management ----
   adminStaff:        () => req('GET', '/api/admin/staff'),
