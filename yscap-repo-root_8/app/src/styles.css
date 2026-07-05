@@ -369,3 +369,11 @@ a.checkitem:hover{transform:translateY(-1px)}
 .rb-summary .metrow{padding:7px 0}
 .rb-grand .k{font-weight:700;color:var(--ivory)}
 .rb-grand .v{font-family:var(--serif,'Fraunces',serif);font-size:19px;font-weight:700;color:var(--gold)}
+
+/* ===== Rehab budget read-only view (staff) ===== */
+.rb-view{background:var(--ink-1);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-top:6px;font-size:13px}
+.rb-view-cat{margin-bottom:8px}
+.rb-view-cat-h{font-weight:600;color:var(--gold);font-size:12px;text-transform:uppercase;letter-spacing:.03em;margin-bottom:2px}
+.rb-view-line{display:flex;justify-content:space-between;gap:12px;padding:2px 0}
+.rb-view-total{border-top:1px solid var(--line);margin-top:6px;padding-top:6px;font-weight:700}
+.rb-view-total span:last-child{color:var(--gold)}

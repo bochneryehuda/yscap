@@ -7,6 +7,7 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import ProductRegistration from '../components/ProductRegistration.jsx';
 import TrackRecord from '../components/TrackRecord.jsx';
+import { RehabBudgetView } from '../components/RehabBudget.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -100,9 +101,11 @@ function Item({ it, team, onPatch }) {
             <button className="btn link small" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'View'} submission</button>
           )}
           {open && it.tool_payload && (
-            <pre className="panel small" style={{ whiteSpace: 'pre-wrap', marginTop: 6, maxHeight: 220, overflow: 'auto' }}>
-              {JSON.stringify(it.tool_payload, null, 2)}
-            </pre>
+            it.tool_key === 'rehab_budget'
+              ? <div style={{ marginTop: 6 }}><RehabBudgetView payload={it.tool_payload} /></div>
+              : <pre className="panel small" style={{ whiteSpace: 'pre-wrap', marginTop: 6, maxHeight: 220, overflow: 'auto' }}>
+                  {JSON.stringify(it.tool_payload, null, 2)}
+                </pre>
           )}
         </div>
       </div>

@@ -31,6 +31,37 @@ const CATS = [
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 const keyOf = (cat, item) => `${cat}::${item}`;
 
+/* Read-only scope-of-work breakdown of a submitted rehab-budget payload —
+   used on the staff file so an underwriter sees the line items, not raw JSON. */
+export function RehabBudgetView({ payload }) {
+  if (!payload || typeof payload !== 'object') return null;
+  const lines = Array.isArray(payload.lines) ? payload.lines : [];
+  const custom = Array.isArray(payload.custom) ? payload.custom : [];
+  const byCat = {};
+  for (const l of lines) { (byCat[l.catLabel || l.cat] = byCat[l.catLabel || l.cat] || []).push(l); }
+  return (
+    <div className="rb-view">
+      {Object.keys(byCat).map((cat) => (
+        <div key={cat} className="rb-view-cat">
+          <div className="rb-view-cat-h">{cat}</div>
+          {byCat[cat].map((l, i) => (
+            <div key={i} className="rb-view-line"><span>{l.item}</span><span>{money(l.amount)}</span></div>
+          ))}
+        </div>
+      ))}
+      {custom.length > 0 && (
+        <div className="rb-view-cat">
+          <div className="rb-view-cat-h">Custom</div>
+          {custom.map((l, i) => <div key={i} className="rb-view-line"><span>{l.label}</span><span>{money(l.amount)}</span></div>)}
+        </div>
+      )}
+      <div className="rb-view-line" style={{ marginTop: 6 }}><span className="muted">Subtotal</span><span>{money(payload.subtotal)}</span></div>
+      {payload.contingency > 0 && <div className="rb-view-line"><span className="muted">Contingency ({payload.contingencyPct}%)</span><span>{money(payload.contingency)}</span></div>}
+      <div className="rb-view-line rb-view-total"><span>Total rehab budget</span><span>{money(payload.total)}</span></div>
+    </div>
+  );
+}
+
 // Rebuild the editable amount map from a previously-submitted payload.
 function seedFromPayload(p) {
   const m = {};
