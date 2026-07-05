@@ -348,12 +348,16 @@ async function loadFileForPricing(appId) {
   return { app, exp };
 }
 
-// Admin-only pricing overrides: setting the qualifying basis/rate directly or
-// forcing a price past ineligibility bypasses the frozen-engine guardrails, so
-// only admins/super-admins may supply them. For anyone else these keys are
-// stripped (a loan officer/processor can what-if the deal inputs, not override
-// the caps or rate). Returns { overrides, strippedAdminKeys }.
-const ADMIN_OVERRIDE_KEYS = ['ovrRate', 'ovrLTC', 'ovrAcqLTV', 'ovrARLTV', 'forcePrice'];
+// Admin-only pricing overrides: setting the qualifying basis/rate directly,
+// forcing a price past ineligibility, OR setting the experience counts all
+// bypass the frozen-engine guardrails, so only admins/super-admins may supply
+// them. Experience is included because the tier it drives moves the exact same
+// caps/rate/eligibility that ovrLTC/ovrRate do — and it must stay verified-only
+// for non-admins (a loan officer/processor can what-if the deal economics, but
+// not inject unverified experience or override the caps/rate). For anyone else
+// these keys are stripped. Returns { overrides, strippedAdminKeys }.
+const ADMIN_OVERRIDE_KEYS = ['ovrRate', 'ovrLTC', 'ovrAcqLTV', 'ovrARLTV', 'forcePrice',
+  'expFlips', 'expHolds', 'expGround'];
 function sanitizeOverrides(req, raw) {
   const o = { ...(raw || {}) };
   let stripped = false;
@@ -1057,6 +1061,13 @@ router.patch('/leads/:id', async (req, res) => {
   const b = req.body || {};
   const STATUSES = ['new', 'contacted', 'working', 'converted', 'archived'];
   if (b.status && !STATUSES.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+  // Horizontal scope: a non-privileged officer may only touch a lead that is
+  // unassigned or already theirs — the same scope GET /leads applies — so one
+  // officer can't reassign or alter another officer's lead by its id.
+  if (!seesAll(req)) {
+    const own = await db.query(`SELECT 1 FROM leads WHERE id=$1 AND (officer_id=$2 OR officer_id IS NULL)`, [req.params.id, req.actor.id]);
+    if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
+  }
   const sets = [], vals = []; let i = 1;
   if (b.status !== undefined) { sets.push(`status=$${i++}`); vals.push(b.status); }
   if (b.officerId !== undefined) { sets.push(`officer_id=$${i++}`); vals.push(b.officerId || null); }
