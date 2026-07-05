@@ -25,6 +25,18 @@
   } catch (_) { /* boot must never fail on env parsing */ }
 })();
 
+// Choose the email provider from env. An explicit EMAIL_PROVIDER wins; otherwise
+// infer from whichever credential set is present so a single env var is enough.
+function resolveEmailProvider() {
+  const explicit = (process.env.EMAIL_PROVIDER || '').trim().toLowerCase();
+  if (explicit && explicit !== 'auto') return explicit;   // honor an explicit choice
+  if ((process.env.RESEND_API_KEY || '').trim()) return 'resend';
+  if ((process.env.MS_TENANT_ID || '').trim() &&
+      (process.env.MS_CLIENT_ID || '').trim() &&
+      (process.env.MS_CLIENT_SECRET || '').trim()) return 'graph';
+  return 'none';
+}
+
 module.exports = {
   port:          process.env.PORT || 3000,
   env:           process.env.NODE_ENV || 'development',
@@ -41,7 +53,13 @@ module.exports = {
   intakeApiKey:  process.env.INTAKE_API_KEY,     // shared secret the site sends with submissions
 
   // --- notifications (email fan-out) ---
-  emailProvider: process.env.EMAIL_PROVIDER || 'none',   // 'graph' | 'resend' | 'none'
+  // Provider is auto-detected from the credentials present so email works as
+  // soon as a key is added, without also having to flip EMAIL_PROVIDER:
+  //   RESEND_API_KEY set            -> resend
+  //   MS_* client-credential set    -> graph
+  //   nothing / EMAIL_PROVIDER=none -> none (logs only; in-app still works)
+  // An explicit EMAIL_PROVIDER always wins.
+  emailProvider: resolveEmailProvider(),
   notifyFrom:    process.env.NOTIFY_FROM || 'YS Capital Group <no-reply@yscapgroup.com>',
   appUrl:        (process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,''),  // base for links in emails
   notifyAdmins:  (process.env.NOTIFY_ADMINS || '').split(',').map(s => s.trim()).filter(Boolean),

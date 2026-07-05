@@ -21,13 +21,23 @@ services:
         generateValue: true
       - key: INTAKE_API_KEY
         generateValue: true
+      # 'auto' picks the provider from whatever credentials are present:
+      # set RESEND_API_KEY below and email turns on automatically. Force a
+      # provider by setting this to resend|graph|none instead.
       - key: EMAIL_PROVIDER
-        value: none
+        value: auto
       - key: NOTIFY_FROM
-        value: no-reply@yscapitalgroup.com
-      # Fill these in the dashboard when you wire notifications / ClickUp:
-      # NOTIFY_ADMINS, MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET,
-      # RESEND_API_KEY, CLICKUP_API_TOKEN
+        value: YS Capital Group <no-reply@yscapgroup.com>
+      # Base URL used for links inside emails (verify/reset). Set to the portal's
+      # public URL, e.g. https://yscap.onrender.com or your custom domain.
+      - key: APP_URL
+        value: https://yscap.onrender.com
+      # Paste your Resend API key in the dashboard (kept out of git). NOTIFY_FROM's
+      # domain (yscapgroup.com) must be a verified domain in your Resend account.
+      - key: RESEND_API_KEY
+        sync: false
+      # Fill these in the dashboard when you wire the rest:
+      # NOTIFY_ADMINS, MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, CLICKUP_API_TOKEN
 databases:
   - name: ys-capital-db
     plan: basic-256mb
