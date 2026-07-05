@@ -130,6 +130,23 @@ router.post('/applications', async (req, res) => {
       [firstName, lastName || '', email, bo.phone || null]);
     const borrowerId = br.rows[0].id;
 
+    // SECURITY: a scoped officer/processor must not be able to originate a file
+    // against a PRE-EXISTING borrower they have no prior relationship with —
+    // that would auto-assign them and unlock the borrower's decrypted SSN and
+    // documents (canSeeBorrower keys off assignment to ANY of the borrower's
+    // files). seesAll staff, and staff already on one of the borrower's files,
+    // are allowed; everyone else must route it through an admin.
+    if (!br.rows[0].created && !seesAll(req)) {
+      const rel = await db.query(
+        `SELECT 1 FROM applications WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+        [borrowerId, req.actor.id]);
+      if (!rel.rows[0]) {
+        // Undo the borrower row if THIS request just created it (it didn't here,
+        // since created=false), then refuse.
+        return res.status(403).json({ error: 'This borrower already has a file with YS. Ask an admin to originate or assign this file to you.' });
+      }
+    }
+
     // Resolve the assigned officer: explicit pick, else the creator when they
     // are a loan officer (their own pipeline), else null => Lead Capture.
     let officerId = null, officerName = null;
@@ -720,12 +737,17 @@ router.getApprovedDocuments = getApprovedDocuments;
 async function canSeeDocument(req, doc) {
   if (seesAll(req)) return true;
   if (doc.application_id) {
+    // An application document is authorized SOLELY by assignment to its own
+    // application — never fall through to the borrower's other files, or an
+    // officer on App1 could reach App2 of the same borrower.
     const r = await db.query(
       `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`,
       [doc.application_id, req.actor.id]);
-    if (r.rows[0]) return true;
+    return !!r.rows[0];
   }
   if (doc.borrower_id) {
+    // Only borrower/llc-scoped documents (no application_id) use the
+    // borrower-wide fallback.
     const r = await db.query(
       `SELECT 1 FROM applications WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
       [doc.borrower_id, req.actor.id]);

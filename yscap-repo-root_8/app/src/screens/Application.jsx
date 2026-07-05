@@ -17,7 +17,71 @@ const TOOLS = {
   rehab_budget: { name: 'Rehab Budget', url: '/tools/rehab-budget.html', blurb: 'Build your construction budget and Scope of Work, then export it.' },
   track_record: { name: 'Track Record', url: '/tools/track-record.html', blurb: 'Enter your prior deals (REO / experience): LLC, address, price, dates.' },
 };
+// Contact tasks are FORMS, not uploads: the borrower enters their title / insurance
+// contact and it saves to a reusable contact book (autocompletes on future files).
+const CONTACT = {
+  title_contact:     { type: 'title_company',  name: 'Title company', blurb: 'Enter your title company contact — no upload needed.' },
+  insurance_contact: { type: 'insurance_agent', name: 'Insurance agent', blurb: 'Enter your insurance agent contact — no upload needed.' },
+};
 const isDone = (s) => s === 'received' || s === 'satisfied' || s === 'done';
+
+// Inline contact form that satisfies a title/insurance checklist task. Suggests
+// the borrower's previously-used contacts of the same type as they type.
+function ContactTask({ it, appId, onSaved }) {
+  const meta = CONTACT[it.tool_key];
+  const done = isDone(it.status);
+  const [saved, setSaved] = useState([]);
+  const [f, setF] = useState({ companyName: '', contactName: '', email: '', phone: '' });
+  const [contactId, setContactId] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(!done);
+  useEffect(() => { api.contacts(meta.type).then(setSaved).catch(() => {}); }, [meta.type]);
+  const useSaved = (c) => { setContactId(c.id); setF({ companyName: c.company_name || '', contactName: c.contact_name || '', email: c.email || '', phone: c.phone || '' }); };
+  async function submit() {
+    setBusy(true);
+    try {
+      await api.saveContact({ contactType: meta.type, contactId, ...f, applicationId: appId, checklistItemId: it.id });
+      setOpen(false); await onSaved();
+    } catch (e) { alert(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="checkitem" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
+      <div className="row" style={{ width: '100%', gap: 8 }}>
+        <span className={`dot ${done ? 'done' : 'outstanding'}`} style={{ marginTop: 4 }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600 }}>{it.label}</div>
+          <div className="muted small">{meta.blurb}</div>
+        </div>
+        <span className="muted small" style={{ textTransform: 'capitalize' }}>{done ? 'Submitted' : (it.status || 'to do')}</span>
+        {done && <button className="btn link small" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'Edit'}</button>}
+      </div>
+      {open && (
+        <div style={{ width: '100%' }}>
+          {saved.length > 0 && (
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+              <span className="muted small">Use a saved contact:</span>
+              {saved.map(c => <button key={c.id} className="btn ghost small" onClick={() => useSaved(c)}>{c.company_name || c.contact_name || c.email}</button>)}
+            </div>
+          )}
+          <div className="grid cols-2">
+            <div className="field"><label>Company / agency</label>
+              <input className="input" value={f.companyName} onChange={e => setF({ ...f, companyName: e.target.value })} /></div>
+            <div className="field"><label>Contact name</label>
+              <input className="input" value={f.contactName} onChange={e => setF({ ...f, contactName: e.target.value })} /></div>
+          </div>
+          <div className="grid cols-2">
+            <div className="field"><label>Email</label>
+              <input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
+            <div className="field"><label>Phone</label>
+              <input className="input" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></div>
+          </div>
+          <button className="btn primary" onClick={submit} disabled={busy}>{busy ? 'Saving…' : 'Submit to YS'}</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Compose a one-line address from the application's property_address jsonb.
 const oneLineAddr = (a) => !a ? '' : (a.oneLine || [a.street, a.line1, a.city, a.state, a.zip].filter(Boolean).join(', '));
@@ -96,7 +160,8 @@ export default function Application() {
   const idx = Math.max(0, FLOW.indexOf(app.status));
 
   const toolTasks = items.filter(it => it.tool_key && TOOLS[it.tool_key]);
-  const docs = items.filter(it => !(it.tool_key && TOOLS[it.tool_key]));
+  const contactTasks = items.filter(it => it.tool_key && CONTACT[it.tool_key]);
+  const docs = items.filter(it => !(it.tool_key && (TOOLS[it.tool_key] || CONTACT[it.tool_key])));
 
   return (
     <>
@@ -159,6 +224,16 @@ export default function Application() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {contactTasks.length > 0 && (
+        <div className="panel" style={{ marginTop: 18 }}>
+          <h3 style={{ marginBottom: 4 }}>Your contacts</h3>
+          <p className="muted small" style={{ marginBottom: 12 }}>
+            Enter your title company and insurance agent — we save them so you never re-type them on your next file.
+          </p>
+          {contactTasks.map(it => <ContactTask key={it.id} it={it} appId={id} onSaved={load} />)}
         </div>
       )}
 

@@ -131,7 +131,12 @@ export default function Apply() {
     save({ data: { loanOfficerName: name || '', loanOfficerEmail: (o && o.email) || '' } });
   };
 
-  const goStep = async (n) => { await flush(); setStep(n); save({ step: n }); };
+  const goStep = async (n) => {
+    // Don't let the clickable stepper jump past property basics with an
+    // incomplete step 1 (street + type + units) — the file needs them.
+    if (n > 1 && !(form && form.propertyAddress && form.propertyAddress.street && form.propertyType && form.units)) { setStep(1); return; }
+    await flush(); setStep(n); save({ step: n });
+  };
 
   async function submit() {
     setErr(''); setBusy(true);
@@ -344,7 +349,7 @@ export default function Apply() {
           <div className="spacer" />
           <SaveChip status={status} />
           {step < 3 && <button className="btn primary" type="button" onClick={() => goStep(step + 1)} disabled={step === 1 && !step1Ready}>Continue</button>}
-          {step === 3 && <button className="btn primary" type="button" onClick={submit} disabled={busy || !a.street}>Submit application</button>}
+          {step === 3 && <button className="btn primary" type="button" onClick={submit} disabled={busy || !step1Ready}>Submit application</button>}
         </div>
       </form>
     </>

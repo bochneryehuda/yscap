@@ -233,6 +233,63 @@ router.get('/llcs/:id/documents', async (req, res) => {
   res.json(r.rows);
 });
 
+// ---------------- SERVICE CONTACTS (title company / insurance agent) ----------------
+// Reusable across files: the borrower enters a contact once and links it on
+// future files via autocomplete. tool_key on the checklist item decides which
+// contact type the form collects.
+const CONTACT_TYPES = ['title_company', 'insurance_agent', 'attorney', 'contractor', 'other'];
+router.get('/contacts', async (req, res) => {
+  const type = CONTACT_TYPES.includes(req.query.type) ? req.query.type : null;
+  const r = await db.query(
+    `SELECT id,contact_type,company_name,contact_name,email,phone,last_used_at
+       FROM service_contacts WHERE borrower_id=$1 AND ($2::text IS NULL OR contact_type=$2)
+      ORDER BY last_used_at DESC NULLS LAST, updated_at DESC`, [me(req), type]);
+  res.json(r.rows);
+});
+// Save/attach a contact. Optionally links it to an application + satisfies a
+// checklist item (the title/insurance "contact" tasks are forms, not uploads).
+router.post('/contacts', async (req, res) => {
+  const b = req.body || {};
+  const type = CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
+  if (!b.companyName && !b.contactName && !b.email && !b.phone)
+    return res.status(400).json({ error: 'enter at least one contact detail' });
+  if (b.applicationId) {
+    const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
+    if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
+  }
+  let contactId = b.contactId || null;
+  if (contactId) {
+    const upd = await db.query(
+      `UPDATE service_contacts SET company_name=$3,contact_name=$4,email=$5,phone=$6,updated_at=now(),last_used_at=now()
+        WHERE id=$1 AND borrower_id=$2 RETURNING id`,
+      [contactId, me(req), b.companyName || null, b.contactName || null, b.email || null, b.phone || null]);
+    if (!upd.rows[0]) contactId = null;
+  }
+  if (!contactId) {
+    const ins = await db.query(
+      `INSERT INTO service_contacts (borrower_id,contact_type,company_name,contact_name,email,phone,last_used_at)
+       VALUES ($1,$2,$3,$4,$5,$6,now()) RETURNING id`,
+      [me(req), type, b.companyName || null, b.contactName || null, b.email || null, b.phone || null]);
+    contactId = ins.rows[0].id;
+  }
+  if (b.applicationId) {
+    await db.query(
+      `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type)
+       VALUES ($1,$2,$3) ON CONFLICT (application_id,contact_type)
+       DO UPDATE SET service_contact_id=EXCLUDED.service_contact_id, created_at=now()`,
+      [b.applicationId, contactId, type]);
+  }
+  // Submitting the contact form satisfies its checklist task (moves to review).
+  if (b.checklistItemId) {
+    await db.query(
+      `UPDATE checklist_items SET status='received', updated_at=now()
+        WHERE id=$1 AND application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)`,
+      [b.checklistItemId, me(req)]);
+  }
+  await audit(req, 'save_contact', 'borrower', me(req), { contactType: type, applicationId: b.applicationId || null });
+  res.status(201).json({ ok: true, contactId });
+});
+
 // ---------------- TRACK RECORDS (on the borrower profile) ----------------
 router.get('/track-records', async (req, res) => {
   const r = await db.query(`SELECT * FROM track_records WHERE borrower_id=$1 ORDER BY sale_date DESC NULLS LAST, created_at DESC`, [me(req)]);
@@ -286,7 +343,7 @@ router.post('/documents', async (req, res) => {
           review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
         WHERE checklist_item_id=$1 AND borrower_id=$2 AND id<>$3 AND is_current=true`,
       [b.checklistItemId, me(req), r.rows[0].id]);
-    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
+    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
   }
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
@@ -395,7 +452,7 @@ router.get('/messages', async (req, res) => {
       WHERE m.channel='borrower'                     -- internal team notes are NEVER shown to borrowers
         AND ($2::uuid IS NULL OR m.application_id=$2)
         AND (m.borrower_id=$1 OR m.application_id IN
-             (SELECT id FROM applications WHERE co_borrower_id=$1))
+             (SELECT id FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1))
       ORDER BY m.created_at`,
     [me(req), req.query.applicationId || null]);
   // Opening the thread clears the "new message" badge for staff replies.
