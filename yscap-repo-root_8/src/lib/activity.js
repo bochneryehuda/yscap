@@ -27,7 +27,9 @@ async function fileActivity(appId, onlySafe) {
                CASE WHEN status='cleared' THEN 'cleared a condition'
                     WHEN status='waived' THEN 'waived a condition'
                     ELSE 'added a condition' END,
-               COALESCE(borrower_title, title)
+               -- Borrower feed ($2=true) never sees the internal title.
+               CASE WHEN $2::bool THEN COALESCE(borrower_title, 'a condition')
+                    ELSE COALESCE(borrower_title, title) END
           FROM conditions WHERE application_id=$1
         UNION ALL
         SELECT status_changed_at, 'status', 'staff', true,

@@ -163,7 +163,6 @@ export default function Application() {
 
   if (err) return <div className="notice err">{err}</div>;
   if (!app) return <div className="panel muted">Loading…</div>;
-  const idx = Math.max(0, FLOW.indexOf(app.status));
 
   const toolTasks = items.filter(it => it.tool_key && TOOLS[it.tool_key]);
   const contactTasks = items.filter(it => it.tool_key && CONTACT[it.tool_key]);
@@ -184,17 +183,11 @@ export default function Application() {
       <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
 
       <div className="grid cols-2">
-        <div className="panel">
-          <h3 style={{ marginBottom: 12 }}>Status</h3>
-          <ul className="timeline">
-            {FLOW.map((s, i) => (
-              <li key={s} className={i <= idx ? 'on' : ''}>{LABEL[s]}</li>
-            ))}
-          </ul>
-        </div>
-        <div className="panel">
+        <StatusTimeline appId={id} status={app.status} createdAt={app.created_at}
+          expectedClosing={app.expected_closing} actualClosing={app.actual_closing} />
+        <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Loan snapshot</h3>
-          <div className="metrow"><span className="k">Officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}</span></div>
+          <div className="metrow"><span className="k">Officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}{app.team_online && <span title="Your loan team is online now" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#3fb950', marginLeft: 8, verticalAlign: 'middle' }} />}</span></div>
           <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>
           <div className="metrow"><span className="k">As-is value</span><span className="v">{money(app.as_is_value)}</span></div>
           <div className="metrow"><span className="k">ARV</span><span className="v">{money(app.arv)}</span></div>
@@ -202,8 +195,6 @@ export default function Application() {
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
         </div>
       </div>
-
-      <StatusTimeline appId={id} status={app.status} expectedClosing={app.expected_closing} actualClosing={app.actual_closing} />
 
       {toolTasks.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>

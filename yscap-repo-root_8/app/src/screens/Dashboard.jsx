@@ -46,6 +46,19 @@ export default function Dashboard() {
   }
   const pct = (a) => a.borrower_total > 0 ? Math.round((a.borrower_done / a.borrower_total) * 100) : 0;
 
+  // Notifications: mark read on open (clears the header bell badge) and navigate
+  // to the linked file; plus a "mark all read".
+  async function openNotif(n) {
+    if (!n.read_at) { try { await api.readNotif(n.id); } catch { /* non-fatal */ } }
+    setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read_at: x.read_at || new Date().toISOString() } : x));
+    if (n.link) { const r = String(n.link).includes('#') ? String(n.link).split('#')[1] : n.link; if (r && r.startsWith('/')) nav(r); }
+  }
+  async function markAllRead() {
+    const unread = notifs.filter(n => !n.read_at);
+    setNotifs(ns => ns.map(x => ({ ...x, read_at: x.read_at || new Date().toISOString() })));
+    try { await Promise.all(unread.map(n => api.readNotif(n.id))); } catch { /* non-fatal */ }
+  }
+
   // Cross-file "what's next" roll-up, computed from the list we already loaded.
   const activeApps = (apps || []).filter(a => !['declined', 'withdrawn'].includes(a.status));
   const outstanding = (apps || []).reduce((s, a) => s + Math.max(0, (a.borrower_total || 0) - (a.borrower_done || 0)), 0);
@@ -142,9 +155,13 @@ export default function Dashboard() {
 
       {notifs.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>
-          <h3 style={{ marginBottom: 6 }}>Recent activity</h3>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <h3 style={{ margin: 0 }}>Recent activity</h3>
+            {notifs.some(n => !n.read_at) && <button className="btn link small" onClick={markAllRead}>Mark all read</button>}
+          </div>
           {notifs.slice(0, 6).map(n => (
-            <div className="checkitem" key={n.id}>
+            <div className="checkitem" key={n.id} style={{ cursor: n.read_at ? 'default' : 'pointer' }}
+              onClick={() => openNotif(n)} title={n.read_at ? '' : 'Mark as read'}>
               <span className={`dot ${n.read_at ? 'done' : 'outstanding'}`} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>{n.title}</div>

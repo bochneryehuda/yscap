@@ -18,19 +18,21 @@ const IDX = Object.fromEntries(PATH.map((p, i) => [p.s, i]));
 const TERMINAL = { declined: 'Declined', withdrawn: 'Withdrawn' };
 const fmt = (d) => d ? new Date(d).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 
-export default function StatusTimeline({ appId, status, expectedClosing, actualClosing }) {
+export default function StatusTimeline({ appId, status, createdAt, expectedClosing, actualClosing }) {
   const [hist, setHist] = useState(null);
   useEffect(() => { api.statusHistory(appId).then(r => setHist(r || [])).catch(() => setHist([])); }, [appId]);
 
-  // Earliest date each status was reached.
+  // Earliest date each status was reached; the file's creation is the
+  // "Submitted" milestone when no explicit history row exists for it.
   const reachedAt = {};
   for (const h of (hist || [])) if (!reachedAt[h.to_status]) reachedAt[h.to_status] = h.created_at;
+  if (!reachedAt['new'] && createdAt) reachedAt['new'] = createdAt;
 
   const terminal = TERMINAL[status];
   const curIdx = terminal ? -1 : (IDX[status] != null ? IDX[status] : 0);
 
   return (
-    <div className="panel" style={{ marginTop: 18 }}>
+    <div className="panel" style={{ marginTop: 0 }}>
       <h3 style={{ marginBottom: 12 }}>Your loan progress</h3>
       <ol className="timeline">
         {PATH.map((p, i) => {

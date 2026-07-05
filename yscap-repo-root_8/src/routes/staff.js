@@ -63,8 +63,10 @@ function scopeClause(req, alias = 'a') {
 router.use('/applications/:id', async (req, res, next) => {
   try {
     if (seesAll(req)) return next();
+    // A soft-deleted file is inaccessible to non-privileged staff (admins can
+    // still reach it to restore); this blocks open/mutate-by-direct-link.
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`,
+      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL AND (loan_officer_id=$2 OR processor_id=$2)`,
       [req.params.id, req.actor.id]);
     if (!r.rows[0]) return res.status(403).json({ error: 'forbidden' });
     next();
@@ -162,10 +164,15 @@ router.get('/my-tasks', async (req, res) => {
 });
 
 router.get('/lead-capture', async (req, res) => {
+  // Assigning unassigned files is an admin/underwriter function (a loan officer
+  // or processor can't even open an unassigned file — the path-scope guard
+  // 403s it), so only they see this queue and its borrower PII. Soft-deleted
+  // files are excluded.
+  if (!seesAll(req)) return res.status(403).json({ error: 'forbidden' });
   const r = await db.query(
     `SELECT a.id,a.ys_loan_number,a.program,a.property_address,a.created_at,b.first_name,b.last_name,b.email
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
-     WHERE a.loan_officer_id IS NULL ORDER BY a.created_at DESC`);
+     WHERE a.loan_officer_id IS NULL AND a.deleted_at IS NULL ORDER BY a.created_at DESC`);
   res.json(r.rows);
 });
 
@@ -235,19 +242,30 @@ router.post('/applications', async (req, res) => {
     // (otherwise they'd immediately lose sight of the file they just created).
     if (!processorId && req.actor.role === 'processor') processorId = req.actor.id;
 
+    // Assignment purchases: capture the underlying price + fee (like the
+    // borrower path) so leverage/pricing size off seller price + fee and the
+    // assignment doc is generated.
+    const isAssignment = !!b.isAssignment && Number(b.underlyingContractPrice) > 0;
+    const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
+    const assignFee = isAssignment ? (b.assignmentFee || null) : null;
+    const purchasePrice = isAssignment
+      ? (Number(b.underlyingContractPrice || 0) + Number(b.assignmentFee || 0))
+      : (b.purchasePrice || null);
+
     const ins = await db.query(
       `INSERT INTO applications
          (borrower_id,property_address,property_type,units,program,loan_type,
           purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
-          processor_id,source,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'staff','new',now())
+          processor_id,is_assignment,underlying_contract_price,assignment_fee,source,status,submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
-       b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
-       b.arv || null, b.rehabBudget || null, officerId, officerName, processorId]);
+       b.program || null, b.loanType || null, purchasePrice, b.asIsValue || null,
+       b.arv || null, b.rehabBudget || null, officerId, officerName, processorId,
+       isAssignment, underlying, assignFee]);
     const appId = ins.rows[0].id;
 
-    try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType); }
+    try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType, { isAssignment }); }
     catch (e) { console.error('[staff-origination] checklist failed:', db.describeError(e)); }
     await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId });
 
@@ -607,10 +625,12 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
       const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
       if (a.rows[0]?.borrower_id) {
         try {
-          await notify.notifyBorrower(a.rows[0].borrower_id, {
+          await notify.notifyAppBorrowers(req.params.id, {
             type: 'condition_added', title: 'A new item needs your attention',
-            body: b.borrowerTitle || b.title, applicationId: req.params.id,
-            link: `/app/${req.params.id}`, ctaLabel: 'See what we need' });
+            // Never surface the internal title to the borrower — use the
+            // borrower-facing wording, or a generic prompt if none was given.
+            body: b.borrowerTitle || 'Your loan team added an item to your file — sign in to see what we need.',
+            applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'See what we need' });
         } catch (_) {}
       }
     }
@@ -820,6 +840,32 @@ router.get('/applications/:id/status-history', async (req, res) => {
   res.json(r.rows);
 });
 
+// Edit core loan-file data after creation (fix a typo'd price, wrong property
+// type, omitted assignment flag, etc.). Scoped by the /applications/:id guard
+// to admins + the assigned officer/processor. Money/unit fields are coerced.
+router.patch('/applications/:id/details', async (req, res) => {
+  const b = req.body || {};
+  const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
+    arv: 'arv', rehabBudget: 'rehab_budget', underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
+  const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy' };
+  const sets = [], vals = []; let i = 1;
+  for (const [k, col] of Object.entries(NUM)) if (k in b) {
+    const n = b[k] === '' || b[k] == null ? null : Number(b[k]);
+    if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
+    sets.push(`${col}=$${i++}`); vals.push(n);
+  }
+  for (const [k, col] of Object.entries(STR)) if (k in b) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : String(b[k]).slice(0, 200)); }
+  if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); }
+  if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? JSON.stringify(b.propertyAddress) : null); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  try {
+    await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    await audit(req, 'edit_application', 'application', req.params.id, { fields: Object.keys(b) });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Nudge the borrower with a friendly reminder of what's still outstanding on
 // their file (borrower-facing checklist items + open borrower conditions).
 router.post('/applications/:id/nudge', async (req, res) => {
@@ -830,13 +876,17 @@ router.post('/applications/:id/nudge', async (req, res) => {
       `SELECT COALESCE(borrower_label,label) AS label FROM checklist_items
         WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('outstanding','requested','issue')
         ORDER BY sort_order LIMIT 20`, [req.params.id]);
+    // Conditions must use the BORROWER-facing wording only — never fall back to
+    // the internal title, which can carry underwriting / capital-partner detail.
+    // A borrower/both condition without borrower_title is skipped from the nudge.
     const conds = await db.query(
-      `SELECT COALESCE(borrower_title,title) AS title FROM conditions
-        WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('open','borrower_responded') LIMIT 20`, [req.params.id]);
+      `SELECT borrower_title AS title FROM conditions
+        WHERE application_id=$1 AND audience IN ('borrower','both') AND borrower_title IS NOT NULL
+          AND status IN ('open','borrower_responded') LIMIT 20`, [req.params.id]);
     const list = [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
     if (!list.length) return res.status(400).json({ error: 'nothing outstanding to remind about' });
     const shown = list.slice(0, 8).join('; ') + (list.length > 8 ? `; +${list.length - 8} more` : '');
-    await notify.notifyBorrower(a.rows[0].borrower_id, {
+    await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items' });
@@ -850,8 +900,16 @@ router.post('/applications/:id/nudge', async (req, res) => {
 router.post('/applications/:id/closing-date', async (req, res) => {
   const b = req.body || {};
   const sets = [], vals = []; let i = 1;
-  const bad = (v) => v && !/^\d{4}-\d{2}-\d{2}$/.test(String(v));
-  if (bad(b.expectedClosing) || bad(b.actualClosing)) return res.status(400).json({ error: 'dates must be YYYY-MM-DD' });
+  // Reject not just bad format but impossible calendar dates (2026-13-45), which
+  // would otherwise reach Postgres and surface as an opaque 500.
+  const bad = (v) => {
+    if (!v) return false;
+    const s = String(v);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return true;
+    const d = new Date(s + 'T00:00:00Z');
+    return isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s;
+  };
+  if (bad(b.expectedClosing) || bad(b.actualClosing)) return res.status(400).json({ error: 'dates must be a valid YYYY-MM-DD' });
   if ('expectedClosing' in b) { sets.push(`expected_closing=$${i++}`); vals.push(b.expectedClosing || null); }
   if ('actualClosing' in b) { sets.push(`actual_closing=$${i++}`); vals.push(b.actualClosing || null); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
@@ -863,7 +921,7 @@ router.post('/applications/:id/closing-date', async (req, res) => {
       const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
       if (a.rows[0] && a.rows[0].borrower_id) {
         const nice = new Date(b.expectedClosing + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-        await notify.notifyBorrower(a.rows[0].borrower_id, {
+        await notify.notifyAppBorrowers(req.params.id, {
           type: 'closing_date', title: 'Estimated closing date set',
           body: `Your loan is now targeting ${nice}. We'll keep you posted as it approaches.`,
           applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
@@ -902,11 +960,10 @@ router.patch('/applications/:id', async (req, res) => {
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
     const label = STATUS_LABEL[status] || status;
     try {
-      if (cur.rows[0].borrower_id)
-        await notify.notifyBorrower(cur.rows[0].borrower_id, {
-          type: 'status_change', title: `Your loan status: ${label}`,
-          body: `Your application has moved to "${label}". Sign in to see the latest.`,
-          applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
+      await notify.notifyAppBorrowers(req.params.id, {
+        type: 'status_change', title: `Your loan status: ${label}`,
+        body: `Your application has moved to "${label}". Sign in to see the latest.`,
+        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
       const team = new Set([cur.rows[0].loan_officer_id, cur.rows[0].processor_id].filter(Boolean).filter(x => x !== req.actor.id));
       for (const sid of team)
         await notify.notifyStaff(sid, {
