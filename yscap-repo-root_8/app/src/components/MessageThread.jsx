@@ -1,33 +1,63 @@
 import React, { useEffect, useRef, useState } from 'react';
 
-/* Secure per-file conversation with rich media. `mine` is the sender_kind that
-   renders on the right. The parent supplies:
-     fetchMessages() -> [...]                (channel-bound)
-     send(body, { makeTask, attachment })    (attachment = {filename, contentType, dataBase64})
+/* Secure per-file conversation with rich media, reactions and entity mentions.
+   The parent supplies:
+     fetchMessages() -> [...]
+     send(body, { makeTask, attachment, entityRefs })
      downloadAttachment(docId) -> { blob, filename }
-   Features: read receipts (Sent / Seen), photo + video + PDF + any-file
-   attachments, and in-browser voice notes (MediaRecorder). */
+     react(messageId, emoji) -> toggles (optional)
+     fetchMentionables() -> { users, tasks, documents, applications } (optional)
+     onOpenApplication(id) (optional; entity chip navigation)
+   Type @ to mention a person (they get pinged) or # to mention a task,
+   document, or application — inserted as a chip linked to the real record. */
 
+const QUICK_EMOJI = ['👍', '❤️', '✅', '👀', '🎉', '❓'];
+const REF_ICON = { task: '☑', document: '⎙', application: '🏠', borrower: '👤' };
 const fmtSize = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
-
-/* Highlight @mentions inside a message body. */
-function renderBody(text) {
-  const parts = String(text).split(/(@[A-Za-z][\w.'-]*(?:\s[A-Z][\w.'-]*)?)/g);
-  return parts.map((p, i) => p && p.startsWith('@') ? <span key={i} className="mention">{p}</span> : p);
-}
 const readFileAsBase64 = (file) => new Promise((res, rej) => {
   const r = new FileReader();
   r.onload = () => res(String(r.result).split(',')[1] || '');
   r.onerror = rej; r.readAsDataURL(file);
 });
 
-/* Media bubble content — fetches the blob with auth and renders by kind. */
+/* Body renderer: entity chips (#Label from entity_refs) + @mention highlights. */
+function renderBody(text, refs, onRef) {
+  let nodes = [String(text)];
+  (refs || []).forEach((ref, ri) => {
+    const tag = '#' + ref.label;
+    nodes = nodes.flatMap(n => {
+      if (typeof n !== 'string') return [n];
+      const segs = n.split(tag);
+      return segs.flatMap((seg, i) => i < segs.length - 1
+        ? [seg, <button key={`r${ri}-${i}`} className="entity-chip" title={ref.type} onClick={() => onRef && onRef(ref)}>
+            <span>{REF_ICON[ref.type] || '#'}</span>{ref.label}
+          </button>]
+        : [seg]);
+    });
+  });
+  return nodes.flatMap((n, i) => {
+    if (typeof n !== 'string') return [n];
+    const parts = n.split(/(@[A-Za-z][\w.'-]*(?:\s[A-Z][\w.'-]*)?)/g);
+    return parts.map((p, k) => p && p.startsWith('@') ? <span key={`m${i}-${k}`} className="mention">{p}</span> : p);
+  });
+}
+
+/* Aggregate raw reaction rows into chips: emoji -> {count, mine}. */
+function groupReactions(list, mineKind) {
+  const map = new Map();
+  (list || []).forEach(r => {
+    const g = map.get(r.emoji) || { emoji: r.emoji, count: 0, mine: false };
+    g.count++; if (r.kind === mineKind) g.mine = true;   // approximation: my kind reacted
+    map.set(r.emoji, g);
+  });
+  return [...map.values()];
+}
+
 function Attachment({ m, download }) {
   const [url, setUrl] = useState(null);
   const [err, setErr] = useState(false);
   const [busy, setBusy] = useState(false);
   const auto = m.attachment_kind === 'image' || m.attachment_kind === 'audio' || m.attachment_kind === 'video';
-
   useEffect(() => {
     let alive = true, obj = null;
     if (auto && m.attachment_document_id) {
@@ -38,7 +68,6 @@ function Attachment({ m, download }) {
     return () => { alive = false; if (obj) URL.revokeObjectURL(obj); };
     // eslint-disable-next-line
   }, [m.attachment_document_id]);
-
   async function saveIt() {
     setBusy(true);
     try {
@@ -51,15 +80,12 @@ function Attachment({ m, download }) {
     } catch { setErr(true); }
     finally { setBusy(false); }
   }
-
   if (!m.attachment_document_id) return null;
   if (err) return <div className="msg-att-file">Attachment unavailable</div>;
   if (m.attachment_kind === 'image' && url)
     return <img className="msg-att-img" src={url} alt={m.attachment_name || 'photo'} onClick={saveIt} title="Click to download" />;
-  if (m.attachment_kind === 'audio' && url)
-    return <audio className="msg-att-audio" controls src={url} />;
-  if (m.attachment_kind === 'video' && url)
-    return <video className="msg-att-video" controls src={url} />;
+  if (m.attachment_kind === 'audio' && url) return <audio className="msg-att-audio" controls src={url} />;
+  if (m.attachment_kind === 'video' && url) return <video className="msg-att-video" controls src={url} />;
   if (auto && !url) return <div className="msg-att-file">Loading media…</div>;
   return (
     <button className="msg-att-file" onClick={saveIt} disabled={busy} title="Download">
@@ -71,12 +97,17 @@ function Attachment({ m, download }) {
 }
 
 export default function MessageThread({ mine, fetchMessages, send, downloadAttachment,
+  react, fetchMentionables, onOpenApplication,
   title = 'Messages', header = null, hint = '', taskOption = false, bare = false }) {
   const [msgs, setMsgs] = useState(null);
   const [body, setBody] = useState('');
   const [makeTask, setMakeTask] = useState(false);
-  const [pending, setPending] = useState(null);      // {filename, contentType, dataBase64, size}
-  const [recState, setRecState] = useState('idle');  // idle | recording | unsupported
+  const [pending, setPending] = useState(null);
+  const [pendingRefs, setPendingRefs] = useState([]);
+  const [mentionables, setMentionables] = useState(null);
+  const [picker, setPicker] = useState(null);          // {trigger:'@'|'#', query, start}
+  const [reactFor, setReactFor] = useState(null);      // message id with open emoji picker
+  const [recState, setRecState] = useState('idle');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const endRef = useRef(null);
@@ -85,8 +116,49 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
 
   const load = () => fetchMessages().then(m => setMsgs(m || [])).catch(e => setErr(e.message));
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => {
+    if (fetchMentionables) fetchMentionables().then(setMentionables).catch(() => {});
+    // eslint-disable-next-line
+  }, []);
   useEffect(() => { if (endRef.current) endRef.current.scrollIntoView({ block: 'nearest' }); }, [msgs]);
 
+  /* ---------- @/# autocomplete ---------- */
+  function pickerItems() {
+    if (!picker || !mentionables) return [];
+    const q = picker.query.toLowerCase();
+    const match = (arr, type) => (arr || [])
+      .filter(x => !q || String(x.label).toLowerCase().includes(q))
+      .slice(0, 6).map(x => ({ ...x, type }));
+    if (picker.trigger === '@') return match(mentionables.users, 'user');
+    return [
+      ...match(mentionables.tasks, 'task'),
+      ...match(mentionables.documents, 'document'),
+      ...match(mentionables.applications, 'application'),
+    ].slice(0, 9);
+  }
+  function onBodyChange(e) {
+    const v = e.target.value;
+    setBody(v);
+    const caret = e.target.selectionStart ?? v.length;
+    const upto = v.slice(0, caret);
+    const m = /(^|\s)([@#])([^@#\n]{0,40})$/.exec(upto);
+    if (m && (fetchMentionables || m[2] === '@')) setPicker({ trigger: m[2], query: m[3], start: caret - m[3].length - 1 });
+    else setPicker(null);
+  }
+  function choosePick(item) {
+    const label = item.label;
+    const before = body.slice(0, picker.start);
+    const after = body.slice(picker.start + 1 + picker.query.length);
+    const token = (picker.trigger === '@' ? '@' : '#') + label;
+    setBody(before + token + ' ' + after);
+    if (picker.trigger === '#') {
+      setPendingRefs(refs => refs.some(r => r.id === item.id && r.type === item.type)
+        ? refs : [...refs, { type: item.type, id: item.id, label }]);
+    }
+    setPicker(null);
+  }
+
+  /* ---------- attachments & voice ---------- */
   async function onPickFile(e) {
     const f = e.target.files && e.target.files[0];
     if (!f) return;
@@ -97,7 +169,6 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
     } catch { setErr('Could not read that file.'); }
     finally { if (fileRef.current) fileRef.current.value = ''; }
   }
-
   async function toggleRecord() {
     if (recState === 'recording') { recRef.current && recRef.current.stop(); return; }
     if (!navigator.mediaDevices || !window.MediaRecorder) { setRecState('unsupported'); setErr('Voice notes are not supported in this browser.'); return; }
@@ -122,12 +193,31 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
     if (!text && !pending) return;
     setBusy(true); setErr('');
     try {
-      await send(text, { makeTask, attachment: pending || undefined });
-      setBody(''); setMakeTask(false); setPending(null);
+      const usedRefs = pendingRefs.filter(r => text.includes('#' + r.label));
+      await send(text, { makeTask, attachment: pending || undefined, entityRefs: usedRefs.length ? usedRefs : undefined });
+      setBody(''); setMakeTask(false); setPending(null); setPendingRefs([]); setPicker(null);
       await load();
     } catch (e) { setErr(e.message || 'Could not send'); }
     finally { setBusy(false); }
   }
+
+  async function doReact(mid, emoji) {
+    setReactFor(null);
+    if (!react) return;
+    try { await react(mid, emoji); await load(); } catch { /* non-fatal */ }
+  }
+  function onRefClick(ref) {
+    if (ref.type === 'document' && downloadAttachment) {
+      downloadAttachment(ref.id).then(({ blob, filename }) => {
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = u; a.download = filename || ref.label; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(u), 1500);
+      }).catch(() => {});
+    } else if (ref.type === 'application' && onOpenApplication) onOpenApplication(ref.id);
+  }
+
+  const items = pickerItems();
 
   return (
     <div className={bare ? '' : 'panel'} style={bare ? {} : { marginTop: 18 }}>
@@ -139,12 +229,13 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
           : msgs.length === 0 ? <p className="muted small">No messages yet. Start the conversation below.</p>
             : msgs.map(m => {
               const isMine = m.sender_kind === mine;
+              const rx = groupReactions(m.reactions, mine);
               return (
                 <div key={m.id} className={`msg-row ${isMine ? 'me' : 'them'}`}>
                   <div className={`msg-bubble ${isMine ? 'me' : 'them'}`}>
                     {!isMine && <div className="msg-from">{m.sender_name || (m.sender_kind === 'staff' ? 'Loan team' : 'Borrower')}</div>}
                     <Attachment m={m} download={downloadAttachment} />
-                    {m.body && <div className="msg-body">{renderBody(m.body)}</div>}
+                    {m.body && <div className="msg-body">{renderBody(m.body, m.entity_refs, onRefClick)}</div>}
                     {m.checklist_item_id && (
                       <div className="msg-task">✦ Saved as task{m.task_label ? `: ${m.task_label.slice(0, 60)}` : ''}{m.task_status ? ` · ${m.task_status}` : ''}</div>
                     )}
@@ -152,6 +243,25 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
                       {new Date(m.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
                       {isMine && <span className="msg-receipt">{m.read_at ? ' · ✓✓ Seen' : ' · ✓ Sent'}</span>}
                     </div>
+                    {(rx.length > 0 || react) && (
+                      <div className="msg-rx-row">
+                        {rx.map(g => (
+                          <button key={g.emoji} className={`msg-rx ${g.mine ? 'mine' : ''}`} onClick={() => doReact(m.id, g.emoji)}>
+                            {g.emoji} {g.count}
+                          </button>
+                        ))}
+                        {react && (
+                          <span style={{ position: 'relative' }}>
+                            <button className="msg-rx add" title="React" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}>🙂+</button>
+                            {reactFor === m.id && (
+                              <span className="msg-rx-pick">
+                                {QUICK_EMOJI.map(e => <button key={e} onClick={() => doReact(m.id, e)}>{e}</button>)}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -168,17 +278,35 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
         </div>
       )}
 
-      <div className="row" style={{ gap: 8, marginTop: 12, alignItems: 'center' }}>
-        <input ref={fileRef} type="file" style={{ display: 'none' }}
-          accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip" onChange={onPickFile} />
-        <button className="btn ghost msg-tool" title="Attach a photo, video, PDF or file" onClick={() => fileRef.current && fileRef.current.click()}>📎</button>
-        <button className={`btn ghost msg-tool ${recState === 'recording' ? 'rec' : ''}`}
-          title={recState === 'recording' ? 'Stop recording' : 'Record a voice note'} onClick={toggleRecord}>
-          {recState === 'recording' ? '■' : '🎤'}
-        </button>
-        <input className="input" placeholder={recState === 'recording' ? 'Recording voice note…' : 'Write a message…'} value={body}
-          onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && submit()} />
-        <button className="btn primary" disabled={busy || (!body.trim() && !pending)} onClick={submit}>{busy ? 'Sending…' : 'Send'}</button>
+      <div style={{ position: 'relative' }}>
+        {picker && items.length > 0 && (
+          <div className="mention-menu">
+            {items.map(it => (
+              <button key={it.type + it.id} className="mention-item" onMouseDown={e => { e.preventDefault(); choosePick(it); }}>
+                <span className="t">{it.type === 'user' ? '@' : REF_ICON[it.type] || '#'}</span>
+                <span className="l">{it.label}</span>
+                <span className="k">{it.type}{it.status ? ` · ${it.status}` : ''}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="row" style={{ gap: 8, marginTop: 12, alignItems: 'center' }}>
+          <input ref={fileRef} type="file" style={{ display: 'none' }}
+            accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip" onChange={onPickFile} />
+          <button className="btn ghost msg-tool" title="Attach a photo, video, PDF or file" onClick={() => fileRef.current && fileRef.current.click()}>📎</button>
+          <button className={`btn ghost msg-tool ${recState === 'recording' ? 'rec' : ''}`}
+            title={recState === 'recording' ? 'Stop recording' : 'Record a voice note'} onClick={toggleRecord}>
+            {recState === 'recording' ? '■' : '🎤'}
+          </button>
+          <input className="input" placeholder={recState === 'recording' ? 'Recording voice note…' : 'Message — @ mentions people, # mentions tasks, documents & properties'}
+            value={body} onChange={onBodyChange}
+            onKeyDown={e => {
+              if (picker && items.length && (e.key === 'Tab' || e.key === 'Enter')) { e.preventDefault(); choosePick(items[0]); return; }
+              if (e.key === 'Escape') setPicker(null);
+              if (e.key === 'Enter' && !e.shiftKey && !picker) submit();
+            }} />
+          <button className="btn primary" disabled={busy || (!body.trim() && !pending)} onClick={submit}>{busy ? 'Sending…' : 'Send'}</button>
+        </div>
       </div>
       {taskOption && (
         <label className="muted small" style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8, cursor: 'pointer' }}>

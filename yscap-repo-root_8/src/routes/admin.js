@@ -173,6 +173,45 @@ router.post('/staff/:id/password', async (req, res) => {
   res.json({ ok: true, email: r.rows[0].email });
 });
 
+// Send a "your console is ready" welcome. Staff WITH a login get a sign-in
+// email; staff without get an invite link to set their password.
+async function sendWelcome(row) {
+  let url, hasLogin = !!row.has_login;
+  if (hasLogin) url = mail.link('/staff/login');
+  else {
+    const token = C.randomToken(24);
+    await db.query(
+      `INSERT INTO invite_tokens (token_hash,kind,email,role,expires_at)
+       VALUES ($1,'staff',$2,$3, now() + interval '14 days')`, [C.sha256(token), row.email, row.role]);
+    url = mail.link('/accept?token=' + token);
+  }
+  const r = await mail.send('staffWelcome', row.email, { fullName: row.full_name, role: row.role, url, hasLogin });
+  return !!(r && r.ok);
+}
+router.post('/staff/:id/welcome', async (req, res) => {
+  const r = await db.query(
+    `SELECT email, full_name, role, (password_hash IS NOT NULL) AS has_login
+       FROM staff_users WHERE id=$1 AND is_active=true`, [req.params.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'staff not found' });
+  try {
+    const sent = await sendWelcome(r.rows[0]);
+    res.json({ ok: true, sent, email: r.rows[0].email });
+  } catch (e) { res.status(502).json({ error: 'could not send welcome email' }); }
+});
+router.post('/staff/welcome-all', async (req, res) => {
+  const onlyNoLogin = (req.body || {}).onlyWithoutLogin !== false;   // default: those who can't log in yet
+  const r = await db.query(
+    `SELECT email, full_name, role, (password_hash IS NOT NULL) AS has_login
+       FROM staff_users WHERE is_active=true ${onlyNoLogin ? 'AND password_hash IS NULL' : ''}
+      ORDER BY full_name`);
+  let sent = 0, failed = 0;
+  for (const row of r.rows) {
+    try { (await sendWelcome(row)) ? sent++ : failed++; }
+    catch (_) { failed++; }
+  }
+  res.json({ ok: true, total: r.rows.length, sent, failed });
+});
+
 router.get('/borrowers', async (req, res) => {
   const r = await db.query(
     `SELECT id,first_name,last_name,email,tier,created_at FROM borrowers ORDER BY created_at DESC LIMIT 200`);

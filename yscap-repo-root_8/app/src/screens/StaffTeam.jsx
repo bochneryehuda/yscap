@@ -84,7 +84,11 @@ export default function StaffTeam() {
       <div className="row" style={{ marginBottom: 16 }}>
         <h1 style={{ margin: 0 }}>Team</h1>
         <div className="spacer" />
-        <span className="muted small">{rows ? `${rows.length} staff` : ''}</span>
+        <button className="btn ghost" title="Email a welcome (with set-up link) to everyone who can't log in yet"
+          onClick={async () => { setErr(''); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { setErr(e.message); } }}>
+          Send welcome to all
+        </button>
+        <span className="muted small" style={{ marginLeft: 10 }}>{rows ? `${rows.length} staff` : ''}</span>
       </div>
 
       {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
@@ -169,6 +173,10 @@ export default function StaffTeam() {
                   </label>
                   <button className="btn link" onClick={() => { setPwFor(pwFor === s.id ? null : s.id); setPwVal(''); }}>
                     {s.has_login ? 'Reset password' : 'Set password'}
+                  </button>
+                  <button className="btn link" title="Email them their console welcome (sign-in or set-up link)"
+                    onClick={async () => { setErr(''); try { const r = await api.adminWelcome(s.id); flash(r.sent ? `Welcome email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } }}>
+                    Send welcome
                   </button>
                 </div>
                 {pwFor === s.id && (

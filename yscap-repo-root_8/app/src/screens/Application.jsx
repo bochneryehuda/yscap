@@ -206,8 +206,11 @@ export default function Application() {
 
       <MessageThread mine="borrower" title="Messages with your loan team"
         fetchMessages={() => api.messages(id)}
-        send={(body, opts) => api.postMessage(id, body, { attachment: opts?.attachment })}
-        downloadAttachment={(docId) => api.downloadDoc(docId)} />
+        send={(body, opts) => api.postMessage(id, body, { attachment: opts?.attachment, entityRefs: opts?.entityRefs })}
+        downloadAttachment={(docId) => api.downloadDoc(docId)}
+        react={(mid, emoji) => api.react(mid, emoji)}
+        fetchMentionables={() => api.mentionables(id)}
+        onOpenApplication={(aid) => { window.location.hash = '#/app/' + aid; }} />
     </>
   );
 }

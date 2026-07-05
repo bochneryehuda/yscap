@@ -212,6 +212,27 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
   });
 }
 
+/** Welcome to an already-provisioned staff member: their console is ready.
+ *  With a login -> sign-in CTA; without -> a set-up-your-access invite CTA. */
+function staffWelcome({ fullName, role, url, hasLogin } = {}) {
+  const roleLabel = ROLE_LABEL[role] || 'team member';
+  return render({
+    audience: 'staff',
+    title: 'Your YS Capital console is ready',
+    preheader: 'Your account on the origination console is set up.',
+    greeting: greet(fullName),
+    intro: 'Your account on the YS Capital Group origination console is set up as a ' + roleLabel + '.',
+    lines: [
+      hasLogin
+        ? 'Sign in below to see your pipeline, your leads, your files, and your team chat.'
+        : 'Set up your password below to activate access to your pipeline, files, and team chat. This link expires in 14 days.',
+    ],
+    meta: [{ label: 'Role', value: roleLabel }],
+    cta: url ? { label: hasLogin ? 'Sign in to the console' : 'Set up your access', url } : null,
+    note: 'If you were not expecting this, contact your administrator.',
+  });
+}
+
 /* =====================================================================
    DELIVERY (never throws — a failed send must not break the request)
    ===================================================================== */
@@ -219,7 +240,7 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
 const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
-  staffInvite, leadReceived, coBorrowerInvite,
+  staffInvite, staffWelcome, leadReceived, coBorrowerInvite,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients. */

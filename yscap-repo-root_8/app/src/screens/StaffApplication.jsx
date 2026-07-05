@@ -363,6 +363,9 @@ function ChatPanel({ appId, onTaskCreated }) {
         taskOption={internal}
         fetchMessages={() => api.staffMessages(appId, channel)}
         downloadAttachment={(docId) => api.staffDownloadDoc(docId)}
+        react={(mid, emoji) => api.staffReact(mid, emoji)}
+        fetchMentionables={() => api.staffMentionables(appId)}
+        onOpenApplication={(id) => { window.location.hash = '#/staff/app/' + id; }}
         send={async (body, opts) => {
           const r = await api.staffPostMessage(appId, body, {
             channel, makeTask: internal && opts?.makeTask, attachment: opts?.attachment });
