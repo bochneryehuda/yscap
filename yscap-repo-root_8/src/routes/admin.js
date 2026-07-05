@@ -51,6 +51,24 @@ router.post('/test-email', async (req, res) => {
 });
 
 // ---------------- staff / team management ----------------
+// super_admin is strictly above admin. Only a super_admin may create/assign the
+// super_admin role or modify an existing super_admin account — otherwise a plain
+// admin could reset the president's password, deactivate him, or self-escalate.
+const isSuper = (req) => req.actor.role === 'super_admin';
+async function targetRole(id) {
+  const r = await db.query(`SELECT role FROM staff_users WHERE id=$1`, [id]);
+  return r.rows[0] ? r.rows[0].role : null;
+}
+// Returns null if allowed, or an {code,error} to send. `newRole` is the role the
+// request would assign (or undefined if unchanged).
+function roleGuard(req, currentRole, newRole) {
+  if (currentRole === 'super_admin' && !isSuper(req))
+    return { code: 403, error: 'only a super admin can modify a super admin account' };
+  if (newRole === 'super_admin' && !isSuper(req))
+    return { code: 403, error: 'only a super admin can grant the super admin role' };
+  return null;
+}
+
 // The full team, with the roster fields the admin console edits.
 router.get('/staff', async (req, res) => {
   const r = await db.query(
@@ -74,6 +92,14 @@ router.post('/staff', async (req, res) => {
   if (b.department && !DEPTS.includes(b.department)) return res.status(400).json({ error: 'bad department' });
   if (b.password && String(b.password).length < 8) return res.status(400).json({ error: 'password too short' });
   try {
+    // Guard against granting super_admin, or silently touching an existing
+    // super_admin (e.g. re-adding the president's email would otherwise
+    // demote/overwrite him). On conflict we deliberately do NOT change role —
+    // role changes go through the edit endpoint — so re-adding never demotes.
+    const existing = await db.query(`SELECT role FROM staff_users WHERE email=$1`, [email]);
+    const g = roleGuard(req, existing.rows[0] && existing.rows[0].role, role);
+    if (g) return res.status(g.code).json({ error: g.error });
+
     const dept = b.department || (role === 'processor' || role === 'underwriter' ? 'operations' : 'sales');
     const r = await db.query(
       `INSERT INTO staff_users
@@ -81,7 +107,7 @@ router.post('/staff', async (req, res) => {
           site_selectable,is_active,sort_order,password_hash)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11)
        ON CONFLICT (email) DO UPDATE SET
-         full_name=EXCLUDED.full_name, role=EXCLUDED.role, title=EXCLUDED.title,
+         full_name=EXCLUDED.full_name, title=EXCLUDED.title,
          department=EXCLUDED.department, phone=EXCLUDED.phone, cell=EXCLUDED.cell,
          ext=EXCLUDED.ext, site_selectable=EXCLUDED.site_selectable, is_active=true,
          updated_at=now()
@@ -116,6 +142,8 @@ router.patch('/staff/:id', async (req, res) => {
   const b = req.body || {};
   if (b.role && !ROLES.includes(b.role)) return res.status(400).json({ error: 'bad role' });
   if (b.department && !DEPTS.includes(b.department)) return res.status(400).json({ error: 'bad department' });
+  const g = roleGuard(req, await targetRole(req.params.id), b.role);
+  if (g) return res.status(g.code).json({ error: g.error });
   const map = {
     full_name: b.fullName, role: b.role, title: b.title, department: b.department,
     phone: b.phone, cell: b.cell, ext: b.ext,
@@ -136,6 +164,8 @@ router.patch('/staff/:id', async (req, res) => {
 router.post('/staff/:id/password', async (req, res) => {
   const pw = (req.body || {}).password || '';
   if (String(pw).length < 8) return res.status(400).json({ error: 'password too short (min 8)' });
+  const g = roleGuard(req, await targetRole(req.params.id));
+  if (g) return res.status(g.code).json({ error: g.error });
   const r = await db.query(
     `UPDATE staff_users SET password_hash=$2, token_version=token_version+1, updated_at=now()
       WHERE id=$1 RETURNING email`, [req.params.id, C.hashPassword(pw)]);
