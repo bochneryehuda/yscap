@@ -210,6 +210,16 @@ router.get('/applications/:id/checklist', async (req, res) => {
   res.json(r.rows);
 });
 
+// Borrower-safe loan timeline: which milestones the file has reached and when.
+// Only the destination status + date (no staff identity, no forced flag).
+router.get('/applications/:id/status-history', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const r = await db.query(
+    `SELECT to_status, created_at FROM application_status_history WHERE application_id=$1 ORDER BY created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+
 // Borrower completes a tool-backed task (Rehab Budget / Track Record) inside the
 // portal. Stores the exported payload and moves the item to 'received' so staff
 // can verify and sign off. The borrower is doing "their part" of the file here.

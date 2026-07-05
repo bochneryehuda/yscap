@@ -778,19 +778,128 @@ router.post('/track-records/:id/verify', async (req, res) => {
 // ---------------- advance application status ----------------
 const APP_STATUS = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
 const STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+// Conditions-to-close gating. Reaching "clear to close" requires every open
+// prior-to-docs (and standard) condition cleared/waived and every gate item
+// signed off; "funded" additionally requires prior-to-funding conditions.
+// post_closing conditions never block. An admin may force past blockers.
+const CTC_SEVERITIES = ['standard', 'prior_to_docs'];
+const FUND_SEVERITIES = ['standard', 'prior_to_docs', 'prior_to_funding'];
+async function advancementBlockers(appId, target) {
+  const sevs = target === 'funded' ? FUND_SEVERITIES : CTC_SEVERITIES;
+  const conds = await db.query(
+    `SELECT id, COALESCE(borrower_title, title) AS title, severity
+       FROM conditions
+      WHERE application_id=$1 AND status IN ('open','borrower_responded') AND severity = ANY($2::text[])
+      ORDER BY severity, created_at`, [appId, sevs]);
+  const gates = await db.query(
+    `SELECT id, label FROM checklist_items
+      WHERE application_id=$1 AND is_gate=true AND NOT (signed_off_at IS NOT NULL OR status='satisfied')
+      ORDER BY sort_order, created_at`, [appId]);
+  return { conditions: conds.rows, gates: gates.rows };
+}
+
+// Readiness for the gated transitions — powers the "conditions to close" widget.
+router.get('/applications/:id/gating', async (req, res) => {
+  try {
+    const [ctc, fund] = await Promise.all([
+      advancementBlockers(req.params.id, 'clear_to_close'),
+      advancementBlockers(req.params.id, 'funded'),
+    ]);
+    res.json({
+      clear_to_close: { ready: !ctc.conditions.length && !ctc.gates.length, ...ctc },
+      funded: { ready: !fund.conditions.length && !fund.gates.length, ...fund },
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.get('/applications/:id/status-history', async (req, res) => {
+  const r = await db.query(
+    `SELECT h.from_status, h.to_status, h.forced, h.created_at, s.full_name AS changed_by_name
+       FROM application_status_history h LEFT JOIN staff_users s ON s.id=h.changed_by
+      WHERE h.application_id=$1 ORDER BY h.created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+
+// Nudge the borrower with a friendly reminder of what's still outstanding on
+// their file (borrower-facing checklist items + open borrower conditions).
+router.post('/applications/:id/nudge', async (req, res) => {
+  try {
+    const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+    if (!a.rows[0] || !a.rows[0].borrower_id) return res.status(404).json({ error: 'no borrower on file' });
+    const items = await db.query(
+      `SELECT COALESCE(borrower_label,label) AS label FROM checklist_items
+        WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('outstanding','requested','issue')
+        ORDER BY sort_order LIMIT 20`, [req.params.id]);
+    const conds = await db.query(
+      `SELECT COALESCE(borrower_title,title) AS title FROM conditions
+        WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('open','borrower_responded') LIMIT 20`, [req.params.id]);
+    const list = [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
+    if (!list.length) return res.status(400).json({ error: 'nothing outstanding to remind about' });
+    const shown = list.slice(0, 8).join('; ') + (list.length > 8 ? `; +${list.length - 8} more` : '');
+    await notify.notifyBorrower(a.rows[0].borrower_id, {
+      type: 'reminder', title: 'A friendly reminder on your loan file',
+      body: `Still needed to keep things moving: ${shown}.`,
+      applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items' });
+    await audit(req, 'nudge_borrower', 'application', req.params.id, { count: list.length });
+    res.json({ ok: true, count: list.length });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Set the file's expected / actual closing date. Setting an estimated closing
+// notifies the borrower so they can plan.
+router.post('/applications/:id/closing-date', async (req, res) => {
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  const bad = (v) => v && !/^\d{4}-\d{2}-\d{2}$/.test(String(v));
+  if (bad(b.expectedClosing) || bad(b.actualClosing)) return res.status(400).json({ error: 'dates must be YYYY-MM-DD' });
+  if ('expectedClosing' in b) { sets.push(`expected_closing=$${i++}`); vals.push(b.expectedClosing || null); }
+  if ('actualClosing' in b) { sets.push(`actual_closing=$${i++}`); vals.push(b.actualClosing || null); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  try {
+    await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    await audit(req, 'set_closing_date', 'application', req.params.id, { expectedClosing: b.expectedClosing, actualClosing: b.actualClosing });
+    if (b.expectedClosing) {
+      const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+      if (a.rows[0] && a.rows[0].borrower_id) {
+        const nice = new Date(b.expectedClosing + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        await notify.notifyBorrower(a.rows[0].borrower_id, {
+          type: 'closing_date', title: 'Estimated closing date set',
+          body: `Your loan is now targeting ${nice}. We'll keep you posted as it approaches.`,
+          applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
+      }
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 router.patch('/applications/:id', async (req, res) => {
   const { status } = req.body || {};
+  const force = !!(req.body && req.body.force);
   if (!status || !APP_STATUS.includes(status)) return res.status(400).json({ error: 'bad status' });
   try {
     const cur = await db.query(
       `SELECT status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
     if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
+    // Gate the underwriting-critical transitions on conditions-to-close + gate items.
+    let forced = false;
+    if (status === 'clear_to_close' || status === 'funded') {
+      const blockers = await advancementBlockers(req.params.id, status);
+      if (blockers.conditions.length || blockers.gates.length) {
+        if (!(force && isAdmin(req))) return res.status(409).json({ error: 'blocked', target: status, blockers });
+        forced = true;
+      }
+    }
     await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
+    // Record the transition on the file's timeline.
+    await db.query(
+      `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
+       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, status, req.actor.id, forced]);
     // Funding seeds the post-closing trailing-doc checklist.
     if (status === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
-    await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status });
+    await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
     const label = STATUS_LABEL[status] || status;
     try {
       if (cur.rows[0].borrower_id)

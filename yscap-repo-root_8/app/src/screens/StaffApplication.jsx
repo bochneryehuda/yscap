@@ -8,6 +8,7 @@ import ActivityFeed from '../components/ActivityFeed.jsx';
 import ProductRegistration from '../components/ProductRegistration.jsx';
 import TrackRecord from '../components/TrackRecord.jsx';
 import RehabBudget, { RehabBudgetView } from '../components/RehabBudget.jsx';
+import DealSnapshot from '../components/DealSnapshot.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -150,6 +151,7 @@ export default function StaffApplication() {
   const [newDoc, setNewDoc] = useState('');
   const [newCond, setNewCond] = useState('');
   const [conds, setConds] = useState([]);
+  const [gating, setGating] = useState(null);
   const [cForm, setCForm] = useState({ title: '', audience: 'staff', severity: 'standard' });
   const [ssnFull, setSsnFull] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
@@ -185,6 +187,7 @@ export default function StaffApplication() {
       const [c, t, d, cn] = await Promise.all([api.staffChecklist(id), api.staffTeam(), api.staffAppDocuments(id).catch(() => []), api.staffConditions(id).catch(() => [])]);
       setItems(c || []); setTeam(t || []); setDocs(d || []); setConds(cn || []);
       if (a.borrower_id) api.staffBorrower(a.borrower_id).then(setBorrower).catch(() => {});
+      api.staffGating(id).then(setGating).catch(() => setGating(null));
     } catch (e) { setErr(e.message); }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
@@ -227,8 +230,41 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Could not delete'); }
   }
   async function changeStatus(status) {
-    try { await api.staffSetStatus(id, status); flash(`Status → ${APP_STATUS_LABEL[status] || status}. Borrower & team notified.`); await load(); }
-    catch (e) { setErr(e.message || 'Could not update status'); }
+    setErr('');
+    try {
+      await api.staffSetStatus(id, status);
+      flash(`Status → ${APP_STATUS_LABEL[status] || status}. Borrower & team notified.`);
+      await load();
+    } catch (e) {
+      // Conditions-to-close gating: the server refuses clear-to-close / funded
+      // while blockers remain. Admins may override; others see what's outstanding.
+      if (e.status === 409 && e.data && e.data.blockers) {
+        const b = e.data.blockers;
+        const lines = [
+          ...b.conditions.map(c => `• Condition: ${c.title} (${String(c.severity).replace(/_/g, ' ')})`),
+          ...b.gates.map(g => `• Gate: ${g.label}`),
+        ].join('\n');
+        if (isAdmin && window.confirm(`This file isn't ready for "${APP_STATUS_LABEL[status]}":\n\n${lines}\n\nOverride as admin and advance anyway?`)) {
+          try { await api.staffSetStatus(id, status, true); flash(`Status → ${APP_STATUS_LABEL[status]} (admin override).`); await load(); }
+          catch (e2) { setErr(e2.message || 'Could not update status'); }
+        } else {
+          setErr(`Not ready for "${APP_STATUS_LABEL[status]}" — ${b.conditions.length} condition(s) and ${b.gates.length} gate(s) outstanding.`);
+          api.staffGating(id).then(setGating).catch(() => {});
+        }
+        return;
+      }
+      setErr(e.message || 'Could not update status');
+    }
+  }
+  async function nudge() {
+    setErr('');
+    try { const r = await api.staffNudge(id); flash(`Reminder sent — ${r.count} outstanding item${r.count === 1 ? '' : 's'}.`); }
+    catch (e) { setErr(e.message || 'Could not send reminder'); }
+  }
+  async function setClosing(field, value) {
+    setErr('');
+    try { await api.staffSetClosingDate(id, { [field]: value || null }); flash(field === 'expectedClosing' ? 'Expected closing saved — borrower notified.' : 'Actual closing saved.'); await load(); }
+    catch (e) { setErr(e.message || 'Could not save closing date'); }
   }
   async function assign() {
     // Only send what actually changed, so re-opening a file and clicking Assign
@@ -293,18 +329,38 @@ export default function StaffApplication() {
       </div>
       <h1 style={{ marginBottom: 4 }}>{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>
       <p className="muted small" style={{ marginBottom: 12 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
+      <DealSnapshot app={app} gating={gating} />
       <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16 }}>
         <span className="muted small">Advance status</span>
         <select className="input" style={{ maxWidth: 190 }} value={app.status} onChange={e => changeStatus(e.target.value)}>
           {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
         </select>
         <span className="muted small">Notifies the borrower &amp; assigned team.</span>
+        {gating && (() => {
+          const g = gating.clear_to_close || {};
+          const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
+          return g.ready
+            ? <span className="ts-badge ok" title="All prior-to-docs conditions cleared and gates satisfied">Clear-to-close ready</span>
+            : <span className="ts-badge warn" title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.label)].join(' · ')}>{n} to clear before CTC</span>;
+        })()}
         <div className="spacer" />
         <button className="btn ghost" onClick={jumpToChat}>💬 Message</button>
+        <button className="btn ghost" onClick={nudge} title="Email the borrower a reminder of their outstanding items">🔔 Remind</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
           title="Email the borrower an invite to join this file in the portal">
           {inviteBusy ? 'Sending…' : 'Invite borrower'}
         </button>
+      </div>
+      <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
+        <span className="muted small">Expected closing</span>
+        <input className="input" type="date" style={{ maxWidth: 170 }}
+          value={app.expected_closing ? String(app.expected_closing).slice(0, 10) : ''}
+          onChange={e => setClosing('expectedClosing', e.target.value)} />
+        <span className="muted small" style={{ marginLeft: 8 }}>Actual closing</span>
+        <input className="input" type="date" style={{ maxWidth: 170 }}
+          value={app.actual_closing ? String(app.actual_closing).slice(0, 10) : ''}
+          onChange={e => setClosing('actualClosing', e.target.value)} />
+        <span className="muted small">Setting an expected date notifies the borrower.</span>
       </div>
 
       {msg && <div className="notice ok">{msg}</div>}
