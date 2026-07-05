@@ -15,6 +15,26 @@ const TOOLS = {
 };
 const isDone = (s) => s === 'received' || s === 'satisfied' || s === 'done';
 
+// Compose a one-line address from the application's property_address jsonb.
+const oneLineAddr = (a) => !a ? '' : (a.oneLine || [a.street, a.line1, a.city, a.state, a.zip].filter(Boolean).join(', '));
+
+// Build the launch URL for a borrower tool, carrying over what the file already
+// knows so the borrower doesn't retype it. The Rehab Budget / Scope of Work is
+// for THIS property, so we pass the application's address. Track Record is a log
+// of OTHER, prior deals, so we deliberately pass no address there.
+function toolLaunchUrl(toolKey, app) {
+  const base = TOOLS[toolKey].url;
+  if (toolKey !== 'rehab_budget') return base;
+  const p = new URLSearchParams();
+  const addr = oneLineAddr(app.property_address);
+  if (addr) p.set('address', addr);
+  if (app.units > 0) p.set('units', String(app.units));
+  if (app.loan_type && /refi/i.test(app.loan_type)) p.set('txn', 'refi');
+  else if (app.loan_type && /purchase/i.test(app.loan_type)) p.set('txn', 'purchase');
+  const qs = p.toString();
+  return qs ? `${base}?${qs}` : base;
+}
+
 export default function Application() {
   const { id } = useParams();
   const [app, setApp] = useState(null);
@@ -111,7 +131,7 @@ export default function Application() {
                   <div style={{ fontWeight: 600 }}>{it.label}</div>
                   <div className="muted small">{t.blurb}{it.hint ? ` · ${it.hint}` : ''}</div>
                   <div className="row" style={{ gap: 8, marginTop: 8 }}>
-                    <a className="btn" href={t.url} target="_blank" rel="noopener noreferrer">Open {t.name} ↗</a>
+                    <a className="btn" href={toolLaunchUrl(it.tool_key, app)} target="_blank" rel="noopener noreferrer">Open {t.name} ↗</a>
                     {!done && <button className="btn ghost" onClick={() => markToolDone(it)}>Mark complete</button>}
                     {!done && <button className="btn link" onClick={() => pick(it.id)}>Attach export</button>}
                   </div>

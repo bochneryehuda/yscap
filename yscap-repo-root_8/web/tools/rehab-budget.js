@@ -1014,8 +1014,27 @@ const RB = (function(){
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=fileBase()+".eml"; document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },1500);
   }
 
+  /* ---------- prefill from the portal ----------
+     When the borrower opens this tool from a loan file, the portal passes the
+     application's known fields (e.g. the property address) as query params so
+     they are NOT retyped. We only fill fields the borrower hasn't set yet — a
+     restored/shared scope (#d=…) always wins, so in-progress work is never
+     overwritten. */
+  function prefillFromQuery(){
+    try{
+      if(!location.search) return;
+      var q=new URLSearchParams(location.search);
+      var addr=q.get("address");
+      if(addr && !S.address) S.address=addr;
+      var units=parseInt(q.get("units"),10);
+      if(units>0 && (!S.units || S.units===1)) S.units=units;
+      var txn=q.get("txn");
+      if(txn && !S.txn && (txn==="purchase"||txn==="refi")) S.txn=txn;
+    }catch(e){}
+  }
+
   /* ---------- init ---------- */
-  function init(){ restore(); render(); document.addEventListener("click",()=>{ document.querySelectorAll(".rb-tip.show").forEach(t=>t.classList.remove("show")); }); }
+  function init(){ restore(); prefillFromQuery(); render(); document.addEventListener("click",()=>{ document.querySelectorAll(".rb-tip.show").forEach(t=>t.classList.remove("show")); }); }
   document.addEventListener("DOMContentLoaded", init);
   return { share, exportXlsx, importXlsx, exportPdf, emailLO };
 })();
