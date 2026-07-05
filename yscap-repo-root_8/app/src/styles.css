@@ -205,3 +205,37 @@ textarea{min-height:90px;resize:vertical}
 .mention-item .t{color:var(--teal,#7FA9B0);width:16px;text-align:center}
 .mention-item .l{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mention-item .k{color:var(--muted,#8A979C);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em}
+
+/* brand: GROUP suffix styled like the lockup */
+.brand-word .brand-group{font-style:normal;font-family:Hanken Grotesk,system-ui,sans-serif;font-size:.62em;
+  letter-spacing:.32em;color:var(--teal,#7FA9B0);font-weight:600;vertical-align:middle}
+
+/* =====================================================================
+   POLISH — depth, sticky chrome, and a sharper institutional feel.
+   Appended last so it refines the base rules without reordering them.
+   ===================================================================== */
+.header{position:sticky;top:0;z-index:40;backdrop-filter:saturate(120%) blur(6px);
+  box-shadow:0 1px 0 var(--line),0 10px 30px -22px rgba(0,0,0,.8)}
+.brand .sub{padding-left:11px;margin-left:10px;border-left:1px solid var(--line)}
+.brand-mark{height:28px}
+.nav a{position:relative;padding:4px 0}
+.nav a.active::after{content:'';position:absolute;left:0;right:0;bottom:-3px;height:2px;border-radius:2px;
+  background:linear-gradient(90deg,var(--teal),var(--gold))}
+
+.panel{box-shadow:0 1px 0 rgba(255,255,255,.02),0 18px 40px -34px rgba(0,0,0,.9)}
+.btn.primary{box-shadow:0 8px 20px -12px rgba(127,169,176,.75)}
+.btn.primary:hover{box-shadow:0 10px 24px -12px rgba(170,212,217,.85)}
+.kpi{background:linear-gradient(160deg,var(--ink-2),var(--ink-1));transition:border-color .15s,transform .15s}
+.kpi:hover{border-color:var(--teal-dp);transform:translateY(-1px)}
+
+/* pipeline / list rows rendered as .checkitem links get a card-like hover */
+a.checkitem{border-radius:10px;padding-left:12px;padding-right:12px;transition:background .12s,border-color .12s}
+a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
+
+/* the full auth lockup gets a hair more presence */
+.brand-lockup img{filter:drop-shadow(0 10px 26px rgba(0,0,0,.5))}
+
+@media(max-width:520px){
+  .brand .sub{display:none}
+  .brand-word{font-size:16px;letter-spacing:1.5px}
+}

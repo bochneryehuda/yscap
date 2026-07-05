@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -48,6 +48,7 @@ function Row({ a }) {
 
 export default function StaffQueue() {
   const { role } = useAuth();
+  const nav = useNavigate();
   const [tab, setTab] = useState('mine');       // mine | leads
   const [mine, setMine] = useState(null);
   const [leads, setLeads] = useState(null);
@@ -77,6 +78,9 @@ export default function StaffQueue() {
           </button>
           <button className={`btn ${tab === 'leads' ? 'primary' : 'ghost'}`} onClick={() => setTab('leads')}>
             Lead Capture{leads ? ` (${leads.length})` : ''}
+          </button>
+          <button className="btn primary" onClick={() => nav('/staff/new')} title="Open a new loan file — the borrower doesn't need an account">
+            + New file
           </button>
         </div>
       </div>

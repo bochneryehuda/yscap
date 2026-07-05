@@ -130,8 +130,24 @@ export default function StaffApplication() {
   const [newCond, setNewCond] = useState('');
   const [ssnFull, setSsnFull] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
+  const [inviteBusy, setInviteBusy] = useState(false);
 
-  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 2600); };
+  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
+
+  async function inviteBorrower() {
+    setInviteBusy(true); setErr('');
+    try {
+      const r = await api.staffInviteBorrower(id);
+      flash(r.hasAccount
+        ? 'That borrower already has portal access — a sign-in link was emailed to them.'
+        : 'Invitation emailed. When the borrower sets up access they will see this file immediately.');
+    } catch (e) { setErr(e.message || 'Could not send the invite.'); }
+    finally { setInviteBusy(false); }
+  }
+  function jumpToChat() {
+    const el = document.getElementById('conversations');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
   async function load() {
     setSsnFull('');
@@ -215,6 +231,12 @@ export default function StaffApplication() {
           {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
         </select>
         <span className="muted small">Notifies the borrower &amp; assigned team.</span>
+        <div className="spacer" />
+        <button className="btn ghost" onClick={jumpToChat}>💬 Message</button>
+        <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
+          title="Email the borrower an invite to join this file in the portal">
+          {inviteBusy ? 'Sending…' : 'Invite borrower'}
+        </button>
       </div>
 
       {msg && <div className="notice ok">{msg}</div>}
@@ -346,7 +368,7 @@ function ChatPanel({ appId, onTaskCreated }) {
   const [channel, setChannel] = useState('borrower');
   const internal = channel === 'internal';
   return (
-    <div className="panel" style={{ marginTop: 18 }}>
+    <div className="panel" id="conversations" style={{ marginTop: 18 }}>
       <div className="row" style={{ marginBottom: 10, alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Conversations</h3>
         <div className="spacer" />

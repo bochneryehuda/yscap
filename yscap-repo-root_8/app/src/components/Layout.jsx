@@ -9,7 +9,7 @@ export function Brand() {
   return (
     <Link to="/dashboard" className="brand" aria-label="YS Capital Group" style={{ textDecoration: 'none' }}>
       <img className="brand-mark" src={BRAND + 'mark-dark.png'} alt="" />
-      <span className="brand-word">YS&nbsp;CAPITAL</span>
+      <span className="brand-word">YS&nbsp;CAPITAL&nbsp;<em className="brand-group">GROUP</em></span>
     </Link>
   );
 }
