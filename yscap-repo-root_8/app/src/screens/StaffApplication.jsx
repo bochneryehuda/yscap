@@ -143,6 +143,8 @@ export default function StaffApplication() {
   const [proc, setProc] = useState('');
   const [newDoc, setNewDoc] = useState('');
   const [newCond, setNewCond] = useState('');
+  const [conds, setConds] = useState([]);
+  const [cForm, setCForm] = useState({ title: '', audience: 'staff', severity: 'standard' });
   const [ssnFull, setSsnFull] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -173,8 +175,8 @@ export default function StaffApplication() {
       // assigned file never reads as "nobody assigned" after a reload.
       setLo(a.loan_officer_id || '');
       setProc(a.processor_id || '');
-      const [c, t, d] = await Promise.all([api.staffChecklist(id), api.staffTeam(), api.staffAppDocuments(id).catch(() => [])]);
-      setItems(c || []); setTeam(t || []); setDocs(d || []);
+      const [c, t, d, cn] = await Promise.all([api.staffChecklist(id), api.staffTeam(), api.staffAppDocuments(id).catch(() => []), api.staffConditions(id).catch(() => [])]);
+      setItems(c || []); setTeam(t || []); setDocs(d || []); setConds(cn || []);
       if (a.borrower_id) api.staffBorrower(a.borrower_id).then(setBorrower).catch(() => {});
     } catch (e) { setErr(e.message); }
   }
@@ -238,6 +240,19 @@ export default function StaffApplication() {
     try { await api.staffRequestDoc(id, { label: newDoc.trim(), audience: 'borrower' }); setNewDoc(''); flash('Requested ✓'); await load(); }
     catch (e) { setErr(e.message || 'Failed'); }
   }
+  async function addLoanCondition() {
+    if (!cForm.title.trim()) return;
+    try {
+      await api.staffAddLoanCondition(id, {
+        title: cForm.title.trim(),
+        borrowerTitle: cForm.audience !== 'staff' ? cForm.title.trim() : undefined,
+        audience: cForm.audience, severity: cForm.severity,
+      });
+      setCForm({ title: '', audience: 'staff', severity: 'standard' }); flash('Condition added ✓'); await load();
+    } catch (e) { setErr(e.message || 'Could not add condition'); }
+  }
+  async function clearCond(cid) { try { await api.staffClearCondition(cid); flash('Cleared ✓'); await load(); } catch (e) { setErr(e.message); } }
+  async function waiveCond(cid) { const r = window.prompt('Waive this condition — reason (required):'); if (!r) return; try { await api.staffWaiveCondition(cid, r); flash('Waived ✓'); await load(); } catch (e) { setErr(e.message); } }
   async function addCondition() {
     if (!newCond.trim()) return;
     try { await api.staffAddCondition(id, { label: newCond.trim(), audience: 'staff' }); setNewCond(''); flash('Added ✓'); await load(); }
@@ -421,13 +436,49 @@ export default function StaffApplication() {
           <p className="muted small" style={{ marginTop: 6 }}>Appears on the borrower's checklist and notifies them.</p>
         </div>
         <div className="panel">
-          <h3 style={{ marginBottom: 8 }}>Add an internal condition (staff)</h3>
-          <div className="row" style={{ gap: 8 }}>
-            <input className="input" placeholder="e.g. Verify owner of record on REO #3" value={newCond}
-              onChange={e => setNewCond(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCondition()} />
-            <button className="btn primary" onClick={addCondition}>Add</button>
+          <div className="row" style={{ marginBottom: 8 }}>
+            <h3>Conditions</h3>
+            <div className="spacer" />
+            <span className="muted small">{conds.filter(c => c.status === 'open').length} open</span>
           </div>
-          <p className="muted small" style={{ marginTop: 6 }}>Staff-only — not shown to the borrower.</p>
+          {conds.length === 0
+            ? <p className="muted small">No conditions yet.</p>
+            : conds.map(c => {
+              const sev = { standard: 'Standard', prior_to_docs: 'Prior to docs', prior_to_funding: 'Prior to funding', post_closing: 'Post-closing' }[c.severity] || c.severity;
+              const open = c.status === 'open' || c.status === 'borrower_responded';
+              return (
+                <div className="checkitem" key={c.id} style={{ alignItems: 'flex-start', opacity: open ? 1 : .6 }}>
+                  <span className={`dot ${open ? 'outstanding' : 'done'}`} style={{ marginTop: 4 }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600 }}>{c.title}</div>
+                    <div className="muted small">
+                      {sev} · {c.audience === 'staff' ? 'Internal' : 'Borrower-facing'}
+                      {c.status !== 'open' ? ` · ${c.status}${c.cleared_by_name ? ` by ${c.cleared_by_name}` : ''}` : ''}
+                      {c.waive_reason ? ` · ${c.waive_reason}` : ''}
+                    </div>
+                  </div>
+                  {open && <button className="btn ghost small" onClick={() => clearCond(c.id)}>Clear</button>}
+                  {open && isAdmin && <button className="btn link small" onClick={() => waiveCond(c.id)}>Waive</button>}
+                </div>
+              );
+            })}
+          <div className="gold-rule" style={{ margin: '10px 0' }} />
+          <input className="input" placeholder="New condition — e.g. Verify owner of record on REO #3" value={cForm.title}
+            onChange={e => setCForm({ ...cForm, title: e.target.value })} onKeyDown={e => e.key === 'Enter' && addLoanCondition()} style={{ marginBottom: 8 }} />
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <select className="input" style={{ maxWidth: 150 }} value={cForm.audience} onChange={e => setCForm({ ...cForm, audience: e.target.value })}>
+              <option value="staff">Internal</option>
+              <option value="both">Borrower-facing</option>
+            </select>
+            <select className="input" style={{ maxWidth: 170 }} value={cForm.severity} onChange={e => setCForm({ ...cForm, severity: e.target.value })}>
+              <option value="standard">Standard</option>
+              <option value="prior_to_docs">Prior to docs</option>
+              <option value="prior_to_funding">Prior to funding</option>
+              <option value="post_closing">Post-closing</option>
+            </select>
+            <button className="btn primary" onClick={addLoanCondition}>Add condition</button>
+          </div>
+          <p className="muted small" style={{ marginTop: 6 }}>Borrower-facing conditions notify the borrower and appear on their file.</p>
         </div>
       </div>
 

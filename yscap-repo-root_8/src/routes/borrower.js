@@ -172,6 +172,19 @@ router.get('/applications/:id', async (req, res) => {
   res.json(r.rows[0]);
 });
 
+// Borrower-visible conditions (object model) — open/unresolved, borrower wording.
+router.get('/applications/:id/conditions', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const r = await db.query(
+    `SELECT id, COALESCE(borrower_title,title) AS title, COALESCE(borrower_detail,detail) AS detail,
+            severity, status, linked_entity_type, linked_entity_id, created_at
+       FROM conditions
+      WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('open','borrower_responded')
+      ORDER BY created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
 router.get('/applications/:id/checklist', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);

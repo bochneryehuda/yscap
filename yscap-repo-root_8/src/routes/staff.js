@@ -17,6 +17,13 @@ router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'under
 // admins + super-admins + underwriters (risk) see every file;
 // loan officers and processors see only files they are assigned to.
 const seesAll = (req) => ['admin', 'super_admin', 'underwriter'].includes(req.actor.role);
+// May this staffer act on a given application? (for routes not under the
+// /applications/:id path-scope middleware, e.g. /loan-conditions/:cid/*).
+async function canTouchApp(req, appId) {
+  if (seesAll(req)) return true;
+  const r = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`, [appId, req.actor.id]);
+  return !!r.rows[0];
+}
 const isAdmin = (req) => ['admin', 'super_admin'].includes(req.actor.role);
 
 async function audit(req, action, entity_type, entity_id, detail) {
@@ -294,6 +301,64 @@ router.post('/applications/:id/conditions', async (req, res) => {
     [req.params.id, b.label, b.audience || 'staff', b.isRequired !== false, b.notes || null, req.actor.id]);
   await audit(req, 'add_condition', 'application', req.params.id, { label: b.label });
   res.status(201).json({ ok: true, itemId: r.rows[0].id });
+});
+
+// ---- first-class conditions (object model) ----
+router.get('/applications/:id/conditions', async (req, res) => {
+  const r = await db.query(
+    `SELECT c.*, cb.full_name AS created_by_name, xb.full_name AS cleared_by_name
+       FROM conditions c
+       LEFT JOIN staff_users cb ON cb.id=c.created_by
+       LEFT JOIN staff_users xb ON xb.id=c.cleared_by
+      WHERE c.application_id=$1 ORDER BY (c.status='open') DESC, c.created_at DESC`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/applications/:id/loan-conditions', async (req, res) => {
+  const b = req.body || {};
+  if (!b.title && !b.borrowerTitle) return res.status(400).json({ error: 'title required' });
+  const audience = ['staff', 'borrower', 'both'].includes(b.audience) ? b.audience : 'staff';
+  const severity = ['standard', 'prior_to_docs', 'prior_to_funding', 'post_closing'].includes(b.severity) ? b.severity : 'standard';
+  try {
+    const r = await db.query(
+      `INSERT INTO conditions (application_id,title,borrower_title,detail,borrower_detail,audience,severity,linked_entity_type,linked_entity_id,created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [req.params.id, b.title || b.borrowerTitle, b.borrowerTitle || null, b.detail || null, b.borrowerDetail || null,
+       audience, severity, b.linkedEntityType || null, b.linkedEntityId || null, req.actor.id]);
+    await audit(req, 'add_loan_condition', 'application', req.params.id, { severity, audience });
+    if (audience !== 'staff') {
+      const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+      if (a.rows[0]?.borrower_id) {
+        try {
+          await notify.notifyBorrower(a.rows[0].borrower_id, {
+            type: 'condition_added', title: 'A new item needs your attention',
+            body: b.borrowerTitle || b.title, applicationId: req.params.id,
+            link: `/app/${req.params.id}`, ctaLabel: 'See what we need' });
+        } catch (_) {}
+      }
+    }
+    res.status(201).json({ ok: true, conditionId: r.rows[0].id });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/loan-conditions/:cid/clear', async (req, res) => {
+  try {
+    const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
+    if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+    await db.query(`UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(), updated_at=now() WHERE id=$1`, [req.params.cid, req.actor.id]);
+    await audit(req, 'clear_condition', 'condition', req.params.cid);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/loan-conditions/:cid/waive', async (req, res) => {
+  if (!['admin', 'super_admin'].includes(req.actor.role)) return res.status(403).json({ error: 'admin only' });
+  const reason = String((req.body || {}).reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'a waive reason is required' });
+  try {
+    const r = await db.query(`UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(), updated_at=now() WHERE id=$1 RETURNING id`, [req.params.cid, reason.slice(0, 500), req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'waive_condition', 'condition', req.params.cid, { reason });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 router.patch('/checklist/:itemId', async (req, res) => {

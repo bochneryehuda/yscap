@@ -108,6 +108,7 @@ export default function Application() {
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
   const [uploads, setUploads] = useState([]);
+  const [conds, setConds] = useState([]);
   const [dlBusy, setDlBusy] = useState(null);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -115,8 +116,8 @@ export default function Application() {
   const [target, setTarget] = useState(null);
   const [docFilter, setDocFilter] = useState('all');
 
-  const load = () => Promise.all([api.application(id), api.checklist(id), api.documents(id).catch(() => [])])
-    .then(([a, c, d]) => { setApp(a); setItems(c || []); setUploads(d || []); }).catch(e => setErr(e.message));
+  const load = () => Promise.all([api.application(id), api.checklist(id), api.documents(id).catch(() => []), api.conditions(id).catch(() => [])])
+    .then(([a, c, d, cn]) => { setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); }).catch(e => setErr(e.message));
 
   async function downloadDoc(doc) {
     setDlBusy(doc.id);
@@ -225,6 +226,22 @@ export default function Application() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {conds.length > 0 && (
+        <div className="panel" style={{ marginTop: 18, borderColor: 'var(--gold)' }}>
+          <h3 style={{ marginBottom: 4 }}>Needs your attention</h3>
+          <p className="muted small" style={{ marginBottom: 12 }}>A few things your loan team needs before we can move ahead.</p>
+          {conds.map(c => (
+            <div className="checkitem" key={c.id} style={{ alignItems: 'flex-start' }}>
+              <span className="dot outstanding" style={{ marginTop: 4 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>{c.title}</div>
+                {c.detail && <div className="muted small">{c.detail}</div>}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
