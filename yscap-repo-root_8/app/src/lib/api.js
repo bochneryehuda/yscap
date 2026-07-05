@@ -104,6 +104,11 @@ export const api = {
   llcs:         () => req('GET', '/api/borrower/llcs'),
   createLlc:    (b) => req('POST', '/api/borrower/llcs', b),
 
+  // investment track record (experience) — drives the pricing tier
+  trackRecords:    () => req('GET', '/api/borrower/track-records'),
+  addTrackRecord:  (b) => req('POST', '/api/borrower/track-records', b),
+  deleteTrackRecord: (id) => req('DELETE', `/api/borrower/track-records/${id}`),
+
   // reusable partners (co-borrowers)
   partners:     () => req('GET', '/api/borrower/partners'),
   savePartner:  (b) => req('POST', '/api/borrower/partners', b),
@@ -137,6 +142,8 @@ export const api = {
   staffDownloadDoc: (id) => download(`/api/staff/documents/${id}/download`),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
+  staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
+  staffVerifyTrackRecord:    (id) => req('POST', `/api/staff/track-records/${id}/verify`),
   staffPatchItem:   (itemId, b) => req('PATCH', `/api/staff/checklist/${itemId}`, b),
   staffRequestDoc:  (appId, b) => req('POST', `/api/staff/applications/${appId}/checklist`, b),
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),

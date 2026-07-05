@@ -333,3 +333,14 @@ a.checkitem:hover{transform:translateY(-1px)}
 .ts-hero-rate .ts-hero-v{color:var(--gold)}
 .ts-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}
 @media(max-width:560px){.ts-grid{grid-template-columns:1fr}.ts-hero{flex-direction:column}}
+
+/* ===== Track record ===== */
+.tr-list{display:flex;flex-direction:column;gap:8px}
+.tr-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;background:var(--ink-2);border:1px solid var(--line);border-radius:9px;padding:10px 14px}
+.tr-main{display:flex;flex-direction:column;gap:1px;flex:1;min-width:180px}
+.tr-type{font-weight:700;font-size:13.5px}
+.tr-addr{font-size:12.5px;color:var(--ivory)}
+.tr-nums{white-space:nowrap}
+.tr-act{display:flex;align-items:center;gap:8px;margin-left:auto}
+.tr-add{margin-top:12px;background:var(--ink-2);border:1px solid var(--line);border-radius:10px;padding:14px}
+.btn.small{padding:5px 12px;font-size:12.5px}

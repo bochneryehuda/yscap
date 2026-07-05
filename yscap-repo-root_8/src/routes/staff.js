@@ -678,6 +678,21 @@ router.get('/borrowers/:id', async (req, res) => {
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+// A borrower's investment track record (experience) — drives the pricing tier.
+router.get('/borrowers/:id/track-records', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT t.id, t.deal_type, t.property_address, t.purchase_price, t.sale_price, t.rehab_amount,
+              t.purchase_date, t.sale_date, t.is_verified, t.verified_at, t.docs_status,
+              l.llc_name AS entity_name, v.full_name AS verified_by_name
+         FROM track_records t
+         LEFT JOIN llcs l ON l.id = t.llc_id
+         LEFT JOIN staff_users v ON v.id = t.verified_by
+        WHERE t.borrower_id=$1 ORDER BY t.sale_date DESC NULLS LAST, t.created_at DESC`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
 router.get('/borrowers/:id/ssn', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });

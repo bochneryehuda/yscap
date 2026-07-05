@@ -360,6 +360,15 @@ router.post('/track-records', async (req, res) => {
      b.purchasePrice || null, b.salePrice || null, b.rehabAmount || null, b.purchaseDate || null, b.saleDate || null]);
   res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
 });
+// Delete a track-record entry — only the borrower's own, and only while it is
+// still unverified (a verified entry is locked as underwriting evidence).
+router.delete('/track-records/:id', async (req, res) => {
+  const r = await db.query(
+    `DELETE FROM track_records WHERE id=$1 AND borrower_id=$2 AND is_verified=false RETURNING id`,
+    [req.params.id, me(req)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
+  res.json({ ok: true });
+});
 
 // ---------------- DOCUMENTS (upload metadata + bytes via storage) ----------------
 // Accepts base64 body {filename, contentType, dataBase64, applicationId|llcId, checklistItemId}
