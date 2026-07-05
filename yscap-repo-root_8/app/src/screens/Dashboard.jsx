@@ -12,12 +12,17 @@ export default function Dashboard() {
   const [drafts, setDrafts] = useState([]);
   const [notifs, setNotifs] = useState([]);
   const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
   const [unread, setUnread] = useState({});
+  const [drawBusy, setDrawBusy] = useState(null);
 
-  useEffect(() => {
+  const load = () => {
     Promise.all([api.applications(), api.drafts(), api.notifications()])
       .then(([a, d, n]) => { setApps(a || []); setDrafts(d || []); setNotifs(n || []); })
       .catch(e => setErr(e.message));
+  };
+  useEffect(() => {
+    load();
     api.chatInbox().then(rows => {
       const map = {}; (rows || []).forEach(r => { if (r.unread > 0) map[r.id] = r.unread; });
       setUnread(map);
@@ -28,6 +33,18 @@ export default function Dashboard() {
     try { const d = await api.createDraft({ label: 'New application', data: {}, step: 1 }); nav(`/apply/${d.id}`); }
     catch (e) { setErr(e.message); }
   }
+  async function requestDraw(e, id) {
+    e.preventDefault(); e.stopPropagation();
+    setDrawBusy(id); setErr('');
+    try {
+      await api.requestDraw(id);
+      setMsg('Draw request sent ✓ — our draws team and your loan officer will follow up.');
+      setTimeout(() => setMsg(''), 5000);
+      load();
+    } catch (e2) { setErr(e2.message || 'Could not send the draw request'); }
+    finally { setDrawBusy(null); }
+  }
+  const pct = (a) => a.borrower_total > 0 ? Math.round((a.borrower_done / a.borrower_total) * 100) : 0;
 
   return (
     <>
@@ -37,6 +54,7 @@ export default function Dashboard() {
         <button className="btn primary" onClick={newApplication}>+ New application</button>
       </div>
       {err && <div className="notice err">{err}</div>}
+      {msg && <div className="notice ok">{msg}</div>}
 
       {drafts.length > 0 && (
         <div className="panel" style={{ marginBottom: 18 }}>
@@ -79,6 +97,22 @@ export default function Dashboard() {
                 <div className="metrow"><span className="k">Loan type</span><span className="v">{a.loan_type || '—'}</span></div>
                 <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(a.loan_amount)}</span></div>
                 <div className="metrow"><span className="k">Officer</span><span className="v">{a.loan_officer_name || 'Lead Capture'}</span></div>
+                {a.borrower_total > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div className="row" style={{ marginBottom: 4 }}>
+                      <span className="muted small">Your checklist</span>
+                      <div className="spacer" />
+                      <span className="muted small">{a.borrower_done}/{a.borrower_total} · {pct(a)}%</span>
+                    </div>
+                    <div className="progress"><div className="progress-fill" style={{ width: pct(a) + '%' }} /></div>
+                  </div>
+                )}
+                {a.status === 'funded' && (
+                  <button className="btn primary" style={{ marginTop: 12, width: '100%' }}
+                    disabled={drawBusy === a.id} onClick={e => requestDraw(e, a.id)}>
+                    {drawBusy === a.id ? 'Sending…' : '💰 Request a draw'}
+                  </button>
+                )}
               </Link>
             ))}
           </div>

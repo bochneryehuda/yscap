@@ -82,8 +82,11 @@ router.get('/dashboard', async (req, res) => {
 router.get('/applications', async (req, res) => {
   const s = scopeClause(req);
   const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.property_address,
-                      a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.created_at,
-                      b.first_name,b.last_name,b.email
+                      a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,
+                      b.first_name,b.last_name,b.email,
+                      (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
+                      (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
+                         AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
                FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                WHERE 1=1 ${s.where.replace(/\$SCOPE/g, '$1')} ORDER BY a.created_at DESC`;
   const r = await db.query(sql, s.params);

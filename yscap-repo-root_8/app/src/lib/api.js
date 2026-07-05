@@ -77,6 +77,7 @@ export const api = {
   uploadPhotoId:(b) => req('POST', '/api/borrower/profile/photo-id', normalizeUpload(b)),
   applications: () => req('GET', '/api/borrower/applications'),
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
+  requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   notifications:() => req('GET', '/api/borrower/notifications'),
   messages:     (appId) => req('GET', `/api/borrower/messages?applicationId=${appId}`),

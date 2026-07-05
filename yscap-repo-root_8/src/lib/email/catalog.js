@@ -258,6 +258,23 @@ function staffWelcome({ fullName, role, url, hasLogin } = {}) {
   });
 }
 
+/** A borrower on a FUNDED file requested draw setup. Goes to the draws desk and
+ *  the assigned loan team so they can coordinate the construction draw process. */
+function drawRequest({ borrowerName, propertyLabel, loanNumber } = {}) {
+  const meta = [];
+  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (borrowerName) meta.push({ label: 'Borrower', value: borrowerName });
+  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  return render({
+    audience: 'staff',
+    title: 'Draw setup needed — ' + (propertyLabel || 'funded file'),
+    preheader: 'A borrower requested draw setup on a funded file.',
+    intro: (borrowerName || 'The borrower') + ' is requesting to set up draws for this funded file. Please coordinate the draw process.',
+    meta,
+    note: 'Sent to the draws desk and the assigned loan team.',
+  });
+}
+
 /** Admin-triggered password reset for a staff member: a single set-a-new-password
  *  link to the console (works whether or not they already had a login). */
 function staffPasswordReset({ fullName, url, days = 7 } = {}) {
@@ -280,7 +297,7 @@ function staffPasswordReset({ fullName, url, days = 7 } = {}) {
 const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
-  staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite,
+  staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, drawRequest,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients. */
