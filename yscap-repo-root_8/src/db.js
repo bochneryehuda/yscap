@@ -8,7 +8,7 @@ if (!cfg.databaseUrl) {
   // instead of letting pg fail with an opaque "connect ECONNREFUSED 127.0.0.1".
   console.error(
     '[db] FATAL: DATABASE_URL is not set. The portal cannot reach a database. ' +
-    'On Render, attach the Postgres instance (render.yaml provisions "ys-capital-db") ' +
+    'On Render, attach the Postgres instance (the "yscap" database) ' +
     'and set DATABASE_URL in the service environment, then redeploy.');
 }
 

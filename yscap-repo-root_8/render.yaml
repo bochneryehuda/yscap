@@ -13,8 +13,16 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # DATABASE_URL must point at your Postgres instance (named "yscap").
+      # - Blueprint-managed services: the fromDatabase link below wires it
+      #   automatically to the matching database in the `databases:` block.
+      # - Manually-created services (render.yaml not applied): this file is
+      #   ignored — you MUST set DATABASE_URL in the dashboard by hand, to the
+      #   database's INTERNAL Database URL (same region) or External URL.
+      # A wrong/unset value makes the app fall back to localhost and every DB
+      # call fails with ECONNREFUSED 127.0.0.1:5432 (see logs) — set this first.
       - key: DATABASE_URL
-        fromDatabase: { name: ys-capital-db, property: connectionString }
+        fromDatabase: { name: yscap, property: connectionString }
       - key: JWT_SECRET
         generateValue: true
       - key: SSN_ENCRYPTION_KEY
@@ -39,5 +47,5 @@ services:
       # Fill these in the dashboard when you wire the rest:
       # NOTIFY_ADMINS, MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, CLICKUP_API_TOKEN
 databases:
-  - name: ys-capital-db
-    plan: basic-256mb
+  - name: yscap
+    plan: basic-1gb

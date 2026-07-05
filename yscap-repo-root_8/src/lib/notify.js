@@ -10,13 +10,13 @@
 const db = require('../db');
 const email = require('./email');
 const tpl = require('./email/template');
+const { link: portalLink } = require('./email/catalog');
 const cfg = require('../config');
 
 /* Turn a notification's opts into a branded {subject,html,text}. */
 function buildEmail(opts, audience) {
-  const link = opts.link
-    ? (/^https?:/i.test(opts.link) ? opts.link : cfg.appUrl + opts.link)
-    : cfg.appUrl;
+  // Deep links must resolve into the portal SPA (/portal/#/…), not the site root.
+  const link = opts.link ? portalLink(opts.link) : portalLink('/');
   return tpl.render({
     title:     opts.title,
     preheader: opts.body || opts.title,
@@ -75,7 +75,7 @@ async function notifyBorrower(borrowerId, opts) {
 /** Notify every active admin (used when an application has no loan officer). */
 async function notifyAdmins(opts) {
   const { rows } = await db.query(
-    `SELECT id, email FROM staff_users WHERE role='admin' AND is_active = true`);
+    `SELECT id, email FROM staff_users WHERE role IN ('admin','super_admin') AND is_active = true`);
   const ids = [];
   for (const a of rows) ids.push(await notifyStaff(a.id, { ...opts, emailTo: a.email }));
   // also copy the configured NOTIFY_ADMINS inbox list, if any (branded)

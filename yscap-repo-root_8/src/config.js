@@ -25,6 +25,28 @@
   } catch (_) { /* boot must never fail on env parsing */ }
 })();
 
+// Resolve a security-critical secret. Production must NEVER run on the public
+// dev default: if the env var is missing (or still the placeholder), generate a
+// strong random value for this process and warn loudly. That closes the
+// forge-anyone's-token / decrypt-any-SSN hole; the trade-off (values reset on
+// restart) is surfaced so operators set a stable value.
+function resolveSecret(name) {
+  const v = process.env[name];
+  const placeholder = !v || v === 'dev-only-change-me' || v === 'change-me-long-random';
+  if (!placeholder) return v;
+  if ((process.env.NODE_ENV || 'development') === 'production') {
+    const gen = require('crypto').randomBytes(48).toString('base64url');
+    console.error(
+      `[config] SECURITY: ${name} is not set — using a random ephemeral value for this process. ` +
+      `Set ${name} to a long random string in the environment. ` +
+      (name === 'SSN_ENCRYPTION_KEY'
+        ? 'Until then, SSNs encrypted now cannot be decrypted after a restart.'
+        : 'Until then, all sessions are invalidated on each restart.'));
+    return gen;
+  }
+  return 'dev-only-change-me';
+}
+
 // Choose the email provider from env. An explicit EMAIL_PROVIDER wins; otherwise
 // infer from whichever credential set is present so a single env var is enough.
 function resolveEmailProvider() {
@@ -43,8 +65,8 @@ module.exports = {
   databaseUrl:   process.env.DATABASE_URL,
 
   // --- auth / crypto ---
-  jwtSecret:     process.env.JWT_SECRET || 'dev-only-change-me',
-  ssnKey:        process.env.SSN_ENCRYPTION_KEY || 'dev-only-change-me',
+  jwtSecret:     resolveSecret('JWT_SECRET'),
+  ssnKey:        resolveSecret('SSN_ENCRYPTION_KEY'),
   accessTtlSec:  parseInt(process.env.ACCESS_TTL_SEC || '3600', 10),      // 1h access token
   refreshTtlSec: parseInt(process.env.REFRESH_TTL_SEC || '2592000', 10),  // 30d
 
@@ -62,6 +84,16 @@ module.exports = {
   emailProvider: resolveEmailProvider(),
   notifyFrom:    process.env.NOTIFY_FROM || 'YS Capital Group <no-reply@yscapgroup.com>',
   appUrl:        (process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,''),  // base for links in emails
+  // The borrower/staff SPA is mounted under this path (vite base '/portal/',
+  // HashRouter). Email + notification deep links must include it, or they land
+  // on the marketing site instead of the portal.
+  portalPath:    ('/' + (process.env.PORTAL_PATH || 'portal').replace(/^\/+|\/+$/g, '')),
+  // Public URL of the branded logo shown in email headers. Defaults to the
+  // app's own statically-served asset (web/assets/brand/lockup-dark.png) so it
+  // renders on the dark email canvas. Override with EMAIL_LOGO_URL if you host
+  // it elsewhere (e.g. the marketing site).
+  emailLogoUrl:  process.env.EMAIL_LOGO_URL ||
+                 ((process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,'') + '/assets/brand/lockup-dark.png'),
   notifyAdmins:  (process.env.NOTIFY_ADMINS || '').split(',').map(s => s.trim()).filter(Boolean),
   // Microsoft Graph (Outlook) provider:
   msTenantId:    process.env.MS_TENANT_ID,
