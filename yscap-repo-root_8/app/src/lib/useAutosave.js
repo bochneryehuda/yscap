@@ -16,7 +16,12 @@ export function useAutosave(saveFn, delay = 900) {
   }, [saveFn]);
 
   const save = useCallback((partial) => {
-    pending.current = { ...(pending.current || {}), ...partial };
+    const prev = pending.current || {};
+    // Deep-merge the nested `data` object: callers save one field at a time as
+    // { data: { field: value } }, and two edits inside the debounce window would
+    // otherwise collide on `data` and drop the earlier field (silent data loss).
+    pending.current = { ...prev, ...partial };
+    if (partial && partial.data) pending.current.data = { ...(prev.data || {}), ...partial.data };
     setStatus('saving');
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(run, delay);

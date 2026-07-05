@@ -92,6 +92,10 @@ export const api = {
   completeTool: (appId, itemId, payload, notes) =>
     req('POST', `/api/borrower/applications/${appId}/checklist/${itemId}/tool`, { payload, notes }),
 
+  // reusable service contacts (title company / insurance agent)
+  contacts:     (type) => req('GET', `/api/borrower/contacts${type ? `?type=${type}` : ''}`),
+  saveContact:  (b) => req('POST', '/api/borrower/contacts', b),
+
   drafts:       () => req('GET', '/api/borrower/drafts'),
   createDraft:  (b) => req('POST', '/api/borrower/drafts', b),
   draft:        (id) => req('GET', `/api/borrower/drafts/${id}`),
