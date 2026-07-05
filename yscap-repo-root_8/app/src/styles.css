@@ -344,3 +344,11 @@ a.checkitem:hover{transform:translateY(-1px)}
 .tr-act{display:flex;align-items:center;gap:8px;margin-left:auto}
 .tr-add{margin-top:12px;background:var(--ink-2);border:1px solid var(--line);border-radius:10px;padding:14px}
 .btn.small{padding:5px 12px;font-size:12.5px}
+
+/* ===== Borrower dashboard "next steps" strip ===== */
+.next-strip{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:18px}
+.next-item{display:flex;align-items:center;gap:10px;background:var(--ink-1);border:1px solid var(--line);border-radius:11px;padding:12px 16px;flex:1;min-width:210px}
+.next-item.warn{border-left:3px solid var(--gold)}
+.next-item.ok{border-left:3px solid var(--ok)}
+.next-item .ni-n{font-family:var(--serif,'Fraunces',serif);font-size:22px;font-weight:700;line-height:1;white-space:nowrap}
+.next-item .ni-l{font-size:13px;color:var(--muted);line-height:1.3}
