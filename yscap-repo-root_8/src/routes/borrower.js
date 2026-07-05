@@ -291,6 +291,35 @@ router.post('/contacts', async (req, res) => {
   res.status(201).json({ ok: true, contactId });
 });
 
+// ---------------- PARTNERS (reusable co-borrowers) ----------------
+router.get('/partners', async (req, res) => {
+  const r = await db.query(
+    `SELECT id,first_name,last_name,email,phone,relationship_type,partner_borrower_id
+       FROM partners WHERE owner_borrower_id=$1 ORDER BY updated_at DESC`, [me(req)]);
+  res.json(r.rows);
+});
+// Save/update a partner for reuse. Also called on submit to remember a co-borrower.
+async function upsertPartner(ownerId, p) {
+  if (!p || (!p.email && !p.firstName && !p.lastName)) return null;
+  const r = await db.query(
+    `INSERT INTO partners (owner_borrower_id,first_name,last_name,email,phone,relationship_type)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (owner_borrower_id,email) DO UPDATE SET
+       first_name=COALESCE(EXCLUDED.first_name,partners.first_name),
+       last_name=COALESCE(EXCLUDED.last_name,partners.last_name),
+       phone=COALESCE(EXCLUDED.phone,partners.phone),
+       relationship_type=EXCLUDED.relationship_type, updated_at=now()
+     RETURNING id`,
+    [ownerId, p.firstName || null, p.lastName || null, p.email || null, p.phone || null, p.relationshipType || 'co_borrower']);
+  return r.rows[0] ? r.rows[0].id : null;
+}
+router.post('/partners', async (req, res) => {
+  const b = req.body || {};
+  try { const id = await upsertPartner(me(req), b); if (!id) return res.status(400).json({ error: 'enter partner details' }); res.status(201).json({ ok: true, partnerId: id }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.upsertPartner = upsertPartner;
+
 // ---------------- TRACK RECORDS (on the borrower profile) ----------------
 router.get('/track-records', async (req, res) => {
   const r = await db.query(`SELECT * FROM track_records WHERE borrower_id=$1 ORDER BY sale_date DESC NULLS LAST, created_at DESC`, [me(req)]);
@@ -753,6 +782,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
       const primary = await db.query(`SELECT first_name,last_name FROM borrowers WHERE id=$1`, [me(req)]);
       const pn = primary.rows[0] ? `${primary.rows[0].first_name} ${primary.rows[0].last_name}`.trim() : '';
       await inviteCoBorrower(appId, pn, b.coBorrower);
+      // Remember this partner so the borrower can reuse them on the next file.
+      try { await upsertPartner(me(req), { ...b.coBorrower, relationshipType: 'co_borrower' }); } catch (_) {}
     } catch (e) { console.error('[apply] co-borrower invite failed:', db.describeError(e)); }
   }
 

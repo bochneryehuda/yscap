@@ -42,6 +42,7 @@ export default function Apply() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [officers, setOfficers] = useState([]);
+  const [partners, setPartners] = useState([]);
   const idRef = useRef(id);
   idRef.current = id;
 
@@ -87,6 +88,7 @@ export default function Apply() {
   // an email, and the backend resolves the officer from it.
   useEffect(() => {
     api.roster().then(r => setOfficers((r.people || []).filter(x => x && x.name))).catch(() => {});
+    api.partners().then(setPartners).catch(() => {});
   }, []);
 
   const doSave = useCallback((patch) => api.saveDraft(idRef.current, patch), []);
@@ -309,6 +311,17 @@ export default function Apply() {
             </div>
             {form.hasCoBorrower && (() => { const c = form.coBorrower || {}; return (
               <>
+                {partners.length > 0 && (
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                    <span className="muted small">Reuse a partner:</span>
+                    {partners.map(pt => (
+                      <button key={pt.id} type="button" className="btn ghost small"
+                        onClick={() => setForm(f => { const co = { firstName: pt.first_name || '', lastName: pt.last_name || '', email: pt.email || '', phone: pt.phone || '' }; save({ data: { coBorrower: co } }); return { ...(f || {}), coBorrower: co }; })}>
+                        {[pt.first_name, pt.last_name].filter(Boolean).join(' ') || pt.email}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <p className="muted small" style={{ marginBottom: 12 }}>
                   We'll email them an invitation to the portal to join this loan — they can add their own
                   personal information and upload their documents themselves.

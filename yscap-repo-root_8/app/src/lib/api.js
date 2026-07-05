@@ -100,6 +100,10 @@ export const api = {
   llcs:         () => req('GET', '/api/borrower/llcs'),
   createLlc:    (b) => req('POST', '/api/borrower/llcs', b),
 
+  // reusable partners (co-borrowers)
+  partners:     () => req('GET', '/api/borrower/partners'),
+  savePartner:  (b) => req('POST', '/api/borrower/partners', b),
+
   drafts:       () => req('GET', '/api/borrower/drafts'),
   createDraft:  (b) => req('POST', '/api/borrower/drafts', b),
   draft:        (id) => req('GET', `/api/borrower/drafts/${id}`),
