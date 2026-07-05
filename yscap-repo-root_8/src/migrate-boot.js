@@ -99,4 +99,41 @@ async function ensureSchema() {
   return { ok: true, ran };
 }
 
-module.exports = { ensureSchema, waitForDb };
+/**
+ * Optionally seed the first super-admin from env vars so the staff console is
+ * reachable immediately after a fresh deploy — no manual `create-admin` shell
+ * step. Opt-in: only runs when ADMIN_EMAIL and ADMIN_PASSWORD are both set.
+ * Idempotent upsert (re-running resets that admin's password to the env value,
+ * which is also a convenient lockout recovery). Remove the vars once you're in.
+ * Never throws.
+ */
+async function bootstrapAdmin() {
+  const email = (process.env.ADMIN_EMAIL || '').trim();
+  const password = process.env.ADMIN_PASSWORD || '';
+  if (!email || !password) return { ok: true, skipped: true };
+  if (String(password).length < 8) {
+    console.warn('[admin] ADMIN_PASSWORD too short (min 8) — skipping admin bootstrap.');
+    return { ok: false, skipped: true };
+  }
+  const role = (process.env.ADMIN_ROLE || 'super_admin').trim();
+  const fullName = (process.env.ADMIN_NAME || email).trim();
+  try {
+    const C = require('./lib/crypto');
+    const r = await db.query(
+      `INSERT INTO staff_users (email, full_name, role, password_hash, is_active)
+       VALUES ($1,$2,$3,$4,true)
+       ON CONFLICT (email) DO UPDATE
+         SET full_name=EXCLUDED.full_name, role=EXCLUDED.role,
+             password_hash=EXCLUDED.password_hash, is_active=true, updated_at=now()
+       RETURNING (xmax = 0) AS created`,
+      [email, fullName, role, C.hashPassword(password)]);
+    console.log(`[admin] ${r.rows[0]?.created ? 'created' : 'updated'} staff admin ${email} (${role}). ` +
+      'Remove ADMIN_PASSWORD from the environment once you have logged in.');
+    return { ok: true };
+  } catch (e) {
+    console.error('[admin] bootstrap failed:', db.describeError(e));
+    return { ok: false, error: db.describeError(e) };
+  }
+}
+
+module.exports = { ensureSchema, waitForDb, bootstrapAdmin };
