@@ -184,6 +184,18 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Download failed'); }
     finally { setDlBusy(null); }
   }
+  async function reviewDoc(doc, action) {
+    let reason;
+    if (action === 'reject') {
+      reason = window.prompt('Why is this document being rejected? The borrower will see this and can upload a new version.');
+      if (reason == null || !reason.trim()) return;
+    }
+    try {
+      await api.staffReviewDoc(doc.id, action, reason);
+      flash(action === 'accept' ? 'Document accepted ✓' : 'Document rejected — the borrower was notified.');
+      await load();
+    } catch (e) { setErr(e.message || 'Could not review the document'); }
+  }
   async function changeStatus(status) {
     try { await api.staffSetStatus(id, status); flash(`Status → ${APP_STATUS_LABEL[status] || status}. Borrower & team notified.`); await load(); }
     catch (e) { setErr(e.message || 'Could not update status'); }
@@ -328,20 +340,34 @@ export default function StaffApplication() {
         </div>
         {docs.length === 0
           ? <p className="muted small">No documents uploaded yet. Request one below and the borrower will see it on their checklist.</p>
-          : docs.map(d => (
-            <div className="checkitem" key={d.id}>
-              <span className="dot done" />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600 }}>{d.filename}</div>
+          : docs.map(d => {
+            const rs = d.review_status || 'pending';
+            const tone = rs === 'accepted' ? 'done' : rs === 'rejected' ? '' : 'outstanding';
+            const pillStyle = rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' }
+              : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' }
+              : rs === 'superseded' ? { opacity: .6 } : { borderColor: 'var(--gold)', color: 'var(--gold)' };
+            return (
+            <div className="checkitem" key={d.id} style={{ alignItems: 'flex-start', flexWrap: 'wrap', opacity: d.is_current ? 1 : .6 }}>
+              <span className={`dot ${tone}`} style={{ marginTop: 4 }} />
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontWeight: 600 }}>{d.filename} {!d.is_current && <span className="muted small">· old version</span>}</div>
                 <div className="muted small">
-                  {kb(d.size_bytes)} · uploaded by {d.uploaded_by_kind} · {new Date(d.created_at).toLocaleDateString()}
+                  {kb(d.size_bytes)} · {d.item_label ? `${d.item_label} · ` : ''}uploaded by {d.uploaded_by_kind} · {new Date(d.created_at).toLocaleDateString()}
                 </div>
+                {rs === 'rejected' && d.rejection_reason && <div className="small" style={{ color: 'var(--danger)', marginTop: 2 }}>Rejected: {d.rejection_reason}</div>}
+                {d.reviewed_by_name && <div className="muted small">Reviewed by {d.reviewed_by_name}</div>}
               </div>
-              <button className="btn ghost" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
-                {dlBusy === d.id ? 'Downloading…' : 'Download'}
-              </button>
+              <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                <span className="pill" style={pillStyle}>{rs}</span>
+                <button className="btn ghost" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                  {dlBusy === d.id ? '…' : 'Download'}
+                </button>
+                {d.is_current && rs !== 'accepted' && <button className="btn primary" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
+                {d.is_current && rs !== 'rejected' && <button className="btn ghost" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
+              </div>
             </div>
-          ))}
+            );
+          })}
       </div>
 
       <div className="grid cols-2" style={{ marginTop: 18 }}>

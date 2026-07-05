@@ -174,12 +174,15 @@ router.get('/applications/:id/checklist', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
-    `SELECT id, COALESCE(borrower_label,label) AS label, status, item_kind, phase,
-            COALESCE(borrower_hint,hint) AS hint, is_required, due_date, notes,
-            tool_key, (tool_payload IS NOT NULL) AS tool_submitted
-       FROM checklist_items
-      WHERE application_id=$1 AND audience IN ('borrower','both')
-      ORDER BY sort_order, created_at`, [req.params.id]);
+    `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
+            COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date, ci.notes,
+            ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted,
+            (SELECT d.rejection_reason FROM documents d
+              WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
+              ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1) AS rejection_reason
+       FROM checklist_items ci
+      WHERE ci.application_id=$1 AND ci.audience IN ('borrower','both')
+      ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   res.json(r.rows);
 });
 
@@ -271,8 +274,17 @@ router.post('/documents', async (req, res) => {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'borrower',$10) RETURNING id`,
     [b.checklistItemId || null, b.applicationId || null, me(req), b.llcId || null,
      b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req)]);
-  if (b.checklistItemId)
+  if (b.checklistItemId) {
+    // A re-upload supersedes the borrower's prior versions for this item so a
+    // rejected/old document never stays part of the file; the new one is the
+    // current version, pending review again.
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE checklist_item_id=$1 AND borrower_id=$2 AND id<>$3 AND is_current=true`,
+      [b.checklistItemId, me(req), r.rows[0].id]);
     await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
+  }
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 
@@ -304,10 +316,11 @@ router.post('/documents', async (req, res) => {
 // List the borrower's own documents (optionally scoped to one application).
 router.get('/documents', async (req, res) => {
   const r = await db.query(
-    `SELECT id,filename,content_type,size_bytes,application_id,llc_id,checklist_item_id,created_at
+    `SELECT id,filename,content_type,size_bytes,application_id,llc_id,checklist_item_id,created_at,
+            review_status,rejection_reason,is_current
        FROM documents
       WHERE borrower_id=$1 AND ($2::uuid IS NULL OR application_id=$2)
-      ORDER BY created_at DESC`,
+      ORDER BY is_current DESC, created_at DESC`,
     [me(req), req.query.applicationId || null]);
   res.json(r.rows);
 });
