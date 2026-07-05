@@ -62,6 +62,12 @@ module.exports = {
   emailProvider: resolveEmailProvider(),
   notifyFrom:    process.env.NOTIFY_FROM || 'YS Capital Group <no-reply@yscapgroup.com>',
   appUrl:        (process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,''),  // base for links in emails
+  // Public URL of the branded logo shown in email headers. Defaults to the
+  // app's own statically-served asset (web/assets/brand/lockup-dark.png) so it
+  // renders on the dark email canvas. Override with EMAIL_LOGO_URL if you host
+  // it elsewhere (e.g. the marketing site).
+  emailLogoUrl:  process.env.EMAIL_LOGO_URL ||
+                 ((process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,'') + '/assets/brand/lockup-dark.png'),
   notifyAdmins:  (process.env.NOTIFY_ADMINS || '').split(',').map(s => s.trim()).filter(Boolean),
   // Microsoft Graph (Outlook) provider:
   msTenantId:    process.env.MS_TENANT_ID,

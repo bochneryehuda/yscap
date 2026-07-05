@@ -10,6 +10,12 @@
    ===================================================================== */
 'use strict';
 
+// The logo URL is resolved from config (env-driven) but the module stays safe
+// to require in isolation — fall back to no image (text wordmark) if config
+// can't load for any reason.
+var LOGO_URL = '';
+try { LOGO_URL = require('../../config').emailLogoUrl || ''; } catch (e) { LOGO_URL = ''; }
+
 var BRAND = {
   ink:    '#141B22',   // deep ink canvas
   ink1:   '#1B242D',   // card
@@ -37,13 +43,26 @@ function esc(s) {
     .replace(/"/g, '&quot;');
 }
 
-/* Wordmark drawn in the header — text, so it always renders (no image host). */
+/* Header brand block. Uses the real YS Capital lockup (skyline mark + "YS
+   CAPITAL GROUP" + "the answer is yes" tagline) hosted as a static asset, so
+   emails carry the actual brand rather than a text approximation. If images are
+   blocked or the URL is unset, the alt text / text wordmark below stands in. */
+function brandHeader() {
+  if (LOGO_URL) {
+    return '<img src="' + esc(LOGO_URL) + '" width="230" alt="YS Capital Group — the answer is yes" ' +
+      'style="display:block;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;' +
+      'width:230px;max-width:230px;height:auto;">';
+  }
+  return wordmark();
+}
+
+/* Text wordmark fallback — always renders even with no image host. */
 function wordmark() {
   return '' +
     '<span style="font-family:Georgia,\'Times New Roman\',serif;font-size:22px;' +
     'letter-spacing:3px;color:' + BRAND.ivory + ';font-weight:700;">YS&nbsp;CAPITAL</span>' +
-    '<span style="display:block;font-family:Arial,Helvetica,sans-serif;font-size:10px;' +
-    'letter-spacing:4px;color:' + BRAND.teal + ';margin-top:4px;text-transform:uppercase;">Group</span>';
+    '<span style="font-family:Arial,Helvetica,sans-serif;font-size:11px;' +
+    'letter-spacing:4px;color:' + BRAND.teal + ';text-transform:uppercase;">&nbsp;&nbsp;GROUP</span>';
 }
 
 /**
@@ -136,8 +155,8 @@ function render(p) {
         'style="width:600px;max-width:600px;background:' + BRAND.ink1 + ';border-radius:14px;' +
         'border:1px solid ' + BRAND.ink2 + ';overflow:hidden;">' +
         /* header */
-        '<tr><td style="padding:26px 34px 22px;border-bottom:1px solid ' + BRAND.ink2 + ';">' +
-          wordmark() +
+        '<tr><td style="padding:28px 34px 24px;border-bottom:1px solid ' + BRAND.ink2 + ';">' +
+          brandHeader() +
         '</td></tr>' +
         /* gold hairline */
         '<tr><td style="height:3px;line-height:3px;font-size:0;background:' + BRAND.gold + ';">&nbsp;</td></tr>' +
