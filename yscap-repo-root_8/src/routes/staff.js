@@ -303,6 +303,28 @@ router.post('/applications/:id/conditions', async (req, res) => {
   res.status(201).json({ ok: true, itemId: r.rows[0].id });
 });
 
+// TPR / clean-file export — streams a stacked ZIP of the accepted+current
+// document set with a manifest. Staff-only (path middleware already scoped it).
+router.get('/applications/:id/export/tpr', async (req, res) => {
+  try {
+    const { zip, filename } = await require('../lib/tpr-export').buildTprExport(req.params.id);
+    await audit(req, 'export_tpr', 'application', req.params.id, { bytes: zip.length });
+    res.set('Content-Type', 'application/zip');
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(zip);
+  } catch (e) { res.status(500).json({ error: 'export failed' }); }
+});
+// Readiness preview (counts + missing list) without building the whole zip.
+router.get('/applications/:id/export/tpr/preview', async (req, res) => {
+  try {
+    const included = (await db.query(
+      `SELECT count(*)::int c FROM documents WHERE application_id=$1 AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'`, [req.params.id])).rows[0].c;
+    const missing = (await db.query(
+      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied' ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
+    res.json({ includedCount: included, missing });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Full file activity feed (staff sees everything, including internal).
 router.get('/applications/:id/activity', async (req, res) => {
   try { res.json(await require('../lib/activity').fileActivity(req.params.id, false)); }

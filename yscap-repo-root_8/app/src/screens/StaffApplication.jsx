@@ -484,6 +484,7 @@ export default function StaffApplication() {
         </div>
       </div>
 
+      <TprExport appId={id} />
       <ChatPanel appId={id} onTaskCreated={load} />
       <ActivityFeed fetcher={activityFetcher} title="File activity" />
     </>
@@ -493,6 +494,42 @@ export default function StaffApplication() {
 /* Two collaboration channels per file: the borrower-facing thread, and an
    internal team channel (LO / processor / underwriter / admin) the borrower
    never sees — where a message can be saved straight onto the file as a task. */
+/* TPR / clean-file export — shows readiness (accepted docs + what's still
+   missing) and downloads a stacked, manifested ZIP of the clean set. */
+function TprExport({ appId }) {
+  const [prev, setPrev] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.staffTprPreview(appId).then(setPrev).catch(() => setPrev({ includedCount: 0, missing: [] })); }, [appId]);
+  async function download() {
+    setBusy(true);
+    try { const { blob, filename } = await api.staffTprExport(appId); saveBlob(blob, filename || 'TPR_export.zip'); }
+    catch (e) { alert(e.message || 'Export failed'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3>TPR / clean-file export</h3>
+        <div className="spacer" />
+        <button className="btn primary" onClick={download} disabled={busy || !prev || prev.includedCount === 0}>
+          {busy ? 'Building…' : 'Export clean file (ZIP)'}
+        </button>
+      </div>
+      {!prev ? <p className="muted small">Checking readiness…</p> : (
+        <>
+          <p className="muted small">{prev.includedCount} accepted document{prev.includedCount === 1 ? '' : 's'} will be included (rejected & superseded files are excluded).</p>
+          {prev.missing.length > 0 && (
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+              <span className="muted small">Not yet accepted:</span>
+              {prev.missing.slice(0, 12).map((m, i) => <span key={i} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>{m}</span>)}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ChatPanel({ appId, onTaskCreated }) {
   const [channel, setChannel] = useState('borrower');
   const internal = channel === 'internal';
