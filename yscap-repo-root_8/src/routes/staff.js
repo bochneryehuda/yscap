@@ -118,6 +118,28 @@ router.get('/applications', async (req, res) => {
   res.json(r.rows);
 });
 
+// Everything on my plate across all my files: tasks explicitly assigned to me,
+// or role-routed (loan_officer/processor) to a file I'm assigned to. Open only.
+router.get('/my-tasks', async (req, res) => {
+  const r = await db.query(
+    `SELECT ci.id, ci.label, ci.status, ci.due_date, ci.role_scope, ci.item_kind,
+            ci.application_id, a.ys_loan_number, a.property_address, a.status AS app_status,
+            b.first_name, b.last_name,
+            (ci.assignee_staff_id=$1) AS assigned_to_me,
+            (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
+               AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL) AS unread
+       FROM checklist_items ci
+       JOIN applications a ON a.id=ci.application_id
+       JOIN borrowers b ON b.id=a.borrower_id
+      WHERE a.deleted_at IS NULL
+        AND ci.status NOT IN ('satisfied')
+        AND (ci.assignee_staff_id=$1
+             OR (ci.assignee_staff_id IS NULL AND ci.role_scope='loan_officer' AND a.loan_officer_id=$1)
+             OR (ci.assignee_staff_id IS NULL AND ci.role_scope='processor' AND a.processor_id=$1))
+      ORDER BY ci.due_date NULLS LAST, a.created_at`, [req.actor.id]);
+  res.json(r.rows);
+});
+
 router.get('/lead-capture', async (req, res) => {
   const r = await db.query(
     `SELECT a.id,a.ys_loan_number,a.program,a.property_address,a.created_at,b.first_name,b.last_name,b.email

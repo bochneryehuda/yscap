@@ -33,6 +33,7 @@ export default function StaffLayout({ children }) {
           </Link>
           <nav className="nav">
             <NavLink to="/staff">Pipeline</NavLink>
+            <NavLink to="/staff/tasks">My tasks</NavLink>
             <NavLink to="/staff/chat" style={{ position: 'relative' }}>
               Chat{unread > 0 && <span className="chat-badge nav">{unread > 99 ? '99+' : unread}</span>}
             </NavLink>

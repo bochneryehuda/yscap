@@ -17,6 +17,7 @@ import NotificationSettings from './screens/NotificationSettings.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
 import StaffNewFile from './screens/StaffNewFile.jsx';
+import StaffTasks from './screens/StaffTasks.jsx';
 import StaffApplication from './screens/StaffApplication.jsx';
 import StaffTeam from './screens/StaffTeam.jsx';
 import StaffLeads from './screens/StaffLeads.jsx';
@@ -73,6 +74,7 @@ export default function App() {
           {/* staff */}
           <Route path="/staff" element={<StaffPrivate><StaffQueue /></StaffPrivate>} />
           <Route path="/staff/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
+          <Route path="/staff/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />
           <Route path="/staff/app/:id" element={<StaffPrivate><StaffApplication /></StaffPrivate>} />
           <Route path="/staff/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
           <Route path="/staff/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
