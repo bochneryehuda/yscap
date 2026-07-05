@@ -285,8 +285,10 @@ router.post('/notifications/:id/read', async (req, res) => {
 router.get('/messages', async (req, res) => {
   const r = await db.query(
     `SELECT m.id,m.application_id,m.sender_kind,m.body,m.is_task_request,m.read_at,m.created_at,
-            m.attachment_document_id, m.attachment_kind,
+            m.attachment_document_id, m.attachment_kind, m.entity_refs,
             d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
+            COALESCE((SELECT json_agg(json_build_object('emoji', r.emoji, 'kind', r.actor_kind, 'actor', r.actor_id))
+                        FROM message_reactions r WHERE r.message_id=m.id), '[]'::json) AS reactions,
             CASE WHEN m.sender_kind='staff' THEN COALESCE(s.full_name,'Your loan team')
                  WHEN m.sender_kind='borrower' THEN 'You'
                  ELSE 'System' END AS sender_name
@@ -325,11 +327,18 @@ router.post('/messages', async (req, res) => {
         byKind: 'borrower', byId: me(req) });
     } catch (e2) { return res.status(e2.status || 500).json({ error: e2.message }); }
   }
+  const refs = Array.isArray(b.entityRefs)
+    ? b.entityRefs.slice(0, 20).map(r => ({
+        type: ['task','document','application','borrower'].includes(r.type) ? r.type : 'task',
+        id: String(r.id || '').slice(0, 60), label: String(r.label || '').slice(0, 160) }))
+      .filter(r => r.id && r.label)
+    : null;
   const r = await db.query(
-    `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,is_task_request,attachment_document_id,attachment_kind)
-     VALUES ($1,$2,'borrower',$2,$3,$4,$5,$6) RETURNING id`,
+    `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,is_task_request,attachment_document_id,attachment_kind,entity_refs)
+     VALUES ($1,$2,'borrower',$2,$3,$4,$5,$6,$7) RETURNING id`,
     [b.applicationId || null, me(req), String(b.body || '').slice(0, 4000), !!b.isTaskRequest,
-     attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null]);
+     attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null,
+     refs && refs.length ? JSON.stringify(refs) : null]);
   res.status(201).json({ ok: true, messageId: r.rows[0].id });
 
   // Notify the file's loan officer + processor of the new borrower message.
@@ -354,6 +363,42 @@ router.post('/messages', async (req, res) => {
       }
     } catch (_) {}
   }
+});
+
+// Toggle an emoji reaction on a borrower-channel message on one of my files.
+router.post('/messages/:mid/react', async (req, res) => {
+  const emoji = String((req.body || {}).emoji || '').slice(0, 16);
+  if (!emoji) return res.status(400).json({ error: 'emoji required' });
+  const m = await db.query(
+    `SELECT 1 FROM messages m JOIN applications a ON a.id=m.application_id
+      WHERE m.id=$1 AND m.channel='borrower' AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`,
+    [req.params.mid, me(req)]);
+  if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
+  const del = await db.query(
+    `DELETE FROM message_reactions WHERE message_id=$1 AND actor_kind='borrower' AND actor_id=$2 AND emoji=$3 RETURNING id`,
+    [req.params.mid, me(req), emoji]);
+  if (!del.rows[0])
+    await db.query(`INSERT INTO message_reactions (message_id,actor_kind,actor_id,emoji) VALUES ($1,'borrower',$2,$3)`,
+      [req.params.mid, me(req), emoji]);
+  res.json({ ok: true, reacted: !del.rows[0] });
+});
+
+// What the borrower can mention: their team, their visible tasks, their
+// documents, and their own applications/properties.
+router.get('/applications/:id/mentionables', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const [users, tasks, docs, apps] = await Promise.all([
+    db.query(`SELECT s.id, s.full_name AS label FROM applications a
+                JOIN staff_users s ON s.id IN (a.loan_officer_id, a.processor_id)
+               WHERE a.id=$1 AND s.is_active=true`, [req.params.id]),
+    db.query(`SELECT id, label, status FROM checklist_items
+               WHERE application_id=$1 AND audience IN ('borrower','both') ORDER BY sort_order LIMIT 200`, [req.params.id]),
+    db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
+    db.query(`SELECT id, COALESCE(property_address->>'oneLine', property_address->>'street', 'Application') AS label
+                FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1`, [me(req)]),
+  ]);
+  res.json({ users: users.rows, tasks: tasks.rows, documents: docs.rows, applications: apps.rows });
 });
 
 // Which of my applications have unread messages from the loan team.

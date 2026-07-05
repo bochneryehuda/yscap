@@ -60,7 +60,10 @@ export default function StaffQueue() {
     api.staffDashboard().then(setDash).catch(() => {});
   }, []);
 
-  const list = tab === 'mine' ? mine : leads;
+  const [officer, setOfficer] = useState('');
+  const officers = [...new Set((mine || []).map(a => a.loan_officer_name).filter(Boolean))].sort();
+  const baseList = tab === 'mine' ? mine : leads;
+  const list = (tab === 'mine' && officer && baseList) ? baseList.filter(a => a.loan_officer_name === officer) : baseList;
   const mineLabel = seesAll(role) ? 'All applications' : 'My pipeline';
 
   return (
@@ -80,6 +83,16 @@ export default function StaffQueue() {
 
       {err && <div className="notice err">{err}</div>}
       <Kpis d={dash} />
+      {tab === 'mine' && seesAll(role) && officers.length > 1 && (
+        <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: 'center' }}>
+          <span className="muted small">Pipeline of</span>
+          <select className="input" style={{ maxWidth: 220 }} value={officer} onChange={e => setOfficer(e.target.value)}>
+            <option value="">All officers</option>
+            {officers.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+          {officer && <span className="muted small">{list ? list.length : 0} file(s)</span>}
+        </div>
+      )}
       {tab === 'leads' && (
         <p className="muted small" style={{ marginBottom: 12 }}>
           New applications with no loan officer assigned yet. Open one to assign an officer and processor.

@@ -317,6 +317,44 @@ router.get('/chat/inbox', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Everything mentionable on this file: people, tasks, documents, and the
+// borrower's other applications/properties — powers the @/# composer picker.
+router.get('/applications/:id/mentionables', async (req, res) => {
+  try {
+    const [users, tasks, docs, apps] = await Promise.all([
+      db.query(`SELECT id, full_name AS label FROM staff_users WHERE is_active=true ORDER BY full_name`),
+      db.query(`SELECT id, label, status FROM checklist_items WHERE application_id=$1 ORDER BY sort_order LIMIT 300`, [req.params.id]),
+      db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
+      db.query(`SELECT a.id, COALESCE(a.property_address->>'oneLine', a.property_address->>'street', 'Application') AS label
+                  FROM applications a WHERE a.borrower_id=(SELECT borrower_id FROM applications WHERE id=$1)`, [req.params.id]),
+    ]);
+    res.json({ users: users.rows, tasks: tasks.rows, documents: docs.rows, applications: apps.rows });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Toggle an emoji reaction on a message (per person per emoji).
+router.post('/messages/:mid/react', async (req, res) => {
+  const emoji = String((req.body || {}).emoji || '').slice(0, 16);
+  if (!emoji) return res.status(400).json({ error: 'emoji required' });
+  try {
+    const m = await db.query(`SELECT application_id FROM messages WHERE id=$1`, [req.params.mid]);
+    if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!seesAll(req)) {
+      const own = await db.query(
+        `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`,
+        [m.rows[0].application_id, req.actor.id]);
+      if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
+    }
+    const del = await db.query(
+      `DELETE FROM message_reactions WHERE message_id=$1 AND actor_kind='staff' AND actor_id=$2 AND emoji=$3 RETURNING id`,
+      [req.params.mid, req.actor.id, emoji]);
+    if (!del.rows[0])
+      await db.query(`INSERT INTO message_reactions (message_id,actor_kind,actor_id,emoji) VALUES ($1,'staff',$2,$3)`,
+        [req.params.mid, req.actor.id, emoji]);
+    res.json({ ok: true, reacted: !del.rows[0] });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- collaboration messaging (per file, two channels) ----------------
 // channel 'borrower' = borrower <-> loan team; channel 'internal' = LO <->
 // processor <-> underwriter <-> admin, never visible to the borrower.
@@ -327,8 +365,10 @@ router.get('/applications/:id/messages', async (req, res) => {
     const r = await db.query(
       `SELECT m.id, m.sender_kind, m.sender_id, m.body, m.channel, m.checklist_item_id,
               m.is_task_request, m.read_at, m.created_at,
-              m.attachment_document_id, m.attachment_kind,
+              m.attachment_document_id, m.attachment_kind, m.entity_refs,
               d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
+              COALESCE((SELECT json_agg(json_build_object('emoji', r.emoji, 'kind', r.actor_kind, 'actor', r.actor_id))
+                          FROM message_reactions r WHERE r.message_id=m.id), '[]'::json) AS reactions,
               CASE WHEN m.sender_kind='staff' THEN s.full_name
                    WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
                    ELSE 'System' END AS sender_name,
@@ -382,11 +422,19 @@ router.post('/applications/:id/messages', async (req, res) => {
       taskId = t.rows[0].id;
     }
 
+    // Structured entity mentions (#task / #document / #application chips).
+    const refs = Array.isArray(b.entityRefs)
+      ? b.entityRefs.slice(0, 20).map(r => ({
+          type: ['task','document','application','borrower'].includes(r.type) ? r.type : 'task',
+          id: String(r.id || '').slice(0, 60), label: String(r.label || '').slice(0, 160) }))
+        .filter(r => r.id && r.label)
+      : null;
     const ins = await db.query(
-      `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,channel,checklist_item_id,attachment_document_id,attachment_kind)
-       VALUES ($1,$2,'staff',$3,$4,$5,$6,$7,$8) RETURNING id`,
+      `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,channel,checklist_item_id,attachment_document_id,attachment_kind,entity_refs)
+       VALUES ($1,$2,'staff',$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
       [req.params.id, a.borrower_id, req.actor.id, String(body || '').slice(0, 4000), channel, taskId,
-       attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null]);
+       attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null,
+       refs && refs.length ? JSON.stringify(refs) : null]);
     await audit(req, 'post_message', 'application', req.params.id, { channel, taskId, attachment: !!attDoc });
 
     try {
