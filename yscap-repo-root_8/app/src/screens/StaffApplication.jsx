@@ -8,6 +8,7 @@ import ActivityFeed from '../components/ActivityFeed.jsx';
 import ProductRegistration from '../components/ProductRegistration.jsx';
 import TrackRecord from '../components/TrackRecord.jsx';
 import RehabBudget, { RehabBudgetView } from '../components/RehabBudget.jsx';
+import DealSnapshot from '../components/DealSnapshot.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -318,6 +319,7 @@ export default function StaffApplication() {
       </div>
       <h1 style={{ marginBottom: 4 }}>{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>
       <p className="muted small" style={{ marginBottom: 12 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
+      <DealSnapshot app={app} gating={gating} />
       <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16 }}>
         <span className="muted small">Advance status</span>
         <select className="input" style={{ maxWidth: 190 }} value={app.status} onChange={e => changeStatus(e.target.value)}>
