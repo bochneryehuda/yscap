@@ -196,6 +196,30 @@ router.post('/documents', async (req, res) => {
     await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
+
+  // Notify the file's loan officer + processor that a document arrived
+  // (best-effort, after the response — never blocks the upload).
+  if (b.applicationId) {
+    try {
+      const a = await db.query(
+        `SELECT a.loan_officer_id, a.processor_id, b.first_name, b.last_name
+           FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [b.applicationId]);
+      const row = a.rows[0];
+      if (row) {
+        const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
+        const opts = {
+          type: 'doc_uploaded',
+          title: 'New document uploaded',
+          body: `${who} uploaded "${b.filename}".`,
+          applicationId: b.applicationId,
+          link: `/staff/app/${b.applicationId}`,
+          ctaLabel: 'Review the document',
+        };
+        const targets = new Set([row.loan_officer_id, row.processor_id].filter(Boolean));
+        for (const sid of targets) await notify.notifyStaff(sid, opts);
+      }
+    } catch (_) { /* never fail the upload on a notify hiccup */ }
+  }
 });
 
 // List the borrower's own documents (optionally scoped to one application).

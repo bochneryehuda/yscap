@@ -111,4 +111,18 @@ module.exports = {
 
   // --- ClickUp (deferred; server-side token only) ---
   clickupToken:  process.env.CLICKUP_API_TOKEN,
+
+  // --- address autocomplete / verification (server-side proxy) ---
+  // The frontend calls OUR /api/address/*; any real key lives only here, never
+  // in the public site bundle. Provider auto-detects: Google if a key is set,
+  // else Smarty if configured, else 'osm' (OpenStreetMap Nominatim) — which is
+  // KEYLESS and works out of the box, so autocomplete is live with zero setup.
+  addressProvider: (process.env.ADDRESS_PROVIDER ||
+                    (process.env.GOOGLE_PLACES_API_KEY ? 'google'
+                     : process.env.SMARTY_AUTH_ID ? 'smarty' : 'osm')).toLowerCase(),
+  googlePlacesKey: process.env.GOOGLE_PLACES_API_KEY,
+  smartyAuthId:    process.env.SMARTY_AUTH_ID,
+  smartyAuthToken: process.env.SMARTY_AUTH_TOKEN,
+  // Nominatim asks every app to identify itself (email/URL) in the User-Agent.
+  osmContact:      process.env.OSM_CONTACT || 'admin@yscapgroup.com',
 };

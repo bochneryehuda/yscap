@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAutosave } from '../lib/useAutosave.js';
+import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 
 const STEPS = ['Property', 'Loan', 'Borrower & submit'];
 const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground Up Construction', 'DSCR Rental', 'Not sure yet'];
@@ -51,14 +52,17 @@ export default function Apply() {
     setForm(f => ({ ...(f || {}), [k]: v }));
     save({ data: { [k]: v } });
   };
-  const setAddr = (k, v) => {
+  const mergeAddr = (patch) => {
     setForm(f => {
-      const address = { ...((f && f.propertyAddress) || {}), [k]: v };
-      address.oneLine = [address.street, address.city, address.state, address.zip].filter(Boolean).join(', ');
+      const address = { ...((f && f.propertyAddress) || {}), ...patch };
+      address.oneLine = [[address.street, address.unit].filter(Boolean).join(' '), address.city, [address.state, address.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
       save({ data: { propertyAddress: address } });
       return { ...(f || {}), propertyAddress: address };
     });
   };
+  const setAddr = (k, v) => mergeAddr({ [k]: v });
+  // Autocomplete returns divided components (street/unit/city/state/zip).
+  const pickAddr = (a) => mergeAddr({ street: a.line1 || '', unit: a.unit || '', city: a.city || '', state: a.state || '', zip: a.zip || '' });
 
   const goStep = async (n) => { await flush(); setStep(n); save({ step: n }); };
 
@@ -99,10 +103,15 @@ export default function Apply() {
           <>
             <h3 style={{ marginBottom: 14 }}>Subject property</h3>
             <div className="field"><label>Street address</label>
-              <input className="input" value={a.street || ''} onChange={e => setAddr('street', e.target.value)} placeholder="1420 Bedford Ave" /></div>
-            <div className="grid cols-3">
+              <AddressAutocomplete value={a.street || ''} placeholder="Start typing the property address…"
+                onChange={v => setAddr('street', v)} onPick={pickAddr} /></div>
+            <div className="grid cols-2">
+              <div className="field"><label>Apt / Unit</label>
+                <input className="input" value={a.unit || ''} onChange={e => setAddr('unit', e.target.value)} placeholder="Optional" /></div>
               <div className="field"><label>City</label>
                 <input className="input" value={a.city || ''} onChange={e => setAddr('city', e.target.value)} /></div>
+            </div>
+            <div className="grid cols-2">
               <div className="field"><label>State</label>
                 <input className="input" maxLength={2} value={a.state || ''} onChange={e => setAddr('state', e.target.value.toUpperCase())} placeholder="NY" /></div>
               <div className="field"><label>ZIP</label>

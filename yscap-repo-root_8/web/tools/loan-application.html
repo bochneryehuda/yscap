@@ -929,6 +929,7 @@
 <script src="rb-logo.js?v=admin8"></script>
 <script src="standard-program.js?v=admin12"></script>
 <script src="title-cost.js?v=admin8"></script>
+<script src="address-autocomplete.js?v=admin8"></script>
 <script>
 /* =====================================================================
    YS LOAN APPLICATION — wizard logic (v2)
@@ -991,6 +992,24 @@
     STATES.forEach(function (s) { html += '<option value="' + s + '">' + s + '</option>'; });
     sel.innerHTML = html;
   });
+
+  /* ---- Address autocomplete on every address group (property + borrowers) ---- */
+  function fillAddr(pfx, a) {
+    var setV = function (id, v) { var e = el(id); if (e && v != null && v !== "") e.value = v; };
+    setV(pfx + "Street", a.line1); setV(pfx + "City", a.city); setV(pfx + "Zip", a.zip);
+    var st = el(pfx + "State"); if (st && a.state) st.value = a.state;
+    ["Street", "City", "State", "Zip"].forEach(function (f) {
+      var e = el(pfx + f);
+      if (e) { if (typeof setErr === "function") setErr(pfx + f, false); e.dispatchEvent(new Event("change", { bubbles: true })); }
+    });
+  }
+  (function initAddressAutocomplete() {
+    if (!window.YSAddr) return;
+    ["b1", "b1F", "b2", "b2F", "b3", "b3F", "b4", "b4F", "p"].forEach(function (pfx) {
+      var street = el(pfx + "Street");
+      if (street) window.YSAddr.attach(street, function (a) { fillAddr(pfx, a); });
+    });
+  })();
   // The officer dropdown is driven by the LIVE team roster (/api/roster) so a
   // loan officer added in the portal shows up here automatically. If the API is
   // unreachable, we fall back to the static sales list above so the form never

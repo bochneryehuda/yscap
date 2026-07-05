@@ -227,6 +227,37 @@ router.post('/track-records/:id/verify', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------------- advance application status ----------------
+const APP_STATUS = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
+const STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+router.patch('/applications/:id', async (req, res) => {
+  const { status } = req.body || {};
+  if (!status || !APP_STATUS.includes(status)) return res.status(400).json({ error: 'bad status' });
+  try {
+    const cur = await db.query(
+      `SELECT status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
+    await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+      [req.params.id, status]);
+    await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status });
+    const label = STATUS_LABEL[status] || status;
+    try {
+      if (cur.rows[0].borrower_id)
+        await notify.notifyBorrower(cur.rows[0].borrower_id, {
+          type: 'status_change', title: `Your loan status: ${label}`,
+          body: `Your application has moved to "${label}". Sign in to see the latest.`,
+          applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
+      const team = new Set([cur.rows[0].loan_officer_id, cur.rows[0].processor_id].filter(Boolean).filter(x => x !== req.actor.id));
+      for (const sid of team)
+        await notify.notifyStaff(sid, {
+          type: 'status_change', title: `File moved to ${label}`,
+          applicationId: req.params.id, link: `/staff/app/${req.params.id}` });
+    } catch (_) { /* notify best-effort */ }
+    res.json({ ok: true, status });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- leads (marketing-site submissions) ----------------
 // admins/underwriters see all; a loan officer sees leads routed to them plus
 // unrouted ones (the shared desk).
