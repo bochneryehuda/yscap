@@ -1,8 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
+import ActivityFeed from '../components/ActivityFeed.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
@@ -108,6 +109,7 @@ export default function Application() {
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
   const [uploads, setUploads] = useState([]);
+  const [conds, setConds] = useState([]);
   const [dlBusy, setDlBusy] = useState(null);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -115,8 +117,9 @@ export default function Application() {
   const [target, setTarget] = useState(null);
   const [docFilter, setDocFilter] = useState('all');
 
-  const load = () => Promise.all([api.application(id), api.checklist(id), api.documents(id).catch(() => [])])
-    .then(([a, c, d]) => { setApp(a); setItems(c || []); setUploads(d || []); }).catch(e => setErr(e.message));
+  const activityFetcher = useCallback(() => api.activity(id), [id]);
+  const load = () => Promise.all([api.application(id), api.checklist(id), api.documents(id).catch(() => []), api.conditions(id).catch(() => [])])
+    .then(([a, c, d, cn]) => { setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); }).catch(e => setErr(e.message));
 
   async function downloadDoc(doc) {
     setDlBusy(doc.id);
@@ -228,6 +231,22 @@ export default function Application() {
         </div>
       )}
 
+      {conds.length > 0 && (
+        <div className="panel" style={{ marginTop: 18, borderColor: 'var(--gold)' }}>
+          <h3 style={{ marginBottom: 4 }}>Needs your attention</h3>
+          <p className="muted small" style={{ marginBottom: 12 }}>A few things your loan team needs before we can move ahead.</p>
+          {conds.map(c => (
+            <div className="checkitem" key={c.id} style={{ alignItems: 'flex-start' }}>
+              <span className="dot outstanding" style={{ marginTop: 4 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>{c.title}</div>
+                {c.detail && <div className="muted small">{c.detail}</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {contactTasks.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>
           <h3 style={{ marginBottom: 4 }}>Your contacts</h3>
@@ -316,8 +335,12 @@ export default function Application() {
         send={(body, opts) => api.postMessage(id, body, { attachment: opts?.attachment, entityRefs: opts?.entityRefs })}
         downloadAttachment={(docId) => api.downloadDoc(docId)}
         react={(mid, emoji) => api.react(mid, emoji)}
+        edit={(mid, body) => api.editMessage(mid, body)}
+        del={(mid) => api.deleteMessage(mid)}
         fetchMentionables={() => api.mentionables(id)}
         onOpenApplication={(aid) => { window.location.hash = '#/app/' + aid; }} />
+
+      <ActivityFeed fetcher={activityFetcher} />
     </>
   );
 }

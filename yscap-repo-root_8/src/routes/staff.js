@@ -12,11 +12,37 @@ const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
 const { requireAuth, requireRole } = require('../auth');
+const pricing = require('../lib/pricing');
 
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
 // admins + super-admins + underwriters (risk) see every file;
 // loan officers and processors see only files they are assigned to.
 const seesAll = (req) => ['admin', 'super_admin', 'underwriter'].includes(req.actor.role);
+// The standard post-closing trailing-doc set, seeded when a file funds.
+const POST_CLOSING_SET = [
+  ['note', 'Final executed note'],
+  ['mortgage', 'Recorded mortgage / deed of trust'],
+  ['title_policy', 'Final title policy'],
+  ['settlement', 'Settlement statement (final CD/HUD)'],
+  ['closing_package', 'Full executed closing package'],
+  ['funding_confirmation', 'Funding confirmation'],
+  ['trailing_docs', 'Recorded trailing documents'],
+];
+async function seedPostClosing(appId) {
+  for (const [code, label] of POST_CLOSING_SET) {
+    await db.query(
+      `INSERT INTO post_closing_items (application_id,code,label) VALUES ($1,$2,$3)
+       ON CONFLICT (application_id,code) DO NOTHING`, [appId, code, label]);
+  }
+}
+
+// May this staffer act on a given application? (for routes not under the
+// /applications/:id path-scope middleware, e.g. /loan-conditions/:cid/*).
+async function canTouchApp(req, appId) {
+  if (seesAll(req)) return true;
+  const r = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`, [appId, req.actor.id]);
+  return !!r.rows[0];
+}
 const isAdmin = (req) => ['admin', 'super_admin'].includes(req.actor.role);
 
 async function audit(req, action, entity_type, entity_id, detail) {
@@ -90,6 +116,48 @@ router.get('/applications', async (req, res) => {
                FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                WHERE a.deleted_at IS NULL ${s.where.replace(/\$SCOPE/g, '$1')} ORDER BY a.created_at DESC`;
   const r = await db.query(sql, s.params);
+  res.json(r.rows);
+});
+
+// Exception dashboard — how many files are in each "needs attention" bucket,
+// scoped to what the staffer can see. Powers the command-center KPI strip.
+router.get('/exceptions', async (req, res) => {
+  const s = scopeClause(req);
+  const w = s.where.replace(/\$SCOPE/g, '$1');
+  try {
+    const r = await db.query(
+      `SELECT
+         count(*) FILTER (WHERE a.loan_officer_id IS NULL AND a.status NOT IN ('funded','declined','withdrawn'))::int AS unassigned,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM messages m WHERE m.application_id=a.id AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL))::int AS unread_messages,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM post_closing_items p WHERE p.application_id=a.id AND p.status='exception'))::int AS post_closing_exceptions
+       FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params);
+    res.json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Everything on my plate across all my files: tasks explicitly assigned to me,
+// or role-routed (loan_officer/processor) to a file I'm assigned to. Open only.
+router.get('/my-tasks', async (req, res) => {
+  const r = await db.query(
+    `SELECT ci.id, ci.label, ci.status, ci.due_date, ci.role_scope, ci.item_kind,
+            ci.application_id, a.ys_loan_number, a.property_address, a.status AS app_status,
+            b.first_name, b.last_name,
+            (ci.assignee_staff_id=$1) AS assigned_to_me,
+            (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
+               AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL) AS unread
+       FROM checklist_items ci
+       JOIN applications a ON a.id=ci.application_id
+       JOIN borrowers b ON b.id=a.borrower_id
+      WHERE a.deleted_at IS NULL
+        AND ci.status NOT IN ('satisfied')
+        AND (ci.assignee_staff_id=$1
+             OR (ci.assignee_staff_id IS NULL AND ci.role_scope='loan_officer' AND a.loan_officer_id=$1)
+             OR (ci.assignee_staff_id IS NULL AND ci.role_scope='processor' AND a.processor_id=$1))
+      ORDER BY ci.due_date NULLS LAST, a.created_at`, [req.actor.id]);
   res.json(r.rows);
 });
 
@@ -253,6 +321,136 @@ router.get('/applications/:id', async (req, res) => {
   res.json(r.rows[0]);
 });
 
+/* ---------------- Product registration / term sheet ----------------
+   Pricing is computed here on the server from the same FROZEN engines the
+   browser loads, so a registered product is always authoritative. */
+
+// Load a joined application row + count the borrower's track record into the
+// experience buckets the engines expect (flips / holds / ground-up).
+async function loadFileForPricing(appId) {
+  const a = await db.query(
+    `SELECT a.*, b.fico FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+  const app = a.rows[0];
+  if (!app) return null;
+  // Only VERIFIED deals count toward experience/tier — the same basis the
+  // borrowers.tier recompute uses. Unverified, borrower-claimed deals must not
+  // inflate the authoritative pricing tier. Staff can still override the exp*
+  // inputs in the panel for a what-if.
+  const tr = await db.query(
+    `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
+       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+  const exp = { flips: 0, holds: 0, ground: 0 };
+  for (const row of tr.rows) {
+    if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
+    else if (row.dt.indexOf('flip') > -1) exp.flips += row.n;
+    else exp.holds += row.n;   // fix-and-hold, rental, anything else
+  }
+  return { app, exp };
+}
+
+// Admin-only pricing overrides: setting the qualifying basis/rate directly or
+// forcing a price past ineligibility bypasses the frozen-engine guardrails, so
+// only admins/super-admins may supply them. For anyone else these keys are
+// stripped (a loan officer/processor can what-if the deal inputs, not override
+// the caps or rate). Returns { overrides, strippedAdminKeys }.
+const ADMIN_OVERRIDE_KEYS = ['ovrRate', 'ovrLTC', 'ovrAcqLTV', 'ovrARLTV', 'forcePrice'];
+function sanitizeOverrides(req, raw) {
+  const o = { ...(raw || {}) };
+  let stripped = false;
+  if (!isAdmin(req)) for (const k of ADMIN_OVERRIDE_KEYS) if (k in o) { delete o[k]; stripped = true; }
+  return { overrides: o, strippedAdminKeys: stripped };
+}
+
+// Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
+router.post('/applications/:id/pricing/quote', async (req, res) => {
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const f = await loadFileForPricing(req.params.id);
+    if (!f) return res.status(404).json({ error: 'not found' });
+    const { overrides } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
+    const out = pricing.quoteAll(f.app, f.exp, overrides);
+    res.json({ ...out, experience: f.exp });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// Current registered product + history, plus a fresh default quote for the panel.
+router.get('/applications/:id/pricing', async (req, res) => {
+  try {
+    const f = await loadFileForPricing(req.params.id);
+    if (!f) return res.status(404).json({ error: 'not found' });
+    const hist = await db.query(
+      `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
+              r.is_current, r.created_at, r.quote, s.full_name AS registered_by_name
+         FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
+        WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
+    const current = hist.rows.find((x) => x.is_current) || null;
+    let quote = null;
+    if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
+    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady() });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// Register a product: recompute authoritatively, persist as the current terms,
+// sync loan_amount / rate_pct onto the file, audit + notify the team.
+router.post('/applications/:id/pricing/register', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const b = req.body || {};
+    const program = b.program === 'gold' ? 'gold' : 'standard';
+    const f = await loadFileForPricing(appId);
+    if (!f) return res.status(404).json({ error: 'not found' });
+
+    const { overrides } = sanitizeOverrides(req, b.overrides || {});
+    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    const quote = pricing.quoteProgram(program, inputs);
+    if (quote.status === 'INELIGIBLE' && !overrides.forcePrice) {
+      return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
+    }
+    const total = quote.sizing ? quote.sizing.totalLoan : 0;
+    if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote });
+
+    const client = await db.getClient();
+    let regId;
+    try {
+      await client.query('BEGIN');
+      await client.query(`UPDATE product_registrations SET is_current=false WHERE application_id=$1 AND is_current`, [appId]);
+      const ins = await client.query(
+        `INSERT INTO product_registrations
+           (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10) RETURNING id`,
+        [appId, program, quote.productLabel || null, quote.status, quote.noteRate, total,
+         inputs.targetLTC || null, JSON.stringify(inputs), JSON.stringify(quote), req.actor.id]);
+      regId = ins.rows[0].id;
+      // The registered product IS the file's terms now.
+      await client.query(
+        `UPDATE applications SET loan_amount=$2, rate_pct=$3, updated_at=now() WHERE id=$1`,
+        [appId, total, quote.noteRate != null ? (quote.noteRate * 100) : null]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+
+    await audit(req, 'register_product', 'application', appId,
+      { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null });
+
+    // Notify the assigned team (LO + processor), not the borrower.
+    try {
+      const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
+      const row = t.rows[0] || {};
+      const pctRate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : '—';
+      const dollars = '$' + Math.round(total).toLocaleString('en-US');
+      const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''}`;
+      for (const sid of [row.loan_officer_id, row.processor_id]) {
+        if (sid && sid !== req.actor.id) await notify.notifyStaff(sid, {
+          type: 'product_registered', title: 'Product registered on ' + (row.ys_loan_number || 'a file'),
+          body, applicationId: appId });
+      }
+    } catch (_) { /* notification is best-effort */ }
+
+    res.status(201).json({ ok: true, registrationId: regId, quote });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
 router.get('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
@@ -294,6 +492,123 @@ router.post('/applications/:id/conditions', async (req, res) => {
     [req.params.id, b.label, b.audience || 'staff', b.isRequired !== false, b.notes || null, req.actor.id]);
   await audit(req, 'add_condition', 'application', req.params.id, { label: b.label });
   res.status(201).json({ ok: true, itemId: r.rows[0].id });
+});
+
+// ---- post-closing ----
+router.get('/applications/:id/post-closing', async (req, res) => {
+  const r = await db.query(
+    `SELECT p.*, s.full_name AS assignee_name FROM post_closing_items p
+       LEFT JOIN staff_users s ON s.id=p.assigned_staff_id
+      WHERE p.application_id=$1 ORDER BY p.created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/applications/:id/post-closing/seed', async (req, res) => {
+  try { await seedPostClosing(req.params.id); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.patch('/post-closing/:pid', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const c = await db.query(`SELECT application_id FROM post_closing_items WHERE id=$1`, [req.params.pid]);
+    if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+    const status = ['pending', 'ordered', 'received', 'accepted', 'exception'].includes(b.status) ? b.status : null;
+    await db.query(
+      `UPDATE post_closing_items SET
+         status=COALESCE($2,status),
+         exception_note=CASE WHEN $3::text IS NOT NULL THEN $3 ELSE exception_note END,
+         assigned_staff_id=CASE WHEN $4::uuid IS NOT NULL THEN $4 ELSE assigned_staff_id END,
+         updated_at=now() WHERE id=$1`,
+      [req.params.pid, status, b.exceptionNote ?? null, b.assigneeStaffId || null]);
+    await audit(req, 'post_closing_update', 'application', c.rows[0].application_id, { pid: req.params.pid, status });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// TPR / clean-file export — streams a stacked ZIP of the accepted+current
+// document set with a manifest. Staff-only (path middleware already scoped it).
+router.get('/applications/:id/export/tpr', async (req, res) => {
+  try {
+    const { zip, filename } = await require('../lib/tpr-export').buildTprExport(req.params.id);
+    await audit(req, 'export_tpr', 'application', req.params.id, { bytes: zip.length });
+    res.set('Content-Type', 'application/zip');
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(zip);
+  } catch (e) { res.status(500).json({ error: 'export failed' }); }
+});
+// Readiness preview (counts + missing list) without building the whole zip.
+router.get('/applications/:id/export/tpr/preview', async (req, res) => {
+  try {
+    const included = (await db.query(
+      `SELECT count(*)::int c FROM documents WHERE application_id=$1 AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'`, [req.params.id])).rows[0].c;
+    const missing = (await db.query(
+      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied' ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
+    res.json({ includedCount: included, missing });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Full file activity feed (staff sees everything, including internal).
+router.get('/applications/:id/activity', async (req, res) => {
+  try { res.json(await require('../lib/activity').fileActivity(req.params.id, false)); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---- first-class conditions (object model) ----
+router.get('/applications/:id/conditions', async (req, res) => {
+  const r = await db.query(
+    `SELECT c.*, cb.full_name AS created_by_name, xb.full_name AS cleared_by_name
+       FROM conditions c
+       LEFT JOIN staff_users cb ON cb.id=c.created_by
+       LEFT JOIN staff_users xb ON xb.id=c.cleared_by
+      WHERE c.application_id=$1 ORDER BY (c.status='open') DESC, c.created_at DESC`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/applications/:id/loan-conditions', async (req, res) => {
+  const b = req.body || {};
+  if (!b.title && !b.borrowerTitle) return res.status(400).json({ error: 'title required' });
+  const audience = ['staff', 'borrower', 'both'].includes(b.audience) ? b.audience : 'staff';
+  const severity = ['standard', 'prior_to_docs', 'prior_to_funding', 'post_closing'].includes(b.severity) ? b.severity : 'standard';
+  try {
+    const r = await db.query(
+      `INSERT INTO conditions (application_id,title,borrower_title,detail,borrower_detail,audience,severity,linked_entity_type,linked_entity_id,created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [req.params.id, b.title || b.borrowerTitle, b.borrowerTitle || null, b.detail || null, b.borrowerDetail || null,
+       audience, severity, b.linkedEntityType || null, b.linkedEntityId || null, req.actor.id]);
+    await audit(req, 'add_loan_condition', 'application', req.params.id, { severity, audience });
+    if (audience !== 'staff') {
+      const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+      if (a.rows[0]?.borrower_id) {
+        try {
+          await notify.notifyBorrower(a.rows[0].borrower_id, {
+            type: 'condition_added', title: 'A new item needs your attention',
+            body: b.borrowerTitle || b.title, applicationId: req.params.id,
+            link: `/app/${req.params.id}`, ctaLabel: 'See what we need' });
+        } catch (_) {}
+      }
+    }
+    res.status(201).json({ ok: true, conditionId: r.rows[0].id });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/loan-conditions/:cid/clear', async (req, res) => {
+  try {
+    const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
+    if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+    await db.query(`UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(), updated_at=now() WHERE id=$1`, [req.params.cid, req.actor.id]);
+    await audit(req, 'clear_condition', 'condition', req.params.cid);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/loan-conditions/:cid/waive', async (req, res) => {
+  if (!['admin', 'super_admin'].includes(req.actor.role)) return res.status(403).json({ error: 'admin only' });
+  const reason = String((req.body || {}).reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'a waive reason is required' });
+  try {
+    const r = await db.query(`UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(), updated_at=now() WHERE id=$1 RETURNING id`, [req.params.cid, reason.slice(0, 500), req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'waive_condition', 'condition', req.params.cid, { reason });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 router.patch('/checklist/:itemId', async (req, res) => {
@@ -363,14 +678,18 @@ router.post('/applications/:id/assign', async (req, res) => {
 // they actually work with — i.e. one on a file they are assigned to. admins,
 // super_admins and underwriters (seesAll) may see any. This is the GLBA / PII
 // horizontal-authorization gate.
-async function canSeeBorrower(req) {
+// May the actor see a specific borrower? seesAll (admin/super_admin/underwriter)
+// always; otherwise only if assigned to one of that borrower's files.
+async function canSeeBorrowerId(req, borrowerId) {
   if (seesAll(req)) return true;
+  if (!borrowerId) return false;
   const r = await db.query(
     `SELECT 1 FROM applications
       WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
-    [req.params.id, req.actor.id]);
+    [borrowerId, req.actor.id]);
   return !!r.rows[0];
 }
+async function canSeeBorrower(req) { return canSeeBorrowerId(req, req.params.id); }
 router.get('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -379,6 +698,21 @@ router.get('/borrowers/:id', async (req, res) => {
       [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// A borrower's investment track record (experience) — drives the pricing tier.
+router.get('/borrowers/:id/track-records', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT t.id, t.deal_type, t.property_address, t.purchase_price, t.sale_price, t.rehab_amount,
+              t.purchase_date, t.sale_date, t.is_verified, t.verified_at, t.docs_status,
+              l.llc_name AS entity_name, v.full_name AS verified_by_name
+         FROM track_records t
+         LEFT JOIN llcs l ON l.id = t.llc_id
+         LEFT JOIN staff_users v ON v.id = t.verified_by
+        WHERE t.borrower_id=$1 ORDER BY t.sale_date DESC NULLS LAST, t.created_at DESC`, [req.params.id]);
+    res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.get('/borrowers/:id/ssn', async (req, res) => {
@@ -393,15 +727,20 @@ router.get('/borrowers/:id/ssn', async (req, res) => {
 
 // ---------------- verify LLC / track record ----------------
 router.post('/llcs/:id/verify', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   await db.query(`UPDATE llcs SET is_verified=true, verified_at=now(), verified_by=$2 WHERE id=$1`, [req.params.id, req.actor.id]);
   await audit(req, 'verify_llc', 'llc', req.params.id);
   res.json({ ok: true });
 });
 router.post('/track-records/:id/verify', async (req, res) => {
+  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+  if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   await db.query(`UPDATE track_records SET is_verified=true, verified_at=now(), verified_by=$2 WHERE id=$1`, [req.params.id, req.actor.id]);
   // recompute borrower tier = count of verified track records
-  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
-  if (tr.rows[0]) await db.query(
+  await db.query(
     `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
     [tr.rows[0].borrower_id]);
   await audit(req, 'verify_track_record', 'track_record', req.params.id);
@@ -421,6 +760,8 @@ router.patch('/applications/:id', async (req, res) => {
     if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
     await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
+    // Funding seeds the post-closing trailing-doc checklist.
+    if (status === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status });
     const label = STATUS_LABEL[status] || status;
     try {
@@ -535,6 +876,53 @@ router.post('/messages/:mid/react', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Pin / unpin a message (any staffer on the file).
+router.post('/messages/:mid/pin', async (req, res) => {
+  try {
+    const m = await db.query(`SELECT application_id, pinned FROM messages WHERE id=$1`, [req.params.mid]);
+    if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, m.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+    const next = !m.rows[0].pinned;
+    await db.query(`UPDATE messages SET pinned=$2::boolean, pinned_by=CASE WHEN $2 THEN $3::uuid ELSE NULL END, pinned_at=CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`, [req.params.mid, next, req.actor.id]);
+    res.json({ ok: true, pinned: next });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// Edit a staff message (own, within 15 min) — or admin any time.
+router.patch('/messages/:mid', async (req, res) => {
+  const body = String((req.body || {}).body || '').trim();
+  if (!body) return res.status(400).json({ error: 'body required' });
+  try {
+    const m = await db.query(`SELECT application_id, sender_id, sender_kind, created_at, deleted_at FROM messages WHERE id=$1`, [req.params.mid]);
+    const row = m.rows[0];
+    if (!row || row.deleted_at) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
+    // Editing changes the author's words, so it is restricted to one's OWN
+    // message (never a borrower's or another staffer's). Non-admins are also
+    // held to a 15-minute window; admins may edit their own past it. Removing
+    // someone else's message is handled by soft-delete (moderation) below.
+    const mine = row.sender_kind === 'staff' && row.sender_id === req.actor.id;
+    const fresh = (Date.now() - new Date(row.created_at).getTime()) < 15 * 60 * 1000;
+    if (!(mine && (fresh || isAdmin(req)))) return res.status(403).json({ error: 'can only edit your own recent message' });
+    await db.query(`UPDATE messages SET body=$2, edited_at=now() WHERE id=$1`, [req.params.mid, body.slice(0, 4000)]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// Soft-delete a message (own, or admin/underwriter as moderator).
+router.delete('/messages/:mid', async (req, res) => {
+  try {
+    const m = await db.query(`SELECT application_id, sender_id, sender_kind FROM messages WHERE id=$1`, [req.params.mid]);
+    const row = m.rows[0];
+    if (!row) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
+    const mine = row.sender_kind === 'staff' && row.sender_id === req.actor.id;
+    if (!(seesAll(req) || mine)) return res.status(403).json({ error: 'forbidden' });
+    await db.query(`UPDATE messages SET deleted_at=now(), body='[message removed]', pinned=false WHERE id=$1`, [req.params.mid]);
+    await db.query(`DELETE FROM message_reactions WHERE message_id=$1`, [req.params.mid]);
+    await audit(req, 'delete_message', 'application', row.application_id, { messageId: req.params.mid });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- collaboration messaging (per file, two channels) ----------------
 // channel 'borrower' = borrower <-> loan team; channel 'internal' = LO <->
 // processor <-> underwriter <-> admin, never visible to the borrower.
@@ -544,7 +932,7 @@ router.get('/applications/:id/messages', async (req, res) => {
   try {
     const r = await db.query(
       `SELECT m.id, m.sender_kind, m.sender_id, m.body, m.channel, m.checklist_item_id,
-              m.is_task_request, m.read_at, m.created_at,
+              m.is_task_request, m.read_at, m.created_at, m.pinned, m.edited_at, m.deleted_at,
               m.attachment_document_id, m.attachment_kind, m.entity_refs,
               d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
               COALESCE((SELECT json_agg(json_build_object('emoji', r.emoji, 'kind', r.actor_kind, 'actor', r.actor_id))

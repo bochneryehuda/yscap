@@ -9,6 +9,31 @@ const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processin
 const seesAll = (role) => ['admin', 'super_admin', 'underwriter'].includes(role);
 const bigMoney = (n) => n == null ? '$0' : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? '$' + Math.round(n / 1e3) + 'K' : '$' + n;
 
+const EXC = [
+  { k: 'needs_correction', label: 'Docs need correction', to: '/staff/tasks' },
+  { k: 'awaiting_review', label: 'Awaiting your review', to: '/staff/tasks' },
+  { k: 'awaiting_borrower', label: 'Awaiting borrower', to: '/staff/tasks' },
+  { k: 'unread_messages', label: 'Unread messages', to: '/staff/chat' },
+  { k: 'open_conditions', label: 'Open conditions', to: '/staff/tasks' },
+  { k: 'unassigned', label: 'Unassigned', to: '/staff' },
+  { k: 'post_closing_exceptions', label: 'Post-closing exceptions', to: '/staff/tasks' },
+];
+function ExceptionStrip({ e }) {
+  if (!e) return null;
+  const live = EXC.filter(x => (e[x.k] || 0) > 0);
+  if (live.length === 0) return null;
+  return (
+    <div className="kpi-row" style={{ marginBottom: 14 }}>
+      {live.map(x => (
+        <Link key={x.k} to={x.to} className="kpi alert" style={{ textDecoration: 'none' }}>
+          <div className="kpi-v">{e[x.k]}</div>
+          <div className="kpi-k">{x.label}</div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 function Kpis({ d }) {
   if (!d) return null;
   const tiles = [
@@ -60,12 +85,14 @@ export default function StaffQueue() {
   const [mine, setMine] = useState(null);
   const [leads, setLeads] = useState(null);
   const [dash, setDash] = useState(null);
+  const [exc, setExc] = useState(null);
   const [err, setErr] = useState('');
 
   useEffect(() => {
     api.staffApplications().then(setMine).catch(e => setErr(e.message));
     api.staffLeadCapture().then(setLeads).catch(() => setLeads([]));
     api.staffDashboard().then(setDash).catch(() => {});
+    api.staffExceptions().then(setExc).catch(() => {});
   }, []);
 
   const [officer, setOfficer] = useState('');
@@ -99,6 +126,7 @@ export default function StaffQueue() {
 
       {err && <div className="notice err">{err}</div>}
       <Kpis d={dash} />
+      <ExceptionStrip e={exc} />
       {tab === 'mine' && (
         <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <select className="input" style={{ maxWidth: 200 }} value={statusF} onChange={e => setStatusF(e.target.value)}>

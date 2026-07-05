@@ -46,6 +46,11 @@ export default function Dashboard() {
   }
   const pct = (a) => a.borrower_total > 0 ? Math.round((a.borrower_done / a.borrower_total) * 100) : 0;
 
+  // Cross-file "what's next" roll-up, computed from the list we already loaded.
+  const activeApps = (apps || []).filter(a => !['declined', 'withdrawn'].includes(a.status));
+  const outstanding = (apps || []).reduce((s, a) => s + Math.max(0, (a.borrower_total || 0) - (a.borrower_done || 0)), 0);
+  const unreadTotal = Object.values(unread).reduce((s, n) => s + n, 0);
+
   return (
     <>
       <div className="row" style={{ marginBottom: 20 }}>
@@ -55,6 +60,23 @@ export default function Dashboard() {
       </div>
       {err && <div className="notice err">{err}</div>}
       {msg && <div className="notice ok">{msg}</div>}
+
+      {apps && apps.length > 0 && (
+        <div className="next-strip">
+          {outstanding > 0 ? (
+            <div className="next-item warn">
+              <span className="ni-n">{outstanding}</span>
+              <span className="ni-l">document{outstanding === 1 ? '' : 's'} & item{outstanding === 1 ? '' : 's'} to complete across your files</span>
+            </div>
+          ) : (
+            <div className="next-item ok"><span className="ni-l">✓ You're all caught up — nothing outstanding right now.</span></div>
+          )}
+          {unreadTotal > 0 && (
+            <div className="next-item"><span className="ni-n">💬 {unreadTotal}</span><span className="ni-l">new message{unreadTotal === 1 ? '' : 's'} from your loan team</span></div>
+          )}
+          <div className="next-item"><span className="ni-n">{activeApps.length}</span><span className="ni-l">active file{activeApps.length === 1 ? '' : 's'}</span></div>
+        </div>
+      )}
 
       {drafts.length > 0 && (
         <div className="panel" style={{ marginBottom: 18 }}>

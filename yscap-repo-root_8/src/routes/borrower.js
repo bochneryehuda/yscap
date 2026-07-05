@@ -172,6 +172,27 @@ router.get('/applications/:id', async (req, res) => {
   res.json(r.rows[0]);
 });
 
+// Borrower-safe file activity feed (never internal chat/notes/conditions).
+router.get('/applications/:id/activity', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  try { res.json(await require('../lib/activity').fileActivity(req.params.id, true)); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Borrower-visible conditions (object model) — open/unresolved, borrower wording.
+router.get('/applications/:id/conditions', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const r = await db.query(
+    `SELECT id, COALESCE(borrower_title,title) AS title, COALESCE(borrower_detail,detail) AS detail,
+            severity, status, linked_entity_type, linked_entity_id, created_at
+       FROM conditions
+      WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('open','borrower_responded')
+      ORDER BY created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
 router.get('/applications/:id/checklist', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
@@ -339,6 +360,15 @@ router.post('/track-records', async (req, res) => {
      b.purchasePrice || null, b.salePrice || null, b.rehabAmount || null, b.purchaseDate || null, b.saleDate || null]);
   res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
 });
+// Delete a track-record entry — only the borrower's own, and only while it is
+// still unverified (a verified entry is locked as underwriting evidence).
+router.delete('/track-records/:id', async (req, res) => {
+  const r = await db.query(
+    `DELETE FROM track_records WHERE id=$1 AND borrower_id=$2 AND is_verified=false RETURNING id`,
+    [req.params.id, me(req)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
+  res.json({ ok: true });
+});
 
 // ---------------- DOCUMENTS (upload metadata + bytes via storage) ----------------
 // Accepts base64 body {filename, contentType, dataBase64, applicationId|llcId, checklistItemId}
@@ -495,6 +525,7 @@ router.put('/notification-prefs', async (req, res) => {
 router.get('/messages', async (req, res) => {
   const r = await db.query(
     `SELECT m.id,m.application_id,m.sender_kind,m.body,m.is_task_request,m.read_at,m.created_at,
+            m.pinned, m.edited_at, m.deleted_at,
             m.attachment_document_id, m.attachment_kind, m.entity_refs,
             d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
             COALESCE((SELECT json_agg(json_build_object('emoji', r.emoji, 'kind', r.actor_kind, 'actor', r.actor_id))
@@ -592,6 +623,32 @@ router.post('/messages/:mid/react', async (req, res) => {
     await db.query(`INSERT INTO message_reactions (message_id,actor_kind,actor_id,emoji) VALUES ($1,'borrower',$2,$3)`,
       [req.params.mid, me(req), emoji]);
   res.json({ ok: true, reacted: !del.rows[0] });
+});
+
+// Edit my own message (within 15 min). Only borrower-channel, my own file.
+router.patch('/messages/:mid', async (req, res) => {
+  const body = String((req.body || {}).body || '').trim();
+  if (!body) return res.status(400).json({ error: 'body required' });
+  const m = await db.query(
+    `SELECT m.created_at, m.deleted_at FROM messages m JOIN applications a ON a.id=m.application_id
+      WHERE m.id=$1 AND m.channel='borrower' AND m.sender_kind='borrower' AND m.sender_id=$2
+        AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`, [req.params.mid, me(req)]);
+  if (!m.rows[0] || m.rows[0].deleted_at) return res.status(404).json({ error: 'not found' });
+  if ((Date.now() - new Date(m.rows[0].created_at).getTime()) > 15 * 60 * 1000)
+    return res.status(403).json({ error: 'this message can no longer be edited' });
+  await db.query(`UPDATE messages SET body=$2, edited_at=now() WHERE id=$1`, [req.params.mid, body.slice(0, 4000)]);
+  res.json({ ok: true });
+});
+// Soft-delete my own message.
+router.delete('/messages/:mid', async (req, res) => {
+  const m = await db.query(
+    `SELECT 1 FROM messages m JOIN applications a ON a.id=m.application_id
+      WHERE m.id=$1 AND m.channel='borrower' AND m.sender_kind='borrower' AND m.sender_id=$2
+        AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`, [req.params.mid, me(req)]);
+  if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
+  await db.query(`UPDATE messages SET deleted_at=now(), body='[message removed]', pinned=false WHERE id=$1`, [req.params.mid]);
+  await db.query(`DELETE FROM message_reactions WHERE message_id=$1`, [req.params.mid]);
+  res.json({ ok: true });
 });
 
 // What the borrower can mention: their team, their visible tasks, their
