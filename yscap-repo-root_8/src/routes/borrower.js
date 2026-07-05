@@ -105,10 +105,45 @@ router.post('/profile/photo-id', async (req, res) => {
 // ---------------- APPLICATIONS (one borrower : many; each a distinct address) ----------------
 router.get('/applications', async (req, res) => {
   const r = await db.query(
-    `SELECT id,ys_loan_number,program,loan_type,status,property_address,loan_amount,
-            loan_officer_name,submitted_at,created_at
-     FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1 ORDER BY created_at DESC`, [me(req)]);
+    `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.property_address,a.loan_amount,
+            a.loan_officer_name,a.submitted_at,a.created_at,
+            (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both')) AS borrower_total,
+            (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('received','satisfied')) AS borrower_done
+     FROM applications a WHERE a.borrower_id=$1 OR a.co_borrower_id=$1 ORDER BY a.created_at DESC`, [me(req)]);
   res.json(r.rows);
+});
+
+// Borrower requests draw setup on a FUNDED file. Notifies the assigned loan team
+// (in-app + email), emails the draws desk + borrower, and confirms in-app.
+router.post('/applications/:id/request-draw', async (req, res) => {
+  const own = await db.query(
+    `SELECT a.id,a.status,a.property_address,a.ys_loan_number,a.loan_officer_id,a.processor_id,
+            b.first_name,b.last_name,b.email
+       FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+      WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const a = own.rows[0];
+  if (!a) return res.status(404).json({ error: 'not found' });
+  if (a.status !== 'funded') return res.status(400).json({ error: 'Draws can be requested once your loan is funded.' });
+  const addr = (a.property_address && (a.property_address.oneLine || a.property_address.street)) || 'your property';
+  const borrowerName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
+  const team = [...new Set([a.loan_officer_id, a.processor_id].filter(Boolean))];
+  try {
+    for (const sid of team)
+      await notify.notifyStaff(sid, {
+        type: 'draw_request', title: 'Draw setup requested',
+        body: `${borrowerName || 'The borrower'} requested draw setup on ${addr}.`,
+        applicationId: a.id, link: `/staff/app/${a.id}`, ctaLabel: 'Open the file' });
+    await notify.notifyBorrower(me(req), {
+      type: 'draw_request', title: 'Draw request received',
+      body: `We received your request to set up draws on ${addr}. Our draws team will follow up.`,
+      applicationId: a.id, link: `/app/${a.id}` });
+    // Branded email to the draws desk + assigned team + borrower.
+    const staff = team.length ? await db.query(`SELECT email FROM staff_users WHERE id = ANY($1::uuid[])`, [team]) : { rows: [] };
+    const recipients = ['draws@yscapgroup.com', a.email, ...staff.rows.map(r => r.email)].filter(Boolean);
+    await mail.deliver(mail.drawRequest({ borrowerName, propertyLabel: addr, loanNumber: a.ys_loan_number }), recipients);
+  } catch (e) { /* in-app notice already written; email is best-effort */ }
+  await audit(req, 'request_draw', 'application', a.id);
+  res.json({ ok: true });
 });
 
 router.post('/applications', async (req, res) => {

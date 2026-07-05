@@ -32,14 +32,21 @@ function Kpis({ d }) {
 }
 
 function Row({ a }) {
+  const pct = a.total_items > 0 ? Math.round((a.done_items / a.total_items) * 100) : 0;
   return (
     <Link to={`/staff/app/${a.id}`} className="checkitem" style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div style={{ flex: 1 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600 }}>{a.first_name} {a.last_name} · {addrLine(a.property_address)}</div>
         <div className="muted small">
           {a.ys_loan_number || 'Loan # pending'} · {a.program || '—'} · {a.loan_type || '—'} · {money(a.loan_amount)}
           {a.loan_officer_name ? ` · LO: ${a.loan_officer_name}` : ' · Unassigned'}
         </div>
+        {a.total_items > 0 && (
+          <div className="row" style={{ gap: 8, marginTop: 6 }}>
+            <div className="progress" style={{ maxWidth: 180 }}><div className="progress-fill" style={{ width: pct + '%' }} /></div>
+            <span className="muted small">{pct}%</span>
+          </div>
+        )}
       </div>
       <span className={`pill ${a.status}`}>{LABEL[a.status] || a.status}</span>
     </Link>
