@@ -171,17 +171,27 @@ export default function Application() {
         <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onFile} />
         {docs.length === 0
           ? <p className="muted small">No items requested yet. Your coordinator will post your checklist here.</p>
-          : docs.map(it => (
-            <div className="checkitem" key={it.id}>
-              <span className={`dot ${isDone(it.status) ? 'done' : 'outstanding'}`} />
+          : docs.map(it => {
+            const needsFix = it.status === 'issue';
+            return (
+            <div className="checkitem" key={it.id} style={{ alignItems: 'flex-start' }}>
+              <span className={`dot ${isDone(it.status) ? 'done' : 'outstanding'}`} style={{ marginTop: 4 }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>{it.label}</div>
                 <div className="muted small">{it.item_kind}{it.hint ? ` · ${it.hint}` : ''}{it.notes ? ` · ${it.notes}` : ''}</div>
+                {needsFix && it.rejection_reason && (
+                  <div className="small" style={{ color: 'var(--danger)', marginTop: 3 }}>
+                    Needs a new version: {it.rejection_reason}
+                  </div>
+                )}
               </div>
-              <span className="muted small" style={{ textTransform: 'capitalize' }}>{it.status || 'outstanding'}</span>
-              <button className="btn link" onClick={() => pick(it.id)}>Upload</button>
+              <span className="muted small" style={{ textTransform: 'capitalize' }}>
+                {needsFix ? 'Needs attention' : it.status === 'received' ? 'In review' : it.status || 'outstanding'}
+              </span>
+              <button className="btn link" onClick={() => pick(it.id)}>{needsFix ? 'Re-upload' : 'Upload'}</button>
             </div>
-          ))}
+            );
+          })}
       </div>
 
       {uploads.length > 0 && (
@@ -191,18 +201,26 @@ export default function Application() {
             <div className="spacer" />
             <span className="muted small">{uploads.length} file{uploads.length === 1 ? '' : 's'}</span>
           </div>
-          {uploads.map(d => (
-            <div className="checkitem" key={d.id}>
-              <span className="dot done" />
+          {uploads.map(d => {
+            const rs = d.review_status || 'pending';
+            const label = rs === 'accepted' ? 'Accepted' : rs === 'rejected' ? 'Rejected' : rs === 'superseded' ? 'Replaced' : 'In review';
+            const style = rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' }
+              : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined;
+            return (
+            <div className="checkitem" key={d.id} style={{ opacity: d.is_current === false ? .6 : 1 }}>
+              <span className={`dot ${rs === 'accepted' ? 'done' : 'outstanding'}`} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600 }}>{d.filename}</div>
                 <div className="muted small">{kb(d.size_bytes)} · {new Date(d.created_at).toLocaleDateString()}</div>
+                {rs === 'rejected' && d.rejection_reason && <div className="small" style={{ color: 'var(--danger)' }}>{d.rejection_reason}</div>}
               </div>
+              <span className="pill" style={style}>{label}</span>
               <button className="btn ghost" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
-                {dlBusy === d.id ? 'Downloading…' : 'Download'}
+                {dlBusy === d.id ? '…' : 'Download'}
               </button>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

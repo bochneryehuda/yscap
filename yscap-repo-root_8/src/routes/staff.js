@@ -640,10 +640,72 @@ router.patch('/leads/:id', async (req, res) => {
 // that this staffer may see this application.
 router.get('/applications/:id/documents', async (req, res) => {
   const r = await db.query(
-    `SELECT id,filename,content_type,size_bytes,checklist_item_id,uploaded_by_kind,created_at
-       FROM documents WHERE application_id=$1 ORDER BY created_at DESC`, [req.params.id]);
+    `SELECT d.id,d.filename,d.content_type,d.size_bytes,d.checklist_item_id,d.uploaded_by_kind,d.created_at,
+            d.review_status,d.rejection_reason,d.reviewed_at,d.is_current,d.replaces_document_id,
+            s.full_name AS reviewed_by_name, ci.label AS item_label
+       FROM documents d
+       LEFT JOIN staff_users s ON s.id=d.reviewed_by
+       LEFT JOIN checklist_items ci ON ci.id=d.checklist_item_id
+      WHERE d.application_id=$1 ORDER BY d.is_current DESC, d.created_at DESC`, [req.params.id]);
   res.json(r.rows);
 });
+
+// Approve or reject an uploaded document. Rejection requires a reason, keeps the
+// rejected file in history (never in the clean file), and flips its checklist
+// item back to 'issue' so the borrower sees exactly what to fix and re-uploads.
+// Acceptance marks the item satisfied. Only accepted+current docs count for the
+// file (see getApprovedDocuments / future TPR export).
+router.post('/documents/:id/review', async (req, res) => {
+  const b = req.body || {};
+  const action = b.action;
+  if (!['accept', 'reject'].includes(action)) return res.status(400).json({ error: 'action must be accept or reject' });
+  if (action === 'reject' && !String(b.reason || '').trim()) return res.status(400).json({ error: 'a rejection reason is required' });
+  try {
+    const r = await db.query(
+      `SELECT id,filename,application_id,borrower_id,checklist_item_id FROM documents WHERE id=$1`, [req.params.id]);
+    const doc = r.rows[0];
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
+
+    const status = action === 'accept' ? 'accepted' : 'rejected';
+    await db.query(
+      `UPDATE documents SET review_status=$2, rejection_reason=$3, reviewed_by=$4, reviewed_at=now() WHERE id=$1`,
+      [doc.id, status, action === 'reject' ? String(b.reason).slice(0, 1000) : null, req.actor.id]);
+
+    // Move the linked checklist item: accept -> satisfied, reject -> issue.
+    if (doc.checklist_item_id) {
+      await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
+        [doc.checklist_item_id, action === 'accept' ? 'satisfied' : 'issue']);
+    }
+    await audit(req, action === 'accept' ? 'accept_document' : 'reject_document', 'document', doc.id,
+      action === 'reject' ? { reason: b.reason } : null);
+
+    // On rejection, tell the borrower what to fix.
+    if (action === 'reject' && doc.borrower_id) {
+      try {
+        await notify.notifyBorrower(doc.borrower_id, {
+          type: 'doc_rejected', title: 'A document needs to be re-uploaded',
+          body: `"${doc.filename}" couldn't be accepted: ${String(b.reason).slice(0, 180)}`,
+          applicationId: doc.application_id, link: `/app/${doc.application_id}`,
+          ctaLabel: 'Upload a new version' });
+      } catch (_) {}
+    }
+    res.json({ ok: true, review_status: status });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// The clean set of documents on a file: accepted + current only. Every export /
+// package path should draw from here so a rejected/superseded doc is never
+// included. Exported for reuse by the (future) TPR export builder.
+async function getApprovedDocuments(applicationId) {
+  const r = await db.query(
+    `SELECT id,filename,content_type,size_bytes,storage_provider,storage_ref,checklist_item_id,doc_kind,created_at
+       FROM documents
+      WHERE application_id=$1 AND review_status='accepted' AND is_current=true
+      ORDER BY created_at`, [applicationId]);
+  return r.rows;
+}
+router.getApprovedDocuments = getApprovedDocuments;
 
 // Can this staffer access a given document? seesAll -> yes. Otherwise they must
 // be assigned to the document's application, or (for borrower/llc-scoped docs)

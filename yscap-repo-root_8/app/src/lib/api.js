@@ -111,6 +111,7 @@ export const api = {
   staffApplication: (id) => req('GET', `/api/staff/applications/${id}`),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
   staffAppDocuments:(id) => req('GET', `/api/staff/applications/${id}/documents`),
+  staffReviewDoc:   (id, action, reason) => req('POST', `/api/staff/documents/${id}/review`, { action, reason }),
   staffDownloadDoc: (id) => download(`/api/staff/documents/${id}/download`),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
