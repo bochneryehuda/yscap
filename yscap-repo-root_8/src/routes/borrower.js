@@ -149,13 +149,14 @@ router.post('/applications/:id/request-draw', async (req, res) => {
 router.post('/applications', async (req, res) => {
   const b = req.body || {};
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
+  if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
   const r = await db.query(
     `INSERT INTO applications
-       (borrower_id,property_address,property_type,units,program,loan_type,
+       (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
         purchase_price,as_is_value,arv,rehab_budget,loan_officer_name,
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'portal',$15,'new',now()) RETURNING id,ys_loan_number`,
-    [me(req), JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'portal',$16,'new',now()) RETURNING id,ys_loan_number`,
+    [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
      b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
@@ -711,6 +712,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
     return res.status(409).json({ error: 'already submitted', applicationId: d.rows[0].submitted_application_id });
   const b = { ...(d.rows[0].data || {}), ...(req.body || {}) };
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
+  // Only accept an LLC the borrower actually owns.
+  if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
 
   // resolve officer (by email, else by name) -> null means Lead Capture
   let officerId = null, officerRow = null;
@@ -726,17 +729,19 @@ router.post('/drafts/:id/submit', async (req, res) => {
 
   const ins = await db.query(
     `INSERT INTO applications
-       (borrower_id,property_address,property_type,units,program,loan_type,
+       (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
         purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
         is_assignment,underlying_contract_price,assignment_fee,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'portal',$16,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'portal',$17,'new',now())
      RETURNING id,ys_loan_number`,
-    [me(req), JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
+    [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
   const appId = ins.rows[0].id;
+  // If the borrower linked an LLC, ensure its document requirements exist.
+  if (b.llcId) { try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ } }
 
   // Personal info entered during the application is saved to the borrower's
   // profile (empty fields only) so it never has to be typed again.

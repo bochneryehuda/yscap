@@ -96,6 +96,10 @@ export const api = {
   contacts:     (type) => req('GET', `/api/borrower/contacts${type ? `?type=${type}` : ''}`),
   saveContact:  (b) => req('POST', '/api/borrower/contacts', b),
 
+  // reusable LLC / vesting-entity database
+  llcs:         () => req('GET', '/api/borrower/llcs'),
+  createLlc:    (b) => req('POST', '/api/borrower/llcs', b),
+
   drafts:       () => req('GET', '/api/borrower/drafts'),
   createDraft:  (b) => req('POST', '/api/borrower/drafts', b),
   draft:        (id) => req('GET', `/api/borrower/drafts/${id}`),
