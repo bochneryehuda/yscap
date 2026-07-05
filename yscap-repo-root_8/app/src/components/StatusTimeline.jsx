@@ -18,7 +18,7 @@ const IDX = Object.fromEntries(PATH.map((p, i) => [p.s, i]));
 const TERMINAL = { declined: 'Declined', withdrawn: 'Withdrawn' };
 const fmt = (d) => d ? new Date(d).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
 
-export default function StatusTimeline({ appId, status }) {
+export default function StatusTimeline({ appId, status, expectedClosing, actualClosing }) {
   const [hist, setHist] = useState(null);
   useEffect(() => { api.statusHistory(appId).then(r => setHist(r || [])).catch(() => setHist([])); }, [appId]);
 
@@ -55,6 +55,13 @@ export default function StatusTimeline({ appId, status }) {
           </li>
         )}
       </ol>
+      {(actualClosing || expectedClosing) && (
+        <div className="tl-closing">
+          {actualClosing
+            ? <>Closed <strong>{fmt(actualClosing)}</strong></>
+            : <>Estimated closing <strong>{fmt(expectedClosing)}</strong> — subject to change as your file progresses.</>}
+        </div>
+      )}
     </div>
   );
 }

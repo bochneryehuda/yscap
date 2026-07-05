@@ -203,7 +203,7 @@ export default function Application() {
         </div>
       </div>
 
-      <StatusTimeline appId={id} status={app.status} />
+      <StatusTimeline appId={id} status={app.status} expectedClosing={app.expected_closing} actualClosing={app.actual_closing} />
 
       {toolTasks.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>

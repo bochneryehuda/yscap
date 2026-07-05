@@ -820,6 +820,34 @@ router.get('/applications/:id/status-history', async (req, res) => {
   res.json(r.rows);
 });
 
+// Set the file's expected / actual closing date. Setting an estimated closing
+// notifies the borrower so they can plan.
+router.post('/applications/:id/closing-date', async (req, res) => {
+  const b = req.body || {};
+  const sets = [], vals = []; let i = 1;
+  const bad = (v) => v && !/^\d{4}-\d{2}-\d{2}$/.test(String(v));
+  if (bad(b.expectedClosing) || bad(b.actualClosing)) return res.status(400).json({ error: 'dates must be YYYY-MM-DD' });
+  if ('expectedClosing' in b) { sets.push(`expected_closing=$${i++}`); vals.push(b.expectedClosing || null); }
+  if ('actualClosing' in b) { sets.push(`actual_closing=$${i++}`); vals.push(b.actualClosing || null); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  try {
+    await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    await audit(req, 'set_closing_date', 'application', req.params.id, { expectedClosing: b.expectedClosing, actualClosing: b.actualClosing });
+    if (b.expectedClosing) {
+      const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+      if (a.rows[0] && a.rows[0].borrower_id) {
+        const nice = new Date(b.expectedClosing + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        await notify.notifyBorrower(a.rows[0].borrower_id, {
+          type: 'closing_date', title: 'Estimated closing date set',
+          body: `Your loan is now targeting ${nice}. We'll keep you posted as it approaches.`,
+          applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
+      }
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 router.patch('/applications/:id', async (req, res) => {
   const { status } = req.body || {};
   const force = !!(req.body && req.body.force);

@@ -167,6 +167,7 @@ export const api = {
   staffSetStatus:   (appId, status, force) => req('PATCH', `/api/staff/applications/${appId}`, force ? { status, force: true } : { status }),
   staffGating:      (appId) => req('GET', `/api/staff/applications/${appId}/gating`),
   staffStatusHistory: (appId) => req('GET', `/api/staff/applications/${appId}/status-history`),
+  staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffDeleteApp:   (appId, reason) => req('DELETE', `/api/staff/applications/${appId}`, { reason }),
   staffRestoreApp:  (appId) => req('POST', `/api/staff/applications/${appId}/restore`),
   staffNotifs:      () => req('GET', '/api/staff/notifications'),

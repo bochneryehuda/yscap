@@ -256,6 +256,11 @@ export default function StaffApplication() {
       setErr(e.message || 'Could not update status');
     }
   }
+  async function setClosing(field, value) {
+    setErr('');
+    try { await api.staffSetClosingDate(id, { [field]: value || null }); flash(field === 'expectedClosing' ? 'Expected closing saved — borrower notified.' : 'Actual closing saved.'); await load(); }
+    catch (e) { setErr(e.message || 'Could not save closing date'); }
+  }
   async function assign() {
     // Only send what actually changed, so re-opening a file and clicking Assign
     // doesn't re-notify the same people. Keep the selectors populated afterward.
@@ -339,6 +344,17 @@ export default function StaffApplication() {
           title="Email the borrower an invite to join this file in the portal">
           {inviteBusy ? 'Sending…' : 'Invite borrower'}
         </button>
+      </div>
+      <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
+        <span className="muted small">Expected closing</span>
+        <input className="input" type="date" style={{ maxWidth: 170 }}
+          value={app.expected_closing ? String(app.expected_closing).slice(0, 10) : ''}
+          onChange={e => setClosing('expectedClosing', e.target.value)} />
+        <span className="muted small" style={{ marginLeft: 8 }}>Actual closing</span>
+        <input className="input" type="date" style={{ maxWidth: 170 }}
+          value={app.actual_closing ? String(app.actual_closing).slice(0, 10) : ''}
+          onChange={e => setClosing('actualClosing', e.target.value)} />
+        <span className="muted small">Setting an expected date notifies the borrower.</span>
       </div>
 
       {msg && <div className="notice ok">{msg}</div>}
