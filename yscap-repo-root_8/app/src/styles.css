@@ -141,3 +141,20 @@ textarea{min-height:90px;resize:vertical}
 /* chat -> task chip inside a bubble */
 .msg-task{margin-top:6px;font-size:.68rem;font-weight:600;color:var(--gold,#C9A86A);
   border:1px solid color-mix(in srgb, var(--gold,#C9A86A) 45%, transparent);border-radius:8px;padding:3px 8px;display:inline-block}
+
+/* ---- chat attachments & tools ---- */
+.msg-att-img{max-width:240px;max-height:200px;border-radius:10px;display:block;margin-bottom:6px;cursor:pointer;object-fit:cover}
+.msg-att-video{max-width:280px;border-radius:10px;display:block;margin-bottom:6px}
+.msg-att-audio{max-width:240px;display:block;margin-bottom:6px}
+.msg-att-file{display:flex;gap:8px;align-items:center;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.14);
+  border-radius:10px;padding:8px 11px;margin-bottom:6px;cursor:pointer;color:inherit;font:inherit;font-size:.82rem;text-align:left}
+.msg-att-file .nm{font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg-att-file .sz{opacity:.65;font-size:.72rem}
+.msg-pending{display:flex;gap:8px;align-items:center;margin-top:10px;padding:8px 11px;border:1px dashed var(--teal,#7FA9B0);
+  border-radius:10px;font-size:.82rem;color:var(--ivory,#F4F0E7)}
+.msg-pending .nm{font-weight:600}.msg-pending .sz{color:var(--muted,#8A979C);font-size:.72rem}
+.msg-tool{padding:.5rem .7rem;font-size:1rem;line-height:1}
+.msg-tool.rec{background:var(--bad,#E08A7B);color:#fff;animation:recpulse 1.2s infinite}
+.msg-receipt{opacity:.75}
+@keyframes recpulse{0%,100%{opacity:1}50%{opacity:.55}}
+@media (prefers-reduced-motion: reduce){.msg-tool.rec{animation:none}}

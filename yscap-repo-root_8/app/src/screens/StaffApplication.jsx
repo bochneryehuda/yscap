@@ -362,8 +362,10 @@ function ChatPanel({ appId, onTaskCreated }) {
           : 'This thread is shared with the borrower.'}
         taskOption={internal}
         fetchMessages={() => api.staffMessages(appId, channel)}
+        downloadAttachment={(docId) => api.staffDownloadDoc(docId)}
         send={async (body, opts) => {
-          const r = await api.staffPostMessage(appId, body, { channel, makeTask: internal && opts?.makeTask });
+          const r = await api.staffPostMessage(appId, body, {
+            channel, makeTask: internal && opts?.makeTask, attachment: opts?.attachment });
           if (r && r.taskId && onTaskCreated) onTaskCreated();
           return r;
         }} />

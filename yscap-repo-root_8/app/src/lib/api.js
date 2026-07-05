@@ -66,7 +66,7 @@ export const api = {
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   notifications:() => req('GET', '/api/borrower/notifications'),
   messages:     (appId) => req('GET', `/api/borrower/messages?applicationId=${appId}`),
-  postMessage:  (appId, body) => req('POST', '/api/borrower/messages', { applicationId: appId, body }),
+  postMessage:  (appId, body, opts = {}) => req('POST', '/api/borrower/messages', { applicationId: appId, body, ...opts }),
   readNotif:    (id) => req('POST', `/api/borrower/notifications/${id}/read`),
   uploadDoc:    (b) => req('POST', '/api/borrower/documents', b),
   documents:    (appId) => req('GET', `/api/borrower/documents${appId ? `?applicationId=${appId}` : ''}`),

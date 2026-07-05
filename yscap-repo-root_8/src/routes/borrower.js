@@ -234,10 +234,14 @@ router.get('/documents', async (req, res) => {
   res.json(r.rows);
 });
 
-// Download one of the borrower's own documents.
+// Download a document the borrower may see: their own uploads, plus anything
+// (e.g. chat attachments from staff or a co-borrower) on an application they
+// are the borrower or co-borrower on.
 router.get('/documents/:id/download', async (req, res) => {
   const r = await db.query(
-    `SELECT id,filename,content_type,storage_ref FROM documents WHERE id=$1 AND borrower_id=$2`,
+    `SELECT id,filename,content_type,storage_ref FROM documents
+      WHERE id=$1 AND (borrower_id=$2 OR application_id IN
+        (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2))`,
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'download_document', 'document', r.rows[0].id);
@@ -281,10 +285,13 @@ router.post('/notifications/:id/read', async (req, res) => {
 router.get('/messages', async (req, res) => {
   const r = await db.query(
     `SELECT m.id,m.application_id,m.sender_kind,m.body,m.is_task_request,m.read_at,m.created_at,
+            m.attachment_document_id, m.attachment_kind,
+            d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
             CASE WHEN m.sender_kind='staff' THEN COALESCE(s.full_name,'Your loan team')
                  WHEN m.sender_kind='borrower' THEN 'You'
                  ELSE 'System' END AS sender_name
        FROM messages m LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
+       LEFT JOIN documents d ON d.id=m.attachment_document_id
       WHERE m.channel='borrower'                     -- internal team notes are NEVER shown to borrowers
         AND ($2::uuid IS NULL OR m.application_id=$2)
         AND (m.borrower_id=$1 OR m.application_id IN
@@ -299,17 +306,30 @@ router.get('/messages', async (req, res) => {
 });
 router.post('/messages', async (req, res) => {
   const b = req.body || {};
-  if (!b.body) return res.status(400).json({ error: 'body required' });
+  const att = b.attachment && b.attachment.dataBase64 ? b.attachment : null;
+  if ((!b.body || !String(b.body).trim()) && !att) return res.status(400).json({ error: 'message body or attachment required' });
   // If tied to an application, it must be the borrower's own — never let a
   // borrower post onto another borrower's file by guessing its id.
   if (b.applicationId) {
     const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
     if (!own.rows[0]) return res.status(404).json({ error: 'application not found' });
   }
+  // Store any attachment (photo, video, voice note, PDF, file).
+  let attDoc = null;
+  if (att) {
+    if (!b.applicationId) return res.status(400).json({ error: 'attachments require an application' });
+    try {
+      attDoc = await require('../lib/chat-attach').saveChatAttachment({
+        applicationId: b.applicationId, borrowerId: me(req),
+        filename: att.filename, contentType: att.contentType, dataBase64: att.dataBase64,
+        byKind: 'borrower', byId: me(req) });
+    } catch (e2) { return res.status(e2.status || 500).json({ error: e2.message }); }
+  }
   const r = await db.query(
-    `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,is_task_request)
-     VALUES ($1,$2,'borrower',$2,$3,$4) RETURNING id`,
-    [b.applicationId || null, me(req), b.body, !!b.isTaskRequest]);
+    `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,is_task_request,attachment_document_id,attachment_kind)
+     VALUES ($1,$2,'borrower',$2,$3,$4,$5,$6) RETURNING id`,
+    [b.applicationId || null, me(req), String(b.body || '').slice(0, 4000), !!b.isTaskRequest,
+     attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null]);
   res.status(201).json({ ok: true, messageId: r.rows[0].id });
 
   // Notify the file's loan officer + processor of the new borrower message.

@@ -206,7 +206,8 @@ export default function Application() {
 
       <MessageThread mine="borrower" title="Messages with your loan team"
         fetchMessages={() => api.messages(id)}
-        send={(body) => api.postMessage(id, body)} />
+        send={(body, opts) => api.postMessage(id, body, { attachment: opts?.attachment })}
+        downloadAttachment={(docId) => api.downloadDoc(docId)} />
     </>
   );
 }

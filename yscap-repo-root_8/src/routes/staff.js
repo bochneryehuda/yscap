@@ -301,6 +301,8 @@ router.get('/applications/:id/messages', async (req, res) => {
     const r = await db.query(
       `SELECT m.id, m.sender_kind, m.sender_id, m.body, m.channel, m.checklist_item_id,
               m.is_task_request, m.read_at, m.created_at,
+              m.attachment_document_id, m.attachment_kind,
+              d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
               CASE WHEN m.sender_kind='staff' THEN s.full_name
                    WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
                    ELSE 'System' END AS sender_name,
@@ -309,10 +311,13 @@ router.get('/applications/:id/messages', async (req, res) => {
          LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
          LEFT JOIN borrowers  b ON b.id=m.borrower_id
          LEFT JOIN checklist_items ci ON ci.id=m.checklist_item_id
+         LEFT JOIN documents d ON d.id=m.attachment_document_id
         WHERE m.application_id=$1 AND m.channel=$2 ORDER BY m.created_at`, [req.params.id, channel]);
-    // Opening the borrower channel clears the "unread borrower message" state.
+    // Opening a channel marks the other side's messages as read (receipts).
     if (channel === 'borrower')
       await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND channel='borrower' AND sender_kind='borrower' AND read_at IS NULL`, [req.params.id]);
+    else
+      await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND channel='internal' AND sender_id<>$2 AND read_at IS NULL`, [req.params.id, req.actor.id]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -320,12 +325,24 @@ router.post('/applications/:id/messages', async (req, res) => {
   const b = req.body || {};
   const body = b.body;
   const channel = b.channel === 'internal' ? 'internal' : 'borrower';
-  if (!body || !String(body).trim()) return res.status(400).json({ error: 'message body required' });
+  const att = b.attachment && b.attachment.dataBase64 ? b.attachment : null;
+  if ((!body || !String(body).trim()) && !att) return res.status(400).json({ error: 'message body or attachment required' });
   try {
     const appRow = await db.query(
       `SELECT borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
     if (!appRow.rows[0]) return res.status(404).json({ error: 'not found' });
     const a = appRow.rows[0];
+
+    // Store any attachment (photo, video, voice note, PDF, file) first.
+    let attDoc = null;
+    if (att) {
+      try {
+        attDoc = await require('../lib/chat-attach').saveChatAttachment({
+          applicationId: req.params.id, borrowerId: a.borrower_id,
+          filename: att.filename, contentType: att.contentType, dataBase64: att.dataBase64,
+          byKind: 'staff', byId: req.actor.id });
+      } catch (e2) { return res.status(e2.status || 500).json({ error: e2.message }); }
+    }
 
     // Optionally promote the message into a real task on the application
     // (staff-audience checklist item), so decisions in chat become work items.
@@ -340,10 +357,11 @@ router.post('/applications/:id/messages', async (req, res) => {
     }
 
     const ins = await db.query(
-      `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,channel,checklist_item_id)
-       VALUES ($1,$2,'staff',$3,$4,$5,$6) RETURNING id`,
-      [req.params.id, a.borrower_id, req.actor.id, String(body).slice(0, 4000), channel, taskId]);
-    await audit(req, 'post_message', 'application', req.params.id, { channel, taskId });
+      `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,channel,checklist_item_id,attachment_document_id,attachment_kind)
+       VALUES ($1,$2,'staff',$3,$4,$5,$6,$7,$8) RETURNING id`,
+      [req.params.id, a.borrower_id, req.actor.id, String(body || '').slice(0, 4000), channel, taskId,
+       attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null]);
+    await audit(req, 'post_message', 'application', req.params.id, { channel, taskId, attachment: !!attDoc });
 
     try {
       if (channel === 'borrower' && a.borrower_id) {
