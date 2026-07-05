@@ -253,3 +253,40 @@ a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
   .brand .sub{display:none}
   .brand-word{font-size:16px;letter-spacing:1.5px}
 }
+
+/* =====================================================================
+   LIVE FEEL — motion, hover, and focus so the portal reads as a modern
+   product instead of a static admin form. Motion-reduced users opt out.
+   ===================================================================== */
+.panel{transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease}
+.panel:hover{border-color:var(--ink-3)}
+.btn{transition:background .14s ease,border-color .14s ease,color .14s ease,box-shadow .14s ease,transform .1s ease}
+.btn:hover{transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn.ghost:hover{border-color:var(--teal-dp);color:var(--ivory)}
+/* checklist / document rows lift and reveal a teal edge on hover */
+.checkitem{transition:background .14s ease,border-color .14s ease,transform .12s ease;border-radius:10px}
+.checkitem:hover{background:var(--ink-2)}
+/* inputs/selects get a clear focus ring */
+.input:focus,select:focus,textarea:focus{outline:none;border-color:var(--teal);
+  box-shadow:0 0 0 3px rgba(127,169,176,.18)}
+/* status pills read brighter */
+.pill{transition:border-color .14s ease,color .14s ease,background .14s ease}
+.pill.done{background:rgba(127,169,176,.10)}
+/* progress bars animate to their width */
+.progress-fill{transition:width .5s cubic-bezier(.4,0,.2,1)}
+/* subtle entrance for panels + notices */
+@keyframes ys-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.notice{animation:ys-rise .22s ease both}
+.savechip .dot{transition:background .2s ease}
+/* links in nav slide their underline in */
+.nav a::after{transition:transform .18s ease,opacity .18s ease}
+/* the KPI cards on dashboards get a gentle hover lift already; extend to file cards */
+a.checkitem:hover{transform:translateY(-1px)}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;transition-duration:.001ms !important}
+}
+
+/* online presence dot on chat avatars */
+.presence-dot{position:absolute;right:-2px;bottom:-2px;width:11px;height:11px;border-radius:50%;
+  background:#4ccf8f;border:2px solid var(--ink-1);box-shadow:0 0 0 1px rgba(0,0,0,.3)}

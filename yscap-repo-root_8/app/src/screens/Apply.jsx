@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
+import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
 
 const STEPS = ['Property', 'Loan', 'Borrower & submit'];
 // Ground-Up is a PROGRAM (not a loan type/purpose). DSCR Rental is intentionally
@@ -42,6 +43,7 @@ export default function Apply() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [officers, setOfficers] = useState([]);
+  const [partners, setPartners] = useState([]);
   const idRef = useRef(id);
   idRef.current = id;
 
@@ -87,6 +89,7 @@ export default function Apply() {
   // an email, and the backend resolves the officer from it.
   useEffect(() => {
     api.roster().then(r => setOfficers((r.people || []).filter(x => x && x.name))).catch(() => {});
+    api.partners().then(setPartners).catch(() => {});
   }, []);
 
   const doSave = useCallback((patch) => api.saveDraft(idRef.current, patch), []);
@@ -233,9 +236,9 @@ export default function Apply() {
             </div>
             <div className="grid cols-2">
               <div className="field"><label>Purchase price</label>
-                <input className="input" type="number" value={form.purchasePrice || ''} onChange={e => set('purchasePrice', e.target.value)} /></div>
+                <MoneyInput value={form.purchasePrice || ''} onChange={v => set('purchasePrice', v)} /></div>
               <div className="field"><label>As-is value</label>
-                <input className="input" type="number" value={form.asIsValue || ''} onChange={e => set('asIsValue', e.target.value)} /></div>
+                <MoneyInput value={form.asIsValue || ''} onChange={v => set('asIsValue', v)} /></div>
             </div>
             {isPurchase(form.loanType) && (
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', margin: '2px 0 12px' }}>
@@ -247,9 +250,9 @@ export default function Apply() {
               <>
                 <div className="grid cols-2">
                   <div className="field"><label>Underlying contract price</label>
-                    <input className="input" type="number" value={form.underlyingContractPrice || ''} onChange={e => set('underlyingContractPrice', e.target.value)} placeholder="Price on the original contract" /></div>
+                    <MoneyInput value={form.underlyingContractPrice || ''} onChange={v => set('underlyingContractPrice', v)} /></div>
                   <div className="field"><label>Assignment fee</label>
-                    <input className="input" type="number" value={form.assignmentFee || ''} onChange={e => set('assignmentFee', e.target.value)} placeholder="Your assignment fee" /></div>
+                    <MoneyInput value={form.assignmentFee || ''} onChange={v => set('assignmentFee', v)} /></div>
                 </div>
                 <p className="muted small" style={{ marginBottom: 12 }}>
                   Total purchase price: <strong>{money((Number(form.underlyingContractPrice) || 0) + (Number(form.assignmentFee) || 0))}</strong>.
@@ -260,9 +263,9 @@ export default function Apply() {
             {showRehab && (
               <div className="grid cols-2">
                 <div className="field"><label>ARV (after-repair value)</label>
-                  <input className="input" type="number" value={form.arv || ''} onChange={e => set('arv', e.target.value)} /></div>
+                  <MoneyInput value={form.arv || ''} onChange={v => set('arv', v)} /></div>
                 <div className="field"><label>Rehab budget</label>
-                  <input className="input" type="number" value={form.rehabBudget || ''} onChange={e => set('rehabBudget', e.target.value)} /></div>
+                  <MoneyInput value={form.rehabBudget || ''} onChange={v => set('rehabBudget', v)} /></div>
               </div>
             )}
             <p className="muted small">Final pricing and leverage are confirmed by your loan officer against program guidelines — these figures start the file.</p>
@@ -280,7 +283,7 @@ export default function Apply() {
               <>
                 <div className="grid cols-2">
                   <div className="field"><label>Cell phone</label>
-                    <input className="input" autoComplete="off" value={p.cellPhone || ''} onChange={e => setPersonal('cellPhone', e.target.value)} /></div>
+                    <PhoneInput value={p.cellPhone || ''} onChange={v => setPersonal('cellPhone', v)} /></div>
                   <div className="field"><label>Date of birth</label>
                     <input className="input" type="date" value={p.dateOfBirth || ''} onChange={e => setPersonal('dateOfBirth', e.target.value)} /></div>
                 </div>
@@ -309,6 +312,17 @@ export default function Apply() {
             </div>
             {form.hasCoBorrower && (() => { const c = form.coBorrower || {}; return (
               <>
+                {partners.length > 0 && (
+                  <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                    <span className="muted small">Reuse a partner:</span>
+                    {partners.map(pt => (
+                      <button key={pt.id} type="button" className="btn ghost small"
+                        onClick={() => setForm(f => { const co = { firstName: pt.first_name || '', lastName: pt.last_name || '', email: pt.email || '', phone: pt.phone || '' }; save({ data: { coBorrower: co } }); return { ...(f || {}), coBorrower: co }; })}>
+                        {[pt.first_name, pt.last_name].filter(Boolean).join(' ') || pt.email}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <p className="muted small" style={{ marginBottom: 12 }}>
                   We'll email them an invitation to the portal to join this loan — they can add their own
                   personal information and upload their documents themselves.
@@ -323,7 +337,7 @@ export default function Apply() {
                   <div className="field"><label>Email</label>
                     <input className="input" autoComplete="off" value={c.email || ''} onChange={e => setCo('email', e.target.value)} placeholder="They'll receive a portal invitation" /></div>
                   <div className="field"><label>Phone</label>
-                    <input className="input" autoComplete="off" value={c.phone || ''} onChange={e => setCo('phone', e.target.value)} /></div>
+                    <PhoneInput value={c.phone || ''} onChange={v => setCo('phone', v)} /></div>
                 </div>
               </>
             ); })()}

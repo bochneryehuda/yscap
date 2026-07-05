@@ -291,6 +291,35 @@ router.post('/contacts', async (req, res) => {
   res.status(201).json({ ok: true, contactId });
 });
 
+// ---------------- PARTNERS (reusable co-borrowers) ----------------
+router.get('/partners', async (req, res) => {
+  const r = await db.query(
+    `SELECT id,first_name,last_name,email,phone,relationship_type,partner_borrower_id
+       FROM partners WHERE owner_borrower_id=$1 ORDER BY updated_at DESC`, [me(req)]);
+  res.json(r.rows);
+});
+// Save/update a partner for reuse. Also called on submit to remember a co-borrower.
+async function upsertPartner(ownerId, p) {
+  if (!p || (!p.email && !p.firstName && !p.lastName)) return null;
+  const r = await db.query(
+    `INSERT INTO partners (owner_borrower_id,first_name,last_name,email,phone,relationship_type)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (owner_borrower_id,email) DO UPDATE SET
+       first_name=COALESCE(EXCLUDED.first_name,partners.first_name),
+       last_name=COALESCE(EXCLUDED.last_name,partners.last_name),
+       phone=COALESCE(EXCLUDED.phone,partners.phone),
+       relationship_type=EXCLUDED.relationship_type, updated_at=now()
+     RETURNING id`,
+    [ownerId, p.firstName || null, p.lastName || null, p.email || null, p.phone || null, p.relationshipType || 'co_borrower']);
+  return r.rows[0] ? r.rows[0].id : null;
+}
+router.post('/partners', async (req, res) => {
+  const b = req.body || {};
+  try { const id = await upsertPartner(me(req), b); if (!id) return res.status(400).json({ error: 'enter partner details' }); res.status(201).json({ ok: true, partnerId: id }); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.upsertPartner = upsertPartner;
+
 // ---------------- TRACK RECORDS (on the borrower profile) ----------------
 router.get('/track-records', async (req, res) => {
   const r = await db.query(`SELECT * FROM track_records WHERE borrower_id=$1 ORDER BY sale_date DESC NULLS LAST, created_at DESC`, [me(req)]);
@@ -434,6 +463,31 @@ router.get('/notifications', async (req, res) => {
 });
 router.post('/notifications/:id/read', async (req, res) => {
   await db.query(`UPDATE notifications SET read_at=now() WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  res.json({ ok: true });
+});
+
+// Notification preferences: the borrower can quiet categories. Critical ones
+// (documents, conditions) stay in-app; only their email can be turned off.
+const CRITICAL_INAPP = new Set(['documents', 'conditions']);
+router.get('/notification-prefs', async (req, res) => {
+  const saved = await db.query(`SELECT category,in_app,email FROM notification_prefs WHERE borrower_id=$1`, [me(req)]);
+  const byCat = Object.fromEntries(saved.rows.map(r => [r.category, r]));
+  const cats = notify.NOTIFY_CATEGORIES.map(category => ({
+    category,
+    in_app: byCat[category] ? byCat[category].in_app : true,
+    email: byCat[category] ? byCat[category].email : true,
+    inAppLocked: CRITICAL_INAPP.has(category),   // can't turn off in-app for these
+  }));
+  res.json(cats);
+});
+router.put('/notification-prefs', async (req, res) => {
+  const b = req.body || {};
+  if (!notify.NOTIFY_CATEGORIES.includes(b.category)) return res.status(400).json({ error: 'bad category' });
+  const inApp = CRITICAL_INAPP.has(b.category) ? true : b.in_app !== false;  // critical stays in-app
+  await db.query(
+    `INSERT INTO notification_prefs (borrower_id,category,in_app,email) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (borrower_id,category) DO UPDATE SET in_app=EXCLUDED.in_app, email=EXCLUDED.email`,
+    [me(req), b.category, inApp, b.email !== false]);
   res.json({ ok: true });
 });
 
@@ -753,6 +807,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
       const primary = await db.query(`SELECT first_name,last_name FROM borrowers WHERE id=$1`, [me(req)]);
       const pn = primary.rows[0] ? `${primary.rows[0].first_name} ${primary.rows[0].last_name}`.trim() : '';
       await inviteCoBorrower(appId, pn, b.coBorrower);
+      // Remember this partner so the borrower can reuse them on the next file.
+      try { await upsertPartner(me(req), { ...b.coBorrower, relationshipType: 'co_borrower' }); } catch (_) {}
     } catch (e) { console.error('[apply] co-borrower invite failed:', db.describeError(e)); }
   }
 

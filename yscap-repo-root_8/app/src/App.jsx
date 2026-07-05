@@ -13,6 +13,7 @@ import Dashboard from './screens/Dashboard.jsx';
 import Apply from './screens/Apply.jsx';
 import Application from './screens/Application.jsx';
 import Profile from './screens/Profile.jsx';
+import NotificationSettings from './screens/NotificationSettings.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
 import StaffNewFile from './screens/StaffNewFile.jsx';
@@ -67,6 +68,7 @@ export default function App() {
           <Route path="/apply/:draftId" element={<Private><Apply /></Private>} />
           <Route path="/app/:id" element={<Private><Application /></Private>} />
           <Route path="/profile" element={<Private><Profile /></Private>} />
+          <Route path="/settings/notifications" element={<Private><NotificationSettings /></Private>} />
 
           {/* staff */}
           <Route path="/staff" element={<StaffPrivate><StaffQueue /></StaffPrivate>} />

@@ -246,8 +246,9 @@ router.post('/applications/:id/invite-borrower', async (req, res) => {
 
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
-    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico
-     FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
+    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico, l.llc_name AS entity_name
+     FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+     LEFT JOIN llcs l ON l.id=a.llc_id WHERE a.id=$1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
 });
@@ -471,6 +472,7 @@ router.get('/chat/inbox', async (req, res) => {
       `SELECT * FROM (
         SELECT a.id, a.ys_loan_number, a.status, a.property_address, a.created_at,
               b.first_name, b.last_name,
+              (b.last_seen_at IS NOT NULL AND b.last_seen_at > now() - interval '3 minutes') AS borrower_online,
               lm.body AS last_body, lm.channel AS last_channel, lm.sender_kind AS last_sender_kind,
               lm.attachment_kind AS last_attachment_kind, lm.created_at AS last_at,
               (a.status IN ('funded','declined','withdrawn')) AS closed,
@@ -484,7 +486,7 @@ router.get('/chat/inbox', async (req, res) => {
          LEFT JOIN LATERAL (SELECT body, channel, sender_kind, attachment_kind, created_at
                          FROM messages m WHERE m.application_id=a.id
                         ORDER BY created_at DESC LIMIT 1) lm ON true
-        WHERE 1=1 ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
+        WHERE a.deleted_at IS NULL ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
       ) q
       ORDER BY (q.unread_borrower + q.unread_internal) DESC,
                q.closed ASC,
