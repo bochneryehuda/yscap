@@ -100,7 +100,7 @@ router.post('/', async (req, res) => {
       } catch (_) {}
     }
 
-    res.status(201).json({ ok: true, leadId, routedTo: officerRow ? officerRow.full_name : 'the YS Capital loan desk' });
+    res.status(201).json({ ok: true, leadId, routedTo: officerRow ? officerRow.full_name : 'the YS Capital Group loan desk' });
   } catch (e) {
     console.error('[leads] submit failed:', db.describeError(e));
     res.status(500).json({ error: 'could not submit — please try again' });

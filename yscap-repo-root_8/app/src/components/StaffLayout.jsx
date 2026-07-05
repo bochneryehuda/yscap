@@ -27,8 +27,8 @@ export default function StaffLayout({ children }) {
         <div className="wrap">
           <Link to="/staff" className="brand" aria-label="YS Capital Group — Staff" style={{ textDecoration: 'none' }}>
             <img className="brand-mark" src={import.meta.env.BASE_URL + 'brand/mark-dark.png'} alt="" />
-            <span className="brand-word">YS&nbsp;CAPITAL</span>
-            <span className="sub">Staff</span>
+            <span className="brand-word">YS&nbsp;CAPITAL&nbsp;<em className="brand-group">GROUP</em></span>
+            <span className="sub">Staff console</span>
           </Link>
           <nav className="nav">
             <NavLink to="/staff">Pipeline</NavLink>

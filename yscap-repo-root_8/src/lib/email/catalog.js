@@ -158,7 +158,7 @@ function leadReceived({ firstName, toolLabel, officerName } = {}) {
   return render({
     audience: 'borrower',
     title: 'We received your ' + tool.toLowerCase(),
-    preheader: 'Your submission reached the YS Capital team.',
+    preheader: 'Your submission reached the YS Capital Group team.',
     greeting: greet(firstName),
     intro: 'Thank you — your ' + tool.toLowerCase() + ' has been received by YS Capital Group.',
     lines: [
@@ -191,6 +191,31 @@ function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount } = {}
   });
 }
 
+/** Invitation to the borrower on a staff-originated loan file: their loan team
+ *  has already opened the file — set up portal access (or sign in) to follow it,
+ *  upload documents, and message the team. */
+function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptUrl, hasAccount } = {}) {
+  const meta = [];
+  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  return render({
+    audience: 'borrower',
+    title: 'Your loan file is ready in the portal',
+    preheader: 'Set up secure access to follow your loan with YS Capital Group.',
+    greeting: greet(firstName),
+    intro: (inviter ? inviter + ' at YS Capital Group' : 'Your loan team at YS Capital Group')
+      + ' has opened a loan file for you and invited you to the secure borrower portal.',
+    lines: [
+      hasAccount
+        ? 'Your existing portal account already has access to this file — sign in to review it, upload your documents, and message your loan team.'
+        : 'Set up your access below to review the file, upload your documents, track every milestone through closing, and message your loan team directly. This invitation expires in 14 days.',
+    ],
+    meta,
+    cta: acceptUrl ? { label: hasAccount ? 'Sign in to the portal' : 'Set up your access', url: acceptUrl } : null,
+    note: 'If you were not expecting this, you can disregard it and no access will be created.',
+  });
+}
+
 /* =====================================================================
    STAFF — TEAM ONBOARDING
    ===================================================================== */
@@ -201,7 +226,7 @@ function staffInvite({ fullName, role, acceptUrl, inviter, days = 7 } = {}) {
   if (inviter) meta.push({ label: 'Invited by', value: inviter });
   return render({
     audience: 'staff',
-    title: 'Your YS Capital team invitation',
+    title: 'Your YS Capital Group team invitation',
     preheader: 'Set up your account to access the origination console.',
     greeting: greet(fullName),
     intro: 'You have been invited to join the YS Capital Group origination console as a ' + roleLabel + '.',
@@ -218,7 +243,7 @@ function staffWelcome({ fullName, role, url, hasLogin } = {}) {
   const roleLabel = ROLE_LABEL[role] || 'team member';
   return render({
     audience: 'staff',
-    title: 'Your YS Capital console is ready',
+    title: 'Your YS Capital Group console is ready',
     preheader: 'Your account on the origination console is set up.',
     greeting: greet(fullName),
     intro: 'Your account on the YS Capital Group origination console is set up as a ' + roleLabel + '.',
@@ -240,7 +265,7 @@ function staffWelcome({ fullName, role, url, hasLogin } = {}) {
 const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
-  staffInvite, staffWelcome, leadReceived, coBorrowerInvite,
+  staffInvite, staffWelcome, leadReceived, coBorrowerInvite, borrowerInvite,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients. */

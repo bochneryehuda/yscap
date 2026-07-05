@@ -9,6 +9,7 @@ const router = express.Router();
 const db = require('../db');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
+const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
 const { requireAuth, requireRole } = require('../auth');
 
@@ -95,6 +96,132 @@ router.get('/lead-capture', async (req, res) => {
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
      WHERE a.loan_officer_id IS NULL ORDER BY a.created_at DESC`);
   res.json(r.rows);
+});
+
+// ---------------- staff originates a mortgage file (borrower need not exist) ----------------
+// Any staffer (admin / loan officer / operations) can open a file from their
+// side: match-or-create the borrower by email (no login required), create the
+// application, generate its checklist, and assign an officer. The borrower can
+// be invited to join this specific file at any time (now or later).
+router.post('/applications', async (req, res) => {
+  const b = req.body || {};
+  const bo = b.borrower || {};
+  const email = String(bo.email || '').trim();
+  const firstName = String(bo.firstName || '').trim();
+  const lastName = String(bo.lastName || '').trim();
+  const addr = b.propertyAddress || null;
+  if (!email) return res.status(400).json({ error: 'borrower email required' });
+  if (!firstName) return res.status(400).json({ error: 'borrower first name required' });
+  if (!addr || !(addr.oneLine || addr.street || addr.line1))
+    return res.status(400).json({ error: 'property address required' });
+  try {
+    // Match-or-create the borrower. Never overwrite existing PII — only fill
+    // blank fields — so an existing borrower record is preserved intact.
+    const br = await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (email) DO UPDATE SET
+         cell_phone = COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
+         updated_at = now()
+       RETURNING id, (xmax=0) AS created`,
+      [firstName, lastName || '', email, bo.phone || null]);
+    const borrowerId = br.rows[0].id;
+
+    // Resolve the assigned officer: explicit pick, else the creator when they
+    // are a loan officer (their own pipeline), else null => Lead Capture.
+    let officerId = null, officerName = null;
+    if (b.loanOfficerId) {
+      const o = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [b.loanOfficerId]);
+      if (o.rows[0]) { officerId = o.rows[0].id; officerName = o.rows[0].full_name; }
+    }
+    if (!officerId && req.actor.role === 'loan_officer') {
+      const meRow = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+      if (meRow.rows[0]) { officerId = meRow.rows[0].id; officerName = meRow.rows[0].full_name; }
+    }
+    let processorId = null;
+    if (b.processorId) {
+      const p = await db.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [b.processorId]);
+      if (p.rows[0]) processorId = p.rows[0].id;
+    }
+    // A processor who opens a file is assigned to it, so it stays on their desk
+    // (otherwise they'd immediately lose sight of the file they just created).
+    if (!processorId && req.actor.role === 'processor') processorId = req.actor.id;
+
+    const ins = await db.query(
+      `INSERT INTO applications
+         (borrower_id,property_address,property_type,units,program,loan_type,
+          purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
+          processor_id,source,status,submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'staff','new',now())
+       RETURNING id,ys_loan_number`,
+      [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
+       b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
+       b.arv || null, b.rehabBudget || null, officerId, officerName, processorId]);
+    const appId = ins.rows[0].id;
+
+    try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType); }
+    catch (e) { console.error('[staff-origination] checklist failed:', db.describeError(e)); }
+    await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId });
+
+    // Optionally invite the borrower to the portal for this file right away.
+    let invited = null;
+    if (b.inviteBorrower) {
+      try { invited = await inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }); }
+      catch (e) { console.error('[staff-origination] borrower invite failed:', db.describeError(e)); }
+    }
+    res.status(201).json({
+      ok: true, applicationId: appId, ysLoanNumber: ins.rows[0].ys_loan_number,
+      borrowerId, borrowerCreated: br.rows[0].created, invited });
+  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+});
+
+// Invite the file's borrower to the portal (they need not have signed up yet).
+// Issues a borrower invite bound to their email; on acceptance they link to the
+// SAME borrower record (ON CONFLICT email) and immediately see this file. If
+// they already have a login they're simply pointed to sign in.
+async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }) {
+  const hasAuth = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [borrowerId]);
+  let acceptUrl, token = null;
+  if (hasAuth.rows[0]) {
+    acceptUrl = mail.link('/login');
+  } else {
+    token = C.randomToken(24);
+    await db.query(
+      `INSERT INTO invite_tokens (token_hash,kind,email,created_by,expires_at)
+       VALUES ($1,'borrower',$2,$3, now() + interval '14 days')`,
+      [C.sha256(token), email, req.actor.id]);
+    acceptUrl = mail.link('/accept?token=' + token);
+  }
+  const meta = await db.query(
+    `SELECT COALESCE(property_address->>'oneLine', property_address->>'street', 'your loan') AS addr,
+            ys_loan_number FROM applications WHERE id=$1`, [appId]);
+  const inviter = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+  await mail.send('borrowerInvite', email, {
+    firstName,
+    propertyLabel: meta.rows[0]?.addr || 'your loan',
+    loanNumber: meta.rows[0]?.ys_loan_number || null,
+    inviter: inviter.rows[0]?.full_name || null,
+    acceptUrl, hasAccount: !!hasAuth.rows[0],
+  });
+  await audit(req, 'invite_borrower', 'application', appId, { email });
+  // Best-effort in-app notice to the file's team.
+  return { emailed: true, hasAccount: !!hasAuth.rows[0], inviteToken: token };
+}
+
+// Invite the borrower to an existing file (guarded by the /applications/:id
+// access middleware below).
+router.post('/applications/:id/invite-borrower', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT a.borrower_id, b.email, b.first_name
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!r.rows[0].email) return res.status(400).json({ error: 'borrower has no email on file' });
+    const out = await inviteBorrowerToFile({
+      appId: req.params.id, borrowerId: r.rows[0].borrower_id,
+      email: r.rows[0].email, firstName: r.rows[0].first_name, req });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 router.get('/applications/:id', async (req, res) => {
@@ -291,16 +418,21 @@ router.patch('/applications/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// ---------------- chat inbox (Slack-style: which files have new messages) ----------------
+// ---------------- chat inbox (Slack-style: a channel per loan file) ----------------
+// Every file the staffer can see is a conversation — even before the first
+// message — so there's always somewhere to start. Unread rises to the top, then
+// most-recent activity, then newest file. Closed files sink below active ones.
 router.get('/chat/inbox', async (req, res) => {
   try {
     const scoped = !seesAll(req);
     const params = [req.actor.id];
     const r = await db.query(
-      `SELECT a.id, a.ys_loan_number, a.status, a.property_address,
+      `SELECT * FROM (
+        SELECT a.id, a.ys_loan_number, a.status, a.property_address, a.created_at,
               b.first_name, b.last_name,
               lm.body AS last_body, lm.channel AS last_channel, lm.sender_kind AS last_sender_kind,
               lm.attachment_kind AS last_attachment_kind, lm.created_at AS last_at,
+              (a.status IN ('funded','declined','withdrawn')) AS closed,
               (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
                  AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL) AS unread_borrower,
               (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
@@ -308,11 +440,16 @@ router.get('/chat/inbox', async (req, res) => {
                  AND (m.sender_id IS NULL OR m.sender_id<>$1)) AS unread_internal
          FROM applications a
          JOIN borrowers b ON b.id=a.borrower_id
-         JOIN LATERAL (SELECT body, channel, sender_kind, attachment_kind, created_at
+         LEFT JOIN LATERAL (SELECT body, channel, sender_kind, attachment_kind, created_at
                          FROM messages m WHERE m.application_id=a.id
                         ORDER BY created_at DESC LIMIT 1) lm ON true
         WHERE 1=1 ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
-        ORDER BY lm.created_at DESC LIMIT 100`, params);
+      ) q
+      ORDER BY (q.unread_borrower + q.unread_internal) DESC,
+               q.closed ASC,
+               q.last_at DESC NULLS LAST,
+               q.created_at DESC
+      LIMIT 100`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
