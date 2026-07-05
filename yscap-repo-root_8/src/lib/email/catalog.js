@@ -258,6 +258,21 @@ function staffWelcome({ fullName, role, url, hasLogin } = {}) {
   });
 }
 
+/** Admin-triggered password reset for a staff member: a single set-a-new-password
+ *  link to the console (works whether or not they already had a login). */
+function staffPasswordReset({ fullName, url, days = 7 } = {}) {
+  return render({
+    audience: 'staff',
+    title: 'Reset your console password',
+    preheader: 'Set a new password for the YS Capital Group origination console.',
+    greeting: greet(fullName),
+    intro: 'A password reset was requested for your YS Capital Group origination console account.',
+    lines: ['Use the button below to set a new password. This link expires in ' + days + ' days and can be used once.'],
+    cta: url ? { label: 'Set a new password', url } : null,
+    note: 'If you did not expect this, contact your administrator — your current password remains unchanged until you set a new one.',
+  });
+}
+
 /* =====================================================================
    DELIVERY (never throws — a failed send must not break the request)
    ===================================================================== */
@@ -265,7 +280,7 @@ function staffWelcome({ fullName, role, url, hasLogin } = {}) {
 const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
-  staffInvite, staffWelcome, leadReceived, coBorrowerInvite, borrowerInvite,
+  staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients. */

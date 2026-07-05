@@ -29,35 +29,77 @@ async function audit(req, action, entity_type, entity_id, detail) {
 router.get('/profile', async (req, res) => {
   const r = await db.query(
     `SELECT id,first_name,last_name,email,cell_phone,date_of_birth,ssn_last4,fico,
-            current_address,years_at_residence,prior_address,citizenship,marital_status,
-            dependents_count,employment_type,employer,contact_type,tier
+            current_address,mailing_address,years_at_residence,months_at_residence,
+            housing_status,housing_payment,citizenship,marital_status,
+            photo_id_document_id,contact_type,tier
      FROM borrowers WHERE id=$1`, [me(req)]);
   res.json(r.rows[0] || {});
 });
 
+// Update the borrower's canonical profile. The client sends camelCase keys and
+// only the fields it wants to change — absent keys are left untouched so a
+// partial save never wipes stored PII. NOT-NULL identity fields (name) are
+// skipped when blank; nullable fields accept an explicit '' to clear.
+// current_address is the PHYSICAL address (may carry a unit); mailing_address is
+// only stored when it differs (mailingDifferent:false clears it). Employment is
+// intentionally NOT collected — this is a no-doc / no-income lender.
 router.put('/profile', async (req, res) => {
   const b = req.body || {};
-  // Only columns actually present in the request are updated. Using `|| null`
-  // here would turn every ABSENT field into an explicit NULL and wipe stored
-  // PII on every partial save — so keep absent fields `undefined` and skip them.
-  const fields = {
-    first_name: b.firstName, last_name: b.lastName, cell_phone: b.cellPhone,
-    date_of_birth: b.dateOfBirth, fico: b.fico,
-    current_address: b.currentAddress !== undefined ? JSON.stringify(b.currentAddress) : undefined,
-    years_at_residence: b.yearsAtResidence,
-    prior_address: b.priorAddress !== undefined ? JSON.stringify(b.priorAddress) : undefined,
-    citizenship: b.citizenship, marital_status: b.maritalStatus,
-    dependents_count: b.dependentsCount,
-    employment_type: b.employmentType, employer: b.employer,
-  };
+  const clean = (v) => (v === '' ? null : v);
+  const fields = {};
+  if (b.firstName !== undefined && String(b.firstName).trim()) fields.first_name = String(b.firstName).trim();
+  if (b.lastName !== undefined && String(b.lastName).trim()) fields.last_name = String(b.lastName).trim();
+  if (b.cellPhone !== undefined) fields.cell_phone = clean(b.cellPhone);
+  if (b.dateOfBirth !== undefined) fields.date_of_birth = clean(b.dateOfBirth);
+  if (b.fico !== undefined) fields.fico = (b.fico === '' || b.fico == null) ? null : (parseInt(b.fico, 10) || null);
+  if (b.citizenship !== undefined) fields.citizenship = clean(b.citizenship);
+  if (b.maritalStatus !== undefined) fields.marital_status = clean(b.maritalStatus);
+  if (b.yearsAtResidence !== undefined) fields.years_at_residence = (b.yearsAtResidence === '' || b.yearsAtResidence == null) ? null : Number(b.yearsAtResidence);
+  if (b.monthsAtResidence !== undefined) fields.months_at_residence = (b.monthsAtResidence === '' || b.monthsAtResidence == null) ? null : parseInt(b.monthsAtResidence, 10);
+  if (b.housingStatus !== undefined) fields.housing_status = clean(b.housingStatus);
+  if (b.housingPayment !== undefined) fields.housing_payment = (b.housingPayment === '' || b.housingPayment == null) ? null : Number(String(b.housingPayment).replace(/[^0-9.]/g, '')) || null;
+  if (b.currentAddress !== undefined) fields.current_address = b.currentAddress ? JSON.stringify(b.currentAddress) : null;
+  if (b.mailingDifferent === false) fields.mailing_address = null;
+  else if (b.mailingAddress !== undefined) fields.mailing_address = b.mailingAddress ? JSON.stringify(b.mailingAddress) : null;
+
   const sets = [], vals = []; let i = 1;
-  for (const [k, v] of Object.entries(fields)) if (v !== undefined) { sets.push(`${k}=$${i++}`); vals.push(v); }
+  for (const [k, v] of Object.entries(fields)) { sets.push(`${k}=$${i++}`); vals.push(v); }
   if (b.ssn) { sets.push(`ssn_encrypted=$${i++}`); vals.push(C.encryptSSN(b.ssn)); sets.push(`ssn_last4=$${i++}`); vals.push(String(b.ssn).replace(/\D/g, '').slice(-4)); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(me(req));
   await db.query(`UPDATE borrowers SET ${sets.join(',')} WHERE id=$${i}`, vals);
   await audit(req, 'update_profile', 'borrower', me(req));
   res.json({ ok: true });
+});
+
+// Government photo ID lives on the PROFILE, collected once and reused on every
+// file (so a borrower is never asked for it again). Stores the bytes like any
+// document and points borrowers.photo_id_document_id at it. Any file's gov-ID
+// checklist item is auto-satisfied from this (see generateChecklist).
+router.post('/profile/photo-id', async (req, res) => {
+  const b = req.body || {};
+  if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  const buf = Buffer.from(b.dataBase64, 'base64');
+  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  try {
+    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    const d = await db.query(
+      `INSERT INTO documents (borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
+       VALUES ($1,$2,$3,$4,$5,$6,'borrower',$1,'photo_id') RETURNING id`,
+      [me(req), b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref]);
+    await db.query(`UPDATE borrowers SET photo_id_document_id=$2, updated_at=now() WHERE id=$1`, [me(req), d.rows[0].id]);
+    // Satisfy any outstanding government-ID checklist item on the borrower's files.
+    await db.query(
+      `UPDATE checklist_items SET status='received', updated_at=now()
+        WHERE template_id=(SELECT id FROM checklist_templates WHERE code='rtl_p1_id')
+          AND status NOT IN ('satisfied')
+          AND application_id IN (SELECT id FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1)`,
+      [me(req)]);
+    await audit(req, 'upload_photo_id', 'borrower', me(req));
+    res.status(201).json({ ok: true, documentId: d.rows[0].id });
+  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
 });
 
 // ---------------- APPLICATIONS (one borrower : many; each a distinct address) ----------------
@@ -97,7 +139,8 @@ router.get('/applications/:id/checklist', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
-    `SELECT id,label,status,item_kind,phase,hint,is_required,due_date,notes,
+    `SELECT id, COALESCE(borrower_label,label) AS label, status, item_kind, phase,
+            COALESCE(borrower_hint,hint) AS hint, is_required, due_date, notes,
             tool_key, (tool_payload IS NOT NULL) AS tool_submitted
        FROM checklist_items
       WHERE application_id=$1 AND audience IN ('borrower','both')
@@ -484,7 +527,8 @@ router.delete('/drafts/:id', async (req, res) => {
  */
 async function syncProfileFromApplication(borrowerId, b) {
   const p = b.personal || {};
-  const hasAny = ['cellPhone', 'dateOfBirth', 'citizenship', 'maritalStatus', 'employmentType', 'employer', 'fico']
+  // Employment is intentionally not collected (no-doc / no-income lender).
+  const hasAny = ['cellPhone', 'dateOfBirth', 'citizenship', 'maritalStatus', 'fico']
     .some(k => p[k] != null && p[k] !== '');
   if (!hasAny && !b.ssn) return;
   await db.query(
@@ -493,13 +537,11 @@ async function syncProfileFromApplication(borrowerId, b) {
        date_of_birth   = COALESCE(date_of_birth, NULLIF($3,'')::date),
        citizenship     = COALESCE(citizenship, NULLIF($4,'')),
        marital_status  = COALESCE(marital_status, NULLIF($5,'')),
-       employment_type = COALESCE(employment_type, NULLIF($6,'')),
-       employer        = COALESCE(employer, NULLIF($7,'')),
-       fico            = COALESCE(fico, $8),
+       fico            = COALESCE(fico, $6),
        updated_at      = now()
      WHERE id=$1`,
     [borrowerId, p.cellPhone || '', p.dateOfBirth || '', p.citizenship || '', p.maritalStatus || '',
-     p.employmentType || '', p.employer || '', p.fico ? parseInt(p.fico, 10) || null : null]);
+     p.fico ? parseInt(p.fico, 10) || null : null]);
   if (b.ssn) {
     await db.query(
       `UPDATE borrowers SET ssn_encrypted = COALESCE(ssn_encrypted, $2),
@@ -582,12 +624,15 @@ router.post('/drafts/:id/submit', async (req, res) => {
   // Personal info entered during the application is saved to the borrower's
   // profile (empty fields only) so it never has to be typed again.
   try { await syncProfileFromApplication(me(req), b); } catch (e) { console.error('[apply] profile sync failed:', db.describeError(e)); }
-  // A named co-borrower is created, linked, and invited to the portal.
-  try {
-    const primary = await db.query(`SELECT first_name,last_name FROM borrowers WHERE id=$1`, [me(req)]);
-    const pn = primary.rows[0] ? `${primary.rows[0].first_name} ${primary.rows[0].last_name}`.trim() : '';
-    await inviteCoBorrower(appId, pn, b.coBorrower);
-  } catch (e) { console.error('[apply] co-borrower invite failed:', db.describeError(e)); }
+  // A named co-borrower (only when the co-borrower toggle is on) is created,
+  // linked, and invited to the portal.
+  if (b.hasCoBorrower && b.coBorrower && b.coBorrower.email) {
+    try {
+      const primary = await db.query(`SELECT first_name,last_name FROM borrowers WHERE id=$1`, [me(req)]);
+      const pn = primary.rows[0] ? `${primary.rows[0].first_name} ${primary.rows[0].last_name}`.trim() : '';
+      await inviteCoBorrower(appId, pn, b.coBorrower);
+    } catch (e) { console.error('[apply] co-borrower invite failed:', db.describeError(e)); }
+  }
 
   await generateChecklist(appId, me(req), b.program, b.loanType);
   await db.query(`UPDATE application_drafts SET submitted_application_id=$1, updated_at=now() WHERE id=$2 AND borrower_id=$3`,
@@ -660,6 +705,16 @@ async function generateChecklist(appId, borrowerId, program, loanType) {
     }
     await insertFromTemplate(tpl, owner);
   }
+  // Government photo ID is collected once on the profile and reused: if it's
+  // already on file, this application's gov-ID item is satisfied up front.
+  try {
+    const pid = await db.query(`SELECT photo_id_document_id FROM borrowers WHERE id=$1`, [borrowerId]);
+    if (pid.rows[0] && pid.rows[0].photo_id_document_id)
+      await db.query(
+        `UPDATE checklist_items SET status='received', updated_at=now()
+          WHERE application_id=$1 AND template_id=(SELECT id FROM checklist_templates WHERE code='rtl_p1_id')`,
+        [appId]);
+  } catch (_) { /* best-effort */ }
 }
 
 // Materialize the LLC document requirements (EIN letter, formation docs,

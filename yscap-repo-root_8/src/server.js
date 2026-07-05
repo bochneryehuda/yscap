@@ -30,6 +30,8 @@ app.get('/api/health', async (req, res) => {
     dbStatus = 'down';
     dbError = db.describeError(e);
   }
+  let storageInfo;
+  try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
   res.status(dbStatus === 'up' ? 200 : 503).json({
     ok: dbStatus === 'up',
     env: cfg.env,
@@ -40,6 +42,9 @@ app.get('/api/health', async (req, res) => {
                    : cfg.emailProvider === 'graph'  ? !!(cfg.msTenantId && cfg.msClientId && cfg.msClientSecret)
                    : false,
     storage: cfg.storageProvider,
+    storageWritable: storageInfo && storageInfo.ok,
+    storagePersistent: storageInfo && storageInfo.persistent,
+    storageBase: storageInfo && storageInfo.base,
     ts: Date.now(),
   });
 });
@@ -88,6 +93,14 @@ if (require.main === module) {
   app.listen(cfg.port, async () => {
     console.log(`YS Capital Portal on :${cfg.port} (${cfg.env}) — email:${cfg.emailProvider} storage:${cfg.storageProvider}`);
     logEmailConfig();
+    // Resolve + report the storage base up front so a bad disk mount is obvious
+    // in the boot logs (rather than a surprise EACCES on the first upload).
+    try {
+      const sp = require('./lib/storage').probe();
+      if (sp.ok) console.log(`[storage] writable at "${sp.base}"` +
+        (sp.persistent ? ' (persistent disk)' : ' — TEMPORARY, NOT persistent: fix STORAGE_DIR / disk mount so uploads survive deploys'));
+      else console.error(`[storage] NOT writable (configured "${sp.configured}") — uploads will fail: ${sp.error || ''}`);
+    } catch (e) { console.error('[storage] probe failed:', e.message); }
     // Bring the schema up to date before anything tries to read/write it. This
     // makes a fresh database usable without a manual `npm run migrate` step.
     if (cfg.databaseUrl) {
