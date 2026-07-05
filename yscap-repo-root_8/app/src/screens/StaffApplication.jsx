@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
+import { useAuth } from '../lib/auth.jsx';
 import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 
@@ -127,6 +128,9 @@ function Item({ it, team, onPatch }) {
 
 export default function StaffApplication() {
   const { id } = useParams();
+  const nav = useNavigate();
+  const { role } = useAuth();
+  const isAdmin = role === 'admin' || role === 'super_admin';
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
   const [docs, setDocs] = useState([]);
@@ -207,6 +211,12 @@ export default function StaffApplication() {
       await load();
     } catch (e) { setErr(e.message || 'Could not review the document'); }
   }
+  async function deleteApp() {
+    const reason = window.prompt('Delete this file? It will be removed from all borrower and staff views (recoverable by an admin). Optional reason:');
+    if (reason === null) return;
+    try { await api.staffDeleteApp(id, reason || undefined); nav('/staff'); }
+    catch (e) { setErr(e.message || 'Could not delete'); }
+  }
   async function changeStatus(status) {
     try { await api.staffSetStatus(id, status); flash(`Status → ${APP_STATUS_LABEL[status] || status}. Borrower & team notified.`); await load(); }
     catch (e) { setErr(e.message || 'Could not update status'); }
@@ -253,6 +263,7 @@ export default function StaffApplication() {
       <div className="row" style={{ marginBottom: 12 }}>
         <Link to="/staff" className="btn link">← Pipeline</Link>
         <div className="spacer" />
+        {isAdmin && <button className="btn link small" style={{ color: 'var(--danger,#e06666)' }} onClick={deleteApp} title="Admin: delete this file">Delete file</button>}
         <span className={`pill ${app.status}`}>{app.status}</span>
       </div>
       <h1 style={{ marginBottom: 4 }}>{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>

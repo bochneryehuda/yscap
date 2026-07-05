@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import InstallButton from './InstallButton.jsx';
 
 const BRAND = import.meta.env.BASE_URL + 'brand/';
 
@@ -49,6 +50,7 @@ export default function Layout({ children }) {
             <Link to="/dashboard" className="bell" title="Notifications">
               🔔{unread > 0 && <span className="badge">{unread}</span>}
             </Link>
+            <InstallButton />
             <button className="btn link" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>
           </nav>
         </div>

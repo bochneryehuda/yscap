@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 
 /* Canonical borrower profile — the single home for personal information so the
@@ -33,32 +34,49 @@ export default function Profile() {
     }).catch(e => setErr(e.message));
   }, []);
 
-  const set = (k, v) => setP(x => ({ ...x, [k]: v }));
-  const setA = (setter) => (k, v) => setter(s => ({ ...s, [k]: v }));
+  const edited = useRef(false);
+  const set = (k, v) => { edited.current = true; setP(x => ({ ...x, [k]: v })); };
+  const setA = (setter) => (k, v) => { edited.current = true; setter(s => ({ ...s, [k]: v })); };
   const setPhysF = setA(setPhys);
   const setMailF = setA(setMail);
   const flash = (m) => { setMsg(m); setTimeout(() => setMsg(''), 3500); };
 
   const addrOneLine = (a) => [[a.line1, a.unit].filter(Boolean).join(' '), a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
 
+  // Build the save payload from current state (shared by autosave + manual save).
+  const buildPayload = () => {
+    const currentAddress = phys.line1 || phys.city ? { ...phys, oneLine: addrOneLine(phys) } : undefined;
+    const payload = {
+      firstName: p.first_name, lastName: p.last_name,
+      cellPhone: p.cell_phone ?? '', dateOfBirth: p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : '',
+      fico: p.fico ?? '', citizenship: p.citizenship ?? '', maritalStatus: p.marital_status ?? '',
+      yearsAtResidence: p.years_at_residence ?? '', monthsAtResidence: p.months_at_residence ?? '',
+      housingStatus: p.housing_status ?? '', housingPayment: p.housing_payment ?? '',
+      currentAddress,
+      mailingDifferent: mailDiff,
+      mailingAddress: mailDiff ? { ...mail, oneLine: addrOneLine(mail) } : undefined,
+    };
+    if (ssn.trim()) payload.ssn = ssn.trim();
+    return payload;
+  };
+
+  // Autosave: everything the borrower types is saved automatically ~1s after
+  // they stop, even without pressing Save. The manual button stays for
+  // reassurance and to force an immediate flush + refresh.
+  const { status, save: queueSave } = useAutosave((payload) => api.saveProfile(payload), 1000);
+  useEffect(() => {
+    if (!p || !edited.current) return;
+    queueSave(buildPayload());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p, phys, mail, mailDiff, ssn]);
+
   async function save() {
     setBusy(true); setErr('');
     try {
-      const currentAddress = phys.line1 || phys.city ? { ...phys, oneLine: addrOneLine(phys) } : undefined;
-      const payload = {
-        firstName: p.first_name, lastName: p.last_name,
-        cellPhone: p.cell_phone ?? '', dateOfBirth: p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : '',
-        fico: p.fico ?? '', citizenship: p.citizenship ?? '', maritalStatus: p.marital_status ?? '',
-        yearsAtResidence: p.years_at_residence ?? '', monthsAtResidence: p.months_at_residence ?? '',
-        housingStatus: p.housing_status ?? '', housingPayment: p.housing_payment ?? '',
-        currentAddress,
-        mailingDifferent: mailDiff,
-        mailingAddress: mailDiff ? { ...mail, oneLine: addrOneLine(mail) } : undefined,
-      };
-      if (ssn.trim()) payload.ssn = ssn.trim();
-      await api.saveProfile(payload);
+      await api.saveProfile(buildPayload());
       setSsn('');
       const fresh = await api.profile(); setP(fresh);
+      edited.current = false;
       flash('Profile saved ✓');
     } catch (e) { setErr(e.message || 'Could not save your profile'); }
     finally { setBusy(false); }
@@ -84,6 +102,10 @@ export default function Profile() {
       <div className="row" style={{ marginBottom: 14 }}>
         <div><h1>Your profile</h1><p className="muted small">Your personal information lives here and prefills every loan application, so you never enter it twice.</p></div>
         <div className="spacer" />
+        <span className="savechip" style={{ marginRight: 10 }}>
+          <span className={`dot ${status === 'saved' ? 'done' : status === 'error' ? '' : status === 'saving' ? 'outstanding' : ''}`} />
+          {status === 'saving' ? 'Saving…' : status === 'saved' ? 'All changes saved' : status === 'error' ? 'Save failed — retrying' : ''}
+        </span>
         <button className="btn primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save profile'}</button>
       </div>
 
@@ -113,7 +135,7 @@ export default function Profile() {
           <div className="field"><label>Date of birth</label>
             <input className="input" type="date" value={p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : ''} onChange={e => set('date_of_birth', e.target.value)} /></div>
           <div className="field"><label>Social Security Number</label>
-            <input className="input" autoComplete="off" value={ssn} onChange={e => setSsn(e.target.value)}
+            <input className="input" autoComplete="off" value={ssn} onChange={e => { edited.current = true; setSsn(e.target.value); }}
               placeholder={p.ssn_last4 ? `On file ••• ${p.ssn_last4}` : '•••-••-••••'} /></div>
           <div className="field"><label>Estimated FICO</label>
             <input className="input" type="number" min="300" max="850" value={p.fico || ''} onChange={e => set('fico', e.target.value)} placeholder="e.g. 720" /></div>
@@ -176,7 +198,7 @@ export default function Profile() {
             </div></div>
         </div>
         <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', marginTop: 4 }}>
-          <input type="checkbox" checked={mailDiff} onChange={e => setMailDiff(e.target.checked)} />
+          <input type="checkbox" checked={mailDiff} onChange={e => { edited.current = true; setMailDiff(e.target.checked); }} />
           <span>My mailing address is different from my home address</span>
         </label>
       </div>
