@@ -118,6 +118,26 @@ router.get('/applications', async (req, res) => {
   res.json(r.rows);
 });
 
+// Exception dashboard — how many files are in each "needs attention" bucket,
+// scoped to what the staffer can see. Powers the command-center KPI strip.
+router.get('/exceptions', async (req, res) => {
+  const s = scopeClause(req);
+  const w = s.where.replace(/\$SCOPE/g, '$1');
+  try {
+    const r = await db.query(
+      `SELECT
+         count(*) FILTER (WHERE a.loan_officer_id IS NULL AND a.status NOT IN ('funded','declined','withdrawn'))::int AS unassigned,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM messages m WHERE m.application_id=a.id AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL))::int AS unread_messages,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
+         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM post_closing_items p WHERE p.application_id=a.id AND p.status='exception'))::int AS post_closing_exceptions
+       FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params);
+    res.json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Everything on my plate across all my files: tasks explicitly assigned to me,
 // or role-routed (loan_officer/processor) to a file I'm assigned to. Open only.
 router.get('/my-tasks', async (req, res) => {

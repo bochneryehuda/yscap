@@ -124,6 +124,7 @@ export const api = {
   staffTeam:        () => req('GET', '/api/staff/team'),
   staffApplications:() => req('GET', '/api/staff/applications'),
   staffMyTasks:     () => req('GET', '/api/staff/my-tasks'),
+  staffExceptions:  () => req('GET', '/api/staff/exceptions'),
   staffCreateFile:  (b) => req('POST', '/api/staff/applications', b),
   staffInviteBorrower: (appId) => req('POST', `/api/staff/applications/${appId}/invite-borrower`),
   staffLeadCapture: () => req('GET', '/api/staff/lead-capture'),
