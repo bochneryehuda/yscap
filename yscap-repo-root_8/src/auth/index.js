@@ -83,7 +83,7 @@ router.post('/borrower/register', async (req, res) => {
   try {
     client = await db.getClient();
   } catch (e) {
-    console.error('[register] database unavailable:', e.message);
+    console.error('[register] database unavailable:', db.describeError(e));
     return res.status(503).json({ error: 'Service is starting up or the database is unavailable — please try again in a moment.' });
   }
   try {

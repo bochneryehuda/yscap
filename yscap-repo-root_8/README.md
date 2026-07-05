@@ -30,16 +30,48 @@ package.json is at the **repo root** — Render finds it automatically.
   `JWT_SECRET`, `SSN_ENCRYPTION_KEY`, `INTAKE_API_KEY`. Run `npm run migrate`
   once after the DB is up (Render Shell, or a one-off job).
 
+## Go-live checklist / troubleshooting
+
+The service auto-migrates the database on boot and auto-detects the email
+provider, so bringing it online is mostly setting two things in the Render
+dashboard.
+
+**1. "Service is starting up or the database is unavailable" on account
+creation.** The web service can't reach Postgres. Check the boot logs:
+- `[db] FATAL: DATABASE_URL is not set` → no database is attached. Deploy via
+  `render.yaml` (it provisions `ys-capital-db` and wires `DATABASE_URL`), or add
+  a Postgres instance and set `DATABASE_URL` on the service, then redeploy.
+- A real connection error (`ECONNREFUSED` / `ENOTFOUND` / timeout with a host
+  address) → the URL is set but wrong/unreachable (e.g. DB in another region, or
+  paused). Fix the URL/instance. `GET /api/health` returns `{"db":"up"}` when the
+  connection is good (HTTP 503 when it isn't).
+- You no longer need to run `npm run migrate` by hand — the schema is created and
+  kept up to date automatically on every start (idempotent). The manual command
+  still works for local dev.
+
+**2. Emails not sending.** Set **`RESEND_API_KEY`** in the dashboard — that's
+enough, `EMAIL_PROVIDER=auto` detects it. Then:
+- Verify your sending domain in Resend (Dashboard → Domains). `NOTIFY_FROM` uses
+  `no-reply@yscapgroup.com`, so **`yscapgroup.com` must be a verified domain** or
+  Resend rejects sends with a 403.
+- Set `APP_URL` to the portal's public URL so verify/reset links point to the
+  right place.
+- Confirm delivery: log in as an admin and `POST /api/admin/test-email`
+  `{"to":"you@example.com"}` — it returns the provider result and surfaces any
+  Resend error (bad key, unverified domain) verbatim. The boot logs also print
+  the active provider and warn if it's misconfigured.
+
 ## Notifications — which tokens you need
 - **In-app notifications** (bell/inbox): **no token.** Stored in Postgres,
   routed to the loan officer on a new application, or to all admins (Lead
   Capture) when no officer is selected.
-- **Email fan-out** — set `EMAIL_PROVIDER` and one credential set:
+- **Email fan-out** — `EMAIL_PROVIDER=auto` (the default) infers the provider
+  from whichever credentials you set; or pin it explicitly:
+  - `resend` (fastest to stand up): set `RESEND_API_KEY` (+ `NOTIFY_FROM`).
   - `graph` (Outlook / Microsoft 365): Azure AD app registration with the
     **application** permission **Mail.Send** (admin-consented) →
     `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `NOTIFY_FROM`.
-  - `resend` (fastest to stand up): `RESEND_API_KEY`, `NOTIFY_FROM`.
-  - `none` (default): logs only; in-app notifications still work.
+  - `none`: logs only; in-app notifications still work.
   - Optional `NOTIFY_ADMINS` = comma list for the unassigned-app inbox copy.
 
 ## API surface

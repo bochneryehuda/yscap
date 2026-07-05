@@ -56,7 +56,7 @@ async function tick() {
 }
 
 function start(intervalMs = 5000) {
-  setInterval(() => { tick().catch(e => console.error('sync tick', e.message)); }, intervalMs);
+  setInterval(() => { tick().catch(e => console.error('[sync] tick failed:', db.describeError(e))); }, intervalMs);
   console.log('[sync] worker started');
 }
 
