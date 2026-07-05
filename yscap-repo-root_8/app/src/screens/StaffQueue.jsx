@@ -69,10 +69,15 @@ export default function StaffQueue() {
   }, []);
 
   const [officer, setOfficer] = useState('');
+  const [statusF, setStatusF] = useState('');
   const officers = [...new Set((mine || []).map(a => a.loan_officer_name).filter(Boolean))].sort();
   const baseList = tab === 'mine' ? mine : leads;
-  const list = (tab === 'mine' && officer && baseList) ? baseList.filter(a => a.loan_officer_name === officer) : baseList;
+  let list = baseList;
+  if (tab === 'mine' && baseList) {
+    list = baseList.filter(a => (!officer || a.loan_officer_name === officer) && (!statusF || a.status === statusF));
+  }
   const mineLabel = seesAll(role) ? 'All applications' : 'My pipeline';
+  const STATUS_ORDER = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
 
   return (
     <>
@@ -94,14 +99,19 @@ export default function StaffQueue() {
 
       {err && <div className="notice err">{err}</div>}
       <Kpis d={dash} />
-      {tab === 'mine' && seesAll(role) && officers.length > 1 && (
-        <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: 'center' }}>
-          <span className="muted small">Pipeline of</span>
-          <select className="input" style={{ maxWidth: 220 }} value={officer} onChange={e => setOfficer(e.target.value)}>
-            <option value="">All officers</option>
-            {officers.map(o => <option key={o} value={o}>{o}</option>)}
+      {tab === 'mine' && (
+        <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <select className="input" style={{ maxWidth: 200 }} value={statusF} onChange={e => setStatusF(e.target.value)}>
+            <option value="">All statuses</option>
+            {STATUS_ORDER.map(s => <option key={s} value={s}>{LABEL[s]}</option>)}
           </select>
-          {officer && <span className="muted small">{list ? list.length : 0} file(s)</span>}
+          {seesAll(role) && officers.length > 1 && (
+            <select className="input" style={{ maxWidth: 220 }} value={officer} onChange={e => setOfficer(e.target.value)}>
+              <option value="">All officers</option>
+              {officers.map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          )}
+          {(officer || statusF) && <span className="muted small">{list ? list.length : 0} file(s)</span>}
         </div>
       )}
       {tab === 'leads' && (
