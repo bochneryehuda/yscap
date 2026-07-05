@@ -16,6 +16,80 @@ const STRATEGIES = [
   { v: 'Ground-Up Construction', label: 'Ground-Up' },
   { v: 'Bridge', label: 'Bridge' },
 ];
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function addrLine(a) {
+  if (!a) return '';
+  if (typeof a === 'string') return a;
+  if (a.oneLine) return a.oneLine;
+  return [a.line1 || a.street, a.city, a.state, a.zip].filter(Boolean).join(', ');
+}
+
+/* Branded, self-contained term sheet opened in a print window (browser
+   print-to-PDF). Borrower-safe program name only; final terms subject to
+   underwriting. Today's date is stamped for the borrower's reference. */
+function printTermSheet(q, app) {
+  if (!q || !q.sizing) return;
+  const s = q.sizing;
+  const borrower = [app.first_name, app.last_name].filter(Boolean).join(' ') || app.entity_name || 'Borrower';
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const row = (k, v) => `<tr><td class="k">${esc(k)}</td><td class="v">${esc(v)}</td></tr>`;
+  const terms = [
+    ['Program', q.programLabel + (q.productLabel ? ' — ' + q.productLabel : '')],
+    ['Loan amount', money(s.totalLoan)],
+    ['Note rate', pct(q.noteRate)],
+    ['Initial advance', money(s.initialAdvance)],
+    s.downPayment > 0 ? ['Estimated down payment', money(s.downPayment)] : null,
+    s.rehabHoldback > 0 ? ['Rehab / construction holdback', money(s.rehabHoldback)] : null,
+    s.financedReserve > 0 ? ['Financed interest reserve', money(s.financedReserve)] : null,
+    ['Monthly payment (at close)', money(s.initialPayment)],
+    ['Monthly payment (fully drawn)', money(s.monthlyPayment)],
+    ['Origination fee (' + pct(q.origPct, 3) + ')', money(q.origination)],
+    ['Estimated title & settlement', money(q.title.total)],
+    ['Loan-to-cost', pct(s.ltcPct, 1)],
+    s.arvPct > 0 ? ['Loan-to-after-repair-value', pct(s.arvPct, 1)] : null,
+  ].filter(Boolean).map((r) => row(r[0], r[1])).join('');
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Term Sheet — ${esc(borrower)}</title>
+<style>
+  *{box-sizing:border-box} body{font-family:'Hanken Grotesk',Arial,sans-serif;color:#141B22;margin:0;padding:40px;max-width:720px;margin:0 auto}
+  .hd{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px solid #C9A86A;padding-bottom:14px;margin-bottom:6px}
+  .brand{font-family:Georgia,'Fraunces',serif;font-size:24px;font-weight:700;letter-spacing:.01em}
+  .brand small{display:block;font-family:Arial,sans-serif;font-size:11px;font-weight:600;color:#6b7680;letter-spacing:.14em;text-transform:uppercase;margin-top:3px}
+  .meta{text-align:right;font-size:12px;color:#6b7680}
+  h1{font-family:Georgia,serif;font-size:19px;margin:22px 0 4px}
+  .sub{color:#6b7680;font-size:13px;margin:0 0 18px}
+  table{width:100%;border-collapse:collapse}
+  td{padding:9px 4px;border-bottom:1px solid #e7e2d6;font-size:13.5px}
+  td.k{color:#6b7680} td.v{text-align:right;font-weight:700}
+  tr:first-child td{border-top:1px solid #e7e2d6}
+  .hero{background:#faf7f0;border:1px solid #ece5d5;border-radius:10px;padding:16px 20px;display:flex;gap:26px;margin:16px 0}
+  .hero div{flex:1} .hero .lab{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#6b7680;font-weight:600}
+  .hero .val{font-family:Georgia,serif;font-size:26px;font-weight:700;margin-top:2px}
+  .hero .val.rate{color:#b2914d}
+  .disc{margin-top:22px;font-size:11px;color:#8a949b;line-height:1.55}
+  @media print{body{padding:0}.noprint{display:none}}
+  .noprint{margin-top:24px;text-align:center}
+  .noprint button{background:#141B22;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-size:14px;cursor:pointer;margin:0 4px}
+</style></head><body>
+  <div class="hd">
+    <div class="brand">YS Capital Group<small>Business-Purpose Real-Estate Lending</small></div>
+    <div class="meta">${esc(today)}<br>NMLS #2609746</div>
+  </div>
+  <h1>Preliminary Term Sheet</h1>
+  <p class="sub">Prepared for <strong>${esc(borrower)}</strong>${addrLine(app.property_address) ? ' &middot; ' + esc(addrLine(app.property_address)) : ''}</p>
+  <div class="hero">
+    <div><div class="lab">Loan amount</div><div class="val">${money(s.totalLoan)}</div></div>
+    <div><div class="lab">Note rate</div><div class="val rate">${pct(q.noteRate)}</div></div>
+  </div>
+  <table><tbody>${terms}</tbody></table>
+  <p class="disc">This preliminary term sheet is an estimate for discussion only and does not constitute a commitment to lend. All amounts, rates and fees are subject to full underwriting, appraisal/valuation, title, and final credit approval and may change. Title &amp; settlement figures are planning estimates; the settlement agent issues binding figures at closing. Business-purpose loans only — not for personal, family, or household use. YS Capital Group, NMLS #2609746.</p>
+  <div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>
+</body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) { alert('Please allow pop-ups to open the term sheet.'); return; }
+  w.document.write(html); w.document.close();
+}
 
 function StatusBadge({ status }) {
   const cls = status === 'ELIGIBLE' ? 'ok' : status === 'MANUAL' ? 'warn' : 'err';
@@ -23,7 +97,7 @@ function StatusBadge({ status }) {
   return <span className={`ts-badge ${cls}`}>{label}</span>;
 }
 
-function TermSheet({ q, onRegister, registering, isCurrent }) {
+function TermSheet({ q, app, onRegister, registering, isCurrent }) {
   if (!q) return null;
   const s = q.sizing;
   const priced = q.status !== 'INELIGIBLE' && s && s.totalLoan > 0;
@@ -80,6 +154,7 @@ function TermSheet({ q, onRegister, registering, isCurrent }) {
           onClick={() => onRegister(q)}>
           {registering ? 'Registering…' : isCurrent ? 'Re-register these terms' : 'Register this product'}
         </button>
+        {priced && <button className="btn ghost" onClick={() => printTermSheet(q, app)}>Print term sheet</button>}
         {q.status === 'INELIGIBLE' && <span className="muted small" style={{ alignSelf: 'center' }}>Resolve the ineligible items or override the basis to register.</span>}
       </div>
     </div>
@@ -251,7 +326,7 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
                 </div>
               )}
 
-              <TermSheet q={active} onRegister={register} registering={registering}
+              <TermSheet q={active} app={app} onRegister={register} registering={registering}
                 isCurrent={!!cur && cur.program === program} />
             </>
           )}
