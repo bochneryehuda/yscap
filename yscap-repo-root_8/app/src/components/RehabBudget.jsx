@@ -69,8 +69,9 @@ function seedFromPayload(p) {
   return m;
 }
 
-export default function RehabBudget({ appId, item, onSubmitted }) {
-  const saved = item && item.tool_payload && typeof item.tool_payload === 'object' ? item.tool_payload : null;
+export default function RehabBudget({ appId, item, onSubmitted, submitFn, initialPayload, ctaLabel }) {
+  const saved = (item && item.tool_payload && typeof item.tool_payload === 'object' ? item.tool_payload : null)
+    || (initialPayload && typeof initialPayload === 'object' ? initialPayload : null);
   const [open, setOpen] = useState(!saved);          // collapsed once submitted
   const [amts, setAmts] = useState(() => seedFromPayload(saved));
   const [custom, setCustom] = useState(() => (saved && Array.isArray(saved.custom) ? saved.custom.map((c) => ({ ...c })) : []));
@@ -111,8 +112,9 @@ export default function RehabBudget({ appId, item, onSubmitted }) {
     try {
       const payload = buildPayload();
       if (!(payload.total > 0)) { setErr('Enter at least one line item.'); setBusy(false); return; }
-      await api.completeTool(appId, item.id, payload);
-      setOkMsg(`Submitted — ${money(total)} scope of work sent to your loan team.`);
+      if (submitFn) await submitFn(payload);
+      else await api.completeTool(appId, item.id, payload);
+      setOkMsg(submitFn ? `Saved — ${money(total)} rehab budget on the file.` : `Submitted — ${money(total)} scope of work sent to your loan team.`);
       setOpen(false);
       if (onSubmitted) onSubmitted();
     } catch (e) { setErr(e.message || 'Could not submit'); }
@@ -189,7 +191,7 @@ export default function RehabBudget({ appId, item, onSubmitted }) {
           </div>
 
           <div className="row" style={{ gap: 8, marginTop: 12 }}>
-            <button className="btn primary" disabled={busy} onClick={submit}>{busy ? 'Submitting…' : saved ? 'Resubmit budget' : 'Submit to your loan team'}</button>
+            <button className="btn primary" disabled={busy} onClick={submit}>{busy ? 'Saving…' : (ctaLabel || (saved ? 'Resubmit budget' : 'Submit to your loan team'))}</button>
           </div>
         </div>
       )}

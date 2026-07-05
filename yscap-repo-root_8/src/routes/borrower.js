@@ -234,6 +234,24 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
       await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
     }
   }
+  // Let the assigned loan team know the borrower completed this task.
+  try {
+    const a = await db.query(
+      `SELECT a.loan_officer_id, a.processor_id, a.ys_loan_number, b.first_name, b.last_name
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
+    const row = a.rows[0];
+    if (row) {
+      const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+      const label = it.rows[0].tool_key === 'rehab_budget' ? 'rehab budget' : 'task';
+      const extra = it.rows[0].tool_key === 'rehab_budget' && isFinite(Number(payload.total))
+        ? ` — $${Math.round(Number(payload.total)).toLocaleString('en-US')}` : '';
+      for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
+        await notify.notifyStaff(sid, {
+          type: 'tool_submitted', title: `${who} submitted their ${label}`,
+          body: `${row.ys_loan_number || 'A file'}${extra}`, applicationId: req.params.id });
+      }
+    }
+  } catch (_) { /* notification is best-effort */ }
   res.json({ ok: true, status: 'received' });
 });
 

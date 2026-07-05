@@ -455,6 +455,30 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
+// Staff build/adjust a file's rehab budget (scope of work) — for staff-run
+// files where the borrower isn't filling it in. Upserts the rehab_budget tool
+// item's payload and syncs applications.rehab_budget (feeds pricing).
+router.post('/applications/:id/rehab-budget', async (req, res) => {
+  const appId = req.params.id;
+  const payload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : null;
+  if (!payload) return res.status(400).json({ error: 'payload required' });
+  try {
+    let it = await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [appId]);
+    let itemId = it.rows[0] && it.rows[0].id;
+    if (!itemId) {
+      const ins = await db.query(
+        `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,tool_key,created_by_kind,created_by_id)
+         VALUES ('application',$1,'Rehab budget','borrower','task','rehab_budget','staff',$2) RETURNING id`, [appId, req.actor.id]);
+      itemId = ins.rows[0].id;
+    }
+    await db.query(`UPDATE checklist_items SET tool_payload=$2, status='received', updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload)]);
+    const total = Number(payload.total);
+    if (isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
+    await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
+    res.json({ ok: true, itemId });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 router.get('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,

@@ -7,7 +7,7 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import ProductRegistration from '../components/ProductRegistration.jsx';
 import TrackRecord from '../components/TrackRecord.jsx';
-import { RehabBudgetView } from '../components/RehabBudget.jsx';
+import RehabBudget, { RehabBudgetView } from '../components/RehabBudget.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -490,6 +490,14 @@ export default function StaffApplication() {
       </div>
 
       {app.borrower_id && <TrackRecord mode="staff" borrowerId={app.borrower_id} />}
+      <div className="panel" style={{ marginTop: 18 }}>
+        <h3 style={{ marginBottom: 10 }}>Rehab budget / scope of work</h3>
+        <RehabBudget appId={id}
+          initialPayload={(items.find(it => it.tool_key === 'rehab_budget') || {}).tool_payload || null}
+          submitFn={(p) => api.staffSaveRehabBudget(id, p)}
+          onSubmitted={load}
+          ctaLabel="Save rehab budget" />
+      </div>
       <ProductRegistration appId={id} app={app} onRegistered={load} />
       {app.status === 'funded' && <PostClosing appId={id} />}
       <TprExport appId={id} />
