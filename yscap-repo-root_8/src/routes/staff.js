@@ -63,8 +63,10 @@ function scopeClause(req, alias = 'a') {
 router.use('/applications/:id', async (req, res, next) => {
   try {
     if (seesAll(req)) return next();
+    // A soft-deleted file is inaccessible to non-privileged staff (admins can
+    // still reach it to restore); this blocks open/mutate-by-direct-link.
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`,
+      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL AND (loan_officer_id=$2 OR processor_id=$2)`,
       [req.params.id, req.actor.id]);
     if (!r.rows[0]) return res.status(403).json({ error: 'forbidden' });
     next();
@@ -162,10 +164,15 @@ router.get('/my-tasks', async (req, res) => {
 });
 
 router.get('/lead-capture', async (req, res) => {
+  // Assigning unassigned files is an admin/underwriter function (a loan officer
+  // or processor can't even open an unassigned file — the path-scope guard
+  // 403s it), so only they see this queue and its borrower PII. Soft-deleted
+  // files are excluded.
+  if (!seesAll(req)) return res.status(403).json({ error: 'forbidden' });
   const r = await db.query(
     `SELECT a.id,a.ys_loan_number,a.program,a.property_address,a.created_at,b.first_name,b.last_name,b.email
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
-     WHERE a.loan_officer_id IS NULL ORDER BY a.created_at DESC`);
+     WHERE a.loan_officer_id IS NULL AND a.deleted_at IS NULL ORDER BY a.created_at DESC`);
   res.json(r.rows);
 });
 
@@ -609,8 +616,10 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
         try {
           await notify.notifyBorrower(a.rows[0].borrower_id, {
             type: 'condition_added', title: 'A new item needs your attention',
-            body: b.borrowerTitle || b.title, applicationId: req.params.id,
-            link: `/app/${req.params.id}`, ctaLabel: 'See what we need' });
+            // Never surface the internal title to the borrower — use the
+            // borrower-facing wording, or a generic prompt if none was given.
+            body: b.borrowerTitle || 'Your loan team added an item to your file — sign in to see what we need.',
+            applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'See what we need' });
         } catch (_) {}
       }
     }
@@ -830,9 +839,13 @@ router.post('/applications/:id/nudge', async (req, res) => {
       `SELECT COALESCE(borrower_label,label) AS label FROM checklist_items
         WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('outstanding','requested','issue')
         ORDER BY sort_order LIMIT 20`, [req.params.id]);
+    // Conditions must use the BORROWER-facing wording only — never fall back to
+    // the internal title, which can carry underwriting / capital-partner detail.
+    // A borrower/both condition without borrower_title is skipped from the nudge.
     const conds = await db.query(
-      `SELECT COALESCE(borrower_title,title) AS title FROM conditions
-        WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('open','borrower_responded') LIMIT 20`, [req.params.id]);
+      `SELECT borrower_title AS title FROM conditions
+        WHERE application_id=$1 AND audience IN ('borrower','both') AND borrower_title IS NOT NULL
+          AND status IN ('open','borrower_responded') LIMIT 20`, [req.params.id]);
     const list = [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
     if (!list.length) return res.status(400).json({ error: 'nothing outstanding to remind about' });
     const shown = list.slice(0, 8).join('; ') + (list.length > 8 ? `; +${list.length - 8} more` : '');
@@ -850,8 +863,16 @@ router.post('/applications/:id/nudge', async (req, res) => {
 router.post('/applications/:id/closing-date', async (req, res) => {
   const b = req.body || {};
   const sets = [], vals = []; let i = 1;
-  const bad = (v) => v && !/^\d{4}-\d{2}-\d{2}$/.test(String(v));
-  if (bad(b.expectedClosing) || bad(b.actualClosing)) return res.status(400).json({ error: 'dates must be YYYY-MM-DD' });
+  // Reject not just bad format but impossible calendar dates (2026-13-45), which
+  // would otherwise reach Postgres and surface as an opaque 500.
+  const bad = (v) => {
+    if (!v) return false;
+    const s = String(v);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return true;
+    const d = new Date(s + 'T00:00:00Z');
+    return isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s;
+  };
+  if (bad(b.expectedClosing) || bad(b.actualClosing)) return res.status(400).json({ error: 'dates must be a valid YYYY-MM-DD' });
   if ('expectedClosing' in b) { sets.push(`expected_closing=$${i++}`); vals.push(b.expectedClosing || null); }
   if ('actualClosing' in b) { sets.push(`actual_closing=$${i++}`); vals.push(b.actualClosing || null); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });

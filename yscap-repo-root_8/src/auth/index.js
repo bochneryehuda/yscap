@@ -321,6 +321,13 @@ router.post('/staff', requireAuth, requireRole('admin'), async (req, res) => {
   const { email, fullName, role, password } = req.body || {};
   if (!['loan_officer', 'processor', 'underwriter', 'admin'].includes(role))
     return res.status(400).json({ error: 'bad role' });
+  // The ON CONFLICT upsert can overwrite an existing user's role — never let a
+  // non-super-admin demote/alter a super_admin by targeting their email.
+  if (req.actor.role !== 'super_admin') {
+    const ex = await db.query(`SELECT role FROM staff_users WHERE email=$1`, [email]);
+    if (ex.rows[0] && ex.rows[0].role === 'super_admin')
+      return res.status(403).json({ error: 'only a super admin can modify a super admin' });
+  }
   try {
     const r = await db.query(
       `INSERT INTO staff_users (email,full_name,role,password_hash)
@@ -334,11 +341,23 @@ router.post('/staff', requireAuth, requireRole('admin'), async (req, res) => {
 router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
   const { email, kind, role } = req.body || {};
   if (!['staff', 'borrower'].includes(kind)) return res.status(400).json({ error: 'bad kind' });
+  // Validate the staff role so an invite can't mint a privilege the inviter
+  // lacks — only a super_admin may grant super_admin (otherwise accept() would
+  // create a super_admin from an unvalidated invite role).
+  let inviteRole = null;
+  if (kind === 'staff') {
+    inviteRole = role || 'loan_officer';
+    if (inviteRole === 'super_admin') {
+      if (req.actor.role !== 'super_admin') return res.status(403).json({ error: 'only a super admin can grant super_admin' });
+    } else if (!['loan_officer', 'processor', 'underwriter', 'admin'].includes(inviteRole)) {
+      return res.status(400).json({ error: 'bad role' });
+    }
+  }
   const token = C.randomToken(24);
   await db.query(
     `INSERT INTO invite_tokens (token_hash,kind,email,role,created_by,expires_at)
      VALUES ($1,$2,$3,$4,$5, now() + interval '7 days')`,
-    [C.sha256(token), kind, email, role || null, req.actor.id]);
+    [C.sha256(token), kind, email, inviteRole, req.actor.id]);
   let emailed = false;
   if (kind === 'staff' && email) {
     try {

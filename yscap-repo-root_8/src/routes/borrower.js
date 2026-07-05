@@ -184,8 +184,12 @@ router.get('/applications/:id/activity', async (req, res) => {
 router.get('/applications/:id/conditions', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  // Borrower-facing wording ONLY — never fall back to the internal title/detail
+  // (which can carry underwriting / capital-partner context). A borrower/both
+  // condition without borrower wording shows a generic placeholder.
   const r = await db.query(
-    `SELECT id, COALESCE(borrower_title,title) AS title, COALESCE(borrower_detail,detail) AS detail,
+    `SELECT id, COALESCE(borrower_title,'An item your loan team needs') AS title,
+            borrower_detail AS detail,
             severity, status, linked_entity_type, linked_entity_id, created_at
        FROM conditions
       WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('open','borrower_responded')
@@ -394,7 +398,10 @@ router.upsertPartner = upsertPartner;
 
 // ---------------- TRACK RECORDS (on the borrower profile) ----------------
 router.get('/track-records', async (req, res) => {
-  const r = await db.query(`SELECT * FROM track_records WHERE borrower_id=$1 ORDER BY sale_date DESC NULLS LAST, created_at DESC`, [me(req)]);
+  const r = await db.query(
+    `SELECT t.*, l.llc_name AS entity_name FROM track_records t
+       LEFT JOIN llcs l ON l.id = t.llc_id
+      WHERE t.borrower_id=$1 ORDER BY t.sale_date DESC NULLS LAST, t.created_at DESC`, [me(req)]);
   res.json(r.rows);
 });
 router.post('/track-records', async (req, res) => {
