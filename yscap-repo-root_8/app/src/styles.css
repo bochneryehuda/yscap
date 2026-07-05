@@ -352,3 +352,20 @@ a.checkitem:hover{transform:translateY(-1px)}
 .next-item.ok{border-left:3px solid var(--ok)}
 .next-item .ni-n{font-family:var(--serif,'Fraunces',serif);font-size:22px;font-weight:700;line-height:1;white-space:nowrap}
 .next-item .ni-l{font-size:13px;color:var(--muted);line-height:1.3}
+
+/* ===== Rehab budget builder ===== */
+.rb-tool{width:100%;background:var(--ink-2);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.rb-cat{border-top:1px solid var(--line)}
+.rb-cat:first-of-type{border-top:none}
+.rb-cat-head{display:flex;align-items:center;gap:8px;width:100%;background:none;border:none;color:inherit;text-align:left;padding:9px 0;cursor:pointer;font-size:13.5px}
+.rb-cat-tog{color:var(--muted);width:12px}
+.rb-cat-label{font-weight:600;flex:1}
+.rb-cat-total{color:var(--gold);font-weight:600;font-size:12.5px}
+.rb-lines{padding:2px 0 10px 20px;display:flex;flex-direction:column;gap:8px}
+.rb-line{display:flex;align-items:center;gap:10px}
+.rb-line-label{flex:1;font-size:13px;color:var(--muted)}
+.rb-line .input{max-width:160px}
+.rb-summary{margin-top:12px;background:var(--ink-1);border:1px solid var(--line);border-radius:9px;padding:10px 14px}
+.rb-summary .metrow{padding:7px 0}
+.rb-grand .k{font-weight:700;color:var(--ivory)}
+.rb-grand .v{font-family:var(--serif,'Fraunces',serif);font-size:19px;font-weight:700;color:var(--gold)}

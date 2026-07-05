@@ -200,7 +200,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
             COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date, ci.notes,
-            ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted,
+            ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             (SELECT d.rejection_reason FROM documents d
               WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
               ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1) AS rejection_reason
@@ -226,6 +226,14 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, status='received', notes=COALESCE($3,notes), updated_at=now()
       WHERE id=$1`, [req.params.itemId, JSON.stringify(payload), notes]);
+  // The rehab-budget tool's grand total IS the file's rehab budget, which feeds
+  // the pricing engine — sync it onto the application so terms reflect the SOW.
+  if (it.rows[0].tool_key === 'rehab_budget') {
+    const total = Number(payload && payload.total);
+    if (isFinite(total) && total >= 0) {
+      await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
+    }
+  }
   res.json({ ok: true, status: 'received' });
 });
 

@@ -4,6 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
+import RehabBudget from '../components/RehabBudget.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
@@ -210,6 +211,15 @@ export default function Application() {
           </p>
           {toolTasks.map(it => {
             const t = TOOLS[it.tool_key]; const done = isDone(it.status) || it.tool_submitted;
+            // The rehab budget is now built natively inside the portal and
+            // submits straight onto the file (and its total feeds pricing).
+            if (it.tool_key === 'rehab_budget') {
+              return (
+                <div className="checkitem" key={it.id} style={{ alignItems: 'flex-start', flexDirection: 'column' }}>
+                  <RehabBudget appId={id} item={it} onSubmitted={load} />
+                </div>
+              );
+            }
             return (
               <div className="checkitem" key={it.id} style={{ alignItems: 'flex-start' }}>
                 <span className={`dot ${done ? 'done' : 'outstanding'}`} />
