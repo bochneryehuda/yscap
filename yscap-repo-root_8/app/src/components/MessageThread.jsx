@@ -9,6 +9,12 @@ import React, { useEffect, useRef, useState } from 'react';
    attachments, and in-browser voice notes (MediaRecorder). */
 
 const fmtSize = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
+
+/* Highlight @mentions inside a message body. */
+function renderBody(text) {
+  const parts = String(text).split(/(@[A-Za-z][\w.'-]*(?:\s[A-Z][\w.'-]*)?)/g);
+  return parts.map((p, i) => p && p.startsWith('@') ? <span key={i} className="mention">{p}</span> : p);
+}
 const readFileAsBase64 = (file) => new Promise((res, rej) => {
   const r = new FileReader();
   r.onload = () => res(String(r.result).split(',')[1] || '');
@@ -138,7 +144,7 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
                   <div className={`msg-bubble ${isMine ? 'me' : 'them'}`}>
                     {!isMine && <div className="msg-from">{m.sender_name || (m.sender_kind === 'staff' ? 'Loan team' : 'Borrower')}</div>}
                     <Attachment m={m} download={downloadAttachment} />
-                    {m.body && <div className="msg-body">{m.body}</div>}
+                    {m.body && <div className="msg-body">{renderBody(m.body)}</div>}
                     {m.checklist_item_id && (
                       <div className="msg-task">✦ Saved as task{m.task_label ? `: ${m.task_label.slice(0, 60)}` : ''}{m.task_status ? ` · ${m.task_status}` : ''}</div>
                     )}

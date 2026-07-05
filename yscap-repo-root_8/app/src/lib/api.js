@@ -104,6 +104,8 @@ export const api = {
   staffLeads:       () => req('GET', '/api/staff/leads'),
   staffUpdateLead:  (id, b) => req('PATCH', `/api/staff/leads/${id}`, b),
   staffDashboard:   () => req('GET', '/api/staff/dashboard'),
+  staffChatInbox:   () => req('GET', '/api/staff/chat/inbox'),
+  chatInbox:        () => req('GET', '/api/borrower/chat/inbox'),
   staffMessages:    (appId, channel = 'borrower') => req('GET', `/api/staff/applications/${appId}/messages?channel=${channel}`),
   staffPostMessage: (appId, body, opts = {}) => req('POST', `/api/staff/applications/${appId}/messages`, { body, ...opts }),
   adminIntegrations:() => req('GET', '/api/admin/integrations'),

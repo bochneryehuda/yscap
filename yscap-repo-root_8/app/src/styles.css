@@ -158,3 +158,22 @@ textarea{min-height:90px;resize:vertical}
 .msg-receipt{opacity:.75}
 @keyframes recpulse{0%,100%{opacity:1}50%{opacity:.55}}
 @media (prefers-reduced-motion: reduce){.msg-tool.rec{animation:none}}
+
+/* ---- chat hub + badges + mentions ---- */
+.chat-row{display:flex;gap:12px;align-items:center;padding:12px 14px;border-radius:10px;text-decoration:none;color:inherit;
+  border-bottom:1px solid var(--ink-2,#232F3A);transition:background .12s}
+.chat-row:last-child{border-bottom:0}
+.chat-row:hover{background:var(--ink-2,#232F3A)}
+.chat-row.unread .chat-name{font-weight:700}
+.chat-ava{flex:0 0 40px;width:40px;height:40px;border-radius:50%;background:var(--teal,#7FA9B0);color:#08232b;
+  display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem;letter-spacing:.03em}
+.chat-name{font-weight:600;color:var(--ivory,#F4F0E7)}
+.chat-prev{font-size:.82rem;color:var(--muted,#8A979C);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:56ch;margin-top:2px}
+.chat-row.unread .chat-prev{color:var(--ivory,#F4F0E7)}
+.chat-badges{display:flex;gap:5px}
+.chat-badge{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;
+  border-radius:12px;background:var(--teal,#7FA9B0);color:#08232b;font-size:.7rem;font-weight:700}
+.chat-badge.gold{background:var(--gold,#C9A86A);color:#1c1408}
+.chat-badge.nav{position:absolute;top:-7px;right:-14px;transform:scale(.85)}
+.mention{color:var(--teal-br,#AAD4D9);background:rgba(127,169,176,.16);border-radius:5px;padding:0 3px;font-weight:600}
+.msg-bubble.me .mention{color:#03282e;background:rgba(0,0,0,.14)}

@@ -291,6 +291,32 @@ router.patch('/applications/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// ---------------- chat inbox (Slack-style: which files have new messages) ----------------
+router.get('/chat/inbox', async (req, res) => {
+  try {
+    const scoped = !seesAll(req);
+    const params = [req.actor.id];
+    const r = await db.query(
+      `SELECT a.id, a.ys_loan_number, a.status, a.property_address,
+              b.first_name, b.last_name,
+              lm.body AS last_body, lm.channel AS last_channel, lm.sender_kind AS last_sender_kind,
+              lm.attachment_kind AS last_attachment_kind, lm.created_at AS last_at,
+              (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
+                 AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL) AS unread_borrower,
+              (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
+                 AND m.channel='internal' AND m.read_at IS NULL
+                 AND (m.sender_id IS NULL OR m.sender_id<>$1)) AS unread_internal
+         FROM applications a
+         JOIN borrowers b ON b.id=a.borrower_id
+         JOIN LATERAL (SELECT body, channel, sender_kind, attachment_kind, created_at
+                         FROM messages m WHERE m.application_id=a.id
+                        ORDER BY created_at DESC LIMIT 1) lm ON true
+        WHERE 1=1 ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
+        ORDER BY lm.created_at DESC LIMIT 100`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- collaboration messaging (per file, two channels) ----------------
 // channel 'borrower' = borrower <-> loan team; channel 'internal' = LO <->
 // processor <-> underwriter <-> admin, never visible to the borrower.
@@ -379,6 +405,13 @@ router.post('/applications/:id/messages', async (req, res) => {
             type: 'message', title: taskId ? 'New task from team chat' : 'New internal note on a file',
             body: String(body).slice(0, 140), applicationId: req.params.id,
             link: `/staff/app/${req.params.id}`, ctaLabel: 'Open the file' });
+      }
+      // @mentions get a direct ping regardless of channel/assignment.
+      if (body) {
+        const meRow = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+        await require('../lib/mentions').notifyMentions({
+          body, applicationId: req.params.id, senderId: req.actor.id,
+          senderName: meRow.rows[0]?.full_name || 'A teammate' });
       }
     } catch (_) {}
     res.status(201).json({ ok: true, messageId: ins.rows[0].id, taskId });

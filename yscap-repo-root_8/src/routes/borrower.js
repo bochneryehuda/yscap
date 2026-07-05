@@ -348,9 +348,28 @@ router.post('/messages', async (req, res) => {
         };
         for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
           await notify.notifyStaff(sid, opts);
+        // @mentions of staff by the borrower get a direct ping too.
+        if (b.body) await require('../lib/mentions').notifyMentions({
+          body: b.body, applicationId: b.applicationId, senderName: who });
       }
     } catch (_) {}
   }
+});
+
+// Which of my applications have unread messages from the loan team.
+router.get('/chat/inbox', async (req, res) => {
+  const r = await db.query(
+    `SELECT a.id, a.property_address, a.status,
+            (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
+               AND m.channel='borrower' AND m.sender_kind='staff' AND m.read_at IS NULL) AS unread,
+            lm.body AS last_body, lm.sender_kind AS last_sender_kind, lm.created_at AS last_at
+       FROM applications a
+       LEFT JOIN LATERAL (SELECT body, sender_kind, created_at FROM messages m
+                           WHERE m.application_id=a.id AND m.channel='borrower'
+                           ORDER BY created_at DESC LIMIT 1) lm ON true
+      WHERE a.borrower_id=$1 OR a.co_borrower_id=$1
+      ORDER BY lm.created_at DESC NULLS LAST`, [me(req)]);
+  res.json(r.rows);
 });
 
 // ---------------- shared: auto-generate checklist from templates ----------------
