@@ -334,9 +334,39 @@ export default function StaffApplication() {
         </div>
       </div>
 
-      <MessageThread mine="staff" title="Messages with the borrower"
-        fetchMessages={() => api.staffMessages(id)}
-        send={(body) => api.staffPostMessage(id, body)} />
+      <ChatPanel appId={id} onTaskCreated={load} />
     </>
+  );
+}
+
+/* Two collaboration channels per file: the borrower-facing thread, and an
+   internal team channel (LO / processor / underwriter / admin) the borrower
+   never sees — where a message can be saved straight onto the file as a task. */
+function ChatPanel({ appId, onTaskCreated }) {
+  const [channel, setChannel] = useState('borrower');
+  const internal = channel === 'internal';
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 10, alignItems: 'center' }}>
+        <h3 style={{ margin: 0 }}>Conversations</h3>
+        <div className="spacer" />
+        <div className="row" style={{ gap: 6 }}>
+          <button className={`btn ${!internal ? 'primary' : 'ghost'}`} onClick={() => setChannel('borrower')}>Borrower</button>
+          <button className={`btn ${internal ? 'primary' : 'ghost'}`} onClick={() => setChannel('internal')}>Team (internal)</button>
+        </div>
+      </div>
+      <MessageThread key={channel} mine="staff" bare
+        header={<span />}
+        hint={internal
+          ? 'Internal channel — loan officer, processor, underwriting and admin only. The borrower can never see these messages. Tick the box to also save a message as a task on the file.'
+          : 'This thread is shared with the borrower.'}
+        taskOption={internal}
+        fetchMessages={() => api.staffMessages(appId, channel)}
+        send={async (body, opts) => {
+          const r = await api.staffPostMessage(appId, body, { channel, makeTask: internal && opts?.makeTask });
+          if (r && r.taskId && onTaskCreated) onTaskCreated();
+          return r;
+        }} />
+    </div>
   );
 }

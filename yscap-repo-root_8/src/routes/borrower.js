@@ -285,7 +285,11 @@ router.get('/messages', async (req, res) => {
                  WHEN m.sender_kind='borrower' THEN 'You'
                  ELSE 'System' END AS sender_name
        FROM messages m LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
-      WHERE m.borrower_id=$1 AND ($2::uuid IS NULL OR m.application_id=$2) ORDER BY m.created_at`,
+      WHERE m.channel='borrower'                     -- internal team notes are NEVER shown to borrowers
+        AND ($2::uuid IS NULL OR m.application_id=$2)
+        AND (m.borrower_id=$1 OR m.application_id IN
+             (SELECT id FROM applications WHERE co_borrower_id=$1))
+      ORDER BY m.created_at`,
     [me(req), req.query.applicationId || null]);
   // Opening the thread clears the "new message" badge for staff replies.
   if (req.query.applicationId)

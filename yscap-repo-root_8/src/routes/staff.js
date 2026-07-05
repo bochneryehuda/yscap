@@ -291,44 +291,79 @@ router.patch('/applications/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// ---------------- secure messaging (borrower <-> staff, per file) ----------------
+// ---------------- collaboration messaging (per file, two channels) ----------------
+// channel 'borrower' = borrower <-> loan team; channel 'internal' = LO <->
+// processor <-> underwriter <-> admin, never visible to the borrower.
 // Guarded by the /applications/:id middleware (staffer must see this file).
 router.get('/applications/:id/messages', async (req, res) => {
+  const channel = req.query.channel === 'internal' ? 'internal' : 'borrower';
   try {
     const r = await db.query(
-      `SELECT m.id, m.sender_kind, m.sender_id, m.body, m.is_task_request, m.read_at, m.created_at,
+      `SELECT m.id, m.sender_kind, m.sender_id, m.body, m.channel, m.checklist_item_id,
+              m.is_task_request, m.read_at, m.created_at,
               CASE WHEN m.sender_kind='staff' THEN s.full_name
                    WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
-                   ELSE 'System' END AS sender_name
+                   ELSE 'System' END AS sender_name,
+              ci.label AS task_label, ci.status AS task_status
          FROM messages m
          LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
          LEFT JOIN borrowers  b ON b.id=m.borrower_id
-        WHERE m.application_id=$1 ORDER BY m.created_at`, [req.params.id]);
-    // Mark borrower messages as read now that staff has opened the thread.
-    await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND sender_kind='borrower' AND read_at IS NULL`, [req.params.id]);
+         LEFT JOIN checklist_items ci ON ci.id=m.checklist_item_id
+        WHERE m.application_id=$1 AND m.channel=$2 ORDER BY m.created_at`, [req.params.id, channel]);
+    // Opening the borrower channel clears the "unread borrower message" state.
+    if (channel === 'borrower')
+      await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND channel='borrower' AND sender_kind='borrower' AND read_at IS NULL`, [req.params.id]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.post('/applications/:id/messages', async (req, res) => {
-  const body = (req.body || {}).body;
+  const b = req.body || {};
+  const body = b.body;
+  const channel = b.channel === 'internal' ? 'internal' : 'borrower';
   if (!body || !String(body).trim()) return res.status(400).json({ error: 'message body required' });
   try {
-    const appRow = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+    const appRow = await db.query(
+      `SELECT borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
     if (!appRow.rows[0]) return res.status(404).json({ error: 'not found' });
+    const a = appRow.rows[0];
+
+    // Optionally promote the message into a real task on the application
+    // (staff-audience checklist item), so decisions in chat become work items.
+    let taskId = null;
+    if (b.makeTask && channel === 'internal') {
+      const t = await db.query(
+        `INSERT INTO checklist_items
+           (application_id, scope, audience, item_kind, label, status, created_by_kind, created_by_id, assignee_staff_id)
+         VALUES ($1,'application','staff','task',$2,'outstanding','staff',$3,$4) RETURNING id`,
+        [req.params.id, String(b.taskLabel || body).slice(0, 300), req.actor.id, b.assigneeStaffId || null]);
+      taskId = t.rows[0].id;
+    }
+
     const ins = await db.query(
-      `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body)
-       VALUES ($1,$2,'staff',$3,$4) RETURNING id`,
-      [req.params.id, appRow.rows[0].borrower_id, req.actor.id, String(body).slice(0, 4000)]);
-    await audit(req, 'post_message', 'application', req.params.id);
-    // Notify the borrower a message is waiting.
+      `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,channel,checklist_item_id)
+       VALUES ($1,$2,'staff',$3,$4,$5,$6) RETURNING id`,
+      [req.params.id, a.borrower_id, req.actor.id, String(body).slice(0, 4000), channel, taskId]);
+    await audit(req, 'post_message', 'application', req.params.id, { channel, taskId });
+
     try {
-      if (appRow.rows[0].borrower_id)
-        await notify.notifyBorrower(appRow.rows[0].borrower_id, {
+      if (channel === 'borrower' && a.borrower_id) {
+        await notify.notifyBorrower(a.borrower_id, {
           type: 'message', title: 'New message from your loan team',
           body: String(body).slice(0, 140), applicationId: req.params.id,
           link: `/app/${req.params.id}`, ctaLabel: 'Open the conversation' });
+      } else if (channel === 'internal') {
+        // Notify the rest of the file's team (assigned LO/processor + a task
+        // assignee if any) — never the borrower, never the sender.
+        const team = new Set([a.loan_officer_id, a.processor_id, b.assigneeStaffId].filter(Boolean));
+        team.delete(req.actor.id);
+        for (const sid of team)
+          await notify.notifyStaff(sid, {
+            type: 'message', title: taskId ? 'New task from team chat' : 'New internal note on a file',
+            body: String(body).slice(0, 140), applicationId: req.params.id,
+            link: `/staff/app/${req.params.id}`, ctaLabel: 'Open the file' });
+      }
     } catch (_) {}
-    res.status(201).json({ ok: true, messageId: ins.rows[0].id });
+    res.status(201).json({ ok: true, messageId: ins.rows[0].id, taskId });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

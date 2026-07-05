@@ -137,3 +137,7 @@ textarea{min-height:90px;resize:vertical}
 .kpi .kpi-v{font-family:Fraunces,Georgia,serif;font-size:1.7rem;font-weight:700;line-height:1;color:var(--ivory,#F4F0E7);font-variant-numeric:tabular-nums}
 .kpi .kpi-k{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted,#8A979C);margin-top:6px}
 .kpi.alert .kpi-v{color:var(--gold,#C9A86A)}
+
+/* chat -> task chip inside a bubble */
+.msg-task{margin-top:6px;font-size:.68rem;font-weight:600;color:var(--gold,#C9A86A);
+  border:1px solid color-mix(in srgb, var(--gold,#C9A86A) 45%, transparent);border-radius:8px;padding:3px 8px;display:inline-block}

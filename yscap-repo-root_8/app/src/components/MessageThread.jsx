@@ -4,9 +4,11 @@ import React, { useEffect, useRef, useState } from 'react';
    right ('borrower' in the borrower portal, 'staff' in the staff console).
    `fetchMessages()` and `send(body)` are supplied by the parent so the same
    component serves both sides. */
-export default function MessageThread({ mine, fetchMessages, send, title = 'Messages' }) {
+export default function MessageThread({ mine, fetchMessages, send, title = 'Messages',
+  header = null, hint = '', taskOption = false, bare = false }) {
   const [msgs, setMsgs] = useState(null);
   const [body, setBody] = useState('');
+  const [makeTask, setMakeTask] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const endRef = useRef(null);
@@ -19,14 +21,15 @@ export default function MessageThread({ mine, fetchMessages, send, title = 'Mess
     const text = body.trim();
     if (!text) return;
     setBusy(true); setErr('');
-    try { await send(text); setBody(''); await load(); }
+    try { await send(text, { makeTask }); setBody(''); setMakeTask(false); await load(); }
     catch (e) { setErr(e.message || 'Could not send'); }
     finally { setBusy(false); }
   }
 
   return (
-    <div className="panel" style={{ marginTop: 18 }}>
-      <h3 style={{ marginBottom: 10 }}>{title}</h3>
+    <div className={bare ? '' : 'panel'} style={bare ? {} : { marginTop: 18 }}>
+      {header || <h3 style={{ marginBottom: 10 }}>{title}</h3>}
+      {hint && <p className="muted small" style={{ margin: '0 0 10px' }}>{hint}</p>}
       {err && <div className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
       <div className="msg-thread">
         {msgs == null ? <p className="muted small">Loading…</p>
@@ -38,6 +41,9 @@ export default function MessageThread({ mine, fetchMessages, send, title = 'Mess
                   <div className={`msg-bubble ${isMine ? 'me' : 'them'}`}>
                     {!isMine && <div className="msg-from">{m.sender_name || (m.sender_kind === 'staff' ? 'Loan team' : 'Borrower')}</div>}
                     <div className="msg-body">{m.body}</div>
+                    {m.checklist_item_id && (
+                      <div className="msg-task">✦ Saved as task{m.task_label ? `: ${m.task_label.slice(0, 60)}` : ''}{m.task_status ? ` · ${m.task_status}` : ''}</div>
+                    )}
                     <div className="msg-time">{new Date(m.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</div>
                   </div>
                 </div>
@@ -50,6 +56,12 @@ export default function MessageThread({ mine, fetchMessages, send, title = 'Mess
           onChange={e => setBody(e.target.value)} onKeyDown={e => e.key === 'Enter' && !e.shiftKey && submit()} />
         <button className="btn primary" disabled={busy || !body.trim()} onClick={submit}>{busy ? 'Sending…' : 'Send'}</button>
       </div>
+      {taskOption && (
+        <label className="muted small" style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8, cursor: 'pointer' }}>
+          <input type="checkbox" checked={makeTask} onChange={e => setMakeTask(e.target.checked)} />
+          Also save this message as a task on the file
+        </label>
+      )}
     </div>
   );
 }
