@@ -372,10 +372,13 @@ router.post('/preview-rule', async (req, res) => {
       WHERE a.deleted_at IS NULL AND a.status = ANY($1::text[])
       ORDER BY a.created_at DESC LIMIT 500`, [engine.OPEN_STATUSES]);
   let matches = 0; const sample = [];
+  // `fields` (the merged built-in + custom map, from validation above) is passed
+  // into evaluateRule so rules on custom (cf_*) fields evaluate the same way the
+  // live engine does — otherwise Preview would show 0 matches for such a rule.
   for (const row of apps.rows) {
     try {
       const loaded = await engine.loadRuleContext(row.id);
-      if (loaded && rules.evaluateRule(tree, loaded.ctx)) {
+      if (loaded && rules.evaluateRule(tree, loaded.ctx, fields)) {
         matches++;
         if (sample.length < 6) {
           const addr = row.property_address || {};
@@ -388,7 +391,7 @@ router.post('/preview-rule', async (req, res) => {
       }
     } catch (_) { /* skip broken files */ }
   }
-  res.json({ total: apps.rows.length, matches, sample, summary: rules.summarizeRule(tree) });
+  res.json({ total: apps.rows.length, matches, sample, summary: rules.summarizeRule(tree, { fields }) });
 });
 
 // ---- run the engine across the whole open pipeline ----

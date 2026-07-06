@@ -369,13 +369,22 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
     earlyStamp = setInterval(stampEarly, 30);
     stampEarly();
 
+    // On failure, stop every timer (setFailed only re-renders — it does not
+    // unmount, so the effect cleanup would not otherwise run) and surface the
+    // error notice.
+    const fail = () => {
+      if (earlyStamp) { clearInterval(earlyStamp); earlyStamp = null; }
+      clearTimeout(revealFallback);
+      setFailed(true);
+    };
+
     let booted = false;
     const boot = () => {
       if (booted || disposed) return;
       booted = true;
       let win;
       try { win = frame.contentWindow; if (!win || !win.document) throw new Error('no frame'); }
-      catch (_) { setFailed(true); return; }
+      catch (_) { fail(); return; }
 
       // termsheet.js wires itself on DOMContentLoaded, so TS/YS may land a
       // beat after the frame's load event — wait for both. (`win` is the
@@ -385,7 +394,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         if (disposed) { clearInterval(ready); return; }
         tries += 1;
         if (!(win.TS && win.YS)) {
-          if (tries > 100) { clearInterval(ready); setFailed(true); }
+          if (tries > 100) { clearInterval(ready); fail(); }
           return;
         }
         clearInterval(ready);
