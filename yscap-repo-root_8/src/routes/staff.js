@@ -485,6 +485,13 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null });
 
+    // Registering the product satisfies the "Products & pricing" condition.
+    try {
+      await db.query(
+        `UPDATE checklist_items SET status='received', updated_at=now()
+          WHERE application_id=$1 AND tool_key='product_pricing' AND status <> 'satisfied'`, [appId]);
+    } catch (_) { /* condition may not exist on older files */ }
+
     // Notify the assigned team (LO + processor), not the borrower.
     try {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
@@ -851,6 +858,34 @@ async function canSeeBorrowerId(req, borrowerId) {
   return !!r.rows[0];
 }
 async function canSeeBorrower(req) { return canSeeBorrowerId(req, req.params.id); }
+// The appraisal payment card, decrypted for the back office to place the
+// order. Every reveal is audited (GLBA-grade payment data).
+router.get('/applications/:id/appraisal-card', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT card_encrypted, last4, brand, exp_month, exp_year, billing_zip, updated_at
+         FROM application_payment_cards WHERE application_id=$1`, [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'no card on file' });
+    const row = r.rows[0];
+    let full = null;
+    try { full = JSON.parse(C.decryptSSN(Buffer.from(row.card_encrypted, 'base64'))); } catch (_) {}
+    if (!full) return res.status(500).json({ error: 'could not decrypt the card' });
+    await audit(req, 'view_appraisal_card', 'application', req.params.id, { last4: row.last4 });
+    res.json({
+      number: full.number, cvc: full.cvc, brand: row.brand,
+      expMonth: row.exp_month, expYear: row.exp_year, zip: row.billing_zip,
+      last4: row.last4, updatedAt: row.updated_at,
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// A borrower's entities, for linking a track-record deal to an LLC.
+router.get('/borrowers/:id/llcs', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(`SELECT id, llc_name, is_verified FROM llcs WHERE borrower_id=$1 ORDER BY created_at`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
 router.get('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -888,6 +923,10 @@ router.post('/borrowers/:id/track-records', async (req, res) => {
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
   const cols = trackRecordCols(b);
+  if (b.llcId) {
+    const l = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, req.params.id]);
+    if (l.rows[0]) cols.llc_id = b.llcId;
+  }
   const names = Object.keys(cols);
   const vals = Object.values(cols);
   const r = await db.query(
@@ -907,6 +946,12 @@ router.put('/track-records/:id', async (req, res) => {
   if (bad) return res.status(400).json({ error: bad });
   const cols = trackRecordCols(b);
   if (b.loNotes !== undefined) cols.lo_notes = b.loNotes ? String(b.loNotes).slice(0, 1000) : null;
+  if (b.llcId !== undefined) {
+    if (b.llcId) {
+      const l = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, tr.rows[0].borrower_id]);
+      if (l.rows[0]) cols.llc_id = b.llcId;
+    } else cols.llc_id = null;
+  }
   const names = Object.keys(cols);
   const vals = Object.values(cols);
   await db.query(
@@ -1644,6 +1689,65 @@ router.get('/team', async (req, res) => {
     `SELECT id, full_name, email, role, title, department FROM staff_users
       WHERE is_active=true ORDER BY department NULLS LAST, sort_order, full_name`);
   res.json(r.rows);
+});
+
+// ---------------- VENDOR DIRECTORY (admin) ----------------
+// Every title company / insurance agent contact entered anywhere on the
+// platform, tagged by type. Admins curate it: enrich, correct, or delete bad
+// entries — borrowers then autocomplete against the cleaned-up records.
+const VENDOR_TYPES = ['title_company', 'insurance_agent', 'attorney', 'contractor', 'other'];
+router.get('/vendors', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  const type = VENDOR_TYPES.includes(req.query.type) ? req.query.type : null;
+  const r = await db.query(
+    `SELECT sc.id, sc.contact_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address,
+            sc.notes, sc.created_at, sc.updated_at, sc.last_used_at,
+            b.first_name || ' ' || b.last_name AS added_by_borrower,
+            s.full_name AS added_by_staff,
+            (SELECT count(*)::int FROM application_service_contacts x WHERE x.service_contact_id=sc.id) AS files_used
+       FROM service_contacts sc
+       LEFT JOIN borrowers b ON b.id=sc.borrower_id
+       LEFT JOIN staff_users s ON s.id=sc.added_by_staff_id
+      WHERE ($1::text IS NULL OR sc.contact_type=$1)
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [type]);
+  res.json(r.rows);
+});
+router.post('/vendors', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  const b = req.body || {};
+  const type = VENDOR_TYPES.includes(b.contactType) ? b.contactType : 'other';
+  if (!b.companyName && !b.contactName && !b.email && !b.phone)
+    return res.status(400).json({ error: 'enter at least one contact detail' });
+  const r = await db.query(
+    `INSERT INTO service_contacts (contact_type,company_name,contact_name,email,phone,address,notes,added_by_staff_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [type, b.companyName || null, b.contactName || null, b.email || null, b.phone || null,
+     b.address || null, b.notes || null, req.actor.id]);
+  await audit(req, 'add_vendor', 'service_contact', r.rows[0].id, { type });
+  res.status(201).json({ ok: true, vendorId: r.rows[0].id });
+});
+router.patch('/vendors/:id', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  const b = req.body || {};
+  const map = { companyName: 'company_name', contactName: 'contact_name', email: 'email',
+                phone: 'phone', address: 'address', notes: 'notes' };
+  const sets = [], vals = []; let i = 1;
+  for (const [k, col] of Object.entries(map))
+    if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
+  if (b.contactType && VENDOR_TYPES.includes(b.contactType)) { sets.push(`contact_type=$${i++}`); vals.push(b.contactType); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  const r = await db.query(`UPDATE service_contacts SET ${sets.join(',')} WHERE id=$${i} RETURNING id`, vals);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  await audit(req, 'edit_vendor', 'service_contact', req.params.id);
+  res.json({ ok: true });
+});
+router.delete('/vendors/:id', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  const r = await db.query(`DELETE FROM service_contacts WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  await audit(req, 'delete_vendor', 'service_contact', req.params.id);
+  res.json({ ok: true });
 });
 
 module.exports = router;

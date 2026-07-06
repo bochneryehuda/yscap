@@ -16,6 +16,7 @@
   var appId = q.get("app"), itemId = q.get("item");
   if (!appId || !itemId) return;
   var staffMode = q.get("internal") === "1" || q.get("staff") === "1"; // "staff" kept for legacy links
+  var embed = q.get("embed") === "1";
   var token = null;
   try { token = localStorage.getItem("ys_portal_token"); } catch (e) {}
   var base = staffMode ? "/api/staff" : "/api/borrower";
@@ -31,33 +32,85 @@
     chip.textContent = txt;
     chip.style.color = tone === "err" ? "#e08585" : tone === "busy" ? "" : "#7fa9b0";
   }
+  var SAVE_LABEL = "Save Rehab Budget ✓";
+  var SAVE_TITLE = "Saves this Scope of Work onto the loan-file condition: the editable HTML version plus a fresh Excel and PDF export (previous versions are marked old).";
   function injectUI() {
-    var actions = document.querySelector(".topbar-actions");
-    if (!actions) return;
+    // Inside the portal iframe (?embed=1) only the tool itself shows: the
+    // marketing header, hero copy and footer disappear; the step strip stays.
+    if (embed) {
+      var st = document.createElement("style");
+      st.textContent =
+        ".topbar,.suite-footer,.fa-wrap,#floatActions{display:none!important}" +
+        ".rb-hero .suite-eyebrow,.rb-hero h1,.rb-hero .tool-tagline,.rb-hero .intro{display:none!important}" +
+        ".rb-hero{padding:0.6rem 1rem 0.2rem}" +
+        "main{padding-top:0!important}" +
+        ".rb-wrap{padding-left:max(10px,2vw);padding-right:max(10px,2vw)}" +
+        "@media (max-width:720px){.rb-portal-bar{flex-wrap:wrap}.rb-portal-bar .btn{flex:1 1 auto;text-align:center}}";
+      document.head.appendChild(st);
+    }
     // A loan-file session doesn't need the share-link flow — the file IS the
     // save — and shouldn't navigate away to the marketing suite.
-    actions.querySelectorAll("button").forEach(function (b) {
+    document.querySelectorAll(".topbar-actions button").forEach(function (b) {
       if (/Share link/.test(b.textContent)) b.style.display = "none";
     });
-    actions.querySelectorAll("a.back").forEach(function (a) { a.style.display = "none"; });
+    document.querySelectorAll(".topbar-actions a.back").forEach(function (a) { a.style.display = "none"; });
     document.querySelectorAll(".topbar-brand, .topbar-crumb a").forEach(function (a) {
       a.removeAttribute("href"); a.style.pointerEvents = "none";
     });
-    chip = document.createElement("span");
-    chip.className = "rb-portal-chip";
-    chip.style.cssText = "font-size:.78rem;opacity:.85;margin-right:.4rem;white-space:nowrap";
+
+    // Slim portal action bar above the builder: Save (main) · Export PDF ·
+    // Export Excel · Import · autosave chip.
+    var wrap = document.querySelector(".rb-wrap");
+    if (!wrap) return;
+    var bar = document.createElement("div");
+    bar.className = "rb-portal-bar";
+    bar.style.cssText = "display:flex;gap:.5rem;align-items:center;margin:0 0 .9rem;padding:.6rem .8rem;" +
+      "border:1px solid rgba(127,169,176,.35);border-radius:12px;background:rgba(11,16,20,.35);position:sticky;top:0;z-index:50;backdrop-filter:blur(6px)";
     submitBtn = document.createElement("button");
     submitBtn.type = "button";
-    submitBtn.className = "btn btn-line";
-    submitBtn.style.cssText = "border-color:#9a7518;color:#e9c46a;font-weight:600";
-    submitBtn.textContent = "Submit to loan file ✓";
-    submitBtn.title = "Saves this Scope of Work onto your loan file and attaches a fresh PDF + Excel export (previous exports are replaced).";
+    submitBtn.className = "btn rb-btn primary";
+    submitBtn.style.cssText = "font-weight:700";
+    submitBtn.textContent = SAVE_LABEL;
+    submitBtn.title = SAVE_TITLE;
     submitBtn.onclick = submit;
-    actions.appendChild(chip);
-    actions.appendChild(submitBtn);
+    bar.appendChild(submitBtn);
+
+    var mk = function (label, title, fn) {
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "btn rb-btn"; b.textContent = label; b.title = title || "";
+      b.onclick = fn; bar.appendChild(b); return b;
+    };
+    mk("Export PDF ⤓", "Download a branded PDF copy", function () { RB.exportPdf(this); });
+    mk("Export Excel ⤓", "Download the Excel workbook (re-importable)", function () { RB.exportXlsx(this); });
+    var imp = document.getElementById("rb-import");
+    if (imp) mk("Import ⤒", "Resume from an Excel exported by this tool", function () { imp.click(); });
+
+    chip = document.createElement("span");
+    chip.className = "rb-portal-chip";
+    chip.style.cssText = "font-size:.78rem;opacity:.85;margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    bar.appendChild(chip);
+    wrap.insertBefore(bar, wrap.firstChild);
+
     var crumb = document.querySelector(".topbar-crumb .here");
     if (crumb) crumb.textContent = "Rehab Budget — on your loan file";
   }
+
+  // Rewire the review step every render: the primary action on the file is
+  // SAVE (Excel + PDF + HTML onto the condition), with Export PDF secondary.
+  window.RB_PORTAL_ONRENDER = function () {
+    document.querySelectorAll("#rb-body button").forEach(function (b) {
+      var t = b.textContent || "";
+      if (/Export Excel/.test(t)) {
+        b.textContent = SAVE_LABEL;
+        b.title = SAVE_TITLE;
+        b.classList.add("primary");
+        b.removeAttribute("onclick");
+        b.onclick = function (e) { e.preventDefault(); submit(); };
+      } else if (/Copy share link/.test(t)) {
+        b.style.display = "none";
+      }
+    });
+  };
 
   if (!token) {
     document.addEventListener("DOMContentLoaded", function () {
@@ -159,11 +212,11 @@
         } }),
       });
       if (!res.ok) { var d = null; try { d = await res.json(); } catch (e) {} throw new Error((d && d.error) || ("HTTP " + res.status)); }
-      submitBtn.textContent = "Submitted ✓";
-      setChip(attachments.length ? "Scope of Work + PDF & Excel saved to your loan file ✓" : "Scope of Work saved to your loan file ✓");
+      submitBtn.textContent = "Saved ✓";
+      setChip("Rehab budget saved — HTML, Excel & PDF are on the condition ✓");
       setTimeout(function () { submitBtn.textContent = orig; submitBtn.disabled = false; busy = false; }, 2500);
       var fl = document.getElementById("rb-flash");
-      if (fl) { fl.textContent = "Submitted — your loan file now carries this Scope of Work" + (attachments.length ? " with a fresh PDF & Excel export." : "."); fl.classList.add("show"); setTimeout(function () { fl.classList.remove("show"); }, 3500); }
+      if (fl) { fl.textContent = "Saved — the condition now carries this Scope of Work (editable HTML" + (attachments.length > 1 ? " + fresh Excel & PDF" : "") + "). Old versions were marked outdated."; fl.classList.add("show"); setTimeout(function () { fl.classList.remove("show"); }, 3500); }
     } catch (err) {
       submitBtn.textContent = orig;
       submitBtn.disabled = false;

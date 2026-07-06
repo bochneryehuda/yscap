@@ -286,6 +286,8 @@ const TR=(function(){
     // stash working copy
     ov._work=Object.assign({},p);
     wireForm(ov);
+    // Portal bridge: LLC linking + address autocomplete on the open form.
+    if(window.TR_PORTAL_ONFORM){ try{ window.TR_PORTAL_ONFORM(ov); }catch(e){} }
   }
 
   function grp(title,fields){ return '<div class="tr-fgrp"><div class="tr-fgrp-h">'+title+'</div><div class="tr-fgrid">'+fields.join("")+'</div></div>'; }

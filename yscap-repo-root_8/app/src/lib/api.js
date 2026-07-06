@@ -146,7 +146,7 @@ export const api = {
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
   borrowerPricingQuote: (appId, overrides) => req('POST', `/api/borrower/applications/${appId}/pricing/quote`, { overrides }),
-  borrowerRegisterProduct: (appId, program, overrides) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides }),
+  borrowerRegisterProduct: (appId, program, overrides, adminKey) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey }),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   conditions:   (id) => req('GET', `/api/borrower/applications/${id}/conditions`),
   activity:     (id) => req('GET', `/api/borrower/applications/${id}/activity`),
@@ -259,6 +259,13 @@ export const api = {
   staffMessages:    (appId, channel = 'borrower') => req('GET', `/api/staff/applications/${appId}/messages?channel=${channel}`),
   staffPostMessage: (appId, body, opts = {}) => req('POST', `/api/staff/applications/${appId}/messages`, { body, ...opts }),
   adminIntegrations:() => req('GET', '/api/admin/integrations'),
+
+  // vendor directory (admin) + appraisal payment card
+  staffVendors:      (type) => req('GET', `/api/staff/vendors${type ? `?type=${type}` : ''}`),
+  staffAddVendor:    (b) => req('POST', '/api/staff/vendors', b),
+  staffUpdateVendor: (id, b) => req('PATCH', `/api/staff/vendors/${id}`, b),
+  staffDeleteVendor: (id) => req('DELETE', `/api/staff/vendors/${id}`),
+  staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
 
   // ---- admin: team / staff management ----
   adminStaff:        () => req('GET', '/api/admin/staff'),

@@ -26,15 +26,104 @@ const CONTACT = {
 const oneLineAddr = (a) => !a ? '' : (a.oneLine || [a.street, a.line1, a.city, a.state, a.zip].filter(Boolean).join(', '));
 
 // The Scope of Work condition opens the full static builder, connected to THIS
-// file: it autosaves onto the condition and Submit attaches PDF+Excel exports.
+// file: it autosaves onto the condition and Save attaches HTML+PDF+Excel.
+// Prefilled from the application: address, transaction, property type, unit
+// count, project type and the target construction budget.
 function sowUrl(appId, item, app) {
-  const p = new URLSearchParams({ app: appId, item: item.id });
+  const p = new URLSearchParams({ app: appId, item: item.id, embed: '1' });
   const addr = oneLineAddr(app.property_address);
   if (addr) p.set('address', addr);
-  if (app.units > 0) p.set('units', String(app.units));
+  const units = Number(app.units) || 0;
+  if (units > 0) p.set('units', String(units));
+  p.set('propType', units >= 5 ? 'large' : units >= 2 ? 'multi' : 'single');
   if (app.loan_type && /refi/i.test(app.loan_type)) p.set('txn', 'refi');
   else if (app.loan_type && /purchase/i.test(app.loan_type)) p.set('txn', 'purchase');
+  const rt = String(app.rehab_type || app.program || '');
+  if (/ground/i.test(rt)) p.set('projType', 'ground');
+  else if (/heavy|gut/i.test(rt)) p.set('projType', 'heavy');
+  else if (/moderate/i.test(rt)) p.set('projType', 'moderate');
+  else if (/cosmetic/i.test(rt)) p.set('projType', 'cosmetic');
+  if (Number(app.rehab_budget) > 0) p.set('target', String(Math.round(Number(app.rehab_budget))));
   return `/tools/rehab-budget.html?${p.toString()}`;
+}
+
+// Client-side Luhn check — same rule the server enforces.
+function luhnOk(num) {
+  const s = String(num || '').replace(/\D/g, '');
+  if (s.length < 13 || s.length > 19) return false;
+  let sum = 0, dbl = false;
+  for (let i = s.length - 1; i >= 0; i--) {
+    let d = s.charCodeAt(i) - 48;
+    if (dbl) { d *= 2; if (d > 9) d -= 9; }
+    sum += d; dbl = !dbl;
+  }
+  return sum % 10 === 0;
+}
+
+/* Credit card for the appraisal — a condition that expands into a card form.
+   Validated (Luhn + expiry) before it saves; stored encrypted; the back
+   office sees it when ordering the appraisal. */
+function CardCondition({ it, appId, onSaved }) {
+  const done = isDone(it.status);
+  const [open, setOpen] = useState(false);
+  const [saved, setSaved] = useState(null);   // masked card on file
+  const [f, setF] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
+  const [busy, setBusy] = useState(false);
+  const [formErr, setFormErr] = useState('');
+  useEffect(() => { api.get(`/api/borrower/applications/${appId}/appraisal-card`).then(setSaved).catch(() => {}); }, [appId]);
+  const digits = f.number.replace(/\D/g, '');
+  const numberOk = luhnOk(digits);
+  async function submit() {
+    setFormErr('');
+    if (!numberOk) { setFormErr('That card number doesn\'t check out — please re-enter it.'); return; }
+    setBusy(true);
+    try {
+      const r = await api.post(`/api/borrower/applications/${appId}/appraisal-card`, f);
+      setSaved({ last4: r.last4, brand: r.brand, exp_month: f.expMonth, exp_year: f.expYear, billing_zip: f.zip });
+      setF({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
+      setOpen(false); await onSaved();
+    } catch (e) { setFormErr(e.message || 'Could not save the card'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <ConditionRow
+      done={done}
+      title="Credit card for the appraisal"
+      subtitle={saved
+        ? `${saved.brand || 'Card'} ending ${saved.last4} on file — we'll use it to order your appraisal.`
+        : 'Enter the card we should use to order your appraisal. Stored encrypted, used only for the appraisal.'}
+      status={done ? 'Submitted' : 'To do'}
+      open={open}
+      action={<button className="btn ghost small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : saved ? 'Replace card' : 'Enter card details'}</button>}
+    >
+      {formErr && <div className="notice err" style={{ marginBottom: 8 }}>{formErr}</div>}
+      <div className="grid cols-2">
+        <div className="field" style={{ gridColumn: '1 / -1' }}><label>Card number</label>
+          <input className="input" inputMode="numeric" autoComplete="off" value={f.number}
+            placeholder="•••• •••• •••• ••••"
+            style={digits.length >= 13 && !numberOk ? { borderColor: 'var(--danger)' } : digits.length >= 13 && numberOk ? { borderColor: 'var(--ok)' } : undefined}
+            onChange={e => setF({ ...f, number: e.target.value.replace(/[^\d ]/g, '').slice(0, 23) })} />
+          {digits.length >= 13 && !numberOk && <span className="small" style={{ color: 'var(--danger)' }}>This isn't a valid card number.</span>}
+          {digits.length >= 13 && numberOk && <span className="small" style={{ color: 'var(--ok)' }}>Card number checks out ✓</span>}
+        </div>
+        <div className="field"><label>Expiration month</label>
+          <input className="input" inputMode="numeric" placeholder="MM" maxLength={2} value={f.expMonth}
+            onChange={e => setF({ ...f, expMonth: e.target.value.replace(/\D/g, '') })} /></div>
+        <div className="field"><label>Expiration year</label>
+          <input className="input" inputMode="numeric" placeholder="YYYY" maxLength={4} value={f.expYear}
+            onChange={e => setF({ ...f, expYear: e.target.value.replace(/\D/g, '') })} /></div>
+        <div className="field"><label>Security code (CVC)</label>
+          <input className="input" inputMode="numeric" placeholder="CVC" maxLength={4} value={f.cvc}
+            onChange={e => setF({ ...f, cvc: e.target.value.replace(/\D/g, '') })} /></div>
+        <div className="field"><label>Billing ZIP</label>
+          <input className="input" inputMode="numeric" placeholder="ZIP" maxLength={10} value={f.zip}
+            onChange={e => setF({ ...f, zip: e.target.value })} /></div>
+      </div>
+      <button className="btn primary" onClick={submit} disabled={busy || !digits || !f.expMonth || !f.expYear || !f.cvc || !f.zip}>
+        {busy ? 'Saving…' : 'Save & submit'}
+      </button>
+    </ConditionRow>
+  );
 }
 
 /* One row in the conditions list: dot + title + status pill + right action,
@@ -160,6 +249,14 @@ export default function Application() {
     load();
     /* eslint-disable-next-line */
   }, [id]);
+  // Coming back from the Track Record section / Scope of Work tab: refresh so
+  // condition statuses and counts stay in step without a manual reload.
+  useEffect(() => {
+    const onFocus = () => load();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+    /* eslint-disable-next-line */
+  }, [id]);
 
   async function onFile(e) {
     const file = e.target.files && e.target.files[0];
@@ -205,10 +302,18 @@ export default function Application() {
   // ---- carve the checklist into the ordered conditions list ----
   const sowItem = items.find(it => it.tool_key === 'rehab_budget');
   const trItem = items.find(it => it.tool_key === 'track_record');
+  const ppItem = items.find(it => it.tool_key === 'product_pricing');
+  const cardItem = items.find(it => it.tool_key === 'appraisal_card');
   const contactItems = items.filter(it => it.tool_key && CONTACT[it.tool_key]);
   const idItem = items.find(it => it.template_code === 'rtl_p1_id');
-  const usedIds = new Set([sowItem, trItem, idItem, ...contactItems].filter(Boolean).map(x => x.id));
+  const assetsItem = items.find(it => it.template_code === 'rtl_p3_assets');
+  const usedIds = new Set([sowItem, trItem, idItem, assetsItem, ...contactItems].filter(Boolean).map(x => x.id));
   const docItems = items.filter(it => !usedIds.has(it.id) && !it.tool_key);
+  const registeredQuote = (() => {
+    if (!app.registered_quote) return null;
+    try { return typeof app.registered_quote === 'string' ? JSON.parse(app.registered_quote) : app.registered_quote; }
+    catch { return null; }
+  })();
 
   const currentDocsFor = (itemId) => uploads.filter(d => d.checklist_item_id === itemId && d.is_current !== false && d.review_status !== 'superseded');
   const sowExports = sowItem ? currentDocsFor(sowItem.id).filter(d => d.doc_kind === 'rehab_budget_export') : [];
@@ -248,7 +353,7 @@ export default function Application() {
         </div>
       </div>
 
-      <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="borrower" />
+      <div id="product-studio"><ProductStudioPanel appId={id} app={app} onRegistered={load} mode="borrower" /></div>
 
       {/* ================= YOUR CONDITIONS — one list, everything the file needs ================= */}
       <div className="panel" style={{ marginTop: 18 }}>
@@ -274,6 +379,21 @@ export default function Application() {
           const show = (it) => docFilter === 'all' || bucket(it.status) === docFilter;
           return (
             <>
+              {/* 0 — Products & pricing: open until a product is registered */}
+              {ppItem && show(ppItem) && (
+                <ConditionRow
+                  done={isDone(ppItem.status) || !!app.registered_program}
+                  title="Products & pricing — register your product"
+                  subtitle={app.registered_program
+                    ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
+                    : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
+                  status={(isDone(ppItem.status) || app.registered_program) ? 'Completed' : 'To do'}
+                  action={<button className="btn primary small" onClick={() => { const el = document.getElementById('product-studio'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
+                    {app.registered_program ? 'Reprice / re-register' : 'Open Products & Pricing'}
+                  </button>}
+                />
+              )}
+
               {/* 1 — Rehab budget / Scope of Work */}
               {sowItem && show(sowItem) && (
                 <ConditionRow
@@ -315,8 +435,9 @@ export default function Application() {
                 />
               )}
 
-              {/* 3 — Company contacts (title / insurance) */}
+              {/* 3 — Company contacts (title / insurance) + appraisal card */}
               {contactItems.filter(show).map(it => <ContactCondition key={it.id} it={it} appId={id} onSaved={load} />)}
+              {cardItem && show(cardItem) && <CardCondition it={cardItem} appId={id} onSaved={load} />}
 
               {/* 4 — Government ID, fulfilled straight from the borrower profile */}
               {idItem && show(idItem) && (
@@ -331,6 +452,48 @@ export default function Application() {
                   action={<button className="btn ghost small" onClick={() => pick({ photoId: true })}>{profile && profile.photo_id_document_id ? 'Replace ID' : 'Upload ID'}</button>}
                 />
               )}
+
+              {/* 4b — Assets & liquidity: once a product is registered, the
+                  registered requirement replaces the generic asset condition */}
+              {assetsItem && show(assetsItem) && (() => {
+                const docs = currentDocsFor(assetsItem.id);
+                const q = registeredQuote;
+                const liq = q && (q.liquidity ?? q.liquidityRequired);
+                const nextSlot = `Document ${docs.length + 1}`;
+                return (
+                  <ConditionRow
+                    done={isDone(assetsItem.status)}
+                    issue={assetsItem.status === 'issue'}
+                    title={q ? 'Assets & liquidity — your registered requirement' : assetsItem.label}
+                    subtitle={q
+                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} registration: verify ${money(liq)} in liquidity`
+                        + (q.reserveRequirement ? ` (incl. ${money(q.reserveRequirement)} reserve${q.reserveBasis ? ` — ${q.reserveBasis}` : ''})` : '')
+                        + (q.cashToClose ? ` · estimated cash to close ${money(q.cashToClose)}` : '')
+                        + '. Upload the bank statements that show it.'
+                      : [assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
+                    status={statusText(assetsItem)}
+                    open={docs.length > 0 || assetsItem.status === 'issue'}
+                    action={<button className="btn link small" onClick={() => pick({ itemId: assetsItem.id, slot: docs.length ? nextSlot : 'Document 1' })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
+                  >
+                    {assetsItem.status === 'issue' && assetsItem.rejection_reason && (
+                      <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
+                        Needs a new version: {assetsItem.rejection_reason}
+                      </div>
+                    )}
+                    {docs.map((d, i) => (
+                      <div className="row" key={d.id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
+                        <span className="muted small" style={{ minWidth: 90 }}>{d.slot_label || `Document ${i + 1}`}</span>
+                        <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
+                        <span className="pill" style={d.review_status === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : d.review_status === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>
+                          {d.review_status === 'accepted' ? 'Accepted' : d.review_status === 'rejected' ? 'Rejected' : 'In review'}
+                        </span>
+                        <button className="btn link small" onClick={() => pick({ itemId: assetsItem.id, slot: d.slot_label || undefined, replaceDocumentId: d.id })}>Replace</button>
+                        <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>{dlBusy === d.id ? '…' : '⤓'}</button>
+                      </div>
+                    ))}
+                  </ConditionRow>
+                );
+              })()}
 
               {/* 5 — every remaining condition, each with multi-document slots */}
               {docItems.filter(show).map(it => {
