@@ -154,7 +154,8 @@ router.patch('/staff/:id', async (req, res) => {
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {
-    await db.query(`UPDATE staff_users SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    const r = await db.query(`UPDATE staff_users SET ${sets.join(',')} WHERE id=$${i} RETURNING id`, vals);
+    if (!r.rows[0]) return res.status(404).json({ error: 'staff member not found' });   // was phantom {ok:true}
     roster.bust();
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'could not update staff member' }); }

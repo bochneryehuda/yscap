@@ -10,8 +10,23 @@ function cleanMoney(v) {
   const i = s.indexOf('.');
   return i < 0 ? s : s.slice(0, i + 1) + s.slice(i + 1).replace(/\./g, '');
 }
+// Group the integer part with commas but PRESERVE a decimal being typed (a
+// trailing '.' and any cents) — running Number().toLocaleString() on the whole
+// string rendered 'NaN' for a lone '.' and erased the decimal point mid-entry,
+// making cents impossible to type.
+function formatMoney(value) {
+  if (value === '' || value == null) return '';
+  const s = cleanMoney(value);
+  if (s === '' || s === '.') return s;                 // '.' shown transiently as the user types
+  const dot = s.indexOf('.');
+  const intPart = dot < 0 ? s : s.slice(0, dot);
+  const frac = dot < 0 ? '' : s.slice(dot);            // includes the '.' and any digits
+  const n = Number(intPart);
+  const grouped = intPart === '' ? '' : (isFinite(n) ? n.toLocaleString('en-US') : intPart);
+  return grouped + frac;
+}
 export function MoneyInput({ value, onChange, placeholder, ...rest }) {
-  const display = value === '' || value == null ? '' : Number(cleanMoney(value)).toLocaleString('en-US');
+  const display = formatMoney(value);
   return (
     <div style={{ position: 'relative' }}>
       <span style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted,#9fb0ba)', pointerEvents: 'none' }}>$</span>
