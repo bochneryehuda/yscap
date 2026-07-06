@@ -9,6 +9,7 @@ import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
+import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -299,7 +300,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
    borrower works through (Scope of Work, track record, contacts, ID, document
    slots), with every uploaded PDF inline and full sign-off capability — a
    separate section from the internal phase-by-phase checklist. */
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
@@ -370,6 +371,13 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
                 </button>
               )}
+              {!it.tool_key && onUploadTo && (
+                <button className="btn ghost small"
+                  title="Upload a document into this condition on the borrower's behalf — it lands in the shared list exactly as if the borrower uploaded it"
+                  onClick={() => onUploadTo({ itemId: it.id, slot: itemDocs.length ? `Document ${itemDocs.length + 1}` : 'Document 1' })}>
+                  {itemDocs.length ? '+ Add doc' : 'Upload'}
+                </button>
+              )}
               {it.reviewed_at
                 ? <button className="btn ghost small" title={`Reviewed by ${it.reviewed_by_name || 'staff'}`} onClick={() => onPatch(it.id, { reviewed: false })}>Reviewed ✓</button>
                 : <button className="btn ghost small" onClick={() => onPatch(it.id, { reviewed: true })}>Mark reviewed</button>}
@@ -387,7 +395,16 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                       <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
                       <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => onDownloadDoc(d)}>{dlBusy === d.id ? '…' : 'Download'}</button>
+                      {onUploadTo && d.source_type !== 'system' && (
+                        <button className="btn link small" title="Replace this document with a new version (the old one is kept in the trash)"
+                          onClick={() => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id })}>Replace</button>
+                      )}
                       {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
+                      {completer && rs !== 'accepted' && (
+                        <button className="btn ghost small"
+                          title="Accept this document but keep the condition open and ask the borrower for one more document"
+                          onClick={() => onReviewDoc(d, 'accept_more')}>Accept +1 more</button>
+                      )}
                       {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
                     </div>
                   );
@@ -521,18 +538,50 @@ export default function StaffApplication() {
   }
   async function reviewDoc(doc, action) {
     if (busyAct) return;
-    let reason;
+    let reason, opts;
     if (action === 'reject') {
       reason = window.prompt('Why is this document being rejected? The borrower will see this and can upload a new version.');
       if (reason == null || !reason.trim()) return;
     }
+    if (action === 'accept_more') {
+      // Accept the PDF, keep the condition open, ask for one more document.
+      const note = window.prompt('This document is accepted ✓ — what ELSE is needed to satisfy the condition? The borrower sees this note.');
+      if (note == null) return;
+      action = 'accept';
+      opts = { requestMore: true, note: note.trim() };
+    }
     setBusyAct('review');
     try {
-      await api.staffReviewDoc(doc.id, action, reason);
-      flash(action === 'accept' ? 'Document accepted ✓' : 'Document rejected — the borrower was notified.');
+      await api.staffReviewDoc(doc.id, action, reason, opts);
+      flash(opts ? 'Accepted ✓ — condition stays open, borrower asked for one more document.'
+        : action === 'accept' ? 'Document accepted ✓' : 'Document rejected — the borrower was notified.');
       await load();
     } catch (e) { setErr(e.message || 'Could not review the document'); }
     finally { setBusyAct(''); }
+  }
+  // Staff upload INTO a condition on the borrower's behalf — same slots, same
+  // shared list the borrower sees.
+  const staffFileRef = useRef(null);
+  const [uploadTarget, setUploadTarget] = useState(null);   // {itemId, slot, replaceDocumentId}
+  const pickUpload = (t) => { setUploadTarget(t || {}); staffFileRef.current && staffFileRef.current.click(); };
+  async function onStaffFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file || !uploadTarget) return;
+    setBusyAct('upload'); setErr('');
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file);
+      });
+      await api.staffUploadAppDoc(id, {
+        checklistItemId: uploadTarget.itemId || undefined,
+        slot: uploadTarget.slot || undefined,
+        replaceDocumentId: uploadTarget.replaceDocumentId || undefined,
+        filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
+      });
+      flash('Uploaded to the condition ✓ — the borrower sees it too.');
+      setUploadTarget(null); await load();
+    } catch (e2) { setErr(e2.message || 'Upload failed'); }
+    finally { setBusyAct(''); if (staffFileRef.current) staffFileRef.current.value = ''; }
   }
   async function deleteApp() {
     const reason = window.prompt('Delete this file? It will be removed from all borrower and internal views (recoverable by an admin). Optional reason:');
@@ -639,6 +688,21 @@ export default function StaffApplication() {
   const officers = team.filter(m => ['loan_officer', 'admin', 'super_admin'].includes(m.role));
   const procName = (team.find(m => m.id === app.processor_id) || {}).full_name;
 
+  const borrowerItems = items.filter(it => it.audience === 'borrower' || it.audience === 'both');
+  const nCondOpen = borrowerItems.filter(it => !it.signed_off_at && it.status !== 'satisfied').length;
+  const SECTIONS = [
+    { id: 'sec-overview', label: 'File overview' },
+    { id: 'sec-application', label: 'Application details' },
+    { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
+    { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
+    { id: 'sec-entity', label: 'Entity (LLC) review' },
+    { id: 'sec-track', label: 'Track record' },
+    { id: 'sec-checklist', label: 'Internal checklist', badge: items.length ? `${items.filter(i => i.signed_off_at).length}/${items.length}` : '' },
+    { id: 'sec-documents', label: 'Documents & exports', badge: docs.length || '' },
+    { id: 'sec-messages', label: 'Conversations' },
+    { id: 'sec-activity', label: 'Activity' },
+  ];
+
   return (
     <>
       <div className="row" style={{ marginBottom: 12 }}>
@@ -649,6 +713,14 @@ export default function StaffApplication() {
       </div>
       <h1 style={{ marginBottom: 4 }}>{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>
       <p className="muted small" style={{ marginBottom: 12 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
+
+      {msg && <div className="notice ok">{msg}</div>}
+      {err && app && <div role="alert" className="notice err">{err}</div>}
+
+      <FileSections sections={SECTIONS}>
+
+      <Section id="sec-overview" title="File overview"
+        info="Status, milestone gating, assignments and the deal at a glance — the control panel for this file.">
       <DealSnapshot app={app} gating={gating} />
       <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16 }}>
         <span className="muted small">Advance status</span>
@@ -683,12 +755,9 @@ export default function StaffApplication() {
         <span className="muted small">Setting an expected date notifies the borrower.</span>
       </div>
 
-      {msg && <div className="notice ok">{msg}</div>}
-      {err && app && <div role="alert" className="notice err">{err}</div>}
-
       <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
 
-      <div className="grid cols-2">
+      <div className="grid cols-2" style={{ marginTop: 14 }}>
         <div className="panel">
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>
           {borrower ? <>
@@ -749,10 +818,47 @@ export default function StaffApplication() {
           <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>Assign</button>
         </div>
       </div>
+      </Section>
 
+      <Section id="sec-application" title="Application details"
+        info="What the borrower filled out — completeness at a glance, plus the editable deal numbers. Changing them here flows straight into pricing.">
       <Completeness app={app} borrower={borrower} />
+      <EditFileDetails app={app} onSaved={load} />
+      </Section>
 
-      <div className="panel" style={{ marginTop: 18 }}>
+      <Section id="sec-pricing" title="Loan structure & pricing"
+        info="The registered product with its full economics, and the live Term Sheet Studio to reprice or re-register — every registration attaches the exact term sheet PDF."
+        badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
+      <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="staff"
+        toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
+      </Section>
+
+      <Section id="sec-conditions" title="Conditions to close"
+        info="The SAME list the borrower sees — shared both ways. Upload on their behalf, accept (signs off), accept-but-request-one-more, or reject with a reason (the file moves to the trash and the condition reopens)."
+        badge={`${borrowerItems.filter(it => it.signed_off_at).length}/${borrowerItems.length} signed off`}>
+      <input ref={staffFileRef} type="file" style={{ display: 'none' }} onChange={onStaffFile} />
+      <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
+        onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
+        onUploadTo={pickUpload} />
+      <div className="grid cols-2" style={{ marginTop: 14 }}>
+        <div className="panel">
+          <h3 style={{ marginBottom: 8 }}>Request a document (borrower) <InfoTip tip="Adds a new upload condition to the borrower's list and emails them." /></h3>
+          <div className="row" style={{ gap: 8 }}>
+            <input className="input" placeholder="e.g. Updated bank statement" value={newDoc}
+              onChange={e => setNewDoc(e.target.value)} onKeyDown={e => e.key === 'Enter' && requestDoc()} />
+            <button className="btn primary" onClick={requestDoc} disabled={busyAct === 'request'}>Request</button>
+          </div>
+          <p className="muted small" style={{ marginTop: 6 }}>Appears on the borrower's checklist and notifies them.</p>
+        </div>
+        <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}
+          cForm={cForm} setCForm={setCForm} addLoanCondition={addLoanCondition}
+          clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} />
+      </div>
+      </Section>
+
+      <Section id="sec-checklist" title="Internal checklist"
+        info="The phase-by-phase processing checklist — internal work items, assignments and gates. The borrower never sees this section.">
+      <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Checklist</h3>
           <div className="spacer" />
@@ -774,14 +880,18 @@ export default function StaffApplication() {
             </div>
           ))}
       </div>
+      </Section>
 
+      <Section id="sec-entity" title="Entity (LLC) review"
+        info="The vesting entity's details, ownership structure and formation documents. Verifying the LLC auto-satisfies its condition on every open file it vests.">
       <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} />
+      </Section>
 
-      <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
-        onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy} />
-
-      <div className="panel" style={{ marginTop: 18 }}>
+      <Section id="sec-documents" title="Documents & exports"
+        info="Every document on the file, titled by condition — with the working set on top, rejected/replaced versions in the trash, and the TPR clean-file export."
+        badge={docs.length ? `${docs.length} files` : ''}>
+      <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6 }}>
           <h3>Documents</h3>
           <div className="spacer" />
@@ -845,20 +955,50 @@ export default function StaffApplication() {
             );
           })()}
       </div>
+      {app.status === 'funded' && <PostClosing appId={id} />}
+      <TprExport appId={id} />
+      </Section>
 
-      <div className="grid cols-2" style={{ marginTop: 18 }}>
-        <div className="panel">
-          <h3 style={{ marginBottom: 8 }}>Request a document (borrower)</h3>
-          <div className="row" style={{ gap: 8 }}>
-            <input className="input" placeholder="e.g. Updated bank statement" value={newDoc}
-              onChange={e => setNewDoc(e.target.value)} onKeyDown={e => e.key === 'Enter' && requestDoc()} />
-            <button className="btn primary" onClick={requestDoc} disabled={busyAct === 'request'}>Request</button>
+      <Section id="sec-track" title="Track record"
+        info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
+      {app.borrower_id ? (
+        <div className="panel" style={{ marginTop: 0 }}>
+          <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
+            <h3>Track record &amp; experience</h3>
+            <div className="spacer" />
+            <span className="muted small">The borrower's live record — add, edit, verify, and attach docs. Changes save automatically.</span>
           </div>
-          <p className="muted small" style={{ marginTop: 6 }}>Appears on the borrower's checklist and notifies them.</p>
+          <iframe
+            title="Borrower track record"
+            src={`/tools/track-record.html?internal=1&borrower=${app.borrower_id}&embed=1`}
+            style={{ width: '100%', height: 'min(640px, 75vh)', border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 10, background: 'transparent' }}
+          />
         </div>
+      ) : <p className="muted small">No borrower linked yet.</p>}
+      </Section>
+
+      <Section id="sec-messages" title="Conversations"
+        info="Two channels: the borrower-facing thread, and the internal team channel the borrower never sees — where a message can be saved onto the file as a task.">
+      <ChatPanel appId={id} onTaskCreated={load} />
+      </Section>
+
+      <Section id="sec-activity" title="Activity"
+        info="The audited history of everything on this file — status changes, uploads, sign-offs, reveals.">
+      <ActivityFeed fetcher={activityFetcher} title="File activity" />
+      </Section>
+
+      </FileSections>
+    </>
+  );
+}
+
+/* Underwriting loan conditions (clear / waive / add) — lives inside the
+   Conditions-to-close section, beside the borrower request box. */
+function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm, addLoanCondition, clearCond, waiveCond, isAdmin }) {
+  return (
         <div className="panel">
           <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
-            <h3>Conditions</h3>
+            <h3>Underwriting conditions <InfoTip tip="Formal loan conditions by severity (prior-to-docs, prior-to-funding…). These gate clear-to-close; clear or waive them here." /></h3>
             <div className="spacer" />
             <span className="muted small" style={{ marginRight: 8 }}>{conds.filter(c => c.status === 'open').length} open</span>
             <select className="input" style={{ maxWidth: 130 }} value={condFilter} onChange={e => setCondFilter(e.target.value)}>
@@ -912,30 +1052,6 @@ export default function StaffApplication() {
           </div>
           <p className="muted small" style={{ marginTop: 6 }}>Borrower-facing conditions notify the borrower and appear on their file.</p>
         </div>
-      </div>
-
-      <EditFileDetails app={app} onSaved={load} />
-      {app.borrower_id && (
-        <div className="panel" style={{ marginTop: 18 }}>
-          <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
-            <h3>Track record &amp; experience</h3>
-            <div className="spacer" />
-            <span className="muted small">The borrower's live record — add, edit, verify, and attach docs. Changes save automatically.</span>
-          </div>
-          <iframe
-            title="Borrower track record"
-            src={`/tools/track-record.html?internal=1&borrower=${app.borrower_id}&embed=1`}
-            style={{ width: '100%', height: 'min(640px, 75vh)', border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 10, background: 'transparent' }}
-          />
-        </div>
-      )}
-      <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="staff"
-        toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
-      {app.status === 'funded' && <PostClosing appId={id} />}
-      <TprExport appId={id} />
-      <ChatPanel appId={id} onTaskCreated={load} />
-      <ActivityFeed fetcher={activityFetcher} title="File activity" />
-    </>
   );
 }
 

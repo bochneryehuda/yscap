@@ -9,6 +9,7 @@ import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
+import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -437,6 +438,19 @@ export default function Application() {
   const hasReq = req.flips + req.holds + req.ground > 0;
 
   const nDone = items.filter(it => isDone(it.status)).length;
+  const nOpen = items.length - nDone;
+  const isRefi = /refi/i.test(app.loan_type || '');
+
+  // The 1003-style section rail: one page, clearly named parts.
+  const SECTIONS = [
+    { id: 'sec-overview', label: 'Loan overview' },
+    { id: 'sec-application', label: 'Application details' },
+    { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
+    { id: 'sec-conditions', label: 'Conditions to close', badge: nOpen || '' },
+    ...(uploads.length ? [{ id: 'sec-documents', label: 'Document history', badge: uploads.length }] : []),
+    { id: 'sec-messages', label: 'Messages' },
+    { id: 'sec-activity', label: 'Activity' },
+  ];
 
   return (
     <>
@@ -451,13 +465,17 @@ export default function Application() {
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
 
+      <FileSections sections={SECTIONS}>
+
+      <Section id="sec-overview" title="Loan overview"
+        info="Where your loan stands right now — the milestone timeline and the key numbers on file.">
       <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
 
-      <div className="grid cols-2">
+      <div className="grid cols-2" style={{ marginTop: 14 }}>
         <StatusTimeline appId={id} status={app.status} createdAt={app.created_at}
           expectedClosing={app.expected_closing} actualClosing={app.actual_closing} />
         <div className="panel" style={{ marginTop: 0 }}>
-          <h3 style={{ marginBottom: 12 }}>Loan snapshot</h3>
+          <h3 style={{ marginBottom: 12 }}>Loan snapshot <InfoTip tip="The headline numbers your loan team works from. Ask your officer to update deal numbers — they flow into pricing automatically." /></h3>
           <div className="metrow"><span className="k">Officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}{app.team_online && <span title="Your loan team is online now" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#3fb950', marginLeft: 8, verticalAlign: 'middle' }} />}</span></div>
           <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>
           <div className="metrow"><span className="k">As-is value</span><span className="v">{money(app.as_is_value)}</span></div>
@@ -466,12 +484,51 @@ export default function Application() {
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
         </div>
       </div>
+      </Section>
 
+      <Section id="sec-application" title="Application details"
+        info="What you told us on your application — the borrower, the property and the transaction. Ask your loan team to correct anything here.">
+      <div className="grid cols-2">
+        <div className="panel" style={{ marginTop: 0 }}>
+          <h3 style={{ marginBottom: 12 }}>Borrower</h3>
+          <div className="metrow"><span className="k">Name</span><span className="v">{profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || '—' : '—'}</span></div>
+          <div className="metrow"><span className="k">Email</span><span className="v">{(profile && profile.email) || '—'}</span></div>
+          <div className="metrow"><span className="k">Phone</span><span className="v">{(profile && profile.cell_phone) || '—'}</span></div>
+          <div className="metrow"><span className="k">Vesting entity</span><span className="v">{app.entity_name || (app.llc_id ? 'LLC on file' : 'Not linked yet')}</span></div>
+          <div className="metrow"><span className="k">Experience claimed</span><span className="v">
+            {[app.requested_exp_flips ? `${app.requested_exp_flips} flips` : '', app.requested_exp_ground ? `${app.requested_exp_ground} ground-up` : '', app.requested_exp_reo ? `${app.requested_exp_reo} REO` : ''].filter(Boolean).join(' · ') || '—'}
+          </span></div>
+        </div>
+        <div className="panel" style={{ marginTop: 0 }}>
+          <h3 style={{ marginBottom: 12 }}>Property & transaction</h3>
+          <div className="metrow"><span className="k">Address</span><span className="v">{addrLine(app.property_address)}</span></div>
+          <div className="metrow"><span className="k">Property type</span><span className="v">{app.property_type || '—'}{app.units ? ` · ${app.units} unit${app.units > 1 ? 's' : ''}` : ''}</span></div>
+          <div className="metrow"><span className="k">Program</span><span className="v">{app.program || '—'}</span></div>
+          <div className="metrow"><span className="k">Transaction</span><span className="v">{app.loan_type || '—'}</span></div>
+          {isRefi ? <>
+            <div className="metrow"><span className="k">Payoff amount</span><span className="v">{money(app.payoff_amount)}</span></div>
+            <div className="metrow"><span className="k">Original purchase price</span><span className="v">{money(app.original_purchase_price)}</span></div>
+            <div className="metrow"><span className="k">Date acquired</span><span className="v">{app.acquisition_date ? String(app.acquisition_date).slice(0, 10) : '—'}</span></div>
+          </> : (
+            <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>
+          )}
+          <div className="metrow"><span className="k">Rehab type</span><span className="v">{app.rehab_type || '—'}</span></div>
+        </div>
+      </div>
+      </Section>
+
+      <Section id="sec-pricing" title="Loan structure & pricing"
+        info="Your registered product and the live Term Sheet Studio. Reprice any time — your scenario autosaves and re-registering replaces the old terms."
+        badge={app.registered_program ? 'Registered ✓' : 'Not registered yet'}>
       <div id="product-studio"><ProductStudioPanel appId={id} app={app} onRegistered={load} mode="borrower"
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} /></div>
+      </Section>
 
-      {/* ================= YOUR CONDITIONS — one list, everything the file needs ================= */}
-      <div className="panel" style={{ marginTop: 18 }}>
+      {/* ================= CONDITIONS — one list, everything the file needs ================= */}
+      <Section id="sec-conditions" title="Conditions to close"
+        info="Every item your loan team needs before closing, in the order it's worked. Upload to a condition and it moves to review; your team accepts, or asks for a fix — you'll be notified either way."
+        badge={`${nDone}/${items.length} complete`}>
+      <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Your conditions</h3>
           <div className="spacer" />
@@ -676,9 +733,13 @@ export default function Application() {
           <p className="muted small">No conditions requested yet. Your coordinator will post them here.</p>
         )}
       </div>
+      </Section>
 
       {uploads.length > 0 && (
-        <div className="panel" style={{ marginTop: 18 }}>
+        <Section id="sec-documents" title="Document history"
+          info="Everything uploaded to this file, newest first, titled by the condition it belongs to. Replaced and rejected versions stay for the record."
+          badge={`${uploads.length} file${uploads.length === 1 ? '' : 's'}`}>
+        <div className="panel" style={{ marginTop: 0 }}>
           <div className="row" style={{ marginBottom: 6 }}>
             <h3>Your uploaded documents</h3>
             <div className="spacer" />
@@ -710,8 +771,11 @@ export default function Application() {
             );
           })}
         </div>
+        </Section>
       )}
 
+      <Section id="sec-messages" title="Messages"
+        info="Chat directly with your loan officer and processor — attach files, reference documents, and get answers on the record.">
       {/* Keyed by file id: this component survives /app/:id navigation, and
           without the key the previous file's thread kept showing. */}
       <MessageThread key={id} mine="borrower" title="Messages with your loan team"
@@ -723,8 +787,14 @@ export default function Application() {
         del={(mid) => api.deleteMessage(mid)}
         fetchMentionables={() => api.mentionables(id)}
         onOpenApplication={(aid) => { window.location.hash = '#/app/' + aid; }} />
+      </Section>
 
+      <Section id="sec-activity" title="Activity"
+        info="A running log of everything that happened on this file — uploads, status changes, sign-offs.">
       <ActivityFeed fetcher={activityFetcher} />
+      </Section>
+
+      </FileSections>
 
       {sowOpen && sowItem && (
         <ToolModal
