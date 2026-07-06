@@ -100,19 +100,21 @@ router.get('/dashboard', async (req, res) => {
     const s = scopeClause(req);
     const w = s.where.replace(/\$SCOPE/g, '$1');
     const [byStatus, totals, leads, aging] = await Promise.all([
+      // Every figure must exclude archived (soft-deleted) files — otherwise an
+      // archived/removed loan keeps inflating the counts and pipeline dollars.
       db.query(`SELECT status, count(*)::int c, COALESCE(sum(loan_amount),0)::bigint v
-                  FROM applications a WHERE 1=1 ${w} GROUP BY status`, s.params),
+                  FROM applications a WHERE a.deleted_at IS NULL ${w} GROUP BY status`, s.params),
       db.query(`SELECT count(*)::int total,
                        COALESCE(sum(loan_amount),0)::bigint pipeline_value,
                        count(*) FILTER (WHERE created_at > now() - interval '7 days')::int new_week,
                        count(*) FILTER (WHERE status='funded')::int funded,
                        count(*) FILTER (WHERE status NOT IN ('funded','declined','withdrawn'))::int active
-                  FROM applications a WHERE 1=1 ${w}`, s.params),
+                  FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params),
       seesAll(req)
         ? db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived')`)
         : db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived') AND (officer_id=$1 OR officer_id IS NULL)`, [req.actor.id]),
       db.query(`SELECT count(*)::int c FROM applications a
-                 WHERE status NOT IN ('funded','declined','withdrawn')
+                 WHERE a.deleted_at IS NULL AND status NOT IN ('funded','declined','withdrawn')
                    AND updated_at < now() - interval '5 days' ${w}`, s.params),
     ]);
     const t = totals.rows[0];
@@ -1527,15 +1529,16 @@ router.patch('/applications/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// Admin: soft-delete a file (keeps the row + audit trail; it disappears from
-// every borrower and staff surface). Restore reverses it. Admin/super_admin only.
-router.delete('/applications/:id', async (req, res) => {
-  if (!can(req.actor, 'delete_files')) return res.status(403).json({ error: 'you do not have permission to delete files' });
+// ARCHIVE a file (soft): keeps the row + audit trail but removes it from every
+// active surface AND from the dashboard figures. Reversible via restore; lives
+// in the Archived folder. `deleted_at` is the archive marker. delete_files cap.
+router.post('/applications/:id/archive', async (req, res) => {
+  if (!can(req.actor, 'delete_files')) return res.status(403).json({ error: 'you do not have permission to archive files' });
   try {
     const r = await db.query(`UPDATE applications SET deleted_at=now(), updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-    await audit(req, 'delete_application', 'application', req.params.id, { reason: (req.body && req.body.reason) || null });
-    res.json({ ok: true, deleted: true });
+    await audit(req, 'archive_application', 'application', req.params.id, { reason: (req.body && req.body.reason) || null });
+    res.json({ ok: true, archived: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.post('/applications/:id/restore', async (req, res) => {
@@ -1546,6 +1549,42 @@ router.post('/applications/:id/restore', async (req, res) => {
     await audit(req, 'restore_application', 'application', req.params.id);
     res.json({ ok: true, restored: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// DELETE PERMANENTLY (hard): the row and everything under it (checklist items,
+// documents, conditions, product registrations, status history, conversations,
+// field values…) are removed by ON DELETE CASCADE, the stored document bytes are
+// deleted from disk, and it is gone from every surface and every figure. Not
+// reversible. Entity (LLC) documents are shared and keyed on llc_id (not this
+// file), so they are left untouched. delete_files capability.
+router.delete('/applications/:id', async (req, res) => {
+  if (!can(req.actor, 'delete_files')) return res.status(403).json({ error: 'you do not have permission to delete files' });
+  try {
+    const exists = await db.query(`SELECT ys_loan_number FROM applications WHERE id=$1`, [req.params.id]);
+    if (!exists.rows[0]) return res.status(404).json({ error: 'not found' });
+    // Remove stored document bytes for THIS file (app-owned only; leave shared
+    // LLC entity docs). Best-effort per file — a missing blob never blocks.
+    const docs = await db.query(`SELECT storage_ref FROM documents WHERE application_id=$1`, [req.params.id]);
+    for (const d of docs.rows) { try { if (d.storage_ref) await storage.remove(d.storage_ref); } catch (_) { /* orphan bytes are harmless */ } }
+    await db.query(`DELETE FROM applications WHERE id=$1`, [req.params.id]);
+    // Audit AFTER the delete: audit_log.entity_id has no FK, so the trail
+    // survives the purge. Ties the removal to a real actor + reason.
+    await audit(req, 'purge_application', 'application', req.params.id,
+      { ysLoanNumber: exists.rows[0].ys_loan_number || null, reason: (req.body && req.body.reason) || null, documents: docs.rows.length });
+    res.json({ ok: true, purged: true });
+  } catch (e) { console.error('[staff] purge failed:', db.describeError ? db.describeError(e) : e.message); res.status(500).json({ error: 'could not delete the file' }); }
+});
+// The Archived folder — soft-deleted files, newest first. delete_files cap.
+// Mounted OUTSIDE the /applications/:id path so it isn't read as an id.
+router.get('/archived-applications', async (req, res) => {
+  if (!can(req.actor, 'delete_files')) return res.status(403).json({ error: 'forbidden' });
+  const r = await db.query(
+    `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.status, a.property_address,
+            a.loan_amount, a.deleted_at, a.created_at,
+            b.first_name, b.last_name, b.email
+       FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+      WHERE a.deleted_at IS NOT NULL
+      ORDER BY a.deleted_at DESC`);
+  res.json(r.rows);
 });
 
 // ---------------- chat inbox (Slack-style: a channel per loan file) ----------------

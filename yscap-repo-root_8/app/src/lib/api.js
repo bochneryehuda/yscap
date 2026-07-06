@@ -247,8 +247,12 @@ export const api = {
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffEditApplication: (appId, b) => req('PATCH', `/api/staff/applications/${appId}/details`, b),
   staffNudge:          (appId) => req('POST', `/api/staff/applications/${appId}/nudge`),
-  staffDeleteApp:   (appId, reason) => req('DELETE', `/api/staff/applications/${appId}`, { reason }),
+  // Archive = reversible soft-remove (leaves the Archived folder); Purge =
+  // permanent hard delete (row + children + stored bytes, gone from all figures).
+  staffArchiveApp:  (appId, reason) => req('POST', `/api/staff/applications/${appId}/archive`, { reason }),
   staffRestoreApp:  (appId) => req('POST', `/api/staff/applications/${appId}/restore`),
+  staffPurgeApp:    (appId, reason) => req('DELETE', `/api/staff/applications/${appId}`, { reason }),
+  staffArchivedApps:() => req('GET', '/api/staff/archived-applications'),
   staffNotifs:      () => req('GET', '/api/staff/notifications'),
   staffLeads:       () => req('GET', '/api/staff/leads'),
   staffUpdateLead:  (id, b) => req('PATCH', `/api/staff/leads/${id}`, b),
