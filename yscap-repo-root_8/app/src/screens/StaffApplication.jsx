@@ -720,7 +720,7 @@ export default function StaffApplication() {
           <iframe
             title="Borrower track record"
             src={`/tools/track-record.html?internal=1&borrower=${app.borrower_id}&embed=1`}
-            style={{ width: '100%', height: 640, border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 10, background: 'transparent' }}
+            style={{ width: '100%', height: 'min(640px, 75vh)', border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 10, background: 'transparent' }}
           />
         </div>
       )}

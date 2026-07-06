@@ -259,7 +259,7 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
                     {editing && editing.id === m.id ? (
                       <div style={{ margin: '4px 0' }}>
                         <textarea className="input" autoFocus rows={2} value={editing.text}
-                          style={{ minHeight: 56, fontSize: 14 }}
+                          style={{ minHeight: 56 }}
                           onChange={e => setEditing({ id: m.id, text: e.target.value })} />
                         <div className="row" style={{ gap: 6, marginTop: 6 }}>
                           <button className="btn primary small" onClick={saveEdit} disabled={!editing.text.trim()}>Save</button>

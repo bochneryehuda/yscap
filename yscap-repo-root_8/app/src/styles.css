@@ -258,6 +258,14 @@ a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
   .header .wrap{height:auto;flex-wrap:wrap;gap:10px 24px;padding-top:12px;padding-bottom:12px}
   .nav{flex-wrap:wrap;row-gap:8px}
 }
+/* on phones the nav becomes one swipeable row (standard mobile tabs)
+   instead of stacking into two or three crowded rows */
+@media(max-width:720px){
+  .nav{width:100%;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
+    justify-content:flex-start;padding-bottom:2px;scrollbar-width:none}
+  .nav::-webkit-scrollbar{display:none}
+  .nav a{padding:8px 0}
+}
 @media(max-width:520px){
   .brand .sub{display:none}
   .brand-word{font-size:16px;letter-spacing:1.5px}
@@ -531,4 +539,6 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .studio-foot{position:static;padding:6px 0}
   .notif-col{width:64px}
   .tm-hint{display:none}
+  /* chat gets real estate on phones — 380px left barely 4 messages */
+  .msg-thread{max-height:60vh}
 }
