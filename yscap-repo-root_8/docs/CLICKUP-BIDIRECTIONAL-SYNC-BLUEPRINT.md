@@ -254,8 +254,8 @@ Legend — **Dir:** `⇄` two-way · `←CU` ClickUp is source (pull-authoritati
 | applications.property_type | *Property Type | `541524d9-255f-4484-ac6d-1011ac60e87b` | drop_down | ⇄ | portal |
 | applications.units | *Number of Units | `81fc839f-23f5-4780-a5f1-8298121cce2b` | number | ⇄ | portal |
 | applications.term | Term | `b67dd5fd-c753-47e9-b3dd-aa576d742abd` | drop_down | ⇄ | either |
-| applications.ppp | *PPP Type & term | `82269a33-79e8-4495-9d74-320edf4e41b6` | short_text | ⇄ | portal |
-| applications.ppp (structured) | Is there a Prepayment Penalty? | `a7a92ef5-0011-49bf-9009-625064e6007e` | drop_down | ⇄ | *(confirm which PPP field is canonical)* |
+| applications.ppp | *PPP Type & term | `82269a33-79e8-4495-9d74-320edf4e41b6` | short_text | ⇄ | portal — **rarely used on RTL** (owner: PPP is a DSCR/long-term concept); mapping defined, expect empty. Revisit when DSCR is added. |
+| applications.ppp (structured) | Is there a Prepayment Penalty? | `a7a92ef5-0011-49bf-9009-625064e6007e` | drop_down | ⇄ | same — DSCR-era field |
 | applications.vesting *(via llc)* | *Vesting | `173dc79a-a12d-4233-a6a6-9f4101770ca9` | drop_down | ⇄ | portal |
 
 ### 6.4 Property / subject
@@ -267,7 +267,9 @@ Legend — **Dir:** `⇄` two-way · `←CU` ClickUp is source (pull-authoritati
 | Portal | ClickUp field | Field ID | Type | Dir | Source |
 |---|---|---|---|---|---|
 | applications.purchase_price | *Purchase price / Estimate Value? | `0fc6370c-60b7-4e20-8b5c-0facb90729cf` | currency | ⇄ | portal |
-| applications.as_is_value | *Approximate Appraised Value | `834d0ffb-38ac-4358-b1ea-13f5d345dd91` | currency | ⇄ | portal *(confirm as-is vs approx)* |
+| applications.as_is_value | **RTL As-Is Value** *(NEW field to add to ClickUp — §10)* | *(new)* | currency | ⇄ | portal *(owner: dedicated RTL as-is field, kept distinct from appraised values)* |
+| *(read-only)* → new portal col | Actual Appraised Value *(the appraisal that comes back)* | `9356ceea-f3b2-4373-9271-d1354214db47` | currency | ←CU | ClickUp authoritative |
+| *(read-only)* → new portal col | Approximate Appraised Value | `834d0ffb-38ac-4358-b1ea-13f5d345dd91` | currency | ←CU | ClickUp internal estimate |
 | applications.arv | ARV - For RTL | `5644fe6e-50bc-449b-91b2-f48aa6aaea55` | currency | ⇄ | portal |
 | applications.rehab_budget | Construction budget | `2d27cb55-9f53-4fb1-8a93-eb523ae40660` | currency | ⇄ | portal |
 | applications.loan_amount | *Loan Amount | `e393e64a-63e3-46cc-ae03-402520614f28` | currency | ⇄ | portal |
@@ -338,13 +340,14 @@ The ClickUp "users" fields need the **numeric ClickUp user ID**. We populate `st
 | Yisroel Weinstock | yisroel@yscapgroup.com | 87450032 | 90118081048 | 90118110163 |
 | Simcha Shedrowitzky | simcha@yscapgroup.com | 87451319 | 90118094956 | 90118110164 |
 
-**Processors / ops** (Pipeline-only, never a lead target): Malky Katz `87335667` (malky@) `90117376201` · goldy@yscapgroup `87380437` (goldy@) `90117430703` · Lisa Katz `87431116` (lisa@) `90117952996` · Shana/UW `87435940` (shana@) `90117990325` · Amanda Cooper `87439003` (amanda@) — folder TBD · Yonah Rapaport `90118065743` (in routing.js, no member row yet — confirm).
+**Processors / ops** (Pipeline-only, never a lead target): Malky Katz `87335667` (malky@) `90117376201` · goldy@yscapgroup `87380437` (goldy@) `90117430703` · Lisa Katz `87431116` (lisa@) `90117952996` · Yonah Rapaport `90118065743` *(email pending — Q8)* · Ezra `90117447287` *(name/email pending — Q8)*.
 
-**Reconciliation notes (need your confirmation — Q8):**
-- Spelling: code has "Joshua **Freidlander**"; ClickUp is "Joshua **friedlander**." We match by email, so it works, but let's standardize the display name.
-- **Chaim Lebowitz** (`90118110153`) & **Mendel Bochner** (`90118110154`) have Pipeline folders but **no CRM folder** and no member row I can see. Are they loan officers? If yes we create CRM folders so PII dual-writes.
-- **Ezra** (`90117447287`) is in routing.js processors but I don't see a matching member — confirm identity/email.
-- Excluded from routing (retained in ClickUp, per prior instruction): Samual Stein, Berish Mendlovic, Boruch Stauber (no longer working). Confirm still correct.
+**Underwriters:** Amanda Cooper `87439003` (amanda@) — **Underwriter manager** *(owner-confirmed)* → maps to the ClickUp **Underwriter** users field; not a loan-officer/lead target. · Shana `87435940` (shana@) `90117990325` — UW.
+
+**Reconciliation — owner decisions:**
+- **Chaim Lebowitz** (Pipeline `90118110153`) & **Mendel Bochner** (Pipeline `90118110154`) **ARE loan officers.** Action: create their **CRM folders + lists** set up like the others (folder `"<Name> CRM"` → `List`; space custom fields auto-inherit). *(Build task — see §18.)* **Feasibility:** the public API **can** create the folder + list, but **cannot** create automations or clone a saved list-view. Recommended: **duplicate an existing officer's CRM folder in the ClickUp UI and rename** — that copies lists, views, **and** automations. API folder/list creation is the fallback (you'd re-add views/automations manually).
+- **Still open (Q8):** Ezra's real name/email; Yonah Rapaport's email; confirm the **excluded** set (Samual Stein, Berish Mendlovic, Boruch Stauber).
+- Cosmetic: code has "Joshua **Freidlander**" vs ClickUp "Joshua **friedlander**"; " Josef Schnitzler CRM" has a stray leading space. We match by **email**, so sync is unaffected — just standardizing display names.
 
 ---
 
@@ -419,6 +422,7 @@ We snapshot the option lists at deploy and refresh them from ClickUp on a schedu
 | **Borrower Portal Status** | drop_down | *(approved)* Mirrors the borrower-facing status on the task so staff see exactly what the borrower sees. |
 | **Sync Status / Last Error** | short_text | *(approved)* Sync health (ok / retrying / failed + last error) on the task, mirroring the Control Center. |
 | **Rehab Type** | drop_down (Cosmetic/Moderate/Heavy/Adding SF/Ground-up) | *(approved)* Portal has `rehab_type`; no ClickUp analog today — add to sync it. |
+| **RTL As-Is Value** | currency | *(approved)* Dedicated RTL as-is value, mapped from portal `as_is_value` (kept distinct from Approximate/Actual Appraised Value). |
 | **Synced to Portal** | date | Last-sync timestamp; lets staff and the poller see at a glance what's linked and when. |
 | **Send to Portal** *(required — owner-approved)* | checkbox | Emergency/manual trigger **and** force-resync. If the auto webhook didn't fire, staff tick it to push the file over with all fields. If a ClickUp change didn't propagate, staff **uncheck→recheck** to fire a full field re-pull for that file. (§4.3) |
 
@@ -514,7 +518,9 @@ In `app/src/screens/Apply.jsx` (Step 3), replace the always-shown officer dropdo
 
 Also answered: **#5 taskDeleted → unlink + Manual Review (§4.2)** · **card data → sync + smart-split into structured fields (§13)** · **Expected Closing Date → two-way (§6.8)**.
 
-**⏳ Still need your call (factual — reply in prose):** **#8 officer/processor roster reconciliation** and **#10 PPP + value-field canonicals** below.
+Round 3 answered: **#8 (partial)** Chaim Lebowitz & Mendel Bochner = **loan officers** (create CRM folders, §7/§18) · Amanda Cooper = **Underwriter manager** · **#10** PPP = N/A for RTL (revisit for DSCR); as-is → **new `RTL As-Is Value` field** (§6.5/§10).
+
+**⏳ Last remaining (small):** Ezra's real name/email · Yonah Rapaport's email · confirm the **excluded** set (Samual Stein, Berish Mendlovic, Boruch Stauber).
 
 1. ~~Descope behavior~~ → **ANSWERED (Manual Review, §12.1).**
 2. **Dedicated bot user:** create a "YS Portal Bot" ClickUp seat + token for clean attribution & echo-suppression, or run on Yehuda's token? (recommended: bot)
@@ -530,4 +536,44 @@ Also answered: **#5 taskDeleted → unlink + Manual Review (§4.2)** · **card d
 
 ---
 
-*Prepared from a live audit of the ClickUp workspace and the portal codebase. No code or ClickUp data has been changed. On your sign-off (with the answers to §17), I'll produce the exact implementation task list and build it in the staged phases above.*
+## 18. Implementation task list (the full build checklist)
+
+### A. ClickUp-side setup (I can do most via API on your go; automations/views are manual)
+- [ ] **Create new custom fields** in the Loan Pipeline space: `Portal File ID` (text), `Send to Portal` (checkbox), `Portal File Link` (url), `Borrower Portal Status` (dropdown), `Sync Status / Last Error` (text), `Rehab Type` (dropdown), `RTL As-Is Value` (currency). *(API-creatable; I capture the new IDs into the mapping.)*
+- [ ] **Create CRM folders + lists** for **Chaim Lebowitz** and **Mendel Bochner** (`"<Name> CRM"` → `List`). *(Recommended: duplicate an existing officer's CRM folder in the ClickUp UI to also copy views + automations; API fallback creates bare folder+list.)*
+- [ ] **Register webhook(s)** on the Pipeline space (`POST /team/{team_id}/webhook`) for `taskCreated, taskUpdated, taskStatusUpdated, taskMoved, taskDeleted, taskAssigneeUpdated`; store the returned **webhook secret**.
+- [ ] *(Optional, declined for now)* create a **YS Portal Bot** member + token.
+
+### B. Portal DB migrations (idempotent, numbered)
+- [ ] `041_clickup_sync_core.sql`: add `applications.internal_status`, `clickup_status_updated_at`, `underwriter_id`, `clickup_shadow` (jsonb) + `clickup_shadow_hash`, `sync_state`, `clickup_last_synced_at`, `hot_poll_until`, `actual_appraised_value`, `approx_appraised_value`, `card_number`/`card_exp`/`card_cvv` (encrypted); extend `applications.status` CHECK **+= `on_hold`**; extend `sync_queue.status` **+= `dead`**.
+- [ ] `042_clickup_control.sql`: `clickup_field_mappings`, `clickup_webhook_inbox` (dedupe), seed mappings from this doc.
+- [ ] Backfill `staff_users.clickup_user_id` (match by email, §7) + add `underwriter` role rows (Amanda, Shana).
+
+### C. Portal backend
+- [ ] Extend `src/clickup/client.js` (get task, set field, get filtered team tasks, create/verify webhook).
+- [ ] `src/clickup/registry.js` — DB-backed mapping cache (fallback to code constants) + **index↔UUID option translator** (§9) with unit tests against live option lists.
+- [ ] `src/clickup/identity.js` — **≥2-field identity match** (§3.4) + binding (stamp Portal File ID / store task_id).
+- [ ] `src/clickup/status.js` — the two-layer **status translation** (§5), both directions.
+- [ ] `src/sync/echo.js` — shadow-copy + hash + suppression window + loopback guard (§3.3).
+- [ ] Extend `src/sync/queue.js` — job handlers for `application/create|update|status`, `contact/upsert`, `checklist/status`, `assignment/*`; dead-letter; backoff (exists).
+- [ ] `src/routes/clickup-webhook.js` — `POST /api/clickup/webhook`, HMAC verify (built-in `crypto`), dedupe→inbox, fast 200.
+- [ ] `src/sync/poller.js` — reconciliation poll (RTL filter + `date_updated` watermark) + **hot-poll** for fresh duplicates (§4.4).
+- [ ] `src/clickup/card.js` — parse/join the single-line card field (§13), encrypted, masked.
+- [ ] Manual Review logic (§12.1): set `sync_state='manual_review'` on descope / ambiguous-match / delete / dead-letter.
+- [ ] `src/routes/admin-clickup.js` — Control Center API (health, mappings CRUD, per-file re-push/re-pull, pause switches, activity feed) gated by `platform_setup`; write ClickUp events to `audit_log` + SSE broadcast (§12).
+- [ ] Emit outbound jobs from existing write paths (`intake.js`, `borrower.js`, `staff.js`, conditions engine) — debounced/coalesced, loopback-guarded.
+
+### D. Portal frontend (rebuild `web/portal/` after)
+- [ ] `Apply.jsx` — the **officer toggle** (§16).
+- [ ] Staff file UI — editable **YS Loan Number** slot, **internal-status** picker (full ClickUp list), a **sync panel** (linked task, last sync, re-push/re-pull), card fields.
+- [ ] **On hold** borrower-facing badge (§5).
+- [ ] Admin **ClickUp Control Center** screen (`/internal/integrations/clickup`) + **Manual Review** queue view for officers.
+
+### E. Config / env
+- [ ] `CLICKUP_API_TOKEN` (Yehuda's), `CLICKUP_TEAM_ID` (`9011888435`), `CLICKUP_WEBHOOK_SECRET`, `CLICKUP_POLL_SEC`, `CLICKUP_SYNC_ENABLED`; keep `RUN_SYNC` gate.
+
+### F. Rollout — follow §15 phases (read-only backfill → outbound → inbound pilot → full → go-live).
+
+---
+
+*Prepared from a live audit of the ClickUp workspace and the portal codebase. No code or ClickUp data has been changed. On your sign-off (answers to the last small roster items + a "go"), I build it in the staged phases above.*
