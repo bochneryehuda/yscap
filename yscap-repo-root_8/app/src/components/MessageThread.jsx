@@ -141,7 +141,12 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
     const n = msgs ? msgs.length : -1;
     const grew = lastCount.current === -1 ? n >= 0 : n > lastCount.current;
     lastCount.current = n;
-    if (grew && endRef.current) endRef.current.scrollIntoView({ block: 'nearest' });
+    // Scroll ONLY the thread's own box. scrollIntoView also scrolled every
+    // ancestor — opening a loan file landed the page at the chat, not the top.
+    if (grew && endRef.current) {
+      const box = endRef.current.closest('.msg-thread');
+      if (box) box.scrollTop = box.scrollHeight;
+    }
   }, [msgs]);
 
   /* ---------- @/# autocomplete ---------- */

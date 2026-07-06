@@ -569,6 +569,69 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .msg-thread{max-height:60vh}
 }
 
+/* =====================================================================
+   LOAN FILE LAYOUT — the 1003-style section rail. A sticky nav on the
+   left walks Borrower → Property → Loan structure → Conditions → …;
+   on phones it becomes a horizontal chip bar pinned under the header.
+   ===================================================================== */
+.file-layout{display:grid;grid-template-columns:228px minmax(0,1fr);gap:26px;align-items:start}
+.file-main{min-width:0}
+.file-nav{position:sticky;top:18px;z-index:20}
+.file-nav ol{list-style:none;margin:0;padding:6px;background:var(--ink-1);
+  border:1px solid var(--line);border-radius:var(--radius)}
+.file-nav a{display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:9px;
+  color:var(--muted);font-size:13.5px;font-weight:500;border-left:2px solid transparent}
+.file-nav a:hover{color:var(--ivory);text-decoration:none;background:var(--ink-2)}
+.file-nav a.active{color:var(--ivory);background:var(--ink-2);border-left-color:var(--gold)}
+.file-nav-label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-nav-badge{flex:none;font-size:11px;font-weight:700;min-width:20px;text-align:center;
+  padding:1px 6px;border-radius:999px;background:var(--ink-3);color:var(--teal-br)}
+.file-nav a.active .file-nav-badge{background:var(--gold);color:var(--on-accent)}
+
+/* a section = an anchored, titled group; the anchor clears the sticky chrome */
+.file-section{scroll-margin-top:84px}
+.file-section + .file-section{margin-top:30px}
+.sec-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;
+  padding-bottom:8px;border-bottom:1px solid var(--line)}
+.sec-title{font-size:17px;letter-spacing:.2px;display:flex;align-items:center;gap:8px}
+.sec-head::before{content:'';width:5px;height:20px;border-radius:3px;flex:none;
+  background:linear-gradient(180deg,var(--gold),var(--teal-dp))}
+.sec-badge{margin-left:auto;font-size:12px;color:var(--muted);border:1px solid var(--line);
+  border-radius:999px;padding:2px 10px;white-space:nowrap}
+.file-section .panel{margin-top:0}
+.file-section .panel + .panel{margin-top:14px}
+
+/* the little "i" — hover/focus explains what a section or field is for,
+   exactly like the info eyes across the static tools */
+.info-tip{position:relative;display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;flex:none;border-radius:50%;border:1px solid var(--teal-dp);
+  color:var(--teal-br);font-size:10.5px;font-weight:700;font-family:var(--sans);
+  font-style:normal;cursor:help;vertical-align:middle;user-select:none}
+.info-tip-bubble{position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);
+  width:min(290px,72vw);background:var(--ink-3);color:var(--ivory);border:1px solid var(--teal-dp);
+  border-radius:10px;padding:9px 12px;font-size:12.5px;font-weight:400;line-height:1.45;
+  text-transform:none;letter-spacing:normal;white-space:normal;text-align:left;
+  opacity:0;visibility:hidden;transition:opacity .12s;z-index:60;pointer-events:none;
+  box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.info-tip:hover .info-tip-bubble,.info-tip:focus .info-tip-bubble,
+.info-tip:focus-visible .info-tip-bubble{opacity:1;visibility:visible}
+
+/* lift the "dead" flatness a touch: panels get depth, condition rows breathe */
+.panel{box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 10px 26px -18px rgba(0,0,0,.55)}
+.checkitem{border-radius:10px;padding:10px;margin:2px -10px}
+.checkitem:hover{background:rgba(127,169,176,.05)}
+
+@media(max-width:900px){
+  .file-layout{display:block}
+  .file-nav{position:sticky;top:0;margin:0 -24px 18px;padding:8px 16px;
+    background:linear-gradient(180deg,var(--ink) 82%,transparent);border-bottom:1px solid var(--line)}
+  .file-nav ol{display:flex;overflow-x:auto;gap:4px;padding:4px;scrollbar-width:none;border-radius:12px}
+  .file-nav ol::-webkit-scrollbar{display:none}
+  .file-nav a{border-left:none;border-bottom:2px solid transparent;white-space:nowrap;padding:8px 11px}
+  .file-nav a.active{border-bottom-color:var(--gold)}
+  .file-section{scroll-margin-top:64px}
+}
+
 /* ===== static-tool embedding: seamless frames + full-screen tool sheet ===== */
 /* The static tools (Track Record, Scope of Work, Term Sheet Studio) render in
    same-origin frames that disappear into the page: no border, no inner

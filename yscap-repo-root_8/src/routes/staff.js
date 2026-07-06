@@ -1663,23 +1663,37 @@ router.get('/applications/:id/documents', async (req, res) => {
 // Attach a document to the file as staff. Used by the Term Sheet Studio panel
 // to save the registered term sheet PDF; docKind 'term_sheet' supersedes any
 // prior term sheet so only the latest registration's sheet stays current.
+// With a checklistItemId the upload lands INSIDE that condition on the
+// borrower's behalf — same slots, same supersede rules as a borrower upload —
+// so a staffer can fill the shared conditions list when the borrower can't.
 router.post('/applications/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
-  const appOk = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+  const appOk = await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!appOk.rows[0]) return res.status(404).json({ error: 'not found' });
+  const borrowerId = appOk.rows[0].borrower_id;
+  let itemLabel = '';
+  if (b.checklistItemId) {
+    const it = await db.query(
+      `SELECT id, COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1 AND application_id=$2`,
+      [b.checklistItemId, req.params.id]);
+    if (!it.rows[0]) return res.status(404).json({ error: 'checklist item not found on this file' });
+    itemLabel = it.rows[0].label;
+  }
   const buf = Buffer.from(b.dataBase64, 'base64');
   if (!buf.length) return res.status(400).json({ error: 'empty file' });
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
+  const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
-    `INSERT INTO documents (application_id,filename,content_type,size_bytes,storage_provider,storage_ref,
-                            uploaded_by_kind,uploaded_by_id,doc_kind,visibility)
-     VALUES ($1,$2,$3,$4,$5,$6,'staff',$7,$8,'borrower') RETURNING id`,
-    [req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
-     req.actor.id, docKind]);
+    `INSERT INTO documents (application_id,checklist_item_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,
+                            uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,$11,'borrower') RETURNING id`,
+    [req.params.id, b.checklistItemId || null, b.checklistItemId ? borrowerId : null,
+     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
+     req.actor.id, docKind, slot]);
   if (docKind === 'term_sheet') {
     await db.query(
       `UPDATE documents SET is_current=false,
@@ -1687,7 +1701,37 @@ router.post('/applications/:id/documents', async (req, res) => {
         WHERE application_id=$1 AND doc_kind='term_sheet' AND id<>$2 AND is_current=true`,
       [req.params.id, r.rows[0].id]);
   }
-  await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind });
+  if (b.checklistItemId) {
+    // Mirror the borrower upload rules: replacing a document (or re-filling a
+    // slot) supersedes only that slot's versions; other slots coexist.
+    if (b.replaceDocumentId) {
+      await db.query(
+        `UPDATE documents SET is_current=false,
+            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+          WHERE id=$1 AND checklist_item_id=$2`,
+        [b.replaceDocumentId, b.checklistItemId]);
+    }
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
+          AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
+          AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
+      [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
+    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
+    // The shared list works both ways — tell the borrower their team added it.
+    if (borrowerId) {
+      try {
+        const ctx = await notify.fileContext(req.params.id);
+        await notify.notifyBorrower(borrowerId, {
+          type: 'doc_uploaded', title: `Your loan team added a document to "${itemLabel}"`,
+          body: `"${b.filename}" was uploaded to condition "${itemLabel}"${slot ? ` (${slot})` : ''}${ctx ? ` on ${ctx.label}` : ''} on your behalf.`,
+          meta: (ctx && ctx.meta) || undefined,
+          applicationId: req.params.id, link: `/app/${req.params.id}` });
+      } catch (_) { /* best-effort */ }
+    }
+  }
+  await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null });
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 
@@ -1714,17 +1758,59 @@ router.post('/documents/:id/review', async (req, res) => {
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
 
     const status = action === 'accept' ? 'accepted' : 'rejected';
+    // Accept-and-request-more: the document itself is GOOD and stays accepted,
+    // but the condition is not satisfied yet — the reviewer asks the borrower
+    // for one more document on the same condition (a new slot), so the
+    // condition stays open instead of signing off.
+    const requestMore = action === 'accept' && !!b.requestMore;
+    const moreNote = requestMore ? String(b.note || '').trim().slice(0, 500) : '';
     await db.query(
       `UPDATE documents SET review_status=$2, rejection_reason=$3, reviewed_by=$4, reviewed_at=now() WHERE id=$1`,
       [doc.id, status, action === 'reject' ? String(b.reason).slice(0, 1000) : null, req.actor.id]);
 
-    // Move the linked checklist item: accept -> satisfied, reject -> issue.
+    // Move the linked checklist item: accept -> satisfied, reject -> issue —
+    // unless the reviewer asked for another document, which keeps it open.
     if (doc.checklist_item_id) {
-      await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
-        [doc.checklist_item_id, action === 'accept' ? 'satisfied' : 'issue']);
+      if (requestMore) {
+        // The note must reach the BORROWER — ci.notes is internal-only (never
+        // sent to borrowers), so the ask lands in borrower_hint, replacing any
+        // previous "Still needed:" suffix instead of stacking them.
+        const cur = await db.query(`SELECT COALESCE(borrower_hint, hint, '') AS bh FROM checklist_items WHERE id=$1`, [doc.checklist_item_id]);
+        const baseHint = String((cur.rows[0] && cur.rows[0].bh) || '').replace(/\s*·?\s*Still needed:.*$/s, '').trim();
+        const newHint = moreNote ? (baseHint ? `${baseHint} · Still needed: ${moreNote}` : `Still needed: ${moreNote}`) : null;
+        await db.query(
+          `UPDATE checklist_items SET status='outstanding',
+                  notes=CASE WHEN $2 <> '' THEN $2 ELSE notes END,
+                  borrower_hint=COALESCE($3, borrower_hint), updated_at=now() WHERE id=$1`,
+          [doc.checklist_item_id, moreNote ? `Still needed: ${moreNote}` : '', newHint]);
+      } else {
+        await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
+          [doc.checklist_item_id, action === 'accept' ? 'satisfied' : 'issue']);
+      }
     }
-    await audit(req, action === 'accept' ? 'accept_document' : 'reject_document', 'document', doc.id,
-      action === 'reject' ? { reason: b.reason } : null);
+    await audit(req, action === 'accept' ? (requestMore ? 'accept_document_request_more' : 'accept_document') : 'reject_document', 'document', doc.id,
+      action === 'reject' ? { reason: b.reason } : requestMore ? { note: moreNote } : null);
+
+    // Tell the borrower another document is needed on this condition — the
+    // accepted file is kept; this is an "and also", not a rejection.
+    if (requestMore && doc.borrower_id) {
+      try {
+        let condLabel = '';
+        if (doc.checklist_item_id) {
+          const it = await db.query(`SELECT COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1`, [doc.checklist_item_id]);
+          if (it.rows[0]) condLabel = it.rows[0].label;
+        }
+        const ctx = doc.application_id ? await notify.fileContext(doc.application_id) : null;
+        await notify.notifyBorrower(doc.borrower_id, {
+          type: 'doc_requested',
+          title: condLabel ? `"${condLabel}" needs one more document` : 'One more document is needed',
+          body: `"${doc.filename}" was accepted ✓${condLabel ? ` — but condition "${condLabel}" needs one more document` : ''}${moreNote ? `: ${moreNote}` : '.'}${ctx ? ` (${ctx.label})` : ''}`,
+          meta: (ctx && ctx.meta) || undefined,
+          applicationId: doc.application_id,
+          link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
+          ctaLabel: 'Upload the document' });
+      } catch (_) { /* best-effort */ }
+    }
 
     // An LLC document verdict changes the entity's state everywhere: rejecting
     // a document of a VERIFIED LLC revokes the verification (its clean doc set
