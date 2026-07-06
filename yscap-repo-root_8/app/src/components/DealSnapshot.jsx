@@ -9,6 +9,7 @@ import React from 'react';
 
 const money = (n) => n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US');
 const pctOf = (num, den) => (Number(num) > 0 && Number(den) > 0) ? (Number(num) / Number(den) * 100).toFixed(1) + '%' : null;
+const pct = (n) => Number(n) > 0 ? (Number(n) * 100).toFixed(1) + '%' : null;
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.line1 || a.street, a.city, a.state, a.zip].filter(Boolean).join(', ') || '—');
 
 export default function DealSnapshot({ app, gating }) {
@@ -17,8 +18,11 @@ export default function DealSnapshot({ app, gating }) {
     ? Number(app.underlying_contract_price) + Number(app.assignment_fee || 0)
     : app.purchase_price;
   const basis = (Number(purchase) || 0) + (Number(app.rehab_budget) || 0);
-  const ltc = pctOf(app.loan_amount, basis);
-  const arvLtv = pctOf(app.loan_amount, app.arv);
+  const quote = app.registered_quote || null;
+  const ltc = quote?.sizing?.ltcPct ? pct(quote.sizing.ltcPct) : pctOf(app.loan_amount, basis);
+  const arvLtv = quote?.sizing?.arvPct ? pct(quote.sizing.arvPct) : pctOf(app.loan_amount, app.arv);
+  const acqLtv = quote?.sizing?.acqLtvPct ? pct(quote.sizing.acqLtvPct) : null;
+  const product = app.registered_product_label || (quote && [quote.programLabel, quote.productLabel].filter(Boolean).join(' · '));
   const priced = app.loan_amount != null && Number(app.loan_amount) > 0;
   const g = gating && gating.clear_to_close;
 
@@ -50,12 +54,15 @@ export default function DealSnapshot({ app, gating }) {
         {cell('Property', addrLine(app.property_address))}
         {cell('Type', [app.property_type, app.units ? `${app.units}u` : null].filter(Boolean).join(' · ') || '—')}
         {cell('Program', app.program || '—')}
+        {cell('Registered product', product || '—')}
         {cell('Loan type', [app.loan_type, app.is_assignment ? 'assignment' : null].filter(Boolean).join(' · ') || '—')}
         {cell('Purchase', money(purchase))}
         {cell('ARV', money(app.arv))}
         {cell('Rehab', money(app.rehab_budget))}
         {cell('LTC', ltc || '—')}
+        {cell('Initial LTV', acqLtv || '—')}
         {cell('Loan-to-ARV', arvLtv || '—')}
+        {quote && quote.liquidity != null ? cell('Liquidity required', money(quote.liquidity)) : null}
         {cell('FICO', app.fico || '—')}
       </div>
     </div>

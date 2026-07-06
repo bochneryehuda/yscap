@@ -15,9 +15,12 @@ const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
 const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
+const pricing = require('../lib/pricing');
+const { persistProductRegistration } = require('../lib/product-registration');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
+const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 async function audit(req, action, entity_type, entity_id, detail) {
   await db.query(
     `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
@@ -169,13 +172,125 @@ router.post('/applications', async (req, res) => {
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
     `SELECT a.*,
+            pr.program AS registered_program, pr.product_label AS registered_product_label,
+            pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
+            pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
+            pr.created_at AS registered_at,
             EXISTS(SELECT 1 FROM staff_users s
                     WHERE s.id IN (a.loan_officer_id, a.processor_id)
                       AND s.last_seen_at > now() - interval '2 minutes') AS team_online
        FROM applications a
+       LEFT JOIN LATERAL (
+         SELECT program, product_label, status, note_rate, total_loan, quote, created_at
+           FROM product_registrations
+          WHERE application_id=a.id AND is_current
+          ORDER BY created_at DESC LIMIT 1
+       ) pr ON true
       WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND a.deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
+});
+
+async function loadFileForPricing(appId, borrowerId) {
+  const a = await db.query(
+    `SELECT a.*, b.fico
+       FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+      WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND a.deleted_at IS NULL`,
+    [appId, borrowerId]);
+  const app = a.rows[0];
+  if (!app) return null;
+  const tr = await db.query(
+    `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
+       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+  const exp = { flips: 0, holds: 0, ground: 0 };
+  for (const row of tr.rows) {
+    if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
+    else if (row.dt.indexOf('flip') > -1) exp.flips += row.n;
+    else exp.holds += row.n;
+  }
+  return { app, exp };
+}
+
+function borrowerPricingOverrides(raw) {
+  const out = {};
+  const targetLTC = Number(raw && raw.targetLTC);
+  if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
+  return out;
+}
+
+router.get('/applications/:id/pricing', async (req, res) => {
+  try {
+    const f = await loadFileForPricing(req.params.id, me(req));
+    if (!f) return res.status(404).json({ error: 'not found' });
+    const hist = await db.query(
+      `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
+              r.is_current, r.created_at, r.quote, s.full_name AS registered_by_name
+         FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
+        WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
+    const current = hist.rows.find((x) => x.is_current) || null;
+    let quote = null;
+    if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
+    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady() });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+router.post('/applications/:id/pricing/quote', async (req, res) => {
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const f = await loadFileForPricing(req.params.id, me(req));
+    if (!f) return res.status(404).json({ error: 'not found' });
+    const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
+    const out = pricing.quoteAll(f.app, f.exp, overrides);
+    res.json({ ...out, experience: f.exp });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+router.post('/applications/:id/pricing/register', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const f = await loadFileForPricing(appId, me(req));
+    if (!f) return res.status(404).json({ error: 'not found' });
+    const b = req.body || {};
+    const program = b.program === 'gold' ? 'gold' : 'standard';
+    const overrides = borrowerPricingOverrides(b.overrides || {});
+    const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    const quote = pricing.quoteProgram(program, inputs);
+    if (quote.status === 'INELIGIBLE') return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
+    const total = quote.sizing ? quote.sizing.totalLoan : 0;
+    if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote });
+
+    const client = await db.getClient();
+    let regId;
+    try {
+      await client.query('BEGIN');
+      regId = await persistProductRegistration(client, {
+        appId, program, inputs, quote, registeredByStaffId: null,
+      });
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+
+    await audit(req, 'register_product', 'application', appId,
+      { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null });
+
+    try {
+      const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
+      const row = t.rows[0] || {};
+      const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : 'n/a';
+      const body = `${pricing.PROGRAM_LABEL[program]} selected by borrower: ${money(total)} @ ${rate}`;
+      for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
+        await notify.notifyStaff(sid, {
+          type: 'product_registered',
+          title: 'Borrower selected a product on ' + (row.ys_loan_number || 'a file'),
+          body, applicationId: appId,
+          link: `/staff/app/${appId}`,
+        });
+      }
+    } catch (_) {}
+
+    res.status(201).json({ ok: true, registrationId: regId, quote });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
 // Borrower-safe file activity feed (never internal chat/notes/conditions).

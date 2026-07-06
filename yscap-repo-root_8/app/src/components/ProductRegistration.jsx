@@ -46,6 +46,10 @@ function printTermSheet(q, app) {
     ['Monthly payment (fully drawn)', money(s.monthlyPayment)],
     ['Origination fee (' + pct(q.origPct, 3) + ')', money(q.origination)],
     ['Estimated title & settlement', money(q.title.total)],
+    q.closingCosts ? ['Estimated closing costs', money(q.closingCosts.dueAtClosing)] : null,
+    q.cashToClose != null ? ['Estimated cash to close', money(q.cashToClose)] : null,
+    q.reserveRequirement != null ? ['Asset reserve requirement', money(q.reserveRequirement)] : null,
+    q.liquidity != null ? ['Assets / liquidity to verify', money(q.liquidity)] : null,
     ['Loan-to-cost', pct(s.ltcPct, 1)],
     s.arvPct > 0 ? ['Loan-to-after-repair-value', pct(s.arvPct, 1)] : null,
   ].filter(Boolean).map((r) => row(r[0], r[1])).join('');
@@ -97,10 +101,15 @@ function StatusBadge({ status }) {
   return <span className={`ts-badge ${cls}`}>{label}</span>;
 }
 
-function TermSheet({ q, app, onRegister, registering, isCurrent }) {
+function TermSheet({ q, app, onRegister, registering, isCurrent, mode = 'staff' }) {
   if (!q) return null;
   const s = q.sizing;
   const priced = q.status !== 'INELIGIBLE' && s && s.totalLoan > 0;
+  const borrower = mode === 'borrower';
+  const actionText = registering ? (borrower ? 'Selecting...' : 'Registering...')
+    : isCurrent ? (borrower ? 'Update selection' : 'Re-register these terms')
+    : borrower ? (q.status === 'MANUAL' ? 'Request manual review' : 'Select this product')
+    : 'Register this product';
   return (
     <div className="ts-card">
       <div className="ts-head">
@@ -140,28 +149,63 @@ function TermSheet({ q, app, onRegister, registering, isCurrent }) {
             <div className="metrow"><span className="k">Payment (fully drawn)</span><span className="v">{money(s.monthlyPayment)}/mo</span></div>
             <div className="metrow"><span className="k">Origination ({pct(q.origPct, 3)})</span><span className="v">{money(q.origination)}</span></div>
             <div className="metrow"><span className="k">Est. title & settlement</span><span className="v">{money(q.title.total)}{!q.title.known ? ' *' : ''}</span></div>
+            {q.closingCosts && <div className="metrow"><span className="k">Closing costs due</span><span className="v">{money(q.closingCosts.dueAtClosing)}</span></div>}
+            {q.cashToClose != null && <div className="metrow"><span className="k">Cash to close</span><span className="v">{money(q.cashToClose)}</span></div>}
+            {q.reserveRequirement != null && <div className="metrow"><span className="k">Asset reserves</span><span className="v">{money(q.reserveRequirement)}</span></div>}
             <div className="metrow"><span className="k">Loan-to-cost</span><span className="v">{pct(s.ltcPct, 1)}</span></div>
+            {s.acqLtvPct > 0 && <div className="metrow"><span className="k">Initial / as-is LTV</span><span className="v">{pct(s.acqLtvPct, 1)}</span></div>}
             {s.arvPct > 0 && <div className="metrow"><span className="k">Loan-to-ARV</span><span className="v">{pct(s.arvPct, 1)}</span></div>}
             {q.liquidity != null && <div className="metrow"><span className="k">Liquidity to show</span><span className="v">{money(q.liquidity)}</span></div>}
+            {q.guidelines && q.guidelines.caps && <div className="metrow"><span className="k">Max LTC guideline</span><span className="v">{pct(q.guidelines.caps.maxLtc, 1)}</span></div>}
+            {q.guidelines && q.guidelines.caps && <div className="metrow"><span className="k">Max ARV guideline</span><span className="v">{pct(q.guidelines.caps.maxArvLtv, 1)}</span></div>}
           </div>
           {s.binding && <p className="muted small" style={{ marginTop: 6 }}>Sized by {s.binding}.</p>}
+          {q.reserveBasis && <p className="muted small" style={{ margin: '2px 0 0' }}>Asset requirement: {q.reserveBasis} plus cash to close.</p>}
           {!q.title.known && <p className="muted small" style={{ margin: '2px 0 0' }}>* Title estimate uses the national baseline — no filed rate on file for this state.</p>}
         </>
       )}
 
       <div className="row" style={{ gap: 8, marginTop: 12 }}>
-        <button className="btn primary" disabled={registering || (!priced && q.status !== 'MANUAL')}
+        <button className="btn primary" disabled={registering || (!priced && (borrower || q.status !== 'MANUAL'))}
           onClick={() => onRegister(q)}>
-          {registering ? 'Registering…' : isCurrent ? 'Re-register these terms' : 'Register this product'}
+          {actionText}
         </button>
         {priced && <button className="btn ghost" onClick={() => printTermSheet(q, app)}>Print term sheet</button>}
-        {q.status === 'INELIGIBLE' && <span className="muted small" style={{ alignSelf: 'center' }}>Resolve the ineligible items or override the basis to register.</span>}
+        {q.status === 'INELIGIBLE' && <span className="muted small" style={{ alignSelf: 'center' }}>{borrower ? 'Your loan team can review alternatives.' : 'Resolve the ineligible items or override the basis to register.'}</span>}
       </div>
     </div>
   );
 }
 
-export default function ProductRegistration({ appId, app, onRegistered }) {
+function ScenarioSummary({ ov, q }) {
+  const exp = q && q.experience;
+  const fields = [
+    ['Strategy', ov.strategy || '—'],
+    ['Loan type', ov.loanType || '—'],
+    ['State', ov.state || '—'],
+    [ov.isAssignment ? 'Seller price' : 'Purchase price', money(ov.isAssignment ? ov.sellerPrice : ov.purchasePrice)],
+    ['As-is value', money(ov.asIsValue)],
+    ['ARV', money(ov.arv)],
+    ['Rehab budget', money(ov.rehabBudget)],
+    ['FICO', ov.fico || '—'],
+    ['Term', ov.term ? `${ov.term} months` : '—'],
+    ['Track record', exp ? `${exp.flips} flips · ${exp.holds} holds · ${exp.ground} ground-up` : '—'],
+  ];
+  return (
+    <>
+      <div className="ts-inputs ts-readonly">
+        {fields.map(([k, v]) => (
+          <label key={k}><span>{k}</span><output>{v}</output></label>
+        ))}
+      </div>
+      <p className="muted small" style={{ margin: '2px 0 12px' }}>
+        Pulled from your application and verified track record. Your loan team can adjust the file if anything is missing or incorrect.{q && q.standard && q.standard.status ? ' Choose a qualifying product below.' : ''}
+      </p>
+    </>
+  );
+}
+
+export default function ProductRegistration({ appId, app, onRegistered, mode = 'staff' }) {
   const [data, setData] = useState(null);      // { current, history, quote, enginesReady }
   const [q, setQ] = useState(null);            // latest quoteAll { standard, gold, inputs, experience }
   const [program, setProgram] = useState('standard');
@@ -173,6 +217,12 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
   const [open, setOpen] = useState(true);
   const userEdited = useRef(false);
   const timer = useRef(null);
+  const isBorrower = mode === 'borrower';
+  const loadPricing = () => isBorrower ? api.borrowerPricing(appId) : api.staffPricing(appId);
+  const quotePricing = (overrides) => isBorrower ? api.borrowerPricingQuote(appId, overrides) : api.staffPricingQuote(appId, overrides);
+  const registerProduct = (selectedProgram, overrides) => isBorrower
+    ? api.borrowerRegisterProduct(appId, selectedProgram, overrides)
+    : api.staffRegisterProduct(appId, selectedProgram, overrides);
 
   // Initial load. Re-seeds from the file whenever the file changes; the
   // userEdited flag is reset so a stale, edited what-if from a previous file
@@ -181,7 +231,7 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
     let alive = true;
     userEdited.current = false;
     setBusy(true); setErr(''); setQ(null); setOv(null);
-    api.staffPricing(appId).then((d) => {
+    loadPricing().then((d) => {
       if (!alive) return;
       setData(d);
       if (d.quote) { setQ(d.quote); setOv({ ...d.quote.inputs }); }
@@ -189,7 +239,7 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
     }).catch((e) => alive && setErr(e.message || 'Could not load pricing'))
       .finally(() => alive && setBusy(false));
     return () => { alive = false; };
-  }, [appId]);
+  }, [appId, mode]);
 
   // Debounced server reprice whenever the staff edits an input. An alive guard
   // drops a late response so it can't overwrite newer state (or set state after
@@ -200,13 +250,13 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
     if (timer.current) clearTimeout(timer.current);
     setRepricing(true);
     timer.current = setTimeout(() => {
-      api.staffPricingQuote(appId, ov)
+      quotePricing(ov)
         .then((d) => { if (alive) setQ(d); })
         .catch((e) => { if (alive) setErr(e.message || 'Pricing failed'); })
         .finally(() => { if (alive) setRepricing(false); });
     }, 450);
     return () => { alive = false; if (timer.current) clearTimeout(timer.current); };
-  }, [ov, appId]);
+  }, [ov, appId, mode]);
 
   function set(k, v) { userEdited.current = true; setOv((o) => ({ ...o, [k]: v })); }
   function pickLadder(ltc) { set('targetLTC', ltc); }
@@ -214,8 +264,8 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
   async function register(quote) {
     setRegistering(true); setErr('');
     try {
-      await api.staffRegisterProduct(appId, program, ov || {});
-      const d = await api.staffPricing(appId);
+      await registerProduct(program, ov || {});
+      const d = await loadPricing();
       setData(d);
       if (onRegistered) onRegistered();
     } catch (e) {
@@ -232,7 +282,7 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setOpen((o) => !o)}>
-        <h3 style={{ margin: 0 }}>Product registration & term sheet</h3>
+        <h3 style={{ margin: 0 }}>{isBorrower ? 'Product options & term sheet' : 'Product registration & term sheet'}</h3>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           {cur && <span className="ts-badge ok">Registered · {cur.program === 'gold' ? 'Gold Standard' : 'Standard'} · {pct(cur.note_rate)}</span>}
           <span className="muted">{open ? '▾' : '▸'}</span>
@@ -247,7 +297,7 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
 
           {cur && (
             <div className="ts-current">
-              <strong>Currently registered:</strong> {cur.product_label || (cur.program === 'gold' ? 'Gold Standard Program' : 'Standard Program')} —
+              <strong>{isBorrower ? 'Selected product:' : 'Currently registered:'}</strong> {cur.product_label || (cur.program === 'gold' ? 'Gold Standard Program' : 'Standard Program')} —
               {' '}{money(cur.total_loan)} @ {pct(cur.note_rate)}
               {cur.registered_by_name ? ` · by ${cur.registered_by_name}` : ''}
               {cur.status && cur.status !== 'ELIGIBLE' ? ` · ${cur.status.toLowerCase()}` : ''}
@@ -256,6 +306,8 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
 
           {ov && (
             <>
+              {isBorrower ? <ScenarioSummary ov={ov} q={q} /> : (
+              <>
               {/* Editable pricing inputs — seeded from the file, staff can what-if. */}
               <div className="ts-inputs">
                 <label><span>Strategy</span>
@@ -301,6 +353,8 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
               <p className="muted small" style={{ margin: '2px 0 12px' }}>
                 Seeded from the file{q && q.experience ? ` (track record: ${q.experience.flips} flips · ${q.experience.holds} holds · ${q.experience.ground} ground-up)` : ''}. Edits are for what-if only until you register.{repricing ? ' · repricing…' : ''}
               </p>
+              </>
+              )}
 
               {/* Program tabs */}
               <div className="ts-tabs">
@@ -333,7 +387,7 @@ export default function ProductRegistration({ appId, app, onRegistered }) {
               )}
 
               <TermSheet q={active} app={app} onRegister={register} registering={registering}
-                isCurrent={!!cur && cur.program === program} />
+                isCurrent={!!cur && cur.program === program} mode={mode} />
             </>
           )}
         </div>

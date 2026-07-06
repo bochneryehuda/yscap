@@ -25,10 +25,13 @@ try {
 function enginesReady() { return !!(YSP && GSP && YSTitle); }
 
 const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program' };
+const FEES = { lender: 2195, credit: 150, appraisal: 800 };
 
 /* ---- small coercers ---- */
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 function clean(s) { return String(s == null ? '' : s).trim(); }
+function round2(n) { return Math.round(num(n) * 100) / 100; }
+function reserveMonths(totalLoan) { return num(totalLoan) > 1000000 ? 4 : 2; }
 
 // Parse a free-text term ("12 months", "12", "18-month") into a month count.
 function parseTermMonths(t) {
@@ -93,25 +96,88 @@ function buildInputs(app, experience, overrides) {
   // Staff overrides win. Only copy known keys; coerce numeric fields.
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'targetLTC',
-    'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate'];
+    'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
+    'markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct',
+    'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
+    'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths'];
   const STRK = ['loanType', 'strategy', 'state', 'city', 'address', 'propertyType'];
-  const BOOLK = ['cashOut', 'isAssignment', 'heavyRehab', 'sqftAddition', 'forcePrice'];
+  const BOOLK = ['cashOut', 'isAssignment', 'heavyRehab', 'sqftAddition', 'forcePrice', 'manualPricing'];
   const out = Object.assign({}, base);
   if (overrides && typeof overrides === 'object') {
     for (const k of NUMK) if (overrides[k] != null && overrides[k] !== '') out[k] = num(overrides[k]);
     for (const k of STRK) if (overrides[k] != null) out[k] = clean(overrides[k]);
     for (const k of BOOLK) if (overrides[k] != null) out[k] = !!overrides[k];
   }
+  if (out.manualPricing) {
+    out.forcePrice = true;
+    if (Object.prototype.hasOwnProperty.call(out, 'ovrAcqLTVPct')) out.ovrAcqLTV = num(out.ovrAcqLTVPct) / 100;
+    if (Object.prototype.hasOwnProperty.call(out, 'ovrARLTVPct')) out.ovrARLTV = num(out.ovrARLTVPct) / 100;
+    if (Object.prototype.hasOwnProperty.call(out, 'ovrLTCPct')) out.ovrLTC = num(out.ovrLTCPct) / 100;
+    if (Object.prototype.hasOwnProperty.call(out, 'ovrRatePct')) out.ovrRate = num(out.ovrRatePct) / 100;
+    if (Object.prototype.hasOwnProperty.call(out, 'ovrIrMonths')) out.irMonths = num(out.ovrIrMonths);
+  }
   return out;
+}
+
+function hasInput(input, key) {
+  return input && Object.prototype.hasOwnProperty.call(input, key) && input[key] != null && input[key] !== '';
+}
+function numberOverride(input, key, fallback) {
+  return hasInput(input, key) ? num(input[key]) : fallback;
+}
+function percentOverride(input, key, fallbackFraction) {
+  return hasInput(input, key) ? num(input[key]) / 100 : fallbackFraction;
+}
+function markupOverride(input, program) {
+  const key = program === 'gold' ? 'markupGoldPct' : 'markupStdPct';
+  return hasInput(input, key) ? num(input[key]) / 100 : null;
+}
+function setEngineMarkup(program, value) {
+  const engine = program === 'gold' ? GSP : YSP;
+  if (engine && typeof engine.setMarkup === 'function') engine.setMarkup(value);
 }
 
 /* ---- normalize an engine result into one UI-agnostic quote shape ---- */
 function normalize(program, input, ev, ladder) {
   const s = ev.sizing || {};
-  const origPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT) : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
+  const defaultOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT) : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
+  const origPct = percentOverride(input, program === 'gold' ? 'origGoldPct' : 'origStdPct', defaultOrigPct);
   const totalLoan = num(s.totalLoan);
   const state = clean(input.state).toUpperCase();
   const title = YSTitle.estimate(state, totalLoan, input.loanType);
+  const titleAutoTotal = num(title.total);
+  const titleOverridden = hasInput(input, 'titleFee');
+  const titleTotal = titleOverridden ? num(input.titleFee) : titleAutoTotal;
+  const lenderFee = numberOverride(input, 'lenderFee', FEES.lender);
+  const creditFee = numberOverride(input, 'creditFee', FEES.credit);
+  const appraisalFee = numberOverride(input, 'appraisalFee', FEES.appraisal);
+  const origination = totalLoan > 0 ? round2(totalLoan * origPct) : 0;
+  const assignmentExcess = num(s.assignmentExcessOOP) || num(ev.assignment && ev.assignment.excessOOP);
+  const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal);
+  const cashToClose = round2(num(s.downPayment) + assignmentExcess + closingDueAtClose);
+  let reserveRequirement = 0;
+  let reserveBasis = '';
+  let reserveMo = 0;
+  let liquidityPct = null;
+  if (totalLoan > 0) {
+    if (program === 'gold') {
+      liquidityPct = num(ev.liquidityPct) || 0.05;
+      reserveRequirement = round2(totalLoan * liquidityPct);
+      reserveBasis = `${(liquidityPct * 100).toFixed(1)}% of loan amount`;
+    } else {
+      reserveMo = reserveMonths(totalLoan);
+      reserveRequirement = round2(num(s.fullPayment) * reserveMo);
+      reserveBasis = `${reserveMo} months of full-payment interest reserves`;
+    }
+  }
+  const liquidityRequired = round2(cashToClose + reserveRequirement);
+  const caps = ev.caps ? {
+    maxLoan: num(ev.caps.maxLoan),
+    minFico: num(ev.caps.minFico),
+    maxAcqLtv: num(ev.caps.maxAcqLTV),
+    maxArvLtv: num(ev.caps.maxARLTV),
+    maxLtc: num(ev.caps.maxLTC),
+  } : null;
 
   const quote = {
     program,
@@ -124,25 +190,70 @@ function normalize(program, input, ev, ladder) {
     tierLabel: ev.tierLabel || null,
     noteRate: ev.noteRate != null ? ev.noteRate : null,
     origPct,
-    origination: totalLoan > 0 ? Math.round(totalLoan * origPct) : 0,
+    origination,
     sizing: {
       totalLoan,
       initialAdvance: num(s.acquisition),
       rehabHoldback: num(s.rehabLoan),
       financedReserve: num(s.financedIR),
       downPayment: num(s.downPayment),
+      assignmentExcessOOP: assignmentExcess,
       initialPayment: num(s.initialPayment),
       monthlyPayment: num(s.fullPayment),
       ltcPct: num(s.ltcPct),
       acqLtvPct: num(s.acqLtvPct),
       arvPct: num(s.arvPct),
       maxReserve: num(s.maxReserve),
+      costBasis: num(s.costBasis),
       binding: s.binding || '',
     },
-    title: { total: num(title.total), premium: num(title.premium), fees: num(title.fees), known: !!title.known },
+    title: { total: titleTotal, premium: num(title.premium), fees: num(title.fees), known: !!title.known,
+      autoTotal: titleAutoTotal, overridden: titleOverridden },
+    closingCosts: {
+      origination,
+      lenderFee,
+      creditFee,
+      titleAndSettlement: titleTotal,
+      dueAtClosing: closingDueAtClose,
+      appraisalPoc: appraisalFee,
+      totalIncludingPoc: round2(closingDueAtClose + appraisalFee),
+    },
+    cashToClose,
+    reserveRequirement,
+    reserveMonths: reserveMo,
+    reserveBasis,
+    liquidityPct,
+    liquidityRequired,
     assignment: ev.assignment || null,
     ladder: ladder || null,
-    liquidity: ev.liquidity != null ? num(ev.liquidity) : null,
+    liquidity: liquidityRequired,
+    guidelines: {
+      caps,
+      tierLabel: ev.tierLabel || null,
+      binding: (s && s.binding) || '',
+      reserveRequirement,
+      reserveMonths: reserveMo,
+      reserveBasis,
+      liquidityPct,
+      drawFee: num(ev.drawFee),
+      irRequired: !!ev.irRequired,
+      irLocked: !!ev.irLocked,
+      reserveCapped: !!s.reserveCapped,
+      reserveCapBy: s.reserveCapBy || '',
+      maxReserveMonths: num(s.maxReserveMonths),
+      heavyRehab: !!ev.heavy,
+      sqftAddition: !!ev.sqft,
+    },
+    adminPricing: {
+      markupPct: hasInput(input, program === 'gold' ? 'markupGoldPct' : 'markupStdPct')
+        ? num(input[program === 'gold' ? 'markupGoldPct' : 'markupStdPct']) : null,
+      origPct: origPct * 100,
+      lenderFee,
+      creditFee,
+      appraisalFee,
+      titleFee: titleOverridden ? titleTotal : null,
+      manualPricing: !!input.forcePrice,
+    },
   };
   return quote;
 }
@@ -150,19 +261,31 @@ function normalize(program, input, ev, ladder) {
 /* ---- quote one program (no persistence) ---- */
 function quoteProgram(program, input) {
   if (!enginesReady()) throw new Error('pricing engines unavailable' + (loadErr ? ': ' + loadErr : ''));
+  const m = markupOverride(input, program);
+  if (m != null) setEngineMarkup(program, m);
   if (program === 'gold') {
-    const ev = GSP.evaluate(input);
-    return normalize('gold', input, ev, null);
-  }
-  const ev = YSP.evaluate(input);
-  let ladder = null;
-  try {
-    const pl = YSP.priceLadder(input);
-    if (pl && pl.eligible && pl.rows && pl.rows.length) {
-      ladder = { maxLtc: pl.maxLtc, maxBucket: pl.maxBucket, binding: pl.binding, rows: pl.rows };
+    try {
+      const ev = GSP.evaluate(input);
+      if (input.forcePrice && ev.status === 'INELIGIBLE') { ev.status = 'MANUAL'; ev.exitShortfall = 0; }
+      return normalize('gold', input, ev, null);
+    } finally {
+      if (m != null) setEngineMarkup(program, null);
     }
-  } catch (_) { /* ladder is best-effort */ }
-  return normalize('standard', input, ev, ladder);
+  }
+  try {
+    const ev = YSP.evaluate(input);
+    if (input.forcePrice && ev.status === 'INELIGIBLE') { ev.status = 'MANUAL'; ev.exitShortfall = 0; }
+    let ladder = null;
+    try {
+      const pl = YSP.priceLadder(input);
+      if (pl && pl.eligible && pl.rows && pl.rows.length) {
+        ladder = { maxLtc: pl.maxLtc, maxBucket: pl.maxBucket, binding: pl.binding, rows: pl.rows };
+      }
+    } catch (_) { /* ladder is best-effort */ }
+    return normalize('standard', input, ev, ladder);
+  } finally {
+    if (m != null) setEngineMarkup(program, null);
+  }
 }
 
 /* ---- quote both programs for a file (panel default) ---- */

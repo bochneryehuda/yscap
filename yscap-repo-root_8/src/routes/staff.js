@@ -13,6 +13,7 @@ const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
 const { requireAuth, requireRole } = require('../auth');
 const pricing = require('../lib/pricing');
+const { persistProductRegistration } = require('../lib/product-registration');
 
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
 // admins + super-admins + underwriters (risk) see every file;
@@ -332,9 +333,20 @@ router.post('/applications/:id/invite-borrower', async (req, res) => {
 
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
-    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico, l.llc_name AS entity_name
+    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico, l.llc_name AS entity_name,
+            pr.program AS registered_program, pr.product_label AS registered_product_label,
+            pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
+            pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
+            pr.created_at AS registered_at
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
-     LEFT JOIN llcs l ON l.id=a.llc_id WHERE a.id=$1`, [req.params.id]);
+     LEFT JOIN llcs l ON l.id=a.llc_id
+     LEFT JOIN LATERAL (
+       SELECT program, product_label, status, note_rate, total_loan, quote, created_at
+         FROM product_registrations
+        WHERE application_id=a.id AND is_current
+        ORDER BY created_at DESC LIMIT 1
+     ) pr ON true
+     WHERE a.id=$1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
 });
@@ -366,21 +378,16 @@ async function loadFileForPricing(appId) {
   return { app, exp };
 }
 
-// Admin-only pricing overrides: setting the qualifying basis/rate directly,
-// forcing a price past ineligibility, OR setting the experience counts all
-// bypass the frozen-engine guardrails, so only admins/super-admins may supply
-// them. Experience is included because the tier it drives moves the exact same
+// Staff pricing overrides: loan officers, processors, underwriters and admins
+// can use the same pricing and fee knobs as the marketing term-sheet tool.
+// The saved product is still recomputed server-side from the frozen engines,
+// so the browser never gets to fabricate final loan terms.
 // caps/rate/eligibility that ovrLTC/ovrRate do — and it must stay verified-only
 // for non-admins (a loan officer/processor can what-if the deal economics, but
 // not inject unverified experience or override the caps/rate). For anyone else
 // these keys are stripped. Returns { overrides, strippedAdminKeys }.
-const ADMIN_OVERRIDE_KEYS = ['ovrRate', 'ovrLTC', 'ovrAcqLTV', 'ovrARLTV', 'forcePrice',
-  'expFlips', 'expHolds', 'expGround'];
 function sanitizeOverrides(req, raw) {
-  const o = { ...(raw || {}) };
-  let stripped = false;
-  if (!isAdmin(req)) for (const k of ADMIN_OVERRIDE_KEYS) if (k in o) { delete o[k]; stripped = true; }
-  return { overrides: o, strippedAdminKeys: stripped };
+  return { overrides: (raw && typeof raw === 'object') ? { ...raw } : {}, strippedAdminKeys: false };
 }
 
 // Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
@@ -436,18 +443,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     let regId;
     try {
       await client.query('BEGIN');
-      await client.query(`UPDATE product_registrations SET is_current=false WHERE application_id=$1 AND is_current`, [appId]);
-      const ins = await client.query(
-        `INSERT INTO product_registrations
-           (application_id, program, product_label, status, note_rate, total_loan, target_ltc, inputs, quote, is_current, registered_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10) RETURNING id`,
-        [appId, program, quote.productLabel || null, quote.status, quote.noteRate, total,
-         inputs.targetLTC || null, JSON.stringify(inputs), JSON.stringify(quote), req.actor.id]);
-      regId = ins.rows[0].id;
-      // The registered product IS the file's terms now.
-      await client.query(
-        `UPDATE applications SET loan_amount=$2, rate_pct=$3, updated_at=now() WHERE id=$1`,
-        [appId, total, quote.noteRate != null ? (quote.noteRate * 100) : null]);
+      regId = await persistProductRegistration(client, {
+        appId, program, inputs, quote, registeredByStaffId: req.actor.id,
+      });
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }

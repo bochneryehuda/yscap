@@ -32,6 +32,12 @@ async function buildTprExport(appId) {
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId])).rows[0];
   if (!app) throw new Error('application not found');
 
+  const registration = (await db.query(
+    `SELECT program, product_label, status, note_rate, total_loan, target_ltc, quote, created_at
+       FROM product_registrations
+      WHERE application_id=$1 AND is_current
+      ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
+
   // The clean set: accepted + current, never chat attachments.
   const docs = (await db.query(
     `SELECT d.id, d.filename, d.storage_ref, d.reviewed_at, d.created_at,
@@ -75,10 +81,51 @@ async function buildTprExport(appId) {
     property: propLabel,
     program: app.program || null,
     loan_type: app.loan_type || null,
+    registered_terms: registration ? {
+      program: registration.program,
+      product_label: registration.product_label,
+      status: registration.status,
+      note_rate: registration.note_rate,
+      total_loan: registration.total_loan,
+      target_ltc: registration.target_ltc,
+      quote: registration.quote,
+      registered_at: registration.created_at,
+    } : null,
     included_documents: manifestDocs,
     included_count: manifestDocs.length,
     missing_or_not_yet_accepted: missing,
   };
+  if (registration) {
+    files.push({
+      name: '01_Application_and_Terms/00_REGISTERED_PRODUCT.json',
+      data: Buffer.from(JSON.stringify(manifest.registered_terms, null, 2), 'utf8'),
+    });
+    const q = registration.quote || {};
+    const s = q.sizing || {};
+    const pct = (v, d = 2) => v == null ? 'n/a' : (Number(v) * 100).toFixed(d) + '%';
+    const money = (v) => v == null ? 'n/a' : '$' + Math.round(Number(v)).toLocaleString('en-US');
+    files.push({
+      name: '01_Application_and_Terms/00_REGISTERED_PRODUCT.txt',
+      data: Buffer.from([
+        'YS CAPITAL GROUP - REGISTERED PRODUCT TERMS',
+        `Product: ${[q.programLabel, q.productLabel].filter(Boolean).join(' - ') || registration.program}`,
+        `Status: ${registration.status || 'n/a'}`,
+        `Loan amount: ${money(s.totalLoan || registration.total_loan)}`,
+        `Note rate: ${pct(q.noteRate || registration.note_rate)}`,
+        `Initial advance: ${money(s.initialAdvance)}`,
+        `Rehab holdback: ${money(s.rehabHoldback)}`,
+        `Financed interest reserve: ${money(s.financedReserve)}`,
+        `LTC: ${pct(s.ltcPct, 1)}`,
+        `Initial/as-is LTV: ${pct(s.acqLtvPct, 1)}`,
+        `Loan-to-ARV: ${pct(s.arvPct, 1)}`,
+        `Closing costs due: ${money(q.closingCosts && q.closingCosts.dueAtClosing)}`,
+        `Cash to close: ${money(q.cashToClose)}`,
+        `Liquidity required: ${money(q.liquidityRequired || q.liquidity)}`,
+        `Reserve basis: ${q.reserveBasis || 'n/a'}`,
+        `Registered at: ${registration.created_at || 'n/a'}`,
+      ].join('\n'), 'utf8'),
+    });
+  }
   files.push({ name: '00_MANIFEST.json', data: Buffer.from(JSON.stringify(manifest, null, 2), 'utf8') });
 
   // Human-readable index too.

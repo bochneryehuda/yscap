@@ -36,7 +36,7 @@ async function fileActivity(appId, onlySafe) {
                'moved the file to '||status, NULL
           FROM applications WHERE id=$1 AND status_changed_at IS NOT NULL
         UNION ALL
-        SELECT created_at, 'product', 'staff', false,
+        SELECT created_at, 'product', 'staff', true,
                'registered a product', COALESCE(product_label, initcap(program)||' Program')
           FROM product_registrations WHERE application_id=$1
      ) q

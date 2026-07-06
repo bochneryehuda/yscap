@@ -307,6 +307,7 @@ a.checkitem:hover{transform:translateY(-1px)}
 .ts-inputs label{display:flex;flex-direction:column;gap:4px}
 .ts-inputs label span{color:var(--muted);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.02em}
 .ts-inputs .input{padding:8px 10px}
+.ts-readonly output{background:var(--ink-2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:34px;font-weight:700;overflow:hidden;text-overflow:ellipsis}
 .ts-tabs{display:flex;gap:8px;margin:4px 0 12px;border-bottom:1px solid var(--line)}
 .ts-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-weight:600;padding:8px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
 .ts-tab.on{color:var(--ivory);border-bottom-color:var(--gold)}
