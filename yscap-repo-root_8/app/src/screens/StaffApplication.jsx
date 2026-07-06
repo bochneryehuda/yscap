@@ -617,11 +617,11 @@ export default function StaffApplication() {
               </div>
               <div className="row" style={{ gap: 6, alignItems: 'center' }}>
                 <span className="pill" style={pillStyle}>{rs}</span>
-                <button className="btn ghost" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
                   {dlBusy === d.id ? '…' : 'Download'}
                 </button>
-                {d.is_current && rs !== 'accepted' && <button className="btn primary" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
-                {d.is_current && rs !== 'rejected' && <button className="btn ghost" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
+                {d.is_current && rs !== 'accepted' && <button className="btn primary small" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
+                {d.is_current && rs !== 'rejected' && <button className="btn ghost small" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
               </div>
             </div>
             );
