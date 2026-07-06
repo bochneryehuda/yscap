@@ -29,12 +29,12 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .brand-mark{height:30px;width:auto;display:block;flex:none}
 .brand-word{font-family:var(--serif);font-weight:700;letter-spacing:2px;font-size:20px;
   color:var(--ivory);line-height:1;white-space:nowrap}
-/* GROUP is the SAME SIZE and weight as the rest of the wordmark — set apart
-   ONLY by the brand teal. This rule is global (header + auth lockup) so the
-   three words always match. LOCKED: do not shrink GROUP back to a small suffix
-   (a .42em "lockup-style" suffix was rejected as unprofessional). */
+/* GROUP is the SAME SIZE, weight AND colour as the rest of the wordmark — the
+   whole "YS CAPITAL GROUP" reads as one uniform ivory wordmark (per request).
+   This rule is global (header + auth lockup) so the three words always match.
+   LOCKED: do not shrink GROUP back to a small suffix. */
 .brand-group{font-style:normal;font-family:var(--serif);font-size:1em;font-weight:inherit;
-  letter-spacing:inherit;color:var(--teal-br,#AAD4D9);vertical-align:baseline}
+  letter-spacing:inherit;color:inherit;vertical-align:baseline}
 .brand .sub{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--teal);
   align-self:center;white-space:nowrap}
 /* Text lockup, centered on the public auth cards (login / register / verify).
@@ -334,6 +334,17 @@ a.checkitem:hover{transform:translateY(-1px)}
 .ts-inputs label{display:flex;flex-direction:column;gap:4px}
 .ts-inputs label span{color:var(--muted);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.02em}
 .ts-inputs .input{padding:8px 10px}
+/* Edit-file-details: a fixed, even 4-col grid (vs. auto-fill, which left short
+   fields orphaned on half-empty rows). Fields span explicit columns via
+   .col-2/.col-4 so every row fills evenly. Collapses to 2 cols, then 1. */
+.edit-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px 12px;align-items:end}
+.edit-grid label{display:flex;flex-direction:column;gap:4px;min-width:0}
+.edit-grid label span{color:var(--muted);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.02em}
+.edit-grid .input{padding:8px 10px;width:100%}
+.edit-grid .col-2{grid-column:span 2}
+.edit-grid .col-4{grid-column:1 / -1}
+@media (max-width:900px){.edit-grid{grid-template-columns:repeat(2,1fr)}.edit-grid .col-2{grid-column:span 1}.edit-grid .col-4{grid-column:1 / -1}}
+@media (max-width:560px){.edit-grid{grid-template-columns:1fr}.edit-grid .col-2,.edit-grid .col-4{grid-column:1 / -1}}
 .ts-readonly output{background:var(--ink-2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:34px;font-weight:700;overflow:hidden;text-overflow:ellipsis}
 .ts-admin-panel.portal{margin:14px 0 10px;border:1px solid var(--teal-dp);border-radius:10px;background:rgba(127,169,176,.06);padding:14px}
 .ts-admin-head{display:flex;align-items:center;gap:8px;font-family:var(--serif);font-size:16px;font-weight:600;margin-bottom:2px}

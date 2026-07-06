@@ -83,22 +83,22 @@ export default function EditFileDetails({ app, onSaved }) {
           {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
           {msg && <div className="notice ok" style={{ marginBottom: 10 }}>{msg}</div>}
           <p className="muted small" style={{ margin: '0 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Property</p>
-          <div className="ts-inputs">
-            <label style={{ gridColumn: '1 / -1' }}><span>Street address</span>
+          <div className="edit-grid">
+            <label className="col-4"><span>Street address</span>
               <input className="input" value={f.addrLine1} onChange={(e) => set('addrLine1', e.target.value)} /></label>
-            <label><span>Apt / Unit</span><input className="input" value={f.addrUnit} onChange={(e) => set('addrUnit', e.target.value)} /></label>
-            <label><span>City</span><input className="input" value={f.addrCity} onChange={(e) => set('addrCity', e.target.value)} /></label>
+            <label className="col-2"><span>City</span><input className="input" value={f.addrCity} onChange={(e) => set('addrCity', e.target.value)} /></label>
             <label><span>State</span>
               <select className="input" value={f.addrState} onChange={(e) => set('addrState', e.target.value)}>
                 <option value="">—</option>{US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
               </select></label>
             <label><span>ZIP</span><input className="input" value={f.addrZip} onChange={(e) => set('addrZip', e.target.value)} /></label>
+            <label><span>Apt / Unit</span><input className="input" value={f.addrUnit} onChange={(e) => set('addrUnit', e.target.value)} /></label>
             <label><span>Property type</span><input className="input" value={f.propertyType} onChange={(e) => set('propertyType', e.target.value)} /></label>
             <label><span>Units</span><input className="input" type="number" min="0" value={f.units} onChange={(e) => set('units', e.target.value)} /></label>
             <label><span>Occupancy</span><input className="input" value={f.occupancy} onChange={(e) => set('occupancy', e.target.value)} /></label>
           </div>
           <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Loan &amp; economics</p>
-          <div className="ts-inputs">
+          <div className="edit-grid">
             <label><span>Program</span><input className="input" value={f.program} onChange={(e) => set('program', e.target.value)} /></label>
             <label><span>Loan type</span>
               <select className="input" value={f.loanType} onChange={(e) => set('loanType', e.target.value)}>
@@ -124,27 +124,27 @@ export default function EditFileDetails({ app, onSaved }) {
           </div>
           {isRefi && <>
             <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Refinance details</p>
-            <div className="ts-inputs">
+            <div className="edit-grid">
               <label><span>Payoff amount</span><MoneyInput value={f.payoffAmount} onChange={(v) => set('payoffAmount', v)} /></label>
               <label><span>Original purchase price</span><MoneyInput value={f.originalPurchasePrice} onChange={(v) => set('originalPurchasePrice', v)} /></label>
-              <label><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} /></label>
+              <label className="col-2"><span>Date acquired</span><input className="input" type="date" value={f.acquisitionDate} onChange={(e) => set('acquisitionDate', e.target.value)} /></label>
             </div>
           </>}
           <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Experience entered on this file</p>
-          <div className="ts-inputs">
+          <div className="edit-grid">
             <label><span>Exp: flips</span><input className="input" type="number" min="0" value={f.requestedExpFlips} onChange={(e) => set('requestedExpFlips', e.target.value)} /></label>
             <label><span>Exp: holds</span><input className="input" type="number" min="0" value={f.requestedExpHolds} onChange={(e) => set('requestedExpHolds', e.target.value)} /></label>
             <label><span>Exp: ground-up</span><input className="input" type="number" min="0" value={f.requestedExpGround} onChange={(e) => set('requestedExpGround', e.target.value)} /></label>
             <label><span>Exp: REO</span><input className="input" type="number" min="0" value={f.requestedExpReo} onChange={(e) => set('requestedExpReo', e.target.value)} /></label>
           </div>
-          <div className="ts-inputs" style={{ marginTop: 10 }}>
-            <label style={{ gridColumn: '1 / -1', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <div className="edit-grid" style={{ marginTop: 12 }}>
+            <label className="col-4" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <input type="checkbox" checked={f.isAssignment} onChange={(e) => set('isAssignment', e.target.checked)} />
-              <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500 }}>This is an assignment purchase</span>
+              <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, fontSize: '14px', color: 'var(--ivory)' }}>This is an assignment purchase</span>
             </label>
             {f.isAssignment && <>
-              <label><span>Underlying price</span><MoneyInput value={f.underlyingContractPrice} onChange={(v) => set('underlyingContractPrice', v)} /></label>
-              <label><span>Assignment fee</span><MoneyInput value={f.assignmentFee} onChange={(v) => set('assignmentFee', v)} /></label>
+              <label className="col-2"><span>Underlying price</span><MoneyInput value={f.underlyingContractPrice} onChange={(v) => set('underlyingContractPrice', v)} /></label>
+              <label className="col-2"><span>Assignment fee</span><MoneyInput value={f.assignmentFee} onChange={(v) => set('assignmentFee', v)} /></label>
             </>}
           </div>
           <p className="muted small" style={{ margin: '8px 0 0' }}>Editing the price/ARV/rehab/assignment re-drives the pricing engine when you re-register a product. Every change lands in the file's Activity log with its before/after values.</p>

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
+import DocPreview from './DocPreview.jsx';
 
 /* One LLC, fully managed: entity details, ownership structure (the borrower's
    own % plus every other member until it totals 100%), and the three fixed
@@ -26,7 +27,7 @@ export function llcBadge(llc) {
   return { cls: 'warn', text: 'Setup incomplete' };
 }
 
-function SlotRow({ llc, slot, onPick, onDownload, dlBusy, uploading, locked }) {
+function SlotRow({ llc, slot, onPick, onDownload, onPreview, dlBusy, uploading, locked }) {
   const d = slot.document_id ? slot : null;
   const rs = d ? slot.review_status : null;
   const pill = !d ? { text: 'Not uploaded', style: undefined }
@@ -49,6 +50,7 @@ function SlotRow({ llc, slot, onPick, onDownload, dlBusy, uploading, locked }) {
       </div>
       <div className="row" style={{ gap: 6, alignItems: 'center' }}>
         <span className="pill" style={pill.style}>{pill.text}</span>
+        {d && <button className="btn ghost small" title="Preview" onClick={() => onPreview(slot)}>Preview</button>}
         {d && <button className="btn ghost small" disabled={dlBusy === slot.document_id} onClick={() => onDownload(slot)}>{dlBusy === slot.document_id ? '…' : '⤓'}</button>}
         {!locked && (
           <button className="btn ghost small" disabled={uploading} onClick={() => onPick(slot)}>{d ? 'Replace' : 'Upload PDF'}</button>
@@ -64,6 +66,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState('');
   const [dlBusy, setDlBusy] = useState(null);
+  const [previewSlot, setPreviewSlot] = useState(null);   // LLC doc being previewed
   const [f, setF] = useState(null);            // details form state
   const [members, setMembers] = useState(null); // members form state
   const fileRef = useRef(null);
@@ -226,10 +229,16 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
         <input ref={fileRef} type="file" accept=".pdf,application/pdf,image/*" style={{ display: 'none' }} onChange={onFile} />
         {(llc.slots || []).map(s => (
           <SlotRow key={s.item_id} llc={llc} slot={s} onPick={pickSlot} onDownload={downloadSlot}
-            dlBusy={dlBusy} uploading={busy === 'upload'} locked={locked} />
+            onPreview={setPreviewSlot} dlBusy={dlBusy} uploading={busy === 'upload'} locked={locked} />
         ))}
         {busy === 'upload' && <p className="muted small">Uploading…</p>}
       </div>
+      {previewSlot && (
+        <DocPreview title={previewSlot.label} filename={previewSlot.filename}
+          load={() => api.downloadDoc(previewSlot.document_id)}
+          onDownload={() => downloadSlot(previewSlot)}
+          onClose={() => setPreviewSlot(null)} />
+      )}
     </div>
   );
 }

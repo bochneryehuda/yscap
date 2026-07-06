@@ -256,6 +256,10 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
   const prefillRef = useRef(prefill);
   prefillRef.current = prefill;
   const [failed, setFailed] = useState(false);
+  // Gate the iframe hidden until it is dark, de-chromed and prefilled — without
+  // this the marketing page paints for ~1s in light theme with its full chrome
+  // (the "wiped-off coloring" blink) before the embed styling is injected.
+  const [loaded, setLoaded] = useState(false);
 
   // Show/hide the studio's admin pricing zone WITHOUT remounting the frame:
   // hiding keeps every admin value live in the (hidden) inputs — exactly how
@@ -333,13 +337,54 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
     let poller = null;
     let disposed = false;
 
+    // Safety net: never leave the studio permanently hidden. If the engines are
+    // slow (or the ready-poll is still spinning), reveal the frame anyway after
+    // a beat — earlyStamp has already made it dark + de-chromed, so revealing it
+    // shows the real tool loading, not the raw marketing page.
+    const revealFallback = setTimeout(() => { if (!disposed) setLoaded(true); }, 2500);
+
+    // Belt-and-braces: stamp dark theme + chrome-hiding CSS the moment the
+    // frame's document exists (even mid-parse), so the FIRST paint is already
+    // dark and de-chromed — the fade-in below then reveals nothing wrong.
+    let earlyStamp = null;
+    let stamped = false;
+    const stampEarly = () => {
+      if (stamped || disposed) return;
+      try {
+        const doc = frame.contentWindow && frame.contentWindow.document;
+        if (!doc || !doc.documentElement) return;
+        // about:blank has no real URL yet; wait for the tool document.
+        const href = frame.contentWindow.location && frame.contentWindow.location.href;
+        if (!href || href === 'about:blank') return;
+        doc.documentElement.setAttribute('data-theme', 'dark');
+        if (doc.head) {
+          const s = doc.createElement('style');
+          s.textContent = HIDE_CSS + '\n.ys-theme-toggle{display:none!important}';
+          doc.head.appendChild(s);
+        }
+        stamped = true;
+        if (earlyStamp) { clearInterval(earlyStamp); earlyStamp = null; }
+      } catch (_) { /* cross-doc timing — try again next tick */ }
+    };
+    earlyStamp = setInterval(stampEarly, 30);
+    stampEarly();
+
+    // On failure, stop every timer (setFailed only re-renders — it does not
+    // unmount, so the effect cleanup would not otherwise run) and surface the
+    // error notice.
+    const fail = () => {
+      if (earlyStamp) { clearInterval(earlyStamp); earlyStamp = null; }
+      clearTimeout(revealFallback);
+      setFailed(true);
+    };
+
     let booted = false;
     const boot = () => {
       if (booted || disposed) return;
       booted = true;
       let win;
       try { win = frame.contentWindow; if (!win || !win.document) throw new Error('no frame'); }
-      catch (_) { setFailed(true); return; }
+      catch (_) { fail(); return; }
 
       // termsheet.js wires itself on DOMContentLoaded, so TS/YS may land a
       // beat after the frame's load event — wait for both. (`win` is the
@@ -349,7 +394,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         if (disposed) { clearInterval(ready); return; }
         tries += 1;
         if (!(win.TS && win.YS)) {
-          if (tries > 100) { clearInterval(ready); setFailed(true); }
+          if (tries > 100) { clearInterval(ready); fail(); }
           return;
         }
         clearInterval(ready);
@@ -388,6 +433,11 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
           if (f) f.dispatchEvent(new win.Event('input', { bubbles: true }));
         } catch (_) { /* studio still renders on its own next input */ }
 
+        // Everything above is applied — the frame is dark, de-chromed and
+        // prefilled — so it is now safe to fade it into view.
+        if (earlyStamp) { clearInterval(earlyStamp); earlyStamp = null; }
+        setLoaded(true);
+
         poller = setInterval(() => {
           if (disposed) return;
           try {
@@ -411,7 +461,9 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
     boot();
     return () => {
       disposed = true;
+      clearTimeout(revealFallback);
       if (poller) clearInterval(poller);
+      if (earlyStamp) clearInterval(earlyStamp);
       winRef.current = null;
     };
     // mount-once: the frame prefill/lock/admin setup applies to the initial props
@@ -426,8 +478,16 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
     );
   }
   return (
-    <iframe ref={frameRef} src={STUDIO_URL} title="YS Term Sheet Studio"
-      style={{ width: '100%', border: 0, display: 'block', minHeight: 900, background: 'transparent' }} />
+    <div className="toolframe" style={{ position: 'relative', minHeight: 900 }}>
+      {!loaded && (
+        <div className="toolframe-loading" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)' }}>
+          <span>Loading the Term Sheet Studio…</span>
+        </div>
+      )}
+      <iframe ref={frameRef} src={STUDIO_URL} title="YS Term Sheet Studio"
+        style={{ width: '100%', border: 0, display: 'block', minHeight: 900, background: 'transparent',
+          opacity: loaded ? 1 : 0, transition: 'opacity .2s ease' }} />
+    </div>
   );
 });
 

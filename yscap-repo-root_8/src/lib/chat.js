@@ -25,6 +25,7 @@ const pii = require('./pii-guard');
 const notify = require('./notify');
 const email = require('./email');
 const { link: portalLink } = require('./email/catalog');
+const { can } = require('./permissions');
 
 const CHAT_EMAIL_DELAY_MIN = 10;      // email fallback only if still unread after this
 const URGENT_RENOTIFY_MIN = 2;        // Teams-style urgent re-ping cadence
@@ -89,6 +90,9 @@ async function getConversation(cid) {
   return r.rows[0] || null;
 }
 
+// Default roles that see every file (mirrors permissions.ROLE_DEFAULTS). Live
+// checks use the see_all_files CAPABILITY so revoking it from a staffer scopes
+// their chat access too, and granting it opens chat — no code change needed.
 const SEES_ALL_ROLES = ['admin', 'super_admin', 'underwriter'];
 
 /** May this staff actor open this conversation? Members always can. seesAll
@@ -96,7 +100,7 @@ const SEES_ALL_ROLES = ['admin', 'super_admin', 'underwriter'];
     open any chat on their file (including customs they're not yet in). */
 async function staffCanAccess(actor, conv) {
   if (!conv || conv.app_deleted_at) return false;
-  if (SEES_ALL_ROLES.includes(actor.role)) return true;
+  if (can(actor, 'see_all_files')) return true;
   if (conv.loan_officer_id === actor.id || conv.processor_id === actor.id) return true;
   const m = await db.query(
     `SELECT 1 FROM conversation_members WHERE conversation_id=$1 AND member_kind='staff' AND member_id=$2 AND removed_at IS NULL`,

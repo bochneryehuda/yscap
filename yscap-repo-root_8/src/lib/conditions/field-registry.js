@@ -244,18 +244,81 @@ const WRITE_TARGETS = {
   fico: { table: 'borrowers', column: 'fico' },
 };
 
+// ---------------------------------------------------------------------------
+// Admin-defined custom fields (custom_fields table, 038) extend the registry
+// at runtime: an information condition can ask for a brand-new field, whose
+// per-application answer lives in application_field_values and which the rule
+// engine can reference like any built-in field. Cached briefly; mutations
+// call bustCustomFields().
+// ---------------------------------------------------------------------------
+let _customCache = null;
+let _customCacheAt = 0;
+const CUSTOM_TTL_MS = 15000;
+
+function customFieldDef(row) {
+  return {
+    key: row.key, label: row.label, group: 'Custom fields', type: row.type,
+    options: row.options || undefined, writable: true, custom: true,
+    borrowerLabel: row.borrower_label || undefined, borrowerHint: row.borrower_hint || undefined,
+    isActive: row.is_active !== false,
+  };
+}
+
+async function loadCustomFields(db) {
+  const now = Date.now();
+  if (_customCache && now - _customCacheAt < CUSTOM_TTL_MS) return _customCache;
+  try {
+    const r = await db.query(`SELECT * FROM custom_fields ORDER BY created_at`);
+    _customCache = r.rows.map(customFieldDef);
+    _customCacheAt = now;
+  } catch (_) {
+    // Table missing (mid-migration) — behave as if there are no custom fields.
+    _customCache = _customCache || [];
+  }
+  return _customCache;
+}
+
+function bustCustomFields() { _customCache = null; _customCacheAt = 0; }
+
+/** All fields (built-in + ACTIVE custom), for pickers and rule authoring. */
+async function allFields(db) {
+  const custom = await loadCustomFields(db);
+  return [...FIELDS, ...custom.filter((f) => f.isActive)];
+}
+
+/**
+ * Field lookup map for rule EVALUATION — includes inactive custom fields so
+ * existing rules/conditions referencing a retired field keep resolving
+ * (they just stop being authorable).
+ */
+async function fieldMap(db) {
+  const custom = await loadCustomFields(db);
+  const map = { ...BY_KEY };
+  for (const f of custom) map[f.key] = f;
+  return map;
+}
+
+const isCustomKey = (key) => /^cf_/.test(String(key || ''));
+
 // The public view sent to the portal (no SQL/source internals).
-function publicFields() {
-  return FIELDS.map((f) => ({
+function toPublic(f) {
+  return {
     key: f.key, label: f.label, group: f.group, type: f.type,
-    options: f.options || undefined, writable: !!f.writable,
+    options: f.options || undefined, writable: !!f.writable, custom: !!f.custom,
     borrowerLabel: f.borrowerLabel || undefined, borrowerHint: f.borrowerHint || undefined,
     description: f.description || undefined,
-  }));
+  };
+}
+function publicFields() {
+  return FIELDS.map(toPublic);
+}
+async function publicFieldsAll(db) {
+  return (await allFields(db)).map(toPublic);
 }
 
 module.exports = {
-  FIELDS, BY_KEY, WRITE_TARGETS, US_STATES, publicFields,
+  FIELDS, BY_KEY, WRITE_TARGETS, US_STATES, publicFields, publicFieldsAll,
+  allFields, fieldMap, loadCustomFields, bustCustomFields, isCustomKey, customFieldDef,
   normState, normStrategy, normLoanPurpose, normPropertyType, normRehabType,
   normCitizenship, normOccupancy,
 };

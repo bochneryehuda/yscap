@@ -42,6 +42,10 @@ function formFromDef(d) {
   };
 }
 
+function blankField() {
+  return { label: '', type: 'text', optionsText: '', borrowerLabel: '', borrowerHint: '' };
+}
+
 const TYPE_HELP = {
   document: 'The borrower (or staff) uploads a file. It shows in the Documents space and counts in the TPR clean-file export.',
   info_field: 'Asks for a piece of information. The answer is written straight into the real field on the file — no side copies.',
@@ -52,8 +56,8 @@ const TYPE_HELP = {
 };
 
 export default function StaffConditionStudio() {
-  const { role } = useAuth();
-  const isAdmin = role === 'admin' || role === 'super_admin';
+  const { can } = useAuth();
+  const isAdmin = can('manage_conditions');
   const [meta, setMeta] = useState(null);
   const [defs, setDefs] = useState([]);
   const [view, setView] = useState('list');           // list | edit
@@ -65,6 +69,7 @@ export default function StaffConditionStudio() {
   const [fAud, setFAud] = useState('all');
   const [showInactive, setShowInactive] = useState(false);
   const [preview, setPreview] = useState(null);       // {matches,total,sample} | {error}
+  const [newField, setNewField] = useState(null);     // inline "create a new field" form | null
   const previewTimer = useRef(null);
 
   const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 6000); };
@@ -73,6 +78,33 @@ export default function StaffConditionStudio() {
     .then(([m, d]) => { setMeta(m); setDefs(d); })
     .catch((e) => flash(false, e.message || 'could not load the condition library'));
   useEffect(() => { if (isAdmin) load(); }, [isAdmin]);
+
+  // Create a brand-new fillable field inline and select it for this condition.
+  async function createField() {
+    if (!newField.label.trim()) return flash(false, 'Give the new field a name.');
+    const body = {
+      label: newField.label.trim(), type: newField.type,
+      borrowerLabel: newField.borrowerLabel.trim() || undefined,
+      borrowerHint: newField.borrowerHint.trim() || undefined,
+    };
+    if (newField.type === 'enum') {
+      const opts = newField.optionsText.split('\n').map((s) => s.trim()).filter(Boolean);
+      if (opts.length < 2) return flash(false, 'A dropdown field needs at least two choices.');
+      body.options = opts.map((label) => ({ label }));
+    }
+    setBusy(true);
+    try {
+      const r = await api.adminCreateCustomField(body);
+      // Refresh the field list so the picker + rule builder see the new field,
+      // then select it for this condition.
+      const m = await api.adminConditionFields();
+      setMeta(m);
+      setForm((f) => ({ ...f, fieldKey: r.field.key }));
+      setNewField(null);
+      flash(true, `Field “${r.field.label}” created and selected.`);
+    } catch (e) { flash(false, e.message || 'could not create the field'); }
+    setBusy(false);
+  }
 
   // Live rule preview while editing (debounced).
   useEffect(() => {
@@ -90,7 +122,7 @@ export default function StaffConditionStudio() {
   const catLabel = useMemo(() => Object.fromEntries(((meta && meta.categories) || []).map((c) => [c.v, c.label])), [meta]);
   const writableFields = useMemo(() => ((meta && meta.fields) || []).filter((f) => f.writable), [meta]);
 
-  if (!isAdmin) return <div role="alert" className="notice err">The Condition Center is for admins only.</div>;
+  if (!isAdmin) return <div role="alert" className="notice err">You do not have permission to manage the Condition Center.</div>;
 
   const filtered = defs.filter((d) => {
     if (!showInactive && !d.isActive) return false;
@@ -107,8 +139,8 @@ export default function StaffConditionStudio() {
     { key: 'inactive', title: 'Inactive / retired', items: filtered.filter((d) => !d.isActive) },
   ].filter((g) => g.items.length);
 
-  const startNew = () => { setForm(blankForm()); setPreview(null); setView('edit'); };
-  const startEdit = (d) => { setForm(formFromDef(d)); setPreview(null); setView('edit'); };
+  const startNew = () => { setForm(blankForm()); setPreview(null); setNewField(null); setView('edit'); };
+  const startEdit = (d) => { setForm(formFromDef(d)); setPreview(null); setNewField(null); setView('edit'); };
 
   const save = async () => {
     if (!form.label.trim()) return flash(false, 'Give the condition a name.');
@@ -208,13 +240,84 @@ export default function StaffConditionStudio() {
             ))}
           </div>
           {form.conditionType === 'info_field' && (
-            <div className="field" style={{ marginTop: 14, maxWidth: 460 }}>
-              <label>Which field should the borrower fill in?</label>
-              <select className="input" value={form.fieldKey} onChange={(e) => setForm((f) => ({ ...f, fieldKey: e.target.value }))}>
-                <option value="" disabled>Choose a field…</option>
-                {writableFields.map((f) => <option key={f.key} value={f.key}>{f.group} — {f.label}</option>)}
-              </select>
-              {form.fieldKey && <span className="muted small">The answer writes straight into “{(writableFields.find((f) => f.key === form.fieldKey) || {}).label}” on the file.</span>}
+            <div style={{ marginTop: 14, maxWidth: 560 }}>
+              <div className="field" style={{ marginBottom: 8 }}>
+                <label>Which field should the borrower fill in?</label>
+                <div className="row" style={{ gap: 8 }}>
+                  <select className="input" style={{ flex: 1 }} value={newField ? '' : form.fieldKey}
+                    disabled={!!newField}
+                    onChange={(e) => setForm((f) => ({ ...f, fieldKey: e.target.value }))}>
+                    <option value="" disabled>Choose an existing field…</option>
+                    <optgroup label="Built-in fields">
+                      {writableFields.filter((f) => !f.custom).map((f) => <option key={f.key} value={f.key}>{f.group} — {f.label}</option>)}
+                    </optgroup>
+                    {writableFields.some((f) => f.custom) && (
+                      <optgroup label="Custom fields you created">
+                        {writableFields.filter((f) => f.custom).map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
+                      </optgroup>
+                    )}
+                  </select>
+                  {!newField && (
+                    <button type="button" className="btn ghost small" onClick={() => setNewField(blankField())}>+ Create a new field</button>
+                  )}
+                </div>
+                <span className="muted small">
+                  Existing fields can be filled elsewhere too. Create a NEW field when you want a piece of information that only this condition collects.
+                </span>
+                {form.fieldKey && !newField && (
+                  <span className="muted small">The answer writes straight into “{(writableFields.find((f) => f.key === form.fieldKey) || {}).label}”.</span>
+                )}
+              </div>
+              {newField && (
+                <div className="panel" style={{ background: 'var(--ink-2)', borderColor: 'var(--teal-dp)' }}>
+                  <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                    <strong className="small">New field</strong>
+                    <button type="button" className="btn link small" onClick={() => setNewField(null)}>Cancel — use an existing field</button>
+                  </div>
+                  <div className="grid cols-2">
+                    <div className="field">
+                      <label>Field name (staff)</label>
+                      <input className="input" value={newField.label} placeholder="e.g. Number of contractors"
+                        onChange={(e) => setNewField((n) => ({ ...n, label: e.target.value }))} />
+                    </div>
+                    <div className="field">
+                      <label>Answer type</label>
+                      <select className="input" value={newField.type} onChange={(e) => setNewField((n) => ({ ...n, type: e.target.value }))}>
+                        <option value="text">Text</option>
+                        <option value="number">Number</option>
+                        <option value="money">Money ($)</option>
+                        <option value="percent">Percent (%)</option>
+                        <option value="date">Date</option>
+                        <option value="boolean">Yes / No</option>
+                        <option value="enum">Dropdown (choices)</option>
+                      </select>
+                    </div>
+                  </div>
+                  {newField.type === 'enum' && (
+                    <div className="field">
+                      <label>Dropdown choices (one per line)</label>
+                      <textarea className="input" rows={3} value={newField.optionsText}
+                        placeholder={'Option A\nOption B\nOption C'}
+                        onChange={(e) => setNewField((n) => ({ ...n, optionsText: e.target.value }))} />
+                    </div>
+                  )}
+                  <div className="grid cols-2">
+                    <div className="field">
+                      <label>Borrower-facing name (optional)</label>
+                      <input className="input" value={newField.borrowerLabel} placeholder="Defaults to the field name"
+                        onChange={(e) => setNewField((n) => ({ ...n, borrowerLabel: e.target.value }))} />
+                    </div>
+                    <div className="field">
+                      <label>Borrower instructions (optional)</label>
+                      <input className="input" value={newField.borrowerHint} placeholder="One sentence on what to enter"
+                        onChange={(e) => setNewField((n) => ({ ...n, borrowerHint: e.target.value }))} />
+                    </div>
+                  </div>
+                  <button type="button" className="btn primary small" disabled={busy} onClick={createField}>
+                    {busy ? 'Creating…' : 'Create field & use it'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
           {form.conditionType === 'tool' && (

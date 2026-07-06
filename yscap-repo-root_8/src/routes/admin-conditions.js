@@ -39,8 +39,10 @@ function slugify(label) {
 /**
  * Validate + normalize a definition payload. Returns { error } or the
  * normalized column values. `existing` is the current row on updates.
+ * `fields` is the merged built-in + custom field map (registry.fieldMap()).
  */
-function normalizeDefinition(b, existing) {
+function normalizeDefinition(b, existing, fields) {
+  const byKey = fields || registry.BY_KEY;
   const out = {};
   const label = b.label !== undefined ? String(b.label || '').trim() : (existing ? existing.label : '');
   if (!label) return { error: 'label is required' };
@@ -63,7 +65,7 @@ function normalizeDefinition(b, existing) {
 
   if (type === 'info_field') {
     const fieldKey = b.fieldKey !== undefined ? b.fieldKey : (existing ? existing.field_key : null);
-    const f = registry.BY_KEY[fieldKey];
+    const f = byKey[fieldKey];
     if (!f || !f.writable) return { error: 'an information condition needs a fillable field' };
     if (audience === 'staff') return { error: 'an information condition must be visible to the borrower (external or both)' };
     out.field_key = fieldKey;
@@ -90,10 +92,10 @@ function normalizeDefinition(b, existing) {
   if (ruleLogic != null && typeof ruleLogic === 'string') { try { ruleLogic = JSON.parse(ruleLogic); } catch (_) { return { error: 'ruleLogic is not valid JSON' }; } }
   if (out.auto_apply === 'rules') {
     if (!ruleLogic) return { error: 'add at least one rule, or set the condition to apply to every file' };
-    const problems = rules.validateRule(ruleLogic);
+    const problems = rules.validateRule(ruleLogic, { fields: byKey });
     if (problems.length) return { error: 'rule problems: ' + problems.join('; ') };
   } else if (ruleLogic) {
-    const problems = rules.validateRule(ruleLogic);
+    const problems = rules.validateRule(ruleLogic, { fields: byKey });
     if (problems.length) return { error: 'rule problems: ' + problems.join('; ') };
   }
   out.rule_logic = ruleLogic ? JSON.stringify(ruleLogic) : null;
@@ -112,7 +114,7 @@ function normalizeDefinition(b, existing) {
 }
 
 /** Serialize a template row for the studio. */
-function defOut(t) {
+function defOut(t, fields) {
   return {
     id: t.id, code: t.code, label: t.label, borrowerLabel: t.borrower_label,
     hint: t.hint, borrowerHint: t.borrower_hint,
@@ -123,7 +125,7 @@ function defOut(t) {
     isActive: t.is_active, sortOrder: t.sort_order,
     appliesProgram: t.applies_program, appliesLoanType: t.applies_loan_type,
     autoApply: t.auto_apply, ruleLogic: t.rule_logic,
-    ruleSummary: t.rule_logic ? rules.summarizeRule(t.rule_logic) : null,
+    ruleSummary: t.rule_logic ? rules.summarizeRule(t.rule_logic, { fields }) : null,
     origin: t.origin, version: t.version,
     createdAt: t.created_at, updatedAt: t.updated_at,
     createdByName: t.created_by_name || null, updatedByName: t.updated_by_name || null,
@@ -131,16 +133,113 @@ function defOut(t) {
   };
 }
 
-// ---- meta: fields, operators, categories, types ----
-router.get('/fields', (req, res) => {
+// ---- meta: fields (built-in + custom), operators, categories, types ----
+router.get('/fields', async (req, res) => {
   res.json({
-    fields: registry.publicFields(),
+    fields: await registry.publicFieldsAll(db),
     operators: rules.OPERATORS_BY_TYPE,
     operatorLabels: rules.OPERATOR_LABEL,
     categories: CATEGORIES,
     types: Object.entries(CONDITION_TYPES).map(([v, t]) => ({ v, label: t.label })),
     tools: TOOLS,
   });
+});
+
+// ---- custom fields: create a brand-new fillable field while authoring ----
+const FIELD_TYPES = ['money', 'number', 'percent', 'text', 'enum', 'boolean', 'date'];
+
+router.get('/custom-fields', async (req, res) => {
+  const r = await db.query(
+    `SELECT cf.*,
+            (SELECT count(*) FROM checklist_templates t WHERE t.field_key=cf.key) AS template_count,
+            (SELECT count(*) FROM application_field_values v WHERE v.field_key=cf.key) AS value_count
+       FROM custom_fields cf ORDER BY cf.created_at`);
+  res.json(r.rows.map((row) => ({
+    id: row.id, key: row.key, label: row.label, type: row.type, options: row.options,
+    borrowerLabel: row.borrower_label, borrowerHint: row.borrower_hint, isActive: row.is_active,
+    templateCount: Number(row.template_count || 0), valueCount: Number(row.value_count || 0),
+  })));
+});
+
+router.post('/custom-fields', async (req, res) => {
+  const b = req.body || {};
+  const label = String(b.label || '').trim();
+  if (!label) return res.status(400).json({ error: 'give the field a name' });
+  if (!FIELD_TYPES.includes(b.type)) return res.status(400).json({ error: 'bad field type' });
+  let options = null;
+  if (b.type === 'enum') {
+    const raw = Array.isArray(b.options) ? b.options : [];
+    options = raw
+      .map((o) => (typeof o === 'string' ? { v: null, label: o } : o))
+      .map((o) => {
+        const lab = String((o && o.label) || '').trim();
+        const v = String((o && o.v) || lab).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        return lab && v ? { v, label: lab } : null;
+      }).filter(Boolean);
+    const seen = new Set();
+    options = options.filter((o) => (seen.has(o.v) ? false : (seen.add(o.v), true)));
+    if (options.length < 2) return res.status(400).json({ error: 'a dropdown field needs at least two options' });
+  }
+  let key = 'cf_' + slugify(label);
+  const taken = await db.query(`SELECT 1 FROM custom_fields WHERE key=$1`, [key]);
+  if (taken.rows[0]) key = `${key}_${Date.now().toString(36).slice(-4)}`;
+  try {
+    const r = await db.query(
+      `INSERT INTO custom_fields (key,label,borrower_label,borrower_hint,type,options,created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [key, label.slice(0, 200),
+       String(b.borrowerLabel || '').trim().slice(0, 200) || null,
+       String(b.borrowerHint || '').trim().slice(0, 1000) || null,
+       b.type, options ? JSON.stringify(options) : null, req.actor.id]);
+    registry.bustCustomFields();
+    await audit(req, 'custom_field_created', 'custom_field', r.rows[0].id, { key, label, type: b.type });
+    res.status(201).json({ ok: true, field: { id: r.rows[0].id, ...registry.customFieldDef(r.rows[0]) } });
+  } catch (e) {
+    console.error('[conditions] custom field create failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'could not create the field' });
+  }
+});
+
+router.patch('/custom-fields/:id', async (req, res) => {
+  const b = req.body || {};
+  const cur = await db.query(`SELECT * FROM custom_fields WHERE id=$1`, [req.params.id]);
+  if (!cur.rows[0]) return res.status(404).json({ error: 'field not found' });
+  const sets = [], vals = []; let i = 1;
+  if (b.label !== undefined) { const l = String(b.label || '').trim(); if (!l) return res.status(400).json({ error: 'label required' }); sets.push(`label=$${i++}`); vals.push(l.slice(0, 200)); }
+  if (b.borrowerLabel !== undefined) { sets.push(`borrower_label=$${i++}`); vals.push(String(b.borrowerLabel || '').trim().slice(0, 200) || null); }
+  if (b.borrowerHint !== undefined) { sets.push(`borrower_hint=$${i++}`); vals.push(String(b.borrowerHint || '').trim().slice(0, 1000) || null); }
+  if (b.isActive !== undefined) { sets.push(`is_active=$${i++}`); vals.push(!!b.isActive); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  await db.query(`UPDATE custom_fields SET ${sets.join(',')} WHERE id=$${i}`, vals);
+  registry.bustCustomFields();
+  await audit(req, 'custom_field_updated', 'custom_field', req.params.id, { fields: Object.keys(b) });
+  res.json({ ok: true });
+});
+
+router.delete('/custom-fields/:id', async (req, res) => {
+  const cur = await db.query(
+    `SELECT cf.*,
+            (SELECT count(*) FROM checklist_templates t WHERE t.field_key=cf.key) AS template_count,
+            (SELECT count(*) FROM application_field_values v WHERE v.field_key=cf.key) AS value_count,
+            -- A field can be referenced ONLY inside a rule tree (no field_key,
+            -- no stored value yet). Count those too, or a hard delete would leave
+            -- a dangling reference that silently makes the rule never match.
+            (SELECT count(*) FROM checklist_templates t
+              WHERE t.rule_logic IS NOT NULL AND t.rule_logic::text LIKE '%"' || cf.key || '"%') AS rule_ref_count
+       FROM custom_fields cf WHERE cf.id=$1`, [req.params.id]);
+  if (!cur.rows[0]) return res.status(404).json({ error: 'field not found' });
+  const f = cur.rows[0];
+  if (Number(f.template_count) > 0 || Number(f.value_count) > 0 || Number(f.rule_ref_count) > 0) {
+    await db.query(`UPDATE custom_fields SET is_active=false, updated_at=now() WHERE id=$1`, [req.params.id]);
+    registry.bustCustomFields();
+    await audit(req, 'custom_field_deactivated', 'custom_field', req.params.id, { key: f.key });
+    return res.json({ ok: true, deactivated: true });
+  }
+  await db.query(`DELETE FROM custom_fields WHERE id=$1`, [req.params.id]);
+  registry.bustCustomFields();
+  await audit(req, 'custom_field_deleted', 'custom_field', req.params.id, { key: f.key });
+  res.json({ ok: true, deleted: true });
 });
 
 // ---- list the whole library (built-in + admin-authored) ----
@@ -154,13 +253,15 @@ router.get('/definitions', async (req, res) => {
        LEFT JOIN staff_users cb ON cb.id = t.created_by
        LEFT JOIN staff_users ub ON ub.id = t.updated_by
       ORDER BY t.is_active DESC, t.scope, t.phase NULLS LAST, t.sort_order, t.label`);
-  res.json(r.rows.map(defOut));
+  const fields = await registry.fieldMap(db);
+  res.json(r.rows.map((t) => defOut(t, fields)));
 });
 
 // ---- create a new definition ----
 router.post('/definitions', async (req, res) => {
   const b = req.body || {};
-  const norm = normalizeDefinition(b);
+  const fields = await registry.fieldMap(db);
+  const norm = normalizeDefinition(b, null, fields);
   if (norm.error) return res.status(400).json({ error: norm.error });
   // unique, readable code: cc_<slug>, suffixed if taken
   let code = 'cc_' + slugify(norm.label);
@@ -186,7 +287,7 @@ router.post('/definitions', async (req, res) => {
     if (['always', 'rules'].includes(norm.auto_apply) && b.runNow !== false) {
       run = await engine.evaluateAllOpen({ actor: req.actor, reason: 'definition_created' });
     }
-    res.status(201).json({ ok: true, definition: defOut(def), run });
+    res.status(201).json({ ok: true, definition: defOut(def, fields), run });
   } catch (e) {
     console.error('[conditions] create failed:', db.describeError ? db.describeError(e) : e.message);
     res.status(500).json({ error: 'could not save the condition' });
@@ -208,7 +309,8 @@ router.patch('/definitions/:id', async (req, res) => {
     return res.json({ ok: true });
   }
 
-  const norm = normalizeDefinition(b, existing);
+  const fields = await registry.fieldMap(db);
+  const norm = normalizeDefinition(b, existing, fields);
   if (norm.error) return res.status(400).json({ error: norm.error });
   const contentChanged = ['label', 'borrower_label', 'hint', 'borrower_hint', 'audience', 'item_kind', 'tool_key',
     'field_key', 'esign_doc', 'category', 'auto_apply', 'rule_logic', 'is_required']
@@ -236,7 +338,7 @@ router.patch('/definitions/:id', async (req, res) => {
     if (['always', 'rules'].includes(norm.auto_apply) && b.runNow !== false && r.rows[0].is_active) {
       run = await engine.evaluateAllOpen({ actor: req.actor, reason: 'definition_updated' });
     }
-    res.json({ ok: true, definition: defOut(r.rows[0]), run });
+    res.json({ ok: true, definition: defOut(r.rows[0], fields), run });
   } catch (e) {
     console.error('[conditions] update failed:', db.describeError ? db.describeError(e) : e.message);
     res.status(500).json({ error: 'could not update the condition' });
@@ -266,7 +368,8 @@ router.post('/preview-rule', async (req, res) => {
   let tree = (req.body || {}).ruleLogic;
   if (typeof tree === 'string') { try { tree = JSON.parse(tree); } catch (_) { return res.status(400).json({ error: 'bad rule JSON' }); } }
   if (!tree) return res.status(400).json({ error: 'ruleLogic required' });
-  const problems = rules.validateRule(tree);
+  const fields = await registry.fieldMap(db);
+  const problems = rules.validateRule(tree, { fields });
   if (problems.length) return res.status(400).json({ error: problems.join('; '), problems });
   const apps = await db.query(
     `SELECT a.id, a.ys_loan_number, a.property_address, b.first_name, b.last_name
@@ -274,10 +377,13 @@ router.post('/preview-rule', async (req, res) => {
       WHERE a.deleted_at IS NULL AND a.status = ANY($1::text[])
       ORDER BY a.created_at DESC LIMIT 500`, [engine.OPEN_STATUSES]);
   let matches = 0; const sample = [];
+  // `fields` (the merged built-in + custom map, from validation above) is passed
+  // into evaluateRule so rules on custom (cf_*) fields evaluate the same way the
+  // live engine does — otherwise Preview would show 0 matches for such a rule.
   for (const row of apps.rows) {
     try {
       const loaded = await engine.loadRuleContext(row.id);
-      if (loaded && rules.evaluateRule(tree, loaded.ctx)) {
+      if (loaded && rules.evaluateRule(tree, loaded.ctx, fields)) {
         matches++;
         if (sample.length < 6) {
           const addr = row.property_address || {};
@@ -290,7 +396,7 @@ router.post('/preview-rule', async (req, res) => {
       }
     } catch (_) { /* skip broken files */ }
   }
-  res.json({ total: apps.rows.length, matches, sample, summary: rules.summarizeRule(tree) });
+  res.json({ total: apps.rows.length, matches, sample, summary: rules.summarizeRule(tree, { fields }) });
 });
 
 // ---- run the engine across the whole open pipeline ----

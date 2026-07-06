@@ -12,6 +12,7 @@ import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import { MoneyInput } from '../components/FormattedInputs.jsx';
+import DocPreview from '../components/DocPreview.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -431,6 +432,8 @@ export default function Application() {
     catch (e) { setErr(e.message || 'Download failed'); }
     finally { setDlBusy(null); }
   }
+  // Preview a document in place (no download) — same authenticated loader.
+  const [previewDoc, setPreviewDoc] = useState(null);
   useEffect(() => {
     // React Router reuses this mounted component across /app/:id changes
     // (mention chips, notification deep-links). Clear the previous file's data
@@ -867,6 +870,7 @@ export default function Application() {
                           {d.review_status === 'accepted' ? 'Accepted' : d.review_status === 'rejected' ? 'Rejected' : 'In review'}
                         </span>
                         <button className="btn link small" onClick={() => pick({ itemId: assetsItem.id, slot: d.slot_label || undefined, replaceDocumentId: d.id })}>Replace</button>
+                        <button className="btn ghost small" title="Preview" onClick={() => setPreviewDoc(d)}>Preview</button>
                         <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>{dlBusy === d.id ? '…' : '⤓'}</button>
                       </div>
                     ))}
@@ -902,6 +906,7 @@ export default function Application() {
                           {d.review_status === 'accepted' ? 'Accepted' : d.review_status === 'rejected' ? 'Rejected' : 'In review'}
                         </span>
                         <button className="btn link small" onClick={() => pick({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id })}>Replace</button>
+                        <button className="btn ghost small" title="Preview" onClick={() => setPreviewDoc(d)}>Preview</button>
                         <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>{dlBusy === d.id ? '…' : '⤓'}</button>
                       </div>
                     ))}
@@ -954,6 +959,7 @@ export default function Application() {
                 {rs === 'rejected' && d.rejection_reason && <div className="small" style={{ color: 'var(--danger)' }}>{d.rejection_reason}</div>}
               </div>
               <span className="pill" style={style}>{label}</span>
+              <button className="btn ghost" title="Preview" onClick={() => setPreviewDoc(d)}>Preview</button>
               <button className="btn ghost" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
                 {dlBusy === d.id ? '…' : 'Download'}
               </button>
@@ -983,6 +989,14 @@ export default function Application() {
           title="Rehab Budget — Scope of Work"
           url={sowUrl(id, sowItem, app)}
           onClose={() => { setSowOpen(false); load(); }} />
+      )}
+      {previewDoc && (
+        <DocPreview
+          title={itemLabelById[previewDoc.checklist_item_id] || previewDoc.slot_label || 'Document preview'}
+          filename={previewDoc.filename} contentType={previewDoc.content_type}
+          load={() => api.downloadDoc(previewDoc.id)}
+          onDownload={() => downloadDoc(previewDoc)}
+          onClose={() => setPreviewDoc(null)} />
       )}
     </>
   );

@@ -13,6 +13,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
+import DocPreview from '../components/DocPreview.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -82,8 +83,10 @@ function Badge({ children, tone }) {
 }
 
 // Completing / signing off is the PROCESSOR's call (admins too); a loan
-// officer marks conditions REVIEWED instead — mirrored server-side.
-const canComplete = (role) => ['processor', 'admin', 'super_admin', 'underwriter'].includes(role);
+// officer marks conditions REVIEWED instead — mirrored server-side. This is a
+// UI hint by role default; the server enforces the sign_off_conditions
+// capability (incl. the loan-coordinator persona and per-user overrides).
+const canComplete = (role) => ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
 
 function Item({ it, team, onPatch, role }) {
   const [open, setOpen] = useState(false);
@@ -151,12 +154,33 @@ function Item({ it, team, onPatch, role }) {
    Accept / Reject, plus the whole-LLC "Mark verified" sign-off. Verifying an
    entity auto-satisfies the LLC condition on every open file it vests;
    revoking (or rejecting one of its documents) reopens those conditions. */
-function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, reviewBusy }) {
+function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, reviewBusy, onPreview }) {
   const [llcs, setLlcs] = useState(null);
   const [openId, setOpenId] = useState(null);
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  // Staff can upload directly into an entity's document slots (e.g. the borrower
+  // emailed a formation doc) — same shared slots the borrower uploads into.
+  const fileRef = useRef(null);
+  const [upTarget, setUpTarget] = useState(null);   // {llcId, itemId, slotLabel, replaceDocumentId}
+  const pickSlot = (t) => { setUpTarget(t); if (fileRef.current) { fileRef.current.value = ''; fileRef.current.click(); } };
+  async function onFile(e) {
+    const file = (e.target.files || [])[0];
+    if (!file || !upTarget) return;
+    setBusy(upTarget.itemId); setErr('');
+    try {
+      const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+      await api.staffUploadAppDoc(appId, {
+        llcId: upTarget.llcId, checklistItemId: upTarget.itemId, slot: upTarget.slotLabel || undefined,
+        replaceDocumentId: upTarget.replaceDocumentId || undefined,
+        filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
+      });
+      flash('Uploaded to the entity ✓ — the borrower sees it too.');
+      setUpTarget(null); await load(); onChanged && await onChanged();
+    } catch (e2) { setErr(e2.message || 'Upload failed'); }
+    finally { setBusy(''); }
+  }
 
   const load = () => app.borrower_id
     ? api.staffBorrowerLlcs(app.borrower_id).then(setLlcs).catch(e => { setErr(e.message || 'Could not load LLCs'); setLlcs([]); })
@@ -191,6 +215,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   if (!app.borrower_id) return null;
   return (
     <div className="panel" style={{ marginTop: 18 }}>
+      <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onFile} />
       <div className="row" style={{ marginBottom: 6 }}>
         <h3>Borrower LLCs</h3>
         <div className="spacer" />
@@ -283,16 +308,30 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                         <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {s.document_id ? s.filename : <span className="muted">not uploaded</span>}
                         </span>
-                        {s.document_id && (
+                        {s.document_id ? (
                           <>
                             <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : { borderColor: 'var(--gold)', color: 'var(--gold)' }}>
                               {rs === 'accepted' ? 'accepted' : rs === 'rejected' ? 'rejected' : 'pending'}
                             </span>
                             {s.reviewed_by_name && <span className="muted small">by {s.reviewed_by_name}</span>}
+                            {onPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => onPreview({ id: s.document_id, filename: s.filename })}>Preview</button>}
                             <button className="btn ghost small" disabled={dlBusy === s.document_id} onClick={() => onDownloadDoc({ id: s.document_id, filename: s.filename })}>{dlBusy === s.document_id ? '…' : 'Download'}</button>
+                            {!l.is_verified && (
+                              <button className="btn link small" disabled={!!busy}
+                                title="Upload a replacement (e.g. the borrower emailed a new copy)"
+                                onClick={() => pickSlot({ llcId: l.id, itemId: s.item_id, slotLabel: s.slot_label || s.label, replaceDocumentId: s.document_id })}>Replace</button>
+                            )}
                             {rs !== 'accepted' && <button className="btn primary small" disabled={reviewBusy} onClick={() => review(s, 'accept')}>Accept</button>}
                             {rs !== 'rejected' && <button className="btn link small" disabled={reviewBusy} onClick={() => review(s, 'reject')}>Reject</button>}
                           </>
+                        ) : (
+                          !l.is_verified && (
+                            <button className="btn ghost small" disabled={busy === s.item_id}
+                              title="Upload this document on the borrower's behalf (e.g. they emailed it to you)"
+                              onClick={() => pickSlot({ llcId: l.id, itemId: s.item_id, slotLabel: s.slot_label || s.label })}>
+                              {busy === s.item_id ? '…' : 'Upload'}
+                            </button>
+                          )
                         )}
                         {rs === 'rejected' && s.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 170 }}>{s.rejection_reason}</span>}
                       </div>
@@ -381,9 +420,10 @@ function StaffTrackRecordPanel({ borrowerId }) {
    borrower works through (Scope of Work, track record, contacts, ID, document
    slots), with every uploaded PDF inline and full sign-off capability — a
    separate section from the internal phase-by-phase checklist. */
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onChanged, onPreview }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
+  const [trOpen, setTrOpen] = useState(false);    // borrower track record open full-screen (staff)
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
   const [cardBusy, setCardBusy] = useState(false);
   const borrowerItems = items.filter(it => it.audience === 'borrower' || it.audience === 'both');
@@ -474,6 +514,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               {it.tool_key === 'rehab_budget' && (
                 <button className="btn ghost small" onClick={() => setSowOpen(it.id)}>Open Scope of Work</button>
               )}
+              {it.tool_key === 'track_record' && app.borrower_id && (
+                <button className="btn ghost small" onClick={() => setTrOpen(true)}>Open track record</button>
+              )}
               {it.tool_key === 'appraisal_card' && (
                 <button className="btn ghost small" disabled={cardBusy} onClick={revealCard}>
                   {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
@@ -502,6 +545,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       <span className="muted small" style={{ minWidth: 90 }}>{d.slot_label || (d.source_type === 'system' ? 'Tool export' : `Document ${i + 1}`)}</span>
                       <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                       <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+                      {onPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => onPreview(d)}>Preview</button>}
                       <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => onDownloadDoc(d)}>{dlBusy === d.id ? '…' : 'Download'}</button>
                       {onUploadTo && d.source_type !== 'system' && (
                         <button className="btn link small" title="Replace this document with a new version (the old one is kept in the trash)"
@@ -527,6 +571,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           title="Rehab Budget — Scope of Work (internal)"
           url={`/tools/rehab-budget.html?app=${appId}&item=${sowOpen}&internal=1&embed=1`}
           onClose={() => setSowOpen(null)} />
+      )}
+      {trOpen && app.borrower_id && (
+        <ToolModal
+          title="Borrower track record (internal)"
+          url={`/tools/track-record.html?internal=1&borrower=${app.borrower_id}&embed=1`}
+          onClose={() => { setTrOpen(false); onChanged && onChanged(); }} />
       )}
     </div>
   );
@@ -624,6 +674,11 @@ export default function StaffApplication() {
     /* eslint-disable-next-line */
   }, [app]);
 
+  // In-place document preview (any PDF/image/text) — see it before signing off,
+  // without downloading. Uses the same authenticated loader as the download.
+  const [previewDoc, setPreviewDoc] = useState(null);
+  const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
+
   async function revealSsn() {
     if (ssnFull) { setSsnFull(''); return; }        // toggle back to masked
     if (!app?.borrower_id) return;
@@ -685,15 +740,18 @@ export default function StaffApplication() {
         });
         await api.staffUploadAppDoc(id, {
           checklistItemId: uploadTarget.itemId || undefined,
-          slot: uploadTarget.replaceDocumentId ? (uploadTarget.slot || undefined)
+          llcId: uploadTarget.llcId || undefined,
+          // LLC document slots are single-doc per slot (formation/EIN/…), so an
+          // LLC upload keeps the slot's own label rather than "Document N".
+          slot: (uploadTarget.replaceDocumentId || uploadTarget.llcId) ? (uploadTarget.slot || undefined)
             : slotBase != null ? `Document ${slotBase + i + 1}` : (uploadTarget.slot || undefined),
           replaceDocumentId: uploadTarget.replaceDocumentId || undefined,
           filename: files[i].name, contentType: files[i].type, dataBase64: String(dataUrl).split(',')[1],
         });
       }
       flash(files.length > 1
-        ? `${files.length} files uploaded to the condition ✓ — the borrower sees them too.`
-        : 'Uploaded to the condition ✓ — the borrower sees it too.');
+        ? `${files.length} files uploaded ✓ — the borrower sees them too.`
+        : 'Uploaded ✓ — the borrower sees it too.');
       setUploadTarget(null); await load();
     } catch (e2) { setErr(e2.message || 'Upload failed'); }
     finally { setBusyAct(''); if (staffFileRef.current) staffFileRef.current.value = ''; }
@@ -781,14 +839,18 @@ export default function StaffApplication() {
 
   const [itemFilter, setItemFilter] = useState('all');
   const bucketOf = (s) => s === 'issue' ? 'rejected' : s === 'received' ? 'submitted' : s === 'satisfied' ? 'satisfied' : 'outstanding';
+  // The internal checklist shows ONLY staff-facing work items — the borrower's
+  // conditions (audience borrower/both) already live in "Conditions to close",
+  // so they must not be listed twice.
+  const internalItems = useMemo(() => items.filter(it => it.audience === 'staff'), [items]);
   const phases = useMemo(() => {
     const groups = {};
-    const src = itemFilter === 'all' ? items : items.filter(it => bucketOf(it.status) === itemFilter);
+    const src = itemFilter === 'all' ? internalItems : internalItems.filter(it => bucketOf(it.status) === itemFilter);
     for (const it of src) { const k = it.phase || 'general'; (groups[k] = groups[k] || []).push(it); }
     return Object.entries(groups)
       .map(([k, arr]) => [k, arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))])
       .sort((a, b) => (a[1][0].sort_order || 0) - (b[1][0].sort_order || 0));
-  }, [items, itemFilter]);
+  }, [internalItems, itemFilter]);
 
   if (err && !app) return <div role="alert" className="notice err">{err}</div>;
   if (!app) return <div className="panel muted">Loading…</div>;
@@ -805,7 +867,7 @@ export default function StaffApplication() {
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
     { id: 'sec-entity', label: 'Entity (LLC) review' },
     { id: 'sec-track', label: 'Track record' },
-    { id: 'sec-checklist', label: 'Internal checklist', badge: items.length ? `${items.filter(i => i.signed_off_at).length}/${items.length}` : '' },
+    { id: 'sec-checklist', label: 'Internal checklist', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
     { id: 'sec-documents', label: 'Documents & exports', badge: docs.length || '' },
     { id: 'sec-messages', label: 'Conversations' },
     { id: 'sec-activity', label: 'Activity' },
@@ -957,7 +1019,7 @@ export default function StaffApplication() {
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
-        onUploadTo={pickUpload} />
+        onUploadTo={pickUpload} onChanged={load} onPreview={openPreview} />
       <div className="grid cols-2" style={{ marginTop: 14 }}>
         <AddConditionPanel appId={id} items={items} onChanged={load}
           onError={(t) => setErr(t)} onFlash={flash} />
@@ -968,22 +1030,22 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-checklist" title="Internal checklist"
-        info="The phase-by-phase processing checklist — internal work items, assignments and gates. The borrower never sees this section.">
+        info="The phase-by-phase processing checklist — internal-only work items, assignments and gates. Borrower conditions live in “Conditions to close” and are never repeated here. The borrower never sees this section.">
       <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
-          <h3>Checklist</h3>
+          <h3>Internal checklist</h3>
           <div className="spacer" />
           <select className="input" style={{ maxWidth: 160 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
-            <option value="all">All ({items.length})</option>
+            <option value="all">All ({internalItems.length})</option>
             <option value="outstanding">Outstanding</option>
             <option value="submitted">Submitted (in review)</option>
             <option value="rejected">Needs attention</option>
             <option value="satisfied">Satisfied</option>
           </select>
-          <span className="muted small">{items.filter(i => i.signed_off_at).length}/{items.length} signed off</span>
+          <span className="muted small">{internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off</span>
         </div>
         {phases.length === 0
-          ? <p className="muted small">No checklist items yet.</p>
+          ? <p className="muted small">No internal-only checklist items. Borrower-facing conditions are in “Conditions to close” above.</p>
           : phases.map(([k, arr]) => (
             <div key={k} style={{ marginTop: 10 }}>
               <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
@@ -996,7 +1058,7 @@ export default function StaffApplication() {
       <Section id="sec-entity" title="Entity (LLC) review"
         info="The vesting entity's details, ownership structure and formation documents. Verifying the LLC auto-satisfies its condition on every open file it vests.">
       <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-        dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} />
+        dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
       </Section>
 
       <Section id="sec-documents" title="Documents & exports"
@@ -1041,6 +1103,7 @@ export default function StaffApplication() {
                 </div>
                 <div className="row" style={{ gap: 6, alignItems: 'center' }}>
                   <span className="pill" style={pillStyle}>{rs}</span>
+                  <button className="btn ghost small" title="Preview without downloading" onClick={() => openPreview(d)}>Preview</button>
                   <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
                     {dlBusy === d.id ? '…' : 'Download'}
                   </button>
@@ -1088,6 +1151,14 @@ export default function StaffApplication() {
       </Section>
 
       </FileSections>
+      {previewDoc && (
+        <DocPreview
+          title={previewDoc.item_label || previewDoc.slot_label || 'Document preview'}
+          filename={previewDoc.filename} contentType={previewDoc.content_type}
+          load={() => api.staffDownloadDoc(previewDoc.id)}
+          onDownload={() => downloadDoc(previewDoc)}
+          onClose={() => setPreviewDoc(null)} />
+      )}
     </>
   );
 }

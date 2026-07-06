@@ -10,8 +10,10 @@ const router = require('../lib/safe-router')();
 const db = require('../db');
 const chat = require('../lib/chat');
 const events = require('../lib/events');
+const { can } = require('../lib/permissions');
 
-const seesAll = (req) => chat.SEES_ALL_ROLES.includes(req.actor.role);
+// Capability-based (mirrors staff.js): honors per-user see_all_files overrides.
+const seesAll = (req) => can(req.actor, 'see_all_files');
 const isAdmin = (req) => ['admin', 'super_admin'].includes(req.actor.role);
 const ROLE_LABEL = {
   super_admin: 'Super Admin', admin: 'Admin',
