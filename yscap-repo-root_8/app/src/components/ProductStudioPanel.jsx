@@ -1,21 +1,21 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import TermSheetStudio, {
   buildStudioState, scenarioFromEngineInputs, adminStateFromEngineInputs, blobToBase64,
 } from './TermSheetStudio.jsx';
 
 /* Product registration on a loan file — borrower AND staff logins. The panel
-   opens the real static Term Sheet Studio prefilled from the file (or from
-   the currently registered scenario), lets the user price, pick a program +
-   leverage and Register — then every detail is exported back into the file:
-   the registration row (full inputs + quote), the applications loan terms,
-   the liquidity condition, and the exact studio PDF attached as the file's
-   current term sheet (prior sheets are marked superseded). Re-pricing and
-   re-registering any number of times is the intended workflow. */
+   shows the registered product; "Reprice / re-register" opens the real static
+   Term Sheet Studio in the SAME full-screen tool sheet as the Rehab Budget —
+   an edge-to-edge page takeover with a slim header, where leaving saves your
+   working scenario back onto the file. Register exports every detail into the
+   file: the registration row (full inputs + quote), the application's loan
+   terms, the liquidity condition, and the exact studio PDF attached as the
+   file's current term sheet (prior sheets are marked superseded). Re-pricing
+   and re-registering any number of times is the intended workflow. */
 
 const money = (n) => (n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
 const pct = (f, d = 2) => (f == null || f === '' ? '—' : (Number(f) * 100).toFixed(d) + '%');
-const pctRaw = (p, d = 1) => (p == null || p === '' ? '—' : Number(p).toFixed(d) + '%');
 const when = (t) => (t ? new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
 
 function addrLine(a) {
@@ -180,7 +180,7 @@ function studioStateFromFields(f) {
   return { v, c: checks };
 }
 
-export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered, toolItemId }) {
+const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered, toolItemId }, ref) {
   const isStaff = mode === 'staff';
   const [data, setData] = useState(null);       // { current, history }
   const [profile, setProfile] = useState(null); // borrower profile (name + fico)
@@ -189,14 +189,20 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
-  const [adminKey, setAdminKey] = useState('');   // set after a correct admin-mode password
+  const [adminKey, setAdminKey] = useState('');   // set after a correct admin-mode password (borrower)
+  const [adminOpen, setAdminOpen] = useState(false); // is the admin zone VISIBLE right now
   const [savedStudio, setSavedStudio] = useState(undefined);   // undefined = still loading, null = none saved
   const studioRef = useRef(null);
+  const sheetBodyRef = useRef(null);
   const studioSaveT = useRef(null);
   const lastStudioSaved = useRef('');
   const stateUrl = toolItemId
     ? `${isStaff ? '/api/staff' : '/api/borrower'}/applications/${appId}/checklist/${toolItemId}/tool-state`
     : null;
+
+  useImperativeHandle(ref, () => ({
+    openStudio() { setOpenStudio(true); },
+  }), []);
 
   // Autosave the studio scenario onto the pricing condition (debounced).
   const onStudioState = (s2) => {
@@ -211,31 +217,72 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
       api.put(stateUrl, { state }).catch(() => { lastStudioSaved.current = ''; });
     }, 1200);
   };
-  const adminOn = isStaff || !!adminKey;
+  const adminActive = isStaff || !!adminKey;   // overrides ride along even when the zone is locked shut
 
-  function unlockAdmin() {
-    if (adminKey) { setAdminKey(''); return; }     // toggle back off
+  function toggleAdmin() {
+    if (isStaff) return;   // staff always have the zone
+    if (adminKey) {
+      // Lock the zone shut — the values REMAIN live in the studio and are
+      // still honored when registering, exactly like the static tool.
+      const next = !adminOpen;
+      setAdminOpen(next);
+      if (studioRef.current) {
+        studioRef.current.setAdminVisible(next);
+        if (next) setTimeout(() => studioRef.current && studioRef.current.scrollToAdmin(sheetBodyRef.current), 120);
+      }
+      return;
+    }
     const pw = window.prompt('Admin mode — enter the pricing admin password:');
     if (pw == null) return;
-    if (cyrb53(pw, 0) === ADMIN_HASH) { setAdminKey(pw); setMsg('Admin pricing unlocked — markup, origination and fee overrides are live.'); }
-    else setErr('Incorrect admin password.');
+    if (cyrb53(pw, 0) === ADMIN_HASH) {
+      setAdminKey(pw);
+      setAdminOpen(true);
+      setMsg('Admin pricing unlocked — markup, origination and fee overrides are live.');
+      // Reveal the zone in place and land the user ON it — no page jump.
+      if (studioRef.current) {
+        studioRef.current.setAdminVisible(true);
+        setTimeout(() => studioRef.current && studioRef.current.scrollToAdmin(sheetBodyRef.current), 120);
+      }
+    } else setErr('Incorrect admin password.');
   }
 
   const loadPricing = () => (isStaff ? api.staffPricing(appId) : api.borrowerPricing(appId));
 
   useEffect(() => {
     let alive = true;
-    loadPricing().then((d) => {
-      if (!alive) return;
-      setData(d);
-      if (!d.current) setOpenStudio(true);   // nothing registered yet -> open the studio
-    }).catch((e) => alive && setErr(e.message || 'Could not load product registration'));
+    loadPricing().then((d) => { if (alive) setData(d); })
+      .catch((e) => alive && setErr(e.message || 'Could not load product registration'));
     if (stateUrl) api.get(stateUrl).then((d) => alive && setSavedStudio((d && d.state && d.state.v) ? d.state : null)).catch(() => alive && setSavedStudio(null));
     else setSavedStudio(null);
     if (!isStaff) api.profile().then((p) => alive && setProfile(p)).catch(() => {});
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId, mode]);
+
+  // Sheet mechanics: lock the page scroll behind it; Escape saves & closes.
+  useEffect(() => {
+    if (!openStudio) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') closeStudio(); };
+    document.addEventListener('keydown', onKey);
+    document.body.style.overflow = 'hidden';
+    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openStudio]);
+
+  // Closing the sheet SAVES: flush the debounced autosave immediately and keep
+  // the last scenario as the prefill, so reopening resumes exactly here.
+  function closeStudio() {
+    const s = studioRef.current && studioRef.current.snapshot();
+    if (s && s.fields) {
+      const state = studioStateFromFields(s.fields);
+      clearTimeout(studioSaveT.current);
+      lastStudioSaved.current = JSON.stringify(state);
+      if (stateUrl) api.put(stateUrl, { state }).catch(() => { lastStudioSaved.current = ''; });
+      setSavedStudio(state);
+    }
+    setAdminOpen(false);
+    setOpenStudio(false);
+  }
 
   const cur = data && data.current;
   const history = (data && data.history) || [];
@@ -322,9 +369,10 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
       // exact PDF from the static generator (best-effort — registration still proceeds)
       let pdf = null;
       try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
-      // Admin-unlocked borrowers price like staff (fee/markup/manual overrides);
-      // the server only honors them because the admin key rides along.
-      const overrides = overridesFromSnapshot(s, adminOn ? 'staff' : mode);
+      // Admin-unlocked borrowers price like staff (fee/markup/manual overrides)
+      // — the admin key rides along even when the zone is locked shut, so the
+      // changes made in admin mode STAY in the registration and the exports.
+      const overrides = overridesFromSnapshot(s, adminActive ? 'staff' : mode);
       if (isStaff) await api.staffRegisterProduct(appId, s.program, overrides);
       else await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined);
       let note = 'Product registered — the loan file now carries these terms, the liquidity requirement and the term sheet.';
@@ -340,7 +388,7 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
       }
       const dNew = await loadPricing();
       setData(dNew);
-      setOpenStudio(false);
+      closeStudio();
       setMsg(note);
       if (onRegistered) onRegistered();
     } catch (e) {
@@ -349,22 +397,34 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
     } finally { setBusy(false); }
   }
 
+  const statusLine = snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
+    : snap && !snap.program ? 'Tap a program card above to choose Standard or Gold Standard.'
+    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money(d.cashToClose)} · liquidity ${money(d.liquidity)}`
+    : '';
+
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Product registration & term sheet</h3>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           {cur && <span className="ts-badge ok">Registered · {cur.program === 'gold' ? 'Gold Standard' : 'Standard'} · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
-          <button className="btn ghost small" onClick={() => setOpenStudio((o) => !o)}
-            title="Everything you enter autosaves to the file — reopening resumes where you left off.">
-            {openStudio ? 'Done — save & close' : cur ? 'Reprice / re-register' : 'Open Term Sheet Studio'}
+          <button className="btn primary small" onClick={() => setOpenStudio(true)}
+            title="Opens the full-screen Term Sheet Studio — everything you enter autosaves to the file; leaving resumes where you left off.">
+            {cur ? 'Reprice / re-register' : 'Open Products & Pricing'}
           </button>
         </div>
       </div>
 
-      {err && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
-      {msg && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
+      {err && !openStudio && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
+      {msg && !openStudio && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
 
+      {!cur && data && (
+        <p className="muted small" style={{ margin: '10px 0 0' }}>
+          No product registered yet. Price the deal in the Term Sheet Studio, pick Standard or Gold
+          Standard and your leverage, then register — the terms, cash to close and liquidity
+          requirement all flow onto this file.
+        </p>
+      )}
       {cur && <RegisteredProductDetails reg={cur} showAdmin={isStaff} />}
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
@@ -373,35 +433,59 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
         </p>
       )}
 
-      {openStudio && prefill && (
-        <div style={{ marginTop: 12 }}>
-          <p className="muted small" style={{ margin: '0 0 8px' }}>
-            {isStaff
-              ? 'The live Term Sheet Studio, prefilled from this file. Adjust anything — including the admin pricing controls below the form — pick the program and leverage, then register. Every detail is saved back onto the file and the exact term sheet PDF is attached (previous sheets are marked superseded).'
-              : 'Prefilled from your loan file. Adjust your experience, credit and reserve, compare the programs, pick your leverage — then register your product. Deal numbers come from your file; ask your loan team to change those.'}
-          </p>
-          <TermSheetStudio key={adminOn ? 'admin' : 'std'} ref={studioRef} prefill={prefill} lockedIds={lockedIds}
-            showAdmin={adminOn} onState={onStudioState} />
-          <div className="row studio-foot" style={{ gap: 10, marginTop: 10, alignItems: 'center' }}>
-            <button className="btn primary" disabled={busy || !canRegister} onClick={register}>
+      {openStudio && (
+        <div className="toolsheet" role="dialog" aria-modal="true" aria-label="Products & Pricing — Term Sheet Studio">
+          <header className="toolsheet-head">
+            <button className="toolsheet-back" aria-label="Save and go back to the file" onClick={closeStudio}>←</button>
+            <div className="toolsheet-titles">
+              <strong>Products &amp; Pricing — Term Sheet Studio</strong>
+              <span className="muted small">Autosaves as you work — leaving saves your scenario to the file too.</span>
+            </div>
+            {cur && <span className="ts-badge ok" style={{ marginRight: 4 }}>Registered · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
+            <button className="btn primary toolsheet-done" disabled={busy || !canRegister} onClick={register}>
               {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
             </button>
-            {!isStaff && (
-              <button className="btn link small" type="button" onClick={unlockAdmin}
-                style={{ opacity: adminKey ? 1 : 0.45 }}
-                title="Admin mode — unlock markup, origination and fee overrides (password required)">
-                {adminKey ? 'Admin mode on — lock' : 'Admin mode'}
-              </button>
-            )}
-            <span className="muted small studio-foot-status">
-              {snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
-                : snap && !snap.program ? 'Tap a program card above to choose Standard or Gold Standard.'
-                : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money(d.cashToClose)} · liquidity ${money(d.liquidity)}`
-                : ''}
-            </span>
+          </header>
+          {(err || msg) && (
+            <div className="toolsheet-sub">
+              {err && <span role="alert" className="small" style={{ color: 'var(--danger)' }}>{err}</span>}
+              {msg && !err && <span className="small" style={{ color: 'var(--ok)' }}>{msg}</span>}
+            </div>
+          )}
+          <div className="toolsheet-body scroll" ref={sheetBodyRef}>
+            <div className="toolsheet-inner">
+              <p className="muted small" style={{ margin: '12px 0 8px' }}>
+                {isStaff
+                  ? 'The live Term Sheet Studio, prefilled from this file. Adjust anything — including the admin pricing controls — pick the program and leverage, then register. Every detail saves back onto the file and the exact term sheet PDF is attached (previous sheets are marked superseded).'
+                  : 'Prefilled from your loan file. Adjust your experience, credit and reserve, compare the programs, pick your leverage — then register your product. Deal numbers come from your file; ask your loan team to change those.'}
+              </p>
+              {prefill
+                ? <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
+                    showAdmin={isStaff} onState={onStudioState} />
+                : <p className="muted small">Loading your scenario…</p>}
+              <div className="toolsheet-actions">
+                <button className="btn primary" disabled={busy || !canRegister} onClick={register}>
+                  {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
+                </button>
+                <button className="btn ghost" onClick={closeStudio}>Save &amp; exit</button>
+                {!isStaff && (
+                  <button className="btn link small" type="button" onClick={toggleAdmin}
+                    style={{ opacity: adminKey ? 1 : 0.45 }}
+                    title="Admin mode — unlock markup, origination and fee overrides (password required)">
+                    {adminKey ? (adminOpen ? 'Admin mode on — lock' : 'Admin mode locked — reopen') : 'Admin mode'}
+                  </button>
+                )}
+                {!isStaff && adminKey && !adminOpen && (
+                  <span className="muted small">Admin overrides stay active while locked — they carry into the registration.</span>
+                )}
+                <span className="muted small studio-foot-status">{statusLine}</span>
+              </div>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
-}
+});
+
+export default ProductStudioPanel;

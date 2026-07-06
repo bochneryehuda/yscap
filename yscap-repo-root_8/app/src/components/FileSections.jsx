@@ -16,14 +16,27 @@ export function InfoTip({ tip }) {
   );
 }
 
-export function Section({ id, title, info, badge, children, style }) {
+/* collapsible + defaultOpen: long, low-urgency sections (Document history,
+   Activity) start collapsed — the header row toggles them. */
+export function Section({ id, title, info, badge, children, style, collapsible = false, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const toggle = () => collapsible && setOpen(o => !o);
   return (
     <section id={id} className="file-section" style={style}>
-      <div className="sec-head">
+      <div
+        className={`sec-head${collapsible ? ' collapsible' : ''}`}
+        onClick={toggle}
+        role={collapsible ? 'button' : undefined}
+        tabIndex={collapsible ? 0 : undefined}
+        aria-expanded={collapsible ? open : undefined}
+        onKeyDown={collapsible ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } } : undefined}
+      >
+        {collapsible && <span className={`sec-chevron${open ? ' open' : ''}`} aria-hidden="true">▶</span>}
         <h2 className="sec-title">{title}{info ? <InfoTip tip={info} /> : null}</h2>
         {badge != null && <span className="sec-badge">{badge}</span>}
+        {collapsible && <span className="muted small" style={{ flex: 'none', marginLeft: badge != null ? 0 : 'auto' }}>{open ? 'Hide' : 'Show'}</span>}
       </div>
-      {children}
+      {(!collapsible || open) && children}
     </section>
   );
 }

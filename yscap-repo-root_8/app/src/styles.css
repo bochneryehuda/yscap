@@ -576,7 +576,12 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
    ===================================================================== */
 .file-layout{display:grid;grid-template-columns:228px minmax(0,1fr);gap:26px;align-items:start}
 .file-main{min-width:0}
-.file-nav{position:sticky;top:18px;z-index:20}
+/* The rail locks the moment it meets the bottom of the sticky header (72px
+   + breathing room) instead of sliding under it — locking "too late", halfway
+   into Application details, was called out explicitly. It also scrolls inside
+   itself if the section list is taller than the viewport. */
+.file-nav{position:sticky;top:86px;z-index:20;max-height:calc(100vh - 102px);overflow-y:auto;scrollbar-width:none}
+.file-nav::-webkit-scrollbar{display:none}
 .file-nav ol{list-style:none;margin:0;padding:6px;background:var(--ink-1);
   border:1px solid var(--line);border-radius:var(--radius)}
 .file-nav a{display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:9px;
@@ -598,6 +603,11 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   background:linear-gradient(180deg,var(--gold),var(--teal-dp))}
 .sec-badge{margin-left:auto;font-size:12px;color:var(--muted);border:1px solid var(--line);
   border-radius:999px;padding:2px 10px;white-space:nowrap}
+/* collapsible sections (Document history / Activity): whole header toggles */
+.sec-head.collapsible{cursor:pointer;user-select:none}
+.sec-head.collapsible:hover .sec-title{color:var(--teal-br)}
+.sec-chevron{flex:none;color:var(--muted);font-size:12px;transition:transform .15s ease}
+.sec-chevron.open{transform:rotate(90deg)}
 .file-section .panel{margin-top:0}
 .file-section .panel + .panel{margin-top:14px}
 
@@ -668,6 +678,19 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .toolsheet-savewash{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;
   gap:12px;align-items:center;justify-content:center;background:rgba(20,27,34,.82);
   backdrop-filter:blur(3px);color:var(--ivory);font-weight:600}
+/* sheet variant whose body scrolls its own (auto-height) content — used by
+   the Products & Pricing studio and the Track Record, which grow with their
+   content instead of filling the viewport */
+.toolsheet-body.scroll{overflow-y:auto;-webkit-overflow-scrolling:touch;display:block;
+  padding:0 clamp(10px,2.5vw,26px) env(safe-area-inset-bottom)}
+.toolsheet-body.scroll>.toolsheet-inner{max-width:1200px;margin:0 auto}
+/* slim sub-bar under the sheet header (requirement chips, admin notes) */
+.toolsheet-sub{flex:none;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  padding:8px calc(14px + env(safe-area-inset-right)) 8px calc(14px + env(safe-area-inset-left));
+  border-bottom:1px solid var(--line);background:var(--ink-1)}
+/* the studio sheet's action bar sticks to the bottom of the scrolling sheet */
+.toolsheet-actions{position:sticky;bottom:0;z-index:6;background:linear-gradient(180deg,transparent,var(--ink) 26%);
+  padding:12px 0 max(10px, env(safe-area-inset-bottom));display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 @media(max-width:720px){
   .toolsheet-titles .small{display:none}
   .toolsheet-titles strong{font-size:15px}

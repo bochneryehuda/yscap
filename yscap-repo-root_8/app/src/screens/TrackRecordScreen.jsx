@@ -10,12 +10,11 @@ import StaticToolFrame from '../components/StaticToolFrame.jsx';
    static HTML copy on the profile, and each loan file's experience condition
    reads from this same record.
 
-   The builder sits in a seamless auto-height frame (no box, no inner
-   scrollbar) and posts live counts up to this page, so the requirement chips
-   update as deals are added — no save, no reload.
-
-   Opened from a file's condition (?app=<id>), "Done — back to my file" also
-   submits the track record for that file's condition and returns to it. */
+   It opens as the SAME full-screen tool sheet as the Rehab Budget: an
+   edge-to-edge page takeover with a slim sticky header, the requirement chips
+   in a sub-bar, and a Done button that saves and returns — whether you arrive
+   from a file's condition (?app=<id>, Done also submits that condition) or
+   from the Profile / nav. */
 
 const bucketOf = (dealType) => {
   const t = String(dealType || '').toLowerCase();
@@ -55,7 +54,17 @@ export default function TrackRecordScreen() {
     return () => window.removeEventListener('message', onMsg);
   }, [appId]);
 
+  // The sheet takes the page over — the portal chrome behind it must not scroll.
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    const onKey = (e) => { if (e.key === 'Escape') done(); };
+    document.addEventListener('keydown', onKey);
+    return () => { document.body.style.overflow = ''; document.removeEventListener('keydown', onKey); };
+    /* eslint-disable-next-line */
+  }, [appId]);
+
   async function done() {
+    if (busy) return;
     if (!appId) { nav('/dashboard'); return; }
     setBusy(true);
     try {
@@ -82,23 +91,22 @@ export default function TrackRecordScreen() {
   };
 
   return (
-    <>
-      <div className="row" style={{ marginBottom: 10, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-        <div>
-          <h1>Track record</h1>
-          <p className="muted small">
-            Your investment experience, documented once and linked to every loan file.
-            Every change saves automatically — and keeps a static HTML copy of your record on your profile.
-          </p>
+    <div className="toolsheet" role="dialog" aria-modal="true" aria-label="Borrower track record">
+      <header className="toolsheet-head">
+        <button className="toolsheet-back" aria-label={appId ? 'Save and go back to your file' : 'Save and go back to your dashboard'}
+          disabled={busy} onClick={done}>←</button>
+        <div className="toolsheet-titles">
+          <strong>Track record &amp; experience</strong>
+          <span className="muted small">Every change saves automatically — one record, linked to every loan file.</span>
         </div>
-        <div className="spacer" />
-        <button className="btn primary" disabled={busy} onClick={done}>
-          {busy ? 'Saving…' : appId ? 'Done — back to my file' : 'Done — back to dashboard'}
+        <button className="btn primary toolsheet-done" disabled={busy} onClick={done}>
+          {busy ? 'Saving…' : appId ? 'Done — back to my file' : 'Done'}
         </button>
-      </div>
-      {counts && (
-        <div className="reqchips" style={{ marginBottom: 12 }}>
-          {hasReq ? (
+      </header>
+      {(counts || note) && (
+        <div className="toolsheet-sub">
+          {note && <span className="small" style={{ color: 'var(--ok)' }}>{note}</span>}
+          {counts && (hasReq ? (
             <>
               <span className="muted small">This file needs:</span>
               {req.flips > 0 && chip(`flip${req.flips === 1 ? '' : 's'}`, counts.flips, req.flips)}
@@ -112,15 +120,18 @@ export default function TrackRecordScreen() {
               {counts.holds > 0 && <span className="reqchip">{counts.holds} hold{counts.holds === 1 ? '' : 's'}</span>}
               {counts.ground > 0 && <span className="reqchip">{counts.ground} ground-up</span>}
             </>
-          )}
+          ))}
         </div>
       )}
-      {note && <div className="notice ok">{note}</div>}
-      <StaticToolFrame
-        title="Borrower track record"
-        src="/tools/track-record.html?portal=1&embed=1"
-        minHeight={560}
-      />
-    </>
+      <div className="toolsheet-body scroll">
+        <div className="toolsheet-inner">
+          <StaticToolFrame
+            title="Borrower track record"
+            src="/tools/track-record.html?portal=1&embed=1"
+            minHeight={560}
+          />
+        </div>
+      </div>
+    </div>
   );
 }

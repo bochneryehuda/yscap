@@ -63,16 +63,19 @@ async function notifyStaff(staffId, opts) {
 // Map a notification `type` onto a user-facing preference category.
 const CATEGORY_OF = {
   message: 'messages',
-  status_change: 'status_updates',
+  status_change: 'status_updates', closing_date: 'status_updates',
   doc_rejected: 'documents', doc_accepted: 'documents', doc_uploaded: 'documents',
   llc_verified: 'documents', llc_unverified: 'documents',
+  tool_submitted: 'documents',
   condition_added: 'conditions',
+  product_registered: 'pricing', term_sheet: 'pricing', pricing_update: 'pricing',
+  reminder: 'reminders',
   draw: 'draws', draw_request: 'draws',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).
 const ALWAYS_IN_APP = new Set(['doc_rejected', 'condition_added', 'security', 'account', 'llc_unverified']);
-const NOTIFY_CATEGORIES = ['messages', 'status_updates', 'documents', 'conditions', 'draws', 'other'];
+const NOTIFY_CATEGORIES = ['messages', 'status_updates', 'documents', 'conditions', 'pricing', 'reminders', 'draws', 'other'];
 const categoryOf = (type) => CATEGORY_OF[type] || 'other';
 
 /** Notify a borrower, respecting their per-category preferences. */

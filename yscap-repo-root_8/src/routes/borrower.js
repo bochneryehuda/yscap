@@ -177,7 +177,7 @@ router.post('/profile/photo-id', async (req, res) => {
 router.get('/applications', async (req, res) => {
   const r = await db.query(
     `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.property_address,a.loan_amount,
-            a.loan_officer_name,a.submitted_at,a.created_at,
+            a.loan_officer_name,a.submitted_at,a.created_at,a.llc_id,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both')) AS borrower_total,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('received','satisfied')) AS borrower_done
      FROM applications a WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ORDER BY a.created_at DESC`, [me(req)]);
@@ -339,13 +339,21 @@ router.get('/applications/:id/pricing', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const hist = await db.query(
       `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
-              r.is_current, r.created_at, r.quote, s.full_name AS registered_by_name
+              r.is_current, r.created_at, r.inputs, r.quote, s.full_name AS registered_by_name
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     // Strip internal lender pricing (markup/spread) from anything sent to a
-    // borrower — a staff-created registration's quote embeds it.
+    // borrower — a staff-created registration's quote AND inputs embed it. The
+    // rest of `inputs` is the borrower's own registered scenario (price, values,
+    // budget, FICO, experience, term, reserve) — that's what the "Scenario as
+    // registered" panel renders from.
     const stripInternal = (q) => { if (q && typeof q === 'object') { const { adminPricing, ...rest } = q; return rest; } return q; };
-    const redactRow = (row) => row ? { ...row, quote: stripInternal(row.quote) } : row;
+    const stripInternalInputs = (inp) => {
+      if (!inp || typeof inp !== 'object') return inp;
+      const { markupStdPct, markupGoldPct, ...rest } = inp;
+      return rest;
+    };
+    const redactRow = (row) => row ? { ...row, quote: stripInternal(row.quote), inputs: stripInternalInputs(row.inputs) } : row;
     const history = hist.rows.map(redactRow);
     const current = history.find((x) => x.is_current) || null;
     let quote = null;
@@ -388,6 +396,13 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
     if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote });
 
+    // Superseded terms, captured before the new registration lands — so the
+    // audit trail / Activity feed can say exactly what the reprice changed.
+    const prevQ = await db.query(
+      `SELECT program, total_loan, note_rate, product_label FROM product_registrations
+        WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
+    const prev = prevQ.rows[0] || null;
+
     const client = await db.getClient();
     let regId;
     try {
@@ -400,7 +415,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     finally { client.release(); }
 
     await audit(req, 'register_product', 'application', appId,
-      { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null });
+      { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
+        origination: quote.origination != null ? quote.origination : undefined,
+        cashToClose: quote.cashToClose != null ? quote.cashToClose : undefined,
+        liquidity: (quote.liquidity ?? quote.liquidityRequired) != null ? (quote.liquidity ?? quote.liquidityRequired) : undefined,
+        previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined });
 
     // Registering the product satisfies the "Products & pricing" condition.
     try {

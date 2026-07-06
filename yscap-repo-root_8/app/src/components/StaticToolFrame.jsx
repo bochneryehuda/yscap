@@ -22,14 +22,25 @@ export default function StaticToolFrame({ src, title, fill = false, minHeight = 
     if (!frame) return undefined;
     let disposed = false;
     let poller = null;
+    let booted = false;
 
     const boot = () => {
+      if (booted || disposed) return;
+      booted = true;
       let win;
       try { win = frame.contentWindow; if (!win || !win.document) throw new Error('no frame'); }
       catch (_) { setLoaded(true); return; }   // cross-origin/failed: show as-is
       try {
+        // The tools carry the marketing site's light/dark switch (theme.js) and
+        // may boot in LIGHT mode (saved site preference / no system signal).
+        // Inside the always-dark portal + a transparent frame that meant dark
+        // ink text on the dark portal — the "washed out, unreadable" embed.
+        // Force the dark tokens and hide the toggle: the embed always matches
+        // the portal around it.
+        win.document.documentElement.setAttribute('data-theme', 'dark');
         const style = win.document.createElement('style');
-        style.textContent = 'html,body{height:auto!important;min-height:0!important;background:transparent}';
+        style.textContent = 'html,body{height:auto!important;min-height:0!important;background:transparent}'
+          + '.ys-theme-toggle{display:none!important}';
         win.document.head.appendChild(style);
       } catch (_) { /* cosmetic only */ }
       if (!disposed) setLoaded(true);
@@ -46,10 +57,30 @@ export default function StaticToolFrame({ src, title, fill = false, minHeight = 
       }, 400);
     };
 
-    frame.addEventListener('load', boot);
+    // Boot on DOM-ready, not the full `load` event: one stalled third-party
+    // resource (a slow fonts CDN) used to leave the tool invisible and
+    // unthemed indefinitely because `load` never fired.
+    const tryBoot = () => {
+      if (booted || disposed) return true;
+      let doc;
+      try { doc = frame.contentWindow && frame.contentWindow.document; }
+      catch (_) { setLoaded(true); booted = true; return true; }   // cross-origin: show as-is
+      if (!doc || (doc.location && doc.location.href === 'about:blank')) return false;
+      // Theme the tool the moment its real document exists — even mid-parse
+      // (a hung stylesheet keeps readyState at 'loading' for a long time, and
+      // the embed must never sit there in the wrong theme).
+      try { if (doc.documentElement) doc.documentElement.setAttribute('data-theme', 'dark'); } catch (_) { /* cosmetic */ }
+      // full boot needs the parsed body
+      if (doc.readyState === 'loading' || !doc.body) return false;
+      boot();
+      return true;
+    };
+    frame.addEventListener('load', tryBoot);
+    const readyPoll = setInterval(() => { if (tryBoot()) clearInterval(readyPoll); }, 150);
     return () => {
       disposed = true;
-      frame.removeEventListener('load', boot);
+      frame.removeEventListener('load', tryBoot);
+      clearInterval(readyPoll);
       if (poller) clearInterval(poller);
     };
     // mount-once: src changes remount via key upstream

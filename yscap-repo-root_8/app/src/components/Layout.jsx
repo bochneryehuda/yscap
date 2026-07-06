@@ -52,6 +52,7 @@ export default function Layout({ children }) {
             <NavLink to="/dashboard">Dashboard</NavLink>
             <NavLink to="/apply">New application</NavLink>
             <NavLink to="/profile">Profile</NavLink>
+            <NavLink to="/entities" title="Your LLCs — set up once, verified, reused on every loan">Entities</NavLink>
             <NavLink to="/track-record" title="Your investment experience — one record, linked to every file">Track record</NavLink>
             <NavLink to="/settings/notifications" title="Notification settings">Alerts</NavLink>
             <Link to="/dashboard" className="bell" title="Notifications"
