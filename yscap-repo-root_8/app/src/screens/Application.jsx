@@ -246,6 +246,7 @@ export default function Application() {
     // (mention chips, notification deep-links). Clear the previous file's data
     // first or the old loan renders under the new URL until the fetch lands.
     setApp(null); setItems([]); setUploads([]); setConds([]); setErr(''); setMsg('');
+    setSowOpen(false); setTarget(null);   // else the Scope-of-Work modal carries over to the next file
     load();
     /* eslint-disable-next-line */
   }, [id]);

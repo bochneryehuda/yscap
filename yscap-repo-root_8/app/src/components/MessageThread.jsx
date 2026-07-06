@@ -113,9 +113,21 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
   const endRef = useRef(null);
   const fileRef = useRef(null);
   const recRef = useRef(null);
+  const sendingRef = useRef(false);
 
   const load = () => fetchMessages().then(m => setMsgs(m || [])).catch(e => setErr(e.message));
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  // Stop the mic if the thread unmounts mid-recording — otherwise the recording
+  // indicator (and the browser's mic access) stays on after navigating away.
+  useEffect(() => () => {
+    try {
+      const r = recRef.current;
+      if (r) {
+        if (r.state && r.state !== 'inactive') r.stop();
+        if (r.stream) r.stream.getTracks().forEach(t => t.stop());
+      }
+    } catch { /* ignore */ }
+  }, []);
   useEffect(() => {
     if (fetchMentionables) fetchMentionables().then(setMentionables).catch(() => {});
     // eslint-disable-next-line
@@ -200,6 +212,8 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
   async function submit() {
     const text = body.trim();
     if (!text && !pending) return;
+    if (sendingRef.current) return;   // Enter bypasses the disabled button; a ref
+    sendingRef.current = true;        // guard stops a rapid double-Enter double-send
     setBusy(true); setErr('');
     try {
       const usedRefs = pendingRefs.filter(r => text.includes('#' + r.label));
@@ -207,7 +221,7 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
       setBody(''); setMakeTask(false); setPending(null); setPendingRefs([]); setPicker(null);
       await load();
     } catch (e) { setErr(e.message || 'Could not send'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); sendingRef.current = false; }
   }
 
   async function doReact(mid, emoji) {

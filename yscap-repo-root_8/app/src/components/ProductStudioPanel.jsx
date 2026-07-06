@@ -102,7 +102,7 @@ export function overridesFromSnapshot(snap, mode) {
 
 /* Every detail of the registered product, laid out in the file. `reg` is a
    product_registrations row (quote + inputs jsonb). */
-export function RegisteredProductDetails({ reg, compactView = false }) {
+export function RegisteredProductDetails({ reg, compactView = false, showAdmin = false }) {
   if (!reg) return null;
   const q = typeof reg.quote === 'string' ? JSON.parse(reg.quote) : (reg.quote || {});
   const inp = typeof reg.inputs === 'string' ? JSON.parse(reg.inputs || '{}') : (reg.inputs || {});
@@ -160,7 +160,7 @@ export function RegisteredProductDetails({ reg, compactView = false }) {
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
           <Row k="Interest reserve" v={`${inp.irMonths || 0} months`} />
-          {q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
+          {showAdmin && q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
             <Row k="Admin pricing" v={`${q.adminPricing.markupPct != null ? 'markup ' + q.adminPricing.markupPct + '%' : ''}${q.adminPricing.manualPricing ? ' · manual basis' : ''}`.trim()} />
           )}
         </div>
@@ -329,7 +329,7 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
       {err && <div className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
 
-      {cur && <RegisteredProductDetails reg={cur} />}
+      {cur && <RegisteredProductDetails reg={cur} showAdmin={isStaff} />}
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
           {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}

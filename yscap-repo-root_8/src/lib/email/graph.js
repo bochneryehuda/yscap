@@ -7,6 +7,16 @@
 const cfg = require('../../config');
 let _tok = { value: null, exp: 0 };
 
+// Bound every Graph HTTP call (like the Resend provider does) so a hung upstream
+// can never leave an email send — and the request that triggered it — waiting
+// indefinitely.
+async function fetchWithTimeout(url, opts = {}, ms = 15000) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ms);
+  try { return await fetch(url, { ...opts, signal: ac.signal }); }
+  finally { clearTimeout(t); }
+}
+
 async function getToken() {
   if (_tok.value && Date.now() < _tok.exp - 60000) return _tok.value;
   const url = `https://login.microsoftonline.com/${cfg.msTenantId}/oauth2/v2.0/token`;
@@ -16,7 +26,7 @@ async function getToken() {
     scope: 'https://graph.microsoft.com/.default',
     grant_type: 'client_credentials',
   });
-  const r = await fetch(url, { method: 'POST', body });
+  const r = await fetchWithTimeout(url, { method: 'POST', body });
   const j = await r.json();
   if (!r.ok) throw new Error(`Graph token: ${j.error_description || r.status}`);
   _tok = { value: j.access_token, exp: Date.now() + (j.expires_in * 1000) };
@@ -34,7 +44,7 @@ module.exports = {
       body: { contentType: html ? 'HTML' : 'Text', content: html || text || '' },
       toRecipients: (Array.isArray(to) ? to : [to]).map(a => ({ emailAddress: { address: a } })),
     };
-    const r = await fetch(url, {
+    const r = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ message, saveToSentItems: false }),
