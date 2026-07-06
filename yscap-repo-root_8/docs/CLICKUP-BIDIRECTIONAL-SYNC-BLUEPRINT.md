@@ -19,6 +19,17 @@ Scope of this build: **RTL / short-term loans only** (Fix & Flip, Bridge, Privat
 
 ---
 
+## 0.1 Owner decisions — LOCKED (2026-07-06)
+
+1. **Sync identity:** run on Yehuda's token (`pk_120151948…`). **No bot seat for now** → echo-suppression relies entirely on value-hash + suppression window + loopback guard (§3.3), which become mandatory. A "YS Portal Bot" seat stays a recommended future hardening (drop-in later, no mapping change).
+2. **New-file trigger — hybrid (§4.3–4.4):** (a) every new ClickUp task auto-syncs via `taskCreated` webhook; (b) a new **"Send to Portal"** checkbox on the task = *emergency create* (if the webhook didn't fire) **and** *force full resync* (uncheck→recheck re-fires a complete ClickUp→portal field pull); (c) **duplicate files wait until the Subject Property Address is changed** from the source before they materialize + open on the portal; (d) freshly-duplicated files run in **hot-poll mode** (poll ~every 30–60s for the first minutes) so rapid field edits all land.
+3. **Officer (re)assignment in the portal:** set the Loan Officer field **and move** the task into that officer's Pipeline folder (§4.1).
+4. **"inactive / on hold":** add a **new borrower-facing "On hold" status** (§5) — requires extending the `applications.status` CHECK set + a borrower-UI label.
+
+*(Still open — see §17: descope behavior, task-delete handling, PPP/value canonicals, processor authority, roster reconciliation, condition-issue notifications, new-field approvals.)*
+
+---
+
 ## 1. Guiding principles (the rules this design obeys)
 
 1. **RTL-only scope, driven by the `*Program` field.** A file syncs **only** if its ClickUp `*Program` is one of the RTL options (§2). Everything else is ignored on both sides.
@@ -81,7 +92,7 @@ Because the integration authenticates as **Yehuda's token**, ClickUp will fire w
 2. **Suppression window.** When we push field F on task T, we stamp `(T,F,valueHash,expiresAt=now+90s)`. Inbound events for `(T,F)` matching that hash inside the window are dropped as echoes.
 3. **Direction stamping on the job.** Outbound jobs carry an origin marker; inbound apply-writes to our DB are flagged so our own write-endpoints don't re-enqueue an outbound job for a value that just came *from* ClickUp (the classic A→B→A loop). This is the standard "loopback guard."
 
-**Strong recommendation (Q2): create a dedicated ClickUp member "YS Portal Bot"** and use *its* API token instead of Yehuda's. Then echo-suppression also gets a clean actor signal (ignore inbound events authored by the bot), attribution in ClickUp is honest ("changed by YS Portal Bot"), and Yehuda's manual edits are never ambiguous. The provided `pk_120151948…` key works for build/testing; a bot seat is the right production posture.
+**Owner decision:** run on **Yehuda's token** (`pk_120151948…`), no bot seat for now. Consequence: we **cannot** use the actor to detect echoes (our writes look like Yehuda's own edits), so layers 1–3 above (shadow-hash + suppression window + loopback guard) carry the full load and are **mandatory, not optional**. A dedicated **"YS Portal Bot"** seat remains the recommended future hardening — it would add a clean actor signal and honest attribution ("changed by YS Portal Bot") — and can be dropped in later by swapping the token, with zero mapping changes.
 
 ### 3.4 Idempotency & the join key
 - Primary cross-reference: **`applications.clickup_pipeline_task_id` ↔ ClickUp `task_id`** (immutable). Stored on both sides; ClickUp side gets a new **"Portal File ID"** field (§10) holding our application UUID.
@@ -110,15 +121,21 @@ Because the integration authenticates as **Yehuda's token**, ClickUp will fire w
 | `taskDeleted` | Mark portal file `clickup_unlinked` (do **not** hard-delete; see Q5) |
 | Reconciliation poll | Backfill + catch missed events |
 
-### 4.3 Status-gated creation (why we don't create on raw `taskCreated`)
-New ClickUp files spend their first moments in **`starting`** / **`prospect / pricing`** — pricing scratchpads that often never become real files, and duplicates that momentarily carry a stale loan number. Creating a portal file for each would spam borrowers and create junk. **Rule:** a ClickUp task only *materializes* a portal file when it (a) matches the RTL program filter, (b) has advanced **past** `starting`/`prospect / pricing` (i.e., someone committed to it), **and** (c) has been *stable for a debounce window* (default 3 min, configurable) with a non-empty borrower name/address. Until then it's tracked in a "pending materialization" list in the Control Center, visible but not yet a portal file.
+### 4.3 New-file trigger — auto webhook + "Send to Portal" checkbox (emergency + force-resync)
+*(Owner-decided.)* A normal (non-duplicate) new RTL task syncs **immediately**, no status gate:
+- **Auto (primary):** a `taskCreated` webhook in the Pipeline space with program ∈ RTL that passes the duplicate guard (§4.4) → create the portal file right away and pull all fields.
+- **"Send to Portal" checkbox (a new ClickUp field) — two jobs:**
+  1. **Emergency create:** if the automatic webhook never fired (missed delivery, downtime, sync paused), staff tick it to force the file over with all its fields.
+  2. **Force full resync:** if a change made in ClickUp did **not** propagate through the normal field-level sync, staff **uncheck → recheck** the box to fire a fresh webhook that re-pulls **every** mapped field from ClickUp → portal for that file. The checkbox is the human override for "the sync missed something."
+- Both paths converge on the same idempotent upsert keyed on `task_id`, so ticking the box never double-creates.
 
-### 4.4 The duplicate-file guard (your "duplicate to start a new file" workflow)
-When staff duplicate an existing task, ClickUp assigns the **new task a brand-new `task_id`** but copies all fields — including the old YS Loan Number — for the minute before it's edited. Guard:
-1. We key on **`task_id`**, so the duplicate is always a distinct entity from its source; we never merge or overwrite the source file's portal record.
-2. We **do not** create on `taskCreated`; we wait for the status-gate + debounce (§4.3), by which point staff have changed the loan number / borrower to the real values.
-3. If two live tasks are seen sharing a YS Loan Number, the Control Center raises a **"duplicate loan number" flag** for a human to resolve rather than guessing.
-4. Optional hard gate (Q3): a ClickUp checkbox **"Create in Portal"** that staff tick when a duplicated file is truly ready — nothing materializes until it's checked. Cleanest, but adds a manual step.
+### 4.4 Duplicate-file guard — wait for the Subject Property Address to change
+*(Owner-decided.)* Your standard workflow duplicates an existing task to start a new file; the duplicate momentarily carries the **source's loan number and subject property address** before staff edit it.
+1. We key on the immutable **`task_id`**, so a duplicate is always a distinct entity from its source — we never merge or overwrite the source file's portal record.
+2. **Detect** a likely duplicate when a `taskCreated` arrives whose **Subject Property Address matches an already-synced task's address** (and/or shares its YS Loan Number).
+3. **Hold materialization** for such tasks — do **not** create the portal file — **until the Subject Property Address is replaced** (changes to a new value). That address change is the signal staff have begun the real, distinct file. On that change we immediately create the portal file and pull all current fields.
+4. **Hot-poll mode:** freshly-duplicated (and freshly-materialized) files are polled far more frequently (~every 30–60s for the first N minutes, configurable) because rapid field edits are expected — so every field lands on the portal promptly instead of waiting for the normal poll interval.
+5. The Control Center shows a **"pending — awaiting address change"** list of held duplicates; staff can force one through with the **Send to Portal** checkbox if needed, or see a **"duplicate loan number"** flag if two live tasks still share a loan number.
 
 ---
 
@@ -128,7 +145,7 @@ Per your direction: **keep the borrower-facing (external) statuses exactly as th
 
 ### 5.1 The two layers
 - **Internal status** (new column `applications.internal_status`): a **1:1 mirror of the ClickUp task status** (all 38 values). This is what syncs both ways, verbatim.
-- **External / borrower-facing status** (existing `applications.status`, the 9 values): **derived** from `internal_status` via the table below. Borrowers only ever see this. Never pushed *up* to ClickUp (it's a projection, not a source).
+- **External / borrower-facing status** (`applications.status`): the existing values **plus a new `on_hold`** (owner-approved) = 10 total. **Derived** from `internal_status` via the table below. Borrowers only ever see this. Never pushed *up* to ClickUp (it's a projection, not a source). *(Adding `on_hold` = extend the `applications.status` CHECK constraint via a new migration + a borrower-UI label/badge.)*
 
 **Bidirectional rule:**
 - Staff change internal status in portal → push the exact matching ClickUp status. ✅
@@ -177,7 +194,7 @@ Grouping follows your rule: *pre-work → new/in-review; anything in back-and-fo
 | trash | withdrawn |
 | recalled | withdrawn |
 | pre-recall | withdrawn |
-| inactive / on hold | processing *(confirm — see Q4)* |
+| inactive / on hold | **on_hold** *(new borrower-facing status — owner-approved)* |
 
 *Confirm the handful marked with notes. "inactive / on hold" is the main judgment call — borrowers can't see an "on hold" state today; do we surface one, or keep showing "processing"?*
 
@@ -394,7 +411,7 @@ We snapshot the option lists at deploy and refresh them from ClickUp on a schedu
 |---|---|---|
 | **Portal File ID** | short_text | Stores the portal application UUID on the task = the stable, duplicate-proof cross-reference. Critical for §4.4. |
 | **Synced to Portal** | checkbox *or* date | Marks a task as portal-managed / last-sync timestamp. Lets staff and the poller see at a glance what's linked. |
-| **Create in Portal** *(optional, Q3)* | checkbox | Manual gate so a freshly-duplicated file doesn't materialize a borrower file until staff say it's real. |
+| **Send to Portal** *(required — owner-approved)* | checkbox | Emergency/manual trigger **and** force-resync. If the auto webhook didn't fire, staff tick it to push the file over with all fields. If a ClickUp change didn't propagate, staff **uncheck→recheck** to fire a full field re-pull for that file. (§4.3) |
 | **Sync Status / Last Error** *(optional)* | short_text | Surfaces sync health on the task itself for staff (mirror of Control Center). |
 | **Borrower Portal Status** *(optional)* | short_text/drop_down | Shows the borrower-facing status on the task so staff know what the borrower sees. |
 | **Rehab Type** *(optional, Q9)* | drop_down (Cosmetic/Moderate/Heavy/Adding SF/Ground-up) | Portal has `rehab_type`; no clean ClickUp analog today. Add if you want it synced. |
@@ -473,6 +490,8 @@ In `app/src/screens/Apply.jsx` (Step 3), replace the always-shown officer dropdo
 ---
 
 ## 17. Open questions — I need your call on these before building
+
+**✅ Answered — see §0.1:** #2 (sync identity → Yehuda's token), #3 (duplicate handling → auto webhook + "Send to Portal" checkbox + wait-for-address-change + hot-poll), #4 (on-hold → new borrower status), #6 (officer reassign → set field + move task). Remaining below.
 
 1. **Descope behavior:** if a file's Program changes from RTL → non-RTL after creation, stop syncing but keep the portal file? (recommended: yes, keep, mark descoped)
 2. **Dedicated bot user:** create a "YS Portal Bot" ClickUp seat + token for clean attribution & echo-suppression, or run on Yehuda's token? (recommended: bot)
