@@ -26,13 +26,19 @@ function cget(k) { const v = cache.get(k); if (v && Date.now() - v.at < TTL) ret
 function cset(k, val) { cache.set(k, { at: Date.now(), val }); if (cache.size > 2000) cache.delete(cache.keys().next().value); }
 let osmChain = Promise.resolve(); let osmLast = 0;
 function osmThrottle(fn) {
-  osmChain = osmChain.then(async () => {
+  // Serialize calls ~1.1s apart (Nominatim asks for <=1 req/sec). The promise
+  // returned to the caller carries fn()'s success/failure, but the internal
+  // `osmChain` gate must always RESOLVE — a rejection propagating into it would
+  // make every future call chain off a rejected promise, permanently breaking
+  // address autocomplete until the process restarted.
+  const run = osmChain.then(async () => {
     const wait = 1100 - (Date.now() - osmLast);
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
     osmLast = Date.now();
     return fn();
   });
-  return osmChain;
+  osmChain = run.then(() => {}, () => {});   // gate swallows the outcome; never carries a rejection forward
+  return run;
 }
 
 async function fetchJson(url, opts = {}) {

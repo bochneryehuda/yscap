@@ -396,7 +396,7 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
                   : 'email this token to the invitee; they POST /auth/accept' });
 });
 
-router.post('/accept', async (req, res) => {
+router.post('/accept', async (req, res, next) => {
   const { token, password, firstName, lastName, fullName } = req.body || {};
   if (!token || !password) return res.status(400).json({ error: 'token + password required' });
   const inv = await db.query(
@@ -417,13 +417,19 @@ router.post('/accept', async (req, res) => {
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ($1,$2,$3)
        ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
       [firstName || 'Unknown', lastName || 'Unknown', row.email]);
-    await db.query(
-      `INSERT INTO borrower_auth (borrower_id,password_hash) VALUES ($1,$2)
-       ON CONFLICT (borrower_id) DO UPDATE SET password_hash=EXCLUDED.password_hash`,
+    // Bump token_version on the password change (invalidates any prior sessions)
+    // and issue the token with the ACTUAL resulting version. Hardcoding 0 handed
+    // an existing borrower (token_version already > 0) a token that authenticate()
+    // rejects immediately as "session expired".
+    const ba = await db.query(
+      `INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,$2,0)
+       ON CONFLICT (borrower_id) DO UPDATE
+         SET password_hash=EXCLUDED.password_hash, token_version=borrower_auth.token_version+1
+       RETURNING token_version`,
       [b.rows[0].id, await C.hashPassword(password)]);
     await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
-    res.json({ token: borrowerToken(b.rows[0].id, 0) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({ token: borrowerToken(b.rows[0].id, ba.rows[0].token_version) });
+  } catch (e) { next(e); }
 });
 
 // ---------------- logout (revoke) + me ----------------

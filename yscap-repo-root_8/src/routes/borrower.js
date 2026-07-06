@@ -430,7 +430,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
   try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
   const r = await db.query(
     `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
-            COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date, ci.notes,
+            COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date,
+            -- ci.notes is the INTERNAL staff note (underwriting / capital-partner
+            -- context) — never send it to a borrower. Only the borrower_* wording
+            -- above is safe.
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             (SELECT d.rejection_reason FROM documents d
