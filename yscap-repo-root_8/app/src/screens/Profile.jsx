@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
@@ -26,6 +26,9 @@ export default function Profile() {
   const [idBusy, setIdBusy] = useState(false);
   const [hasPhotoId, setHasPhotoId] = useState(false);
   const idRef = useRef(null);
+  const [trCounts, setTrCounts] = useState(null);  // live track-record counts
+  const [trSnap, setTrSnap] = useState(null);      // saved static HTML copy
+  const [trDl, setTrDl] = useState(false);
 
   useEffect(() => {
     api.profile().then(d => {
@@ -35,7 +38,26 @@ export default function Profile() {
       if (d.mailing_address) { setMailDiff(true); const m = d.mailing_address; setMail({ line1: m.line1 || '', unit: m.unit || '', city: m.city || '', state: m.state || '', zip: m.zip || '' }); }
       setHasPhotoId(!!d.photo_id_document_id);
     }).catch(e => setErr(e.message));
+    // The live track record + its saved static copy, summarized right here.
+    api.trackRecords().then(rows => {
+      const c = { flips: 0, holds: 0, ground: 0, total: 0 };
+      for (const r of rows || []) {
+        const t = String(r.deal_type || '').toLowerCase();
+        if (t.includes('ground')) c.ground++; else if (t.includes('flip')) c.flips++; else c.holds++;
+        c.total++;
+      }
+      setTrCounts(c);
+    }).catch(() => {});
+    api.trackRecordSnapshot().then(setTrSnap).catch(() => {});
   }, []);
+
+  async function downloadTrSnap() {
+    if (!trSnap) return;
+    setTrDl(true);
+    try { const { blob, filename } = await api.downloadDoc(trSnap.documentId); saveBlob(blob, filename || trSnap.filename); }
+    catch (e) { setErr(e.message || 'Download failed'); }
+    finally { setTrDl(false); }
+  }
 
   const edited = useRef(false);
   const set = (k, v) => { edited.current = true; setP(x => ({ ...x, [k]: v })); };
@@ -231,14 +253,27 @@ export default function Profile() {
       {/* The track record is its own general section (one live record per
           borrower, linked to every file) — not part of the profile form. */}
       <div className="panel">
-        <div className="row" style={{ alignItems: 'center' }}>
+        <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
           <div>
             <h3 style={{ marginBottom: 4 }}>Track record &amp; experience</h3>
             <p className="muted small" style={{ margin: 0 }}>Your completed deals live in their own section and link to every loan file automatically.</p>
           </div>
           <div className="spacer" />
+          {trSnap && (
+            <button className="btn ghost" disabled={trDl} onClick={downloadTrSnap} title="The static HTML copy of your track record — kept in sync automatically">
+              {trDl ? '…' : '⤓ Saved copy (HTML)'}
+            </button>
+          )}
           <Link className="btn primary" to="/track-record">Open Track Record →</Link>
         </div>
+        {trCounts && (
+          <div className="reqchips" style={{ marginTop: 12 }}>
+            <span className={`reqchip ${trCounts.total ? 'met' : ''}`}>{trCounts.total} deal{trCounts.total === 1 ? '' : 's'} on record</span>
+            {trCounts.flips > 0 && <span className="reqchip">{trCounts.flips} flip{trCounts.flips === 1 ? '' : 's'}</span>}
+            {trCounts.holds > 0 && <span className="reqchip">{trCounts.holds} hold{trCounts.holds === 1 ? '' : 's'}</span>}
+            {trCounts.ground > 0 && <span className="reqchip">{trCounts.ground} ground-up</span>}
+          </div>
+        )}
       </div>
 
       <div className="row" style={{ marginTop: 8 }}>

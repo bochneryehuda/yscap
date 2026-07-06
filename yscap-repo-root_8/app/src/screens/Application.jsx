@@ -316,6 +316,7 @@ export default function Application() {
   const [docFilter, setDocFilter] = useState('open');   // default: only what still needs the borrower
   const [trBusy, setTrBusy] = useState(false);
   const [trRows, setTrRows] = useState([]);     // the borrower's live track record
+  const [trSnap, setTrSnap] = useState(null);   // its saved static HTML copy
   const [sowOpen, setSowOpen] = useState(false);
 
   const activityFetcher = useCallback(() => api.activity(id), [id]);
@@ -325,10 +326,10 @@ export default function Application() {
     return Promise.all([
       api.application(id), api.checklist(id), api.documents(id).catch(() => []),
       api.conditions(id).catch(() => []), api.profile().catch(() => null),
-      api.trackRecords().catch(() => []),
-    ]).then(([a, c, d, cn, p, tr]) => {
+      api.trackRecords().catch(() => []), api.trackRecordSnapshot().catch(() => null),
+    ]).then(([a, c, d, cn, p, tr, ts]) => {
       if (idRef.current !== forId) return;
-      setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); setProfile(p); setTrRows(tr || []);
+      setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); setProfile(p); setTrRows(tr || []); setTrSnap(ts || null);
     }).catch(e => { if (idRef.current === forId) setErr(e.message); });
   };
 
@@ -546,13 +547,26 @@ export default function Application() {
                       ? `${liveCounts.total} deal${liveCounts.total === 1 ? '' : 's'} on your record — linked automatically to this file.`
                       : 'Document your completed deals once — your track record is one record, shared by every file.'}
                   status={statusText(trItem)}
+                  open={!!trSnap}
                   action={
                     <span className="row" style={{ gap: 6 }}>
                       <Link className="btn primary small" to={`/track-record?app=${id}`}>Open Track Record</Link>
                       {!isDone(trItem.status) && <button className="btn ghost small" disabled={trBusy} onClick={() => submitTrackRecord(trItem)}>{trBusy ? '…' : 'Submit for this file'}</button>}
                     </span>
                   }
-                />
+                >
+                  {trSnap && (
+                    <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                      <button className="btn ghost small" disabled={dlBusy === trSnap.documentId}
+                        onClick={() => downloadDoc({ id: trSnap.documentId, filename: trSnap.filename })}>
+                        {dlBusy === trSnap.documentId ? '…' : '⤓ Saved copy (HTML)'}
+                      </button>
+                      <span className="muted small" style={{ alignSelf: 'center' }}>
+                        The static copy of your track record — kept in sync automatically, shared by every file.
+                      </span>
+                    </div>
+                  )}
+                </ConditionRow>
               )}
 
               {/* 3 — The vesting LLC: linked entity's state drives this condition */}

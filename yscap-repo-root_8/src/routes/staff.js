@@ -1009,6 +1009,23 @@ router.delete('/track-records/:id', async (req, res) => {
   await audit(req, 'staff_delete_track_record', 'track_record', req.params.id);
   res.json({ ok: true });
 });
+// The borrower's saved STATIC COPY of their track record (self-contained HTML
+// with the data): staff edits refresh it exactly like borrower edits do.
+router.put('/borrowers/:id/track-record/snapshot', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  try {
+    const out = await require('../lib/track-record-snapshot').saveSnapshot(req.params.id, {
+      html: b.html, filename: b.filename, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message || 'could not save the snapshot' }); }
+});
+router.get('/borrowers/:id/track-record/snapshot', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+  try { res.json(await require('../lib/track-record-snapshot').latestSnapshot(req.params.id)); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
 router.get('/track-records/:id/documents', async (req, res) => {
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });

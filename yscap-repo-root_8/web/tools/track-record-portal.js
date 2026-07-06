@@ -193,6 +193,123 @@
     });
     loaded = true;
     TR.setState({ borrower: displayName, props: props });
+    // Tell the hosting portal page where the record stands NOW, so condition
+    // counts / requirement chips update live while the tool is open.
+    try {
+      window.parent.postMessage({ type: "ys-tr-sync", counts: bucketCounts(props) }, location.origin);
+    } catch (e) { /* not embedded */ }
+    scheduleSnapshot();
+  }
+
+  /* ---- the SAVED STATIC COPY: a self-contained HTML file with the data ---- */
+  // Rebuilt and pushed to the server after every change (debounced), so the
+  // profile / every loan file always carries a current, openable static copy.
+  function bucketCounts(props) {
+    var c = { flips: 0, holds: 0, ground: 0, total: 0 };
+    (props || []).forEach(function (p) {
+      var t = String(p._dealType || "").toLowerCase();
+      if (t.indexOf("ground") >= 0) c.ground++;
+      else if (t ? t.indexOf("flip") >= 0 : p.kind === "flip") c.flips++;
+      else c.holds++;
+      c.total++;
+    });
+    return c;
+  }
+  function escH(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  function fmtMoney(v) { var n = Number(v); return isFinite(n) && n ? "$" + Math.round(n).toLocaleString("en-US") : "—"; }
+  function encSnap(o) { return btoa(unescape(encodeURIComponent(JSON.stringify(o)))); }
+  function snapshotHtml() {
+    var snap = TR.snap();
+    var props = snap.props || [];
+    var counts = bucketCounts(props);
+    var openUrl = location.origin + "/tools/track-record.html#d=" + encSnap(snap);
+    var when = new Date().toLocaleString("en-US");
+    function exitCell(p) {
+      if (p.kind === "flip") return "Sold " + fmtMoney(p.salePrice) + (p.saleDate ? " · " + escH(p.saleDate) : "");
+      var bits = [];
+      if (p.rent) bits.push("Rents " + fmtMoney(p.rent) + "/mo" + (p.rentDate ? " since " + escH(p.rentDate) : ""));
+      if (p.refiAmount) bits.push("Refi " + fmtMoney(p.refiAmount) + (p.refiDate ? " · " + escH(p.refiDate) : ""));
+      return bits.join("<br>") || "—";
+    }
+    function row(p) {
+      var st = propsById[p.id] ? (propsById[p.id].status || "pending") : "pending";
+      return "<tr><td>" + escH([p.address, [p.city, p.state].filter(Boolean).join(", "), p.zip].filter(Boolean).join(", ") || "—") +
+        "</td><td>" + escH(p.entity || "—") +
+        "</td><td>" + escH(p.propType || "—") +
+        "</td><td>" + fmtMoney(p.purchasePrice) + (p.purchaseDate ? "<br><small>" + escH(p.purchaseDate) + "</small>" : "") +
+        "</td><td>" + fmtMoney(p.rehab) +
+        "</td><td>" + exitCell(p) +
+        "</td><td>" + escH(STATUS_LABEL[st] || st) + "</td></tr>";
+    }
+    function section(title, list) {
+      if (!list.length) return "";
+      return "<h2>" + escH(title) + " <small>(" + list.length + ")</small></h2>" +
+        "<div class=\"tw\"><table><thead><tr><th>Property</th><th>Entity</th><th>Type</th><th>Purchase</th><th>Rehab</th><th>Exit</th><th>Verification</th></tr></thead><tbody>" +
+        list.map(row).join("") + "</tbody></table></div>";
+    }
+    var isG = function (p) { return /ground/i.test(String(p._dealType || "")); };
+    var flips = props.filter(function (p) { return !isG(p) && p.kind === "flip"; });
+    var holds = props.filter(function (p) { return !isG(p) && p.kind !== "flip"; });
+    var ground = props.filter(isG);
+    return "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
+      "<title>Track Record — " + escH(snap.borrower || "Borrower") + "</title><style>" +
+      "body{font-family:'Hanken Grotesk',system-ui,Arial,sans-serif;background:#141B22;color:#F4F0E7;margin:0;padding:2rem 1rem;line-height:1.5}" +
+      "main{max-width:960px;margin:0 auto}h1{font-family:Georgia,serif;font-weight:600;margin:0 0 .2rem}" +
+      "h2{font-family:Georgia,serif;font-weight:600;margin:1.6rem 0 .5rem}h2 small{color:#A6B3BA;font-size:.7em}" +
+      ".sum{display:flex;gap:.6rem;flex-wrap:wrap;margin:.8rem 0 1rem}" +
+      ".chip{border:1px solid rgba(127,169,176,.5);border-radius:999px;padding:.25rem .8rem;font-size:.82rem;font-weight:600}" +
+      ".muted{color:#A6B3BA;font-size:.85rem}.tw{overflow-x:auto;border:1px solid rgba(255,255,255,.09);border-radius:12px}" +
+      "table{border-collapse:collapse;width:100%;min-width:680px;font-size:.86rem}" +
+      "th,td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid rgba(255,255,255,.09);vertical-align:top}" +
+      "th{font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:#A6B3BA}tr:last-child td{border-bottom:0}" +
+      "small{color:#A6B3BA}a.open{display:inline-block;margin:1.4rem 0;padding:.6rem 1.3rem;border-radius:10px;background:#7FA9B0;color:#08232b;font-weight:700;text-decoration:none}" +
+      "footer{margin-top:2rem;color:#A6B3BA;font-size:.78rem}" +
+      "</style></head><body><main>" +
+      "<h1>YS Capital Group — Borrower Track Record</h1>" +
+      "<p class=\"muted\">" + escH(snap.borrower || "") + (snap.borrower ? " · " : "") + "saved " + escH(when) + "</p>" +
+      "<div class=\"sum\">" +
+      "<span class=\"chip\">" + counts.total + " deal" + (counts.total === 1 ? "" : "s") + "</span>" +
+      "<span class=\"chip\">" + counts.flips + " fix &amp; flip</span>" +
+      "<span class=\"chip\">" + counts.holds + " fix &amp; hold</span>" +
+      (counts.ground ? "<span class=\"chip\">" + counts.ground + " ground-up</span>" : "") +
+      "</div>" +
+      section("Fix & Flip", flips) + section("Fix & Hold", holds) + section("Ground-up", ground) +
+      "<a class=\"open\" href=\"" + escH(openUrl) + "\">Open in the live Track Record builder →</a>" +
+      "<p class=\"muted\">This is the saved static copy of the live track record — it reopens the builder with these exact deals. The portal keeps it in sync automatically.</p>" +
+      "<footer>YS Capital Group · NMLS ID 2609746 · For verification and underwriting reference.</footer>" +
+      "</main></body></html>";
+  }
+  function snapshotUrl() {
+    return staffMode
+      ? "/api/staff/borrowers/" + staffBorrowerId + "/track-record/snapshot"
+      : "/api/borrower/track-record/snapshot";
+  }
+  function snapshotName() {
+    var who = String(displayName || "Borrower").replace(/[^\w]+/g, "_").replace(/^_|_$/g, "").slice(0, 40);
+    return "Track_Record_" + (who || "Borrower") + "_" + new Date().toISOString().slice(0, 10) + ".html";
+  }
+  var snapT = null, lastSnapKey = null, snapReady = false;
+  function scheduleSnapshot() {
+    clearTimeout(snapT);
+    snapT = setTimeout(pushSnapshot, 2500);
+  }
+  async function pushSnapshot() {
+    if (!loaded || !snapReady) return;
+    try {
+      var key = JSON.stringify(TR.snap());
+      if (key === lastSnapKey) return;
+      await api("PUT", snapshotUrl(), { html: snapshotHtml(), filename: snapshotName() });
+      lastSnapKey = key;
+    } catch (e) { /* best-effort — the next change tries again */ }
+  }
+  // Opening the tool shouldn't re-save an unchanged copy: if the server already
+  // holds one, the current state is the baseline and only a real change pushes.
+  function seedSnapshotBaseline() {
+    return api("GET", snapshotUrl()).then(function (existing) {
+      if (existing && existing.documentId) lastSnapKey = JSON.stringify(TR.snap());
+      snapReady = true;
+      scheduleSnapshot();
+    }).catch(function () { snapReady = true; scheduleSnapshot(); });
   }
 
   /* ---- per-card UI: verification badge, docs, staff status control ---- */
@@ -395,6 +512,8 @@
       return loadLlcs();
     }).then(function () {
       return reload();
+    }).then(function () {
+      return seedSnapshotBaseline();
     }).then(function () {
       flash("Connected — your track record saves automatically.");
     }).catch(function (e) {

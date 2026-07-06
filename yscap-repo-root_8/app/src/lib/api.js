@@ -182,6 +182,7 @@ export const api = {
   trackRecords:    () => req('GET', '/api/borrower/track-records'),
   addTrackRecord:  (b) => req('POST', '/api/borrower/track-records', b),
   deleteTrackRecord: (id) => req('DELETE', `/api/borrower/track-records/${id}`),
+  trackRecordSnapshot: () => req('GET', '/api/borrower/track-record/snapshot'),
 
   // reusable partners (co-borrowers)
   partners:     () => req('GET', '/api/borrower/partners'),
@@ -217,6 +218,7 @@ export const api = {
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
+  staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id) => req('POST', `/api/staff/track-records/${id}/verify`),
