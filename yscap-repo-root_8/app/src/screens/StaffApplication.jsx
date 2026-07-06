@@ -586,8 +586,9 @@ export default function StaffApplication() {
   const { id } = useParams();
   const nav = useNavigate();
   const { search } = useLocation();
-  const { role } = useAuth();
+  const { role, can } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
+  const canDelete = can('delete_files');
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
   const [docs, setDocs] = useState([]);
@@ -756,10 +757,22 @@ export default function StaffApplication() {
     } catch (e2) { setErr(e2.message || 'Upload failed'); }
     finally { setBusyAct(''); if (staffFileRef.current) staffFileRef.current.value = ''; }
   }
-  async function deleteApp() {
-    const reason = window.prompt('Delete this file? It will be removed from all borrower and internal views (recoverable by an admin). Optional reason:');
+  async function archiveApp() {
+    const reason = window.prompt('Archive this file? It leaves the pipeline and stops counting in the dashboard, but is kept in the Archived folder and can be restored anytime. Optional reason:');
     if (reason === null) return;
-    try { await api.staffDeleteApp(id, reason || undefined); nav('/internal'); }
+    try { await api.staffArchiveApp(id, reason || undefined); nav('/internal'); }
+    catch (e) { setErr(e.message || 'Could not archive'); }
+  }
+  async function restoreApp() {
+    try { await api.staffRestoreApp(id); await load(); flash('File restored ✓ — back in the pipeline.'); }
+    catch (e) { setErr(e.message || 'Could not restore'); }
+  }
+  async function purgeApp() {
+    const ok1 = window.confirm('Delete this file PERMANENTLY? This removes the loan file and every document, condition and message under it, and it will disappear from all figures. This cannot be undone.');
+    if (!ok1) return;
+    const typed = window.prompt('This is permanent. Type DELETE to confirm.');
+    if (typed !== 'DELETE') { if (typed !== null) setErr('Not deleted — you must type DELETE to confirm.'); return; }
+    try { await api.staffPurgeApp(id); nav('/internal'); }
     catch (e) { setErr(e.message || 'Could not delete'); }
   }
   async function changeStatus(status) {
@@ -884,7 +897,14 @@ export default function StaffApplication() {
           <h1 className="file-top-addr">{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>
           <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
         </div>
-        {isAdmin && <button className="btn link small" style={{ color: 'var(--danger,#e06666)', flex: 'none' }} onClick={deleteApp} title="Admin: delete this file">Delete file</button>}
+        {canDelete && (app.deleted_at
+          ? <span className="row" style={{ gap: 8, flex: 'none' }}>
+              <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }} title="This file is archived">Archived</span>
+              <button className="btn link small" onClick={restoreApp} title="Restore this file to the pipeline">Restore</button>
+              <button className="btn link small" style={{ color: 'var(--danger,#e06666)' }} onClick={purgeApp} title="Delete permanently — cannot be undone">Delete permanently</button>
+            </span>
+          : <button className="btn link small" style={{ color: 'var(--danger,#e06666)', flex: 'none' }} onClick={archiveApp} title="Archive this file (reversible; leaves the dashboard figures)">Archive file</button>
+        )}
         <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{app.status}</span>
       </div>
 

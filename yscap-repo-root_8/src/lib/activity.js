@@ -125,7 +125,10 @@ const AUDIT_RENDER = {
   },
   export_tpr: { borrowerSafe: false, kind: 'document', render: () => ({ verb: 'exported the clean file (TPR)', label: null }) },
   view_appraisal_card: { borrowerSafe: false, kind: 'card', render: (d) => ({ verb: 'revealed the appraisal card', label: d && d.last4 ? `Card ending ${d.last4} (audited)` : '(audited)' }) },
-  delete_application: { borrowerSafe: false, kind: 'status', render: (d) => ({ verb: 'deleted the file', label: (d && d.reason) || null }) },
+  archive_application: { borrowerSafe: false, kind: 'status', render: (d) => ({ verb: 'archived the file', label: (d && d.reason) || null }) },
+  // Legacy soft-deletes (pre-archive rename) still render on old files.
+  delete_application: { borrowerSafe: false, kind: 'status', render: (d) => ({ verb: 'archived the file', label: (d && d.reason) || null }) },
+  purge_application: { borrowerSafe: false, kind: 'status', render: (d) => ({ verb: 'deleted the file permanently', label: (d && d.reason) || null }) },
   restore_application: { borrowerSafe: false, kind: 'status', render: () => ({ verb: 'restored the file', label: null }) },
 };
 

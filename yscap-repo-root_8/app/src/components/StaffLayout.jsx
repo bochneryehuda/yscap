@@ -48,6 +48,7 @@ export default function StaffLayout({ children }) {
   const canManageTeam = can('manage_team');
   const canManageConditions = can('manage_conditions');
   const canManageVendors = can('manage_vendors');
+  const canDeleteFiles = can('delete_files');
   return (
     <div className="shell">
       <header className="header">
@@ -63,6 +64,7 @@ export default function StaffLayout({ children }) {
             {canManageConditions && <NavLink to="/internal/conditions" title="Condition Center — the global condition library & rules">Conditions</NavLink>}
             {canManageTeam && <NavLink to="/internal/team">Team</NavLink>}
             {canManageVendors && <NavLink to="/internal/vendors" title="Title & insurance vendor directory">Vendors</NavLink>}
+            {canDeleteFiles && <NavLink to="/internal/archived" title="Archived files — restore or delete permanently">Archived</NavLink>}
             <span className="pill" title="Your role">{ROLE_LABEL[role] || role || 'Internal'}</span>
             <button className="btn ghost small" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
           </nav>
