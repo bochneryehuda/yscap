@@ -203,6 +203,8 @@ function normalize(program, input, ev, ladder) {
     program,
     programLabel: PROGRAM_LABEL[program],
     productLabel: ev.productLabel || null,
+    kind: ev.kind || null,
+    reserveEligible: ev.reserveEligible !== false,
     status: ev.status,
     eligible: ev.status !== 'INELIGIBLE',
     reasons: (ev.reasons || []).map((r) => ({ level: r.level, msg: r.msg })),

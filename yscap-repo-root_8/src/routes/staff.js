@@ -476,6 +476,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const { overrides } = sanitizeOverrides(req, b.overrides || {});
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     const quote = pricing.quoteProgram(program, inputs);
+    // Gold Standard renovation cannot finance an interest reserve — never persist a
+    // requested reserve on the registered scenario for that program.
+    if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
     if (quote.status === 'INELIGIBLE' && !overrides.forcePrice) {
       return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
     }
