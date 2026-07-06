@@ -1367,11 +1367,15 @@ router.get('/chat/inbox', async (req, res) => {
               lm.body AS last_body, lm.channel AS last_channel, lm.sender_kind AS last_sender_kind,
               lm.attachment_kind AS last_attachment_kind, lm.created_at AS last_at,
               (a.status IN ('funded','declined','withdrawn')) AS closed,
-              (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
-                 AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL) AS unread_borrower,
-              (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
-                 AND m.channel='internal' AND m.read_at IS NULL
-                 AND (m.sender_id IS NULL OR m.sender_id<>$1)) AS unread_internal
+              -- Unread now comes from the per-member watermark model (035).
+              COALESCE((SELECT cm.unread_count FROM conversation_members cm
+                          JOIN conversations c2 ON c2.id=cm.conversation_id
+                         WHERE c2.application_id=a.id AND c2.kind='borrower'
+                           AND cm.member_kind='staff' AND cm.member_id=$1 AND cm.removed_at IS NULL), 0) AS unread_borrower,
+              COALESCE((SELECT sum(cm.unread_count)::int FROM conversation_members cm
+                          JOIN conversations c2 ON c2.id=cm.conversation_id
+                         WHERE c2.application_id=a.id AND c2.kind<>'borrower'
+                           AND cm.member_kind='staff' AND cm.member_id=$1 AND cm.removed_at IS NULL), 0) AS unread_internal
          FROM applications a
          JOIN borrowers b ON b.id=a.borrower_id
          LEFT JOIN LATERAL (SELECT body, channel, sender_kind, attachment_kind, created_at
@@ -1408,7 +1412,7 @@ router.post('/messages/:mid/react', async (req, res) => {
   const emoji = String((req.body || {}).emoji || '').slice(0, 16);
   if (!emoji) return res.status(400).json({ error: 'emoji required' });
   try {
-    const m = await db.query(`SELECT application_id FROM messages WHERE id=$1`, [req.params.mid]);
+    const m = await db.query(`SELECT application_id, conversation_id FROM messages WHERE id=$1`, [req.params.mid]);
     if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!seesAll(req)) {
       const own = await db.query(
@@ -1422,6 +1426,12 @@ router.post('/messages/:mid/react', async (req, res) => {
     if (!del.rows[0])
       await db.query(`INSERT INTO message_reactions (message_id,actor_kind,actor_id,emoji) VALUES ($1,'staff',$2,$3)`,
         [req.params.mid, req.actor.id, emoji]);
+    if (m.rows[0].conversation_id) {
+      const chatLib = require('../lib/chat');
+      const fresh = await chatLib.getMessage(req.params.mid);
+      require('../lib/events').publishToConversation(m.rows[0].conversation_id, 'reaction:update',
+        { conversationId: m.rows[0].conversation_id, messageId: req.params.mid, reactions: fresh.reactions }).catch(() => {});
+    }
     res.json({ ok: true, reacted: !del.rows[0] });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -1434,6 +1444,12 @@ router.post('/messages/:mid/pin', async (req, res) => {
     if (!(await canTouchApp(req, m.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
     const next = !m.rows[0].pinned;
     await db.query(`UPDATE messages SET pinned=$2::boolean, pinned_by=CASE WHEN $2 THEN $3::uuid ELSE NULL END, pinned_at=CASE WHEN $2 THEN now() ELSE NULL END WHERE id=$1`, [req.params.mid, next, req.actor.id]);
+    const convId = (await db.query(`SELECT conversation_id FROM messages WHERE id=$1`, [req.params.mid])).rows[0].conversation_id;
+    if (convId) {
+      const fresh = await require('../lib/chat').getMessage(req.params.mid);
+      require('../lib/events').publishToConversation(convId, 'message:edited',
+        { conversationId: convId, message: fresh }).catch(() => {});
+    }
     res.json({ ok: true, pinned: next });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -1453,7 +1469,18 @@ router.patch('/messages/:mid', async (req, res) => {
     const mine = row.sender_kind === 'staff' && row.sender_id === req.actor.id;
     const fresh = (Date.now() - new Date(row.created_at).getTime()) < 15 * 60 * 1000;
     if (!(mine && (fresh || isAdmin(req)))) return res.status(403).json({ error: 'can only edit your own recent message' });
+    // Append-only revision trail: the UI shows only the latest + "(edited)",
+    // but the pre-edit body is preserved for audit/discovery.
+    await db.query(
+      `INSERT INTO message_revisions (message_id, body, edited_by_kind, edited_by_id)
+       SELECT id, body, 'staff', $2 FROM messages WHERE id=$1`, [req.params.mid, req.actor.id]);
     await db.query(`UPDATE messages SET body=$2, edited_at=now() WHERE id=$1`, [req.params.mid, body.slice(0, 4000)]);
+    const convId = (await db.query(`SELECT conversation_id FROM messages WHERE id=$1`, [req.params.mid])).rows[0].conversation_id;
+    if (convId) {
+      const freshMsg = await require('../lib/chat').getMessage(req.params.mid);
+      require('../lib/events').publishToConversation(convId, 'message:edited',
+        { conversationId: convId, message: freshMsg }).catch(() => {});
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -1466,135 +1493,73 @@ router.delete('/messages/:mid', async (req, res) => {
     if (!(await canTouchApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
     const mine = row.sender_kind === 'staff' && row.sender_id === req.actor.id;
     if (!(seesAll(req) || mine)) return res.status(403).json({ error: 'forbidden' });
+    // Tombstone, never a hard delete — the pre-delete body goes to the
+    // revision trail so the record survives for audit/discovery.
+    await db.query(
+      `INSERT INTO message_revisions (message_id, body, edited_by_kind, edited_by_id)
+       SELECT id, body, 'staff', $2 FROM messages WHERE id=$1`, [req.params.mid, req.actor.id]);
     await db.query(`UPDATE messages SET deleted_at=now(), body='[message removed]', pinned=false WHERE id=$1`, [req.params.mid]);
     await db.query(`DELETE FROM message_reactions WHERE message_id=$1`, [req.params.mid]);
     await audit(req, 'delete_message', 'application', row.application_id, { messageId: req.params.mid });
+    const convId = (await db.query(`SELECT conversation_id FROM messages WHERE id=$1`, [req.params.mid])).rows[0].conversation_id;
+    if (convId) require('../lib/events').publishToConversation(convId, 'message:deleted',
+      { conversationId: convId, messageId: req.params.mid }).catch(() => {});
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// ---------------- collaboration messaging (per file, two channels) ----------------
-// channel 'borrower' = borrower <-> loan team; channel 'internal' = LO <->
-// processor <-> underwriter <-> admin, never visible to the borrower.
-// Guarded by the /applications/:id middleware (staffer must see this file).
+// ---------------- collaboration messaging (LEGACY channel endpoints) --------
+// Conversations are first-class now (see routes/staff-chat.js). These two
+// endpoints keep the old (application, channel) contract working for any
+// stale client by delegating onto the file's default conversations.
 router.get('/applications/:id/messages', async (req, res) => {
   const channel = req.query.channel === 'internal' ? 'internal' : 'borrower';
   try {
-    const r = await db.query(
-      `SELECT m.id, m.sender_kind, m.sender_id, m.body, m.channel, m.checklist_item_id,
-              m.is_task_request, m.read_at, m.created_at, m.pinned, m.edited_at, m.deleted_at,
-              m.attachment_document_id, m.attachment_kind, m.entity_refs,
-              d.filename AS attachment_name, d.content_type AS attachment_type, d.size_bytes AS attachment_size,
-              COALESCE((SELECT json_agg(json_build_object('emoji', r.emoji, 'kind', r.actor_kind, 'actor', r.actor_id))
-                          FROM message_reactions r WHERE r.message_id=m.id), '[]'::json) AS reactions,
-              CASE WHEN m.sender_kind='staff' THEN s.full_name
-                   WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
-                   ELSE 'System' END AS sender_name,
-              ci.label AS task_label, ci.status AS task_status
-         FROM messages m
-         LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
-         LEFT JOIN borrowers  b ON b.id=m.borrower_id
-         LEFT JOIN checklist_items ci ON ci.id=m.checklist_item_id
-         LEFT JOIN documents d ON d.id=m.attachment_document_id
-        WHERE m.application_id=$1 AND m.channel=$2
-        ORDER BY m.created_at DESC LIMIT 500`, [req.params.id, channel]);
-    r.rows.reverse();   // newest-500 window, still rendered oldest-first
-    // Opening a channel marks the other side's messages as read (receipts).
-    if (channel === 'borrower')
-      await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND channel='borrower' AND sender_kind='borrower' AND read_at IS NULL`, [req.params.id]);
-    else
-      await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND channel='internal' AND sender_id<>$2 AND read_at IS NULL`, [req.params.id, req.actor.id]);
-    res.json(r.rows);
+    const chatLib = require('../lib/chat');
+    await chatLib.ensureConversationsForApp(req.params.id);
+    const c = await db.query(
+      `SELECT id FROM conversations WHERE application_id=$1 AND kind=$2`, [req.params.id, channel]);
+    if (!c.rows[0]) return res.json([]);
+    const conv = await chatLib.getConversation(c.rows[0].id);
+    const msgs = await chatLib.fetchMessages(conv.id, { limit: 200 });
+    // The legacy contract marked everything read on open.
+    const maxSeq = msgs.length ? msgs[msgs.length - 1].seq : 0;
+    if (maxSeq) await chatLib.markRead(conv, { kind: 'staff', id: req.actor.id }, maxSeq);
+    res.json(msgs);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.post('/applications/:id/messages', async (req, res) => {
   const b = req.body || {};
-  const body = b.body;
   const channel = b.channel === 'internal' ? 'internal' : 'borrower';
   const att = b.attachment && b.attachment.dataBase64 ? b.attachment : null;
-  if ((!body || !String(body).trim()) && !att) return res.status(400).json({ error: 'message body or attachment required' });
+  if ((!b.body || !String(b.body).trim()) && !att) return res.status(400).json({ error: 'message body or attachment required' });
   try {
-    const appRow = await db.query(
-      `SELECT borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
-    if (!appRow.rows[0]) return res.status(404).json({ error: 'not found' });
-    const a = appRow.rows[0];
+    const chatLib = require('../lib/chat');
+    await chatLib.ensureConversationsForApp(req.params.id);
+    const c = await db.query(
+      `SELECT id FROM conversations WHERE application_id=$1 AND kind=$2`, [req.params.id, channel]);
+    if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
+    const conv = await chatLib.getConversation(c.rows[0].id);
 
-    // Store any attachment (photo, video, voice note, PDF, file) first.
-    let attDoc = null;
-    if (att) {
-      try {
-        attDoc = await require('../lib/chat-attach').saveChatAttachment({
-          applicationId: req.params.id, borrowerId: a.borrower_id,
-          filename: att.filename, contentType: att.contentType, dataBase64: att.dataBase64,
-          byKind: 'staff', byId: req.actor.id, channel });
-      } catch (e2) { return res.status(e2.status || 500).json({ error: e2.message }); }
-    }
-
-    // Optionally promote the message into a real task on the application
-    // (staff-audience checklist item), so decisions in chat become work items.
     let taskId = null;
     if (b.makeTask && channel === 'internal') {
       const t = await db.query(
         `INSERT INTO checklist_items
            (application_id, scope, audience, item_kind, label, status, created_by_kind, created_by_id, assignee_staff_id)
          VALUES ($1,'application','staff','task',$2,'outstanding','staff',$3,$4) RETURNING id`,
-        [req.params.id, String(b.taskLabel || body).slice(0, 300), req.actor.id, b.assigneeStaffId || null]);
+        [req.params.id, String(b.taskLabel || b.body).slice(0, 300), req.actor.id, b.assigneeStaffId || null]);
       taskId = t.rows[0].id;
     }
-
-    // Structured entity mentions (#task / #document / #application chips).
-    const refs = Array.isArray(b.entityRefs)
-      ? b.entityRefs.slice(0, 20).map(r => ({
-          type: ['task','document','application','borrower'].includes(r.type) ? r.type : 'task',
-          id: String(r.id || '').slice(0, 60), label: String(r.label || '').slice(0, 160) }))
-        .filter(r => r.id && r.label)
-      : null;
-    const ins = await db.query(
-      `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,channel,checklist_item_id,attachment_document_id,attachment_kind,entity_refs)
-       VALUES ($1,$2,'staff',$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-      [req.params.id, a.borrower_id, req.actor.id, String(body || '').slice(0, 4000), channel, taskId,
-       attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null,
-       refs && refs.length ? JSON.stringify(refs) : null]);
-    // Link the stored attachment back to its message (visibility was already
-    // set from the channel at save time — this is just the back-reference).
-    if (attDoc) await db.query(`UPDATE documents SET message_id=$1 WHERE id=$2`, [ins.rows[0].id, attDoc.documentId]);
-    await audit(req, 'post_message', 'application', req.params.id, { channel, taskId, attachment: !!attDoc });
-
-    try {
-      if (channel === 'borrower' && a.borrower_id) {
-        const senderRow = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
-        const senderName = (senderRow.rows[0] && senderRow.rows[0].full_name) || 'Your loan team';
-        const ctxB = await notify.fileContext(req.params.id);
-        await notify.notifyBorrower(a.borrower_id, {
-          type: 'message', title: `New message from ${senderName}`,
-          body: `${ctxB ? ctxB.addr + ' — ' : ''}"${String(body).slice(0, 200)}"`,
-          meta: (ctxB && ctxB.meta) || undefined,
-          applicationId: req.params.id,
-          link: `/app/${req.params.id}`, ctaLabel: 'Open the conversation' });
-      } else if (channel === 'internal') {
-        // Notify the rest of the file's team (assigned LO/processor + a task
-        // assignee if any) — never the borrower, never the sender.
-        const team = new Set([a.loan_officer_id, a.processor_id, b.assigneeStaffId].filter(Boolean));
-        team.delete(req.actor.id);
-        const ctxI = await notify.fileContext(req.params.id);
-        for (const sid of team)
-          await notify.notifyStaff(sid, {
-            type: 'message', title: (taskId ? 'New task from team chat' : 'New internal note') + (ctxI ? ` on ${ctxI.loanNo}` : ' on a file'),
-            body: `${ctxI ? ctxI.label + ' — ' : ''}${String(body).slice(0, 200)}`,
-            meta: (ctxI && ctxI.meta) || undefined,
-            applicationId: req.params.id,
-            link: `/internal/app/${req.params.id}`, ctaLabel: 'Open the file' });
-      }
-      // @mentions get a direct ping regardless of channel/assignment.
-      if (body) {
-        const meRow = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
-        await require('../lib/mentions').notifyMentions({
-          body, applicationId: req.params.id, senderId: req.actor.id,
-          senderName: meRow.rows[0]?.full_name || 'A teammate' });
-      }
-    } catch (_) {}
-    res.status(201).json({ ok: true, messageId: ins.rows[0].id, taskId });
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
+    const { message } = await chatLib.postMessage({
+      conv, actor: { kind: 'staff', id: req.actor.id, role: req.actor.role },
+      body: b.body, attachment: att, entityRefs: b.entityRefs, checklistItemId: taskId,
+    });
+    await audit(req, 'post_message', 'application', req.params.id, { channel, taskId, attachment: !!att });
+    res.status(201).json({ ok: true, messageId: message.id, taskId });
+  } catch (e) {
+    if (e.code === 'pii_blocked') return res.status(400).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' });
+  }
 });
 
 // ---------------- leads (marketing-site submissions) ----------------
@@ -1984,5 +1949,10 @@ router.delete('/vendors/:id', async (req, res) => {
   await audit(req, 'delete_vendor', 'service_contact', req.params.id);
   res.json({ ok: true });
 });
+
+// ---------------- chat v3: conversations, receipts, presence ----------------
+// Mounted last so the /applications/:id scope guard above still covers the
+// application-scoped chat routes (create chat / export).
+router.use(require('./staff-chat'));
 
 module.exports = router;

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
-import MessageThread from '../components/MessageThread.jsx';
+import ChatThread from '../components/ChatThread.jsx';
+import { useAuth } from '../lib/auth.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
@@ -789,18 +790,10 @@ export default function Application() {
       )}
 
       <Section id="sec-messages" title="Messages"
-        info="Chat directly with your loan officer and processor — attach files, reference documents, and get answers on the record.">
+        info="Chat live with your loan team — see when they're online, when they're typing, and when your messages are read. Attach files, record voice notes, and get answers on the record.">
       {/* Keyed by file id: this component survives /app/:id navigation, and
           without the key the previous file's thread kept showing. */}
-      <MessageThread key={id} mine="borrower" title="Messages with your loan team"
-        fetchMessages={() => api.messages(id)}
-        send={(body, opts) => api.postMessage(id, body, { attachment: opts?.attachment, entityRefs: opts?.entityRefs })}
-        downloadAttachment={(docId) => api.downloadDoc(docId)}
-        react={(mid, emoji) => api.react(mid, emoji)}
-        edit={(mid, body) => api.editMessage(mid, body)}
-        del={(mid) => api.deleteMessage(mid)}
-        fetchMentionables={() => api.mentionables(id)}
-        onOpenApplication={(aid) => { window.location.hash = '#/app/' + aid; }} />
+      <BorrowerChat key={id} appId={id} />
       </Section>
 
       <Section id="sec-activity" title="Activity"
@@ -817,5 +810,27 @@ export default function Application() {
           onClose={() => { setSowOpen(false); load(); }} />
       )}
     </>
+  );
+}
+
+/* The borrower's live chat with their loan team. A file has exactly one
+   borrower-visible conversation — resolve it, then render the full thread
+   (typing indicators, online presence, read receipts, replies, drafts). */
+function BorrowerChat({ appId }) {
+  const { actor } = useAuth();
+  const [conv, setConv] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    api.conversations(appId)
+      .then(r => setConv((r.conversations || [])[0] || false))
+      .catch(e => setErr(e.message));
+  }, [appId]);
+  if (err) return <div role="alert" className="notice err">{err}</div>;
+  if (conv === false) return <p className="muted small">Your conversation will appear here once your loan team opens it.</p>;
+  if (!conv) return <p className="muted small">Loading your conversation…</p>;
+  return (
+    <ChatThread conversationId={conv.id} surface="borrower"
+      me={{ kind: 'borrower', id: actor?.id }} height="60vh"
+      onOpenApplication={(aid) => { window.location.hash = '#/app/' + aid; }} />
   );
 }

@@ -1355,72 +1355,49 @@ router.get('/messages', async (req, res) => {
       ORDER BY m.created_at DESC LIMIT 500`,
     [me(req), req.query.applicationId || null]);
   r.rows.reverse();   // newest-500 window, still rendered oldest-first
-  // Opening the thread clears the "new message" badge for staff replies.
-  if (req.query.applicationId)
+  // Opening the thread clears the "new message" badge for staff replies —
+  // legacy read_at plus the new per-member watermark (035).
+  if (req.query.applicationId) {
     await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND borrower_id=$2 AND sender_kind='staff' AND read_at IS NULL`,
       [req.query.applicationId, me(req)]);
+    try {
+      const chatLib = require('../lib/chat');
+      const c = await db.query(`SELECT id FROM conversations WHERE application_id=$1 AND kind='borrower'`, [req.query.applicationId]);
+      if (c.rows[0]) {
+        const conv = await chatLib.getConversation(c.rows[0].id);
+        const mx = await db.query(`SELECT COALESCE(max(seq),0) AS s FROM messages WHERE conversation_id=$1`, [conv.id]);
+        if (Number(mx.rows[0].s)) await chatLib.markRead(conv, { kind: 'borrower', id: me(req) }, Number(mx.rows[0].s));
+      }
+    } catch (_) { /* legacy path stays best-effort */ }
+  }
   res.json(r.rows);
 });
 router.post('/messages', async (req, res) => {
   const b = req.body || {};
   const att = b.attachment && b.attachment.dataBase64 ? b.attachment : null;
   if ((!b.body || !String(b.body).trim()) && !att) return res.status(400).json({ error: 'message body or attachment required' });
-  // If tied to an application, it must be the borrower's own — never let a
-  // borrower post onto another borrower's file by guessing its id.
-  if (b.applicationId) {
-    const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
-    if (!own.rows[0]) return res.status(404).json({ error: 'application not found' });
-  }
-  // Store any attachment (photo, video, voice note, PDF, file).
-  let attDoc = null;
-  if (att) {
-    if (!b.applicationId) return res.status(400).json({ error: 'attachments require an application' });
-    try {
-      attDoc = await require('../lib/chat-attach').saveChatAttachment({
-        applicationId: b.applicationId, borrowerId: me(req),
-        filename: att.filename, contentType: att.contentType, dataBase64: att.dataBase64,
-        byKind: 'borrower', byId: me(req), channel: 'borrower' });
-    } catch (e2) { return res.status(e2.status || 500).json({ error: e2.message }); }
-  }
-  const refs = Array.isArray(b.entityRefs)
-    ? b.entityRefs.slice(0, 20).map(r => ({
-        type: ['task','document','application','borrower'].includes(r.type) ? r.type : 'task',
-        id: String(r.id || '').slice(0, 60), label: String(r.label || '').slice(0, 160) }))
-      .filter(r => r.id && r.label)
-    : null;
-  const r = await db.query(
-    `INSERT INTO messages (application_id,borrower_id,sender_kind,sender_id,body,is_task_request,attachment_document_id,attachment_kind,entity_refs)
-     VALUES ($1,$2,'borrower',$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [b.applicationId || null, me(req), String(b.body || '').slice(0, 4000), !!b.isTaskRequest,
-     attDoc ? attDoc.documentId : null, attDoc ? attDoc.kind : null,
-     refs && refs.length ? JSON.stringify(refs) : null]);
-  if (attDoc) await db.query(`UPDATE documents SET message_id=$1 WHERE id=$2`, [r.rows[0].id, attDoc.documentId]);
-  res.status(201).json({ ok: true, messageId: r.rows[0].id });
+  if (!b.applicationId) return res.status(400).json({ error: 'applicationId required' });
+  // Must be the borrower's own file — never let a borrower post onto another
+  // borrower's file by guessing its id.
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'application not found' });
 
-  // Notify the file's loan officer + processor of the new borrower message.
-  if (b.applicationId) {
-    try {
-      const a = await db.query(
-        `SELECT a.loan_officer_id, a.processor_id, bo.first_name, bo.last_name
-           FROM applications a JOIN borrowers bo ON bo.id=a.borrower_id WHERE a.id=$1`, [b.applicationId]);
-      const row = a.rows[0];
-      if (row) {
-        const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
-        const ctx = await notify.fileContext(b.applicationId);
-        const opts = {
-          type: 'message', title: `New message from ${who} on ${ctx ? ctx.loanNo : 'a file'}`,
-          body: `${ctx ? ctx.label + ' — ' : ''}"${String(b.body).slice(0, 200)}"`,
-          meta: (ctx && ctx.meta) || undefined,
-          applicationId: b.applicationId,
-          link: `/internal/app/${b.applicationId}`, ctaLabel: 'Open the conversation',
-        };
-        for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
-          await notify.notifyStaff(sid, opts);
-        // @mentions of staff by the borrower get a direct ping too.
-        if (b.body) await require('../lib/mentions').notifyMentions({
-          body: b.body, applicationId: b.applicationId, senderName: who });
-      }
-    } catch (_) {}
+  // Legacy contract, new engine: delegate onto the file's borrower chat so the
+  // watermark receipts, SSE fan-out and notification ladder all run.
+  const chatLib = require('../lib/chat');
+  await chatLib.ensureConversationsForApp(b.applicationId);
+  const c = await db.query(`SELECT id FROM conversations WHERE application_id=$1 AND kind='borrower'`, [b.applicationId]);
+  if (!c.rows[0]) return res.status(404).json({ error: 'conversation not found' });
+  const conv = await chatLib.getConversation(c.rows[0].id);
+  try {
+    const { message } = await chatLib.postMessage({
+      conv, actor: { kind: 'borrower', id: me(req) },
+      body: b.body, attachment: att, entityRefs: b.entityRefs, isTaskRequest: !!b.isTaskRequest,
+    });
+    res.status(201).json({ ok: true, messageId: message.id });
+  } catch (e) {
+    if (e.code === 'pii_blocked') return res.status(400).json({ error: e.message });
+    return res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' });
   }
 });
 
@@ -1439,6 +1416,14 @@ router.post('/messages/:mid/react', async (req, res) => {
   if (!del.rows[0])
     await db.query(`INSERT INTO message_reactions (message_id,actor_kind,actor_id,emoji) VALUES ($1,'borrower',$2,$3)`,
       [req.params.mid, me(req), emoji]);
+  try {
+    const convId = (await db.query(`SELECT conversation_id FROM messages WHERE id=$1`, [req.params.mid])).rows[0].conversation_id;
+    if (convId) {
+      const fresh = await require('../lib/chat').getMessage(req.params.mid);
+      require('../lib/events').publishToConversation(convId, 'reaction:update',
+        { conversationId: convId, messageId: req.params.mid, reactions: fresh.reactions }).catch(() => {});
+    }
+  } catch (_) {}
   res.json({ ok: true, reacted: !del.rows[0] });
 });
 
@@ -1453,7 +1438,19 @@ router.patch('/messages/:mid', async (req, res) => {
   if (!m.rows[0] || m.rows[0].deleted_at) return res.status(404).json({ error: 'not found' });
   if ((Date.now() - new Date(m.rows[0].created_at).getTime()) > 15 * 60 * 1000)
     return res.status(403).json({ error: 'this message can no longer be edited' });
+  // Pre-edit body goes to the append-only revision trail (audit/discovery).
+  await db.query(
+    `INSERT INTO message_revisions (message_id, body, edited_by_kind, edited_by_id)
+     SELECT id, body, 'borrower', $2 FROM messages WHERE id=$1`, [req.params.mid, me(req)]);
   await db.query(`UPDATE messages SET body=$2, edited_at=now() WHERE id=$1`, [req.params.mid, body.slice(0, 4000)]);
+  try {
+    const convId = (await db.query(`SELECT conversation_id FROM messages WHERE id=$1`, [req.params.mid])).rows[0].conversation_id;
+    if (convId) {
+      const fresh = await require('../lib/chat').getMessage(req.params.mid);
+      require('../lib/events').publishToConversation(convId, 'message:edited',
+        { conversationId: convId, message: fresh }).catch(() => {});
+    }
+  } catch (_) {}
   res.json({ ok: true });
 });
 // Soft-delete my own message.
@@ -1463,8 +1460,17 @@ router.delete('/messages/:mid', async (req, res) => {
       WHERE m.id=$1 AND m.channel='borrower' AND m.sender_kind='borrower' AND m.sender_id=$2
         AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`, [req.params.mid, me(req)]);
   if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
+  // Tombstone with the pre-delete body preserved in the revision trail.
+  await db.query(
+    `INSERT INTO message_revisions (message_id, body, edited_by_kind, edited_by_id)
+     SELECT id, body, 'borrower', $2 FROM messages WHERE id=$1`, [req.params.mid, me(req)]);
   await db.query(`UPDATE messages SET deleted_at=now(), body='[message removed]', pinned=false WHERE id=$1`, [req.params.mid]);
   await db.query(`DELETE FROM message_reactions WHERE message_id=$1`, [req.params.mid]);
+  try {
+    const convId = (await db.query(`SELECT conversation_id FROM messages WHERE id=$1`, [req.params.mid])).rows[0].conversation_id;
+    if (convId) require('../lib/events').publishToConversation(convId, 'message:deleted',
+      { conversationId: convId, messageId: req.params.mid }).catch(() => {});
+  } catch (_) {}
   res.json({ ok: true });
 });
 
@@ -1489,20 +1495,26 @@ router.get('/applications/:id/mentionables', async (req, res) => {
 });
 
 // Which of my applications have unread messages from the loan team.
+// Unread now comes from the per-member watermark model (035).
 router.get('/chat/inbox', async (req, res) => {
   const r = await db.query(
     `SELECT a.id, a.property_address, a.status,
-            (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
-               AND m.channel='borrower' AND m.sender_kind='staff' AND m.read_at IS NULL) AS unread,
+            COALESCE((SELECT cm.unread_count FROM conversation_members cm
+                        JOIN conversations c2 ON c2.id=cm.conversation_id
+                       WHERE c2.application_id=a.id AND c2.kind='borrower'
+                         AND cm.member_kind='borrower' AND cm.member_id=$1 AND cm.removed_at IS NULL), 0) AS unread,
             lm.body AS last_body, lm.sender_kind AS last_sender_kind, lm.created_at AS last_at
        FROM applications a
        LEFT JOIN LATERAL (SELECT body, sender_kind, created_at FROM messages m
-                           WHERE m.application_id=a.id AND m.channel='borrower'
+                           WHERE m.application_id=a.id AND m.channel='borrower' AND m.deleted_at IS NULL
                            ORDER BY created_at DESC LIMIT 1) lm ON true
       WHERE a.borrower_id=$1 OR a.co_borrower_id=$1
       ORDER BY lm.created_at DESC NULLS LAST`, [me(req)]);
   res.json(r.rows);
 });
+
+// ---------------- chat v3: conversations, receipts, presence ----------------
+router.use(require('./borrower-chat'));
 
 // ---------------- shared: auto-generate checklist from templates ----------------
 // ==================== APPLICATION DRAFTS (save-as-you-go) ====================

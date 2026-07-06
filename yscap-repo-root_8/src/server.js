@@ -92,6 +92,10 @@ app.use('/api/intake', require('./routes/intake'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/staff', require('./routes/staff'));
 app.use('/api/admin', require('./routes/admin'));
+// SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
+// routers: EventSource can't send an Authorization header, so this route does
+// its own token verification from a query parameter.
+app.use('/api/events', require('./routes/events'));
 
 // --- Static site (your existing build drops into web/) ---
 const webDir = path.join(__dirname, '..', cfg.webDir);
@@ -189,6 +193,9 @@ if (require.main === module) {
     if (cfg.env === 'production' || process.env.RUN_SYNC === '1') {
       try { require('./sync/queue').start(); } catch (e) { console.warn('sync queue not started:', e.message); }
     }
+    // Chat's deferred-notification sweeper (email-if-still-unread + urgent
+    // re-pings). Cheap interval; safe to run alongside everything else.
+    try { require('./lib/chat').startSweeper(); } catch (e) { console.warn('chat sweeper not started:', e.message); }
   });
 }
 module.exports = app;
