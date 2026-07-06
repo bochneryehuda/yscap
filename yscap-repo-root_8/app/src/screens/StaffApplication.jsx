@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -239,6 +239,9 @@ export default function StaffApplication() {
   const [ssnFull, setSsnFull] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
   const [inviteBusy, setInviteBusy] = useState(false);
+  // One in-flight action at a time: double-clicking Assign/Remind/Accept/Request
+  // used to double-assign, double-email the borrower, or create duplicate items.
+  const [busyAct, setBusyAct] = useState('');
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
   const activityFetcher = useCallback(() => api.staffActivity(id), [id]);
@@ -258,22 +261,39 @@ export default function StaffApplication() {
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
+  const idRef = useRef(id); idRef.current = id;
   async function load() {
+    const forId = id;   // drop late responses after switching to another file
     setSsnFull('');
     try {
       const a = await api.staffApplication(id);
+      if (idRef.current !== forId) return;
       setApp(a);
       // Prefill the assignment selectors from what's already on the file, so an
       // assigned file never reads as "nobody assigned" after a reload.
       setLo(a.loan_officer_id || '');
       setProc(a.processor_id || '');
-      const [c, t, d, cn] = await Promise.all([api.staffChecklist(id), api.staffTeam(), api.staffAppDocuments(id).catch(() => []), api.staffConditions(id).catch(() => [])]);
+      // Each sub-load fails independently: a 500 on the checklist must not also
+      // empty the team dropdowns (and vice versa).
+      const [c, t, d, cn] = await Promise.all([
+        api.staffChecklist(id).catch(e => { setErr(e.message || 'Could not load the checklist'); return []; }),
+        api.staffTeam().catch(() => []),
+        api.staffAppDocuments(id).catch(() => []),
+        api.staffConditions(id).catch(() => []),
+      ]);
+      if (idRef.current !== forId) return;
       setItems(c || []); setTeam(t || []); setDocs(d || []); setConds(cn || []);
-      if (a.borrower_id) api.staffBorrower(a.borrower_id).then(setBorrower).catch(() => {});
-      api.staffGating(id).then(setGating).catch(() => setGating(null));
-    } catch (e) { setErr(e.message); }
+      if (a.borrower_id) api.staffBorrower(a.borrower_id).then(b => { if (idRef.current === forId) setBorrower(b); }).catch(() => {});
+      api.staffGating(id).then(g => { if (idRef.current === forId) setGating(g); }).catch(() => setGating(null));
+    } catch (e) { if (idRef.current === forId) setErr(e.message); }
   }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+  useEffect(() => {
+    // This component is reused across /staff/app/:id changes — clear the old
+    // file's data or it renders under the new file's URL until the fetch lands.
+    setApp(null); setItems([]); setDocs([]); setConds([]); setBorrower(null); setGating(null); setErr(''); setMsg('');
+    load();
+    /* eslint-disable-next-line */
+  }, [id]);
 
   async function revealSsn() {
     if (ssnFull) { setSsnFull(''); return; }        // toggle back to masked
@@ -295,16 +315,19 @@ export default function StaffApplication() {
     finally { setDlBusy(null); }
   }
   async function reviewDoc(doc, action) {
+    if (busyAct) return;
     let reason;
     if (action === 'reject') {
       reason = window.prompt('Why is this document being rejected? The borrower will see this and can upload a new version.');
       if (reason == null || !reason.trim()) return;
     }
+    setBusyAct('review');
     try {
       await api.staffReviewDoc(doc.id, action, reason);
       flash(action === 'accept' ? 'Document accepted ✓' : 'Document rejected — the borrower was notified.');
       await load();
     } catch (e) { setErr(e.message || 'Could not review the document'); }
+    finally { setBusyAct(''); }
   }
   async function deleteApp() {
     const reason = window.prompt('Delete this file? It will be removed from all borrower and internal views (recoverable by an admin). Optional reason:');
@@ -340,9 +363,11 @@ export default function StaffApplication() {
     }
   }
   async function nudge() {
-    setErr('');
+    if (busyAct) return;   // a double-click emailed the borrower twice
+    setBusyAct('nudge'); setErr('');
     try { const r = await api.staffNudge(id); flash(`Reminder sent — ${r.count} outstanding item${r.count === 1 ? '' : 's'}.`); }
     catch (e) { setErr(e.message || 'Could not send reminder'); }
+    finally { setBusyAct(''); }
   }
   async function setClosing(field, value) {
     setErr('');
@@ -350,21 +375,26 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Could not save closing date'); }
   }
   async function assign() {
+    if (busyAct) return;   // double-click assigned (and emailed) twice
     // Only send what actually changed, so re-opening a file and clicking Assign
     // doesn't re-notify the same people. Keep the selectors populated afterward.
     const body = {};
     if (lo && lo !== (app.loan_officer_id || '')) body.loanOfficerId = lo;
     if (proc && proc !== (app.processor_id || '')) body.processorId = proc;
     if (!body.loanOfficerId && !body.processorId) { flash('No assignment change.'); return; }
+    setBusyAct('assign');
     try {
       await api.staffAssign(id, body);
       flash('Assigned ✓'); await load();
     } catch (e) { setErr(e.message || 'Assign failed'); }
+    finally { setBusyAct(''); }
   }
   async function requestDoc() {
-    if (!newDoc.trim()) return;
+    if (!newDoc.trim() || busyAct) return;   // double-Enter created duplicate items
+    setBusyAct('request');
     try { await api.staffRequestDoc(id, { label: newDoc.trim(), audience: 'borrower' }); setNewDoc(''); flash('Requested ✓'); await load(); }
     catch (e) { setErr(e.message || 'Failed'); }
+    finally { setBusyAct(''); }
   }
   async function addLoanCondition() {
     if (!cForm.title.trim()) return;
@@ -428,7 +458,7 @@ export default function StaffApplication() {
         })()}
         <div className="spacer" />
         <button className="btn ghost" onClick={jumpToChat}>💬 Message</button>
-        <button className="btn ghost" onClick={nudge} title="Email the borrower a reminder of their outstanding items">🔔 Remind</button>
+        <button className="btn ghost" onClick={nudge} disabled={busyAct === 'nudge'} title="Email the borrower a reminder of their outstanding items">🔔 Remind</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
           title="Email the borrower an invite to join this file in the portal">
           {inviteBusy ? 'Sending…' : 'Invite borrower'}
@@ -504,7 +534,7 @@ export default function StaffApplication() {
               <option value="">— select —</option>
               {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
             </select></div>
-          <button className="btn primary" onClick={assign} disabled={!lo && !proc}>Assign</button>
+          <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>Assign</button>
         </div>
       </div>
 
@@ -580,7 +610,7 @@ export default function StaffApplication() {
           <div className="row" style={{ gap: 8 }}>
             <input className="input" placeholder="e.g. Updated bank statement" value={newDoc}
               onChange={e => setNewDoc(e.target.value)} onKeyDown={e => e.key === 'Enter' && requestDoc()} />
-            <button className="btn primary" onClick={requestDoc}>Request</button>
+            <button className="btn primary" onClick={requestDoc} disabled={busyAct === 'request'}>Request</button>
           </div>
           <p className="muted small" style={{ marginTop: 6 }}>Appears on the borrower's checklist and notifies them.</p>
         </div>
@@ -754,7 +784,9 @@ function ChatPanel({ appId, onTaskCreated }) {
           <button className={`btn ${internal ? 'primary' : 'ghost'}`} onClick={() => setChannel('internal')}>Team (internal)</button>
         </div>
       </div>
-      <MessageThread key={channel} mine="staff" bare
+      {/* Key by app id AND channel: this panel survives /staff/app/:id changes,
+          and without the id in the key the previous file's thread kept showing. */}
+      <MessageThread key={`${appId}:${channel}`} mine="staff" bare
         header={<span />}
         hint={internal
           ? 'Internal channel — loan officer, processor, underwriting and admin only. The borrower can never see these messages. Tick the box to also save a message as a task on the file.'
@@ -770,7 +802,8 @@ function ChatPanel({ appId, onTaskCreated }) {
         onOpenApplication={(id) => { window.location.hash = '#/internal/app/' + id; }}
         send={async (body, opts) => {
           const r = await api.staffPostMessage(appId, body, {
-            channel, makeTask: internal && opts?.makeTask, attachment: opts?.attachment });
+            channel, makeTask: internal && opts?.makeTask, attachment: opts?.attachment,
+            entityRefs: opts?.entityRefs });   // was dropped — staff # mentions saved as plain text
           if (r && r.taskId && onTaskCreated) onTaskCreated();
           return r;
         }} />

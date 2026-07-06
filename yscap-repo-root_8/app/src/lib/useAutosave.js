@@ -7,12 +7,21 @@ export function useAutosave(saveFn, delay = 900) {
   const timer = useRef(null);
   const pending = useRef(null);
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (rethrow = false) => {
     if (pending.current == null) return;
     const payload = pending.current; pending.current = null;
     setStatus('saving');
     try { await saveFn(payload); setStatus('saved'); }
-    catch { setStatus('error'); }
+    catch (e) {
+      // Re-queue the failed batch UNDER anything typed since, so the next edit
+      // (or flush) retries it — a transient failure no longer silently drops
+      // the fields that were in flight.
+      const newer = pending.current || {};
+      pending.current = { ...payload, ...newer };
+      if (payload.data || newer.data) pending.current.data = { ...(payload.data || {}), ...(newer.data || {}) };
+      setStatus('error');
+      if (rethrow) throw e;
+    }
   }, [saveFn]);
 
   const save = useCallback((partial) => {
@@ -27,9 +36,12 @@ export function useAutosave(saveFn, delay = 900) {
     timer.current = setTimeout(run, delay);
   }, [run, delay]);
 
+  // flush() REJECTS if the final write fails — callers that submit right after
+  // (Apply's step/submit) must know the last edits didn't reach the server,
+  // instead of submitting a draft that's silently missing them.
   const flush = useCallback(async () => {
     if (timer.current) clearTimeout(timer.current);
-    await run();
+    await run(true);
   }, [run]);
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);

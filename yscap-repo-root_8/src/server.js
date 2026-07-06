@@ -89,6 +89,9 @@ app.use((err, req, res, next) => {
   if (res.headersSent) return;   // a partial response is already on the wire
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'invalid JSON body' });
   if (err.type === 'entity.too.large')  return res.status(413).json({ error: 'upload too large' });
+  // Postgres 22P02 = a malformed id (usually a non-UUID :id param) reached a
+  // query — the request is bad, not the server.
+  if (err.code === '22P02') return res.status(400).json({ error: 'invalid id' });
   if (isDbUnavailable(err)) {
     console.error(`[api] DB unavailable during ${req.method} ${req.path}:`, require('./db').describeError(err));
     return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
