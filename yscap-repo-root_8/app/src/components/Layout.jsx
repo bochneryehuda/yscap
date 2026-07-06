@@ -54,8 +54,9 @@ export default function Layout({ children }) {
             <NavLink to="/profile">Profile</NavLink>
             <NavLink to="/track-record" title="Your investment experience — one record, linked to every file">Track record</NavLink>
             <NavLink to="/settings/notifications" title="Notification settings">Alerts</NavLink>
-            <Link to="/dashboard" className="bell" title="Notifications">
-              🔔{unread > 0 && <span className="badge">{unread}</span>}
+            <Link to="/dashboard" className="bell" title="Notifications"
+              aria-label={unread > 0 ? `Notifications — ${unread} unread` : 'Notifications'}>
+              🔔{unread > 0 && <span className="badge" aria-hidden="true">{unread}</span>}
             </Link>
             <button className="btn ghost small" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>
           </nav>

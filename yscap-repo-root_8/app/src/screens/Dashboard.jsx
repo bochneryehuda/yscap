@@ -77,7 +77,8 @@ export default function Dashboard() {
         <div className="spacer" />
         <button className="btn primary" onClick={newApplication}>+ New application</button>
       </div>
-      {err && <div className="notice err">{err}</div>}
+      {err && <div role="alert" className="notice err">{err}
+        <button className="btn link small" onClick={() => { setErr(''); load(); }}>Retry</button></div>}
       {msg && <div className="notice ok">{msg}</div>}
 
       {apps && apps.length > 0 && (

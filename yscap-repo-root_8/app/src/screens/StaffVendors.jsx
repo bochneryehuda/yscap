@@ -78,7 +78,7 @@ export default function StaffVendors() {
     catch (e) { setErr(e.message || 'Could not delete'); }
   }
 
-  if (!isAdmin) return <div className="notice err">The vendor directory is admin-only.</div>;
+  if (!isAdmin) return <div role="alert" className="notice err">The vendor directory is admin-only.</div>;
   const needle = q.trim().toLowerCase();
   const shown = (rows || []).filter(v => !needle
     || [v.company_name, v.contact_name, v.email, v.phone].some(x => String(x || '').toLowerCase().includes(needle)));
@@ -94,7 +94,7 @@ export default function StaffVendors() {
         <button className="btn primary" onClick={() => { setAdding(a => !a); setEditing(null); }}>{adding ? 'Close' : '+ Add vendor'}</button>
       </div>
       {msg && <div className="notice ok">{msg}</div>}
-      {err && <div className="notice err">{err}</div>}
+      {err && <div role="alert" className="notice err">{err}</div>}
       {adding && <VendorForm initial={blank()} busy={busy} onSave={add} onCancel={() => setAdding(false)} />}
 
       <div className="row" style={{ gap: 8, margin: '12px 0', flexWrap: 'wrap' }}>

@@ -2,6 +2,8 @@ import React, { useEffect } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './lib/auth.jsx';
 import { engineReport } from './lib/engines.js';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
+import RouteChrome from './components/RouteChrome.jsx';
 import Layout from './components/Layout.jsx';
 import StaffLayout from './components/StaffLayout.jsx';
 import Login from './screens/Login.jsx';
@@ -63,6 +65,8 @@ export default function App() {
   return (
     <AuthProvider>
       <HashRouter>
+        <RouteChrome />
+        <ErrorBoundary>
         <Routes>
           {/* public */}
           <Route path="/login" element={<Login />} />
@@ -97,6 +101,7 @@ export default function App() {
 
           <Route path="*" element={<Fallback />} />
         </Routes>
+        </ErrorBoundary>
       </HashRouter>
     </AuthProvider>
   );

@@ -509,6 +509,22 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .panel{padding:14px}
 }
 
+/* installed-app fit: viewport-fit=cover lets the app draw edge-to-edge on
+   notched phones — pad the chrome back out of the notch / home-bar areas */
+.header{padding-top:env(safe-area-inset-top)}
+.header .wrap{padding-left:calc(24px + env(safe-area-inset-left));
+  padding-right:calc(24px + env(safe-area-inset-right))}
+.shell>footer{padding-bottom:calc(20px + env(safe-area-inset-bottom)) !important}
+@media(max-width:720px){
+  .header .wrap{padding-left:calc(16px + env(safe-area-inset-left));
+    padding-right:calc(16px + env(safe-area-inset-right))}
+}
+
+/* keyboard users get a visible focus ring on every control; inputs keep
+   their own teal box-shadow treatment */
+:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
+
 /* =====================================================================
    TOUCH & READABILITY PASS — real tap targets on phones, no hover-gated
    controls, legible micro-text, and calmer sticky chrome.

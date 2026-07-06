@@ -25,6 +25,9 @@ export default function StaffTeam() {
   const [busy, setBusy] = useState(false);
   const [pwFor, setPwFor] = useState(null);
   const [pwVal, setPwVal] = useState('');
+  // Guards the welcome / password-reset email actions — a double-click was
+  // sending the same email twice.
+  const [mailBusy, setMailBusy] = useState(null);
 
   const load = () => api.adminStaff().then(setRows).catch(e => setErr(e.message));
   useEffect(() => { if (isAdmin) load(); }, [isAdmin]);
@@ -70,7 +73,7 @@ export default function StaffTeam() {
     } catch (e) { setErr(e.message); }
   }
 
-  if (!isAdmin) return <div className="notice err">Team management is available to admins only.</div>;
+  if (!isAdmin) return <div role="alert" className="notice err">Team management is available to admins only.</div>;
 
   const groups = [
     { key: 'sales', label: 'Sales & Loan Coordinators' },
@@ -84,15 +87,15 @@ export default function StaffTeam() {
       <div className="row" style={{ marginBottom: 16 }}>
         <h1 style={{ margin: 0 }}>Team</h1>
         <div className="spacer" />
-        <button className="btn ghost" title="Email a welcome (with set-up link) to everyone who can't log in yet"
-          onClick={async () => { setErr(''); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { setErr(e.message); } }}>
+        <button className="btn ghost" disabled={mailBusy === 'all'} title="Email a welcome (with set-up link) to everyone who can't log in yet"
+          onClick={async () => { if (mailBusy) return; setMailBusy('all'); setErr(''); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
           Send welcome to all
         </button>
         <span className="muted small" style={{ marginLeft: 10 }}>{rows ? `${rows.length} team members` : ''}</span>
       </div>
 
       {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
-      {err && <div className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
 
       {/* ---- add new staff ---- */}
       <div className="panel" style={{ marginBottom: 20 }}>
@@ -174,12 +177,12 @@ export default function StaffTeam() {
                   <button className="btn link" onClick={() => { setPwFor(pwFor === s.id ? null : s.id); setPwVal(''); }}>
                     {s.has_login ? 'Reset password' : 'Set password'}
                   </button>
-                  <button className="btn link" title="Email them their console welcome (sign-in or set-up link)"
-                    onClick={async () => { setErr(''); try { const r = await api.adminWelcome(s.id); flash(r.sent ? `Welcome email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } }}>
+                  <button className="btn link" disabled={mailBusy === `w${s.id}`} title="Email them their console welcome (sign-in or set-up link)"
+                    onClick={async () => { if (mailBusy) return; setMailBusy(`w${s.id}`); setErr(''); try { const r = await api.adminWelcome(s.id); flash(r.sent ? `Welcome email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
                     Send welcome
                   </button>
-                  <button className="btn link" title="Email them a link to set a new password"
-                    onClick={async () => { setErr(''); try { const r = await api.adminResetStaffEmail(s.id); flash(r.sent ? `Password-reset email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } }}>
+                  <button className="btn link" disabled={mailBusy === `r${s.id}`} title="Email them a link to set a new password"
+                    onClick={async () => { if (mailBusy) return; setMailBusy(`r${s.id}`); setErr(''); try { const r = await api.adminResetStaffEmail(s.id); flash(r.sent ? `Password-reset email sent to ${r.email}.` : `Could not deliver to ${r.email} — check the email provider.`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
                     Send password reset
                   </button>
                 </div>

@@ -30,7 +30,7 @@ export default function StaffTasks() {
     return Object.values(g);
   }, [shown]);
 
-  if (err) return <div className="notice err">{err}</div>;
+  if (err) return <div role="alert" className="notice err">{err}</div>;
   if (!rows) return <div className="panel muted">Loading your tasks…</div>;
 
   return (

@@ -42,7 +42,7 @@ export default function StaffChat() {
     });
   }, [rows, filter, q]);
 
-  if (err) return <div className="notice err">{err}</div>;
+  if (err) return <div role="alert" className="notice err">{err}</div>;
   if (rows == null) return <div className="panel muted">Loading conversations…</div>;
 
   const totalUnread = rows.reduce((n, r) => n + r.unread_borrower + r.unread_internal, 0);

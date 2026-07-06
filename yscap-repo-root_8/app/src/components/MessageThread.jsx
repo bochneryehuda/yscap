@@ -257,7 +257,7 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
     <div className={bare ? '' : 'panel'} style={bare ? {} : { marginTop: 18 }}>
       {header || <h3 style={{ marginBottom: 10 }}>{title}</h3>}
       {hint && <p className="muted small" style={{ margin: '0 0 10px' }}>{hint}</p>}
-      {err && <div className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
       <div className="msg-thread">
         {msgs == null ? <p className="muted small">Loading…</p>
           : msgs.length === 0 ? <p className="muted small">No messages yet. Start the conversation below.</p>
@@ -308,7 +308,7 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
                             <button className="msg-rx add" title="React" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}>🙂+</button>
                             {reactFor === m.id && (
                               <span className="msg-rx-pick">
-                                {QUICK_EMOJI.map(e => <button key={e} onClick={() => doReact(m.id, e)}>{e}</button>)}
+                                {QUICK_EMOJI.map(e => <button key={e} aria-label={`React with ${e}`} onClick={() => doReact(m.id, e)}>{e}</button>)}
                               </span>
                             )}
                           </span>

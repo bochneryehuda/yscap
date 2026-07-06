@@ -63,30 +63,30 @@ export default function Login() {
         </p>
 
         {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
-        {err && <div className="notice err" style={{ marginTop: 16 }}>{err}</div>}
+        {err && <div role="alert" className="notice err" style={{ marginTop: 16 }}>{err}</div>}
 
         <div style={{ marginTop: 18 }}>
           {mode === 'register' && (
             <div className="grid cols-2">
               <div className="field"><label>First name</label>
-                <input className="input" value={first} onChange={e => setFirst(e.target.value)} /></div>
+                <input className="input" autoComplete="given-name" value={first} onChange={e => setFirst(e.target.value)} /></div>
               <div className="field"><label>Last name</label>
-                <input className="input" value={last} onChange={e => setLast(e.target.value)} /></div>
+                <input className="input" autoComplete="family-name" value={last} onChange={e => setLast(e.target.value)} /></div>
             </div>
           )}
           {mode !== 'mfa' && (
             <>
               <div className="field"><label>Email</label>
-                <input className="input" type="email" value={email}
+                <input className="input" type="email" autoComplete="username" value={email}
                   onChange={e => setEmail(e.target.value)} onKeyDown={onKey(mode === 'login' ? submitLogin : submitRegister)} /></div>
               <div className="field"><label>Password</label>
-                <input className="input" type="password" value={password}
+                <input className="input" type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password}
                   onChange={e => setPassword(e.target.value)} onKeyDown={onKey(mode === 'login' ? submitLogin : submitRegister)} /></div>
             </>
           )}
           {mode === 'mfa' && (
             <div className="field"><label>6-digit code</label>
-              <input className="input" inputMode="numeric" maxLength={6} value={code}
+              <input className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code}
                 onChange={e => setCode(e.target.value.replace(/\D/g, ''))} onKeyDown={onKey(submitMfa)} autoFocus /></div>
           )}
         </div>

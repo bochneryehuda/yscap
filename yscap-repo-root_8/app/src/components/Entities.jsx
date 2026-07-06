@@ -64,7 +64,7 @@ export default function Entities() {
         documents, the IRS EIN letter, and the operating agreement. Once your loan team verifies an
         LLC, it fulfills the LLC condition on every loan automatically.
       </p>
-      {err && <div className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
       {rows == null ? <p className="muted small">Loading…</p>
         : rows.length === 0 ? <p className="muted small">No entities yet. Add the LLC(s) you borrow through — they're reused on every file, and we'll collect their formation documents once.</p>
           : <div className="ent-list">{rows.map(l => <EntityCard key={l.id} llc={l} onChanged={load} />)}</div>}

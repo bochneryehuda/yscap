@@ -98,7 +98,7 @@ function CardCondition({ it, appId, onSaved }) {
       open={open}
       action={<button className="btn ghost small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : saved ? 'Replace card' : 'Enter card details'}</button>}
     >
-      {formErr && <div className="notice err" style={{ marginBottom: 8 }}>{formErr}</div>}
+      {formErr && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{formErr}</div>}
       <div className="grid cols-2">
         <div className="field" style={{ gridColumn: '1 / -1' }}><label>Card number</label>
           <input className="input" inputMode="numeric" autoComplete="off" value={f.number}
@@ -196,7 +196,7 @@ function ContactCondition({ it, appId, onSaved }) {
         <div className="field"><label>Phone</label>
           <input className="input" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></div>
       </div>
-      {err && <div className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
       <button className="btn primary" onClick={submit} disabled={busy}>{busy ? 'Saving…' : 'Save & submit'}</button>
     </ConditionRow>
   );
@@ -243,7 +243,7 @@ function LlcCondition({ it, app, onChanged }) {
         open
         action={switching ? <button className="btn link small" onClick={() => setSwitching(false)}>Cancel</button> : null}
       >
-        {err && <div className="notice err" style={{ marginBottom: 6 }}>{err}</div>}
+        {err && <div role="alert" className="notice err" style={{ marginBottom: 6 }}>{err}</div>}
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <div style={{ flex: 1, minWidth: 220 }}>
             <LlcPicker value={pick.name} onPick={setPick} placeholder="Start typing your LLC name…" />
@@ -394,7 +394,7 @@ export default function Application() {
     } finally { setTrBusy(false); }
   }
 
-  if (err && !app) return <div className="notice err">{err}</div>;
+  if (err && !app) return <div role="alert" className="notice err">{err}</div>;
   if (!app) return <div className="panel muted">Loading…</div>;
 
   // ---- carve the checklist into the ordered conditions list ----
@@ -449,7 +449,7 @@ export default function Application() {
       <p className="muted small" style={{ marginBottom: 20 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
 
       {msg && <div className="notice ok">{msg}</div>}
-      {err && <div className="notice err">{err}</div>}
+      {err && <div role="alert" className="notice err">{err}</div>}
 
       <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
 

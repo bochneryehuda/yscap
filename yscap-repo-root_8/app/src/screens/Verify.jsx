@@ -63,9 +63,9 @@ export default function Verify() {
     return (
       <AuthShell title="Confirm your email"
         subtitle="Enter your email and we'll send you a 6-digit confirmation code.">
-        {err && <div className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+        {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
         <div className="field"><label>Email</label>
-          <input className="input" type="email" value={email} autoFocus
+          <input className="input" type="email" autoComplete="email" value={email} autoFocus
             onChange={e => setEmail(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && validEmail && sendCode()} /></div>
         <div className="row" style={{ marginTop: 8 }}>
@@ -87,14 +87,14 @@ export default function Verify() {
   return (
     <AuthShell title="Enter your code"
       subtitle={`Enter the 6-digit code we emailed to ${email || 'your address'}.`}>
-      {err && <div className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
       <div className="notice ok" style={{ marginBottom: 14 }}>
         If an unverified account exists for that email, a code is on its way. It expires in 24 hours.
       </div>
       <div className="field"><label>Email</label>
-        <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} /></div>
+        <input className="input" type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} /></div>
       <div className="field"><label>6-digit code</label>
-        <input className="input" inputMode="numeric" maxLength={6} value={code} autoFocus
+        <input className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} autoFocus
           onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
           onKeyDown={e => e.key === 'Enter' && validEmail && code.length === 6 && verifyByCode()} /></div>
       <div className="row" style={{ marginTop: 8 }}>

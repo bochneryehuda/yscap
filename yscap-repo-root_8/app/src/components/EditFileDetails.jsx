@@ -49,7 +49,7 @@ export default function EditFileDetails({ app, onSaved }) {
       </div>
       {open && (
         <div style={{ marginTop: 12 }}>
-          {err && <div className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+          {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
           <div className="ts-inputs">
             <label><span>Program</span><input className="input" value={f.program} onChange={(e) => set('program', e.target.value)} /></label>
             <label><span>Loan type</span>

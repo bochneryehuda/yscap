@@ -49,22 +49,22 @@ export default function StaffLogin() {
         </p>
 
         {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
-        {err && <div className="notice err" style={{ marginTop: 16 }}>{err}</div>}
+        {err && <div role="alert" className="notice err" style={{ marginTop: 16 }}>{err}</div>}
 
         <div style={{ marginTop: 18 }}>
           {mode === 'login' && (
             <>
               <div className="field"><label>Work email</label>
-                <input className="input" type="email" value={email}
+                <input className="input" type="email" autoComplete="username" value={email}
                   onChange={e => setEmail(e.target.value)} onKeyDown={onKey(submitLogin)} autoFocus /></div>
               <div className="field"><label>Password</label>
-                <input className="input" type="password" value={password}
+                <input className="input" type="password" autoComplete="current-password" value={password}
                   onChange={e => setPassword(e.target.value)} onKeyDown={onKey(submitLogin)} /></div>
             </>
           )}
           {mode === 'mfa' && (
             <div className="field"><label>6-digit code</label>
-              <input className="input" inputMode="numeric" maxLength={6} value={code}
+              <input className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code}
                 onChange={e => setCode(e.target.value.replace(/\D/g, ''))} onKeyDown={onKey(submitMfa)} autoFocus /></div>
           )}
         </div>

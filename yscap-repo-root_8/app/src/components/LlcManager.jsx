@@ -136,7 +136,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
     finally { setDlBusy(null); }
   }
 
-  if (err && !llc) return <div className="notice err">{err}</div>;
+  if (err && !llc) return <div role="alert" className="notice err">{err}</div>;
   if (!llc || !f) return <p className="muted small">Loading LLC…</p>;
 
   const readOnly = !!llc.read_only;   // a co-borrower viewing the primary's entity
@@ -166,7 +166,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
           Ask your loan team if something needs to change.
         </p>
       )}
-      {err && <div className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
 
       {/* ---- entity details ---- */}
       <div className="ts-inputs">
