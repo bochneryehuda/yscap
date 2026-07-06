@@ -562,7 +562,7 @@ export default function StaffApplication() {
     } catch (e) { if (idRef.current === forId) setErr(e.message); }
   }
   useEffect(() => {
-    // This component is reused across /staff/app/:id changes — clear the old
+    // This component is reused across /internal/app/:id changes — clear the old
     // file's data or it renders under the new file's URL until the fetch lands.
     setApp(null); setItems([]); setDocs([]); setConds([]); setBorrower(null); setGating(null); setErr(''); setMsg('');
     load();
@@ -1196,7 +1196,7 @@ function ChatPanel({ appId, onTaskCreated }) {
           <button className={`btn ${internal ? 'primary' : 'ghost'}`} onClick={() => setChannel('internal')}>Team (internal)</button>
         </div>
       </div>
-      {/* Key by app id AND channel: this panel survives /staff/app/:id changes,
+      {/* Key by app id AND channel: this panel survives /internal/app/:id changes,
           and without the id in the key the previous file's thread kept showing. */}
       <MessageThread key={`${appId}:${channel}`} mine="staff" bare
         header={<span />}
