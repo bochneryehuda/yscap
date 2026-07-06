@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script src="../theme.js?v=n1"></script>
+<script src="../brand.js?v=n1"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YS Track Record — Borrower Experience Builder</title>
+<meta name="description" content="Document and verify a borrower's real-estate track record — fix & flip and fix & hold experience in separate sections, with experience ranking, loan-officer verification, and branded Excel + PDF export.">
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/images/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../assets/images/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="../assets/images/favicon-180.png">
+<meta property="og:image" content="../assets/images/favicon-512.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css?v=n1">
+<link rel="stylesheet" href="track-record.css">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<span class="orb orb-1" aria-hidden="true"></span>
+<span class="orb orb-2" aria-hidden="true"></span>
+
+<header class="topbar">
+    <div class="topbar-inner">
+        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+        <span class="topbar-sep"></span>
+        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Track Record</span></div>
+        <div class="topbar-actions">
+            <a class="back" href="../suite.html">← All tools</a>
+            <button class="btn btn-line" type="button" onclick="TR.share(this)" title="Copy a link that reopens this track record">Share link 🔗</button>
+            <button class="btn btn-line" type="button" onclick="TR.exportXlsx(this)">Export ⤓</button>
+            <button class="btn btn-line" type="button" onclick="document.getElementById('tr-import').click()">Import ⤒</button>
+            <input id="tr-import" type="file" accept=".xlsx" class="hide" onchange="TR.importXlsx(this)">
+        </div>
+    </div>
+</header>
+
+<main>
+<section class="tr-hero">
+    <span class="eyebrow">Investor Suite · Borrower Experience</span>
+    <h1>Borrower <em>Track Record</em></h1>
+    <p>Document your completed deals so we can calculate your experience ranking. Add each property as a Fix &amp; Flip or a Fix &amp; Hold — they live in separate sections with their own exit details, and export to a branded Excel and PDF.</p>
+    <div class="tr-borrower-wrap">
+        <label for="tr-borrower">Borrower / sponsor name</label>
+        <input id="tr-borrower" type="text" placeholder="Optional — appears on the export">
+    </div>
+</section>
+
+<div id="tr-app"></div>
+<div id="tr-flash" role="status" aria-live="polite"></div>
+</main>
+
+<footer class="suite-footer">
+    <div class="sf-inner">
+        <div class="sf-top">
+            <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">
+            <span class="sf-tag">The answer is yes.™</span>
+            <div class="sf-marks">
+                <img src="../assets/images/eho-lender.png" alt="Equal Housing Lender">
+                <img src="../assets/images/nmls.svg" alt="NMLS ID 2609746">
+            </div>
+        </div>
+        <div class="sf-meta">YS Capital Group · <a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">NMLS ID 2609746</a> · <a href="tel:7188312168">718-831-2168</a> · <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a></div>
+        <p class="sf-disc"><strong>For estimation &amp; education only.</strong> Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Final terms depend on full underwriting. Use is at your own risk.</p>
+        <p class="sf-copy">© 2026 YS Capital Group. All rights reserved. Equal Housing Lender.</p>
+    </div>
+</footer>
+
+<script src="../suite.js"></script>
+<script src="rb-logo.js"></script>
+<script src="track-record.js"></script>
+<script src="../float-actions.js"></script>
+</body>
+</html>

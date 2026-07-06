@@ -1,0 +1,126 @@
+/**
+ * Zero-dependency security primitives on Node's built-in crypto.
+ *   - Passwords: scrypt (memory-hard) + random salt, timing-safe verify.
+ *   - JWT: compact HS256 sign/verify (access + refresh).
+ *   - TOTP: RFC 6238 (SHA1, 6 digits, 30s) for MFA — compatible with
+ *           Google Authenticator / Authy / 1Password.
+ *   - SSN: AES-256-GCM encrypt/decrypt for at-rest PII.
+ * No argon2/otplib/jsonwebtoken => no native build => clean Render deploys.
+ */
+const crypto = require('crypto');
+const cfg = require('../config');
+
+// ---------- passwords (scrypt) ----------
+function hashPassword(pw) {
+  const salt = crypto.randomBytes(16);
+  const dk = crypto.scryptSync(String(pw), salt, 32, { N: 16384, r: 8, p: 1 });
+  return `scrypt$16384$8$1$${salt.toString('base64')}$${dk.toString('base64')}`;
+}
+function verifyPassword(pw, stored) {
+  try {
+    const [, N, r, p, saltB64, hashB64] = stored.split('$');
+    const salt = Buffer.from(saltB64, 'base64');
+    const expected = Buffer.from(hashB64, 'base64');
+    const dk = crypto.scryptSync(String(pw), salt, expected.length,
+      { N: +N, r: +r, p: +p });
+    return dk.length === expected.length && crypto.timingSafeEqual(dk, expected);
+  } catch { return false; }
+}
+
+// ---------- JWT (HS256) ----------
+const b64u  = (buf) => Buffer.from(buf).toString('base64url');
+const b64uJSON = (o) => b64u(JSON.stringify(o));
+function signJwt(payload, ttlSec = cfg.accessTtlSec) {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const now = Math.floor(Date.now() / 1000);
+  const body = { ...payload, iat: now, exp: now + ttlSec };
+  const data = `${b64uJSON(header)}.${b64uJSON(body)}`;
+  const sig = crypto.createHmac('sha256', cfg.jwtSecret).update(data).digest('base64url');
+  return `${data}.${sig}`;
+}
+function verifyJwt(token) {
+  try {
+    const [h, p, sig] = String(token).split('.');
+    if (!h || !p || !sig) return null;
+    const expected = crypto.createHmac('sha256', cfg.jwtSecret).update(`${h}.${p}`).digest('base64url');
+    const a = Buffer.from(sig), b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const body = JSON.parse(Buffer.from(p, 'base64url').toString());
+    if (body.exp && Math.floor(Date.now() / 1000) > body.exp) return null;
+    return body;
+  } catch { return null; }
+}
+
+// ---------- TOTP (RFC 6238) ----------
+function newTotpSecret() {
+  // base32 (RFC 4648) of 20 random bytes
+  const bytes = crypto.randomBytes(20);
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '', out = '';
+  for (const byte of bytes) bits += byte.toString(2).padStart(8, '0');
+  for (let i = 0; i + 5 <= bits.length; i += 5) out += A[parseInt(bits.slice(i, i + 5), 2)];
+  return out;
+}
+function _b32decode(s) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const c of s.toUpperCase().replace(/=+$/, '')) {
+    const v = A.indexOf(c); if (v < 0) continue;
+    bits += v.toString(2).padStart(5, '0');
+  }
+  const out = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) out.push(parseInt(bits.slice(i, i + 8), 2));
+  return Buffer.from(out);
+}
+function _totpAt(secret, counter) {
+  const key = _b32decode(secret);
+  const buf = Buffer.alloc(8);
+  buf.writeBigInt64BE(BigInt(counter));
+  const hmac = crypto.createHmac('sha1', key).update(buf).digest();
+  const off = hmac[hmac.length - 1] & 0xf;
+  const code = ((hmac[off] & 0x7f) << 24) | (hmac[off + 1] << 16) | (hmac[off + 2] << 8) | hmac[off + 3];
+  return (code % 1e6).toString().padStart(6, '0');
+}
+function verifyTotp(secret, code, window = 1) {
+  if (!secret || !code) return false;
+  const step = Math.floor(Date.now() / 1000 / 30);
+  for (let w = -window; w <= window; w++) {
+    if (_totpAt(secret, step + w) === String(code).padStart(6, '0')) return true;
+  }
+  return false;
+}
+function totpUri(secret, label, issuer = 'YS Capital') {
+  return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(label)}`
+       + `?secret=${secret}&issuer=${encodeURIComponent(issuer)}&period=30&digits=6&algorithm=SHA1`;
+}
+
+// ---------- SSN at rest (AES-256-GCM) ----------
+function _key() { return crypto.createHash('sha256').update(cfg.ssnKey).digest(); }
+function encryptSSN(plain) {
+  if (!plain) return null;
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', _key(), iv);
+  const enc = Buffer.concat([c.update(String(plain), 'utf8'), c.final()]);
+  return Buffer.concat([iv, c.getAuthTag(), enc]); // stored in bytea
+}
+function decryptSSN(buf) {
+  if (!buf) return null;
+  try {
+    const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+    const iv = b.subarray(0, 12), tag = b.subarray(12, 28), enc = b.subarray(28);
+    const d = crypto.createDecipheriv('aes-256-gcm', _key(), iv);
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(enc), d.final()]).toString('utf8');
+  } catch { return null; }
+}
+
+const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+const randomToken = (n = 32) => crypto.randomBytes(n).toString('base64url');
+
+module.exports = {
+  hashPassword, verifyPassword,
+  signJwt, verifyJwt,
+  newTotpSecret, verifyTotp, totpUri,
+  encryptSSN, decryptSSN,
+  sha256, randomToken,
+};

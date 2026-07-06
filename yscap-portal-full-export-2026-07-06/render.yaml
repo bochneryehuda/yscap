@@ -1,0 +1,61 @@
+# Render Blueprint. package.json is at the REPO ROOT, so no Root Directory
+# override is needed. If your repo nests the project in a subfolder, set
+# `rootDir:` below (or the dashboard's Root Directory) to that folder.
+services:
+  - type: web
+    name: ys-capital-portal
+    runtime: node
+    plan: starter
+    # rootDir: ys-capital-portal        # uncomment ONLY if the project is nested
+    buildCommand: npm install && npm --prefix app ci && npm --prefix app run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    # Persistent disk for uploaded documents. Render's default filesystem is
+    # ephemeral (wiped on every deploy); this volume survives deploys/restarts.
+    # Note: a service with a disk runs a single instance (no horizontal scaling).
+    disk:
+      name: yscap-uploads
+      mountPath: /var/data
+      sizeGB: 5
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Store documents on the persistent disk mounted above.
+      - key: STORAGE_DIR
+        value: /var/data/uploads
+      # DATABASE_URL must point at your Postgres instance (named "yscap").
+      # - Blueprint-managed services: the fromDatabase link below wires it
+      #   automatically to the matching database in the `databases:` block.
+      # - Manually-created services (render.yaml not applied): this file is
+      #   ignored — you MUST set DATABASE_URL in the dashboard by hand, to the
+      #   database's INTERNAL Database URL (same region) or External URL.
+      # A wrong/unset value makes the app fall back to localhost and every DB
+      # call fails with ECONNREFUSED 127.0.0.1:5432 (see logs) — set this first.
+      - key: DATABASE_URL
+        fromDatabase: { name: yscap, property: connectionString }
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SSN_ENCRYPTION_KEY
+        generateValue: true
+      - key: INTAKE_API_KEY
+        generateValue: true
+      # 'auto' picks the provider from whatever credentials are present:
+      # set RESEND_API_KEY below and email turns on automatically. Force a
+      # provider by setting this to resend|graph|none instead.
+      - key: EMAIL_PROVIDER
+        value: auto
+      - key: NOTIFY_FROM
+        value: YS Capital Group <no-reply@yscapgroup.com>
+      # Base URL used for links inside emails (verify/reset). Set to the portal's
+      # public URL, e.g. https://yscap.onrender.com or your custom domain.
+      - key: APP_URL
+        value: https://yscap.onrender.com
+      # Paste your Resend API key in the dashboard (kept out of git). NOTIFY_FROM's
+      # domain (yscapgroup.com) must be a verified domain in your Resend account.
+      - key: RESEND_API_KEY
+        sync: false
+      # Fill these in the dashboard when you wire the rest:
+      # NOTIFY_ADMINS, MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, CLICKUP_API_TOKEN
+databases:
+  - name: yscap
+    plan: basic-1gb

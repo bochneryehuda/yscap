@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script src="../theme.js?v=n1"></script>
+<script src="../brand.js?v=n1"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YS Equity Compare — HELOC / Second Lien vs. Cash-Out Refi</title>
+<meta name="description" content="Compare keeping your loan and adding a second/HELOC versus a full cash-out refinance — monthly payments, blended rate, and net benefit.">
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/images/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../assets/images/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="../assets/images/favicon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css?v=n1">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<span class="orb orb-1" aria-hidden="true"></span>
+<span class="orb orb-2" aria-hidden="true"></span>
+
+<header class="topbar">
+    <div class="topbar-inner">
+        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+        <span class="topbar-sep"></span>
+        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Equity Compare</span></div>
+        <div class="topbar-actions">
+            <a class="back" href="../suite.html">← All tools</a>
+            <button class="btn btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
+            <button class="btn btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
+            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
+        </div>
+    </div>
+</header>
+
+<main>
+<section class="tool-hero">
+    <div class="suite-eyebrow">Equity strategy</div>
+    <h1>YS Equity Compare<span class="tm">™</span></h1>
+    <p class="tool-tagline">The tool serious investors say YES to.</p>
+    <p class="tool-intro">Two ways to pull equity: keep your current loan and stack a second mortgage or interest-only HELOC, or replace everything with a full cash-out refinance. See the true monthly cost of each — so you don't guess, you know.</p>
+    <span class="fill-hint"><span class="swatch"></span> Fill the input fields — every result updates automatically.</span>
+</section>
+
+<div class="tool-grid">
+    <div class="inputs-col">
+        <div class="panel">
+            <h2><span class="panel-num">A</span> Keep current + add equity</h2>
+            <div class="subhead">Current first mortgage</div>
+            <div class="field-rows two-col">
+                <div class="field"><label for="o1amt">Balance</label><div class="input"><span class="adorn">$</span><input id="o1amt" type="number" value="400000"></div></div>
+                <div class="field"><label for="o1rate">Rate <em>(%)</em></label><div class="input"><input id="o1rate" type="number" value="6.5"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="o1term">Term <em>(years)</em></label><div class="input"><input id="o1term" type="number" value="30"></div></div>
+            </div>
+            <div class="subhead">Second loan — fully amortized <em style="font-weight:400;text-transform:none;letter-spacing:0">(leave blank if using HELOC below)</em></div>
+            <div class="field-rows two-col">
+                <div class="field"><label for="o2amt">Amount</label><div class="input"><span class="adorn">$</span><input id="o2amt" type="number" value="100000"></div></div>
+                <div class="field"><label for="o2rate">Rate <em>(%)</em></label><div class="input"><input id="o2rate" type="number" value="9.5"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="o2term">Term <em>(years)</em></label><div class="input"><input id="o2term" type="number" value="30"></div></div>
+            </div>
+            <div class="subhead">Interest-only loan / HELOC <em style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</em></div>
+            <div class="field-rows two-col">
+                <div class="field"><label for="ioamt">Amount</label><div class="input"><span class="adorn">$</span><input id="ioamt" type="number" value="0"></div></div>
+                <div class="field"><label for="iorate">Rate <em>(%)</em></label><div class="input"><input id="iorate" type="number" value="12"><span class="adorn suffix">%</span></div></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2><span class="panel-num">B</span> Cash-out refinance</h2>
+            <p class="panel-note">A single new loan that replaces everything above.</p>
+            <div class="field-rows two-col">
+                <div class="field"><label for="coamt">New loan amount</label><div class="input"><span class="adorn">$</span><input id="coamt" type="number" value="500000"></div></div>
+                <div class="field"><label for="corate">Rate <em>(%)</em></label><div class="input"><input id="corate" type="number" value="7.5"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="coterm">Term <em>(years)</em></label><div class="input"><input id="coterm" type="number" value="30"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="results-col">
+        <div class="result-hero">
+            <div class="rh-label">Better option</div>
+            <div class="rh-value tealed" id="betterName" style="font-size:1.9rem;line-height:1.2">Keep current + add equity</div>
+            <div class="rh-sub" id="betterSub">$127 / month cheaper</div>
+            <span class="verdict good" id="betterVerdict">Lower monthly cost</span>
+        </div>
+
+        <div class="result-grid">
+            <div class="result"><div class="r-label">Keep + add — total / mo</div><div class="r-value" id="keepTotal">$3,369</div><div class="r-hint">first + second + HELOC</div></div>
+            <div class="result"><div class="r-label">Cash-out refi — total / mo</div><div class="r-value" id="coTotal">$3,496</div></div>
+            <div class="result"><div class="r-label">First mortgage / mo</div><div class="r-value" id="o1mo">$2,528</div></div>
+            <div class="result"><div class="r-label">Second loan / mo</div><div class="r-value" id="o2mo">$841</div></div>
+            <div class="result"><div class="r-label">HELOC (interest-only) / mo</div><div class="r-value" id="iomo">$0</div></div>
+            <div class="result"><div class="r-label">Blended rate (keep + add)</div><div class="r-value" id="blended">7.10%</div><div class="r-hint">weighted by balance</div></div>
+        </div>
+
+        <div class="apply-strip" style="margin-top:1.2rem">
+            <p>Closed-end home equity, HELOC and cash-out refi — we do all three.</p>
+            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
+            <a class="btn btn-line" href="mailto:sales@yscapgroup.com">Get a quote</a>
+        </div>
+
+        <div class="panel">
+            <div class="note-row"><span class="dot"></span><div>Monthly cost is only one factor — a cash-out refi resets your first mortgage rate on the whole balance, while a second lien leaves a low first-mortgage rate untouched.</div></div>
+            <div class="note-row"><span class="dot"></span><div>Interest-only payments are lower but don't reduce principal. Weigh payoff goals and how long you'll hold.</div></div>
+        </div>
+    </div>
+</div>
+</main>
+
+<footer class="suite-footer">
+    <div class="sf-inner">
+        <div class="sf-top">
+            <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">
+            <span class="sf-tag">The answer is yes.™</span>
+            <div class="sf-marks"><img src="../assets/images/eho-lender.png" alt="Equal Housing Lender"><img src="../assets/images/nmls.svg" alt="NMLS ID 2609746"></div>
+        </div>
+        <div class="sf-meta">YS Capital Group · <a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">NMLS ID 2609746</a> · <a href="tel:7188312168">718-831-2168</a> · <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a></div>
+        <p class="sf-disc"><strong>For estimation &amp; education only.</strong> Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Use is at your own risk.</p>
+        <p class="sf-copy">© 2026 YS Capital Group. All rights reserved. Equal Housing Lender.</p>
+    </div>
+</footer>
+
+<script src="../suite.js"></script>
+<script>
+/* ---------- YS Equity Compare — formulas ----------
+   firstMo  : amortized payment on the current first mortgage
+   secondMo : amortized payment on a fully-amortized second loan
+   heloMo   : interest-only = amount × rate/100 / 12
+   keepTotal = firstMo + secondMo + heloMo
+   cashoutMo : amortized payment on the new single loan
+   blended   : Σ(balance × rate) / Σ(balance)   (weighted average rate)
+   savings   = cashoutMo − keepTotal  (positive ⇒ keeping is cheaper)
+--------------------------------------------------*/
+function compute() {
+  const o1 = YS.num("o1amt"), o1r = YS.num("o1rate"), o1t = YS.num("o1term");
+  const o2 = YS.num("o2amt"), o2r = YS.num("o2rate"), o2t = YS.num("o2term");
+  const io = YS.num("ioamt"), ior = YS.num("iorate");
+  const co = YS.num("coamt"), cor = YS.num("corate"), cot = YS.num("coterm");
+
+  const firstMo  = YS.monthlyPayment(o1, o1r, o1t);
+  const secondMo = YS.monthlyPayment(o2, o2r, o2t);
+  const heloMo   = io * ior / 100 / 12;
+  const keepTotal = firstMo + secondMo + heloMo;
+
+  const cashoutMo = YS.monthlyPayment(co, cor, cot);
+
+  const balSum = o1 + o2 + io;
+  const blended = balSum > 0 ? (o1*o1r + o2*o2r + io*ior) / balSum : 0; // percent
+
+  const savings = cashoutMo - keepTotal; // + => keeping cheaper
+
+  YS.put("o1mo", YS.fmtUSD(firstMo));
+  YS.put("o2mo", YS.fmtUSD(secondMo));
+  YS.put("iomo", YS.fmtUSD(heloMo));
+  YS.put("keepTotal", YS.fmtUSD(keepTotal));
+  YS.put("coTotal", YS.fmtUSD(cashoutMo));
+  YS.put("blended", blended.toFixed(2) + "%");
+
+  const name = YS.el("betterName"), sub = YS.el("betterSub"), v = YS.el("betterVerdict");
+  v.className = "verdict";
+  const diff = Math.abs(savings);
+  if (Math.round(savings) === 0) {
+    name.textContent = "It's a wash";
+    sub.textContent = "Both options cost about the same per month";
+    v.classList.add("ok"); v.textContent = "Roughly equal";
+  } else if (savings > 0) {
+    name.textContent = "Keep current + add equity";
+    sub.textContent = YS.fmtUSD(diff) + " / month cheaper than refinancing";
+    v.classList.add("good"); v.textContent = "Lower monthly cost";
+  } else {
+    name.textContent = "Cash-out refinance";
+    sub.textContent = YS.fmtUSD(diff) + " / month cheaper than stacking loans";
+    v.classList.add("good"); v.textContent = "Lower monthly cost";
+  }
+}
+YS.live(compute);
+</script>
+<script src="../float-actions.js"></script>
+</body>
+</html>
