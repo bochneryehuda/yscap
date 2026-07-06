@@ -6,7 +6,7 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import RehabBudget from '../components/RehabBudget.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
-import ProductRegistration from '../components/ProductRegistration.jsx';
+import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import TrackRecord from '../components/TrackRecord.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
@@ -205,7 +205,7 @@ export default function Application() {
         </div>
       </div>
 
-      <ProductRegistration appId={id} app={app} onRegistered={load} mode="borrower" />
+      <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="borrower" />
 
       {toolTasks.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>

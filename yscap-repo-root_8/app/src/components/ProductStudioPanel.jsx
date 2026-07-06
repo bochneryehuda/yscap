@@ -1,0 +1,335 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { api } from '../lib/api.js';
+import TermSheetStudio, {
+  buildStudioState, scenarioFromEngineInputs, adminStateFromEngineInputs, blobToBase64,
+} from './TermSheetStudio.jsx';
+
+/* Product registration on a loan file — borrower AND staff logins. The panel
+   opens the real static Term Sheet Studio prefilled from the file (or from
+   the currently registered scenario), lets the user price, pick a program +
+   leverage and Register — then every detail is exported back into the file:
+   the registration row (full inputs + quote), the applications loan terms,
+   the liquidity condition, and the exact studio PDF attached as the file's
+   current term sheet (prior sheets are marked superseded). Re-pricing and
+   re-registering any number of times is the intended workflow. */
+
+const money = (n) => (n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
+const pct = (f, d = 2) => (f == null || f === '' ? '—' : (Number(f) * 100).toFixed(d) + '%');
+const pctRaw = (p, d = 1) => (p == null || p === '' ? '—' : Number(p).toFixed(d) + '%');
+const when = (t) => (t ? new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
+
+function addrLine(a) {
+  if (!a) return '';
+  if (typeof a === 'string') return a;
+  if (a.oneLine) return a.oneLine;
+  return [a.line1 || a.street, a.city, a.state, a.zip].filter(Boolean).join(', ');
+}
+
+// Omit empty values so a blank studio field never overrides file data with 0.
+function compact(obj) {
+  const out = {};
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v === '' || v == null) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/* The staff registration carries the FULL studio scenario (deal economics,
+   experience, admin markups/fees/manual basis) so the server-side frozen
+   engines recompute exactly what the studio displayed. Borrowers may only
+   send the knobs a borrower owns; the deal basis stays the file's. */
+export function overridesFromSnapshot(snap, mode) {
+  const f = snap.fields;
+  const d = snap.d || {};
+  const base = compact({
+    targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
+    irMonths: f.irMonths === '' ? null : f.irMonths,
+    term: f.tsTerm,
+    fico: f.fico,
+    expFlips: f.expFlips, expHolds: f.expBrrrr, expGround: f.expGround,
+  });
+  if (mode !== 'staff') return base;
+  const refi = /refinance/i.test(f.dealPurpose || '');
+  return {
+    ...base,
+    ...compact({
+      loanType: refi ? 'Refinance' : 'Purchase',
+      strategy: f.dealType,
+      state: f.propState,
+      propertyType: f.propType === '2-4' ? '2-4 units' : 'SFR (1 unit)',
+      address: f.addrTBD ? null : f.propAddr,
+      purchasePrice: refi ? null : f.price,
+      sellerPrice: f.isAssign ? f.origPrice : null,
+      asIsValue: f.asIs,
+      arv: f.arv,
+      rehabBudget: f.construction,
+      markupStdPct: f.tsYspStd, markupGoldPct: f.tsYspGold,
+      origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold,
+      lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
+      titleFee: f.tsFeeTitle,
+      ovrAcqLTVPct: f.tsManualOn ? f.tsMLtv : null,
+      ovrARLTVPct: f.tsManualOn ? f.tsMArv : null,
+      ovrLTCPct: f.tsManualOn ? f.tsMLtc : null,
+      ovrRatePct: f.tsManualOn ? f.tsMRate : null,
+      ovrIrMonths: f.tsManualOn ? f.tsMIr : null,
+    }),
+    cashOut: /cash/i.test(f.dealPurpose || ''),
+    isAssignment: !!f.isAssign,
+    heavyRehab: f.rehabScope === 'heavy',
+    sqftAddition: !!f.sqft,
+    manualPricing: !!f.tsManualOn,
+  };
+}
+
+/* Every detail of the registered product, laid out in the file. `reg` is a
+   product_registrations row (quote + inputs jsonb). */
+export function RegisteredProductDetails({ reg, compactView = false }) {
+  if (!reg) return null;
+  const q = typeof reg.quote === 'string' ? JSON.parse(reg.quote) : (reg.quote || {});
+  const inp = typeof reg.inputs === 'string' ? JSON.parse(reg.inputs || '{}') : (reg.inputs || {});
+  const s = q.sizing || {};
+  const cc = q.closingCosts || {};
+  const caps = (q.guidelines && q.guidelines.caps) || null;
+  const Row = ({ k, v }) => <div className="metrow"><span className="k">{k}</span><span className="v">{v}</span></div>;
+  return (
+    <div className={compactView ? '' : 'panel'} style={compactView ? {} : { background: 'var(--ink-2)', marginTop: 10 }}>
+      <div className="row" style={{ alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+        <strong>{q.programLabel || (reg.program === 'gold' ? 'Gold Standard Program' : 'Standard Program')}</strong>
+        {q.productLabel && <span className="muted small">· {q.productLabel}</span>}
+        {q.tierLabel && <span className="muted small">· {q.tierLabel}</span>}
+        {reg.status && reg.status !== 'ELIGIBLE' && <span className="ts-badge warn">{String(reg.status).toLowerCase()}</span>}
+        <div className="spacer" />
+        <span className="muted small">Registered {when(reg.created_at)}{reg.registered_by_name ? ` by ${reg.registered_by_name}` : ''}</span>
+      </div>
+      <div className="grid cols-2">
+        <div>
+          <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Loan structure</p>
+          <Row k="Total loan amount" v={money(s.totalLoan ?? reg.total_loan)} />
+          <Row k="Note rate (interest-only)" v={pct(q.noteRate ?? reg.note_rate)} />
+          <Row k="Initial advance (at closing)" v={money(s.initialAdvance)} />
+          <Row k="Construction holdback" v={money(s.rehabHoldback)} />
+          {s.financedReserve > 0 && <Row k="Financed interest reserve" v={money(s.financedReserve)} />}
+          <Row k="Down payment (equity)" v={money(s.downPayment)} />
+          {s.assignmentExcessOOP > 0 && <Row k="Assignment over cap (out of pocket)" v={money(s.assignmentExcessOOP)} />}
+          <Row k="Payment — initial advance" v={s.initialPayment ? money(s.initialPayment) + '/mo' : '—'} />
+          <Row k="Payment — fully drawn" v={s.monthlyPayment ? money(s.monthlyPayment) + '/mo' : '—'} />
+          <Row k="Term" v={inp.term ? inp.term + ' months' : '—'} />
+          <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Leverage</p>
+          <Row k="Loan-to-cost (LTC)" v={pct(s.ltcPct, 1)} />
+          <Row k="Initial / as-is LTV" v={pct(s.acqLtvPct, 1)} />
+          <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
+          {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
+          {s.binding && <Row k="Binding limit" v={s.binding} />}
+          {caps && <Row k="Program max — LTC / ARV / as-is" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)} / ${pct(caps.maxAcqLtv, 1)}`} />}
+        </div>
+        <div>
+          <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
+          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money(q.origination)} />
+          <Row k="UW / processing / legal" v={money(cc.lenderFee)} />
+          <Row k="Credit report" v={money(cc.creditFee)} />
+          <Row k="Title / escrow (est.)" v={money(cc.titleAndSettlement)} />
+          <Row k="Appraisal (est., POC)" v={money(cc.appraisalPoc)} />
+          <Row k="Closing costs due at closing" v={money(cc.dueAtClosing)} />
+          <Row k="Estimated cash to close" v={<strong>{money(q.cashToClose)}</strong>} />
+          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money(q.reserveRequirement)} />
+          <Row k="Liquidity to verify" v={<strong>{money(q.liquidity ?? q.liquidityRequired)}</strong>} />
+          <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Scenario as registered</p>
+          <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
+          <Row k="Purchase price" v={money(inp.purchasePrice)} />
+          {inp.isAssignment && <Row k="Seller price / assignment fee" v={`${money(inp.sellerPrice)} / ${money(Math.max(0, (inp.purchasePrice || 0) - (inp.sellerPrice || 0)))}`} />}
+          <Row k="As-is value / ARV" v={`${money(inp.asIsValue)} / ${money(inp.arv)}`} />
+          <Row k="Rehab budget" v={money(inp.rehabBudget)} />
+          <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
+          <Row k="Interest reserve" v={`${inp.irMonths || 0} months`} />
+          {q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
+            <Row k="Admin pricing" v={`${q.adminPricing.markupPct != null ? 'markup ' + q.adminPricing.markupPct + '%' : ''}${q.adminPricing.manualPricing ? ' · manual basis' : ''}`.trim()} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered }) {
+  const isStaff = mode === 'staff';
+  const [data, setData] = useState(null);       // { current, history }
+  const [profile, setProfile] = useState(null); // borrower profile (name + fico)
+  const [snap, setSnap] = useState(null);       // live studio state
+  const [openStudio, setOpenStudio] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const studioRef = useRef(null);
+
+  const loadPricing = () => (isStaff ? api.staffPricing(appId) : api.borrowerPricing(appId));
+
+  useEffect(() => {
+    let alive = true;
+    loadPricing().then((d) => {
+      if (!alive) return;
+      setData(d);
+      if (!d.current) setOpenStudio(true);   // nothing registered yet -> open the studio
+    }).catch((e) => alive && setErr(e.message || 'Could not load product registration'));
+    if (!isStaff) api.profile().then((p) => alive && setProfile(p)).catch(() => {});
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appId, mode]);
+
+  const cur = data && data.current;
+  const history = (data && data.history) || [];
+  const superseded = history.filter((h) => !h.is_current);
+
+  // Prefill: the registered scenario when there is one (so a re-open shows
+  // exactly what was registered), otherwise the loan file itself.
+  const prefill = useMemo(() => {
+    if (!data) return null;
+    const name = isStaff
+      ? ([app.first_name, app.last_name].filter(Boolean).join(' ') || app.entity_name || '')
+      : ([profile && profile.first_name, profile && profile.last_name].filter(Boolean).join(' ') || '');
+    let st;
+    if (cur && cur.inputs) {
+      const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : cur.inputs;
+      st = buildStudioState(scenarioFromEngineInputs(inp, { borrowerName: name, address: inp.address || addrLine(app.property_address) }));
+      if (isStaff) {
+        const adm = adminStateFromEngineInputs(inp);
+        st = { v: { ...st.v, ...adm.v }, c: { ...st.c, ...adm.c } };
+      }
+    } else if (data.quote && data.quote.inputs) {
+      // The server already built the exact engine input from the file — use
+      // it, but prefer the experience the borrower requested on this file
+      // over the verified track-record counts for the what-if display.
+      const inp = data.quote.inputs;
+      st = buildStudioState(scenarioFromEngineInputs(inp, {
+        borrowerName: name,
+        address: inp.address || addrLine(app.property_address),
+        expFlips: app.requested_exp_flips ?? inp.expFlips,
+        expHolds: app.requested_exp_holds ?? inp.expHolds,
+        expGround: app.requested_exp_ground ?? inp.expGround,
+        fico: inp.fico || (profile && profile.fico) || '',
+      }));
+    } else {
+      st = buildStudioState({
+        borrowerName: name,
+        address: addrLine(app.property_address),
+        state: (app.property_address && app.property_address.state) || '',
+        loanType: app.loan_type,
+        program: app.program,
+        propertyType: app.property_type,
+        units: app.units,
+        purchasePrice: app.purchase_price,
+        isAssignment: app.is_assignment,
+        underlyingContractPrice: app.underlying_contract_price,
+        assignmentFee: app.assignment_fee,
+        asIsValue: app.as_is_value,
+        arv: app.arv,
+        rehabBudget: app.rehab_budget,
+        rehabType: app.rehab_type,
+        fico: app.fico || (profile && profile.fico) || '',
+        expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
+        termMonths: app.term, irMonths: app.requested_ir_months,
+      });
+    }
+    return st;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, profile]);
+
+  // Borrowers can price/choose but never change the file's deal economics
+  // from here — those change through the loan team. Staff edit everything.
+  const lockedIds = useMemo(() => (isStaff ? [] : [
+    'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
+    'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
+  ]), [isStaff]);
+
+  const d = snap && snap.d;
+  const canRegister = !!(snap && snap.ready && snap.program && d && d.status !== 'INELIGIBLE' && d.totalLoan > 0);
+
+  async function register() {
+    const s = studioRef.current && studioRef.current.snapshot();
+    if (!s) { setErr('The Term Sheet Studio is still loading.'); return; }
+    if (!s.ready) { setErr('Complete the required pricing fields first: ' + s.missing.join(', ')); return; }
+    if (!s.program) { setErr('Tap the Standard or Gold Standard card in the studio to choose your product first.'); return; }
+    const dd = s.d;
+    if (!dd || dd.status === 'INELIGIBLE' || !(dd.totalLoan > 0)) {
+      setErr("This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review.");
+      return;
+    }
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      // exact PDF from the static generator (best-effort — registration still proceeds)
+      let pdf = null;
+      try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
+      const overrides = overridesFromSnapshot(s, mode);
+      const regFn = isStaff ? api.staffRegisterProduct : api.borrowerRegisterProduct;
+      await regFn(appId, s.program, overrides);
+      let note = 'Product registered — the loan file now carries these terms, the liquidity requirement and the term sheet.';
+      if (pdf && pdf.blob) {
+        try {
+          const dataBase64 = await blobToBase64(pdf.blob);
+          const body = { filename: pdf.filename, contentType: 'application/pdf', dataBase64, docKind: 'term_sheet' };
+          if (isStaff) await api.staffUploadAppDoc(appId, body);
+          else await api.uploadDoc({ ...body, applicationId: appId });
+        } catch (_) { note = 'Product registered. The term sheet PDF could not be attached — download it from the studio instead.'; }
+      } else {
+        note = 'Product registered. The term sheet PDF could not be generated (internet required) — download it from the studio.';
+      }
+      const dNew = await loadPricing();
+      setData(dNew);
+      setOpenStudio(false);
+      setMsg(note);
+      if (onRegistered) onRegistered();
+    } catch (e) {
+      const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
+      setErr(detail);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ margin: 0 }}>Product registration & term sheet</h3>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          {cur && <span className="ts-badge ok">Registered · {cur.program === 'gold' ? 'Gold Standard' : 'Standard'} · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
+          <button className="btn ghost small" onClick={() => setOpenStudio((o) => !o)}>
+            {openStudio ? 'Close studio' : cur ? 'Reprice / re-register' : 'Open Term Sheet Studio'}
+          </button>
+        </div>
+      </div>
+
+      {err && <div className="notice err" style={{ marginTop: 10 }}>{err}</div>}
+      {msg && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
+
+      {cur && <RegisteredProductDetails reg={cur} />}
+      {superseded.length > 0 && (
+        <p className="muted small" style={{ margin: '8px 0 0' }}>
+          {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}
+          {superseded.map((h) => `${h.program === 'gold' ? 'Gold' : 'Standard'} ${money(h.total_loan)} @ ${pct(h.note_rate)} on ${when(h.created_at)}`).join(' · ')}
+        </p>
+      )}
+
+      {openStudio && prefill && (
+        <div style={{ marginTop: 12 }}>
+          <p className="muted small" style={{ margin: '0 0 8px' }}>
+            {isStaff
+              ? 'The live Term Sheet Studio, prefilled from this file. Adjust anything — including the admin pricing controls below the form — pick the program and leverage, then register. Every detail is saved back onto the file and the exact term sheet PDF is attached (previous sheets are marked superseded).'
+              : 'Prefilled from your loan file. Adjust your experience, credit and reserve, compare the programs, pick your leverage — then register your product. Deal numbers come from your file; ask your loan team to change those.'}
+          </p>
+          <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
+            showAdmin={isStaff} onState={setSnap} />
+          <div className="row" style={{ gap: 10, marginTop: 10, alignItems: 'center', position: 'sticky', bottom: 0, background: 'var(--ink-1)', padding: '10px 0' }}>
+            <button className="btn primary" disabled={busy || !canRegister} onClick={register}>
+              {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
+            </button>
+            <span className="muted small">
+              {snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
+                : snap && !snap.program ? 'Tap a program card above to choose Standard or Gold Standard.'
+                : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money(d.cashToClose)} · liquidity ${money(d.liquidity)}`
+                : ''}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -269,10 +269,22 @@ async function loadFileForPricing(appId, borrowerId) {
   return { app, exp };
 }
 
+// The borrower may only pass the scenario knobs the Term Sheet Studio lets a
+// borrower choose (leverage, term, reserve, estimated FICO and requested
+// experience). Deal economics (price / values / budget / state) always come
+// from the loan file itself, so a tampered client can't inject a fabricated
+// basis. Every value is coerced + clamped to the studio's own input ranges.
 function borrowerPricingOverrides(raw) {
   const out = {};
+  const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
   const targetLTC = Number(raw && raw.targetLTC);
   if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
+  if (raw && raw.irMonths != null && raw.irMonths !== '') { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
+  if (raw && raw.term != null && raw.term !== '') { const v = clamp(raw.term, 1, 36); if (v != null) out.term = Math.round(v); }
+  if (raw && raw.fico != null && raw.fico !== '') { const v = clamp(raw.fico, 300, 850); if (v != null) out.fico = Math.round(v); }
+  for (const k of ['expFlips', 'expHolds', 'expGround']) {
+    if (raw && raw[k] != null && raw[k] !== '') { const v = clamp(raw[k], 0, 999); if (v != null) out[k] = Math.round(v); }
+  }
   return out;
 }
 
@@ -670,12 +682,23 @@ router.post('/documents', async (req, res) => {
   if (!buf.length) return res.status(400).json({ error: 'empty file' });
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  // Optional kind tag. 'term_sheet' marks the registered-product term sheet
+  // PDF captured from the Term Sheet Studio: each re-registration supersedes
+  // the previous term sheet so exactly one is current on the file.
+  const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
-    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'borrower',$10) RETURNING id`,
+    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'borrower',$10,$11) RETURNING id`,
     [b.checklistItemId || null, b.applicationId || null, me(req), b.llcId || null,
-     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req)]);
+     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req), docKind]);
+  if (docKind === 'term_sheet' && b.applicationId) {
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE application_id=$1 AND doc_kind='term_sheet' AND id<>$2 AND is_current=true`,
+      [b.applicationId, r.rows[0].id]);
+  }
   if (b.checklistItemId) {
     // A re-upload supersedes the borrower's prior versions for this item so a
     // rejected/old document never stays part of the file; the new one is the
@@ -1138,15 +1161,17 @@ router.post('/drafts/:id/submit', async (req, res) => {
         purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
         rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
         is_assignment,underlying_contract_price,assignment_fee,
+        term,requested_ir_months,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'portal',$23,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
      b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-     !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
+     !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b)),
+     b.termMonths ? String(b.termMonths) : null, intField(b.irMonths)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
   if (b.llcId) { try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ } }

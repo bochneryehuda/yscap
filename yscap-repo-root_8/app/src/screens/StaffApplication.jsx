@@ -5,7 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
-import ProductRegistration from '../components/ProductRegistration.jsx';
+import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import TrackRecord from '../components/TrackRecord.jsx';
 import RehabBudget, { RehabBudgetView } from '../components/RehabBudget.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
@@ -569,7 +569,7 @@ export default function StaffApplication() {
           onSubmitted={load}
           ctaLabel="Save rehab budget" />
       </div>
-      <ProductRegistration appId={id} app={app} onRegistered={load} />
+      <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="staff" />
       {app.status === 'funded' && <PostClosing appId={id} />}
       <TprExport appId={id} />
       <ChatPanel appId={id} onTaskCreated={load} />

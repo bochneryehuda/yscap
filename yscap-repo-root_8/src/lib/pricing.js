@@ -40,6 +40,22 @@ function parseTermMonths(t) {
   return n >= 1 && n <= 36 ? n : 12;
 }
 
+// The portal's program label "Fix & Flip w/ Construction" contains the word
+// "construction", which the frozen engine's normStrategy() classifies as
+// GROUND-UP — silently pricing every standard fix & flip on the wrong matrix
+// (wrong tiers, wrong FICO minimums, wrong leverage). Normalize portal labels
+// to the Term Sheet Studio's own strategy labels before they reach the
+// engines; unknown labels pass through untouched.
+function engineStrategy(s) {
+  const x = clean(s).toLowerCase();
+  if (!x || x.indexOf('not sure') > -1) return 'Fix & Flip';
+  if (x.indexOf('bridge') > -1 || x.indexOf('stabil') > -1) return 'Bridge / Stabilized';
+  if (x.indexOf('ground') > -1) return 'Ground-up Construction';
+  if (x.indexOf('hold') > -1 || x.indexOf('brrrr') > -1) return 'Fix & Hold (BRRRR)';
+  if (x.indexOf('flip') > -1) return 'Fix & Flip';
+  return clean(s);
+}
+
 // Refinance if the loan type mentions refi; cash-out if it says so.
 function loanTypeOf(app) {
   const lt = clean(app.loan_type).toLowerCase();
@@ -70,7 +86,7 @@ function buildInputs(app, experience, overrides) {
   const base = {
     loanType,
     cashOut: loanType === 'Refinance' && isCashOut(app),
-    strategy: clean(app.program) || clean(app.loan_type) || 'Fix & Flip',
+    strategy: engineStrategy(clean(app.program) || clean(app.loan_type)),
     state: clean(addr.state).toUpperCase(),
     city: clean(addr.city),
     address: clean(addr.line1 || addr.address || ''),
@@ -87,7 +103,7 @@ function buildInputs(app, experience, overrides) {
     expHolds: experience ? num(experience.holds) : 0,
     expGround: experience ? num(experience.ground) : 0,
     term: parseTermMonths(app.term),
-    irMonths: 0,
+    irMonths: num(app.requested_ir_months),
     heavyRehab: /heavy|gut|ground/i.test(clean(app.rehab_type)),
     sqftAddition: /square|sf|addition|ground/i.test(clean(app.rehab_type)) || num(app.sqft_post) > num(app.sqft_pre),
     targetLTC: 0,
@@ -108,6 +124,7 @@ function buildInputs(app, experience, overrides) {
     for (const k of STRK) if (overrides[k] != null) out[k] = clean(overrides[k]);
     for (const k of BOOLK) if (overrides[k] != null) out[k] = !!overrides[k];
   }
+  out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
   if (out.manualPricing) {
     out.forcePrice = true;
     if (Object.prototype.hasOwnProperty.call(out, 'ovrAcqLTVPct')) out.ovrAcqLTV = num(out.ovrAcqLTVPct) / 100;
