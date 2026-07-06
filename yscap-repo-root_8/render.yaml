@@ -20,6 +20,11 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Password hashing (scrypt) runs on libuv's threadpool so it never blocks
+      # the event loop. Give it more than the default 4 threads so a burst of
+      # concurrent logins doesn't queue up behind a small pool.
+      - key: UV_THREADPOOL_SIZE
+        value: "8"
       # Store documents on the persistent disk mounted above.
       - key: STORAGE_DIR
         value: /var/data/uploads

@@ -323,10 +323,15 @@ router.get('/applications/:id/pricing', async (req, res) => {
               r.is_current, r.created_at, r.quote, s.full_name AS registered_by_name
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
-    const current = hist.rows.find((x) => x.is_current) || null;
+    // Strip internal lender pricing (markup/spread) from anything sent to a
+    // borrower — a staff-created registration's quote embeds it.
+    const stripInternal = (q) => { if (q && typeof q === 'object') { const { adminPricing, ...rest } = q; return rest; } return q; };
+    const redactRow = (row) => row ? { ...row, quote: stripInternal(row.quote) } : row;
+    const history = hist.rows.map(redactRow);
+    const current = history.find((x) => x.is_current) || null;
     let quote = null;
     if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
-    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady() });
+    res.json({ current, history, quote, enginesReady: pricing.enginesReady() });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
@@ -352,6 +357,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
     const overrides = mergeAdminOverrides(borrowerPricingOverrides(b.overrides || {}), b.overrides || {}, b.adminKey);
+    // A REGISTERED product is authoritative terms. Never let borrower-claimed
+    // experience beat the verified track record here — staff loan officers are
+    // forbidden from injecting these same keys (ADMIN_ONLY_OVERRIDE_KEYS), so a
+    // borrower (least privileged) must not be able to either. The what-if /quote
+    // path may keep them; the registered basis uses verified experience only.
+    delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     const quote = pricing.quoteProgram(program, inputs);
     if (quote.status === 'INELIGIBLE') return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
@@ -430,7 +441,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
   try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
   const r = await db.query(
     `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
-            COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date, ci.notes,
+            COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date,
+            -- ci.notes is the INTERNAL staff note (underwriting / capital-partner
+            -- context) — never send it to a borrower. Only the borrower_* wording
+            -- above is safe.
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             (SELECT d.rejection_reason FROM documents d
@@ -1292,6 +1306,15 @@ router.put('/drafts/:id', async (req, res) => {
     [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   if (own.rows[0].submitted_application_id) return res.status(409).json({ error: 'already submitted' });
+  // Never persist a plaintext SSN into the draft blob (unlike borrowers.ssn,
+  // which is AES-encrypted). Strip it here as defense-in-depth; the real SSN is
+  // sent on submit and encrypted by syncProfileFromApplication. Keep an
+  // ssnProvided flag so a resumed draft still shows the "on file" state.
+  const data = { ...(b.data || {}) };
+  if ('ssn' in data) { if (data.ssn) data.ssnProvided = true; delete data.ssn; }
+  if (data.personal && typeof data.personal === 'object' && 'ssn' in data.personal) {
+    const { ssn, ...restPersonal } = data.personal; data.personal = restPersonal;
+  }
   const r = await db.query(
     `UPDATE application_drafts
         SET data = data || $3::jsonb,
@@ -1300,7 +1323,7 @@ router.put('/drafts/:id', async (req, res) => {
             updated_at = now()
       WHERE id=$1 AND borrower_id=$2
       RETURNING id,step,updated_at`,
-    [req.params.id, me(req), JSON.stringify(b.data || {}),
+    [req.params.id, me(req), JSON.stringify(data),
      (b.step == null ? null : b.step), (b.label == null ? null : b.label)]);
   res.json({ ok: true, ...r.rows[0] });
 });

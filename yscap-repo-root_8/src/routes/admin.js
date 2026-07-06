@@ -113,7 +113,7 @@ router.post('/staff', async (req, res) => {
          updated_at=now()
        RETURNING id, (xmax=0) AS created`,
       [email, fullName, role, b.title || null, dept, b.phone || null, b.cell || null, b.ext || null,
-       b.siteSelectable !== false, Number(b.sortOrder) || 100, b.password ? C.hashPassword(b.password) : null]);
+       b.siteSelectable !== false, Number(b.sortOrder) || 100, b.password ? await C.hashPassword(b.password) : null]);
     const staffId = r.rows[0].id;
     roster.bust();
 
@@ -154,7 +154,8 @@ router.patch('/staff/:id', async (req, res) => {
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {
-    await db.query(`UPDATE staff_users SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    const r = await db.query(`UPDATE staff_users SET ${sets.join(',')} WHERE id=$${i} RETURNING id`, vals);
+    if (!r.rows[0]) return res.status(404).json({ error: 'staff member not found' });   // was phantom {ok:true}
     roster.bust();
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'could not update staff member' }); }
@@ -168,7 +169,7 @@ router.post('/staff/:id/password', async (req, res) => {
   if (g) return res.status(g.code).json({ error: g.error });
   const r = await db.query(
     `UPDATE staff_users SET password_hash=$2, token_version=token_version+1, updated_at=now()
-      WHERE id=$1 RETURNING email`, [req.params.id, C.hashPassword(pw)]);
+      WHERE id=$1 RETURNING email`, [req.params.id, await C.hashPassword(pw)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'staff not found' });
   res.json({ ok: true, email: r.rows[0].email });
 });

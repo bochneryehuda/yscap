@@ -78,6 +78,10 @@ export default function Apply() {
         if (draftId) {
           const d = await api.draft(draftId);
           if (!live) return;
+          // An already-submitted draft is read-only server-side: every autosave
+          // and the submit itself would 409. Send the borrower to the created
+          // file instead of stranding them on a dead, un-saveable form.
+          if (d.submitted_application_id) { nav(`/app/${d.submitted_application_id}`, { replace: true }); return; }
           data = d.data || {}; stepN = d.step || 1; setId(draftId);
         } else {
           const d = await api.createDraft({ label: 'New application', data: {}, step: 1 });
@@ -156,6 +160,10 @@ export default function Apply() {
 
   const set = (k, v) => {
     setForm(f => ({ ...(f || {}), [k]: v }));
+    // Never autosave the SSN into the draft blob (it would sit in plaintext at
+    // rest). Keep it in local form state only; it's sent once on submit and
+    // encrypted server-side. The backend also strips it defensively.
+    if (k === 'ssn') return;
     save({ data: { [k]: v } });
   };
   const mergeAddr = (patch) => {
@@ -215,7 +223,9 @@ export default function Apply() {
       setErr(''); setBusy(true);
       try {
         await flush();
-        const r = await api.submitDraft(id, {});
+        // SSN is intentionally not in the draft; send it once here so it's
+        // encrypted server-side on submit.
+        const r = await api.submitDraft(id, form && form.ssn ? { ssn: form.ssn } : {});
         setAppId(r.applicationId);
       } catch (e) {
         if (e.status === 409 && e.data && e.data.applicationId) setAppId(e.data.applicationId);

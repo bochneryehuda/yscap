@@ -33,7 +33,8 @@ export default function StaffLogin() {
     catch (e) { setErr(e.message || 'Invalid code'); }
     finally { setBusy(false); }
   }
-  const onKey = (fn) => (e) => { if (e.key === 'Enter') fn(); };
+  // Guard on `busy` so Enter can't re-fire while a request is already in flight.
+  const onKey = (fn) => (e) => { if (e.key === 'Enter' && !busy) fn(); };
 
   return (
     <div className="authbg">
