@@ -17,6 +17,7 @@ const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
+const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower } = require('../lib/experience');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -26,6 +27,60 @@ async function audit(req, action, entity_type, entity_id, detail) {
     `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
      VALUES ('borrower',$1,$2,$3,$4,$5,$6,$7)`,
     [me(req), action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, detail || null]);
+}
+function intField(v) {
+  const n = parseInt(v, 10);
+  return isFinite(n) && n > 0 ? n : 0;
+}
+function moneyField(v) {
+  if (v === '' || v == null) return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  return isFinite(n) ? n : null;
+}
+function stripToolAttachments(payload) {
+  const raw = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
+  const attachments = raw.slice(0, 4)
+    .map((a) => ({
+      filename: String(a.filename || 'tool-export.txt').replace(/[\\/:*?"<>|]/g, '_').slice(0, 160),
+      contentType: String(a.contentType || 'application/octet-stream').slice(0, 120),
+      dataBase64: String(a.dataBase64 || ''),
+    }))
+    .filter((a) => a.filename && a.dataBase64);
+  const clean = { ...(payload || {}) };
+  delete clean.attachments;
+  if (attachments.length) {
+    clean.export_files = attachments.map((a) => ({ filename: a.filename, contentType: a.contentType }));
+  }
+  return { payload: clean, attachments };
+}
+async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, attachments }) {
+  if (!attachments || !attachments.length) return [];
+  await db.query(
+    `UPDATE documents
+        SET is_current=false,
+            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+      WHERE checklist_item_id=$1
+        AND borrower_id=$2
+        AND source_type='system'
+        AND is_current=true`,
+    [itemId, borrowerId]);
+
+  const out = [];
+  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  for (const a of attachments) {
+    const buf = Buffer.from(a.dataBase64, 'base64');
+    if (!buf.length || buf.length > maxBytes) continue;
+    const { ref, provider } = await storage.save(buf, { filename: a.filename });
+    const r = await db.query(
+      `INSERT INTO documents
+         (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,
+          storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$3,'system','borrower',$9) RETURNING id`,
+      [itemId, appId, borrowerId, a.filename, a.contentType, buf.length, provider, ref, toolKey + '_export']);
+    out.push({ id: r.rows[0].id, filename: a.filename });
+  }
+  if (out.length) await audit(req, 'store_tool_exports', 'checklist_item', itemId, { toolKey, files: out.map((x) => x.filename) });
+  return out;
 }
 
 // ---------------- PROFILE (canonical PII, shared across applications) ----------------
@@ -157,11 +212,14 @@ router.post('/applications', async (req, res) => {
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
         purchase_price,as_is_value,arv,rehab_budget,loan_officer_name,
+        rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'portal',$16,'new',now()) RETURNING id,ys_loan_number`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
      b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
+     b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+     intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
   await generateChecklist(appId, me(req), b.program, b.loanType, { isAssignment: !!b.isAssignment });
@@ -320,8 +378,9 @@ router.get('/applications/:id/conditions', async (req, res) => {
 
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
 router.get('/applications/:id/checklist', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
   const r = await db.query(
     `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
             COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date, ci.notes,
@@ -349,14 +408,27 @@ router.get('/applications/:id/status-history', async (req, res) => {
 // portal. Stores the exported payload and moves the item to 'received' so staff
 // can verify and sign off. The borrower is doing "their part" of the file here.
 router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const it = await db.query(
     `SELECT id,tool_key FROM checklist_items
       WHERE id=$1 AND application_id=$2 AND audience IN ('borrower','both') AND tool_key IS NOT NULL`,
     [req.params.itemId, req.params.id]);
   if (!it.rows[0]) return res.status(404).json({ error: 'tool task not found' });
-  const payload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
+  if (it.rows[0].tool_key === 'track_record') {
+    const sync = await syncExperienceChecklistForApplication(req.params.id);
+    if (!sync || !sync.satisfied) {
+      return res.status(422).json({
+        error: 'track record requirement is not complete',
+        required: sync && sync.required,
+        counts: sync && sync.counts,
+      });
+    }
+    return res.json({ ok: true, status: 'received', ...sync });
+  }
+  const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
+  const stripped = stripToolAttachments(rawPayload);
+  const payload = stripped.payload;
   const notes = (req.body && req.body.notes) ? String(req.body.notes).slice(0, 2000) : null;
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, status='received', notes=COALESCE($3,notes), updated_at=now()
@@ -369,6 +441,10 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
       await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
     }
   }
+  const storedExports = await storeToolAttachments({
+    req, appId: req.params.id, borrowerId: own.rows[0].borrower_id,
+    itemId: req.params.itemId, toolKey: it.rows[0].tool_key, attachments: stripped.attachments,
+  });
   // Let the assigned loan team know the borrower completed this task.
   try {
     const a = await db.query(
@@ -387,7 +463,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
       }
     }
   } catch (_) { /* notification is best-effort */ }
-  res.json({ ok: true, status: 'received' });
+  res.json({ ok: true, status: 'received', exports: storedExports });
 });
 
 // ---------------- LLCs + documents ----------------
@@ -532,11 +608,37 @@ router.post('/track-records', async (req, res) => {
     const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
     if (!own.rows[0]) return res.status(404).json({ error: 'llc not found' });
   }
+  const dealType = b.dealType || 'flip';
+  const typeText = String(dealType).toLowerCase();
+  const addressText = b.propertyAddress && (b.propertyAddress.oneLine || b.propertyAddress.street || b.propertyAddress.line1);
+  if (!addressText) return res.status(400).json({ error: 'property address is required' });
+  if (!moneyField(b.purchasePrice)) return res.status(400).json({ error: 'purchase price is required' });
+  if (!b.purchaseDate) return res.status(400).json({ error: 'purchase date is required' });
+  if (!moneyField(b.rehabAmount)) return res.status(400).json({ error: 'rehab budget is required' });
+  const isHold = typeText.indexOf('hold') >= 0 || typeText.indexOf('rental') >= 0;
+  const isGround = typeText.indexOf('ground') >= 0;
+  if (!isHold && !isGround && (!moneyField(b.salePrice) || !b.saleDate)) {
+    return res.status(400).json({ error: 'sale price and sale date are required for a fix-and-flip deal' });
+  }
+  if (isHold && (!moneyField(b.rentAmount) && !moneyField(b.refiAmount))) {
+    return res.status(400).json({ error: 'monthly rent or refinance amount is required for a fix-and-hold deal' });
+  }
+  if (isHold && (!b.rentDate && !b.refiDate)) {
+    return res.status(400).json({ error: 'rent date or refinance date is required for a fix-and-hold deal' });
+  }
+  if (isGround && !((moneyField(b.salePrice) && b.saleDate) || (moneyField(b.rentAmount) && b.rentDate) || (moneyField(b.refiAmount) && b.refiDate))) {
+    return res.status(400).json({ error: 'ground-up experience needs a sale, rent, or refinance exit' });
+  }
   const r = await db.query(
-    `INSERT INTO track_records (borrower_id,llc_id,property_address,deal_type,purchase_price,sale_price,rehab_amount,purchase_date,sale_date)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-    [me(req), b.llcId || null, b.propertyAddress ? JSON.stringify(b.propertyAddress) : null, b.dealType || null,
-     b.purchasePrice || null, b.salePrice || null, b.rehabAmount || null, b.purchaseDate || null, b.saleDate || null]);
+    `INSERT INTO track_records
+       (borrower_id,llc_id,property_address,deal_type,purchase_price,sale_price,rehab_amount,purchase_date,sale_date,
+        rent_amount,rent_date,refi_amount,refi_date,current_value,notes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+    [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), dealType,
+     moneyField(b.purchasePrice), moneyField(b.salePrice), moneyField(b.rehabAmount), b.purchaseDate || null, b.saleDate || null,
+     moneyField(b.rentAmount), b.rentDate || null, moneyField(b.refiAmount), b.refiDate || null,
+     moneyField(b.currentValue), b.notes ? String(b.notes).slice(0, 1000) : null]);
+  try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
   res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
 });
 // Delete a track-record entry — only the borrower's own, and only while it is
@@ -546,6 +648,7 @@ router.delete('/track-records/:id', async (req, res) => {
     `DELETE FROM track_records WHERE id=$1 AND borrower_id=$2 AND is_verified=false RETURNING id`,
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
+  try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
   res.json({ ok: true });
 });
 
@@ -934,9 +1037,14 @@ router.delete('/drafts/:id', async (req, res) => {
 async function syncProfileFromApplication(borrowerId, b) {
   const p = b.personal || {};
   // Employment is intentionally not collected (no-doc / no-income lender).
-  const hasAny = ['cellPhone', 'dateOfBirth', 'citizenship', 'maritalStatus', 'fico']
+  const hasAny = ['cellPhone', 'dateOfBirth', 'citizenship', 'maritalStatus', 'fico',
+                  'currentAddress', 'yearsAtResidence', 'monthsAtResidence', 'housingStatus', 'housingPayment']
     .some(k => p[k] != null && p[k] !== '');
   if (!hasAny && !b.ssn) return;
+  const currentAddress = p.currentAddress ? JSON.stringify(p.currentAddress) : null;
+  const yearsAtResidence = p.yearsAtResidence === '' || p.yearsAtResidence == null ? null : Number(p.yearsAtResidence);
+  const monthsAtResidence = p.monthsAtResidence === '' || p.monthsAtResidence == null ? null : parseInt(p.monthsAtResidence, 10) || null;
+  const housingPayment = moneyField(p.housingPayment);
   await db.query(
     `UPDATE borrowers SET
        cell_phone      = COALESCE(cell_phone, NULLIF($2,'')),
@@ -944,10 +1052,17 @@ async function syncProfileFromApplication(borrowerId, b) {
        citizenship     = COALESCE(citizenship, NULLIF($4,'')),
        marital_status  = COALESCE(marital_status, NULLIF($5,'')),
        fico            = COALESCE(fico, $6),
+       current_address = COALESCE(current_address, $7::jsonb),
+       years_at_residence = COALESCE(years_at_residence, $8),
+       months_at_residence = COALESCE(months_at_residence, $9),
+       housing_status  = COALESCE(housing_status, NULLIF($10,'')),
+       housing_payment = COALESCE(housing_payment, $11),
        updated_at      = now()
      WHERE id=$1`,
     [borrowerId, p.cellPhone || '', p.dateOfBirth || '', p.citizenship || '', p.maritalStatus || '',
-     p.fico ? parseInt(p.fico, 10) || null : null]);
+     p.fico ? parseInt(p.fico, 10) || null : null,
+     currentAddress, isFinite(yearsAtResidence) ? yearsAtResidence : null,
+     monthsAtResidence, p.housingStatus || '', housingPayment]);
   if (b.ssn) {
     await db.query(
       `UPDATE borrowers SET ssn_encrypted = COALESCE(ssn_encrypted, $2),
@@ -1021,13 +1136,16 @@ router.post('/drafts/:id/submit', async (req, res) => {
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
         purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
+        rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
         is_assignment,underlying_contract_price,assignment_fee,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'portal',$17,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
+     b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+     intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
@@ -1131,6 +1249,7 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
           WHERE application_id=$1 AND template_id=(SELECT id FROM checklist_templates WHERE code='rtl_p1_id')`,
         [appId]);
   } catch (_) { /* best-effort */ }
+  try { await syncExperienceChecklistForApplication(appId); } catch (_) { /* best-effort */ }
 }
 
 // Materialize the LLC document requirements (EIN letter, formation docs,

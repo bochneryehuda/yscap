@@ -21,9 +21,13 @@ ALTER TABLE checklist_items
   ADD COLUMN IF NOT EXISTS tool_payload jsonb;   -- borrower-submitted tool output
 
 -- ---- 3. mark the tool-backed RTL tasks -------------------------------------
--- Rehab Budget tool produces BOTH the construction budget AND the Scope of Work.
+-- Rehab Budget tool produces the construction budget AND the Scope of Work in
+-- ONE borrower task. The later SOW checkpoint remains for staff/appraiser
+-- review, but it must not create a duplicate borrower tool.
 UPDATE checklist_templates SET tool_key='rehab_budget', item_kind='task'
-  WHERE code IN ('rtl_p1_budget','rtl_p3_sow1');
+  WHERE code = 'rtl_p1_budget';
+UPDATE checklist_templates SET tool_key=NULL, item_kind='document'
+  WHERE code = 'rtl_p3_sow1';
 -- Track Record tool produces the REO / experience sheet.
 UPDATE checklist_templates SET tool_key='track_record', item_kind='task'
   WHERE code IN ('rtl_p3_reo');

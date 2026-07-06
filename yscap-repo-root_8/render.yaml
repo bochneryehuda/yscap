@@ -7,7 +7,7 @@ services:
     runtime: node
     plan: starter
     # rootDir: ys-capital-portal        # uncomment ONLY if the project is nested
-    buildCommand: npm install
+    buildCommand: npm install && npm --prefix app ci && npm --prefix app run build
     startCommand: npm run start
     healthCheckPath: /api/health
     # Persistent disk for uploaded documents. Render's default filesystem is

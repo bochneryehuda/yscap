@@ -14,6 +14,9 @@ const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground Up Constructio
 const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Ground up'];
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
 
+const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
+const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
+
 const numOrNull = (v) => (v === '' || v == null) ? null : Number(String(v).replace(/[^0-9.]/g, '')) || null;
 
 export default function StaffNewFile() {
@@ -24,7 +27,8 @@ export default function StaffNewFile() {
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
     program: '', loanType: '', propertyType: '', units: '',
-    purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '',
+    purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
+    requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '',
     loanOfficerId: '', processorId: '', inviteBorrower: true,
   });
   const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '' });
@@ -72,6 +76,12 @@ export default function StaffNewFile() {
         asIsValue: numOrNull(f.asIsValue),
         arv: numOrNull(f.arv),
         rehabBudget: numOrNull(f.rehabBudget),
+        rehabType: f.rehabType || undefined,
+        sqftPre: f.sqftPre ? Number(f.sqftPre) : undefined,
+        sqftPost: f.sqftPost ? Number(f.sqftPost) : undefined,
+        requestedExpFlips: f.requestedExpFlips ? Number(f.requestedExpFlips) : 0,
+        requestedExpHolds: f.requestedExpHolds ? Number(f.requestedExpHolds) : 0,
+        requestedExpGround: f.requestedExpGround ? Number(f.requestedExpGround) : 0,
         loanOfficerId: f.loanOfficerId || undefined,
         processorId: f.processorId || undefined,
         inviteBorrower: !!f.inviteBorrower,
@@ -165,6 +175,25 @@ export default function StaffNewFile() {
               <input className="input" value={f.arv} onChange={e => set('arv', e.target.value)} placeholder="$" /></div>
             <div className="field"><label>Rehab budget</label>
               <input className="input" value={f.rehabBudget} onChange={e => set('rehabBudget', e.target.value)} placeholder="$" /></div>
+            <div className="field"><label>Rehab type</label>
+              <select value={f.rehabType} onChange={e => set('rehabType', e.target.value)}>
+                <option value="">Select...</option>{REHAB_TYPES.map(x => <option key={x}>{x}</option>)}
+              </select></div>
+            {needsSqft(f.rehabType) && <>
+              <div className="field"><label>Existing sq ft</label>
+                <input className="input" type="number" min="0" value={f.sqftPre} onChange={e => set('sqftPre', e.target.value)} /></div>
+              <div className="field"><label>Completed sq ft</label>
+                <input className="input" type="number" min="0" value={f.sqftPost} onChange={e => set('sqftPost', e.target.value)} /></div>
+            </>}
+          </div>
+          <h3 style={{ margin: '12px 0 8px' }}>Experience used for this request</h3>
+          <div className="grid cols-3">
+            <div className="field"><label>Fix &amp; flip deals</label>
+              <input className="input" type="number" min="0" value={f.requestedExpFlips} onChange={e => set('requestedExpFlips', e.target.value)} /></div>
+            <div className="field"><label>Fix &amp; hold deals</label>
+              <input className="input" type="number" min="0" value={f.requestedExpHolds} onChange={e => set('requestedExpHolds', e.target.value)} /></div>
+            <div className="field"><label>Ground-up deals</label>
+              <input className="input" type="number" min="0" value={f.requestedExpGround} onChange={e => set('requestedExpGround', e.target.value)} /></div>
           </div>
           <p className="muted small">Final pricing and leverage are confirmed against program guidelines — these figures start the file.</p>
         </div>

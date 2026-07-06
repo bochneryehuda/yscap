@@ -563,6 +563,7 @@ export default function StaffApplication() {
       <div className="panel" style={{ marginTop: 18 }}>
         <h3 style={{ marginBottom: 10 }}>Rehab budget / scope of work</h3>
         <RehabBudget appId={id}
+          app={app}
           initialPayload={(items.find(it => it.tool_key === 'rehab_budget') || {}).tool_payload || null}
           submitFn={(p) => api.staffSaveRehabBudget(id, p)}
           onSubmitted={load}

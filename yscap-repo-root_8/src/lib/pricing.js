@@ -88,8 +88,8 @@ function buildInputs(app, experience, overrides) {
     expGround: experience ? num(experience.ground) : 0,
     term: parseTermMonths(app.term),
     irMonths: 0,
-    heavyRehab: false,
-    sqftAddition: false,
+    heavyRehab: /heavy|gut|ground/i.test(clean(app.rehab_type)),
+    sqftAddition: /square|sf|addition|ground/i.test(clean(app.rehab_type)) || num(app.sqft_post) > num(app.sqft_pre),
     targetLTC: 0,
   };
 

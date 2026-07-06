@@ -6,6 +6,8 @@ import { MoneyInput } from './FormattedInputs.jsx';
    property type, an omitted assignment flag, etc. Collapsed by default. */
 
 const num = (v) => v == null || v === '' ? '' : String(v);
+const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
+const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
 
 export default function EditFileDetails({ app, onSaved }) {
   const [open, setOpen] = useState(false);
@@ -15,6 +17,8 @@ export default function EditFileDetails({ app, onSaved }) {
     program: app.program || '', loanType: app.loan_type || '', propertyType: app.property_type || '',
     units: num(app.units), purchasePrice: num(app.purchase_price), asIsValue: num(app.as_is_value),
     arv: num(app.arv), rehabBudget: num(app.rehab_budget), occupancy: app.occupancy || '',
+    rehabType: app.rehab_type || '', sqftPre: num(app.sqft_pre), sqftPost: num(app.sqft_post),
+    requestedExpFlips: num(app.requested_exp_flips), requestedExpHolds: num(app.requested_exp_holds), requestedExpGround: num(app.requested_exp_ground),
     isAssignment: !!app.is_assignment, underlyingContractPrice: num(app.underlying_contract_price), assignmentFee: num(app.assignment_fee),
   });
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
@@ -25,6 +29,8 @@ export default function EditFileDetails({ app, onSaved }) {
       const body = {
         program: f.program, loanType: f.loanType, propertyType: f.propertyType, occupancy: f.occupancy,
         units: f.units, purchasePrice: f.purchasePrice, asIsValue: f.asIsValue, arv: f.arv, rehabBudget: f.rehabBudget,
+        rehabType: f.rehabType, sqftPre: f.sqftPre, sqftPost: f.sqftPost,
+        requestedExpFlips: f.requestedExpFlips, requestedExpHolds: f.requestedExpHolds, requestedExpGround: f.requestedExpGround,
         isAssignment: f.isAssignment,
         underlyingContractPrice: f.isAssignment ? f.underlyingContractPrice : '',
         assignmentFee: f.isAssignment ? f.assignmentFee : '',
@@ -57,6 +63,18 @@ export default function EditFileDetails({ app, onSaved }) {
             <label><span>As-is value</span><MoneyInput value={f.asIsValue} onChange={(v) => set('asIsValue', v)} /></label>
             <label><span>ARV</span><MoneyInput value={f.arv} onChange={(v) => set('arv', v)} /></label>
             <label><span>Rehab budget</span><MoneyInput value={f.rehabBudget} onChange={(v) => set('rehabBudget', v)} /></label>
+            <label><span>Rehab type</span>
+              <select className="input" value={f.rehabType} onChange={(e) => set('rehabType', e.target.value)}>
+                <option value="">-</option>{REHAB_TYPES.map(x => <option key={x}>{x}</option>)}
+              </select>
+            </label>
+            {needsSqft(f.rehabType) && <>
+              <label><span>Existing sq ft</span><input className="input" type="number" min="0" value={f.sqftPre} onChange={(e) => set('sqftPre', e.target.value)} /></label>
+              <label><span>Completed sq ft</span><input className="input" type="number" min="0" value={f.sqftPost} onChange={(e) => set('sqftPost', e.target.value)} /></label>
+            </>}
+            <label><span>Exp: flips</span><input className="input" type="number" min="0" value={f.requestedExpFlips} onChange={(e) => set('requestedExpFlips', e.target.value)} /></label>
+            <label><span>Exp: holds</span><input className="input" type="number" min="0" value={f.requestedExpHolds} onChange={(e) => set('requestedExpHolds', e.target.value)} /></label>
+            <label><span>Exp: ground-up</span><input className="input" type="number" min="0" value={f.requestedExpGround} onChange={(e) => set('requestedExpGround', e.target.value)} /></label>
             <label style={{ gridColumn: '1 / -1', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <input type="checkbox" checked={f.isAssignment} onChange={(e) => set('isAssignment', e.target.checked)} />
               <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500 }}>This is an assignment purchase</span>

@@ -308,6 +308,12 @@ a.checkitem:hover{transform:translateY(-1px)}
 .ts-inputs label span{color:var(--muted);font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.02em}
 .ts-inputs .input{padding:8px 10px}
 .ts-readonly output{background:var(--ink-2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;min-height:34px;font-weight:700;overflow:hidden;text-overflow:ellipsis}
+.ts-admin-panel.portal{margin:14px 0 10px;border:1px solid var(--teal-dp);border-radius:10px;background:rgba(127,169,176,.06);padding:14px}
+.ts-admin-head{display:flex;align-items:center;gap:8px;font-family:var(--serif);font-size:16px;font-weight:600;margin-bottom:2px}
+.ts-admin-badge{font-family:var(--sans);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;background:var(--teal);color:var(--on-accent);border-radius:999px;padding:2px 7px}
+.ts-admin-group{color:var(--teal-br);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;margin:12px 0 7px}
+.ts-admin-check{display:flex;align-items:flex-start;gap:8px;color:var(--ivory);font-size:13px;line-height:1.4;margin:0}
+.ts-admin-check input{margin-top:3px;flex:none}
 .ts-tabs{display:flex;gap:8px;margin:4px 0 12px;border-bottom:1px solid var(--line)}
 .ts-tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-weight:600;padding:8px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
 .ts-tab.on{color:var(--ivory);border-bottom-color:var(--gold)}
@@ -364,6 +370,7 @@ a.checkitem:hover{transform:translateY(-1px)}
 .rb-cat-total{color:var(--gold);font-weight:600;font-size:12.5px}
 .rb-lines{padding:2px 0 10px 20px;display:flex;flex-direction:column;gap:8px}
 .rb-line{display:flex;align-items:center;gap:10px}
+.rb-line.rb-suggested{background:rgba(201,168,106,.08);border-radius:8px;padding:6px 8px;margin-left:-8px}
 .rb-line-label{flex:1;font-size:13px;color:var(--muted)}
 .rb-line .input{max-width:160px}
 .rb-summary{margin-top:12px;background:var(--ink-1);border:1px solid var(--line);border-radius:9px;padding:10px 14px}
