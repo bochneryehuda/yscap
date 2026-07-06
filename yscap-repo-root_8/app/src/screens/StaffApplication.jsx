@@ -219,16 +219,35 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                   <div className="row" style={{ gap: 14, flexWrap: 'wrap', marginBottom: 6 }}>
                     <span className="muted small">Formed {l.formation_date ? new Date(l.formation_date).toLocaleDateString() : '—'}</span>
                     <span className="muted small">Borrower owns {l.ownership_pct != null ? `${l.ownership_pct}%` : '—'}</span>
-                    {(l.members || []).map(m => <span key={m.id} className="muted small">{m.full_name}: {m.ownership_pct}%</span>)}
+                    {(l.members || []).map(m => (
+                      <span key={m.id} className="muted small">
+                        {m.full_name}: {m.ownership_pct}%
+                        {Number(m.ownership_pct) >= 20 && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--gold)', color: 'var(--gold)' }}>≥20% — guarantor likely required</span>}
+                      </span>
+                    ))}
                     <span className={`ts-badge ${Math.abs(total - 100) <= 0.01 ? 'ok' : 'warn'}`}>
                       {Math.abs(total - 100) <= 0.01 ? 'Ownership 100% ✓' : `Ownership ${total || 0}%`}
                     </span>
                   </div>
+                  {(() => {
+                    // Underwriting advisories: never gate verification, always visible.
+                    const notes = [...(c.advisories || [])];
+                    const propState = app.property_address && app.property_address.state;
+                    if (linked && propState && l.formation_state && String(propState).toUpperCase() !== String(l.formation_state).toUpperCase())
+                      notes.push(`Formed in ${l.formation_state}, property in ${propState} — foreign entity registration in ${propState} is likely required`);
+                    if (l.is_verified && l.verified_at && (Date.now() - new Date(l.verified_at).getTime()) > 365 * 86400000)
+                      notes.push('Verified over a year ago — re-verification recommended (fresh Good Standing certificate)');
+                    return notes.length ? (
+                      <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                        {notes.map((n, i) => <span key={i} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>{n}</span>)}
+                      </div>
+                    ) : null;
+                  })()}
                   {(l.slots || []).map(s => {
                     const rs = s.document_id ? s.review_status : null;
                     return (
                       <div className="row" key={s.item_id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'center' }}>
-                        <span className="muted small" style={{ minWidth: 170 }}>{s.label}</span>
+                        <span className="muted small" style={{ minWidth: 170 }}>{s.label}{s.is_required === false ? ' (optional)' : ''}</span>
                         <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {s.document_id ? s.filename : <span className="muted">not uploaded</span>}
                         </span>
