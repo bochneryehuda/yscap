@@ -184,19 +184,26 @@ Appraisal ready to order `fe1ce98c` (checkbox) · appraisal ordered? `b7d1e6f6` 
 
 ---
 
-## PART 5 — New ClickUp fields to CREATE (UI — API can't create fields)
+## PART 5 — New ClickUp fields (UI-only; API/connector can't create field definitions)
 
-Add these to the **Loan Pipeline space** (`90113223301`) so all lists inherit them. After you create them, send me the field IDs (or I'll re-pull) and I lock them into the mapping.
+Field *definitions* can only be made in the ClickUp UI (Space → ⚙ → Custom Fields). **But most of these don't have to live in ClickUp** — the binding and status live in our DB regardless. Tiered so you do the minimum:
 
-| Field name | Type | Options / config |
+### 5A. Create in ClickUp (UI) — only the ones you want the ClickUp-side behavior for
+| Field name | Type | Options / config | Why it must be in ClickUp |
+|---|---|---|---|
+| **Send to Portal** | Checkbox | — | Staff tick it *in ClickUp* to force create/resync. Skip only if you're fine triggering resync from the portal admin panel instead. |
+| **RTL As-Is Value** | Currency (USD) | precision 2 | You asked for a dedicated RTL as-is field to sync `as_is_value`. |
+| **Rehab Type** | Dropdown | Cosmetic · Moderate · Heavy · Adding SF · Ground-up | Only if you want `rehab_type` visible/editable in ClickUp. |
+
+### 5B. Optional convenience (create if you want staff to SEE it in ClickUp; otherwise skip — it lives in the portal)
+| Field name | Type | Lives fine in portal-only? |
 |---|---|---|
-| **Portal File ID** | Short text | — (holds our app UUID; binding stamp) |
-| **Send to Portal** | Checkbox | — (emergency create + force-resync) |
-| **Portal File Link** | URL | — |
-| **Borrower Portal Status** | Dropdown | new · in_review · processing · underwriting · approved · clear_to_close · funded · on_hold · declined · withdrawn |
-| **Sync Status / Last Error** | Short text | — |
-| **Rehab Type** | Dropdown | Cosmetic · Moderate · Heavy · Adding SF · Ground-up |
-| **RTL As-Is Value** | Currency (USD) | precision 2 |
+| Portal File ID | Short text | ✅ — binding is stored on our side (`clickup_pipeline_task_id` ↔ app UUID). The ClickUp field is just a visible cross-ref. |
+| Portal File Link | URL | ✅ — convenience deep-link only. |
+| Borrower Portal Status | Dropdown (10 statuses) | ✅ — derived on our side; the ClickUp mirror is staff-visibility only. |
+| Sync Status / Last Error | Short text | ✅ — shown in the portal Control Center regardless. |
+
+After you create whichever you want, I re-pull the IDs into the mapping. **Minimum to unblock the core build: just `Send to Portal` + `RTL As-Is Value`** (and `Rehab Type` if you want that field). Everything else I keep on our side.
 
 **CRM folders (Chaim Lebowitz, Mendel Bochner):** cleanest = **duplicate an existing officer's CRM folder** (e.g. "Yehuda Bochner CRM") in the UI and rename — copies the List, views, and automations. (API can make a bare folder+list but not the views/automations.)
 
