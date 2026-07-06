@@ -48,25 +48,26 @@ export default function NotificationSettings() {
         {msg && <span className="muted small">{msg} ✓</span>}
       </div>
       <div className="panel">
-        <div className="row" style={{ fontWeight: 600, paddingBottom: 8, borderBottom: '1px solid var(--line)' }}>
-          <span style={{ flex: 1 }}>Notification</span>
-          <span style={{ width: 90, textAlign: 'center' }}>In-app</span>
-          <span style={{ width: 90, textAlign: 'center' }}>Email</span>
+        <div className="row" style={{ fontWeight: 600, paddingBottom: 8, borderBottom: '1px solid var(--line)', flexWrap: 'nowrap' }}>
+          <span style={{ flex: 1, minWidth: 0 }}>Notification</span>
+          <span className="notif-col" style={{ textAlign: 'center' }}>In-app</span>
+          <span className="notif-col" style={{ textAlign: 'center' }}>Email</span>
         </div>
         {rows.map(r => (
-          <div key={r.category} className="row" style={{ padding: '12px 0', borderBottom: '1px solid var(--line)', alignItems: 'flex-start' }}>
-            <div style={{ flex: 1 }}>
+          <div key={r.category} className="row" style={{ padding: '4px 0', borderBottom: '1px solid var(--line)', alignItems: 'center', flexWrap: 'nowrap' }}>
+            <div style={{ flex: 1, minWidth: 0, padding: '8px 0' }}>
               <div>{LABEL[r.category] || r.category}</div>
               {HINT[r.category] && <div className="muted small">{HINT[r.category]}</div>}
             </div>
-            <span style={{ width: 90, textAlign: 'center' }}>
+            {/* the whole cell is the tap target, not just the 16px checkbox */}
+            <label className="notif-col" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'stretch', cursor: r.inAppLocked ? 'default' : 'pointer' }}
+              title={r.inAppLocked ? 'Always on' : ''}>
               <input type="checkbox" checked={!!r.in_app} disabled={r.inAppLocked}
-                onChange={e => toggle(r.category, 'in_app', e.target.checked)}
-                title={r.inAppLocked ? 'Always on' : ''} />
-            </span>
-            <span style={{ width: 90, textAlign: 'center' }}>
+                onChange={e => toggle(r.category, 'in_app', e.target.checked)} />
+            </label>
+            <label className="notif-col" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', alignSelf: 'stretch', cursor: 'pointer' }}>
               <input type="checkbox" checked={!!r.email} onChange={e => toggle(r.category, 'email', e.target.checked)} />
-            </span>
+            </label>
           </div>
         ))}
         <p className="muted small" style={{ marginTop: 12 }}>Changes save automatically.</p>

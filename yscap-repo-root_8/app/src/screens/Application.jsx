@@ -158,14 +158,15 @@ function ContactCondition({ it, appId, onSaved }) {
   const [contactId, setContactId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+  const [err, setErr] = useState('');
   useEffect(() => { api.contacts(meta.type).then(setSaved).catch(() => {}); }, [meta.type]);
   const useSaved = (c) => { setContactId(c.id); setF({ companyName: c.company_name || '', contactName: c.contact_name || '', email: c.email || '', phone: c.phone || '' }); };
   async function submit() {
-    setBusy(true);
+    setBusy(true); setErr('');
     try {
       await api.saveContact({ contactType: meta.type, contactId, ...f, applicationId: appId, checklistItemId: it.id });
       setOpen(false); await onSaved();
-    } catch (e) { alert(e.message || 'Could not save'); }
+    } catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(false); }
   }
   return (
@@ -195,6 +196,7 @@ function ContactCondition({ it, appId, onSaved }) {
         <div className="field"><label>Phone</label>
           <input className="input" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></div>
       </div>
+      {err && <div className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
       <button className="btn primary" onClick={submit} disabled={busy}>{busy ? 'Saving…' : 'Save & submit'}</button>
     </ConditionRow>
   );
@@ -561,7 +563,7 @@ export default function Application() {
                       : [assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
                     status={statusText(assetsItem)}
                     open={docs.length > 0 || assetsItem.status === 'issue'}
-                    action={<button className="btn link small" onClick={() => pick({ itemId: assetsItem.id, slot: docs.length ? nextSlot : 'Document 1' })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
+                    action={<button className="btn ghost small" onClick={() => pick({ itemId: assetsItem.id, slot: docs.length ? nextSlot : 'Document 1' })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
                   >
                     {assetsItem.status === 'issue' && assetsItem.rejection_reason && (
                       <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
@@ -597,7 +599,7 @@ export default function Application() {
                     subtitle={[it.hint, it.notes].filter(Boolean).join(' · ') || null}
                     status={statusText(it)}
                     open={docs.length > 0 || needsFix}
-                    action={<button className="btn link small" onClick={() => pick({ itemId: it.id, slot: docs.length ? nextSlot : 'Document 1' })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
+                    action={<button className="btn ghost small" onClick={() => pick({ itemId: it.id, slot: docs.length ? nextSlot : 'Document 1' })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
                   >
                     {needsFix && it.rejection_reason && (
                       <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
@@ -645,10 +647,10 @@ export default function Application() {
             const style = rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' }
               : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined;
             return (
-            <div className="checkitem" key={d.id} style={{ opacity: d.is_current === false ? .6 : 1 }}>
+            <div className="checkitem" key={d.id} style={{ opacity: d.is_current === false ? .6 : 1, flexWrap: 'wrap' }}>
               <span className={`dot ${rs === 'accepted' ? 'done' : 'outstanding'}`} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600 }}>{d.filename}</div>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</div>
                 <div className="muted small">{kb(d.size_bytes)}{d.slot_label ? ` · ${d.slot_label}` : ''} · {new Date(d.created_at).toLocaleDateString()}</div>
                 {rs === 'rejected' && d.rejection_reason && <div className="small" style={{ color: 'var(--danger)' }}>{d.rejection_reason}</div>}
               </div>

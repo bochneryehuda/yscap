@@ -14,7 +14,7 @@ export default function ToolModal({ url, title, onClose }) {
     <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(6,10,12,.88)', display: 'flex', flexDirection: 'column', padding: '2vh 2vw' }}>
       <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
         <h3 style={{ color: '#f3efe6', margin: 0 }}>{title}</h3>
-        <span className="muted small" style={{ marginLeft: 12 }}>Autosaves to your loan file — close anytime.</span>
+        <span className="muted small tm-hint" style={{ marginLeft: 12 }}>Autosaves to your loan file — close anytime.</span>
         <div className="spacer" />
         <button className="btn primary" onClick={onClose}>Done — back to my file</button>
       </div>

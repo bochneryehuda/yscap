@@ -258,6 +258,14 @@ a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
   .header .wrap{height:auto;flex-wrap:wrap;gap:10px 24px;padding-top:12px;padding-bottom:12px}
   .nav{flex-wrap:wrap;row-gap:8px}
 }
+/* on phones the nav becomes one swipeable row (standard mobile tabs)
+   instead of stacking into two or three crowded rows */
+@media(max-width:720px){
+  .nav{width:100%;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
+    justify-content:flex-start;padding-bottom:2px;scrollbar-width:none}
+  .nav::-webkit-scrollbar{display:none}
+  .nav a{padding:8px 0}
+}
 @media(max-width:520px){
   .brand .sub{display:none}
   .brand-word{font-size:16px;letter-spacing:1.5px}
@@ -427,3 +435,110 @@ a.checkitem:hover{transform:translateY(-1px)}
 .snap-v{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis}
 
 .tl-closing{margin-top:6px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+
+/* =====================================================================
+   SIZING & MOBILE PASS — one consistent scale for fields, boxes, and
+   tables everywhere, and a real phone layout. Appended last on purpose.
+   ===================================================================== */
+
+/* media never blows out its container */
+img,svg,video,canvas{max-width:100%}
+
+/* every table gets the same treatment: full width, consistent cells */
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+/* wide tables scroll inside their panel instead of stretching the page */
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -8px;padding:0 8px}
+.table-scroll table{min-width:560px}
+
+/* one field scale: anything input-like sizes identically */
+input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]),
+select,textarea{min-height:42px}
+/* selects drop the native chrome so they match text fields exactly,
+   with our own caret — one box style across every browser and OS */
+select:not([multiple]){-webkit-appearance:none;appearance:none;padding-right:34px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23A6B3BA' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center}
+select option{background:var(--ink-1);color:var(--ivory)}
+input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(--teal)}
+.field .input,.field select,.field textarea{margin:0}
+/* fields sitting in a flex .row shrink instead of overflowing */
+.row>.input,.row>select{flex:1;width:auto;min-width:0}
+
+/* list rows never crush their buttons */
+.item{flex-wrap:wrap}
+.item>.row,.item .ttl{min-width:0}
+
+@media(max-width:720px){
+  /* tighter, consistent gutters and boxes on phones */
+  .wrap{padding:0 16px}
+  .content{padding:20px 0 44px}
+  .panel{padding:16px;border-radius:12px}
+  .panel + .panel{margin-top:14px}
+  h1{font-size:22px} h2{font-size:18px}
+  /* 16px stops iOS Safari from zooming into focused fields */
+  .input,select,textarea{font-size:16px;padding:10px 12px}
+  .btn{padding:10px 16px}
+  .item{padding:13px 14px;gap:10px}
+  .kpi-row{grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+  .kpi{padding:12px 13px}
+  .kpi .kpi-v{font-size:1.4rem}
+  .snap-terms{gap:16px}
+  .snap-term-v{font-size:20px}
+  .ts-hero-v{font-size:22px}
+  .msg-bubble{max-width:88%}
+  .rb-lines{padding-left:10px}
+  .rb-line .input{max-width:120px}
+  .stepper .step{min-width:calc(50% - 8px)}
+  .next-item{min-width:100%}
+  .tr-nums{white-space:normal}
+}
+@media(max-width:400px){
+  .wrap{padding:0 13px}
+  .panel{padding:14px}
+}
+
+/* =====================================================================
+   TOUCH & READABILITY PASS — real tap targets on phones, no hover-gated
+   controls, legible micro-text, and calmer sticky chrome.
+   ===================================================================== */
+
+/* message pin/edit/delete were hover-revealed — phones have no hover */
+@media(hover:none){
+  .msg-actions{opacity:.85}
+}
+.msg-actions button{padding:2px 6px;min-width:26px;min-height:26px}
+
+/* notification settings columns: fixed on desktop, tighter on phones;
+   the whole cell (styled as a label) is the tap target */
+.notif-col{width:90px;flex:none}
+
+/* product studio footer: sticky on desktop where there's room, in the
+   normal flow on phones so it never sits over the studio */
+.studio-foot{position:sticky;bottom:0;background:var(--ink-1);padding:10px 0;z-index:5}
+
+@media(max-width:720px){
+  /* touch-primary controls get real hit areas (btn.small/.btn.link
+     out-specify the generic .btn rule above, so restate them) */
+  .btn.small{padding:9px 14px;font-size:13px}
+  .btn.link{padding:9px 8px}
+  .msg-tool{min-width:42px;min-height:42px}
+  .msg-actions button{min-width:34px;min-height:34px;font-size:1em}
+  .msg-rx{min-height:30px;padding:4px 10px}
+  .eye-btn{width:40px;height:36px}
+  input[type=checkbox],input[type=radio]{width:19px;height:19px}
+  /* micro-text floors — timestamps, sender names, labels */
+  .msg-time{font-size:11px}
+  .msg-from{font-size:11.5px}
+  .snap-k{font-size:11px}
+  .addr-foot{font-size:10.8px}
+  .badge{font-size:10.5px}
+  /* entity (LLC) rows: action cluster drops below the name */
+  .ent-row{flex-wrap:wrap}
+  .studio-foot{position:static;padding:6px 0}
+  .notif-col{width:64px}
+  .tm-hint{display:none}
+  /* chat gets real estate on phones — 380px left barely 4 messages */
+  .msg-thread{max-height:60vh}
+}

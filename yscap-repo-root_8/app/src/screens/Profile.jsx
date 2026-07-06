@@ -143,11 +143,11 @@ export default function Profile() {
           <div className="field"><label>Estimated FICO</label>
             <input className="input" type="number" min="300" max="850" value={p.fico || ''} onChange={e => set('fico', e.target.value)} placeholder="e.g. 720" /></div>
           <div className="field"><label>Citizenship</label>
-            <select value={p.citizenship || ''} onChange={e => set('citizenship', e.target.value)}>
+            <select className="input" value={p.citizenship || ''} onChange={e => set('citizenship', e.target.value)}>
               <option value="">Select…</option>{CITIZENSHIP.map(c => <option key={c}>{c}</option>)}
             </select></div>
           <div className="field"><label>Marital status</label>
-            <select value={p.marital_status || ''} onChange={e => set('marital_status', e.target.value)}>
+            <select className="input" value={p.marital_status || ''} onChange={e => set('marital_status', e.target.value)}>
               <option value="">Select…</option>{MARITAL.map(c => <option key={c}>{c}</option>)}
             </select></div>
         </div>
@@ -186,7 +186,7 @@ export default function Profile() {
         </div>
         <div className="grid cols-3" style={{ marginTop: 4 }}>
           <div className="field"><label>Housing status</label>
-            <select value={p.housing_status || ''} onChange={e => set('housing_status', e.target.value)}>
+            <select className="input" value={p.housing_status || ''} onChange={e => set('housing_status', e.target.value)}>
               <option value="">Select…</option>
               <option value="rent">Rent</option>
               <option value="mortgage">Own with mortgage</option>

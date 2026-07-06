@@ -22,7 +22,7 @@ function VendorForm({ initial, onSave, onCancel, busy }) {
     <div className="panel" style={{ background: 'var(--ink-2)', marginTop: 8 }}>
       <div className="grid cols-3">
         <div className="field"><label>Type</label>
-          <select value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })}>
+          <select className="input" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })}>
             {TYPES.map(t => <option key={t.v} value={t.v}>{t.label}</option>)}
           </select></div>
         <div className="field"><label>Company / agency</label>
