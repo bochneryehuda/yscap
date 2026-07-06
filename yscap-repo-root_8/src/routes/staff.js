@@ -816,7 +816,7 @@ router.post('/applications/:id/assign', async (req, res) => {
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
       await notify.notifyStaff(loanOfficerId, {
         type: 'assignment', title: 'Application assigned to you', applicationId: req.params.id,
-        link: `/staff/app/${req.params.id}` });
+        link: `/internal/app/${req.params.id}` });
       await audit(req, 'assign_application', 'application', req.params.id, { loanOfficerId });
     }
     if (processorId) {
@@ -827,7 +827,7 @@ router.post('/applications/:id/assign', async (req, res) => {
       if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
       await notify.notifyStaff(processorId, {
         type: 'assignment', title: 'File assigned to you for processing', applicationId: req.params.id,
-        link: `/staff/app/${req.params.id}` });
+        link: `/internal/app/${req.params.id}` });
       await audit(req, 'assign_processor', 'application', req.params.id, { processorId });
     }
     res.json({ ok: true });
@@ -1180,7 +1180,7 @@ router.patch('/applications/:id', async (req, res) => {
       for (const sid of team)
         await notify.notifyStaff(sid, {
           type: 'status_change', title: `File moved to ${label}`,
-          applicationId: req.params.id, link: `/staff/app/${req.params.id}` });
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
     } catch (_) { /* notify best-effort */ }
     res.json({ ok: true, status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -1431,7 +1431,7 @@ router.post('/applications/:id/messages', async (req, res) => {
           await notify.notifyStaff(sid, {
             type: 'message', title: taskId ? 'New task from team chat' : 'New internal note on a file',
             body: String(body).slice(0, 140), applicationId: req.params.id,
-            link: `/staff/app/${req.params.id}`, ctaLabel: 'Open the file' });
+            link: `/internal/app/${req.params.id}`, ctaLabel: 'Open the file' });
       }
       // @mentions get a direct ping regardless of channel/assignment.
       if (body) {
