@@ -2,14 +2,22 @@ import React from 'react';
 
 /* Money input: shows a $ prefix and comma-grouped digits while storing a plain
    numeric string in the form (so the backend still gets a number). */
+// Strip to digits + AT MOST ONE decimal point — "1.2.3" (paste, fat-finger,
+// European "1.200.000") used to render "NaN" and feed an unparseable string
+// to drafts and the pricing engine.
+function cleanMoney(v) {
+  const s = String(v).replace(/[^0-9.]/g, '');
+  const i = s.indexOf('.');
+  return i < 0 ? s : s.slice(0, i + 1) + s.slice(i + 1).replace(/\./g, '');
+}
 export function MoneyInput({ value, onChange, placeholder, ...rest }) {
-  const display = value === '' || value == null ? '' : Number(String(value).replace(/[^0-9.]/g, '')).toLocaleString('en-US');
+  const display = value === '' || value == null ? '' : Number(cleanMoney(value)).toLocaleString('en-US');
   return (
     <div style={{ position: 'relative' }}>
       <span style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted,#9fb0ba)', pointerEvents: 'none' }}>$</span>
       <input className="input" inputMode="numeric" autoComplete="off" style={{ paddingLeft: 22 }}
         value={display} placeholder={placeholder || '0'}
-        onChange={(e) => { const digits = e.target.value.replace(/[^0-9.]/g, ''); onChange(digits); }}
+        onChange={(e) => onChange(cleanMoney(e.target.value))}
         {...rest} />
     </div>
   );

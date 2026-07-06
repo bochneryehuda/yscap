@@ -802,6 +802,17 @@ router.post('/documents', async (req, res) => {
     const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
     if (!o.rows[0]) return res.status(404).json({ error: 'llc not found' });
   }
+  // The checklist item must be the borrower's own too — otherwise the document
+  // row can be pointed at another borrower's checklist-item id.
+  if (b.checklistItemId) {
+    const o = await db.query(
+      `SELECT 1 FROM checklist_items ci
+        WHERE ci.id=$1 AND (ci.borrower_id=$2
+           OR ci.application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)
+           OR ci.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`,
+      [b.checklistItemId, me(req)]);
+    if (!o.rows[0]) return res.status(404).json({ error: 'checklist item not found' });
+  }
   const buf = Buffer.from(b.dataBase64, 'base64');
   if (!buf.length) return res.status(400).json({ error: 'empty file' });
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
@@ -988,8 +999,9 @@ router.get('/messages', async (req, res) => {
         AND ($2::uuid IS NULL OR m.application_id=$2)
         AND (m.borrower_id=$1 OR m.application_id IN
              (SELECT id FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1))
-      ORDER BY m.created_at`,
+      ORDER BY m.created_at DESC LIMIT 500`,
     [me(req), req.query.applicationId || null]);
+  r.rows.reverse();   // newest-500 window, still rendered oldest-first
   // Opening the thread clears the "new message" badge for staff replies.
   if (req.query.applicationId)
     await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND borrower_id=$2 AND sender_kind='staff' AND read_at IS NULL`,

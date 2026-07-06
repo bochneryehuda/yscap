@@ -89,7 +89,9 @@ export default function StaffQueue() {
   const [err, setErr] = useState('');
 
   useEffect(() => {
-    api.staffApplications().then(setMine).catch(e => setErr(e.message));
+    // On failure, land on an empty list — leaving `mine` null kept the panel
+    // on "Loading…" forever underneath the error banner.
+    api.staffApplications().then(setMine).catch(e => { setMine([]); setErr(e.message); });
     api.staffLeadCapture().then(setLeads).catch(() => setLeads([]));
     api.staffDashboard().then(setDash).catch(() => {});
     api.staffExceptions().then(setExc).catch(() => {});

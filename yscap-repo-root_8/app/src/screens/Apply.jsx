@@ -167,7 +167,10 @@ export default function Apply() {
     // Don't let the clickable stepper jump past property basics with an
     // incomplete step 1 (street + type + units) — the file needs them.
     if (n > 1 && !(form && form.propertyAddress && form.propertyAddress.street && form.propertyType && form.units)) { setStep(1); return; }
-    await flush(); setStep(n); save({ step: n });
+    // A failed flush isn't fatal here — the batch stays queued and retries on
+    // the next change/submit — but surface it so the user knows.
+    try { await flush(); } catch (e) { setErr(e.message || 'Autosave hit a snag — your changes are still on this device and will retry.'); }
+    setStep(n); save({ step: n });
   };
 
   async function submit() {
