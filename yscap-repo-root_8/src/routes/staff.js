@@ -862,7 +862,8 @@ async function canSeeBorrowerId(req, borrowerId) {
   if (!borrowerId) return false;
   const r = await db.query(
     `SELECT 1 FROM applications
-      WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+      WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2)
+        AND deleted_at IS NULL LIMIT 1`,
     [borrowerId, req.actor.id]);
   return !!r.rows[0];
 }

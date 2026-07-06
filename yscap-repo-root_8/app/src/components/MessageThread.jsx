@@ -346,7 +346,10 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
             onKeyDown={e => {
               if (picker && items.length && (e.key === 'Tab' || e.key === 'Enter')) { e.preventDefault(); choosePick(items[0]); return; }
               if (e.key === 'Escape') setPicker(null);
-              if (e.key === 'Enter' && !e.shiftKey && !picker) submit();
+              // Also submit when a picker is open but matched nothing — otherwise
+              // Enter was dead (couldn't pick, wouldn't send) and the message
+              // silently never went out until the user hit Escape.
+              if (e.key === 'Enter' && !e.shiftKey && (!picker || !items.length)) submit();
             }} />
           <button className="btn primary" disabled={busy || (!body.trim() && !pending)} onClick={submit}>{busy ? 'Sending…' : 'Send'}</button>
         </div>
