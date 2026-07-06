@@ -14,11 +14,26 @@ process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e &
 process.on('uncaughtException',  (e) => console.error('uncaughtException:',  e && e.message ? e.message : e));
 
 const app = express();
+// Behind Render's proxy: trust the first hop so req.ip / req.secure reflect the
+// real client (needed for correct rate-limiting and HSTS gating).
+app.set('trust proxy', 1);
+// Baseline security headers on every response (nosniff, anti-clickjacking, HSTS…).
+app.use(require('./lib/security').securityHeaders);
 // Body limit must comfortably exceed a max-size upload AFTER base64 inflation:
 // a MAX_UPLOAD_MB-byte file becomes ~1.37x that as base64 inside the JSON body,
 // plus envelope. A flat 25mb limit silently 413'd legitimate ~19-20MB uploads.
 const JSON_LIMIT_MB = Math.max(25, Math.ceil(cfg.maxUploadMb * 1.4) + 4);
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
+
+// Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
+// The per-account lockout can't stop credential-stuffing across many accounts
+// or flooding of the public endpoints; this does, and it shields the scrypt
+// threadpool from a login flood. Generous enough never to hit a real user.
+const { rateLimit } = require('./lib/rate-limit');
+app.use('/auth', rateLimit({ bucket: 'auth', windowMs: 60000, max: 30 }));   // login/register/mfa/reset
+app.use('/api/intake', rateLimit({ bucket: 'intake', windowMs: 60000, max: 20 }));
+app.use('/api/leads', rateLimit({ bucket: 'leads', windowMs: 60000, max: 20 }));
+app.use('/api/address', rateLimit({ bucket: 'address', windowMs: 60000, max: 120 })); // autocomplete is chatty
 
 // --- API ---
 // LIVENESS health check (Render points healthCheckPath here). It reports 200 as
