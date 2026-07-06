@@ -7,6 +7,7 @@ import ActivityFeed from '../components/ActivityFeed.jsx';
 import RehabBudget from '../components/RehabBudget.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
 import ProductRegistration from '../components/ProductRegistration.jsx';
+import TrackRecord from '../components/TrackRecord.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
@@ -19,7 +20,7 @@ const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processin
 // the static bundle at /tools/… — we launch them, not rebuild them.
 const TOOLS = {
   rehab_budget: { name: 'Rehab Budget', url: '/tools/rehab-budget.html', blurb: 'Build your construction budget and Scope of Work, then export it.' },
-  track_record: { name: 'Track Record', url: '/tools/track-record.html', blurb: 'Enter your prior deals (REO / experience): LLC, address, price, dates.' },
+  track_record: { name: 'Track Record', url: '/tools/track-record.html', blurb: 'Add your prior deals once to your borrower profile. Matching experience clears this file task automatically.' },
 };
 // Contact tasks are FORMS, not uploads: the borrower enters their title / insurance
 // contact and it saves to a reusable contact book (autocompletes on future files).
@@ -105,6 +106,13 @@ function toolLaunchUrl(toolKey, app) {
   else if (app.loan_type && /purchase/i.test(app.loan_type)) p.set('txn', 'purchase');
   const qs = p.toString();
   return qs ? `${base}?${qs}` : base;
+}
+function experienceRequirement(app) {
+  return {
+    flips: Number(app.requested_exp_flips) || 0,
+    holds: Number(app.requested_exp_holds) || 0,
+    ground: Number(app.requested_exp_ground) || 0,
+  };
 }
 
 export default function Application() {
@@ -213,7 +221,22 @@ export default function Application() {
             if (it.tool_key === 'rehab_budget') {
               return (
                 <div className="checkitem" key={it.id} style={{ alignItems: 'flex-start', flexDirection: 'column' }}>
-                  <RehabBudget appId={id} item={it} onSubmitted={load} />
+                  <RehabBudget appId={id} item={it} app={app} onSubmitted={load} />
+                </div>
+              );
+            }
+            if (it.tool_key === 'track_record') {
+              return (
+                <div className="checkitem" key={it.id} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
+                  <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
+                    <span className={`dot ${done ? 'done' : 'outstanding'}`} style={{ marginTop: 4 }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600 }}>{it.label}</div>
+                      <div className="muted small">{t.blurb}{it.hint ? ` · ${it.hint}` : ''}</div>
+                    </div>
+                    <span className="muted small" style={{ textTransform: 'capitalize' }}>{done ? 'Submitted' : (it.status || 'to do')}</span>
+                  </div>
+                  <TrackRecord mode="borrower" bare requirement={experienceRequirement(app)} onChange={load} />
                 </div>
               );
             }

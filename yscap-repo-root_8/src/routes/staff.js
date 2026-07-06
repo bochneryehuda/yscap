@@ -14,6 +14,7 @@ const { serveDocument } = require('../lib/serve-document');
 const { requireAuth, requireRole } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
+const { syncExperienceChecklistForApplication } = require('../lib/experience');
 
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
 // admins + super-admins + underwriters (risk) see every file;
@@ -45,6 +46,10 @@ async function canTouchApp(req, appId) {
   return !!r.rows[0];
 }
 const isAdmin = (req) => ['admin', 'super_admin'].includes(req.actor.role);
+function intField(v) {
+  const n = parseInt(v, 10);
+  return isFinite(n) && n > 0 ? n : 0;
+}
 
 async function audit(req, action, entity_type, entity_id, detail) {
   await db.query(
@@ -257,13 +262,16 @@ router.post('/applications', async (req, res) => {
       `INSERT INTO applications
          (borrower_id,property_address,property_type,units,program,loan_type,
           purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
+          rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
           processor_id,is_assignment,underlying_contract_price,assignment_fee,source,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'staff','new',now())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
        b.program || null, b.loanType || null, purchasePrice, b.asIsValue || null,
-       b.arv || null, b.rehabBudget || null, officerId, officerName, processorId,
-       isAssignment, underlying, assignFee]);
+       b.arv || null, b.rehabBudget || null, officerId, officerName,
+       b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
+       intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
+       processorId, isAssignment, underlying, assignFee]);
     const appId = ins.rows[0].id;
 
     try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType, { isAssignment }); }
@@ -752,7 +760,8 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const r = await db.query(
       `SELECT t.id, t.deal_type, t.property_address, t.purchase_price, t.sale_price, t.rehab_amount,
-              t.purchase_date, t.sale_date, t.is_verified, t.verified_at, t.docs_status,
+              t.purchase_date, t.sale_date, t.rent_amount, t.rent_date, t.refi_amount, t.refi_date,
+              t.current_value, t.notes, t.is_verified, t.verified_at, t.docs_status,
               l.llc_name AS entity_name, v.full_name AS verified_by_name
          FROM track_records t
          LEFT JOIN llcs l ON l.id = t.llc_id
@@ -844,11 +853,13 @@ router.get('/applications/:id/status-history', async (req, res) => {
 router.patch('/applications/:id/details', async (req, res) => {
   const b = req.body || {};
   const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
-    arv: 'arv', rehabBudget: 'rehab_budget', underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
-  const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy' };
+    arv: 'arv', rehabBudget: 'rehab_budget', sqftPre: 'sqft_pre', sqftPost: 'sqft_post',
+    requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
+    underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
+  const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy', rehabType: 'rehab_type' };
   const sets = [], vals = []; let i = 1;
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
-    const n = b[k] === '' || b[k] == null ? null : Number(b[k]);
+    const n = k.indexOf('requestedExp') === 0 ? intField(b[k]) : (b[k] === '' || b[k] == null ? null : Number(b[k]));
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
     sets.push(`${col}=$${i++}`); vals.push(n);
   }
@@ -859,6 +870,9 @@ router.patch('/applications/:id/details', async (req, res) => {
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {
     await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    if ('requestedExpFlips' in b || 'requestedExpHolds' in b || 'requestedExpGround' in b) {
+      try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
+    }
     await audit(req, 'edit_application', 'application', req.params.id, { fields: Object.keys(b) });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }

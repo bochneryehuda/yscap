@@ -13,10 +13,14 @@ const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Constructio
 const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'];
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
 const CITIZENSHIP = ['US Citizen', 'Permanent Resident', 'Foreign National'];
+const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
+const MARITAL = ['Single', 'Married', 'Separated', 'Divorced', 'Widowed'];
+const HOUSING = ['Rent', 'Own with mortgage', 'Own free and clear', 'Live with family', 'Other'];
 
 // Fix & Flip / Ground-Up / construction files use ARV + rehab budget; a straight
 // Bridge does not, so those fields are hidden for them.
 const needsRehab = (program) => !program || /flip|ground|construction|rehab|not sure/i.test(program);
+const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
 // An assignment only applies to a purchase.
 const isPurchase = (loanType) => !loanType || /purchase/i.test(loanType);
 
@@ -74,7 +78,13 @@ export default function Apply() {
             cellPhone: cur.cellPhone || p.cell_phone || '',
             dateOfBirth: cur.dateOfBirth || (p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : ''),
             citizenship: cur.citizenship || p.citizenship || '',
+            maritalStatus: cur.maritalStatus || p.marital_status || '',
             fico: cur.fico || p.fico || '',
+            currentAddress: cur.currentAddress || p.current_address || {},
+            yearsAtResidence: cur.yearsAtResidence || p.years_at_residence || '',
+            monthsAtResidence: cur.monthsAtResidence || p.months_at_residence || '',
+            housingStatus: cur.housingStatus || p.housing_status || '',
+            housingPayment: cur.housingPayment || p.housing_payment || '',
           };
           if (data.ssnOnFile === undefined) data.ssnOnFile = !!p.ssn_last4;
         } catch { /* profile prefill is best-effort */ }
@@ -116,6 +126,16 @@ export default function Apply() {
   });
   const setPersonal = setNested('personal');
   const setCo = setNested('coBorrower');
+  const mergePersonalAddr = (patch) => setForm(f => {
+    const personal = { ...((f && f.personal) || {}) };
+    const address = { ...(personal.currentAddress || {}), ...patch };
+    address.oneLine = [[address.street, address.unit].filter(Boolean).join(' '), address.city, [address.state, address.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+    personal.currentAddress = address;
+    save({ data: { personal } });
+    return { ...(f || {}), personal };
+  });
+  const setPersonalAddr = (k, v) => mergePersonalAddr({ [k]: v });
+  const pickPersonalAddr = (x) => mergePersonalAddr({ street: x.line1 || '', unit: x.unit || '', city: x.city || '', state: x.state || '', zip: x.zip || '' });
 
   // Choosing the property type auto-resolves units for single-unit types so the
   // borrower never has to answer "units" for a single-family / condo / townhouse.
@@ -261,12 +281,37 @@ export default function Apply() {
               </>
             )}
             {showRehab && (
-              <div className="grid cols-2">
-                <div className="field"><label>ARV (after-repair value)</label>
-                  <MoneyInput value={form.arv || ''} onChange={v => set('arv', v)} /></div>
-                <div className="field"><label>Rehab budget</label>
-                  <MoneyInput value={form.rehabBudget || ''} onChange={v => set('rehabBudget', v)} /></div>
-              </div>
+              <>
+                <div className="grid cols-2">
+                  <div className="field"><label>ARV (after-repair value)</label>
+                    <MoneyInput value={form.arv || ''} onChange={v => set('arv', v)} /></div>
+                  <div className="field"><label>Rehab budget</label>
+                    <MoneyInput value={form.rehabBudget || ''} onChange={v => set('rehabBudget', v)} /></div>
+                </div>
+                <div className="grid cols-2">
+                  <div className="field"><label>Rehab type</label>
+                    <select value={form.rehabType || ''} onChange={e => set('rehabType', e.target.value)}>
+                      <option value="">Select...</option>{REHAB_TYPES.map(x => <option key={x}>{x}</option>)}
+                    </select></div>
+                  {needsSqft(form.rehabType) && (
+                    <div className="grid cols-2" style={{ margin: 0 }}>
+                      <div className="field"><label>Existing sq ft</label>
+                        <input className="input" type="number" min="0" value={form.sqftPre || ''} onChange={e => set('sqftPre', e.target.value)} /></div>
+                      <div className="field"><label>Completed sq ft</label>
+                        <input className="input" type="number" min="0" value={form.sqftPost || ''} onChange={e => set('sqftPost', e.target.value)} /></div>
+                    </div>
+                  )}
+                </div>
+                <h3 style={{ margin: '14px 0 8px' }}>Experience used for this request</h3>
+                <div className="grid cols-3">
+                  <div className="field"><label>Fix &amp; flip deals</label>
+                    <input className="input" type="number" min="0" value={form.requestedExpFlips || ''} onChange={e => set('requestedExpFlips', e.target.value)} /></div>
+                  <div className="field"><label>Fix &amp; hold deals</label>
+                    <input className="input" type="number" min="0" value={form.requestedExpHolds || ''} onChange={e => set('requestedExpHolds', e.target.value)} /></div>
+                  <div className="field"><label>Ground-up deals</label>
+                    <input className="input" type="number" min="0" value={form.requestedExpGround || ''} onChange={e => set('requestedExpGround', e.target.value)} /></div>
+                </div>
+              </>
             )}
             <p className="muted small">Final pricing and leverage are confirmed by your loan officer against program guidelines — these figures start the file.</p>
           </>
@@ -297,6 +342,40 @@ export default function Apply() {
                     <select value={p.citizenship || ''} onChange={e => setPersonal('citizenship', e.target.value)}>
                       <option value="">Select…</option>{CITIZENSHIP.map(c => <option key={c}>{c}</option>)}
                     </select></div>
+                </div>
+                <div className="grid cols-2">
+                  <div className="field"><label>Marital status</label>
+                    <select value={p.maritalStatus || ''} onChange={e => setPersonal('maritalStatus', e.target.value)}>
+                      <option value="">Select...</option>{MARITAL.map(c => <option key={c}>{c}</option>)}
+                    </select></div>
+                  <div className="field"><label>Housing status</label>
+                    <select value={p.housingStatus || ''} onChange={e => setPersonal('housingStatus', e.target.value)}>
+                      <option value="">Select...</option>{HOUSING.map(c => <option key={c}>{c}</option>)}
+                    </select></div>
+                </div>
+                <h3 style={{ margin: '16px 0 10px' }}>Primary residence</h3>
+                <div className="field"><label>Home address</label>
+                  <AddressAutocomplete value={(p.currentAddress && p.currentAddress.street) || ''} placeholder="Start typing your home address..."
+                    onChange={v => setPersonalAddr('street', v)} onPick={pickPersonalAddr} /></div>
+                <div className="grid cols-2">
+                  <div className="field"><label>Apt / Unit</label>
+                    <input className="input" autoComplete="off" value={(p.currentAddress && p.currentAddress.unit) || ''} onChange={e => setPersonalAddr('unit', e.target.value)} /></div>
+                  <div className="field"><label>City</label>
+                    <input className="input" autoComplete="off" value={(p.currentAddress && p.currentAddress.city) || ''} onChange={e => setPersonalAddr('city', e.target.value)} /></div>
+                </div>
+                <div className="grid cols-3">
+                  <div className="field"><label>State</label>
+                    <input className="input" maxLength={2} value={(p.currentAddress && p.currentAddress.state) || ''} onChange={e => setPersonalAddr('state', e.target.value.toUpperCase())} /></div>
+                  <div className="field"><label>ZIP</label>
+                    <input className="input" value={(p.currentAddress && p.currentAddress.zip) || ''} onChange={e => setPersonalAddr('zip', e.target.value)} /></div>
+                  <div className="field"><label>Housing payment</label>
+                    <MoneyInput value={p.housingPayment || ''} onChange={v => setPersonal('housingPayment', v)} /></div>
+                </div>
+                <div className="grid cols-2">
+                  <div className="field"><label>Years at address</label>
+                    <input className="input" type="number" min="0" step="0.1" value={p.yearsAtResidence || ''} onChange={e => setPersonal('yearsAtResidence', e.target.value)} /></div>
+                  <div className="field"><label>Additional months</label>
+                    <input className="input" type="number" min="0" max="11" value={p.monthsAtResidence || ''} onChange={e => setPersonal('monthsAtResidence', e.target.value)} /></div>
                 </div>
               </>
             ); })()}

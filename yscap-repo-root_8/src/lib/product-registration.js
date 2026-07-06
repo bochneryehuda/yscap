@@ -1,6 +1,7 @@
 'use strict';
 
 const PRODUCT_CONDITION_TYPE = 'product_registration';
+const { syncExperienceChecklistForApplication } = require('./experience');
 
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 function money(v) { return '$' + Math.round(num(v)).toLocaleString('en-US'); }
@@ -109,6 +110,9 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
         SET loan_amount=$2,
             rate_pct=$3,
             ltv=$4,
+            requested_exp_flips=$5,
+            requested_exp_holds=$6,
+            requested_exp_ground=$7,
             updated_at=now()
       WHERE id=$1`,
     [
@@ -116,8 +120,12 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       total,
       quote.noteRate != null ? (quote.noteRate * 100) : null,
       s.acqLtvPct > 0 ? (s.acqLtvPct * 100) : null,
+      num(inputs.expFlips),
+      num(inputs.expHolds),
+      num(inputs.expGround),
     ]);
   await replaceProductConditions(client, { appId, registrationId, quote, registeredByStaffId });
+  await syncExperienceChecklistForApplication(appId, client);
   return registrationId;
 }
 

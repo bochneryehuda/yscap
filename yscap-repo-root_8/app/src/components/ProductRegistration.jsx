@@ -17,6 +17,224 @@ const STRATEGIES = [
   { v: 'Bridge', label: 'Bridge' },
 ];
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const YS_STATE_PREFIX = 'YSLOAN1\u0001';
+
+function rawNum(v) {
+  if (v == null || v === '') return '';
+  const n = Number(String(v).replace(/[$,%\s,]/g, ''));
+  return isFinite(n) ? String(n) : '';
+}
+function has(v) { return v != null && v !== ''; }
+function valOr(v, fallback = '') { return has(v) ? String(v) : fallback; }
+function borrowerName(app) {
+  return [app.first_name, app.last_name].filter(Boolean).join(' ') || app.entity_name || 'Applicant';
+}
+function purposeLabel(ov) {
+  if (String(ov.loanType || '').toLowerCase().includes('refi')) return ov.cashOut ? 'Cash-out refinance' : 'Rate & term refinance';
+  return 'Purchase';
+}
+function strategyLabel(s) {
+  const x = String(s || '').toLowerCase();
+  if (x.includes('ground') || x.includes('construction')) return 'Ground-up Construction';
+  if (x.includes('bridge') || x.includes('stabil')) return 'Bridge / Stabilized';
+  if (x.includes('hold') || x.includes('brrrr')) return 'Fix & Hold (BRRRR)';
+  return 'Fix & Flip';
+}
+function portalState(ov, app, program, allQuote) {
+  const address = ov.address || addrLine(app.property_address);
+  const v = {
+    borrowerName: borrowerName(app),
+    propAddr: address || '',
+    dealPurpose: purposeLabel(ov),
+    dealType: strategyLabel(ov.strategy),
+    propState: valOr(ov.state),
+    propType: String(ov.propertyType || '').includes('2-4') || Number(ov.units) > 1 ? '2-4' : 'sfr',
+    price: rawNum(ov.purchasePrice),
+    origPrice: rawNum(ov.sellerPrice),
+    asIs: rawNum(ov.asIsValue),
+    arv: rawNum(ov.arv),
+    construction: rawNum(ov.rehabBudget),
+    fico: rawNum(ov.fico),
+    expFlips: rawNum(ov.expFlips) || '0',
+    expBrrrr: rawNum(ov.expHolds) || '0',
+    expGround: rawNum(ov.expGround) || '0',
+    tsTerm: rawNum(ov.term) || '12',
+    irMonths: rawNum(ov.irMonths) || '0',
+    tsYspStd: valOr(ov.markupStdPct, '0.5'),
+    tsYspGold: valOr(ov.markupGoldPct, '0.5'),
+    tsOrigStd: valOr(ov.origStdPct, '1.25'),
+    tsOrigGold: valOr(ov.origGoldPct, '1.25'),
+    tsFeeUW: valOr(ov.lenderFee, '2195'),
+    tsFeeCredit: valOr(ov.creditFee, '150'),
+    tsFeeAppr: valOr(ov.appraisalFee, '800'),
+    tsFeeTitle: valOr(ov.titleFee),
+    tsMLtv: valOr(ov.ovrAcqLTVPct),
+    tsMArv: valOr(ov.ovrARLTVPct),
+    tsMLtc: valOr(ov.ovrLTCPct),
+    tsMRate: valOr(ov.ovrRatePct),
+    tsMIr: valOr(ov.ovrIrMonths),
+  };
+  const c = { isAssign: !!ov.isAssignment, tsManualOn: !!ov.manualPricing };
+  if (!address) c.addrTBD = true;
+  return {
+    v, c,
+    portal: {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      program,
+      overrides: ov,
+      quote: allQuote || null,
+    },
+  };
+}
+function applyStateToOverrides(st, base) {
+  const v = (st && st.v) || {};
+  const c = (st && st.c) || {};
+  const out = { ...(base || {}) };
+  const setNum = (id, key) => { const n = rawNum(v[id]); if (n !== '') out[key] = n; };
+  const setText = (id, key) => { if (v[id] != null && v[id] !== '') out[key] = String(v[id]); };
+  if (v.dealPurpose) {
+    const p = String(v.dealPurpose).toLowerCase();
+    out.loanType = p.includes('refinance') ? 'Refinance' : 'Purchase';
+    out.cashOut = p.includes('cash');
+  }
+  setText('dealType', 'strategy');
+  setText('propState', 'state');
+  setText('propAddr', 'address');
+  setText('propType', 'propertyType');
+  setNum('price', 'purchasePrice');
+  setNum('origPrice', 'sellerPrice');
+  setNum('asIs', 'asIsValue');
+  setNum('arv', 'arv');
+  setNum('construction', 'rehabBudget');
+  setNum('fico', 'fico');
+  setNum('expFlips', 'expFlips');
+  setNum('expBrrrr', 'expHolds');
+  setNum('expGround', 'expGround');
+  setNum('tsTerm', 'term');
+  setNum('irMonths', 'irMonths');
+  setNum('tsYspStd', 'markupStdPct');
+  setNum('tsYspGold', 'markupGoldPct');
+  setNum('tsOrigStd', 'origStdPct');
+  setNum('tsOrigGold', 'origGoldPct');
+  setNum('tsFeeUW', 'lenderFee');
+  setNum('tsFeeCredit', 'creditFee');
+  setNum('tsFeeAppr', 'appraisalFee');
+  setNum('tsFeeTitle', 'titleFee');
+  setNum('tsMLtv', 'ovrAcqLTVPct');
+  setNum('tsMArv', 'ovrARLTVPct');
+  setNum('tsMLtc', 'ovrLTCPct');
+  setNum('tsMRate', 'ovrRatePct');
+  setNum('tsMIr', 'ovrIrMonths');
+  if (Object.prototype.hasOwnProperty.call(c, 'isAssign')) out.isAssignment = !!c.isAssign;
+  if (Object.prototype.hasOwnProperty.call(c, 'tsManualOn')) out.manualPricing = !!c.tsManualOn;
+  if (st && st.portal && st.portal.overrides) Object.assign(out, st.portal.overrides);
+  return out;
+}
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+async function ensureXLSX() {
+  if (window.XLSX && window.XLSX.utils) return window.XLSX;
+  try { await loadScript('https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js'); }
+  catch (_) { await loadScript('https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js'); }
+  if (!(window.XLSX && window.XLSX.utils)) throw new Error('spreadsheet library failed to load');
+  return window.XLSX;
+}
+function fileStem(app) {
+  return 'YS_Term_Sheet_' + borrowerName(app).replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48)
+    + '_' + new Date().toISOString().slice(0, 10);
+}
+function stateChunks(st) {
+  const enc = YS_STATE_PREFIX + JSON.stringify(st);
+  const chunks = [];
+  for (let p = 0; p < enc.length; p += 30000) chunks.push(enc.slice(p, p + 30000));
+  return chunks;
+}
+async function stateFromImportFile(file) {
+  if (!file) return null;
+  if (/\.(json|txt)$/i.test(file.name || '')) {
+    const text = await file.text();
+    const body = text.indexOf(YS_STATE_PREFIX) === 0 ? text.slice(YS_STATE_PREFIX.length) : text;
+    return JSON.parse(body);
+  }
+  const X = await ensureXLSX();
+  const wb = X.read(await file.arrayBuffer(), { type: 'array' });
+  if (wb.SheetNames.indexOf('_ys') < 0) throw new Error('No saved YS term-sheet data found');
+  const aoa = X.utils.sheet_to_json(wb.Sheets['_ys'], { header: 1 });
+  if (!(aoa[0] && String(aoa[0][0]) === 'YSLOANSTATE')) throw new Error('No saved YS term-sheet data found');
+  const nch = parseInt(aoa[0][1], 10);
+  let joined = '';
+  for (let i = 1; i <= nch && i < aoa.length; i++) joined += (aoa[i] && aoa[i][0]) ? aoa[i][0] : '';
+  if (joined.indexOf(YS_STATE_PREFIX) !== 0) throw new Error('Saved YS state was not recognized');
+  return JSON.parse(joined.slice(YS_STATE_PREFIX.length));
+}
+function quoteRows(label, q) {
+  if (!q || !q.sizing) return [[label + ' status', q ? q.status : 'Not priced']];
+  const s = q.sizing;
+  return [
+    [label + ' status', q.status],
+    [label + ' product', q.productLabel || q.programLabel || label],
+    [label + ' loan amount', money(s.totalLoan)],
+    [label + ' note rate', pct(q.noteRate)],
+    [label + ' initial advance', money(s.initialAdvance)],
+    [label + ' rehab / construction holdback', money(s.rehabHoldback)],
+    [label + ' loan-to-cost', pct(s.ltcPct, 1)],
+    [label + ' as-is LTV', pct(s.acqLtvPct, 1)],
+    [label + ' ARV LTV', pct(s.arvPct, 1)],
+    [label + ' origination', money(q.origination)],
+    [label + ' cash to close', money(q.cashToClose)],
+    [label + ' liquidity to show', money(q.liquidity)],
+  ];
+}
+async function exportPortalXlsx(ov, app, program, allQuote) {
+  const X = await ensureXLSX();
+  const active = allQuote ? (program === 'gold' ? allQuote.gold : allQuote.standard) : null;
+  const rows = [
+    ['YS CAPITAL GROUP - TERM SHEET'],
+    ['Generated', new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })],
+    [],
+    ['Borrower / entity', borrowerName(app)],
+    ['Property', ov.address || addrLine(app.property_address) || 'To be determined'],
+    ['Purpose', purposeLabel(ov)],
+    ['Strategy', strategyLabel(ov.strategy)],
+    ['State', ov.state || ''],
+    ['Purchase price', money(ov.purchasePrice)],
+    ['As-is value', money(ov.asIsValue)],
+    ['ARV', money(ov.arv)],
+    ['Rehab budget', money(ov.rehabBudget)],
+    ['FICO', ov.fico || ''],
+    ['Experience', `${ov.expFlips || 0} flips / ${ov.expHolds || 0} holds / ${ov.expGround || 0} ground-up`],
+    [],
+    ['Selected program', active ? active.programLabel : program],
+    ...quoteRows('Standard Program', allQuote && allQuote.standard),
+    [],
+    ...quoteRows('Gold Standard Program', allQuote && allQuote.gold),
+    [],
+    ['Portal admin pricing'],
+    ['Standard markup', valOr(ov.markupStdPct, '0.5') + '%'],
+    ['Gold markup', valOr(ov.markupGoldPct, '0.5') + '%'],
+    ['Standard origination', valOr(ov.origStdPct, '1.25') + '%'],
+    ['Gold origination', valOr(ov.origGoldPct, '1.25') + '%'],
+    ['UW / processing / legal', money(valOr(ov.lenderFee, 2195))],
+    ['Credit report', money(valOr(ov.creditFee, 150))],
+    ['Appraisal POC', money(valOr(ov.appraisalFee, 800))],
+    ['Title / escrow override', has(ov.titleFee) ? money(ov.titleFee) : 'Auto-estimate'],
+  ];
+  const ws = X.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 32 }, { wch: 54 }];
+  const wb = X.utils.book_new();
+  X.utils.book_append_sheet(wb, ws, 'Term Sheet');
+  const hidden = [['YSLOANSTATE', stateChunks(portalState(ov, app, program, allQuote)).length]];
+  stateChunks(portalState(ov, app, program, allQuote)).forEach((ch) => hidden.push([ch]));
+  X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(hidden), '_ys');
+  wb.Workbook = { Sheets: [{ Hidden: 0 }, { Hidden: 2 }] };
+  X.writeFile(wb, fileStem(app) + '.xlsx');
+}
 
 function addrLine(a) {
   if (!a) return '';
@@ -95,13 +313,49 @@ function printTermSheet(q, app) {
   w.document.write(html); w.document.close();
 }
 
+function printPreApproval(q, app) {
+  if (!q || !q.sizing) return;
+  const s = q.sizing;
+  const borrower = borrowerName(app);
+  const property = addrLine(app.property_address) || 'To be determined';
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Pre-Approval - ${esc(borrower)}</title>
+<style>
+  *{box-sizing:border-box} body{font-family:Arial,sans-serif;color:#141B22;margin:0;padding:46px;max-width:760px;margin:0 auto;line-height:1.55}
+  .top{border-bottom:3px solid #C9A86A;padding-bottom:14px;margin-bottom:28px;display:flex;justify-content:space-between;gap:20px;align-items:flex-end}
+  .brand{font-family:Georgia,serif;font-size:25px;font-weight:700}.brand small{display:block;font-family:Arial,sans-serif;font-size:11px;color:#68747c;letter-spacing:.12em;text-transform:uppercase;margin-top:4px}
+  .meta{text-align:right;font-size:12px;color:#68747c} h1{font-family:Georgia,serif;font-size:24px;margin:0 0 18px}.amount{font-family:Georgia,serif;font-size:32px;font-weight:700;color:#1F3A40;margin:10px 0 4px}
+  p{font-size:14px}.box{border:1px solid #e7e2d6;background:#faf7f0;border-radius:10px;padding:16px 18px;margin:20px 0}.sig{margin-top:42px}.line{width:260px;border-top:1px solid #141B22;margin-top:32px;padding-top:6px;font-size:12px;color:#68747c}
+  .disc{font-size:11px;color:#7b858c;margin-top:28px}.noprint{text-align:center;margin-top:24px}.noprint button{background:#141B22;color:#fff;border:0;border-radius:8px;padding:10px 20px;cursor:pointer}
+  @media print{body{padding:0}.noprint{display:none}}
+</style></head><body>
+  <div class="top"><div class="brand">YS Capital Group<small>Business-Purpose Real-Estate Lending</small></div><div class="meta">${esc(today)}<br>NMLS #2609746</div></div>
+  <h1>Pre-Approval / Proof of Funds</h1>
+  <p>To whom it may concern,</p>
+  <p>Based on the preliminary information provided, ${esc(borrower)} has been reviewed for a business-purpose real-estate loan through YS Capital Group.</p>
+  <div class="box">
+    <div>Indicated financing amount</div>
+    <div class="amount">${money(s.totalLoan)}</div>
+    <div>Program: ${esc(q.programLabel)}${q.productLabel ? ' - ' + esc(q.productLabel) : ''}</div>
+    <div>Property: ${esc(property)}</div>
+  </div>
+  <p>This letter may be used to support an offer or transaction discussion. Final approval remains subject to underwriting, appraisal or valuation, title review, entity and borrower verification, available liquidity, and final credit committee approval.</p>
+  <div class="sig"><div>Sincerely,</div><div class="line">YS Capital Group</div></div>
+  <p class="disc">This is not a commitment to lend and does not create an obligation to fund. Loan terms, fees, leverage and eligibility may change after full underwriting. Business-purpose loans only.</p>
+  <div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>
+</body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) { alert('Please allow pop-ups to open the pre-approval letter.'); return; }
+  w.document.write(html); w.document.close();
+}
+
 function StatusBadge({ status }) {
   const cls = status === 'ELIGIBLE' ? 'ok' : status === 'MANUAL' ? 'warn' : 'err';
   const label = status === 'ELIGIBLE' ? 'Eligible' : status === 'MANUAL' ? 'Manual review' : status === 'INELIGIBLE' ? 'Ineligible' : 'Error';
   return <span className={`ts-badge ${cls}`}>{label}</span>;
 }
 
-function TermSheet({ q, app, onRegister, registering, isCurrent, mode = 'staff' }) {
+function TermSheet({ q, app, onRegister, registering, isCurrent, mode = 'staff', onExportXlsx, onImportClick }) {
   if (!q) return null;
   const s = q.sizing;
   const priced = q.status !== 'INELIGIBLE' && s && s.totalLoan > 0;
@@ -171,6 +425,9 @@ function TermSheet({ q, app, onRegister, registering, isCurrent, mode = 'staff' 
           {actionText}
         </button>
         {priced && <button className="btn ghost" onClick={() => printTermSheet(q, app)}>Print term sheet</button>}
+        {priced && <button className="btn ghost" onClick={() => printPreApproval(q, app)}>Pre-approval</button>}
+        <button className="btn ghost" onClick={onExportXlsx}>Export Excel</button>
+        {!borrower && <button className="btn ghost" onClick={onImportClick}>Import Excel</button>}
         {q.status === 'INELIGIBLE' && <span className="muted small" style={{ alignSelf: 'center' }}>{borrower ? 'Your loan team can review alternatives.' : 'Resolve the ineligible items or override the basis to register.'}</span>}
       </div>
     </div>
@@ -205,6 +462,65 @@ function ScenarioSummary({ ov, q }) {
   );
 }
 
+function StaffAdminControls({ ov, set }) {
+  const number = (key, label, opts = {}) => (
+    <label><span>{label}</span>
+      <input className="input" type="number" inputMode="decimal" min={opts.min ?? 0} max={opts.max}
+        step={opts.step || '0.01'} placeholder={opts.placeholder || ''}
+        value={ov[key] ?? ''} onChange={(e) => set(key, e.target.value)} />
+    </label>
+  );
+  const moneyInput = (key, label, placeholder) => (
+    <label><span>{label}</span>
+      <MoneyInput value={ov[key] ?? ''} placeholder={placeholder || '0'} onChange={(v) => set(key, v)} />
+    </label>
+  );
+  return (
+    <div className="ts-admin-panel portal">
+      <div className="ts-admin-head">Pricing controls <span className="ts-admin-badge">Staff</span></div>
+      <p className="muted small" style={{ margin: '0 0 10px' }}>
+        These match the marketing term-sheet admin knobs and flow into the live quote, registration, term sheet, pre-approval and Excel export.
+      </p>
+
+      <div className="ts-admin-group">Rate markup / YSP</div>
+      <div className="ts-inputs">
+        {number('markupStdPct', 'Standard (%)', { step: '0.05', placeholder: '0.5' })}
+        {number('markupGoldPct', 'Gold (%)', { step: '0.05', placeholder: '0.5' })}
+      </div>
+
+      <div className="ts-admin-group">Origination points</div>
+      <div className="ts-inputs">
+        {number('origStdPct', 'Standard (%)', { step: '0.25', placeholder: '1.25' })}
+        {number('origGoldPct', 'Gold (%)', { step: '0.25', placeholder: '1.25' })}
+      </div>
+
+      <div className="ts-admin-group">Closing-cost overrides</div>
+      <div className="ts-inputs">
+        {moneyInput('lenderFee', 'UW / processing / legal', '2,195')}
+        {moneyInput('creditFee', 'Credit report', '150')}
+        {moneyInput('appraisalFee', 'Appraisal - POC', '800')}
+        {moneyInput('titleFee', 'Title / escrow', 'auto-estimate')}
+      </div>
+
+      <div className="ts-admin-group">Manual scenario</div>
+      <label className="ts-admin-check">
+        <input type="checkbox" checked={!!ov.manualPricing} onChange={(e) => set('manualPricing', e.target.checked)} />
+        <span>Price as a manual scenario with an admin-set basis.</span>
+      </label>
+      {ov.manualPricing && (
+        <div className="ts-inputs" style={{ marginTop: 8 }}>
+          {number('ovrAcqLTVPct', 'Initial / as-is LTV (%)', { step: '1', max: 100, placeholder: 'auto' })}
+          {number('ovrARLTVPct', 'ARV LTV (%)', { step: '1', max: 100, placeholder: 'auto' })}
+          {number('ovrLTCPct', 'LTC (%)', { step: '1', max: 100, placeholder: 'auto' })}
+          {number('ovrRatePct', 'Note rate (%)', { step: '0.125', placeholder: 'auto' })}
+          {number('ovrIrMonths', 'Interest reserve months', { step: '1', placeholder: 'from file' })}
+        </div>
+      )}
+      {ov.manualPricing && <p className="muted small" style={{ margin: '8px 0 0' }}>Blank manual fields fall back to the program's computed value. Registered manual files are saved as manually reviewed terms.</p>}
+    </div>
+  );
+}
+
 export default function ProductRegistration({ appId, app, onRegistered, mode = 'staff' }) {
   const [data, setData] = useState(null);      // { current, history, quote, enginesReady }
   const [q, setQ] = useState(null);            // latest quoteAll { standard, gold, inputs, experience }
@@ -217,6 +533,7 @@ export default function ProductRegistration({ appId, app, onRegistered, mode = '
   const [open, setOpen] = useState(true);
   const userEdited = useRef(false);
   const timer = useRef(null);
+  const importInputRef = useRef(null);
   const isBorrower = mode === 'borrower';
   const loadPricing = () => isBorrower ? api.borrowerPricing(appId) : api.staffPricing(appId);
   const quotePricing = (overrides) => isBorrower ? api.borrowerPricingQuote(appId, overrides) : api.staffPricingQuote(appId, overrides);
@@ -261,6 +578,33 @@ export default function ProductRegistration({ appId, app, onRegistered, mode = '
   function set(k, v) { userEdited.current = true; setOv((o) => ({ ...o, [k]: v })); }
   function pickLadder(ltc) { set('targetLTC', ltc); }
 
+  async function exportXlsx() {
+    if (!ov) return;
+    setErr('');
+    try {
+      await exportPortalXlsx(ov, app, program, q);
+    } catch (e) {
+      setErr(e.message || 'Excel export needs an internet connection to load the spreadsheet engine.');
+    }
+  }
+
+  async function importXlsx(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file || !ov) return;
+    setErr('');
+    try {
+      const st = await stateFromImportFile(file);
+      const next = applyStateToOverrides(st, ov);
+      userEdited.current = true;
+      setOv(next);
+      if (st && st.portal && st.portal.program) setProgram(st.portal.program === 'gold' ? 'gold' : 'standard');
+    } catch (ex) {
+      setErr(ex.message || 'Could not import that YS Excel file.');
+    } finally {
+      e.target.value = '';
+    }
+  }
+
   async function register(quote) {
     setRegistering(true); setErr('');
     try {
@@ -294,6 +638,7 @@ export default function ProductRegistration({ appId, app, onRegistered, mode = '
           {busy && <p className="muted small">Pricing…</p>}
           {err && <div className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
           {data && !data.enginesReady && <div className="notice err">Pricing engines are unavailable on the server.</div>}
+          <input ref={importInputRef} type="file" accept=".xlsx,.xls,.json,.txt" style={{ display: 'none' }} onChange={importXlsx} />
 
           {cur && (
             <div className="ts-current">
@@ -350,6 +695,7 @@ export default function ProductRegistration({ appId, app, onRegistered, mode = '
                   <input className="input" type="number" min="0" value={ov.expGround || 0} onChange={(e) => set('expGround', e.target.value)} />
                 </label>
               </div>
+              <StaffAdminControls ov={ov} set={set} />
               <p className="muted small" style={{ margin: '2px 0 12px' }}>
                 Seeded from the file{q && q.experience ? ` (track record: ${q.experience.flips} flips · ${q.experience.holds} holds · ${q.experience.ground} ground-up)` : ''}. Edits are for what-if only until you register.{repricing ? ' · repricing…' : ''}
               </p>
@@ -387,7 +733,8 @@ export default function ProductRegistration({ appId, app, onRegistered, mode = '
               )}
 
               <TermSheet q={active} app={app} onRegister={register} registering={registering}
-                isCurrent={!!cur && cur.program === program} mode={mode} />
+                isCurrent={!!cur && cur.program === program} mode={mode}
+                onExportXlsx={exportXlsx} onImportClick={() => importInputRef.current && importInputRef.current.click()} />
             </>
           )}
         </div>
