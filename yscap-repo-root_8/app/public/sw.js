@@ -5,7 +5,7 @@
  * always fetched live over the network. */
 // v4: purges caches poisoned by the bad-merge window where a missing CSS file
 // was answered with the marketing homepage HTML (and cached as a "stylesheet").
-const CACHE = 'ys-portal-shell-v4';
+const CACHE = 'ys-portal-shell-v5';
 const SHELL = ['/portal/', '/portal/index.html', '/portal/manifest.webmanifest', '/portal/icon.svg'];
 
 self.addEventListener('install', (e) => {
