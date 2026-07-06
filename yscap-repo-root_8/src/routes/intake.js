@@ -7,7 +7,7 @@
  * snapshot in the payload.
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');

@@ -11,7 +11,7 @@
  * `code` is the email local-part (lowercased) — the ?lo= branding key.
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 
 const DEPT_LABEL = { sales: 'Sales & Loan Coordinators', operations: 'Operations & Back Office' };

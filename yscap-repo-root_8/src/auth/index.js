@@ -17,7 +17,7 @@
  *   GET  /auth/me          (auth)
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const C = require('../lib/crypto');
 const mail = require('../lib/email/catalog');
@@ -52,13 +52,31 @@ async function authenticate(req, res, next) {
   // A pending-MFA challenge is NOT an access token — it only authorizes the
   // /mfa/verify step. Reject it here or the second factor is bypassable.
   if (claims.mfa) return res.status(401).json({ error: 'mfa not completed' });
-  // token_version check (revocation)
+  // token_version check (revocation). This runs on EVERY authenticated request,
+  // so a DB blip here must answer 503 fast — never reject and hang the request.
   const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
   const idCol = claims.kind === 'staff' ? 'id' : 'borrower_id';
-  const r = await db.query(`SELECT token_version FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
-  if (!r.rows[0] || r.rows[0].token_version !== (claims.tv || 0))
+  let r;
+  try {
+    r = await db.query(`SELECT token_version FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
+  } catch (e) {
+    console.error('[auth] token check failed (db):', db.describeError(e));
+    return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
+  }
+  const tv = r.rows[0] ? r.rows[0].token_version : null;
+  if (tv === null || tv !== (claims.tv || 0))
     return res.status(401).json({ error: 'session expired' });
   req.actor = { id: claims.sub, kind: claims.kind, role: claims.role };
+  // Sliding session: past the token's half-life, hand back a fresh token so an
+  // active user never gets logged out mid-work. The SPA stores it from this
+  // header on every response; revocation still wins because tv is re-checked.
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (claims.exp && claims.iat && (claims.exp - nowSec) < (claims.exp - claims.iat) / 2) {
+    const fresh = claims.kind === 'staff'
+      ? staffToken(claims.sub, claims.role, tv)
+      : borrowerToken(claims.sub, tv);
+    res.set('X-Refresh-Token', fresh);
+  }
   // Presence heartbeat (best-effort, non-blocking, throttled to ~1 write/min per
   // user) so chat can show who is currently online.
   const ptbl = claims.kind === 'staff' ? 'staff_users' : 'borrowers';
@@ -123,7 +141,10 @@ router.post('/borrower/register', async (req, res) => {
   finally { client.release(); }
 });
 
-router.post('/borrower/login', async (req, res) => {
+// On a DB failure, next(e) hands off to the JSON error middleware, which
+// answers a friendly 503 instead of leaking "connect ECONNREFUSED ..." to the
+// sign-in form.
+router.post('/borrower/login', async (req, res, next) => {
   const { email, password } = req.body || {};
   try {
     const r = await db.query(
@@ -143,7 +164,7 @@ router.post('/borrower/login', async (req, res) => {
     if (row.mfa_enabled)
       return res.json({ mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'borrower', mfa: true }, 300) });
     res.json({ token: borrowerToken(row.id, row.token_version) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { next(e); }
 });
 
 router.post('/borrower/mfa/verify', async (req, res) => {
@@ -292,7 +313,7 @@ router.post('/mfa/enable', requireAuth, async (req, res) => {
 });
 
 // ---------------- staff login ----------------
-router.post('/staff/login', async (req, res) => {
+router.post('/staff/login', async (req, res, next) => {
   const { email, password } = req.body || {};
   try {
     const r = await db.query(
@@ -305,7 +326,7 @@ router.post('/staff/login', async (req, res) => {
     if (row.mfa_enabled)
       return res.json({ mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'staff', role: row.role, mfa: true }, 300) });
     res.json({ token: staffToken(row.id, row.role, row.token_version) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { next(e); }   // JSON error middleware answers a friendly 503/500
 });
 router.post('/staff/mfa/verify', async (req, res) => {
   const { challenge, code } = req.body || {};

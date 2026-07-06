@@ -1,6 +1,6 @@
 /** Admin API — user management + Lead-Capture overview. */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
 const C = require('../lib/crypto');

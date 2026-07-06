@@ -7,7 +7,7 @@
  *   POST /api/leads   { tool, name, email, phone, officerCode, subject, message, payload }
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');

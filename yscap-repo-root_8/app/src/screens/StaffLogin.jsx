@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, useAuthNotice } from '../lib/auth.jsx';
 import { BrandLockup } from '../components/Layout.jsx';
 
 export default function StaffLogin() {
   const { signIn } = useAuth();
+  const notice = useAuthNotice();
   const nav = useNavigate();
   const [mode, setMode] = useState('login');   // login | mfa
   const [email, setEmail] = useState('');
@@ -46,6 +47,7 @@ export default function StaffLogin() {
             : 'Loan officers, processors, underwriters and administrators.'}
         </p>
 
+        {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
         {err && <div className="notice err" style={{ marginTop: 16 }}>{err}</div>}
 
         <div style={{ marginTop: 18 }}>
