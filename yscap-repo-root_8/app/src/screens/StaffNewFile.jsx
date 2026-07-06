@@ -87,7 +87,7 @@ export default function StaffNewFile() {
         inviteBorrower: !!f.inviteBorrower,
       };
       const r = await api.staffCreateFile(body);
-      nav(`/staff/app/${r.applicationId}`);
+      nav(`/internal/app/${r.applicationId}`);
     } catch (e2) {
       setErr(e2.message || 'Could not create the file.');
       setBusy(false);
@@ -97,7 +97,7 @@ export default function StaffNewFile() {
   return (
     <>
       <div className="row" style={{ marginBottom: 16 }}>
-        <Link to="/staff" className="btn link">← Pipeline</Link>
+        <Link to="/internal" className="btn link">← Pipeline</Link>
         <div className="spacer" />
       </div>
       <h1 style={{ marginBottom: 4 }}>New loan file</h1>
@@ -217,7 +217,7 @@ export default function StaffNewFile() {
 
         <div className="row" style={{ gap: 10 }}>
           <button className="btn primary" disabled={busy}>{busy ? 'Creating…' : 'Create file'}</button>
-          <Link to="/staff" className="btn ghost">Cancel</Link>
+          <Link to="/internal" className="btn ghost">Cancel</Link>
         </div>
       </form>
     </>

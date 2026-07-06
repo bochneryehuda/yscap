@@ -6,11 +6,13 @@ import InstallButton from './InstallButton.jsx';
 
 const BRAND = import.meta.env.BASE_URL + 'brand/';
 
-export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard' }) {
+export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'YS Capital Group' }) {
   return (
-    <Link to={to} className="brand" aria-label="YS Capital Group" style={{ textDecoration: 'none' }}>
+    <Link to={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>
       <img className="brand-mark" src={BRAND + 'mark-dark.png'} alt="" />
-      <span className="brand-word">YS&nbsp;CAPITAL&nbsp;<em className="brand-group">GROUP</em></span>
+      {/* "GROUP" is not part of the name — it sits apart, small, in the sans
+          face, exactly like the official lockup. */}
+      <span className="brand-word">YS&nbsp;CAPITAL<span className="brand-group">GROUP</span></span>
       {consoleLabel && <span className="sub">{consoleLabel}</span>}
     </Link>
   );

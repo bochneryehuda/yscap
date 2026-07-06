@@ -56,7 +56,7 @@ export default function StaffChat() {
         <div className="row" style={{ gap: 6 }}>
           <button className={`btn ${filter === 'all' ? 'primary' : 'ghost'}`} onClick={() => setFilter('all')}>All</button>
           <button className={`btn ${filter === 'unread' ? 'primary' : 'ghost'}`} onClick={() => setFilter('unread')}>Unread</button>
-          <button className="btn ghost" onClick={() => nav('/staff/new')} title="Open a new loan file and start a conversation">+ New file</button>
+          <button className="btn ghost" onClick={() => nav('/internal/new')} title="Open a new loan file and start a conversation">+ New file</button>
         </div>
       </div>
       <p className="muted small" style={{ marginBottom: 12 }}>
@@ -71,7 +71,7 @@ export default function StaffChat() {
 
       {rows.length === 0
         ? <div className="panel muted">
-            No loan files yet. <Link to="/staff/new">Open a new file</Link> — you can start chatting on it right away,
+            No loan files yet. <Link to="/internal/new">Open a new file</Link> — you can start chatting on it right away,
             and invite the borrower to join whenever you're ready.
           </div>
         : shown.length === 0
@@ -80,7 +80,7 @@ export default function StaffChat() {
               {shown.map(r => {
                 const unread = r.unread_borrower + r.unread_internal;
                 return (
-                  <Link key={r.id} to={`/staff/app/${r.id}`} className={`chat-row ${unread ? 'unread' : ''}`}>
+                  <Link key={r.id} to={`/internal/app/${r.id}`} className={`chat-row ${unread ? 'unread' : ''}`}>
                     <div className="chat-ava" style={{ position: 'relative' }}>{(r.first_name || '?')[0]}{(r.last_name || '')[0]}
                       {r.borrower_online && <span className="presence-dot" title="Borrower is online now" />}
                     </div>

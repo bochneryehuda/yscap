@@ -3,7 +3,7 @@
  * fast and survives a flaky connection. It NEVER caches API/auth responses,
  * documents, or anything that could hold borrower PII (SSNs, files). Those are
  * always fetched live over the network. */
-const CACHE = 'ys-portal-shell-v1';
+const CACHE = 'ys-portal-shell-v2';
 const SHELL = ['/portal/', '/portal/index.html', '/portal/manifest.webmanifest', '/portal/icon.svg'];
 
 self.addEventListener('install', (e) => {

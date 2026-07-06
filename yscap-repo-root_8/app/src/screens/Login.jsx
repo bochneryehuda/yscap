@@ -104,7 +104,7 @@ export default function Login() {
         )}
         {mode === 'login' && (
           <div className="row" style={{ marginTop: 12, justifyContent: 'center' }}>
-            <button className="btn link small muted" onClick={() => nav('/staff/login')}>Staff sign in →</button>
+            <button className="btn link small muted" onClick={() => nav('/internal/login')}>Internal sign in →</button>
           </div>
         )}
       </div>

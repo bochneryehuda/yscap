@@ -210,9 +210,10 @@ textarea{min-height:90px;resize:vertical}
 .progress{flex:1;height:7px;border-radius:999px;background:var(--ink-3,#2B3945);overflow:hidden}
 .progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--teal),var(--gold));transition:width .3s}
 
-/* brand: GROUP suffix styled like the lockup */
-.brand-word .brand-group{font-style:normal;font-family:Hanken Grotesk,system-ui,sans-serif;font-size:.6em;
-  letter-spacing:.32em;color:var(--teal,#7FA9B0);font-weight:600;vertical-align:middle}
+/* brand: "GROUP" is NOT part of the name — a small, letterspaced sans suffix
+   sitting apart from the big serif "YS CAPITAL", exactly like the lockup. */
+.brand-word .brand-group{font-style:normal;font-family:'Hanken Grotesk',system-ui,sans-serif;font-size:.42em;
+  letter-spacing:.34em;color:var(--teal,#7FA9B0);font-weight:600;vertical-align:baseline;margin-left:.6em}
 /* Bigger, more confident wordmark; console label sits under it, quiet. */
 .brand{align-items:center}
 .brand-word{font-size:23px;letter-spacing:2.5px}

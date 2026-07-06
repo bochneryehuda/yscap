@@ -51,7 +51,7 @@ export default function StaffTeam() {
       else note += ' They can log in now.';
       flash(note);
       setForm(blankForm()); await load();
-    } catch (e2) { setErr(e2.message || 'Could not add staff member'); }
+    } catch (e2) { setErr(e2.message || 'Could not add team member'); }
     finally { setBusy(false); }
   }
 
@@ -88,7 +88,7 @@ export default function StaffTeam() {
           onClick={async () => { setErr(''); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { setErr(e.message); } }}>
           Send welcome to all
         </button>
-        <span className="muted small" style={{ marginLeft: 10 }}>{rows ? `${rows.length} staff` : ''}</span>
+        <span className="muted small" style={{ marginLeft: 10 }}>{rows ? `${rows.length} team members` : ''}</span>
       </div>
 
       {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}

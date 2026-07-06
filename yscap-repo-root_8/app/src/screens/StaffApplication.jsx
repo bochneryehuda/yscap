@@ -97,7 +97,7 @@ function Item({ it, team, onPatch }) {
           </div>
           {it.hint && <div className="muted small" style={{ marginTop: 4 }}>{it.hint}</div>}
           {it.assignee_name && <div className="muted small">Assigned to {it.assignee_name}</div>}
-          {signed && <div className="muted small">Signed off by {it.signed_off_name || 'staff'} · {new Date(it.signed_off_at).toLocaleDateString()}</div>}
+          {signed && <div className="muted small">Signed off by {it.signed_off_name || 'the internal team'} · {new Date(it.signed_off_at).toLocaleDateString()}</div>}
           {it.tool_key && it.tool_submitted && (
             <button className="btn link small" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'View'} submission</button>
           )}
@@ -175,7 +175,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? 'Contact information form'
                     : it.item_kind}
                   {` · ${it.status}`}
-                  {signed && ` · signed off by ${it.signed_off_name || 'staff'}`}
+                  {signed && ` · signed off by ${it.signed_off_name || 'the internal team'}`}
                 </div>
               </div>
               {it.tool_key === 'rehab_budget' && (
@@ -207,8 +207,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       })}
       {sowOpen && (
         <ToolModal
-          title="Rehab Budget — Scope of Work (staff)"
-          url={`/tools/rehab-budget.html?app=${appId}&item=${sowOpen}&staff=1`}
+          title="Rehab Budget — Scope of Work (internal)"
+          url={`/tools/rehab-budget.html?app=${appId}&item=${sowOpen}&internal=1`}
           onClose={() => setSowOpen(null)} />
       )}
     </div>
@@ -307,9 +307,9 @@ export default function StaffApplication() {
     } catch (e) { setErr(e.message || 'Could not review the document'); }
   }
   async function deleteApp() {
-    const reason = window.prompt('Delete this file? It will be removed from all borrower and staff views (recoverable by an admin). Optional reason:');
+    const reason = window.prompt('Delete this file? It will be removed from all borrower and internal views (recoverable by an admin). Optional reason:');
     if (reason === null) return;
-    try { await api.staffDeleteApp(id, reason || undefined); nav('/staff'); }
+    try { await api.staffDeleteApp(id, reason || undefined); nav('/internal'); }
     catch (e) { setErr(e.message || 'Could not delete'); }
   }
   async function changeStatus(status) {
@@ -405,7 +405,7 @@ export default function StaffApplication() {
   return (
     <>
       <div className="row" style={{ marginBottom: 12 }}>
-        <Link to="/staff" className="btn link">← Pipeline</Link>
+        <Link to="/internal" className="btn link">← Pipeline</Link>
         <div className="spacer" />
         {isAdmin && <button className="btn link small" style={{ color: 'var(--danger,#e06666)' }} onClick={deleteApp} title="Admin: delete this file">Delete file</button>}
         <span className={`pill ${app.status}`}>{app.status}</span>
@@ -652,7 +652,7 @@ export default function StaffApplication() {
           </div>
           <iframe
             title="Borrower track record"
-            src={`/tools/track-record.html?staff=1&borrower=${app.borrower_id}&embed=1`}
+            src={`/tools/track-record.html?internal=1&borrower=${app.borrower_id}&embed=1`}
             style={{ width: '100%', height: 640, border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 10, background: 'transparent' }}
           />
         </div>
@@ -767,7 +767,7 @@ function ChatPanel({ appId, onTaskCreated }) {
         edit={(mid, body) => api.staffEditMessage(mid, body)}
         del={(mid) => api.staffDeleteMessage(mid)}
         fetchMentionables={() => api.staffMentionables(appId)}
-        onOpenApplication={(id) => { window.location.hash = '#/staff/app/' + id; }}
+        onOpenApplication={(id) => { window.location.hash = '#/internal/app/' + id; }}
         send={async (body, opts) => {
           const r = await api.staffPostMessage(appId, body, {
             channel, makeTask: internal && opts?.makeTask, attachment: opts?.attachment });

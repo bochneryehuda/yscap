@@ -28,7 +28,7 @@ async function notifyMentions({ body, applicationId, senderId = null, senderName
         title: `${senderName} mentioned you`,
         body: text.slice(0, 140),
         applicationId: applicationId || null,
-        link: link || (applicationId ? `/staff/app/${applicationId}` : '/staff'),
+        link: link || (applicationId ? `/internal/app/${applicationId}` : '/internal'),
         ctaLabel: 'Open the conversation',
       });
       notified.push(sid);
