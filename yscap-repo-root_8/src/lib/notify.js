@@ -65,12 +65,13 @@ const CATEGORY_OF = {
   message: 'messages',
   status_change: 'status_updates',
   doc_rejected: 'documents', doc_accepted: 'documents', doc_uploaded: 'documents',
+  llc_verified: 'documents', llc_unverified: 'documents',
   condition_added: 'conditions',
   draw: 'draws', draw_request: 'draws',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).
-const ALWAYS_IN_APP = new Set(['doc_rejected', 'condition_added', 'security', 'account']);
+const ALWAYS_IN_APP = new Set(['doc_rejected', 'condition_added', 'security', 'account', 'llc_unverified']);
 const NOTIFY_CATEGORIES = ['messages', 'status_updates', 'documents', 'conditions', 'draws', 'other'];
 const categoryOf = (type) => CATEGORY_OF[type] || 'other';
 

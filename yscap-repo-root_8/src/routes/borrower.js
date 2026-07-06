@@ -18,6 +18,7 @@ const { serveDocument } = require('../lib/serve-document');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower } = require('../lib/experience');
+const llcLib = require('../lib/llc');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -241,7 +242,7 @@ router.post('/applications', async (req, res) => {
 
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
-    `SELECT a.*,
+    `SELECT a.*, l.llc_name, l.is_verified AS llc_verified,
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
@@ -250,6 +251,7 @@ router.get('/applications/:id', async (req, res) => {
                     WHERE s.id IN (a.loan_officer_id, a.processor_id)
                       AND s.last_seen_at > now() - interval '2 minutes') AS team_online
        FROM applications a
+       LEFT JOIN llcs l ON l.id = a.llc_id
        LEFT JOIN LATERAL (
          SELECT program, product_label, status, note_rate, total_loan, quote, created_at
            FROM product_registrations
@@ -574,36 +576,122 @@ router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
 });
 
 // ---------------- LLCs + documents ----------------
+// The LLC on the profile is the single source of truth: entity details,
+// ownership structure (members), and the three document slots. Every list /
+// detail response is the same "bundle" shape from src/lib/llc.js.
 router.get('/llcs', async (req, res) => {
-  const r = await db.query(
-    `SELECT l.*, (SELECT count(*) FROM documents d WHERE d.llc_id=l.id) AS doc_count
-     FROM llcs l WHERE borrower_id=$1 ORDER BY created_at`, [me(req)]);
-  res.json(r.rows);
+  const r = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 ORDER BY created_at`, [me(req)]);
+  const out = [];
+  for (const row of r.rows) out.push(await llcLib.getLlcBundle(row.id));
+  res.json(out.filter(Boolean));
 });
+router.get('/llcs/:id', async (req, res) => {
+  // Own LLCs are fully accessible. A CO-BORROWER on a file vesting in this
+  // LLC gets READ access (read_only:true) so the file's LLC condition renders
+  // for them too — managing the entity stays with the borrower who owns it.
+  const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const mine = own.rows[0].borrower_id === me(req);
+  if (!mine) {
+    const linked = await db.query(
+      `SELECT 1 FROM applications WHERE llc_id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL LIMIT 1`,
+      [req.params.id, me(req)]);
+    if (!linked.rows[0]) return res.status(404).json({ error: 'not found' });
+  }
+  const bundle = await llcLib.getLlcBundle(req.params.id);
+  res.json({ ...bundle, read_only: !mine });
+});
+
+// Validate a members payload: [{fullName, ownershipPct, email?, phone?}].
+// Returns {members, error}. Completion to exactly 100% is a VERIFICATION
+// requirement, not a save requirement — partial saves are allowed, but the
+// total (borrower + members) may never exceed 100%.
+function parseMembers(raw, borrowerPct) {
+  if (raw === undefined) return { members: undefined };
+  if (!Array.isArray(raw)) return { error: 'members must be an array' };
+  if (raw.length > 20) return { error: 'a maximum of 20 members is supported' };
+  const members = [];
+  for (const m of raw) {
+    const fullName = String((m && m.fullName) || '').trim().slice(0, 160);
+    const p = Number(m && m.ownershipPct);
+    if (!fullName) return { error: 'each member needs a full name' };
+    if (!isFinite(p) || p <= 0 || p >= 100) return { error: 'each member needs an ownership % between 0 and 100' };
+    members.push({
+      fullName, ownershipPct: Math.round(p * 100) / 100,
+      email: m.email ? String(m.email).trim().slice(0, 160) : null,
+      phone: m.phone ? String(m.phone).trim().slice(0, 40) : null,
+    });
+  }
+  const own = borrowerPct == null ? 0 : Number(borrowerPct) || 0;
+  const total = own + members.reduce((s, m) => s + m.ownershipPct, 0);
+  if (total > 100.01) return { error: `ownership exceeds 100% (${total.toFixed(2)}%)` };
+  return { members };
+}
+
+async function replaceMembers(llcId, members) {
+  await db.query(`DELETE FROM llc_members WHERE llc_id=$1`, [llcId]);
+  for (const m of members) {
+    await db.query(
+      `INSERT INTO llc_members (llc_id, full_name, ownership_pct, email, phone) VALUES ($1,$2,$3,$4,$5)`,
+      [llcId, m.fullName, m.ownershipPct, m.email, m.phone]);
+  }
+}
+
 router.post('/llcs', async (req, res) => {
   const b = req.body || {};
   if (!b.llcName) return res.status(400).json({ error: 'llcName required' });
+  if (b.ownershipPct !== undefined && b.ownershipPct !== '' && b.ownershipPct != null) {
+    const p = Number(b.ownershipPct);
+    if (!isFinite(p) || p < 0 || p > 100) return res.status(400).json({ error: 'ownership % must be between 0 and 100' });
+  }
+  const parsed = parseMembers(b.members, b.ownershipPct);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
   const r = await db.query(
     `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
     [me(req), b.llcName, b.ein || null, b.formationState || null, b.formationDate || null, b.ownershipPct || null]);
+  if (parsed.members && parsed.members.length) await replaceMembers(r.rows[0].id, parsed.members);
   // Requesting an LLC pulls its document requirements: EIN letter, formation docs, operating agreement.
   try { await generateLlcChecklist(r.rows[0].id); } catch (_) {}
   res.status(201).json({ ok: true, llcId: r.rows[0].id });
 });
-// Fill in / correct an own entity's details (EIN, formation, ownership) — e.g.
-// after creating it by name in the application picker. The name and verified
-// status are not editable here (renaming a verified entity would mislead).
+// Fill in / correct an own entity's details (name / EIN / formation /
+// ownership). A VERIFIED entity is locked — staff verified it as-is, so
+// changing anything requires the loan team to revoke verification first.
 router.patch('/llcs/:id', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT is_verified FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before making changes' });
   const b = req.body || {};
   const sets = [], vals = []; let i = 1;
-  const map = { ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
+  if (b.llcName !== undefined && !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName cannot be empty' });
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  // Raising the borrower's own stake must not push the total past 100%.
+  if (b.ownershipPct !== undefined && b.ownershipPct !== '' && b.ownershipPct != null) {
+    const mem = await db.query(`SELECT COALESCE(sum(ownership_pct),0) AS s FROM llc_members WHERE llc_id=$1`, [req.params.id]);
+    const total = Number(b.ownershipPct) + Number(mem.rows[0].s);
+    if (!isFinite(Number(b.ownershipPct)) || Number(b.ownershipPct) < 0 || Number(b.ownershipPct) > 100)
+      return res.status(400).json({ error: 'ownership % must be between 0 and 100' });
+    if (total > 100.01)
+      return res.status(400).json({ error: `ownership exceeds 100% (${total.toFixed(2)}% with the other members) — adjust the members first` });
+  }
   sets.push('updated_at=now()'); vals.push(req.params.id); vals.push(me(req));
   await db.query(`UPDATE llcs SET ${sets.join(',')} WHERE id=$${i++} AND borrower_id=$${i}`, vals);
+  res.json({ ok: true });
+});
+// Replace the LLC's OTHER members (the borrower's own stake is ownership_pct
+// on the LLC row). Shown whenever the borrower owns <100% — the section is
+// complete when borrower % + member %s = 100.
+router.put('/llcs/:id/members', async (req, res) => {
+  const own = await db.query(`SELECT is_verified, ownership_pct FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before making changes' });
+  const parsed = parseMembers((req.body || {}).members || [], own.rows[0].ownership_pct);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  await replaceMembers(req.params.id, parsed.members || []);
+  await audit(req, 'update_llc_members', 'llc', req.params.id, { count: (parsed.members || []).length });
   res.json({ ok: true });
 });
 router.get('/llcs/:id/documents', async (req, res) => {
@@ -612,6 +700,31 @@ router.get('/llcs/:id/documents', async (req, res) => {
   const r = await db.query(`SELECT id,filename,content_type,size_bytes,created_at FROM documents
      WHERE llc_id=$1 AND visibility='borrower' AND source_type <> 'chat_attachment' ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
+});
+// Link (or switch) the vesting LLC on an open file. The file's LLC condition
+// immediately reflects the linked entity's real state — a verified LLC
+// auto-satisfies it; an unverified one turns it into "set up your LLC".
+router.post('/applications/:id/link-llc', async (req, res) => {
+  const b = req.body || {};
+  if (!b.llcId) return res.status(400).json({ error: 'llcId required' });
+  const app = await db.query(
+    `SELECT id, llc_id, status FROM applications
+      WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+    [req.params.id, me(req)]);
+  if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (['funded', 'declined', 'withdrawn'].includes(app.rows[0].status))
+    return res.status(409).json({ error: 'this file is closed — the vesting entity can no longer be changed' });
+  const own = await db.query(`SELECT id FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'llc not found' });
+  const previous = app.rows[0].llc_id;
+  await db.query(`UPDATE applications SET llc_id=$2, updated_at=now() WHERE id=$1`, [req.params.id, b.llcId]);
+  try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ }
+  // reopen + appId: the previous entity's state no longer drives this file's
+  // LLC condition — recompute it from the NEWLY linked entity, even downgrading
+  // an auto-satisfied item left behind by the old link.
+  try { await llcLib.syncLlcConditions(b.llcId, { appId: req.params.id, reopen: true }); } catch (_) { /* best-effort */ }
+  await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
+  res.json({ ok: true });
 });
 
 // ---------------- APPRAISAL PAYMENT CARD (a borrower condition) ----------------
@@ -932,19 +1045,30 @@ router.post('/documents', async (req, res) => {
     if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
   }
   if (b.llcId) {
-    const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
+    const o = await db.query(`SELECT is_verified, llc_name FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
     if (!o.rows[0]) return res.status(404).json({ error: 'llc not found' });
+    // A verified LLC's document set is locked — staff verified it as-is.
+    if (o.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before replacing documents' });
   }
   // The checklist item must be the borrower's own too — otherwise the document
   // row can be pointed at another borrower's checklist-item id.
   if (b.checklistItemId) {
     const o = await db.query(
-      `SELECT 1 FROM checklist_items ci
+      `SELECT ci.llc_id FROM checklist_items ci
         WHERE ci.id=$1 AND (ci.borrower_id=$2
            OR ci.application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)
            OR ci.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`,
       [b.checklistItemId, me(req)]);
     if (!o.rows[0]) return res.status(404).json({ error: 'checklist item not found' });
+    // An llc-scoped item's uploads ALWAYS belong to that LLC, even when the
+    // caller omits llcId — otherwise the verified-lock (and the document's
+    // llc_id linkage) could be sidestepped by posting the bare item id.
+    if (o.rows[0].llc_id) {
+      if (b.llcId && b.llcId !== o.rows[0].llc_id) return res.status(400).json({ error: 'llcId does not match the checklist item' });
+      b.llcId = o.rows[0].llc_id;
+      const v = await db.query(`SELECT is_verified FROM llcs WHERE id=$1`, [b.llcId]);
+      if (v.rows[0] && v.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before replacing documents' });
+    }
   }
   const buf = Buffer.from(b.dataBase64, 'base64');
   if (!buf.length) return res.status(400).json({ error: 'empty file' });
@@ -991,8 +1115,47 @@ router.post('/documents', async (req, res) => {
       [b.checklistItemId, me(req), r.rows[0].id, slot, b.replaceDocumentId || null]);
     await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
   }
+  // An LLC document changed — recompute the LLC condition on every open file
+  // vesting in this entity (all three in => the condition moves to review).
+  if (b.llcId) { try { await llcLib.syncLlcConditions(b.llcId); } catch (_) { /* best-effort */ } }
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
+
+  // An LLC document uploaded from the profile (no file context): tell the loan
+  // teams of every open file vesting in this LLC — or the borrower's primary
+  // officer when no file is linked yet (best-effort, after the response).
+  if (b.llcId && !b.applicationId) {
+    try {
+      const info = await db.query(
+        `SELECT l.llc_name, b.first_name, b.last_name, b.primary_officer_id
+           FROM llcs l JOIN borrowers b ON b.id=l.borrower_id WHERE l.id=$1`, [b.llcId]);
+      const row = info.rows[0];
+      if (row) {
+        const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
+        const apps = await db.query(
+          `SELECT id, loan_officer_id, processor_id FROM applications
+            WHERE llc_id=$1 AND deleted_at IS NULL
+              AND status NOT IN ('funded','declined','withdrawn')`, [b.llcId]);
+        const targets = new Set();
+        for (const a of apps.rows) { if (a.loan_officer_id) targets.add(a.loan_officer_id); if (a.processor_id) targets.add(a.processor_id); }
+        if (!targets.size && row.primary_officer_id) targets.add(row.primary_officer_id);
+        let slotLabel = '';
+        if (b.checklistItemId) {
+          const it = await db.query(`SELECT label FROM checklist_items WHERE id=$1`, [b.checklistItemId]);
+          if (it.rows[0]) slotLabel = ` — ${it.rows[0].label}`;
+        }
+        for (const sid of targets) {
+          await notify.notifyStaff(sid, {
+            type: 'doc_uploaded', title: 'New LLC document uploaded',
+            body: `${who} uploaded "${b.filename}" to LLC "${row.llc_name}"${slotLabel}.`,
+            applicationId: apps.rows[0] ? apps.rows[0].id : null,
+            link: apps.rows[0] ? `/internal/app/${apps.rows[0].id}` : '/internal',
+            ctaLabel: 'Review the document',
+          });
+        }
+      }
+    } catch (_) { /* never fail the upload on a notify hiccup */ }
+  }
 
   // Notify the file's loan officer + processor that a document arrived
   // (best-effort, after the response — never blocks the upload).
@@ -1045,13 +1208,16 @@ router.get('/documents', async (req, res) => {
 
 // Download a document the borrower may see: their own uploads plus staff files
 // shared with them on the borrower channel, on an application they own or
-// co-borrow. visibility='borrower' is mandatory — a borrower must never be able
+// co-borrow, plus the vesting LLC's documents on a file they co-borrow.
+// visibility='borrower' is mandatory — a borrower must never be able
 // to fetch a staff-only / internal document even with a guessed id.
 router.get('/documents/:id/download', async (req, res) => {
   const r = await db.query(
     `SELECT id,filename,content_type,storage_ref FROM documents
       WHERE id=$1 AND visibility='borrower' AND (borrower_id=$2 OR application_id IN
-        (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2))`,
+        (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)
+        OR (llc_id IS NOT NULL AND llc_id IN
+          (SELECT llc_id FROM applications WHERE (borrower_id=$2 OR co_borrower_id=$2) AND llc_id IS NOT NULL)))`,
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'download_document', 'document', r.rows[0].id);
@@ -1600,6 +1766,13 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
         `UPDATE checklist_items SET status='received', updated_at=now()
           WHERE application_id=$1 AND template_id=(SELECT id FROM checklist_templates WHERE code='rtl_p1_id')`,
         [appId]);
+  } catch (_) { /* best-effort */ }
+  // The vesting LLC drives the file's LLC condition from day one: a verified
+  // entity auto-satisfies it (signed off), an in-progress one starts it in the
+  // matching state (in review / needs attention / outstanding).
+  try {
+    const av = await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [appId]);
+    if (av.rows[0] && av.rows[0].llc_id) await llcLib.syncLlcConditions(av.rows[0].llc_id, { appId });
   } catch (_) { /* best-effort */ }
   try { await syncExperienceChecklistForApplication(appId); } catch (_) { /* best-effort */ }
 }

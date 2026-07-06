@@ -17,6 +17,7 @@ const { requireAuth, requireRole } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication } = require('../lib/experience');
+const llcLib = require('../lib/llc');
 
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
 // admins + super-admins + underwriters (risk) see every file;
@@ -348,7 +349,8 @@ router.post('/applications/:id/invite-borrower', async (req, res) => {
 
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
-    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico, l.llc_name AS entity_name,
+    `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico,
+            l.llc_name AS entity_name, l.is_verified AS entity_verified,
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
@@ -719,7 +721,11 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
 router.get('/applications/:id/export/tpr/preview', async (req, res) => {
   try {
     const included = (await db.query(
-      `SELECT count(*)::int c FROM documents WHERE application_id=$1 AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'`, [req.params.id])).rows[0].c;
+      `SELECT count(*)::int c FROM documents
+        WHERE (application_id=$1
+               OR (application_id IS NULL AND llc_id IS NOT NULL
+                   AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
+          AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'`, [req.params.id])).rows[0].c;
     const missing = (await db.query(
       `SELECT COALESCE(label,'(document)') AS label FROM checklist_items WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied' ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
     res.json({ includedCount: included, missing });
@@ -913,14 +919,9 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
-// A borrower's entities, for linking a track-record deal to an LLC.
-router.get('/borrowers/:id/llcs', async (req, res) => {
-  try {
-    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
-    const r = await db.query(`SELECT id, llc_name, is_verified FROM llcs WHERE borrower_id=$1 ORDER BY created_at`, [req.params.id]);
-    res.json(r.rows);
-  } catch (e) { res.status(500).json({ error: 'server error' }); }
-});
+// (A borrower's entities live at GET /borrowers/:id/llcs below — the full
+// review bundle; its rows carry id/llc_name/is_verified for the track-record
+// tool's linker plus members/slots/completeness for the LLC review panel.)
 router.get('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -1046,14 +1047,60 @@ router.get('/borrowers/:id/ssn', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
-// ---------------- verify LLC / track record ----------------
+// ---------------- LLC review & verification ----------------
+// Every LLC of a borrower, with ownership structure and the three document
+// slots — the staff review surface (per-doc accept/reject + whole-LLC verify).
+router.get('/borrowers/:id/llcs', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+  const r = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 ORDER BY created_at`, [req.params.id]);
+  const out = [];
+  for (const row of r.rows) {
+    const bundle = await llcLib.getLlcBundle(row.id);
+    if (bundle) out.push({ ...bundle, missing: llcLib.missingForVerification(bundle, bundle.members, bundle.slots) });
+  }
+  res.json(out);
+});
+
+// Verify — or revoke verification of — an LLC. Verification is a real gate:
+// entity details + ownership totalling 100% + all three documents accepted.
+// Verifying auto-satisfies (and signs off) the LLC condition on every open
+// file vesting in this entity; revoking reopens those conditions.
 router.post('/llcs/:id/verify', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
+  const own = await db.query(`SELECT borrower_id, llc_name, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  await db.query(`UPDATE llcs SET is_verified=true, verified_at=now(), verified_by=$2 WHERE id=$1`, [req.params.id, req.actor.id]);
-  await audit(req, 'verify_llc', 'llc', req.params.id);
-  res.json({ ok: true });
+  const b = req.body || {};
+  const verified = b.verified !== false;   // default true (backward compatible)
+
+  if (verified) {
+    const bundle = await llcLib.getLlcBundle(req.params.id);
+    const missing = llcLib.missingForVerification(bundle, bundle.members, bundle.slots);
+    if (missing.length) return res.status(409).json({ error: 'this LLC is not ready to verify', missing });
+    await db.query(`UPDATE llcs SET is_verified=true, verified_at=now(), verified_by=$2, updated_at=now() WHERE id=$1`,
+      [req.params.id, req.actor.id]);
+    await llcLib.syncLlcConditions(req.params.id, { verifiedBy: req.actor.id });
+    await audit(req, 'verify_llc', 'llc', req.params.id);
+    try {
+      await notify.notifyBorrower(own.rows[0].borrower_id, {
+        type: 'llc_verified', title: 'Your LLC is verified',
+        body: `"${own.rows[0].llc_name}" is fully verified. Its documents and ownership details are on file and will be reused automatically on your loans.`,
+        link: '/profile', ctaLabel: 'View your profile' });
+    } catch (_) { /* best-effort */ }
+    return res.json({ ok: true, verified: true });
+  }
+
+  const reason = String(b.reason || '').trim().slice(0, 500);
+  await db.query(`UPDATE llcs SET is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now() WHERE id=$1`,
+    [req.params.id]);
+  await llcLib.syncLlcConditions(req.params.id, { reopen: true });
+  await audit(req, 'unverify_llc', 'llc', req.params.id, reason ? { reason } : null);
+  try {
+    await notify.notifyBorrower(own.rows[0].borrower_id, {
+      type: 'llc_unverified', title: 'Your LLC needs attention',
+      body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}. Please review its details and documents on your profile.`,
+      link: '/profile', ctaLabel: 'Review your LLC' });
+  } catch (_) { /* best-effort */ }
+  res.json({ ok: true, verified: false });
 });
 // Verification statuses mirror the static Track Record tool: pending review,
 // documentation required, verified (with docs), limited (public record only).
@@ -1575,15 +1622,23 @@ router.patch('/leads/:id', async (req, res) => {
 router.get('/applications/:id/documents', async (req, res) => {
   // Formal documents only — chat attachments live in the conversation, not the
   // review queue. source_type/visibility are returned so the UI can badge.
+  // The vesting LLC's documents (application_id NULL, llc_id = the file's LLC)
+  // are part of the file too — they ride along automatically wherever the
+  // entity is linked.
   const r = await db.query(
     `SELECT d.id,d.filename,d.content_type,d.size_bytes,d.checklist_item_id,d.slot_label,d.doc_kind,d.uploaded_by_kind,d.created_at,
             d.review_status,d.rejection_reason,d.reviewed_at,d.is_current,d.replaces_document_id,
-            d.source_type,d.visibility,
-            s.full_name AS reviewed_by_name, ci.label AS item_label
+            d.source_type,d.visibility,d.llc_id,
+            s.full_name AS reviewed_by_name,
+            CASE WHEN d.llc_id IS NOT NULL THEN 'LLC — ' || COALESCE(ci.label, l.llc_name) ELSE ci.label END AS item_label
        FROM documents d
        LEFT JOIN staff_users s ON s.id=d.reviewed_by
        LEFT JOIN checklist_items ci ON ci.id=d.checklist_item_id
-      WHERE d.application_id=$1 AND d.source_type <> 'chat_attachment'
+       LEFT JOIN llcs l ON l.id=d.llc_id
+      WHERE (d.application_id=$1
+             OR (d.application_id IS NULL AND d.llc_id IS NOT NULL
+                 AND d.llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
+        AND d.source_type <> 'chat_attachment'
       ORDER BY d.is_current DESC, d.created_at DESC`, [req.params.id]);
   res.json(r.rows);
 });
@@ -1636,7 +1691,7 @@ router.post('/documents/:id/review', async (req, res) => {
   if (action === 'reject' && !String(b.reason || '').trim()) return res.status(400).json({ error: 'a rejection reason is required' });
   try {
     const r = await db.query(
-      `SELECT id,filename,application_id,borrower_id,checklist_item_id FROM documents WHERE id=$1`, [req.params.id]);
+      `SELECT id,filename,application_id,borrower_id,llc_id,checklist_item_id FROM documents WHERE id=$1`, [req.params.id]);
     const doc = r.rows[0];
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
@@ -1654,7 +1709,22 @@ router.post('/documents/:id/review', async (req, res) => {
     await audit(req, action === 'accept' ? 'accept_document' : 'reject_document', 'document', doc.id,
       action === 'reject' ? { reason: b.reason } : null);
 
-    // On rejection, tell the borrower what to fix.
+    // An LLC document verdict changes the entity's state everywhere: rejecting
+    // a document of a VERIFIED LLC revokes the verification (its clean doc set
+    // no longer stands), and every open file vesting in the entity gets its
+    // LLC condition recomputed.
+    if (doc.llc_id) {
+      if (action === 'reject') {
+        const wasVerified = await db.query(
+          `UPDATE llcs SET is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now()
+            WHERE id=$1 AND is_verified=true RETURNING id`, [doc.llc_id]);
+        if (wasVerified.rows[0]) await audit(req, 'unverify_llc', 'llc', doc.llc_id, { cause: 'document_rejected', documentId: doc.id });
+      }
+      try { await llcLib.syncLlcConditions(doc.llc_id, { reopen: action === 'reject' }); } catch (_) { /* best-effort */ }
+    }
+
+    // On rejection, tell the borrower what to fix. LLC documents live on the
+    // borrower profile, not on a file — send the borrower there instead.
     if (action === 'reject' && doc.borrower_id) {
       try {
         let condLabel = '';
@@ -1667,7 +1737,8 @@ router.post('/documents/:id/review', async (req, res) => {
           type: 'doc_rejected', title: condLabel ? `"${condLabel}" needs a new document` : 'A document needs to be re-uploaded',
           body: `"${doc.filename}"${condLabel ? ` on condition "${condLabel}"` : ''}${ctx ? ` (${ctx.label})` : ''} couldn't be accepted: ${String(b.reason).slice(0, 180)}`,
           meta: (ctx && ctx.meta) || undefined,
-          applicationId: doc.application_id, link: `/app/${doc.application_id}`,
+          applicationId: doc.application_id,
+          link: doc.application_id ? `/app/${doc.application_id}` : '/profile',
           ctaLabel: 'Upload a new version' });
       } catch (_) {}
     }
@@ -1679,10 +1750,16 @@ router.post('/documents/:id/review', async (req, res) => {
 // package path should draw from here so a rejected/superseded doc is never
 // included. Exported for reuse by the (future) TPR export builder.
 async function getApprovedDocuments(applicationId) {
+  // The clean file includes the vesting LLC's accepted documents — a verified
+  // entity's formation docs / EIN letter / operating agreement travel with
+  // every file the entity is linked to.
   const r = await db.query(
     `SELECT id,filename,content_type,size_bytes,storage_provider,storage_ref,checklist_item_id,doc_kind,created_at
        FROM documents
-      WHERE application_id=$1 AND review_status='accepted' AND is_current=true
+      WHERE (application_id=$1
+             OR (application_id IS NULL AND llc_id IS NOT NULL
+                 AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
+        AND review_status='accepted' AND is_current=true
       ORDER BY created_at`, [applicationId]);
   return r.rows;
 }

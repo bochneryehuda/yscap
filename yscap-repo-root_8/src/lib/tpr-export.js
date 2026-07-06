@@ -38,14 +38,19 @@ async function buildTprExport(appId) {
       WHERE application_id=$1 AND is_current
       ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
 
-  // The clean set: accepted + current, never chat attachments.
+  // The clean set: accepted + current, never chat attachments. The vesting
+  // LLC's accepted documents (formation / EIN / operating agreement, stored on
+  // the entity, not the file) belong in the package too.
   const docs = (await db.query(
     `SELECT d.id, d.filename, d.storage_ref, d.reviewed_at, d.created_at,
             ci.label AS item_label, s.full_name AS reviewed_by_name
        FROM documents d
        LEFT JOIN checklist_items ci ON ci.id=d.checklist_item_id
        LEFT JOIN staff_users s ON s.id=d.reviewed_by
-      WHERE d.application_id=$1 AND d.review_status='accepted' AND d.is_current=true
+      WHERE (d.application_id=$1
+             OR (d.application_id IS NULL AND d.llc_id IS NOT NULL
+                 AND d.llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
+        AND d.review_status='accepted' AND d.is_current=true
         AND d.source_type <> 'chat_attachment'
       ORDER BY ci.sort_order NULLS LAST, d.created_at`, [appId])).rows;
 

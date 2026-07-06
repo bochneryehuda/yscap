@@ -141,6 +141,141 @@ function Item({ it, team, onPatch, role }) {
   );
 }
 
+/* Every LLC of this borrower — the staff review surface for the LLC section.
+   The file's vesting entity is expanded first; each LLC shows its details,
+   full ownership structure, and the three document slots with per-document
+   Accept / Reject, plus the whole-LLC "Mark verified" sign-off. Verifying an
+   entity auto-satisfies the LLC condition on every open file it vests;
+   revoking (or rejecting one of its documents) reopens those conditions. */
+function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, reviewBusy }) {
+  const [llcs, setLlcs] = useState(null);
+  const [openId, setOpenId] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const load = () => app.borrower_id
+    ? api.staffBorrowerLlcs(app.borrower_id).then(setLlcs).catch(e => { setErr(e.message || 'Could not load LLCs'); setLlcs([]); })
+    : Promise.resolve();
+  useEffect(() => { setOpenId(app.llc_id || null); load(); /* eslint-disable-next-line */ }, [app.borrower_id, app.llc_id]);
+
+  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
+
+  async function setVerified(llc, verified) {
+    if (busy) return;
+    let reason;
+    if (!verified) {
+      reason = window.prompt('Revoke verification of this LLC? The LLC condition reopens on every open file vesting in it, and the borrower is notified. Optional reason:');
+      if (reason === null) return;
+    } else if (!window.confirm(`Mark "${llc.llc_name}" as a verified LLC? The LLC condition on every open file vesting in it is satisfied and signed off automatically.`)) return;
+    setBusy(llc.id); setErr('');
+    try {
+      await api.staffVerifyLlc(llc.id, verified ? { verified: true } : { verified: false, reason: reason || undefined });
+      flash(verified ? 'LLC verified ✓ — linked files updated.' : 'Verification revoked — linked files reopened.');
+      await load(); onChanged && await onChanged();
+    } catch (e) {
+      if (e.status === 409 && e.data && e.data.missing) setErr(`Not ready to verify: ${e.data.missing.join(' · ')}`);
+      else setErr(e.message || 'Could not update the LLC');
+    } finally { setBusy(''); }
+  }
+
+  async function review(slot, action) {
+    await onReviewDoc({ id: slot.document_id, filename: slot.filename }, action);
+    await load();
+  }
+
+  if (!app.borrower_id) return null;
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3>Borrower LLCs</h3>
+        <div className="spacer" />
+        <span className="muted small">{llcs ? `${llcs.length} entit${llcs.length === 1 ? 'y' : 'ies'}` : ''}</span>
+      </div>
+      <p className="muted small" style={{ marginBottom: 10 }}>
+        The borrower's reusable entities. Review each document, then mark the whole LLC verified —
+        it auto-fulfills the LLC condition on this and every future file it vests.
+      </p>
+      {msg && <div className="notice ok">{msg}</div>}
+      {err && <div className="notice err">{err}</div>}
+      {llcs == null ? <p className="muted small">Loading…</p>
+        : llcs.length === 0 ? <p className="muted small">No LLCs on this borrower's profile yet.</p>
+        : llcs.map(l => {
+          const linked = l.id === app.llc_id;
+          const open = openId === l.id;
+          const c = l.completeness || {};
+          const total = (Number(l.ownership_pct) || 0) + (Number(c.member_total_pct) || 0);
+          return (
+            <div className="checkitem" key={l.id} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }}>
+              <div className="row" style={{ width: '100%', gap: 8, alignItems: 'center' }}>
+                <span className={`dot ${l.is_verified ? 'done' : 'outstanding'}`} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600 }}>
+                    {l.llc_name}
+                    {linked && <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--teal)', color: 'var(--teal)' }}>Vesting entity for this file</span>}
+                  </div>
+                  <div className="muted small">
+                    {l.formation_state || 'state —'} · EIN {l.ein || '—'} · {c.docs_accepted || 0}/{c.docs_required || 3} docs accepted
+                    {l.is_verified && l.verified_at ? ` · verified ${new Date(l.verified_at).toLocaleDateString()}` : ''}
+                  </div>
+                </div>
+                <span className={`ts-badge ${l.is_verified ? 'ok' : (l.missing || []).length ? 'warn' : 'ok'}`}>
+                  {l.is_verified ? 'Verified LLC ✓' : (l.missing || []).length ? 'Unverified' : 'Ready to verify'}
+                </span>
+                <button className="btn ghost small" onClick={() => setOpenId(open ? null : l.id)}>{open ? 'Close' : 'Review'}</button>
+              </div>
+              {open && (
+                <div style={{ width: '100%', paddingLeft: 20 }}>
+                  <div className="row" style={{ gap: 14, flexWrap: 'wrap', marginBottom: 6 }}>
+                    <span className="muted small">Formed {l.formation_date ? new Date(l.formation_date).toLocaleDateString() : '—'}</span>
+                    <span className="muted small">Borrower owns {l.ownership_pct != null ? `${l.ownership_pct}%` : '—'}</span>
+                    {(l.members || []).map(m => <span key={m.id} className="muted small">{m.full_name}: {m.ownership_pct}%</span>)}
+                    <span className={`ts-badge ${Math.abs(total - 100) <= 0.01 ? 'ok' : 'warn'}`}>
+                      {Math.abs(total - 100) <= 0.01 ? 'Ownership 100% ✓' : `Ownership ${total || 0}%`}
+                    </span>
+                  </div>
+                  {(l.slots || []).map(s => {
+                    const rs = s.document_id ? s.review_status : null;
+                    return (
+                      <div className="row" key={s.item_id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'center' }}>
+                        <span className="muted small" style={{ minWidth: 170 }}>{s.label}</span>
+                        <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {s.document_id ? s.filename : <span className="muted">not uploaded</span>}
+                        </span>
+                        {s.document_id && (
+                          <>
+                            <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : { borderColor: 'var(--gold)', color: 'var(--gold)' }}>
+                              {rs === 'accepted' ? 'accepted' : rs === 'rejected' ? 'rejected' : 'pending'}
+                            </span>
+                            {s.reviewed_by_name && <span className="muted small">by {s.reviewed_by_name}</span>}
+                            <button className="btn ghost small" disabled={dlBusy === s.document_id} onClick={() => onDownloadDoc({ id: s.document_id, filename: s.filename })}>{dlBusy === s.document_id ? '…' : 'Download'}</button>
+                            {rs !== 'accepted' && <button className="btn primary small" disabled={reviewBusy} onClick={() => review(s, 'accept')}>Accept</button>}
+                            {rs !== 'rejected' && <button className="btn link small" disabled={reviewBusy} onClick={() => review(s, 'reject')}>Reject</button>}
+                          </>
+                        )}
+                        {rs === 'rejected' && s.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 170 }}>{s.rejection_reason}</span>}
+                      </div>
+                    );
+                  })}
+                  <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {l.is_verified
+                      ? <button className="btn ghost small" disabled={busy === l.id} onClick={() => setVerified(l, false)}>{busy === l.id ? '…' : 'Revoke verification'}</button>
+                      : <button className="btn primary small" disabled={busy === l.id || (l.missing || []).length > 0}
+                          title={(l.missing || []).length ? l.missing.join(' · ') : 'All requirements met'}
+                          onClick={() => setVerified(l, true)}>{busy === l.id ? '…' : 'Mark LLC verified'}</button>}
+                    {!l.is_verified && (l.missing || []).length > 0 && (
+                      <span className="muted small">Outstanding: {l.missing.slice(0, 4).join(' · ')}{l.missing.length > 4 ? ` · +${l.missing.length - 4} more` : ''}</span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+    </div>
+  );
+}
+
 /* The borrower's conditions, as staff see them: the same single list the
    borrower works through (Scope of Work, track record, contacts, ID, document
    slots), with every uploaded PDF inline and full sign-off capability — a
@@ -550,7 +685,12 @@ export default function StaffApplication() {
         <div className="panel">
           <h3 style={{ marginBottom: 12 }}>Loan & assignment</h3>
           <div className="metrow"><span className="k">Property</span><span className="v">{app.property_type || '—'}{app.units ? ` · ${app.units} unit${app.units > 1 ? 's' : ''}` : ''}</span></div>
-          <div className="metrow"><span className="k">Entity</span><span className="v">{app.entity_name || (app.llc_id ? 'LLC on file' : '—')}</span></div>
+          <div className="metrow"><span className="k">Entity</span><span className="v">
+            {app.entity_name || (app.llc_id ? 'LLC on file' : '—')}
+            {app.llc_id && (app.entity_verified
+              ? <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified ✓</span>
+              : <span className="ts-badge warn" style={{ marginLeft: 6 }}>Unverified</span>)}
+          </span></div>
           <div className="metrow"><span className="k">Purchase</span><span className="v">{money(app.purchase_price)}</span></div>
           {app.is_assignment && <>
             <div className="metrow"><span className="k">Assignment</span><span className="v" style={{ color: 'var(--teal)' }}>Yes</span></div>
@@ -602,6 +742,9 @@ export default function StaffApplication() {
             </div>
           ))}
       </div>
+
+      <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+        dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} />
 
       <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy} />
