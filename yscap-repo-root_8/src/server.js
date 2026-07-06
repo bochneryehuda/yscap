@@ -67,6 +67,11 @@ const webDir = path.join(__dirname, '..', cfg.webDir);
 app.use(express.static(webDir));
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/auth')) return next();
+  // A missing FILE (anything with an extension — .css/.js/.png…) must 404, not
+  // silently receive the homepage HTML. Serving HTML as a stylesheet is how a
+  // stale index.html referencing a purged bundle "unstyled" the whole portal —
+  // and service workers then cache that poisoned response.
+  if (/\.[a-z0-9]{2,8}$/i.test(req.path)) return res.status(404).type('text/plain').send('not found');
   res.sendFile(path.join(webDir, 'index.html'), (err) => err && next());
 });
 
