@@ -205,6 +205,14 @@ Field *definitions* can only be made in the ClickUp UI (Space → ⚙ → Custom
 
 After you create whichever you want, I re-pull the IDs into the mapping. **Minimum to unblock the core build: just `Send to Portal` + `RTL As-Is Value`** (and `Rehab Type` if you want that field). Everything else I keep on our side.
 
+### 5C. New dropdown OPTIONS to add to EXISTING ClickUp fields (owner-decided)
+| Field | Add option(s) |
+|---|---|
+| `*Program` `50eb857a` | **Ground-Up** (for Ground-Up Construction files) |
+| `*Property Type` `541524d9` | **Condo** · **Townhouse** |
+
+*(These are single-option additions on existing dropdowns — Space → the field → Add option. I re-pull the new option UUIDs and finish those three rows.)*
+
 **CRM folders (Chaim Lebowitz, Mendel Bochner):** cleanest = **duplicate an existing officer's CRM folder** (e.g. "Yehuda Bochner CRM") in the UI and rename — copies the List, views, and automations. (API can make a bare folder+list but not the views/automations.)
 
 **Also enable:** the **"Tasks in Multiple Lists"** ClickApp (so processor assignment can add-to-list without moving).
@@ -223,10 +231,10 @@ Portal offers: `Fix & Flip w/ Construction` · `Bridge` · `Ground-Up Constructi
 |---|---|---|
 | Fix & Flip w/ Construction | **Fix & Flip With Construction** `31e3b89d` | → Fix & Flip w/ Construction |
 | Bridge | **bridge Without Construction** `e8ff7301` | → Bridge |
-| Ground-Up Construction | **Fix & Flip With Construction** `31e3b89d` **+ set Loan type = Ground up** ⚠️ | (Program=F&F + Loan type=Ground up) → Ground-Up Construction |
-| Not sure yet | **leave Program empty** (officer sets) ⚠️ | — |
-| *(no portal equivalent)* | Private hard money `3222c2ec` | → **Bridge** ⚠️ (or add a portal "Private money" value?) |
-**⚠️ DECIDE:** (a) Ground-Up → is "F&F With Construction + Loan type Ground up" right, or should it be its own thing? (b) "Not sure yet" → leave blank vs default to F&F? (c) inbound "Private hard money" → show as Bridge, or add a portal program value?
+| Ground-Up Construction | **NEW ClickUp Program option "Ground-Up"** *(owner adding — §5C)* + Loan type = Ground up | → Ground-Up Construction |
+| Not sure yet | **leave Program empty** (officer sets) ✅ | — |
+| *(no portal equivalent)* | Private hard money `3222c2ec` | → **Bridge** ✅ (default) |
+**✅ RESOLVED:** Ground-Up → owner adds a dedicated **"Ground-Up" option** to the ClickUp Program field (I map to it + Loan type Ground up); "Not sure yet" → leave blank; inbound "Private hard money" → Bridge.
 
 ### 6.2 Loan type  (portal `loan_type` ⇄ ClickUp `*Loan type` `ee1b564f`)
 | Portal value | → ClickUp (id) |
@@ -244,10 +252,10 @@ Inbound extras (Delayed Purchase Financing `163ad351`, HELOC `3ec0b186`, Second 
 | Multi 2–4 | Multi 2-4 `95ef80f0` | |
 | Multi 5+ | Multi 5+ `64378328` | |
 | Mixed use | Mixed Use `93eb74bd` | |
-| Condo | **Warrantable condo** `8f6aa277` ⚠️ | ClickUp splits warrantable/non-warrantable; default warrantable, officer refines |
-| Townhouse | **SFR** `42070628` ⚠️ | ClickUp has no Townhouse option |
-ClickUp-only inbound: Co-Op `81736937`, New Construction `a09b3a6b`, Non-warrantable condo `470f43af` → map to nearest portal type.
-**⚠️ DECIDE:** Condo → default Warrantable? Townhouse → SFR (or add options in ClickUp)?
+| Condo | **NEW ClickUp option "Condo"** *(owner adding — §5C)* | 1:1 |
+| Townhouse | **NEW ClickUp option "Townhouse"** *(owner adding — §5C)* | 1:1 |
+ClickUp-only inbound: Warrantable/Non-warrantable condo → Condo; Co-Op `81736937`, New Construction `a09b3a6b` → nearest portal type.
+**✅ RESOLVED:** owner adds plain **Condo** + **Townhouse** options to the ClickUp Property Type field; I map 1:1.
 
 ### 6.4 Occupancy  (portal `occupancy` ⇄ ClickUp `* Occupancy` `df9d81b5`)
 Primary→Primary `5472309f` · Investment→Investment `e3f10e41` · Secondary→Secondary `ce9aed84`. **RTL default = Investment** when portal value is blank.
@@ -258,8 +266,8 @@ LLC linked → **LLC / Corp** `e3d7a04a` · no LLC (individual) → **Individual
 ### 6.6 Rehab type  (portal `rehab_type` ⇄ ClickUp **Rehab Type** `NEW` dropdown)
 Cosmetic→Cosmetic · Moderate→Moderate · Heavy / gut rehab→Heavy · Adding square footage→Adding SF · Ground-up construction→Ground-up. (1:1 by design — I'll name the new ClickUp options to match.)
 
-### 6.7 Marital status  (portal `borrowers.marital_status` ⇄ ClickUp `Marital Status` `b91e06a6`, a YES/NO "married?" dropdown)
-Portal: Single/Married/Separated/Divorced/Widowed. **Push:** `Married` → YES `fddfc66d`; all others → NO `a0109516`. **Pull (lossy):** YES → `Married`; NO → leave portal value unchanged if already set, else `Single`. ⚠️ Confirm YES/NO = "is married?".
+### 6.7 Marital status  (portal `borrowers.marital_status` ⇄ ClickUp `Marital Status` `b91e06a6`, a YES/NO = "is married?" dropdown) ✅
+Portal: Single/Married/Separated/Divorced/Widowed. **YES `fddfc66d` = married.** **Smart/AI normalization both ways** (owner-requested): a `normalizeMarried(text) → true|false` helper handles free-form input — deterministic keyword match first (`married`/`spouse`/`husband`/`wife` → true; `single`/`unmarried`/`divorced`/`separated`/`widowed`/`never married` → false), **LLM fallback** for anything unclear. **Push:** married → YES, else → NO. **Pull:** YES → `Married`; NO → keep existing portal value if set, else `Single`.
 
 ### 6.8 Employment type  (portal `borrowers.employment_type` ⇄ ClickUp `Borrowers employment type` `33bf62d8`)
 W-2→W-2 · 1099→1099 · K1/S-Corp→K1 - S CORP · C CORP→C CORP · Self employed→Self employed (name-match).
@@ -286,12 +294,12 @@ RTL is short-term → default **12 Months** `cf6d0b1c` when blank; else 30 year 
 - **Status:** internal ↔ ClickUp status string verbatim; borrower-facing derived (Part 2).
 - **Checklist status:** normalize ClickUp label case-insensitively → 5-state; write the exact option UUID (Part 4).
 
-### 6.13 The decisions I need before locking the mapping module
-1. **Program:** Ground-Up handling (§6.1a) · "Not sure yet" (§6.1b) · inbound "Private hard money" (§6.1c).
-2. **Property type:** Condo → Warrantable? · Townhouse → SFR? (§6.3) — or add ClickUp options.
-3. **Housing:** "Live with family" and "Other" targets (§6.9).
-4. **Marital:** confirm YES/NO = "is married?" (§6.7).
-Everything else above is 1:1 and safe to lock.
+### 6.13 Decisions — ✅ ALL RESOLVED (mapping logic locked)
+1. **Program:** Ground-Up → new ClickUp "Ground-Up" option (owner adding) + Loan type Ground up; "Not sure yet" → blank; inbound "Private hard money" → Bridge. ✅
+2. **Property type:** owner adds **Condo** + **Townhouse** options to ClickUp; map 1:1. ✅
+3. **Housing:** Live with family → Rent Free; Other → blank. ✅
+4. **Marital:** YES = married, with AI/keyword normalization both ways. ✅
+**The mapping logic is fully locked**, pending only the IDs of the new ClickUp options/fields the owner adds (I re-pull those and drop them in).
 
 ---
 
