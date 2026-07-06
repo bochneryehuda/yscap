@@ -718,51 +718,9 @@ router.get('/llcs/:id', async (req, res) => {
   res.json({ ...bundle, read_only: !mine });
 });
 
-// Validate a members payload: [{fullName, ownershipPct, email?, phone?}].
-// Returns {members, error}. Completion to exactly 100% is a VERIFICATION
-// requirement, not a save requirement — partial saves are allowed, but the
-// total (borrower + members) may never exceed 100%.
-function parseMembers(raw, borrowerPct) {
-  if (raw === undefined) return { members: undefined };
-  if (!Array.isArray(raw)) return { error: 'members must be an array' };
-  if (raw.length > 20) return { error: 'a maximum of 20 members is supported' };
-  const members = [];
-  for (const m of raw) {
-    const fullName = String((m && m.fullName) || '').trim().slice(0, 160);
-    const p = Number(m && m.ownershipPct);
-    if (!fullName) return { error: 'each member needs a full name' };
-    if (!isFinite(p) || p <= 0 || p >= 100) return { error: 'each member needs an ownership % between 0 and 100' };
-    members.push({
-      fullName, ownershipPct: Math.round(p * 100) / 100,
-      email: m.email ? String(m.email).trim().slice(0, 160) : null,
-      phone: m.phone ? String(m.phone).trim().slice(0, 40) : null,
-    });
-  }
-  const own = borrowerPct == null ? 0 : Number(borrowerPct) || 0;
-  const total = own + members.reduce((s, m) => s + m.ownershipPct, 0);
-  if (total > 100.01) return { error: `ownership exceeds 100% (${total.toFixed(2)}%)` };
-  return { members };
-}
-
-async function replaceMembers(llcId, members) {
-  await db.query(`DELETE FROM llc_members WHERE llc_id=$1`, [llcId]);
-  for (const m of members) {
-    await db.query(
-      `INSERT INTO llc_members (llc_id, full_name, ownership_pct, email, phone) VALUES ($1,$2,$3,$4,$5)`,
-      [llcId, m.fullName, m.ownershipPct, m.email, m.phone]);
-  }
-}
-
-// Normalize an EIN to XX-XXXXXXX. Returns {ein} (null for blank) or {error}.
-function normalizeEin(raw) {
-  if (raw === undefined) return { ein: undefined };
-  const s = String(raw || '').trim();
-  if (!s) return { ein: null };
-  const digits = s.replace(/[^0-9]/g, '');
-  if (digits.length !== 9 || !/^\d{2}-?\d{7}$/.test(s.replace(/\s/g, '')))
-    return { error: 'EIN must be 9 digits (XX-XXXXXXX)' };
-  return { ein: `${digits.slice(0, 2)}-${digits.slice(2)}` };
-}
+// Entity-detail validators (member shape, ownership ceiling, EIN normalization)
+// live in src/lib/llc.js so the borrower and staff write paths share one rulebook.
+const { parseMembers, replaceMembers, normalizeEin } = llcLib;
 
 router.post('/llcs', async (req, res) => {
   const b = req.body || {};

@@ -220,6 +220,9 @@ export const api = {
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
+  staffCreateLlc:    (borrowerId, b) => req('POST', `/api/staff/borrowers/${borrowerId}/llcs`, b),
+  staffUpdateLlc:    (id, b) => req('PATCH', `/api/staff/llcs/${id}`, b),
+  staffSaveLlcMembers: (id, members) => req('PUT', `/api/staff/llcs/${id}/members`, { members }),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id) => req('POST', `/api/staff/track-records/${id}/verify`),
   staffPatchItem:   (itemId, b) => req('PATCH', `/api/staff/checklist/${itemId}`, b),
@@ -327,7 +330,7 @@ export const api = {
   adminConditionDefs:      () => req('GET', '/api/admin/conditions/definitions'),
   adminCreateConditionDef: (b) => req('POST', '/api/admin/conditions/definitions', b),
   adminUpdateConditionDef: (id, b) => req('PATCH', `/api/admin/conditions/definitions/${id}`, b),
-  adminDeleteConditionDef: (id) => req('DELETE', `/api/admin/conditions/definitions/${id}`),
+  adminDeleteConditionDef: (id, removeFromFiles) => req('DELETE', `/api/admin/conditions/definitions/${id}${removeFromFiles ? '?removeFromFiles=1' : ''}`),
   adminPreviewRule:        (ruleLogic) => req('POST', '/api/admin/conditions/preview-rule', { ruleLogic }),
   adminRunAllConditions:   () => req('POST', '/api/admin/conditions/run-all'),
   // admin-defined custom fields (used by information conditions + rules)

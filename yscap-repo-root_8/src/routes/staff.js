@@ -944,6 +944,74 @@ router.post('/loan-conditions/:cid/waive', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Data-integrity gate for the three tool-backed conditions. Returns null when
+// clear, or a plain-language reason string that blocks the sign-off.
+//   rtl_p1_product  — a product must be registered on the file.
+//   rtl_p1_budget   — the Scope of Work total must equal the file's rehab
+//                     budget AND the registered product's budget.
+//   rtl_p3_reo      — verified track-record experience must meet the registered
+//                     product's claimed experience (re-register with less, or
+//                     verify more, until they agree).
+async function signOffGate(itemId) {
+  const it = await db.query(
+    `SELECT ci.application_id, ci.tool_key, ci.tool_payload,
+            (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
+       FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
+  const item = it.rows[0];
+  if (!item || !item.application_id) return null;
+  const code = item.template_code || '';
+  const isProduct = code === 'rtl_p1_product' || item.tool_key === 'product_pricing';
+  const isBudget = code === 'rtl_p1_budget' || item.tool_key === 'rehab_budget';
+  const isExp = code === 'rtl_p3_reo' || item.tool_key === 'track_record';
+  if (!isProduct && !isBudget && !isExp) return null;
+
+  const ar = await db.query(`SELECT rehab_budget, borrower_id FROM applications WHERE id=$1`, [item.application_id]);
+  const app = ar.rows[0];
+  if (!app) return null;
+  const reg = (await db.query(
+    `SELECT inputs, quote FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
+    [item.application_id])).rows[0] || null;
+  const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
+  const eq = (a, c) => Math.round(Number(a) || 0) === Math.round(Number(c) || 0);
+
+  if (isProduct) {
+    if (!reg) return 'Register a product first — this condition can only be signed off once a product is registered on the file in the Term Sheet Studio.';
+    return null;
+  }
+  if (isBudget) {
+    if (!reg) return 'Register a product first — the rehab budget must match the registered product before this can be signed off.';
+    const sowTotal = item.tool_payload && item.tool_payload.total != null ? Number(item.tool_payload.total) : null;
+    if (sowTotal == null) return 'The Scope of Work / rehab budget has not been submitted yet.';
+    const appBudget = Number(app.rehab_budget) || 0;
+    const regBudget = reg.inputs && reg.inputs.rehabBudget != null ? Number(reg.inputs.rehabBudget) : null;
+    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget))) {
+      return `Budgets do not match — Scope of Work total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must all agree before sign-off: update the Scope of Work or re-register the product so the numbers match.`;
+    }
+    return null;
+  }
+  // isExp
+  if (!reg) return 'Register a product first — experience is checked against the registered product before this can be signed off.';
+  const tr = await db.query(
+    `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n
+       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+  const v = { flips: 0, holds: 0, ground: 0 };
+  for (const row of tr.rows) {
+    if (/ground|construction/.test(row.dt)) v.ground += row.n;
+    else if (/flip/.test(row.dt)) v.flips += row.n;
+    else v.holds += row.n;
+  }
+  const inp = reg.inputs || {};
+  const need = { flips: Number(inp.expFlips) || 0, holds: Number(inp.expHolds) || 0, ground: Number(inp.expGround) || 0 };
+  const short = [];
+  if (v.flips < need.flips) short.push(`${need.flips - v.flips} more flip${need.flips - v.flips === 1 ? '' : 's'}`);
+  if (v.holds < need.holds) short.push(`${need.holds - v.holds} more hold${need.holds - v.holds === 1 ? '' : 's'}`);
+  if (v.ground < need.ground) short.push(`${need.ground - v.ground} more ground-up`);
+  if (short.length) {
+    return `Experience does not match the registered product — it claims ${need.flips} flip(s) / ${need.holds} hold(s) / ${need.ground} ground-up, but only ${v.flips}/${v.holds}/${v.ground} are VERIFIED on the track record. Verify ${short.join(', ')}, or re-register the product with the experience the borrower can prove.`;
+  }
+  return null;
+}
+
 router.patch('/checklist/:itemId', async (req, res) => {
   // access guard: non-privileged staff may only edit items on their own files.
   // llc-scoped items (entity document slots) have no application_id — they're
@@ -968,6 +1036,14 @@ router.patch('/checklist/:itemId', async (req, res) => {
   const canComplete = can(req.actor, 'sign_off_conditions');
   if ((b.signedOff === true || b.status === 'satisfied') && !canComplete) {
     return res.status(403).json({ error: 'Only the processor can complete a condition — mark it reviewed instead.' });
+  }
+  // Data-integrity gates on the three tool-backed conditions: a product must be
+  // registered, the rehab budget must agree across SOW/file/product, and
+  // verified experience must back the registered product. Blocks the sign-off
+  // (422) with a plain-language reason until everything lines up.
+  if (b.signedOff === true || b.status === 'satisfied') {
+    const gate = await signOffGate(req.params.itemId);
+    if (gate) return res.status(422).json({ error: gate });
   }
 
   const sets = ['updated_at=now()'];
@@ -1233,6 +1309,79 @@ router.get('/borrowers/:id/llcs', async (req, res) => {
     if (bundle) out.push({ ...bundle, missing: llcLib.missingForVerification(bundle, bundle.members, bundle.slots) });
   }
   res.json(out);
+});
+
+// Create a borrower entity on their behalf — full parity with the borrower's
+// own POST /llcs. Same validators (src/lib/llc.js), same requirement pull. A
+// staffer standing up the LLC for a borrower who can't lands them the exact
+// same document slots the borrower would have created.
+router.post('/borrowers/:id/llcs', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+  const borrowerId = req.params.id;
+  const b = req.body || {};
+  if (!b.llcName || !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName required' });
+  if (b.ownershipPct !== undefined && b.ownershipPct !== '' && b.ownershipPct != null) {
+    const p = Number(b.ownershipPct);
+    if (!isFinite(p) || p < 0 || p > 100) return res.status(400).json({ error: 'ownership % must be between 0 and 100' });
+  }
+  const ein = llcLib.normalizeEin(b.ein);
+  if (ein.error) return res.status(400).json({ error: ein.error });
+  const parsed = llcLib.parseMembers(b.members, b.ownershipPct);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const r = await db.query(
+    `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [borrowerId, String(b.llcName).trim(), ein.ein || null, b.formationState || null, b.formationDate || null, b.ownershipPct || null]);
+  if (parsed.members && parsed.members.length) await llcLib.replaceMembers(r.rows[0].id, parsed.members);
+  try { await require('./borrower').generateLlcChecklist(r.rows[0].id); } catch (_) { /* best-effort */ }
+  await audit(req, 'create_llc', 'llc', r.rows[0].id, { borrowerId });
+  res.status(201).json({ ok: true, llcId: r.rows[0].id });
+});
+
+// Fill in / correct an entity's details on the borrower's behalf. Mirrors the
+// borrower's PATCH /llcs/:id, including the verified-lock: a verified entity
+// must be unlocked (POST /llcs/:id/verify {verified:false}) before edits.
+router.patch('/llcs/:id', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+  if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before making changes' });
+  const b = req.body || {};
+  if (b.ein !== undefined) {
+    const ein = llcLib.normalizeEin(b.ein);
+    if (ein.error) return res.status(400).json({ error: ein.error });
+    b.ein = ein.ein === null ? '' : ein.ein;
+  }
+  if (b.llcName !== undefined && !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName cannot be empty' });
+  const sets = [], vals = []; let i = 1;
+  const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
+  if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  if (b.ownershipPct !== undefined && b.ownershipPct !== '' && b.ownershipPct != null) {
+    const p = Number(b.ownershipPct);
+    if (!isFinite(p) || p < 0 || p > 100) return res.status(400).json({ error: 'ownership % must be between 0 and 100' });
+    const mem = await db.query(`SELECT COALESCE(sum(ownership_pct),0) AS s FROM llc_members WHERE llc_id=$1`, [req.params.id]);
+    const total = p + Number(mem.rows[0].s);
+    if (total > 100.01) return res.status(400).json({ error: `ownership exceeds 100% (${total.toFixed(2)}% with the other members) — adjust the members first` });
+  }
+  sets.push('updated_at=now()'); vals.push(req.params.id);
+  await db.query(`UPDATE llcs SET ${sets.join(',')} WHERE id=$${i}`, vals);
+  await audit(req, 'update_llc', 'llc', req.params.id);
+  res.json({ ok: true });
+});
+
+// Replace an entity's OTHER members on the borrower's behalf. Same shape/lock
+// as the borrower's PUT /llcs/:id/members.
+router.put('/llcs/:id/members', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id, is_verified, ownership_pct FROM llcs WHERE id=$1`, [req.params.id]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+  if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before making changes' });
+  const parsed = llcLib.parseMembers((req.body || {}).members || [], own.rows[0].ownership_pct);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  await llcLib.replaceMembers(req.params.id, parsed.members || []);
+  await audit(req, 'update_llc_members', 'llc', req.params.id, { count: (parsed.members || []).length });
+  res.json({ ok: true });
 });
 
 // Verify — or revoke verification of — an LLC. Verification is a real gate:

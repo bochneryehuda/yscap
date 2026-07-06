@@ -757,11 +757,18 @@ export default function Application() {
                   action={<button className="btn primary small" onClick={() => setSowOpen(true)}>{sowItem.tool_submitted ? 'Reopen & edit' : 'Open Scope of Work'}</button>}
                 >
                   <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                    {sowExports.map(d => (
-                      <button key={d.id} className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
-                        {dlBusy === d.id ? '…' : `⤓ ${/xlsx|sheet/i.test(d.content_type || d.filename) ? 'Excel export' : /html/i.test(d.content_type || d.filename) ? 'Editable HTML copy' : 'PDF export'}`}
-                      </button>
-                    ))}
+                    {sowExports.map(d => {
+                      const label = /xlsx|sheet/i.test(d.content_type || d.filename) ? 'Excel export' : /html/i.test(d.content_type || d.filename) ? 'Editable HTML copy' : 'PDF export';
+                      const canPreview = /pdf|html|image|png|jpe?g/i.test(d.content_type || d.filename);
+                      return (
+                        <span key={d.id} className="row" style={{ gap: 4 }}>
+                          {canPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => setPreviewDoc(d)}>Preview {label}</button>}
+                          <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                            {dlBusy === d.id ? '…' : `⤓ ${label}`}
+                          </button>
+                        </span>
+                      );
+                    })}
                     {sowExports.length > 0 && <span className="muted small" style={{ alignSelf: 'center' }}>Re-submitting from the builder replaces these with fresh versions.</span>}
                   </div>
                 </ConditionRow>
@@ -790,6 +797,10 @@ export default function Application() {
                 >
                   {trSnap && (
                     <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                      <button className="btn ghost small" title="Preview without downloading"
+                        onClick={() => setPreviewDoc({ id: trSnap.documentId, filename: trSnap.filename, content_type: 'text/html' })}>
+                        Preview
+                      </button>
                       <button className="btn ghost small" disabled={dlBusy === trSnap.documentId}
                         onClick={() => downloadDoc({ id: trSnap.documentId, filename: trSnap.filename })}>
                         {dlBusy === trSnap.documentId ? '…' : '⤓ Saved copy (HTML)'}

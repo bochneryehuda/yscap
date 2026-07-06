@@ -4,6 +4,7 @@ import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
 import Entities from '../components/Entities.jsx';
+import DocPreview from '../components/DocPreview.jsx';
 import { Link } from 'react-router-dom';
 
 /* Canonical borrower profile — the single home for personal information so the
@@ -29,6 +30,7 @@ export default function Profile() {
   const [trCounts, setTrCounts] = useState(null);  // live track-record counts
   const [trSnap, setTrSnap] = useState(null);      // saved static HTML copy
   const [trDl, setTrDl] = useState(false);
+  const [trPreview, setTrPreview] = useState(false);
 
   useEffect(() => {
     api.profile().then(d => {
@@ -260,12 +262,20 @@ export default function Profile() {
           </div>
           <div className="spacer" />
           {trSnap && (
+            <button className="btn ghost" onClick={() => setTrPreview(true)} title="Preview your saved track record without downloading">Preview</button>
+          )}
+          {trSnap && (
             <button className="btn ghost" disabled={trDl} onClick={downloadTrSnap} title="The static HTML copy of your track record — kept in sync automatically">
               {trDl ? '…' : '⤓ Saved copy (HTML)'}
             </button>
           )}
           <Link className="btn primary" to="/track-record">Open Track Record →</Link>
         </div>
+        {trPreview && trSnap && (
+          <DocPreview title="Track record — saved copy" filename={trSnap.filename} contentType="text/html"
+            load={() => api.downloadDoc(trSnap.documentId)}
+            onDownload={downloadTrSnap} onClose={() => setTrPreview(false)} />
+        )}
         {trCounts && (
           <div className="reqchips" style={{ marginTop: 12 }}>
             <span className={`reqchip ${trCounts.total ? 'met' : ''}`}>{trCounts.total} deal{trCounts.total === 1 ? '' : 's'} on record</span>
