@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import MessageThread from '../components/MessageThread.jsx';
@@ -381,7 +381,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       {sowOpen && (
         <ToolModal
           title="Rehab Budget — Scope of Work (internal)"
-          url={`/tools/rehab-budget.html?app=${appId}&item=${sowOpen}&internal=1`}
+          url={`/tools/rehab-budget.html?app=${appId}&item=${sowOpen}&internal=1&embed=1`}
           onClose={() => setSowOpen(null)} />
       )}
     </div>
@@ -391,6 +391,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
 export default function StaffApplication() {
   const { id } = useParams();
   const nav = useNavigate();
+  const { search } = useLocation();
   const { role } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
   const [app, setApp] = useState(null);
@@ -467,6 +468,18 @@ export default function StaffApplication() {
     load();
     /* eslint-disable-next-line */
   }, [id]);
+
+  // Arriving from the Chat hub (?focus=chat): land on the conversation panel
+  // instead of the top of a very long page. Runs once per file, after render.
+  const focusedChat = useRef(false);
+  useEffect(() => { focusedChat.current = false; }, [id]);
+  useEffect(() => {
+    if (app && !focusedChat.current && new URLSearchParams(search).get('focus') === 'chat') {
+      focusedChat.current = true;
+      setTimeout(jumpToChat, 60);
+    }
+    /* eslint-disable-next-line */
+  }, [app]);
 
   async function revealSsn() {
     if (ssnFull) { setSsnFull(''); return; }        // toggle back to masked
@@ -788,11 +801,11 @@ export default function StaffApplication() {
                 </div>
                 <div className="row" style={{ gap: 6, alignItems: 'center' }}>
                   <span className="pill" style={pillStyle}>{rs}</span>
-                  <button className="btn ghost" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                  <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
                     {dlBusy === d.id ? '…' : 'Download'}
                   </button>
-                  {d.is_current && rs !== 'accepted' && canComplete(role) && <button className="btn primary" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
-                  {d.is_current && rs !== 'rejected' && <button className="btn ghost" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
+                  {d.is_current && rs !== 'accepted' && canComplete(role) && <button className="btn primary small" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
+                  {d.is_current && rs !== 'rejected' && <button className="btn ghost small" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
                 </div>
               </div>
               );
@@ -893,7 +906,7 @@ export default function StaffApplication() {
           <iframe
             title="Borrower track record"
             src={`/tools/track-record.html?internal=1&borrower=${app.borrower_id}&embed=1`}
-            style={{ width: '100%', height: 640, border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 10, background: 'transparent' }}
+            style={{ width: '100%', height: 'min(640px, 75vh)', border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 10, background: 'transparent' }}
           />
         </div>
       )}

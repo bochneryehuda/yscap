@@ -56,7 +56,7 @@ export default function TrackRecordScreen() {
       <iframe
         title="Borrower track record"
         src="/tools/track-record.html?portal=1&embed=1"
-        style={{ width: '100%', height: 'calc(100vh - 190px)', minHeight: 640, border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 12, background: 'transparent' }}
+        style={{ width: '100%', height: 'calc(100vh - 190px)', minHeight: 'min(640px, 78vh)', border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 12, background: 'transparent' }}
       />
     </>
   );

@@ -169,7 +169,7 @@ export default function Dashboard() {
             <div className="checkitem" key={n.id} style={{ cursor: n.read_at ? 'default' : 'pointer' }}
               onClick={() => openNotif(n)} title={n.read_at ? '' : 'Mark as read'}>
               <span className={`dot ${n.read_at ? 'done' : 'outstanding'}`} />
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>
                 <div style={{ fontWeight: 600 }}>{n.title}</div>
                 {n.body && <div className="muted small">{n.body}</div>}
               </div>

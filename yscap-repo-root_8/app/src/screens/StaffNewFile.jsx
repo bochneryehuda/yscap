@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
+import { MoneyInput } from '../components/FormattedInputs.jsx';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -148,7 +149,7 @@ export default function StaffNewFile() {
           </div>
           <div className="grid cols-2">
             <div className="field"><label>Property type</label>
-              <select value={f.propertyType} onChange={e => set('propertyType', e.target.value)}>
+              <select className="input" value={f.propertyType} onChange={e => set('propertyType', e.target.value)}>
                 <option value="">Select…</option>{PROP_TYPES.map(p => <option key={p}>{p}</option>)}
               </select></div>
             <div className="field"><label>Units</label>
@@ -160,23 +161,23 @@ export default function StaffNewFile() {
           <h3 style={{ marginBottom: 12 }}>Loan</h3>
           <div className="grid cols-2">
             <div className="field"><label>Program</label>
-              <select value={f.program} onChange={e => set('program', e.target.value)}>
+              <select className="input" value={f.program} onChange={e => set('program', e.target.value)}>
                 <option value="">Select…</option>{PROGRAMS.map(p => <option key={p}>{p}</option>)}
               </select></div>
             <div className="field"><label>Loan type</label>
-              <select value={f.loanType} onChange={e => set('loanType', e.target.value)}>
+              <select className="input" value={f.loanType} onChange={e => set('loanType', e.target.value)}>
                 <option value="">Select…</option>{LOAN_TYPES.map(p => <option key={p}>{p}</option>)}
               </select></div>
             <div className="field"><label>Purchase price</label>
-              <input className="input" value={f.purchasePrice} onChange={e => set('purchasePrice', e.target.value)} placeholder="$" /></div>
+              <MoneyInput value={f.purchasePrice} onChange={v => set('purchasePrice', v)} /></div>
             <div className="field"><label>As-is value</label>
-              <input className="input" value={f.asIsValue} onChange={e => set('asIsValue', e.target.value)} placeholder="$" /></div>
+              <MoneyInput value={f.asIsValue} onChange={v => set('asIsValue', v)} /></div>
             <div className="field"><label>ARV</label>
-              <input className="input" value={f.arv} onChange={e => set('arv', e.target.value)} placeholder="$" /></div>
+              <MoneyInput value={f.arv} onChange={v => set('arv', v)} /></div>
             <div className="field"><label>Rehab budget</label>
-              <input className="input" value={f.rehabBudget} onChange={e => set('rehabBudget', e.target.value)} placeholder="$" /></div>
+              <MoneyInput value={f.rehabBudget} onChange={v => set('rehabBudget', v)} /></div>
             <div className="field"><label>Rehab type</label>
-              <select value={f.rehabType} onChange={e => set('rehabType', e.target.value)}>
+              <select className="input" value={f.rehabType} onChange={e => set('rehabType', e.target.value)}>
                 <option value="">Select...</option>{REHAB_TYPES.map(x => <option key={x}>{x}</option>)}
               </select></div>
             {needsSqft(f.rehabType) && <>
@@ -202,12 +203,12 @@ export default function StaffNewFile() {
           <h3 style={{ marginBottom: 12 }}>Assignment</h3>
           <div className="grid cols-2">
             <div className="field"><label>Loan officer</label>
-              <select value={f.loanOfficerId} onChange={e => set('loanOfficerId', e.target.value)}>
+              <select className="input" value={f.loanOfficerId} onChange={e => set('loanOfficerId', e.target.value)}>
                 <option value="">{seesAll ? '— Lead Capture (unassigned) —' : 'Me'}</option>
                 {officers.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
               </select></div>
             <div className="field"><label>Processor</label>
-              <select value={f.processorId} onChange={e => set('processorId', e.target.value)}>
+              <select className="input" value={f.processorId} onChange={e => set('processorId', e.target.value)}>
                 <option value="">— none yet —</option>
                 {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
               </select></div>

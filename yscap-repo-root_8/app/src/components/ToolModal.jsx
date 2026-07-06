@@ -40,7 +40,7 @@ export default function ToolModal({ url, title, onClose }) {
     <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(6,10,12,.88)', display: 'flex', flexDirection: 'column', padding: '2vh 2vw' }}>
       <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
         <h3 style={{ color: '#f3efe6', margin: 0 }}>{title}</h3>
-        <span className="muted small" style={{ marginLeft: 12 }}>Autosaves as you work — closing also saves the exports.</span>
+        <span className="muted small tm-hint" style={{ marginLeft: 12 }}>Autosaves as you work — closing also saves the exports.</span>
         <div className="spacer" />
         <button className="btn primary" disabled={saving} onClick={saveAndClose}>
           {saving ? 'Saving to your file…' : 'Done — save & back to my file'}

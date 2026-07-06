@@ -424,12 +424,12 @@ export default function Apply() {
             </div>
             <div className="grid cols-2">
               <div className="field"><label>Property type *</label>
-                <select value={form.propertyType || ''} onChange={e => setPropertyType(e.target.value)}>
+                <select className="input" value={form.propertyType || ''} onChange={e => setPropertyType(e.target.value)}>
                   <option value="">Select…</option>{PROP_TYPES.map(p => <option key={p}>{p}</option>)}
                 </select></div>
               {unitsMode(form.propertyType) === 'select24' && (
                 <div className="field"><label>Number of units *</label>
-                  <select value={form.units || ''} onChange={e => set('units', e.target.value)}>
+                  <select className="input" value={form.units || ''} onChange={e => set('units', e.target.value)}>
                     <option value="">Select…</option><option>2</option><option>3</option><option>4</option>
                   </select></div>
               )}
@@ -451,11 +451,11 @@ export default function Apply() {
             <h3 style={{ marginBottom: 14 }}>Loan details</h3>
             <div className="grid cols-2">
               <div className="field"><label>Program</label>
-                <select value={form.program || ''} onChange={e => set('program', e.target.value)}>
+                <select className="input" value={form.program || ''} onChange={e => set('program', e.target.value)}>
                   <option value="">Select…</option>{PROGRAMS.map(p => <option key={p}>{p}</option>)}
                 </select></div>
               <div className="field"><label>Loan type</label>
-                <select value={form.loanType || ''} onChange={e => set('loanType', e.target.value)}>
+                <select className="input" value={form.loanType || ''} onChange={e => set('loanType', e.target.value)}>
                   <option value="">Select…</option>{LOAN_TYPES.map(p => <option key={p}>{p}</option>)}
                 </select></div>
             </div>
@@ -519,7 +519,7 @@ export default function Apply() {
                 </div>
                 <div className="grid cols-2">
                   <div className="field"><label>Rehab type</label>
-                    <select value={form.rehabType || ''} onChange={e => set('rehabType', e.target.value)}>
+                    <select className="input" value={form.rehabType || ''} onChange={e => set('rehabType', e.target.value)}>
                       <option value="">Select...</option>{REHAB_TYPES.map(x => <option key={x}>{x}</option>)}
                     </select></div>
                   {needsSqft(form.rehabType) && (
@@ -571,17 +571,17 @@ export default function Apply() {
                   <div className="field"><label>Estimated FICO</label>
                     <input className="input" type="number" min="300" max="850" value={p.fico || ''} onChange={e => setPersonal('fico', e.target.value)} placeholder="e.g. 720" /></div>
                   <div className="field"><label>Citizenship</label>
-                    <select value={p.citizenship || ''} onChange={e => setPersonal('citizenship', e.target.value)}>
+                    <select className="input" value={p.citizenship || ''} onChange={e => setPersonal('citizenship', e.target.value)}>
                       <option value="">Select…</option>{CITIZENSHIP.map(c => <option key={c}>{c}</option>)}
                     </select></div>
                 </div>
                 <div className="grid cols-2">
                   <div className="field"><label>Marital status</label>
-                    <select value={p.maritalStatus || ''} onChange={e => setPersonal('maritalStatus', e.target.value)}>
+                    <select className="input" value={p.maritalStatus || ''} onChange={e => setPersonal('maritalStatus', e.target.value)}>
                       <option value="">Select...</option>{MARITAL.map(c => <option key={c}>{c}</option>)}
                     </select></div>
                   <div className="field"><label>Housing status</label>
-                    <select value={p.housingStatus || ''} onChange={e => setPersonal('housingStatus', e.target.value)}>
+                    <select className="input" value={p.housingStatus || ''} onChange={e => setPersonal('housingStatus', e.target.value)}>
                       <option value="">Select...</option>{HOUSING.map(c => <option key={c}>{c}</option>)}
                     </select></div>
                 </div>
@@ -659,7 +659,7 @@ export default function Apply() {
                 onPick={({ id, name }) => setForm(f => { const next = { ...(f || {}), entityName: name, llcId: id }; save({ data: { entityName: name, llcId: id } }); return next; })} />
               <p className="muted small" style={{ marginTop: 4 }}>Reuse an LLC you've used before, or create a new one — we'll ask for its EIN letter, formation docs, and operating agreement once.</p></div>
             <div className="field"><label>Requested loan officer</label>
-              <select value={form.loanOfficerName || ''} onChange={e => pickOfficer(e.target.value)}>
+              <select className="input" value={form.loanOfficerName || ''} onChange={e => pickOfficer(e.target.value)}>
                 <option value="">No preference — send to Lead Capture</option>
                 {officers.map(o => <option key={o.email || o.name} value={o.name}>{o.name}{o.title ? ` — ${o.title}` : ''}</option>)}
               </select></div>

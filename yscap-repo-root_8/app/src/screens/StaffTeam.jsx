@@ -187,7 +187,7 @@ export default function StaffTeam() {
                   <div className="row" style={{ gap: 8, width: '100%', marginTop: 8 }}>
                     <input className="input" style={{ maxWidth: 240 }} type="text" placeholder="New password (min 8)"
                       value={pwVal} onChange={e => setPwVal(e.target.value)} />
-                    <button className="btn" onClick={() => savePassword(s.id)}>Save password</button>
+                    <button className="btn primary" onClick={() => savePassword(s.id)}>Save password</button>
                     <button className="btn ghost" onClick={() => { setPwFor(null); setPwVal(''); }}>Cancel</button>
                   </div>
                 )}

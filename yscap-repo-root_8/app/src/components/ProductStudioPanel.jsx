@@ -382,7 +382,7 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
           </p>
           <TermSheetStudio key={adminOn ? 'admin' : 'std'} ref={studioRef} prefill={prefill} lockedIds={lockedIds}
             showAdmin={adminOn} onState={onStudioState} />
-          <div className="row" style={{ gap: 10, marginTop: 10, alignItems: 'center', position: 'sticky', bottom: 0, background: 'var(--ink-1)', padding: '10px 0' }}>
+          <div className="row studio-foot" style={{ gap: 10, marginTop: 10, alignItems: 'center' }}>
             <button className="btn primary" disabled={busy || !canRegister} onClick={register}>
               {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
             </button>
@@ -393,7 +393,7 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
                 {adminKey ? 'Admin mode on — lock' : 'Admin mode'}
               </button>
             )}
-            <span className="muted small">
+            <span className="muted small studio-foot-status">
               {snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
                 : snap && !snap.program ? 'Tap a program card above to choose Standard or Gold Standard.'
                 : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money(d.cashToClose)} · liquidity ${money(d.liquidity)}`
