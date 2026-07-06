@@ -779,7 +779,7 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
         await notify.notifyStaff(sid, {
           type: 'condition_added', title: `${who} added the appraisal card`,
           body: `${row.ys_loan_number || 'A file'} — ${cardBrand(number)} ending ${number.slice(-4)}. The appraisal can be ordered.`,
-          applicationId: req.params.id, link: `/staff/app/${req.params.id}` });
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
     }
   } catch (_) { /* best-effort */ }
   res.status(201).json({ ok: true, last4: number.slice(-4), brand: cardBrand(number) });
