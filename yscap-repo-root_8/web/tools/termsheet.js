@@ -965,14 +965,23 @@
       y += 13; doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y); y += 14;
 
       if (d.status === "MANUAL") {
+        // Say WHY manual review is needed, right in the banner \u2014 the engine's own MANUAL
+        // reason(s), shortened. (Full text still appears in the eligibility snapshot below.)
+        var manualWhy = (d.reasons || []).filter(function (r) { return r.level === "MANUAL"; }).map(function (r) { return shortMsg(r.msg); }).filter(Boolean);
+        var manualLead = "Manual underwriting is needed" + (manualWhy.length ? ": " + manualWhy.join("  \u00b7  ") + "." : " for this scenario.") +
+          " The figures below are indicative and subject to review \u2014 this is not a clean approval.";
+        doc.setFont("helvetica", "normal"); doc.setFontSize(7.4);
+        var manualLines = doc.splitTextToSize(pdfSafe(manualLead), W - 2 * M - 24);
+        var manualBoxH = Math.max(25, 16 + manualLines.length * 8.5);
+        brk(manualBoxH + 6);
         doc.setFillColor(250, 243, 228); doc.setDrawColor(200, 168, 96); doc.setLineWidth(0.8);
-        doc.roundedRect(M, y, W - 2 * M, 25, 3, 3, "FD");
-        doc.setFillColor(176, 140, 70); doc.rect(M, y, 3.5, 25, "F");
+        doc.roundedRect(M, y, W - 2 * M, manualBoxH, 3, 3, "FD");
+        doc.setFillColor(176, 140, 70); doc.rect(M, y, 3.5, manualBoxH, "F");
         doc.setFont("helvetica", "bold"); doc.setFontSize(8.6); doc.setTextColor(140, 104, 40);
         doc.text("REVIEW REQUIRED", M + 13, y + 10.5);
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.4); doc.setTextColor(120, 92, 48);
-        doc.text(pdfSafe("Manual underwriting is needed for this scenario. The figures below are indicative and subject to review \u2014 this is not a clean approval."), M + 13, y + 19.5, { maxWidth: W - 2 * M - 24 });
-        y += 33;
+        doc.text(manualLines, M + 13, y + 19.5);
+        y += manualBoxH + 8;
       }
 
       // HERO
@@ -1071,10 +1080,11 @@
       }
       if (d.status === "INELIGIBLE") {
         // Not eligible as entered → no signable terms (unprofitable / ineligible deals get no term sheet).
-        para("5.  Eligibility.  As entered, this scenario does not meet the " + progName + " guidelines, so no terms are offered and this document is not signable. Please review the eligibility notes above; a revised scenario can be submitted for review.", 7.5);
+        var inelWhy = (d.reasons || []).filter(function (r) { return r.level === "INELIGIBLE"; }).map(function (r) { return r.msg; }).filter(Boolean);
+        para("5.  Eligibility.  As entered, this scenario does not meet the " + progName + " guidelines" + (inelWhy.length ? " \u2014 " + inelWhy.join(" ") : "") + ", so no terms are offered and this document is not signable. Please review the eligibility notes above; a revised scenario can be submitted for manual review.", 7.5);
         brk(70); band("Not eligible \u2014 no terms offered");
         doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor.apply(doc, GRAY);
-        doc.text(pdfSafe("Because this scenario is not eligible as entered, there is no acceptance or signature block. Adjust the inputs above to see whether an eligible structure is available."), M, y + 15, { maxWidth: W - 2 * M });
+        doc.text(pdfSafe("Because this scenario is not eligible as entered" + (inelWhy.length ? " (" + shortMsg(inelWhy[0]) + ")" : "") + ", there is no acceptance or signature block. Adjust the inputs above to see whether an eligible structure is available, or submit it to our team for a manual review."), M, y + 15, { maxWidth: W - 2 * M });
         y += 44; footer();
       } else {
         para("5.  Validity & acceptance.  This term sheet is valid through " + fmtD(exp) + (d.inp.state ? (" for a property located in " + d.inp.state) : "") + ". It is not binding unless and until it is accepted in writing by the borrower below and countersigned by an authorized representative of " + LENDER.name + ".", 7.5);

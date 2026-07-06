@@ -18,6 +18,21 @@ const money = (n) => (n == null || n === '' ? '—' : '$' + Math.round(Number(n)
 const pct = (f, d = 2) => (f == null || f === '' ? '—' : (Number(f) * 100).toFixed(d) + '%');
 const when = (t) => (t ? new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
 
+// A short, human first-clause of the engine's own reason for a non-eligible status, so a
+// "manual review" / "not eligible" badge can always say WHY. Prefers the reason matching the
+// status (MANUAL vs INELIGIBLE); the full text still shows in the reasons list elsewhere.
+function shortReason(reasons, status) {
+  const rs = Array.isArray(reasons) ? reasons : [];
+  const want = status === 'INELIGIBLE' ? 'INELIGIBLE' : status === 'MANUAL' ? 'MANUAL' : null;
+  const nonOk = rs.filter((r) => r && r.level !== 'ELIGIBLE');
+  const pick = (want ? nonOk.filter((r) => r.level === want) : nonOk).concat(nonOk)[0];
+  if (!pick || !pick.msg) return '';
+  let m = String(pick.msg).split(' — ')[0].split('. ')[0].trim();
+  if (m.length > 96) m = m.slice(0, 94).replace(/[\s,;:]+\S*$/, '') + '…';
+  return m;
+}
+const statusWord = (st) => (st === 'MANUAL' ? 'manual review' : st === 'INELIGIBLE' ? 'not eligible' : String(st || '').toLowerCase());
+
 function addrLine(a) {
   if (!a) return '';
   if (typeof a === 'string') return a;
@@ -116,10 +131,15 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
         <strong>{q.programLabel || (reg.program === 'gold' ? 'Gold Standard Program' : 'Standard Program')}</strong>
         {q.productLabel && <span className="muted small">· {q.productLabel}</span>}
         {q.tierLabel && <span className="muted small">· {q.tierLabel}</span>}
-        {reg.status && reg.status !== 'ELIGIBLE' && <span className="ts-badge warn">{String(reg.status).toLowerCase()}</span>}
+        {reg.status && reg.status !== 'ELIGIBLE' && <span className="ts-badge warn">{statusWord(reg.status)}</span>}
         <div className="spacer" />
         <span className="muted small">Registered {when(reg.created_at)}{reg.registered_by_name ? ` by ${reg.registered_by_name}` : ''}</span>
       </div>
+      {reg.status && reg.status !== 'ELIGIBLE' && shortReason(q.reasons, reg.status) && (
+        <p className="small" style={{ margin: '-2px 0 10px', color: 'var(--warn, #c69a4b)' }}>
+          <strong>{reg.status === 'INELIGIBLE' ? 'Not eligible as entered' : 'Manual review needed'}:</strong> {shortReason(q.reasons, reg.status)}
+        </p>
+      )}
       <div className="grid cols-2">
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Loan structure</p>
