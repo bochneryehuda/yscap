@@ -10,13 +10,13 @@ const seesAll = (role) => ['admin', 'super_admin', 'underwriter'].includes(role)
 const bigMoney = (n) => n == null ? '$0' : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? '$' + Math.round(n / 1e3) + 'K' : '$' + n;
 
 const EXC = [
-  { k: 'needs_correction', label: 'Docs need correction', to: '/staff/tasks' },
-  { k: 'awaiting_review', label: 'Awaiting your review', to: '/staff/tasks' },
-  { k: 'awaiting_borrower', label: 'Awaiting borrower', to: '/staff/tasks' },
-  { k: 'unread_messages', label: 'Unread messages', to: '/staff/chat' },
-  { k: 'open_conditions', label: 'Open conditions', to: '/staff/tasks' },
-  { k: 'unassigned', label: 'Unassigned', to: '/staff' },
-  { k: 'post_closing_exceptions', label: 'Post-closing exceptions', to: '/staff/tasks' },
+  { k: 'needs_correction', label: 'Docs need correction', to: '/internal/tasks' },
+  { k: 'awaiting_review', label: 'Awaiting your review', to: '/internal/tasks' },
+  { k: 'awaiting_borrower', label: 'Awaiting borrower', to: '/internal/tasks' },
+  { k: 'unread_messages', label: 'Unread messages', to: '/internal/chat' },
+  { k: 'open_conditions', label: 'Open conditions', to: '/internal/tasks' },
+  { k: 'unassigned', label: 'Unassigned', to: '/internal' },
+  { k: 'post_closing_exceptions', label: 'Post-closing exceptions', to: '/internal/tasks' },
 ];
 function ExceptionStrip({ e }) {
   if (!e) return null;
@@ -59,7 +59,7 @@ function Kpis({ d }) {
 function Row({ a }) {
   const pct = a.total_items > 0 ? Math.round((a.done_items / a.total_items) * 100) : 0;
   return (
-    <Link to={`/staff/app/${a.id}`} className="checkitem" style={{ textDecoration: 'none', color: 'inherit' }}>
+    <Link to={`/internal/app/${a.id}`} className="checkitem" style={{ textDecoration: 'none', color: 'inherit' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600 }}>{a.first_name} {a.last_name} · {addrLine(a.property_address)}</div>
         <div className="muted small">
@@ -120,7 +120,7 @@ export default function StaffQueue() {
           <button className={`btn ${tab === 'leads' ? 'primary' : 'ghost'}`} onClick={() => setTab('leads')}>
             Lead Capture{leads ? ` (${leads.length})` : ''}
           </button>
-          <button className="btn primary" onClick={() => nav('/staff/new')} title="Open a new loan file — the borrower doesn't need an account">
+          <button className="btn primary" onClick={() => nav('/internal/new')} title="Open a new loan file — the borrower doesn't need an account">
             + New file
           </button>
         </div>

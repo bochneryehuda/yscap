@@ -16,7 +16,7 @@ export default function StaffLogin() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const done = (t) => { signIn(t); nav('/staff'); };
+  const done = (t) => { signIn(t); nav('/internal'); };
 
   async function submitLogin() {
     setErr(''); setBusy(true);
@@ -40,7 +40,7 @@ export default function StaffLogin() {
       <div className="authcard panel">
         <BrandLockup />
         <div className="gold-rule" />
-        <h1>{mode === 'mfa' ? 'Enter your code' : 'Staff sign in'}</h1>
+        <h1>{mode === 'mfa' ? 'Enter your code' : 'Internal sign in'}</h1>
         <p className="muted small" style={{ marginTop: 6 }}>
           {mode === 'mfa'
             ? 'Open your authenticator app and enter the 6-digit code.'
