@@ -8,21 +8,32 @@
  * No argon2/otplib/jsonwebtoken => no native build => clean Render deploys.
  */
 const crypto = require('crypto');
+const { promisify } = require('util');
 const cfg = require('../config');
 
 // ---------- passwords (scrypt) ----------
-function hashPassword(pw) {
+// scrypt is memory-hard and CPU-heavy (~100-300ms on a shared-CPU instance).
+// We use the ASYNC form so the hashing runs on libuv's threadpool instead of
+// blocking Node's single event loop. Blocking it here was a real outage engine:
+// a burst of logins would freeze the whole process — health checks included —
+// long enough for the platform to declare the instance unhealthy and restart
+// it, surfacing to users as a wall of 502s around sign-in.
+const scryptAsync = promisify(crypto.scrypt);
+// 16 MiB is the working set for N=16384,r=8; give the threadpool headroom.
+const SCRYPT_MAXMEM = 64 * 1024 * 1024;
+
+async function hashPassword(pw) {
   const salt = crypto.randomBytes(16);
-  const dk = crypto.scryptSync(String(pw), salt, 32, { N: 16384, r: 8, p: 1 });
+  const dk = await scryptAsync(String(pw), salt, 32, { N: 16384, r: 8, p: 1, maxmem: SCRYPT_MAXMEM });
   return `scrypt$16384$8$1$${salt.toString('base64')}$${dk.toString('base64')}`;
 }
-function verifyPassword(pw, stored) {
+async function verifyPassword(pw, stored) {
   try {
     const [, N, r, p, saltB64, hashB64] = stored.split('$');
     const salt = Buffer.from(saltB64, 'base64');
     const expected = Buffer.from(hashB64, 'base64');
-    const dk = crypto.scryptSync(String(pw), salt, expected.length,
-      { N: +N, r: +r, p: +p });
+    const dk = await scryptAsync(String(pw), salt, expected.length,
+      { N: +N, r: +r, p: +p, maxmem: SCRYPT_MAXMEM });
     return dk.length === expected.length && crypto.timingSafeEqual(dk, expected);
   } catch { return false; }
 }
