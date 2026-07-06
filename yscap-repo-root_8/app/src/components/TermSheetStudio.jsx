@@ -73,6 +73,9 @@ export function buildStudioState(x) {
   const isAssign = !!x.isAssignment && rawNum(x.underlyingContractPrice) !== '';
   const price = rawNum(x.purchasePrice) ||
     (isAssign ? String((Number(rawNum(x.underlyingContractPrice)) || 0) + (Number(rawNum(x.assignmentFee)) || 0)) : '');
+  // Empty as-is value defaults to the final purchase price — same rule the
+  // server-side pricing input builder applies.
+  const asIs = rawNum(x.asIsValue) || price;
   const v = {
     borrowerName: x.borrowerName || '',
     propAddr: x.address || '',
@@ -82,7 +85,7 @@ export function buildStudioState(x) {
     propType: /2.?4/.test(String(x.propertyType || '')) || Number(x.units) > 1 ? '2-4' : 'sfr',
     price,
     origPrice: isAssign ? rawNum(x.underlyingContractPrice) : '',
-    asIs: rawNum(x.asIsValue),
+    asIs,
     arv: rawNum(x.arv),
     construction: rawNum(x.rehabBudget),
     rehabScope: /heavy|gut/i.test(String(x.rehabType || '')) ? 'heavy' : 'light',

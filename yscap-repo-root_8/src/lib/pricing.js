@@ -95,7 +95,10 @@ function buildInputs(app, experience, overrides) {
     purchasePrice: totalPrice,
     sellerPrice,
     isAssignment,
-    asIsValue: num(app.as_is_value),
+    // An empty as-is value defaults to the FINAL purchase price — leaving it
+    // blank on the application means "worth what I'm paying for it". Applies
+    // everywhere these inputs flow (quotes, registrations, the studio prefill).
+    asIsValue: num(app.as_is_value) || totalPrice,
     arv: num(app.arv),
     rehabBudget: num(app.rehab_budget),
     fico: num(app.fico),

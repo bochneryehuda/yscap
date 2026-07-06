@@ -566,13 +566,17 @@ export default function Application() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 16 }}>
-        <Link to="/dashboard" className="btn link">← All loans</Link>
-        <div className="spacer" />
-        <span className={`pill ${app.status}`}>{LABEL[app.status] || app.status}</span>
+      {/* The file's identity bar STAYS while you scroll — the address, loan
+          number and status pin under the app header; only the sections below
+          (and the rail beside them) move. */}
+      <div className="file-top">
+        <Link to="/dashboard" className="btn link" style={{ flex: 'none' }}>← All loans</Link>
+        <div className="file-top-main">
+          <h1 className="file-top-addr">{addrLine(app.property_address)}</h1>
+          <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
+        </div>
+        <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{LABEL[app.status] || app.status}</span>
       </div>
-      <h1 style={{ marginBottom: 4 }}>{addrLine(app.property_address)}</h1>
-      <p className="muted small" style={{ marginBottom: 20 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
 
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
@@ -590,7 +594,11 @@ export default function Application() {
           <h3 style={{ marginBottom: 12 }}>Loan snapshot <InfoTip tip="The headline numbers your loan team works from. Ask your officer to update deal numbers — they flow into pricing automatically." /></h3>
           <div className="metrow"><span className="k">Officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}{app.team_online && <span title="Your loan team is online now" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#3fb950', marginLeft: 8, verticalAlign: 'middle' }} />}</span></div>
           <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>
-          <div className="metrow"><span className="k">As-is value</span><span className="v">{money(app.as_is_value)}</span></div>
+          <div className="metrow"><span className="k">As-is value</span><span className="v">
+            {money(app.as_is_value ?? app.purchase_price)}
+            {app.as_is_value == null && app.purchase_price != null &&
+              <span className="muted small" style={{ fontWeight: 400 }} title="No as-is value was entered, so it defaults to the final purchase price"> (= purchase price)</span>}
+          </span></div>
           <div className="metrow"><span className="k">ARV</span><span className="v">{money(app.arv)}</span></div>
           <div className="metrow"><span className="k">Rehab budget</span><span className="v">{money(app.rehab_budget)}</span></div>
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
@@ -610,27 +618,51 @@ export default function Application() {
             {app.entity_name || app.llc_name || (app.llc_id ? 'LLC on file' : 'Not linked yet')}
             {app.llc_id && app.llc_verified && <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified ✓</span>}
           </span></div>
-          <div className="metrow"><span className="k">Experience entered</span><span className="v">
-            {[app.requested_exp_flips ? `${app.requested_exp_flips} flips` : '', app.requested_exp_holds ? `${app.requested_exp_holds} holds` : '', app.requested_exp_ground ? `${app.requested_exp_ground} ground-up` : '', app.requested_exp_reo ? `${app.requested_exp_reo} REO` : ''].filter(Boolean).join(' · ') || '—'}
-          </span></div>
-          <div className="metrow"><span className="k">Experience verified</span><span className="v">
-            {(() => {
-              // Verified deals straight from the track record — the counts your
-              // pricing tier is actually based on.
-              const v = { flips: 0, holds: 0, ground: 0, total: 0 };
-              for (const r of trRows) {
-                if (!r.is_verified) continue;
-                const t = String(r.deal_type || '').toLowerCase();
-                if (t.includes('ground')) v.ground++; else if (t.includes('flip')) v.flips++; else v.holds++;
-                v.total++;
-              }
-              if (!v.total) return <span className="muted">None verified yet — your track record is reviewed by your loan team</span>;
-              return <>
-                {[v.flips ? `${v.flips} flip${v.flips === 1 ? '' : 's'}` : '', v.holds ? `${v.holds} hold${v.holds === 1 ? '' : 's'}` : '', v.ground ? `${v.ground} ground-up` : ''].filter(Boolean).join(' · ')}
-                <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified from your track record ✓</span>
-              </>;
-            })()}
-          </span></div>
+          {(() => {
+            // Entered = what was claimed on the application / product
+            // registration (re-registering syncs these onto the file).
+            // Verified = what the loan team has verified on the track record —
+            // the basis pricing actually stands on. The two must meet: either
+            // the track record catches up, or the file reprices at the lower
+            // (more expensive) experience tier.
+            const entered = {
+              flips: Number(app.requested_exp_flips) || 0,
+              holds: Number(app.requested_exp_holds) || 0,
+              ground: Number(app.requested_exp_ground) || 0,
+            };
+            const v = { flips: 0, holds: 0, ground: 0, total: 0 };
+            for (const r of trRows) {
+              if (!r.is_verified) continue;
+              const t = String(r.deal_type || '').toLowerCase();
+              if (t.includes('ground')) v.ground++; else if (t.includes('flip')) v.flips++; else v.holds++;
+              v.total++;
+            }
+            const short = [
+              entered.flips > v.flips ? `${entered.flips - v.flips} flip${entered.flips - v.flips === 1 ? '' : 's'}` : null,
+              entered.holds > v.holds ? `${entered.holds - v.holds} hold${entered.holds - v.holds === 1 ? '' : 's'}` : null,
+              entered.ground > v.ground ? `${entered.ground - v.ground} ground-up` : null,
+            ].filter(Boolean);
+            return <>
+              <div className="metrow"><span className="k">Experience entered <InfoTip tip="What you entered on your application / product registration. Re-registering a product updates this." /></span><span className="v">
+                {[entered.flips ? `${entered.flips} flips` : '', entered.holds ? `${entered.holds} holds` : '', entered.ground ? `${entered.ground} ground-up` : '', app.requested_exp_reo ? `${app.requested_exp_reo} REO` : ''].filter(Boolean).join(' · ') || '—'}
+              </span></div>
+              <div className="metrow"><span className="k">Experience verified <InfoTip tip="Deals your loan team has verified on your Track Record — the experience your pricing actually stands on." /></span><span className="v">
+                {v.total
+                  ? <>
+                      {[v.flips ? `${v.flips} flip${v.flips === 1 ? '' : 's'}` : '', v.holds ? `${v.holds} hold${v.holds === 1 ? '' : 's'}` : '', v.ground ? `${v.ground} ground-up` : ''].filter(Boolean).join(' · ')}
+                      <span className="ts-badge ok" style={{ marginLeft: 6 }}>From your track record ✓</span>
+                    </>
+                  : <span className="muted">None verified yet — your track record is reviewed by your loan team</span>}
+              </span></div>
+              {short.length > 0 && (
+                <div className="small" style={{ padding: '8px 10px', marginTop: 6, borderRadius: 8, border: '1px solid rgba(201,168,106,.45)', background: 'rgba(201,168,106,.1)', color: '#E6D2A6' }}>
+                  ⚠ These two need to match before closing: your verified track record is short {short.join(', ')}.
+                  Add (and document) the missing deals in your <Link to={`/track-record?app=${id}`} style={{ color: 'inherit', textDecoration: 'underline' }}>Track Record</Link>,
+                  or reprice in Products &amp; Pricing with the lower experience — a lower tier prices higher.
+                </div>
+              )}
+            </>;
+          })()}
         </div>
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Property & transaction</h3>

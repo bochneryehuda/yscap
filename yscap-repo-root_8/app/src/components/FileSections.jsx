@@ -16,11 +16,17 @@ export function InfoTip({ tip }) {
   );
 }
 
-/* collapsible + defaultOpen: long, low-urgency sections (Document history,
-   Activity) start collapsed — the header row toggles them. */
-export function Section({ id, title, info, badge, children, style, collapsible = false, defaultOpen = true }) {
+/* EVERY section is collapsible from its header row. Most start open
+   (defaultOpen) — long, low-urgency ones (Document history, Activity) pass
+   defaultOpen={false} and start collapsed. */
+export function Section({ id, title, info, badge, children, style, collapsible = true, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen);
-  const toggle = () => collapsible && setOpen(o => !o);
+  const toggle = (e) => {
+    if (!collapsible) return;
+    // hovering/clicking the little "i" must never collapse the section
+    if (e && e.target && e.target.closest && e.target.closest('.info-tip')) return;
+    setOpen(o => !o);
+  };
   return (
     <section id={id} className="file-section" style={style}>
       <div
@@ -29,7 +35,7 @@ export function Section({ id, title, info, badge, children, style, collapsible =
         role={collapsible ? 'button' : undefined}
         tabIndex={collapsible ? 0 : undefined}
         aria-expanded={collapsible ? open : undefined}
-        onKeyDown={collapsible ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } } : undefined}
+        onKeyDown={collapsible ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(e); } } : undefined}
       >
         {collapsible && <span className={`sec-chevron${open ? ' open' : ''}`} aria-hidden="true">▶</span>}
         <h2 className="sec-title">{title}{info ? <InfoTip tip={info} /> : null}</h2>
@@ -53,7 +59,7 @@ export default function FileSections({ sections, children, top = null }) {
       const vis = entries.filter(e => e.isIntersecting)
         .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
       if (vis[0]) setActive(vis[0].target.id);
-    }, { rootMargin: '-90px 0px -55% 0px', threshold: 0 });
+    }, { rootMargin: '-150px 0px -55% 0px', threshold: 0 });   // clears header + file identity bar
     for (const s of sections) {
       const el = document.getElementById(s.id);
       if (el) obs.observe(el);
