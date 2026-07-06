@@ -319,6 +319,7 @@ const RB = (function(){
     if(STEPS[step].id==="budget") b.innerHTML=viewBudget();
     if(STEPS[step].id==="review") b.innerHTML=viewReview();
     renderNav(); bind();
+    if(window.RB_PORTAL_ONRENDER){ try{ window.RB_PORTAL_ONRENDER(); }catch(e){} }
     if(opts&&opts.scroll){ window.scrollTo({top:0,behavior:"smooth"}); }
     else if(keepY!=null){ const h=document.documentElement,p=h.style.scrollBehavior; h.style.scrollBehavior="auto"; window.scrollTo(0,keepY); h.style.scrollBehavior=p; }
     save();
@@ -1034,6 +1035,19 @@ const RB = (function(){
       if(units>0 && (!S.units || S.units===1)) S.units=units;
       var txn=q.get("txn");
       if(txn && !S.txn && (txn==="purchase"||txn==="refi")) S.txn=txn;
+      // property type + target budget from the loan file, so the builder
+      // opens already matched to the application.
+      var pt=q.get("propType");
+      if(pt && !S.propType && (pt==="single"||pt==="multi"||pt==="large")){
+        S.propType=pt;
+        if(pt==="single") S.units=1;
+        else if(pt==="multi" && !(units>=2&&units<=4)) S.units=2;
+        else if(pt==="large" && !(units>=5)) S.units=5;
+      }
+      var target=parseFloat(String(q.get("target")||"").replace(/[^0-9.]/g,""));
+      if(target>0 && !S.target) S.target=String(Math.round(target));
+      var pj=q.get("projType");
+      if(pj && !S.projType && /^(cosmetic|moderate|heavy|ground)$/.test(pj)) S.projType=pj;
     }catch(e){}
   }
 

@@ -31,7 +31,9 @@ export default function AddressAutocomplete({ value, onChange, onPick, placehold
         setActive(-1);
         setOpen(!!(j.suggestions && j.suggestions.length));
       })
-      .catch(() => { setSuggestions([]); setOpen(false); });
+      // Same staleness guard as the success path: a slow earlier request that
+      // fails must not wipe a newer request's results.
+      .catch(() => { if (mine !== seq.current) return; setSuggestions([]); setOpen(false); });
   }
   function onInput(e) {
     const v = e.target.value;

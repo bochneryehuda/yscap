@@ -25,6 +25,23 @@ function addrLine(a) {
   return [a.line1 || a.street, a.city, a.state, a.zip].filter(Boolean).join(', ');
 }
 
+/* Admin-mode soft gate — the SAME password gate the static Term Sheet tool
+   carries (cyrb53 hash check). Unlocking reveals the studio's admin pricing
+   zone (markups, origination, fee overrides, manual basis); the password is
+   ALSO sent with the registration so the server honors those overrides. */
+function cyrb53(str, seed = 0) {
+  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+  for (let i = 0, ch; i < str.length; i++) {
+    ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+const ADMIN_HASH = 6019969998889003; // matches web/tools/termsheet.js
+
 // Omit empty values so a blank studio field never overrides file data with 0.
 function compact(obj) {
   const out = {};
@@ -85,7 +102,7 @@ export function overridesFromSnapshot(snap, mode) {
 
 /* Every detail of the registered product, laid out in the file. `reg` is a
    product_registrations row (quote + inputs jsonb). */
-export function RegisteredProductDetails({ reg, compactView = false }) {
+export function RegisteredProductDetails({ reg, compactView = false, showAdmin = false }) {
   if (!reg) return null;
   const q = typeof reg.quote === 'string' ? JSON.parse(reg.quote) : (reg.quote || {});
   const inp = typeof reg.inputs === 'string' ? JSON.parse(reg.inputs || '{}') : (reg.inputs || {});
@@ -143,7 +160,7 @@ export function RegisteredProductDetails({ reg, compactView = false }) {
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
           <Row k="Interest reserve" v={`${inp.irMonths || 0} months`} />
-          {q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
+          {showAdmin && q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
             <Row k="Admin pricing" v={`${q.adminPricing.markupPct != null ? 'markup ' + q.adminPricing.markupPct + '%' : ''}${q.adminPricing.manualPricing ? ' · manual basis' : ''}`.trim()} />
           )}
         </div>
@@ -161,7 +178,17 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  const [adminKey, setAdminKey] = useState('');   // set after a correct admin-mode password
   const studioRef = useRef(null);
+  const adminOn = isStaff || !!adminKey;
+
+  function unlockAdmin() {
+    if (adminKey) { setAdminKey(''); return; }     // toggle back off
+    const pw = window.prompt('Admin mode — enter the pricing admin password:');
+    if (pw == null) return;
+    if (cyrb53(pw, 0) === ADMIN_HASH) { setAdminKey(pw); setMsg('Admin pricing unlocked — markup, origination and fee overrides are live.'); }
+    else setErr('Incorrect admin password.');
+  }
 
   const loadPricing = () => (isStaff ? api.staffPricing(appId) : api.borrowerPricing(appId));
 
@@ -260,9 +287,11 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
       // exact PDF from the static generator (best-effort — registration still proceeds)
       let pdf = null;
       try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
-      const overrides = overridesFromSnapshot(s, mode);
-      const regFn = isStaff ? api.staffRegisterProduct : api.borrowerRegisterProduct;
-      await regFn(appId, s.program, overrides);
+      // Admin-unlocked borrowers price like staff (fee/markup/manual overrides);
+      // the server only honors them because the admin key rides along.
+      const overrides = overridesFromSnapshot(s, adminOn ? 'staff' : mode);
+      if (isStaff) await api.staffRegisterProduct(appId, s.program, overrides);
+      else await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined);
       let note = 'Product registered — the loan file now carries these terms, the liquidity requirement and the term sheet.';
       if (pdf && pdf.blob) {
         try {
@@ -300,7 +329,7 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
       {err && <div className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
 
-      {cur && <RegisteredProductDetails reg={cur} />}
+      {cur && <RegisteredProductDetails reg={cur} showAdmin={isStaff} />}
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
           {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}
@@ -315,12 +344,19 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
               ? 'The live Term Sheet Studio, prefilled from this file. Adjust anything — including the admin pricing controls below the form — pick the program and leverage, then register. Every detail is saved back onto the file and the exact term sheet PDF is attached (previous sheets are marked superseded).'
               : 'Prefilled from your loan file. Adjust your experience, credit and reserve, compare the programs, pick your leverage — then register your product. Deal numbers come from your file; ask your loan team to change those.'}
           </p>
-          <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
-            showAdmin={isStaff} onState={setSnap} />
+          <TermSheetStudio key={adminOn ? 'admin' : 'std'} ref={studioRef} prefill={prefill} lockedIds={lockedIds}
+            showAdmin={adminOn} onState={setSnap} />
           <div className="row" style={{ gap: 10, marginTop: 10, alignItems: 'center', position: 'sticky', bottom: 0, background: 'var(--ink-1)', padding: '10px 0' }}>
             <button className="btn primary" disabled={busy || !canRegister} onClick={register}>
               {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
             </button>
+            {!isStaff && (
+              <button className="btn link small" type="button" onClick={unlockAdmin}
+                style={{ opacity: adminKey ? 1 : 0.45 }}
+                title="Admin mode — unlock markup, origination and fee overrides (password required)">
+                {adminKey ? 'Admin mode on — lock' : 'Admin mode'}
+              </button>
+            )}
             <span className="muted small">
               {snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
                 : snap && !snap.program ? 'Tap a program card above to choose Standard or Gold Standard.'

@@ -44,7 +44,7 @@ async function main() {
     process.exit(1);
   }
 
-  const hash = C.hashPassword(password);
+  const hash = await C.hashPassword(password);
   const r = await db.query(
     `INSERT INTO staff_users (email, full_name, role, password_hash, is_active)
      VALUES ($1, $2, $3, $4, true)

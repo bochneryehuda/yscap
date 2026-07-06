@@ -301,6 +301,20 @@ function borrowerPricingOverrides(raw) {
   }
   return out;
 }
+// Admin pricing unlock: a borrower session that presents the admin key (the
+// Term Sheet Studio's admin-mode password, server-verified) may also send the
+// staff-grade fee / markup / manual-basis overrides.
+const ADMIN_OVERRIDE_KEYS = ['markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct',
+  'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
+  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths'];
+function mergeAdminOverrides(overrides, raw, adminKey) {
+  if (!adminKey || adminKey !== cfg.adminPricingKey) return overrides;
+  for (const k of ADMIN_OVERRIDE_KEYS) {
+    if (raw && raw[k] != null && raw[k] !== '') overrides[k] = raw[k];
+  }
+  if (raw && raw.manualPricing != null) overrides.manualPricing = !!raw.manualPricing;
+  return overrides;
+}
 
 router.get('/applications/:id/pricing', async (req, res) => {
   try {
@@ -323,7 +337,9 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const f = await loadFileForPricing(req.params.id, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
-    const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
+    const overrides = mergeAdminOverrides(
+      borrowerPricingOverrides((req.body && req.body.overrides) || {}),
+      (req.body && req.body.overrides) || {}, req.body && req.body.adminKey);
     const out = pricing.quoteAll(f.app, f.exp, overrides);
     res.json({ ...out, experience: f.exp });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
@@ -337,7 +353,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
-    const overrides = borrowerPricingOverrides(b.overrides || {});
+    const overrides = mergeAdminOverrides(borrowerPricingOverrides(b.overrides || {}), b.overrides || {}, b.adminKey);
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     const quote = pricing.quoteProgram(program, inputs);
     if (quote.status === 'INELIGIBLE') return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
@@ -357,6 +373,13 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null });
+
+    // Registering the product satisfies the "Products & pricing" condition.
+    try {
+      await db.query(
+        `UPDATE checklist_items SET status='received', updated_at=now()
+          WHERE application_id=$1 AND tool_key='product_pricing' AND status <> 'satisfied'`, [appId]);
+    } catch (_) { /* condition may not exist on older files */ }
 
     try {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
@@ -409,7 +432,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
   try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
   const r = await db.query(
     `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
-            COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date, ci.notes,
+            COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date,
+            -- ci.notes is the INTERNAL staff note (underwriting / capital-partner
+            -- context) — never send it to a borrower. Only the borrower_* wording
+            -- above is safe.
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             (SELECT d.rejection_reason FROM documents d
@@ -675,6 +701,87 @@ router.post('/applications/:id/link-llc', async (req, res) => {
   try { await llcLib.syncLlcConditions(b.llcId, { appId: req.params.id, reopen: true }); } catch (_) { /* best-effort */ }
   await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
   res.json({ ok: true });
+});
+
+// ---------------- APPRAISAL PAYMENT CARD (a borrower condition) ----------------
+// The borrower enters the card the appraisal is ordered on. Stored encrypted
+// (AES-256-GCM, same key handling as SSNs); the back office decrypts it when
+// placing the order. Luhn + expiry validated server-side.
+function luhnOk(num) {
+  const s = String(num || '').replace(/\D/g, '');
+  if (s.length < 13 || s.length > 19) return false;
+  let sum = 0, dbl = false;
+  for (let i = s.length - 1; i >= 0; i--) {
+    let d = s.charCodeAt(i) - 48;
+    if (dbl) { d *= 2; if (d > 9) d -= 9; }
+    sum += d; dbl = !dbl;
+  }
+  return sum % 10 === 0;
+}
+function cardBrand(num) {
+  const s = String(num || '').replace(/\D/g, '');
+  if (/^4/.test(s)) return 'Visa';
+  if (/^(5[1-5]|2[2-7])/.test(s)) return 'Mastercard';
+  if (/^3[47]/.test(s)) return 'Amex';
+  if (/^6(011|5)/.test(s)) return 'Discover';
+  return 'Card';
+}
+router.post('/applications/:id/appraisal-card', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  const number = String(b.number || '').replace(/\D/g, '');
+  if (!luhnOk(number)) return res.status(400).json({ error: 'That does not look like a valid card number — please check the digits.' });
+  const expMonth = parseInt(b.expMonth, 10), expYear = parseInt(b.expYear, 10);
+  const fullYear = expYear < 100 ? 2000 + expYear : expYear;
+  if (!(expMonth >= 1 && expMonth <= 12)) return res.status(400).json({ error: 'expiration month must be 1–12' });
+  const now = new Date();
+  if (!(fullYear > now.getFullYear() || (fullYear === now.getFullYear() && expMonth >= now.getMonth() + 1)))
+    return res.status(400).json({ error: 'that card is expired' });
+  const cvc = String(b.cvc || '').replace(/\D/g, '');
+  if (cvc.length < 3 || cvc.length > 4) return res.status(400).json({ error: 'security code must be 3 or 4 digits' });
+  const zip = String(b.zip || '').trim().slice(0, 10);
+  if (!zip) return res.status(400).json({ error: 'billing ZIP is required' });
+  try {
+  // encryptSSN yields binary (bytea shape) — base64 it for the text column.
+  const enc = C.encryptSSN(JSON.stringify({ number, cvc })).toString('base64');
+  await db.query(
+    `INSERT INTO application_payment_cards (application_id,borrower_id,card_encrypted,last4,brand,exp_month,exp_year,billing_zip)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (application_id) DO UPDATE SET
+       card_encrypted=EXCLUDED.card_encrypted, last4=EXCLUDED.last4, brand=EXCLUDED.brand,
+       exp_month=EXCLUDED.exp_month, exp_year=EXCLUDED.exp_year, billing_zip=EXCLUDED.billing_zip,
+       borrower_id=EXCLUDED.borrower_id, updated_at=now()`,
+    [req.params.id, me(req), enc, number.slice(-4), cardBrand(number), expMonth, fullYear, zip]);
+  await db.query(
+    `UPDATE checklist_items SET status='received', updated_at=now()
+      WHERE application_id=$1 AND tool_key='appraisal_card'`, [req.params.id]);
+  await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4: number.slice(-4) });
+  try {
+    const a = await db.query(
+      `SELECT a.loan_officer_id, a.processor_id, a.ys_loan_number, b.first_name, b.last_name
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
+    const row = a.rows[0];
+    if (row) {
+      const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+      for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
+        await notify.notifyStaff(sid, {
+          type: 'condition_added', title: `${who} added the appraisal card`,
+          body: `${row.ys_loan_number || 'A file'} — ${cardBrand(number)} ending ${number.slice(-4)}. The appraisal can be ordered.`,
+          applicationId: req.params.id, link: `/staff/app/${req.params.id}` });
+    }
+  } catch (_) { /* best-effort */ }
+  res.status(201).json({ ok: true, last4: number.slice(-4), brand: cardBrand(number) });
+  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+});
+// Masked view for the borrower's own condition row.
+router.get('/applications/:id/appraisal-card', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const r = await db.query(
+    `SELECT last4, brand, exp_month, exp_year, billing_zip, updated_at
+       FROM application_payment_cards WHERE application_id=$1`, [req.params.id]);
+  res.json(r.rows[0] || null);
 });
 
 // ---------------- SERVICE CONTACTS (title company / insurance agent) ----------------
@@ -1484,8 +1591,9 @@ router.post('/drafts/:id/submit', async (req, res) => {
         rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
         is_assignment,underlying_contract_price,assignment_fee,
         term,requested_ir_months,
+        requested_exp_reo,payoff_amount,original_purchase_price,acquisition_date,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,'portal',$23,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
@@ -1493,7 +1601,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
      b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b)),
-     b.termMonths ? String(b.termMonths) : null, intField(b.irMonths)]);
+     b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
+     intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice), b.acquisitionDate || null]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
   if (b.llcId) { try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ } }

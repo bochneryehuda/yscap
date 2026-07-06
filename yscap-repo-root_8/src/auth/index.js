@@ -123,7 +123,7 @@ router.post('/borrower/register', async (req, res) => {
     if (exists.rows[0]) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'account exists — log in' }); }
     await client.query(
       `INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,$2,0)`,
-      [id, C.hashPassword(password)]);
+      [id, await C.hashPassword(password)]);
     await client.query('COMMIT');
 
     // Welcome + email verification (outside the txn; never blocks the response).
@@ -154,7 +154,7 @@ router.post('/borrower/login', async (req, res, next) => {
     if (!row) return res.status(401).json({ error: 'invalid credentials' });
     if (row.locked_until && new Date(row.locked_until) > new Date())
       return res.status(423).json({ error: 'account locked — try later' });
-    if (!C.verifyPassword(password, row.password_hash)) {
+    if (!(await C.verifyPassword(password, row.password_hash))) {
       const fa = row.failed_attempts + 1;
       await db.query(`UPDATE borrower_auth SET failed_attempts=$2, locked_until=$3 WHERE borrower_id=$1`,
         [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]);
@@ -270,7 +270,7 @@ router.post('/borrower/reset', async (req, res) => {
           SET password_hash=$2, token_version=token_version+1,
               failed_attempts=0, locked_until=NULL
         WHERE borrower_id=$1`,
-      [row.borrower_id, C.hashPassword(password)]);
+      [row.borrower_id, await C.hashPassword(password)]);
     await db.query(`UPDATE email_tokens SET used_at=now() WHERE id=$1`, [row.id]);
     try {
       const b = await db.query(`SELECT first_name, email FROM borrowers WHERE id=$1`, [row.borrower_id]);
@@ -320,7 +320,7 @@ router.post('/staff/login', async (req, res, next) => {
       `SELECT id, role, password_hash, mfa_enabled, token_version FROM staff_users
        WHERE email=$1 AND is_active=true`, [email]);
     const row = r.rows[0];
-    if (!row || !row.password_hash || !C.verifyPassword(password, row.password_hash))
+    if (!row || !row.password_hash || !(await C.verifyPassword(password, row.password_hash)))
       return res.status(401).json({ error: 'invalid credentials' });
     await db.query(`UPDATE staff_users SET last_login_at=now() WHERE id=$1`, [row.id]);
     if (row.mfa_enabled)
@@ -354,7 +354,7 @@ router.post('/staff', requireAuth, requireRole('admin'), async (req, res) => {
       `INSERT INTO staff_users (email,full_name,role,password_hash)
        VALUES ($1,$2,$3,$4)
        ON CONFLICT (email) DO UPDATE SET full_name=EXCLUDED.full_name, role=EXCLUDED.role RETURNING id`,
-      [email, fullName, role, password ? C.hashPassword(password) : null]);
+      [email, fullName, role, password ? await C.hashPassword(password) : null]);
     res.status(201).json({ ok: true, staffId: r.rows[0].id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -396,7 +396,7 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
                   : 'email this token to the invitee; they POST /auth/accept' });
 });
 
-router.post('/accept', async (req, res) => {
+router.post('/accept', async (req, res, next) => {
   const { token, password, firstName, lastName, fullName } = req.body || {};
   if (!token || !password) return res.status(400).json({ error: 'token + password required' });
   const inv = await db.query(
@@ -409,7 +409,7 @@ router.post('/accept', async (req, res) => {
       const s = await db.query(
         `INSERT INTO staff_users (email,full_name,role,password_hash) VALUES ($1,$2,$3,$4)
          ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash RETURNING id,role,token_version`,
-        [row.email, fullName || row.email, row.role || 'loan_officer', C.hashPassword(password)]);
+        [row.email, fullName || row.email, row.role || 'loan_officer', await C.hashPassword(password)]);
       await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
       return res.json({ token: staffToken(s.rows[0].id, s.rows[0].role, s.rows[0].token_version) });
     }
@@ -417,13 +417,19 @@ router.post('/accept', async (req, res) => {
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ($1,$2,$3)
        ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
       [firstName || 'Unknown', lastName || 'Unknown', row.email]);
-    await db.query(
-      `INSERT INTO borrower_auth (borrower_id,password_hash) VALUES ($1,$2)
-       ON CONFLICT (borrower_id) DO UPDATE SET password_hash=EXCLUDED.password_hash`,
-      [b.rows[0].id, C.hashPassword(password)]);
+    // Bump token_version on the password change (invalidates any prior sessions)
+    // and issue the token with the ACTUAL resulting version. Hardcoding 0 handed
+    // an existing borrower (token_version already > 0) a token that authenticate()
+    // rejects immediately as "session expired".
+    const ba = await db.query(
+      `INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,$2,0)
+       ON CONFLICT (borrower_id) DO UPDATE
+         SET password_hash=EXCLUDED.password_hash, token_version=borrower_auth.token_version+1
+       RETURNING token_version`,
+      [b.rows[0].id, await C.hashPassword(password)]);
     await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
-    res.json({ token: borrowerToken(b.rows[0].id, 0) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({ token: borrowerToken(b.rows[0].id, ba.rows[0].token_version) });
+  } catch (e) { next(e); }
 });
 
 // ---------------- logout (revoke) + me ----------------

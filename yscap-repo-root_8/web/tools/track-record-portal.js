@@ -79,7 +79,7 @@
     };
     var dealType = p.kind === "hold" ? "fix-and-hold" : "flip";
     if (p._dealType && /ground/i.test(p._dealType)) dealType = p._dealType;   // keep ground-up labelling
-    return {
+    var out = {
       dealType: dealType, propertyAddress: addr,
       purchasePrice: p.purchasePrice || "", purchaseDate: p.purchaseDate || "", rehabAmount: p.rehab || "",
       salePrice: p.kind === "flip" ? (p.salePrice || "") : "", saleDate: p.kind === "flip" ? (p.saleDate || "") : "",
@@ -88,7 +88,56 @@
       currentValue: p.currentValue || "", notes: p.notes || "",
       propertyType: p.propType || "", entityName: p.entity || "",
     };
+    // Entity typed to match one of the borrower's LLCs → hard-link the deal.
+    var llc = llcByName(p.entity);
+    out.llcId = llc ? llc.id : null;
+    return out;
   }
+
+  /* ---- borrower LLCs for entity linking ---- */
+  var llcs = [];
+  function llcByName(name) {
+    var n = String(name || "").trim().toLowerCase();
+    if (!n) return null;
+    for (var i = 0; i < llcs.length; i++) {
+      if (String(llcs[i].llc_name || "").trim().toLowerCase() === n) return llcs[i];
+    }
+    return null;
+  }
+  function loadLlcs() {
+    var url = staffMode ? "/api/staff/borrowers/" + staffBorrowerId + "/llcs" : "/api/borrower/llcs";
+    return api("GET", url).then(function (rows) { llcs = rows || []; }).catch(function () { llcs = []; });
+  }
+
+  /* ---- per-form enhancements: LLC picker + address autocomplete ---- */
+  window.TR_PORTAL_ONFORM = function (ov) {
+    try {
+      var ent = ov.querySelector('[data-f="entity"]');
+      if (ent && llcs.length) {
+        var dl = document.getElementById("tr-portal-llcs");
+        if (!dl) {
+          dl = document.createElement("datalist");
+          dl.id = "tr-portal-llcs";
+          document.body.appendChild(dl);
+        }
+        dl.innerHTML = llcs.map(function (l) { return '<option value="' + String(l.llc_name || "").replace(/"/g, "&quot;") + '">'; }).join("");
+        ent.setAttribute("list", "tr-portal-llcs");
+        ent.placeholder = "Pick one of your LLCs, or type a name";
+      }
+      var addrIn = ov.querySelector('[data-f="address"]');
+      if (addrIn && window.YSAddr) {
+        window.YSAddr.attach(addrIn, function (a) {
+          addrIn.value = a.line1 || addrIn.value;
+          var set = function (key, val) {
+            var el = ov.querySelector('[data-f="' + key + '"]');
+            if (el && val) { el.value = val; el.dispatchEvent(new Event("input", { bubbles: true })); }
+          };
+          addrIn.dispatchEvent(new Event("input", { bubbles: true }));
+          set("city", a.city); set("state", a.state); set("zip", a.zip);
+        });
+      }
+    } catch (e) { /* form still works without enhancements */ }
+  };
 
   /* ---- diff sync: the tool mutates its working set; we mirror it server-side ---- */
   var basePayloads = {};                 // server id -> JSON of last-known payload
@@ -276,10 +325,49 @@
     var s = document.createElement("style");
     s.textContent = css;
     document.head.appendChild(s);
-    // Share/import make no sense on the live record — the server is the save.
+    // Sharing makes no sense on the live record — the server is the save.
+    // IMPORT stays: an Excel export (or the YS template) merges into the live
+    // record and syncs to the server like any other change.
     document.querySelectorAll(".topbar-actions button").forEach(function (b) {
-      if (/Share link|Import/.test(b.textContent)) b.style.display = "none";
+      if (/Share link/.test(b.textContent)) b.style.display = "none";
     });
+    if (embed) {
+      // In embed mode the topbar is hidden — surface Import/Export in a slim bar.
+      var main = document.querySelector("main");
+      var hero = document.querySelector(".tr-hero");
+      if (main) {
+        var bar = document.createElement("div");
+        bar.style.cssText = "display:flex;gap:.5rem;align-items:center;margin:0 auto .4rem;max-width:1080px;padding:0 1rem";
+        var mk = function (label, title, fn) {
+          var b = document.createElement("button");
+          b.type = "button"; b.className = "tr-btn line"; b.textContent = label; b.title = title;
+          b.style.cssText = "padding:.3rem .9rem;font-size:.8rem";
+          b.onclick = fn; bar.appendChild(b);
+        };
+        mk("Import Excel ⤒", "Import your experience from an Excel exported by this tool or the YS template — it merges into your live record.",
+          function () { var i = document.getElementById("tr-import"); if (i) i.click(); });
+        mk("Export Excel ⤓", "Download the branded Excel workbook", function () { TR.exportXlsx(this); });
+        mk("Export PDF ⤓", "Download the branded PDF report", function () { TR.exportPdf(this); });
+        main.insertBefore(bar, hero ? hero.nextSibling : main.firstChild);
+      }
+    }
+    // Importing must MERGE into the live record, never wipe it: keep the
+    // server rows and add the imported deals on top (skip near-duplicates).
+    var origImport = TR.importXlsx;
+    TR.importXlsx = async function (input) {
+      var before = {};
+      (TR._state().props || []).forEach(function (p) { before[p.id] = true; });
+      await origImport(input);
+      var imported = (TR._state().props || []).filter(function (p) { return !before[p.id]; });
+      if (!imported.length) return;
+      var existing = Object.keys(propsById).map(function (k) { return propsById[k]; });
+      var dupKey = function (p) { return (String(p.address || "").toLowerCase().trim() + "|" + (p.purchaseDate || "")); };
+      var seen = {};
+      existing.forEach(function (p) { seen[dupKey(p)] = true; });
+      var fresh = imported.filter(function (p) { var k = dupKey(p); if (seen[k]) return false; seen[k] = true; return true; });
+      TR.setState({ borrower: displayName, props: existing.concat(fresh) });
+      flash("Imported " + fresh.length + " deal" + (fresh.length === 1 ? "" : "s") + " — merged into your live track record.");
+    };
     var hero = document.querySelector(".tr-hero p");
     if (hero) hero.textContent = staffMode
       ? "The borrower's live track record. Add, edit or remove deals, set each deal's verification status, and attach the documentation you verified it against. Changes save automatically."
@@ -299,6 +387,8 @@
       : api("GET", "/api/borrower/profile").then(function (b) { return ((b.first_name || "") + " " + (b.last_name || "")).trim(); });
     namePromise.catch(function () { return ""; }).then(function (n) {
       displayName = n || "";
+      return loadLlcs();
+    }).then(function () {
       return reload();
     }).then(function () {
       flash("Connected — your track record saves automatically.");

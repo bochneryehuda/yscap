@@ -1,5 +1,5 @@
 -- =====================================================================
--- 032_llc_rebuild.sql
+-- 033_llc_rebuild.sql
 -- LLC section rebuild: the LLC on the borrower profile becomes the single
 -- source of truth for entity info, ownership structure, and the three
 -- entity documents — reused on every loan file.

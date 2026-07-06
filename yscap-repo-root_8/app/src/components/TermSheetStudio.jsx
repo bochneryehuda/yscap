@@ -18,6 +18,10 @@ const HIDE_CSS = `
   .topbar, .tool-hero, .suite-footer, #leadCapture, #handoff,
   #floatActions, #applyModal, .fill-hint { display: none !important; }
   body { padding-top: 0 !important; }
+  /* height:auto so scrollHeight reflects CONTENT, not the iframe viewport —
+     otherwise the auto-resize below reads its own height back (+24px) every
+     tick and the frame grows forever, pushing the Register button away. */
+  html, body { height: auto !important; min-height: 0 !important; }
 `;
 // Borrowers never see the studio's admin pricing zone; staff keep it (and get
 // it pre-unlocked) so markups, origination and fee overrides work exactly as
@@ -337,7 +341,14 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         poller = setInterval(() => {
           if (disposed) return;
           try {
-            frame.style.height = Math.max(900, win.document.documentElement.scrollHeight + 24) + 'px';
+            // Fit the frame to the studio's CONTENT. Only move when the size
+            // genuinely changed — resizing every tick fed the measurement back
+            // into itself (scrollHeight tracks the viewport when content is
+            // shorter), growing the frame ~24px per tick with an ever-larger
+            // empty gap before the Register button.
+            const want = Math.max(900, win.document.body.scrollHeight + 24);
+            const have = parseInt(frame.style.height, 10) || 0;
+            if (Math.abs(want - have) > 30) frame.style.height = want + 'px';
             if (onStateRef.current) onStateRef.current(readSnapshot(win));
           } catch (_) { /* frame navigated / torn down */ }
         }, 700);
