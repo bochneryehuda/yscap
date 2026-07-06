@@ -25,9 +25,15 @@ export default function NotificationSettings() {
     setRows(rs => rs.map(r => r.category === cat ? { ...r, [field]: value } : r));
     const row = rows.find(r => r.category === cat);
     try {
+      setErr('');
       await api.saveNotificationPref({ category: cat, in_app: field === 'in_app' ? value : row.in_app, email: field === 'email' ? value : row.email });
       setMsg('Saved'); setTimeout(() => setMsg(''), 1500);
-    } catch (e) { setErr(e.message || 'Could not save'); }
+    } catch (e) {
+      // Roll the checkbox back — leaving the optimistic value on screen made
+      // the user believe a preference stuck when it never saved.
+      setRows(rs => rs.map(r => r.category === cat ? { ...r, [field]: row[field] } : r));
+      setErr(e.message || 'Could not save');
+    }
   }
 
   if (err && !rows) return <div className="notice err">{err}</div>;

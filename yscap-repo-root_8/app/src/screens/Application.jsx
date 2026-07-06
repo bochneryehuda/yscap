@@ -223,11 +223,17 @@ export default function Application() {
   const [sowOpen, setSowOpen] = useState(false);
 
   const activityFetcher = useCallback(() => api.activity(id), [id]);
-  const load = () => Promise.all([
-    api.application(id), api.checklist(id), api.documents(id).catch(() => []),
-    api.conditions(id).catch(() => []), api.profile().catch(() => null),
-  ]).then(([a, c, d, cn, p]) => { setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); setProfile(p); })
-    .catch(e => setErr(e.message));
+  const idRef = useRef(id); idRef.current = id;
+  const load = () => {
+    const forId = id;   // drop late responses after navigating to another file
+    return Promise.all([
+      api.application(id), api.checklist(id), api.documents(id).catch(() => []),
+      api.conditions(id).catch(() => []), api.profile().catch(() => null),
+    ]).then(([a, c, d, cn, p]) => {
+      if (idRef.current !== forId) return;
+      setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); setProfile(p);
+    }).catch(e => { if (idRef.current === forId) setErr(e.message); });
+  };
 
   async function downloadDoc(doc) {
     setDlBusy(doc.id);
@@ -235,7 +241,14 @@ export default function Application() {
     catch (e) { setErr(e.message || 'Download failed'); }
     finally { setDlBusy(null); }
   }
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+  useEffect(() => {
+    // React Router reuses this mounted component across /app/:id changes
+    // (mention chips, notification deep-links). Clear the previous file's data
+    // first or the old loan renders under the new URL until the fetch lands.
+    setApp(null); setItems([]); setUploads([]); setConds([]); setErr(''); setMsg('');
+    load();
+    /* eslint-disable-next-line */
+  }, [id]);
   // Coming back from the Track Record section / Scope of Work tab: refresh so
   // condition statuses and counts stay in step without a manual reload.
   useEffect(() => {
@@ -309,7 +322,7 @@ export default function Application() {
   const trCounts = trPayload.counts || {};
   const hasReq = req.flips + req.holds + req.ground > 0;
 
-  const nDone = items.filter(it => isDone(it.status)).length + (conds.length ? 0 : 0);
+  const nDone = items.filter(it => isDone(it.status)).length;
 
   return (
     <>
@@ -561,7 +574,9 @@ export default function Application() {
         </div>
       )}
 
-      <MessageThread mine="borrower" title="Messages with your loan team"
+      {/* Keyed by file id: this component survives /app/:id navigation, and
+          without the key the previous file's thread kept showing. */}
+      <MessageThread key={id} mine="borrower" title="Messages with your loan team"
         fetchMessages={() => api.messages(id)}
         send={(body, opts) => api.postMessage(id, body, { attachment: opts?.attachment, entityRefs: opts?.entityRefs })}
         downloadAttachment={(docId) => api.downloadDoc(docId)}

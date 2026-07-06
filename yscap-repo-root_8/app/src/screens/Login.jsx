@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, useAuthNotice } from '../lib/auth.jsx';
 import { BrandLockup } from '../components/Layout.jsx';
 
 export default function Login() {
   const { signIn } = useAuth();
+  const notice = useAuthNotice();
   const nav = useNavigate();
   const [mode, setMode] = useState('login');       // login | mfa | register
   const [email, setEmail] = useState('');
@@ -58,6 +59,7 @@ export default function Login() {
             : 'Access your loan files, documents and status with YS Capital Group.'}
         </p>
 
+        {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
         {err && <div className="notice err" style={{ marginTop: 16 }}>{err}</div>}
 
         <div style={{ marginTop: 18 }}>
@@ -104,7 +106,7 @@ export default function Login() {
         )}
         {mode === 'login' && (
           <div className="row" style={{ marginTop: 12, justifyContent: 'center' }}>
-            <button className="btn link small muted" onClick={() => nav('/staff/login')}>Staff sign in →</button>
+            <button className="btn link small muted" onClick={() => nav('/internal/login')}>Internal sign in →</button>
           </div>
         )}
       </div>

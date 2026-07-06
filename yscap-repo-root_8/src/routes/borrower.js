@@ -5,7 +5,7 @@
  *   · Checklists (borrower-visible) · Documents · Notifications · Messages
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
 const C = require('../lib/crypto');
@@ -202,7 +202,7 @@ router.post('/applications/:id/request-draw', async (req, res) => {
       await notify.notifyStaff(sid, {
         type: 'draw_request', title: 'Draw setup requested',
         body: `${borrowerName || 'The borrower'} requested draw setup on ${addr}.`,
-        applicationId: a.id, link: `/staff/app/${a.id}`, ctaLabel: 'Open the file' });
+        applicationId: a.id, link: `/internal/app/${a.id}`, ctaLabel: 'Open the file' });
     await notify.notifyBorrower(me(req), {
       type: 'draw_request', title: 'Draw request received',
       body: `We received your request to set up draws on ${addr}. Our draws team will follow up.`,
@@ -389,7 +389,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           type: 'product_registered',
           title: 'Borrower selected a product on ' + (row.ys_loan_number || 'a file'),
           body, applicationId: appId,
-          link: `/staff/app/${appId}`,
+          link: `/internal/app/${appId}`,
         });
       }
     } catch (_) {}
@@ -906,6 +906,17 @@ router.post('/documents', async (req, res) => {
     const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
     if (!o.rows[0]) return res.status(404).json({ error: 'llc not found' });
   }
+  // The checklist item must be the borrower's own too — otherwise the document
+  // row can be pointed at another borrower's checklist-item id.
+  if (b.checklistItemId) {
+    const o = await db.query(
+      `SELECT 1 FROM checklist_items ci
+        WHERE ci.id=$1 AND (ci.borrower_id=$2
+           OR ci.application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)
+           OR ci.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`,
+      [b.checklistItemId, me(req)]);
+    if (!o.rows[0]) return res.status(404).json({ error: 'checklist item not found' });
+  }
   const buf = Buffer.from(b.dataBase64, 'base64');
   if (!buf.length) return res.status(400).json({ error: 'empty file' });
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
@@ -976,7 +987,7 @@ router.post('/documents', async (req, res) => {
           title: 'New document uploaded',
           body: `${who} uploaded "${b.filename}"${where}.`,
           applicationId: b.applicationId,
-          link: `/staff/app/${b.applicationId}`,
+          link: `/internal/app/${b.applicationId}`,
           ctaLabel: 'Review the document',
         };
         const targets = new Set([row.loan_officer_id, row.processor_id].filter(Boolean));
@@ -1092,8 +1103,9 @@ router.get('/messages', async (req, res) => {
         AND ($2::uuid IS NULL OR m.application_id=$2)
         AND (m.borrower_id=$1 OR m.application_id IN
              (SELECT id FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1))
-      ORDER BY m.created_at`,
+      ORDER BY m.created_at DESC LIMIT 500`,
     [me(req), req.query.applicationId || null]);
+  r.rows.reverse();   // newest-500 window, still rendered oldest-first
   // Opening the thread clears the "new message" badge for staff replies.
   if (req.query.applicationId)
     await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND borrower_id=$2 AND sender_kind='staff' AND read_at IS NULL`,
@@ -1148,7 +1160,7 @@ router.post('/messages', async (req, res) => {
         const opts = {
           type: 'message', title: `New message from ${who}`,
           body: String(b.body).slice(0, 140), applicationId: b.applicationId,
-          link: `/staff/app/${b.applicationId}`, ctaLabel: 'Open the conversation',
+          link: `/internal/app/${b.applicationId}`, ctaLabel: 'Open the conversation',
         };
         for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
           await notify.notifyStaff(sid, opts);
@@ -1456,14 +1468,14 @@ router.post('/drafts/:id/submit', async (req, res) => {
       await notify.notifyStaff(officerId, {
         type: 'new_application', title: 'New application submitted',
         body: 'A borrower submitted a new loan application through the portal.',
-        applicationId: appId, link: `/staff/app/${appId}`, meta,
+        applicationId: appId, link: `/internal/app/${appId}`, meta,
         emailTo: officerRow.email, ctaLabel: 'Open the loan file',
       });
     } else {
       await notify.notifyAdmins({
         type: 'unassigned_application', title: 'New application — Lead Capture',
         body: 'A borrower submitted a new application with no loan officer selected. It is in Lead Capture.',
-        applicationId: appId, link: `/staff`, meta, ctaLabel: 'Open Lead Capture',
+        applicationId: appId, link: `/internal`, meta, ctaLabel: 'Open Lead Capture',
       });
     }
   } catch (e) { /* notification failure never blocks submission */ }

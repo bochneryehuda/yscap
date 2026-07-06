@@ -30,11 +30,13 @@
 // strong random value for this process and warn loudly. That closes the
 // forge-anyone's-token / decrypt-any-SSN hole; the trade-off (values reset on
 // restart) is surfaced so operators set a stable value.
+const generatedSecrets = new Set();   // names we had to auto-generate this boot
 function resolveSecret(name) {
   const v = process.env[name];
   const placeholder = !v || v === 'dev-only-change-me' || v === 'change-me-long-random';
   if (!placeholder) return v;
   if ((process.env.NODE_ENV || 'development') === 'production') {
+    generatedSecrets.add(name);
     const gen = require('crypto').randomBytes(48).toString('base64url');
     console.error(
       `[config] SECURITY: ${name} is not set — using a random ephemeral value for this process. ` +
@@ -67,7 +69,15 @@ module.exports = {
   // --- auth / crypto ---
   jwtSecret:     resolveSecret('JWT_SECRET'),
   ssnKey:        resolveSecret('SSN_ENCRYPTION_KEY'),
-  accessTtlSec:  parseInt(process.env.ACCESS_TTL_SEC || '3600', 10),      // 1h access token
+  // Exposed on /api/health as jwtStable/ssnKeyStable — when true, the env var
+  // is missing and sessions/SSNs won't survive a restart. Fix the env.
+  jwtSecretGenerated: generatedSecrets.has('JWT_SECRET'),
+  ssnKeyGenerated:    generatedSecrets.has('SSN_ENCRYPTION_KEY'),
+  // Session lifetime. Tokens slide: any authenticated request past the halfway
+  // point returns a fresh token in X-Refresh-Token (picked up by the SPA), so
+  // this is effectively an IDLE timeout, not an absolute one. Revocation still
+  // works instantly via token_version (logout / password reset).
+  accessTtlSec:  parseInt(process.env.ACCESS_TTL_SEC || '604800', 10),    // 7d idle timeout
   refreshTtlSec: parseInt(process.env.REFRESH_TTL_SEC || '2592000', 10),  // 30d
 
   // --- site integration ---

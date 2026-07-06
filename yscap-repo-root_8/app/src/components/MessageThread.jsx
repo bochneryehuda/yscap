@@ -120,7 +120,16 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
     if (fetchMentionables) fetchMentionables().then(setMentionables).catch(() => {});
     // eslint-disable-next-line
   }, []);
-  useEffect(() => { if (endRef.current) endRef.current.scrollIntoView({ block: 'nearest' }); }, [msgs]);
+  // Auto-scroll only when messages are ADDED (initial load / new message).
+  // Reacting, pinning, editing or deleting refreshes the list too — yanking the
+  // reader back to the bottom mid-scroll every time was maddening.
+  const lastCount = useRef(-1);
+  useEffect(() => {
+    const n = msgs ? msgs.length : -1;
+    const grew = lastCount.current === -1 ? n >= 0 : n > lastCount.current;
+    lastCount.current = n;
+    if (grew && endRef.current) endRef.current.scrollIntoView({ block: 'nearest' });
+  }, [msgs]);
 
   /* ---------- @/# autocomplete ---------- */
   function pickerItems() {

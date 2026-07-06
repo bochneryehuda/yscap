@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, useAuthNotice } from '../lib/auth.jsx';
 import { BrandLockup } from '../components/Layout.jsx';
 
 export default function StaffLogin() {
   const { signIn } = useAuth();
+  const notice = useAuthNotice();
   const nav = useNavigate();
   const [mode, setMode] = useState('login');   // login | mfa
   const [email, setEmail] = useState('');
@@ -15,7 +16,7 @@ export default function StaffLogin() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const done = (t) => { signIn(t); nav('/staff'); };
+  const done = (t) => { signIn(t); nav('/internal'); };
 
   async function submitLogin() {
     setErr(''); setBusy(true);
@@ -39,13 +40,14 @@ export default function StaffLogin() {
       <div className="authcard panel">
         <BrandLockup />
         <div className="gold-rule" />
-        <h1>{mode === 'mfa' ? 'Enter your code' : 'Staff sign in'}</h1>
+        <h1>{mode === 'mfa' ? 'Enter your code' : 'Internal sign in'}</h1>
         <p className="muted small" style={{ marginTop: 6 }}>
           {mode === 'mfa'
             ? 'Open your authenticator app and enter the 6-digit code.'
             : 'Loan officers, processors, underwriters and administrators.'}
         </p>
 
+        {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
         {err && <div className="notice err" style={{ marginTop: 16 }}>{err}</div>}
 
         <div style={{ marginTop: 18 }}>

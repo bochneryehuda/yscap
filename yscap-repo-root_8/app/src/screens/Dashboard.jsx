@@ -17,9 +17,11 @@ export default function Dashboard() {
   const [drawBusy, setDrawBusy] = useState(null);
 
   const load = () => {
-    Promise.all([api.applications(), api.drafts(), api.notifications()])
-      .then(([a, d, n]) => { setApps(a || []); setDrafts(d || []); setNotifs(n || []); })
-      .catch(e => setErr(e.message));
+    // Each panel loads independently: a failing drafts/notifications call must
+    // not blank the loans list (or leave the page on "Loading…" forever).
+    api.applications().then(a => setApps(a || [])).catch(e => { setApps([]); setErr(e.message); });
+    api.drafts().then(d => setDrafts(d || [])).catch(() => {});
+    api.notifications().then(n => setNotifs(n || [])).catch(() => {});
   };
   useEffect(() => {
     load();
@@ -29,9 +31,13 @@ export default function Dashboard() {
     }).catch(() => {});
   }, []);
 
+  const [creating, setCreating] = useState(false);
   async function newApplication() {
+    if (creating) return;   // double-click created two duplicate drafts
+    setCreating(true);
     try { const d = await api.createDraft({ label: 'New application', data: {}, step: 1 }); nav(`/apply/${d.id}`); }
     catch (e) { setErr(e.message); }
+    finally { setCreating(false); }
   }
   async function requestDraw(e, id) {
     e.preventDefault(); e.stopPropagation();

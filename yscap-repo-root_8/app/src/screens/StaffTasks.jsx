@@ -55,7 +55,7 @@ export default function StaffTasks() {
         : byFile.map(({ file, items }) => (
           <div className="panel" key={file.application_id} style={{ marginBottom: 14 }}>
             <div className="row" style={{ marginBottom: 8, alignItems: 'baseline' }}>
-              <Link to={`/staff/app/${file.application_id}`} style={{ fontWeight: 600 }}>
+              <Link to={`/internal/app/${file.application_id}`} style={{ fontWeight: 600 }}>
                 {file.first_name} {file.last_name} · {addrLine(file.property_address) || file.ys_loan_number || 'File'}
               </Link>
               <div className="spacer" />
@@ -65,7 +65,7 @@ export default function StaffTasks() {
             {items.map(it => {
               const overdue = it.due_date && it.due_date < new Date().toISOString().slice(0, 10);
               return (
-                <Link to={`/staff/app/${it.application_id}`} className="checkitem" key={it.id} style={{ textDecoration: 'none', color: 'inherit' }}>
+                <Link to={`/internal/app/${it.application_id}`} className="checkitem" key={it.id} style={{ textDecoration: 'none', color: 'inherit' }}>
                   <span className={`dot ${it.status === 'received' ? 'outstanding' : it.status === 'issue' ? '' : 'outstanding'}`} style={it.status === 'issue' ? { background: 'var(--danger)' } : undefined} />
                   <div style={{ flex: 1 }}>
                     <div>{it.label}</div>

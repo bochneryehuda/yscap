@@ -15,7 +15,7 @@
   var q = new URLSearchParams(location.search);
   var appId = q.get("app"), itemId = q.get("item");
   if (!appId || !itemId) return;
-  var staffMode = q.get("staff") === "1";
+  var staffMode = q.get("internal") === "1" || q.get("staff") === "1"; // "staff" kept for legacy links
   var embed = q.get("embed") === "1";
   var token = null;
   try { token = localStorage.getItem("ys_portal_token"); } catch (e) {}

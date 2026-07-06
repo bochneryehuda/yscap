@@ -223,7 +223,10 @@ export default function Apply() {
       }
       setBusy(false);
     }
-    await flush(); setStep(n); save({ step: n });
+    // A failed flush isn't fatal here — the batch stays queued and retries on
+    // the next change/submit — but surface it so the user knows.
+    try { await flush(); } catch (e) { setErr(e.message || 'Autosave hit a snag — your changes are still on this device and will retry.'); }
+    setStep(n); save({ step: n });
   };
 
   function finishLater() {

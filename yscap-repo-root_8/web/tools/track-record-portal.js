@@ -15,7 +15,7 @@
   "use strict";
   var q = new URLSearchParams(location.search);
   var borrowerMode = q.get("portal") === "1";
-  var staffMode = q.get("staff") === "1";
+  var staffMode = q.get("internal") === "1" || q.get("staff") === "1"; // "staff" kept for legacy links
   var staffBorrowerId = q.get("borrower") || "";
   if (!borrowerMode && !staffMode) return;
   if (staffMode && !staffBorrowerId) return;

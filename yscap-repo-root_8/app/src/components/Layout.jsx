@@ -2,15 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
-import InstallButton from './InstallButton.jsx';
 
 const BRAND = import.meta.env.BASE_URL + 'brand/';
 
-export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard' }) {
+export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'YS Capital Group' }) {
   return (
-    <Link to={to} className="brand" aria-label="YS Capital Group" style={{ textDecoration: 'none' }}>
+    <Link to={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>
       <img className="brand-mark" src={BRAND + 'mark-dark.png'} alt="" />
-      <span className="brand-word">YS&nbsp;CAPITAL&nbsp;<em className="brand-group">GROUP</em></span>
+      <span className="brand-word">YS&nbsp;CAPITAL&nbsp;<span className="brand-group">GROUP</span></span>
       {consoleLabel && <span className="sub">{consoleLabel}</span>}
     </Link>
   );
@@ -52,8 +51,7 @@ export default function Layout({ children }) {
             <Link to="/dashboard" className="bell" title="Notifications">
               🔔{unread > 0 && <span className="badge">{unread}</span>}
             </Link>
-            <InstallButton />
-            <button className="btn link" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>
+            <button className="btn ghost small" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>
           </nav>
         </div>
       </header>

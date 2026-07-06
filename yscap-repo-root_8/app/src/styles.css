@@ -19,17 +19,23 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 
 /* layout */
 .shell{min-height:100%;display:flex;flex-direction:column}
-.wrap{width:100%;max-width:1060px;margin:0 auto;padding:0 20px}
+.wrap{width:100%;max-width:1200px;margin:0 auto;padding:0 24px}
 .header{border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--ink-1),var(--ink))}
-.header .wrap{display:flex;align-items:center;justify-content:space-between;height:64px}
-.brand{display:flex;align-items:center;gap:9px}
-.brand-mark{height:26px;width:auto;display:block;flex:none}
-.brand-word{font-family:var(--serif);font-weight:700;letter-spacing:2px;font-size:18px;color:var(--ivory);line-height:1}
-.brand .sub{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--teal);align-self:center;margin-left:1px}
+/* thin teal→gold hairline across the very top — quiet, premium */
+.header::before{content:'';display:block;height:2px;
+  background:linear-gradient(90deg,var(--teal-dp),var(--gold) 55%,var(--teal-dp))}
+.header .wrap{display:flex;align-items:center;justify-content:space-between;gap:28px;height:72px}
+.brand{display:flex;align-items:center;gap:12px;flex:none;min-width:0}
+.brand-mark{height:30px;width:auto;display:block;flex:none}
+.brand-word{font-family:var(--serif);font-weight:700;letter-spacing:2px;font-size:20px;
+  color:var(--ivory);line-height:1;white-space:nowrap}
+.brand .sub{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--teal);
+  align-self:center;white-space:nowrap}
 /* full brand lockup, used centered on the public auth cards */
 .brand-lockup{display:flex;justify-content:center}
 .brand-lockup img{width:232px;max-width:74%;height:auto;display:block}
-.nav{display:flex;gap:20px;align-items:center}
+.nav{display:flex;gap:22px;align-items:center}
+.nav a,.nav .btn,.nav .pill{white-space:nowrap}
 .nav a{color:var(--muted);font-weight:500;font-size:14px}
 .nav a.active,.nav a:hover{color:var(--ivory);text-decoration:none}
 .content{flex:1;padding:30px 0 60px}
@@ -92,6 +98,7 @@ textarea{min-height:90px;resize:vertical}
 .notice{padding:11px 14px;border-radius:var(--radius-sm);font-size:14px;margin-bottom:14px}
 .notice.err{background:rgba(224,115,107,.12);border:1px solid rgba(224,115,107,.4);color:#F3C4BF}
 .notice.ok{background:rgba(143,199,160,.12);border:1px solid rgba(143,199,160,.4);color:#CDE9D5}
+.notice.info{background:rgba(140,170,224,.12);border:1px solid rgba(140,170,224,.4);color:#C9D8F3}
 .savechip{font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px}
 .savechip .dot{width:7px;height:7px}
 .stepper{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
@@ -210,13 +217,10 @@ textarea{min-height:90px;resize:vertical}
 .progress{flex:1;height:7px;border-radius:999px;background:var(--ink-3,#2B3945);overflow:hidden}
 .progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--teal),var(--gold));transition:width .3s}
 
-/* brand: GROUP suffix styled like the lockup */
-.brand-word .brand-group{font-style:normal;font-family:Hanken Grotesk,system-ui,sans-serif;font-size:.6em;
-  letter-spacing:.32em;color:var(--teal,#7FA9B0);font-weight:600;vertical-align:middle}
-/* Bigger, more confident wordmark; console label sits under it, quiet. */
-.brand{align-items:center}
-.brand-word{font-size:23px;letter-spacing:2.5px}
-.brand .sub{font-size:10px;letter-spacing:2.5px}
+/* brand: one confident line — "GROUP" carries the same weight and size as
+   "YS CAPITAL", set apart only by the brand teal. */
+.brand-word .brand-group{font-style:normal;font-family:var(--serif);font-size:1em;
+  letter-spacing:inherit;color:var(--teal-br,#AAD4D9);font-weight:700;vertical-align:baseline}
 /* SSN reveal eye toggle */
 .eye-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:24px;
   padding:0;border:1px solid var(--line);border-radius:6px;background:var(--ink-2);color:var(--teal);
@@ -230,8 +234,7 @@ textarea{min-height:90px;resize:vertical}
    ===================================================================== */
 .header{position:sticky;top:0;z-index:40;backdrop-filter:saturate(120%) blur(6px);
   box-shadow:0 1px 0 var(--line),0 10px 30px -22px rgba(0,0,0,.8)}
-.brand .sub{padding-left:11px;margin-left:10px;border-left:1px solid var(--line)}
-.brand-mark{height:28px}
+.brand .sub{padding-left:12px;margin-left:12px;border-left:1px solid var(--line)}
 .nav a{position:relative;padding:4px 0}
 .nav a.active::after{content:'';position:absolute;left:0;right:0;bottom:-3px;height:2px;border-radius:2px;
   background:linear-gradient(90deg,var(--teal),var(--gold))}
@@ -249,6 +252,12 @@ a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
 /* the full auth lockup gets a hair more presence */
 .brand-lockup img{filter:drop-shadow(0 10px 26px rgba(0,0,0,.5))}
 
+/* header collapses gracefully: below 960px the nav drops under the brand,
+   everything stays on tidy lines instead of squeezing. */
+@media(max-width:960px){
+  .header .wrap{height:auto;flex-wrap:wrap;gap:10px 24px;padding-top:12px;padding-bottom:12px}
+  .nav{flex-wrap:wrap;row-gap:8px}
+}
 @media(max-width:520px){
   .brand .sub{display:none}
   .brand-word{font-size:16px;letter-spacing:1.5px}

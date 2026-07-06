@@ -7,7 +7,7 @@
  * snapshot in the payload.
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
@@ -74,12 +74,12 @@ router.post('/', async (req, res) => {
       await notify.notifyStaff(officerId, {
         type: 'new_application', title: 'New application assigned to you',
         body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
-        link: `/staff/app/${appId}` });
+        link: `/internal/app/${appId}` });
     } else {
       await notify.notifyAdmins({
         type: 'unassigned_application', title: 'New application needs assignment (Lead Capture)',
         body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
-        link: `/staff` });
+        link: `/internal` });
     }
     res.status(201).json({ ok: true, borrowerId, applicationId: appId, assigned: !!officerId });
   } catch (e) {

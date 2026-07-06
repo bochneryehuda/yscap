@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './lib/auth.jsx';
 import { engineReport } from './lib/engines.js';
 import Layout from './components/Layout.jsx';
@@ -25,18 +25,18 @@ import StaffLeads from './screens/StaffLeads.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 
-/* Borrower-only area. Staff who land here are bounced to their console. */
+/* Borrower-only area. Internal users who land here are bounced to their console. */
 function Private({ children }) {
   const { isAuthed, isStaff } = useAuth();
   if (!isAuthed) return <Navigate to="/login" replace />;
-  if (isStaff) return <Navigate to="/staff" replace />;
+  if (isStaff) return <Navigate to="/internal" replace />;
   return <Layout>{children}</Layout>;
 }
 
-/* Staff-only area. Borrowers who land here are bounced to their dashboard. */
+/* Internal-only area. Borrowers who land here are bounced to their dashboard. */
 function StaffPrivate({ children }) {
   const { isAuthed, isStaff } = useAuth();
-  if (!isAuthed) return <Navigate to="/staff/login" replace />;
+  if (!isAuthed) return <Navigate to="/internal/login" replace />;
   if (!isStaff) return <Navigate to="/dashboard" replace />;
   return <StaffLayout>{children}</StaffLayout>;
 }
@@ -45,7 +45,14 @@ function StaffPrivate({ children }) {
 function Fallback() {
   const { isAuthed, isStaff } = useAuth();
   if (!isAuthed) return <Navigate to="/login" replace />;
-  return <Navigate to={isStaff ? '/staff' : '/dashboard'} replace />;
+  return <Navigate to={isStaff ? '/internal' : '/dashboard'} replace />;
+}
+
+/* The internal console used to live under /staff — keep old links (emails,
+   bookmarks, stored notifications) working by rewriting them to /internal. */
+function LegacyStaffRedirect() {
+  const loc = useLocation();
+  return <Navigate to={loc.pathname.replace(/^\/staff/, '/internal') + loc.search} replace />;
 }
 
 export default function App() {
@@ -63,7 +70,7 @@ export default function App() {
           <Route path="/forgot" element={<Forgot />} />
           <Route path="/reset" element={<Reset />} />
           <Route path="/accept" element={<Accept />} />
-          <Route path="/staff/login" element={<StaffLogin />} />
+          <Route path="/internal/login" element={<StaffLogin />} />
 
           {/* borrower */}
           <Route path="/dashboard" element={<Private><Dashboard /></Private>} />
@@ -74,15 +81,19 @@ export default function App() {
           <Route path="/track-record" element={<Private><TrackRecordScreen /></Private>} />
           <Route path="/settings/notifications" element={<Private><NotificationSettings /></Private>} />
 
-          {/* staff */}
-          <Route path="/staff" element={<StaffPrivate><StaffQueue /></StaffPrivate>} />
-          <Route path="/staff/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
-          <Route path="/staff/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />
-          <Route path="/staff/app/:id" element={<StaffPrivate><StaffApplication /></StaffPrivate>} />
-          <Route path="/staff/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
-          <Route path="/staff/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
-          <Route path="/staff/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
-          <Route path="/staff/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
+          {/* internal console */}
+          <Route path="/internal" element={<StaffPrivate><StaffQueue /></StaffPrivate>} />
+          <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
+          <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />
+          <Route path="/internal/app/:id" element={<StaffPrivate><StaffApplication /></StaffPrivate>} />
+          <Route path="/internal/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
+          <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
+          <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
+          <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
+
+          {/* legacy /staff/* deep links (old emails, bookmarks) → /internal/* */}
+          <Route path="/staff" element={<LegacyStaffRedirect />} />
+          <Route path="/staff/*" element={<LegacyStaffRedirect />} />
 
           <Route path="*" element={<Fallback />} />
         </Routes>

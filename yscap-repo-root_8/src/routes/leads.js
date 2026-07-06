@@ -7,7 +7,7 @@
  *   POST /api/leads   { tool, name, email, phone, officerCode, subject, message, payload }
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
@@ -78,7 +78,7 @@ router.post('/', async (req, res) => {
       type: 'new_lead',
       title: `New ${label.toLowerCase()} from ${name || email || 'a visitor'}`,
       body: b.message || `A visitor submitted the ${label.toLowerCase()} on the site.`,
-      meta, link: '/staff/leads', ctaLabel: 'Open leads',
+      meta, link: '/internal/leads', ctaLabel: 'Open leads',
     };
 
     // Notify the routed officer, else the admin desk (in-app + branded email).

@@ -41,6 +41,11 @@ app.get('/api/health', async (req, res) => {
     emailConfigured: cfg.emailProvider === 'resend' ? !!cfg.resendApiKey
                    : cfg.emailProvider === 'graph'  ? !!(cfg.msTenantId && cfg.msClientId && cfg.msClientSecret)
                    : false,
+    // False when the secret was auto-generated at boot (env var not set): every
+    // restart/deploy then invalidates all sessions (jwt) or orphans encrypted
+    // SSNs (ssnKey). If either is false in production, set the env var NOW.
+    jwtStable: !cfg.jwtSecretGenerated,
+    ssnKeyStable: !cfg.ssnKeyGenerated,
     storage: cfg.storageProvider,
     storageWritable: storageInfo && storageInfo.ok,
     storagePersistent: storageInfo && storageInfo.persistent,
@@ -62,11 +67,43 @@ const webDir = path.join(__dirname, '..', cfg.webDir);
 app.use(express.static(webDir));
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/auth')) return next();
+  // A missing FILE (anything with an extension — .css/.js/.png…) must 404, not
+  // silently receive the homepage HTML. Serving HTML as a stylesheet is how a
+  // stale index.html referencing a purged bundle "unstyled" the whole portal —
+  // and service workers then cache that poisoned response.
+  if (/\.[a-z0-9]{2,8}$/i.test(req.path)) return res.status(404).type('text/plain').send('not found');
   res.sendFile(path.join(webDir, 'index.html'), (err) => err && next());
 });
 
 // 404 for unmatched API routes
 app.use((req, res) => res.status(404).json({ error: 'not found' }));
+
+// Final JSON error handler. Everything routed through safe-router lands here on
+// a rejected promise; body-parser errors (bad JSON, payload too large) and sync
+// throws land here too. Without this, Express answers with an HTML error page —
+// or, for async rejections, never answers at all and the gateway returns 502.
+const DB_DOWN_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', '57P03', '53300', '08006', '08001']);
+function isDbUnavailable(e) {
+  if (!e) return false;
+  if (DB_DOWN_CODES.has(e.code)) return true;
+  if (Array.isArray(e.errors)) return e.errors.some(isDbUnavailable);  // AggregateError
+  return /terminat|timeout exceeded when trying to connect|Connection terminated/i.test(e.message || '');
+}
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (res.headersSent) return;   // a partial response is already on the wire
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'invalid JSON body' });
+  if (err.type === 'entity.too.large')  return res.status(413).json({ error: 'upload too large' });
+  // Postgres 22P02 = a malformed id (usually a non-UUID :id param) reached a
+  // query — the request is bad, not the server.
+  if (err.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+  if (isDbUnavailable(err)) {
+    console.error(`[api] DB unavailable during ${req.method} ${req.path}:`, require('./db').describeError(err));
+    return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
+  }
+  console.error(`[api] unhandled error in ${req.method} ${req.path}:`, err && err.stack ? err.stack : err);
+  res.status(err.status || err.statusCode || 500).json({ error: 'Something went wrong on our end — please try again.' });
+});
 
 // One-line summary of the email configuration + a warning when it's off or
 // half-configured, so a glance at the boot logs tells you if email will send.

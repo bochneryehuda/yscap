@@ -5,7 +5,7 @@
  * track records, and assign Lead-Capture (unassigned) applications.
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
@@ -44,7 +44,12 @@ async function seedPostClosing(appId) {
 // /applications/:id path-scope middleware, e.g. /loan-conditions/:cid/*).
 async function canTouchApp(req, appId) {
   if (seesAll(req)) return true;
-  const r = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`, [appId, req.actor.id]);
+  // deleted_at check mirrors the /applications/:id path middleware — without it
+  // an assigned officer could keep mutating (conditions/messages/post-closing)
+  // a file an admin soft-deleted.
+  const r = await db.query(
+    `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2) AND deleted_at IS NULL`,
+    [appId, req.actor.id]);
   return !!r.rows[0];
 }
 const isAdmin = (req) => ['admin', 'super_admin'].includes(req.actor.role);
@@ -396,8 +401,25 @@ async function loadFileForPricing(appId) {
 // for non-admins (a loan officer/processor can what-if the deal economics, but
 // not inject unverified experience or override the caps/rate). For anyone else
 // these keys are stripped. Returns { overrides, strippedAdminKeys }.
+// Cap/rate/eligibility overrides and manual experience are ADMIN-ONLY. For
+// everyone else they're stripped, so a loan officer/processor/underwriter can
+// what-if deal economics but cannot force-register an INELIGIBLE file, inject
+// unverified experience, or dictate the rate/caps from the client.
+const ADMIN_ONLY_OVERRIDE_KEYS = [
+  'forcePrice', 'manualPricing',
+  'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
+  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths',
+  'expFlips', 'expHolds', 'expGround',
+];
 function sanitizeOverrides(req, raw) {
-  return { overrides: (raw && typeof raw === 'object') ? { ...raw } : {}, strippedAdminKeys: false };
+  const overrides = (raw && typeof raw === 'object') ? { ...raw } : {};
+  const role = req.actor && req.actor.role;
+  if (role === 'admin' || role === 'super_admin') return { overrides, strippedAdminKeys: false };
+  let stripped = false;
+  for (const k of ADMIN_ONLY_OVERRIDE_KEYS) {
+    if (k in overrides) { delete overrides[k]; stripped = true; }
+  }
+  return { overrides, strippedAdminKeys: stripped };
 }
 
 // Fresh quote for both programs (no persistence). Body: { program?, overrides? }.
@@ -781,7 +803,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
     sets.push('signed_off_by=NULL', 'signed_off_at=NULL');
   }
 
-  await db.query(`UPDATE checklist_items SET ${sets.join(', ')} WHERE id=$1`, params);
+  const r = await db.query(`UPDATE checklist_items SET ${sets.join(', ')} WHERE id=$1`, params);
+  // A wrong/deleted item id used to answer {ok:true} — the UI showed a sign-off
+  // that never persisted. Phantom success is this repo's #1 bug class.
+  if (r.rowCount === 0) return res.status(404).json({ error: 'checklist item not found' });
   res.json({ ok: true });
 });
 
@@ -793,21 +818,23 @@ router.post('/applications/:id/assign', async (req, res) => {
     if (loanOfficerId) {
       const off = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true`, [loanOfficerId]);
       if (!off.rows[0]) return res.status(404).json({ error: 'officer not found' });
-      await db.query(`UPDATE applications SET loan_officer_id=$2, loan_officer_name=$3, updated_at=now() WHERE id=$1`,
+      const u = await db.query(`UPDATE applications SET loan_officer_id=$2, loan_officer_name=$3, updated_at=now() WHERE id=$1`,
         [req.params.id, loanOfficerId, off.rows[0].full_name]);
+      if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
       await notify.notifyStaff(loanOfficerId, {
         type: 'assignment', title: 'Application assigned to you', applicationId: req.params.id,
-        link: `/staff/app/${req.params.id}` });
+        link: `/internal/app/${req.params.id}` });
       await audit(req, 'assign_application', 'application', req.params.id, { loanOfficerId });
     }
     if (processorId) {
       const p = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [processorId]);
       if (!p.rows[0]) return res.status(404).json({ error: 'processor not found' });
-      await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
+      const u = await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
         [req.params.id, processorId]);
+      if (u.rowCount === 0) return res.status(404).json({ error: 'application not found' });
       await notify.notifyStaff(processorId, {
         type: 'assignment', title: 'File assigned to you for processing', applicationId: req.params.id,
-        link: `/staff/app/${req.params.id}` });
+        link: `/internal/app/${req.params.id}` });
       await audit(req, 'assign_processor', 'application', req.params.id, { processorId });
     }
     res.json({ ok: true });
@@ -1198,7 +1225,7 @@ router.patch('/applications/:id', async (req, res) => {
       for (const sid of team)
         await notify.notifyStaff(sid, {
           type: 'status_change', title: `File moved to ${label}`,
-          applicationId: req.params.id, link: `/staff/app/${req.params.id}` });
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
     } catch (_) { /* notify best-effort */ }
     res.json({ ok: true, status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -1370,7 +1397,9 @@ router.get('/applications/:id/messages', async (req, res) => {
          LEFT JOIN borrowers  b ON b.id=m.borrower_id
          LEFT JOIN checklist_items ci ON ci.id=m.checklist_item_id
          LEFT JOIN documents d ON d.id=m.attachment_document_id
-        WHERE m.application_id=$1 AND m.channel=$2 ORDER BY m.created_at`, [req.params.id, channel]);
+        WHERE m.application_id=$1 AND m.channel=$2
+        ORDER BY m.created_at DESC LIMIT 500`, [req.params.id, channel]);
+    r.rows.reverse();   // newest-500 window, still rendered oldest-first
     // Opening a channel marks the other side's messages as read (receipts).
     if (channel === 'borrower')
       await db.query(`UPDATE messages SET read_at=now() WHERE application_id=$1 AND channel='borrower' AND sender_kind='borrower' AND read_at IS NULL`, [req.params.id]);
@@ -1447,7 +1476,7 @@ router.post('/applications/:id/messages', async (req, res) => {
           await notify.notifyStaff(sid, {
             type: 'message', title: taskId ? 'New task from team chat' : 'New internal note on a file',
             body: String(body).slice(0, 140), applicationId: req.params.id,
-            link: `/staff/app/${req.params.id}`, ctaLabel: 'Open the file' });
+            link: `/internal/app/${req.params.id}`, ctaLabel: 'Open the file' });
       }
       // @mentions get a direct ping regardless of channel/assignment.
       if (body) {

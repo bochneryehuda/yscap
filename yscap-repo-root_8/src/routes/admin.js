@@ -1,6 +1,6 @@
 /** Admin API — user management + Lead-Capture overview. */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
 const C = require('../lib/crypto');
@@ -177,7 +177,7 @@ router.post('/staff/:id/password', async (req, res) => {
 // email; staff without get an invite link to set their password.
 async function sendWelcome(row) {
   let url, hasLogin = !!row.has_login;
-  if (hasLogin) url = mail.link('/staff/login');
+  if (hasLogin) url = mail.link('/internal/login');
   else {
     const token = C.randomToken(24);
     await db.query(
