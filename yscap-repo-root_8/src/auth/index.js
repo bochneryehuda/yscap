@@ -357,9 +357,13 @@ router.post('/staff/mfa/verify', async (req, res) => {
 });
 
 // ---------------- admin: create staff + invites ----------------
+// Roles this legacy endpoint may assign — every persona except super_admin
+// (which requires the super_admin-guarded admin console). Sourced from the
+// permissions module so new personas are accepted automatically.
+const ASSIGNABLE_ROLES = perms.ROLE_KEYS.filter((r) => r !== 'super_admin');
 router.post('/staff', requireAuth, requireRole('admin'), async (req, res) => {
   const { email, fullName, role, password } = req.body || {};
-  if (!['loan_officer', 'processor', 'underwriter', 'admin'].includes(role))
+  if (!ASSIGNABLE_ROLES.includes(role))
     return res.status(400).json({ error: 'bad role' });
   // The ON CONFLICT upsert can overwrite an existing user's role — never let a
   // non-super-admin demote/alter a super_admin by targeting their email.
@@ -389,7 +393,7 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
     inviteRole = role || 'loan_officer';
     if (inviteRole === 'super_admin') {
       if (req.actor.role !== 'super_admin') return res.status(403).json({ error: 'only a super admin can grant super_admin' });
-    } else if (!['loan_officer', 'processor', 'underwriter', 'admin'].includes(inviteRole)) {
+    } else if (!ASSIGNABLE_ROLES.includes(inviteRole)) {
       return res.status(400).json({ error: 'bad role' });
     }
   }

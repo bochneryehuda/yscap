@@ -123,7 +123,12 @@ function evalRow(row, ctx, byKey) {
     case 'is_empty': return isBlank(actual);
     case 'not_empty': return !isBlank(actual);
     case 'is_true': return actual === true;
-    case 'is_false': return actual === false || isBlank(actual);
+    // Symmetric with is_true: requires an explicit "no". A blank (never-answered)
+    // custom boolean is unknown, not false — so an is_false rule must NOT fire
+    // before the borrower answers. Built-in booleans are always concrete
+    // (coerced with !!), so this is unchanged for them. Use is_false OR is_empty
+    // if "false or unanswered" is really intended.
+    case 'is_false': return actual === false;
     default: break;
   }
   if (isBlank(actual)) return false;

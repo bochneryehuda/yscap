@@ -67,7 +67,13 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
           {state.status === 'error' && <span className="notice err" style={{ margin: 16 }}>{state.error}</span>}
           {state.status === 'ready' && previewable && (isImg
             ? <img src={state.url} alt={state.filename || 'document'} style={{ maxWidth: '100%', maxHeight: '78vh', objectFit: 'contain' }} />
-            : <iframe title={state.filename || 'document'} src={state.url} style={{ width: '100%', height: '78vh', border: 0, background: '#fff' }} />
+            // SANDBOXED: a blob: URL made from a same-origin fetch is same-origin,
+            // so an uploaded HTML file would otherwise run scripts with access to
+            // the viewer's token/localStorage (stored XSS). `sandbox` with no
+            // allow-scripts/allow-same-origin neutralizes that; the browser's PDF
+            // viewer and static HTML/images still render fine.
+            : <iframe title={state.filename || 'document'} src={state.url} sandbox=""
+                style={{ width: '100%', height: '78vh', border: 0, background: '#fff' }} />
           )}
           {state.status === 'ready' && !previewable && (
             <div style={{ textAlign: 'center', padding: 24 }}>

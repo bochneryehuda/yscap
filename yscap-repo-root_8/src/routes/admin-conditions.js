@@ -221,11 +221,16 @@ router.delete('/custom-fields/:id', async (req, res) => {
   const cur = await db.query(
     `SELECT cf.*,
             (SELECT count(*) FROM checklist_templates t WHERE t.field_key=cf.key) AS template_count,
-            (SELECT count(*) FROM application_field_values v WHERE v.field_key=cf.key) AS value_count
+            (SELECT count(*) FROM application_field_values v WHERE v.field_key=cf.key) AS value_count,
+            -- A field can be referenced ONLY inside a rule tree (no field_key,
+            -- no stored value yet). Count those too, or a hard delete would leave
+            -- a dangling reference that silently makes the rule never match.
+            (SELECT count(*) FROM checklist_templates t
+              WHERE t.rule_logic IS NOT NULL AND t.rule_logic::text LIKE '%"' || cf.key || '"%') AS rule_ref_count
        FROM custom_fields cf WHERE cf.id=$1`, [req.params.id]);
   if (!cur.rows[0]) return res.status(404).json({ error: 'field not found' });
   const f = cur.rows[0];
-  if (Number(f.template_count) > 0 || Number(f.value_count) > 0) {
+  if (Number(f.template_count) > 0 || Number(f.value_count) > 0 || Number(f.rule_ref_count) > 0) {
     await db.query(`UPDATE custom_fields SET is_active=false, updated_at=now() WHERE id=$1`, [req.params.id]);
     registry.bustCustomFields();
     await audit(req, 'custom_field_deactivated', 'custom_field', req.params.id, { key: f.key });
