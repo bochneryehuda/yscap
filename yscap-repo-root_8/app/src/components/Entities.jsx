@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import LlcManager, { llcBadge } from './LlcManager.jsx';
 
@@ -58,7 +59,11 @@ export default function Entities() {
 
   return (
     <div className="panel" style={{ marginTop: 18 }}>
-      <h3 style={{ marginBottom: 4 }}>Your entities (LLCs)</h3>
+      <div className="row" style={{ alignItems: 'center', gap: 8 }}>
+        <h3 style={{ marginBottom: 4 }}>Your entities (LLCs)</h3>
+        <div className="spacer" />
+        <Link className="btn ghost small" to="/entities" title="The full entities section — status, linked loans, good standing, and more">Open full section →</Link>
+      </div>
       <p className="muted small" style={{ marginBottom: 10 }}>
         Each LLC needs its details, full ownership structure, and three documents — state formation
         documents, the IRS EIN letter, and the operating agreement. Once your loan team verifies an

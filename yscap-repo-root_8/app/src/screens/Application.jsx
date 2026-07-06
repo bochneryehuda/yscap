@@ -314,8 +314,13 @@ export default function Application() {
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const fileRef = useRef(null);
-  const [target, setTarget] = useState(null);   // {itemId, slot, replaceDocumentId, photoId}
+  const studioRef = useRef(null);               // the Products & Pricing sheet
+  const [target, setTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId, photoId}
   const [docFilter, setDocFilter] = useState('open');   // default: only what still needs the borrower
+  // Conditions the borrower just worked on THIS visit: they stay visible in the
+  // default "Open" view instead of vanishing the second an upload submits them.
+  const [justTouched, setJustTouched] = useState(() => new Set());
+  const touch = (itemId) => { if (itemId) setJustTouched((s) => new Set(s).add(itemId)); };
   const [trBusy, setTrBusy] = useState(false);
   const [trRows, setTrRows] = useState([]);     // the borrower's live track record
   const [trSnap, setTrSnap] = useState(null);   // its saved static HTML copy
@@ -347,6 +352,7 @@ export default function Application() {
     // first or the old loan renders under the new URL until the fetch lands.
     setApp(null); setItems([]); setUploads([]); setConds([]); setErr(''); setMsg('');
     setSowOpen(false); setTarget(null);   // else the Scope-of-Work modal carries over to the next file
+    setJustTouched(new Set());
     load();
     /* eslint-disable-next-line */
   }, [id]);
@@ -359,27 +365,44 @@ export default function Application() {
     /* eslint-disable-next-line */
   }, [id]);
 
+  const readB64 = (file) => new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1]);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+
+  // Multi-select aware: picking several PDFs at once uploads them all onto the
+  // condition, each in its own slot (Document N, N+1, …). Replacements and the
+  // photo ID stay single-file.
   async function onFile(e) {
-    const file = e.target.files && e.target.files[0];
-    if (!file || !target) return;
-    setMsg('Uploading…');
+    const all = Array.from((e.target.files) || []);
+    if (!all.length || !target) return;
+    const files = (target.photoId || target.replaceDocumentId) ? all.slice(0, 1) : all;
+    setErr('');
     try {
-      const dataUrl = await new Promise((res, rej) => {
-        const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file);
-      });
-      const dataBase64 = String(dataUrl).split(',')[1];
       if (target.photoId) {
         // The government-ID condition saves to the PROFILE too, so the next
         // file's ID condition is fulfilled automatically.
-        await api.uploadPhotoId({ applicationId: id, filename: file.name, contentType: file.type, dataBase64 });
+        setMsg('Uploading…');
+        await api.uploadPhotoId({ applicationId: id, filename: files[0].name, contentType: files[0].type, dataBase64: await readB64(files[0]) });
       } else {
-        await api.uploadDoc({
-          applicationId: id, checklistItemId: target.itemId || undefined,
-          slot: target.slot || undefined, replaceDocumentId: target.replaceDocumentId || undefined,
-          filename: file.name, contentType: file.type, size: file.size, dataBase64,
-        });
+        const slotBase = Number.isFinite(target.slotBase) ? target.slotBase : null;
+        for (let i = 0; i < files.length; i++) {
+          setMsg(files.length > 1 ? `Uploading ${i + 1} of ${files.length}…` : 'Uploading…');
+          const slot = target.replaceDocumentId ? (target.slot || undefined)
+            : slotBase != null ? `Document ${slotBase + i + 1}`
+            : (target.slot || undefined);
+          await api.uploadDoc({
+            applicationId: id, checklistItemId: target.itemId || undefined,
+            slot, replaceDocumentId: target.replaceDocumentId || undefined,
+            filename: files[i].name, contentType: files[i].type, size: files[i].size, dataBase64: await readB64(files[i]),
+          });
+        }
+        touch(target.itemId);   // the condition stays visible in the Open view
       }
-      setMsg('Uploaded ✓'); setTarget(null); await load();
+      setMsg(files.length > 1 ? `${files.length} files uploaded ✓` : 'Uploaded ✓');
+      setTarget(null); await load();
       setTimeout(() => setMsg(''), 2500);
     } catch (e2) { setMsg(''); setErr(e2.message || 'Upload failed'); }
     finally { if (fileRef.current) fileRef.current.value = ''; }
@@ -496,9 +519,30 @@ export default function Application() {
           <div className="metrow"><span className="k">Name</span><span className="v">{profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || '—' : '—'}</span></div>
           <div className="metrow"><span className="k">Email</span><span className="v">{(profile && profile.email) || '—'}</span></div>
           <div className="metrow"><span className="k">Phone</span><span className="v">{(profile && profile.cell_phone) || '—'}</span></div>
-          <div className="metrow"><span className="k">Vesting entity</span><span className="v">{app.entity_name || (app.llc_id ? 'LLC on file' : 'Not linked yet')}</span></div>
-          <div className="metrow"><span className="k">Experience claimed</span><span className="v">
-            {[app.requested_exp_flips ? `${app.requested_exp_flips} flips` : '', app.requested_exp_ground ? `${app.requested_exp_ground} ground-up` : '', app.requested_exp_reo ? `${app.requested_exp_reo} REO` : ''].filter(Boolean).join(' · ') || '—'}
+          <div className="metrow"><span className="k">Vesting entity</span><span className="v">
+            {app.entity_name || app.llc_name || (app.llc_id ? 'LLC on file' : 'Not linked yet')}
+            {app.llc_id && app.llc_verified && <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified ✓</span>}
+          </span></div>
+          <div className="metrow"><span className="k">Experience entered</span><span className="v">
+            {[app.requested_exp_flips ? `${app.requested_exp_flips} flips` : '', app.requested_exp_holds ? `${app.requested_exp_holds} holds` : '', app.requested_exp_ground ? `${app.requested_exp_ground} ground-up` : '', app.requested_exp_reo ? `${app.requested_exp_reo} REO` : ''].filter(Boolean).join(' · ') || '—'}
+          </span></div>
+          <div className="metrow"><span className="k">Experience verified</span><span className="v">
+            {(() => {
+              // Verified deals straight from the track record — the counts your
+              // pricing tier is actually based on.
+              const v = { flips: 0, holds: 0, ground: 0, total: 0 };
+              for (const r of trRows) {
+                if (!r.is_verified) continue;
+                const t = String(r.deal_type || '').toLowerCase();
+                if (t.includes('ground')) v.ground++; else if (t.includes('flip')) v.flips++; else v.holds++;
+                v.total++;
+              }
+              if (!v.total) return <span className="muted">None verified yet — your track record is reviewed by your loan team</span>;
+              return <>
+                {[v.flips ? `${v.flips} flip${v.flips === 1 ? '' : 's'}` : '', v.holds ? `${v.holds} hold${v.holds === 1 ? '' : 's'}` : '', v.ground ? `${v.ground} ground-up` : ''].filter(Boolean).join(' · ')}
+                <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified from your track record ✓</span>
+              </>;
+            })()}
           </span></div>
         </div>
         <div className="panel" style={{ marginTop: 0 }}>
@@ -522,7 +566,7 @@ export default function Application() {
       <Section id="sec-pricing" title="Loan structure & pricing"
         info="Your registered product and the live Term Sheet Studio. Reprice any time — your scenario autosaves and re-registering replaces the old terms."
         badge={app.registered_program ? 'Registered ✓' : 'Not registered yet'}>
-      <div id="product-studio"><ProductStudioPanel appId={id} app={app} onRegistered={load} mode="borrower"
+      <div id="product-studio"><ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="borrower"
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} /></div>
       </Section>
 
@@ -544,15 +588,19 @@ export default function Application() {
         </div>
         <p className="muted small" style={{ marginBottom: 12 }}>
           Everything your loan team needs to move this file forward, in one place. Each condition can carry
-          several documents — add them one per slot.
+          several documents — select multiple PDFs at once, or add more later with "+ Add another".
         </p>
-        <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onFile} />
+        <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={onFile} />
         {(() => {
           const bucket = (s) => s === 'issue' ? 'attention' : s === 'received' ? 'review' : (s === 'satisfied' || s === 'done') ? 'done' : 'todo';
           // Default view: submitted conditions disappear as you complete them —
           // only what still needs you (to do / needs attention) stays visible.
+          // EXCEPT what you just worked on this visit (justTouched): it stays put
+          // so "+ Add another" is still there right after an upload submits it.
           const show = (it) => docFilter === 'all'
-            || (docFilter === 'open' ? ['todo', 'attention'].includes(bucket(it.status)) : bucket(it.status) === docFilter);
+            || (docFilter === 'open'
+              ? (['todo', 'attention'].includes(bucket(it.status)) || justTouched.has(it.id))
+              : bucket(it.status) === docFilter);
           return (
             <>
               {/* 0 — Products & pricing: open until a product is registered */}
@@ -564,7 +612,12 @@ export default function Application() {
                     ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
                     : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
                   status={(isDone(ppItem.status) || app.registered_program) ? 'Completed' : 'To do'}
-                  action={<button className="btn primary small" onClick={() => { const el = document.getElementById('product-studio'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
+                  action={<button className="btn primary small" onClick={() => {
+                    // Same full-screen tool sheet as the Scope of Work — no
+                    // scrolling hunt for the panel.
+                    if (studioRef.current) studioRef.current.openStudio();
+                    else { const el = document.getElementById('product-studio'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+                  }}>
                     {app.registered_program ? 'Reprice / re-register' : 'Open Products & Pricing'}
                   </button>}
                 />
@@ -631,8 +684,8 @@ export default function Application() {
               {llcItem && show(llcItem) && <LlcCondition it={llcItem} app={app} onChanged={load} />}
 
               {/* 4 — Company contacts (title / insurance) + appraisal card */}
-              {contactItems.filter(show).map(it => <ContactCondition key={it.id} it={it} appId={id} onSaved={load} />)}
-              {cardItem && show(cardItem) && <CardCondition it={cardItem} appId={id} onSaved={load} />}
+              {contactItems.filter(show).map(it => <ContactCondition key={it.id} it={it} appId={id} onSaved={async () => { touch(it.id); await load(); }} />)}
+              {cardItem && show(cardItem) && <CardCondition it={cardItem} appId={id} onSaved={async () => { touch(cardItem.id); await load(); }} />}
 
               {/* 4 — Government ID, fulfilled straight from the borrower profile */}
               {idItem && show(idItem) && (
@@ -654,7 +707,6 @@ export default function Application() {
                 const docs = currentDocsFor(assetsItem.id);
                 const q = registeredQuote;
                 const liq = q && (q.liquidity ?? q.liquidityRequired);
-                const nextSlot = `Document ${docs.length + 1}`;
                 // The registration's liquidity condition is one and the same —
                 // its full breakdown renders inside THIS condition.
                 const regCond = conds.find(c => c.linked_entity_type === 'product_registration');
@@ -671,7 +723,7 @@ export default function Application() {
                       : [assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
                     status={statusText(assetsItem)}
                     open={docs.length > 0 || assetsItem.status === 'issue' || !!q}
-                    action={<button className="btn ghost small" onClick={() => pick({ itemId: assetsItem.id, slot: docs.length ? nextSlot : 'Document 1' })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
+                    action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: assetsItem.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
                   >
                     {regCond && regCond.detail && (
                       <div className="muted small" style={{ whiteSpace: 'pre-line', marginBottom: 8, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
@@ -702,7 +754,6 @@ export default function Application() {
               {docItems.filter(show).map(it => {
                 const docs = currentDocsFor(it.id);
                 const needsFix = it.status === 'issue';
-                const nextSlot = `Document ${docs.length + 1}`;
                 return (
                   <ConditionRow
                     key={it.id}
@@ -712,7 +763,7 @@ export default function Application() {
                     subtitle={[it.hint, it.notes].filter(Boolean).join(' · ') || null}
                     status={statusText(it)}
                     open={docs.length > 0 || needsFix}
-                    action={<button className="btn ghost small" onClick={() => pick({ itemId: it.id, slot: docs.length ? nextSlot : 'Document 1' })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
+                    action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: it.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
                   >
                     {needsFix && it.rejection_reason && (
                       <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
@@ -751,7 +802,7 @@ export default function Application() {
       </Section>
 
       {uploads.length > 0 && (
-        <Section id="sec-documents" title="Document history"
+        <Section id="sec-documents" title="Document history" collapsible defaultOpen={false}
           info="Everything uploaded to this file, newest first, titled by the condition it belongs to. Replaced and rejected versions stay for the record."
           badge={`${uploads.length} file${uploads.length === 1 ? '' : 's'}`}>
         <div className="panel" style={{ marginTop: 0 }}>
@@ -796,9 +847,9 @@ export default function Application() {
       <BorrowerChat key={id} appId={id} />
       </Section>
 
-      <Section id="sec-activity" title="Activity"
-        info="A running log of everything that happened on this file — uploads, status changes, sign-offs.">
-      <ActivityFeed fetcher={activityFetcher} />
+      <Section id="sec-activity" title="Activity" collapsible defaultOpen={false}
+        info="The full audit log of this file — every application edit, reprice, upload, status change and sign-off, with exactly what changed.">
+      <ActivityFeed fetcher={activityFetcher} title="File audit log" />
       </Section>
 
       </FileSections>

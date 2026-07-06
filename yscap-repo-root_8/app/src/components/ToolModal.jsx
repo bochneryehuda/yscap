@@ -41,6 +41,30 @@ export default function ToolModal({ url, title, onClose }) {
     return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
   }, [saveAndClose]);
 
+  // Theme + reveal on DOM-ready rather than the full `load` event — a stalled
+  // third-party resource (fonts CDN) must not leave the tool hidden/light.
+  useEffect(() => {
+    let done = false;
+    const tick = setInterval(() => {
+      if (done) { clearInterval(tick); return; }
+      try {
+        const doc = frameRef.current && frameRef.current.contentWindow && frameRef.current.contentWindow.document;
+        if (!doc || doc.readyState === 'loading' || !doc.body || (doc.location && doc.location.href === 'about:blank')) return;
+        doc.documentElement.setAttribute('data-theme', 'dark');
+        if (!doc.getElementById('ys-portal-embed-style')) {
+          const style = doc.createElement('style');
+          style.id = 'ys-portal-embed-style';
+          style.textContent = '.ys-theme-toggle{display:none!important}';
+          doc.head.appendChild(style);
+        }
+        done = true;
+        clearInterval(tick);
+        setLoaded(true);
+      } catch (_) { done = true; clearInterval(tick); setLoaded(true); }   // cross-origin: show as-is
+    }, 150);
+    return () => clearInterval(tick);
+  }, []);
+
   return (
     <div className="toolsheet" role="dialog" aria-modal="true" aria-label={title}>
       <header className="toolsheet-head">

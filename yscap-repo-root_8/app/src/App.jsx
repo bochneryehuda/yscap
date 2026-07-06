@@ -15,6 +15,7 @@ import Dashboard from './screens/Dashboard.jsx';
 import Apply from './screens/Apply.jsx';
 import Application from './screens/Application.jsx';
 import Profile from './screens/Profile.jsx';
+import EntitiesScreen from './screens/EntitiesScreen.jsx';
 import TrackRecordScreen from './screens/TrackRecordScreen.jsx';
 import NotificationSettings from './screens/NotificationSettings.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
@@ -82,6 +83,7 @@ export default function App() {
           <Route path="/apply/:draftId" element={<Private><Apply /></Private>} />
           <Route path="/app/:id" element={<Private><Application /></Private>} />
           <Route path="/profile" element={<Private><Profile /></Private>} />
+          <Route path="/entities" element={<Private><EntitiesScreen /></Private>} />
           <Route path="/track-record" element={<Private><TrackRecordScreen /></Private>} />
           <Route path="/settings/notifications" element={<Private><NotificationSettings /></Private>} />
 

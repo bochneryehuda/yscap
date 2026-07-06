@@ -258,9 +258,27 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                   })()}
                   {(l.slots || []).map(s => {
                     const rs = s.document_id ? s.review_status : null;
+                    // The Certificate of Good Standing ships OPTIONAL by default —
+                    // the officer/processor flips it to required per file/entity,
+                    // and it then gates the LLC's verification.
+                    const toggleable = /good standing/i.test(s.label || '');
                     return (
                       <div className="row" key={s.item_id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'center' }}>
                         <span className="muted small" style={{ minWidth: 170 }}>{s.label}{s.is_required === false ? ' (optional)' : ''}</span>
+                        {toggleable && (
+                          <button className="btn link small" disabled={!!busy}
+                            title={s.is_required === false
+                              ? 'Optional (default) — click to make it REQUIRED: it will gate this LLC\'s verification'
+                              : 'Required — click to make it optional again'}
+                            onClick={async () => {
+                              setBusy(s.item_id); setErr('');
+                              try { await api.staffPatchItem(s.item_id, { isRequired: s.is_required === false }); await load(); onChanged && await onChanged(); }
+                              catch (e) { setErr(e.message || 'Could not update the requirement'); }
+                              finally { setBusy(''); }
+                            }}>
+                            {s.is_required === false ? 'Make required' : 'Make optional'}
+                          </button>
+                        )}
                         <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {s.document_id ? s.filename : <span className="muted">not uploaded</span>}
                         </span>
@@ -305,6 +323,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
 function StaffTrackRecordPanel({ borrowerId }) {
   const [snap, setSnap] = useState(null);
   const [dl, setDl] = useState(false);
+  const [full, setFull] = useState(false);   // full-screen tool sheet (same UX as the Scope of Work)
   const refreshSnap = useCallback(() => {
     api.staffTrackRecordSnapshot(borrowerId).then(setSnap).catch(() => {});
   }, [borrowerId]);
@@ -330,6 +349,10 @@ function StaffTrackRecordPanel({ borrowerId }) {
       <div className="row" style={{ marginBottom: 6, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <h3>Track record &amp; experience</h3>
         <div className="spacer" />
+        <button className="btn primary small" onClick={() => setFull(true)}
+          title="Open the track record in the full-screen workspace — same as the Scope of Work">
+          Open full screen
+        </button>
         {snap && (
           <button className="btn ghost small" disabled={dl} onClick={download}
             title="The borrower's saved static copy — refreshed automatically on every change">
@@ -343,6 +366,12 @@ function StaffTrackRecordPanel({ borrowerId }) {
         src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
         minHeight={520}
       />
+      {full && (
+        <ToolModal
+          title="Borrower track record"
+          url={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
+          onClose={() => { setFull(false); refreshSnap(); }} />
+      )}
     </div>
   );
 }
@@ -438,8 +467,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               )}
               {!it.tool_key && onUploadTo && (
                 <button className="btn ghost small"
-                  title="Upload a document into this condition on the borrower's behalf — it lands in the shared list exactly as if the borrower uploaded it"
-                  onClick={() => onUploadTo({ itemId: it.id, slot: itemDocs.length ? `Document ${itemDocs.length + 1}` : 'Document 1' })}>
+                  title="Upload documents into this condition on the borrower's behalf (multiple PDFs at once supported) — they land in the shared list exactly as if the borrower uploaded them"
+                  onClick={() => onUploadTo({ itemId: it.id, slotBase: itemDocs.length })}>
                   {itemDocs.length ? '+ Add doc' : 'Upload'}
                 </button>
               )}
@@ -625,25 +654,33 @@ export default function StaffApplication() {
     finally { setBusyAct(''); }
   }
   // Staff upload INTO a condition on the borrower's behalf — same slots, same
-  // shared list the borrower sees.
+  // shared list the borrower sees. Multi-select aware: several PDFs at once
+  // land in successive slots (Document N, N+1, …); replacements stay single.
   const staffFileRef = useRef(null);
-  const [uploadTarget, setUploadTarget] = useState(null);   // {itemId, slot, replaceDocumentId}
+  const [uploadTarget, setUploadTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId}
   const pickUpload = (t) => { setUploadTarget(t || {}); staffFileRef.current && staffFileRef.current.click(); };
   async function onStaffFile(e) {
-    const file = e.target.files && e.target.files[0];
-    if (!file || !uploadTarget) return;
+    const all = Array.from((e.target.files) || []);
+    if (!all.length || !uploadTarget) return;
+    const files = uploadTarget.replaceDocumentId ? all.slice(0, 1) : all;
     setBusyAct('upload'); setErr('');
     try {
-      const dataUrl = await new Promise((res, rej) => {
-        const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file);
-      });
-      await api.staffUploadAppDoc(id, {
-        checklistItemId: uploadTarget.itemId || undefined,
-        slot: uploadTarget.slot || undefined,
-        replaceDocumentId: uploadTarget.replaceDocumentId || undefined,
-        filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
-      });
-      flash('Uploaded to the condition ✓ — the borrower sees it too.');
+      const slotBase = Number.isFinite(uploadTarget.slotBase) ? uploadTarget.slotBase : null;
+      for (let i = 0; i < files.length; i++) {
+        const dataUrl = await new Promise((res, rej) => {
+          const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(files[i]);
+        });
+        await api.staffUploadAppDoc(id, {
+          checklistItemId: uploadTarget.itemId || undefined,
+          slot: uploadTarget.replaceDocumentId ? (uploadTarget.slot || undefined)
+            : slotBase != null ? `Document ${slotBase + i + 1}` : (uploadTarget.slot || undefined),
+          replaceDocumentId: uploadTarget.replaceDocumentId || undefined,
+          filename: files[i].name, contentType: files[i].type, dataBase64: String(dataUrl).split(',')[1],
+        });
+      }
+      flash(files.length > 1
+        ? `${files.length} files uploaded to the condition ✓ — the borrower sees them too.`
+        : 'Uploaded to the condition ✓ — the borrower sees it too.');
       setUploadTarget(null); await load();
     } catch (e2) { setErr(e2.message || 'Upload failed'); }
     finally { setBusyAct(''); if (staffFileRef.current) staffFileRef.current.value = ''; }
@@ -901,7 +938,7 @@ export default function StaffApplication() {
       <Section id="sec-conditions" title="Conditions to close"
         info="The SAME list the borrower sees — shared both ways. Upload on their behalf, accept (signs off), accept-but-request-one-more, or reject with a reason (the file moves to the trash and the condition reopens)."
         badge={`${borrowerItems.filter(it => it.signed_off_at).length}/${borrowerItems.length} signed off`}>
-      <input ref={staffFileRef} type="file" style={{ display: 'none' }} onChange={onStaffFile} />
+      <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
         onUploadTo={pickUpload} />

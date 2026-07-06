@@ -247,17 +247,60 @@ function loadPdfEngine(doc) {
 const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false }, ref) {
   const frameRef = useRef(null);
   const winRef = useRef(null);
+  const adminStyleRef = useRef(null);   // the injected style hiding the admin zone
   const onStateRef = useRef(onState);
   onStateRef.current = onState;
   const prefillRef = useRef(prefill);
   prefillRef.current = prefill;
   const [failed, setFailed] = useState(false);
 
+  // Show/hide the studio's admin pricing zone WITHOUT remounting the frame:
+  // hiding keeps every admin value live in the (hidden) inputs — exactly how
+  // the static tool behaves — so locking admin mode never resets the pricing.
+  function applyAdminVisible(show) {
+    const win = winRef.current;
+    if (!win) return;
+    try {
+      const doc = win.document;
+      if (show) {
+        if (adminStyleRef.current) { adminStyleRef.current.remove(); adminStyleRef.current = null; }
+        const panel = doc.getElementById('tsAdminPanel');
+        const lock = doc.getElementById('tsAdminLock');
+        const trig = doc.getElementById('tsAdminTrigger');
+        if (panel) panel.hidden = false;
+        if (lock) lock.hidden = true;
+        if (trig) trig.hidden = true;
+      } else if (!adminStyleRef.current) {
+        const style = doc.createElement('style');
+        style.textContent = HIDE_ADMIN_CSS;
+        doc.head.appendChild(style);
+        adminStyleRef.current = style;
+      }
+    } catch (_) { /* cosmetic only */ }
+  }
+
   useImperativeHandle(ref, () => ({
     snapshot() {
       const win = winRef.current;
       if (!win || !win.TS) return null;
       try { return readSnapshot(win); } catch (_) { return null; }
+    },
+    setAdminVisible(show) { applyAdminVisible(show); },
+    /* Bring the admin pricing zone into view. `container` is the scrolling
+       ancestor (the studio sheet body) — falls back to the window. */
+    scrollToAdmin(container) {
+      const win = winRef.current, frame = frameRef.current;
+      if (!win || !frame) return;
+      try {
+        const el = win.document.getElementById('tsAdminPanel') || win.document.querySelector('.ts-admin-zone');
+        if (!el) return;
+        const y = frame.getBoundingClientRect().top + el.getBoundingClientRect().top;
+        if (container && typeof container.scrollBy === 'function') {
+          container.scrollBy({ top: y - (container.getBoundingClientRect ? container.getBoundingClientRect().top : 0) - 80, behavior: 'smooth' });
+        } else {
+          window.scrollBy({ top: y - 90, behavior: 'smooth' });
+        }
+      } catch (_) { /* scrolling is best-effort */ }
     },
     /* Build the exact PDF the static tool downloads, but capture the bytes
        instead: doc.save() is swapped for an output('blob') capture for the
@@ -287,13 +330,17 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
     let poller = null;
     let disposed = false;
 
+    let booted = false;
     const boot = () => {
+      if (booted || disposed) return;
+      booted = true;
       let win;
       try { win = frame.contentWindow; if (!win || !win.document) throw new Error('no frame'); }
       catch (_) { setFailed(true); return; }
 
       // termsheet.js wires itself on DOMContentLoaded, so TS/YS may land a
-      // beat after the frame's load event — wait for both.
+      // beat after the frame's load event — wait for both. (`win` is the
+      // frame's WindowProxy, so it follows the about:blank → tool navigation.)
       let tries = 0;
       const ready = setInterval(() => {
         if (disposed) { clearInterval(ready); return; }
@@ -307,21 +354,19 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         const doc = win.document;
         try {
           const style = doc.createElement('style');
-          style.textContent = HIDE_CSS + (showAdmin ? '' : HIDE_ADMIN_CSS);
+          style.textContent = HIDE_CSS;
           doc.head.appendChild(style);
+          // Match the always-dark portal regardless of the visitor's saved
+          // marketing-site theme; the embed hides the tool's own toggle.
+          doc.documentElement.setAttribute('data-theme', 'dark');
+          const themeStyle = doc.createElement('style');
+          themeStyle.textContent = '.ys-theme-toggle{display:none!important}';
+          doc.head.appendChild(themeStyle);
         } catch (_) { /* cosmetic only */ }
-        if (showAdmin) {
-          // Staff are already authenticated in the portal — skip the studio's
-          // client-side password gate and open the pricing controls directly.
-          try {
-            const panel = doc.getElementById('tsAdminPanel');
-            const lock = doc.getElementById('tsAdminLock');
-            const trig = doc.getElementById('tsAdminTrigger');
-            if (panel) panel.hidden = false;
-            if (lock) lock.hidden = true;
-            if (trig) trig.hidden = true;
-          } catch (_) { /* password gate still works */ }
-        }
+        // Portal-authenticated staff (or an unlocked admin session) get the
+        // pricing controls open; everyone else gets them hidden — togglable
+        // later through the ref WITHOUT remounting (values persist hidden).
+        applyAdminVisible(!!showAdmin);
         try { if (prefillRef.current) win.YS.applyState(prefillRef.current); } catch (_) { /* keep defaults */ }
         for (const id of lockedIds) {
           const e = doc.getElementById(id);
@@ -357,10 +402,12 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
       }, 100);
     };
 
-    frame.addEventListener('load', boot);
+    // Boot right away instead of waiting for the frame's full `load` event —
+    // the internal TS/YS poll already waits for the engines, and a stalled
+    // third-party resource (fonts CDN) used to keep `load` from ever firing.
+    boot();
     return () => {
       disposed = true;
-      frame.removeEventListener('load', boot);
       if (poller) clearInterval(poller);
       winRef.current = null;
     };

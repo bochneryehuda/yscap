@@ -443,7 +443,7 @@ router.get('/applications/:id/pricing', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const hist = await db.query(
       `SELECT r.id, r.program, r.product_label, r.status, r.note_rate, r.total_loan, r.target_ltc,
-              r.is_current, r.created_at, r.quote, s.full_name AS registered_by_name
+              r.is_current, r.created_at, r.inputs, r.quote, s.full_name AS registered_by_name
          FROM product_registrations r LEFT JOIN staff_users s ON s.id=r.registered_by
         WHERE r.application_id=$1 ORDER BY r.created_at DESC`, [req.params.id]);
     const current = hist.rows.find((x) => x.is_current) || null;
@@ -473,6 +473,13 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
     if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote });
 
+    // The superseded terms, captured before the new row lands — the audit trail
+    // (and Activity feed) shows exactly what a reprice changed.
+    const prevQ = await db.query(
+      `SELECT program, total_loan, note_rate, product_label FROM product_registrations
+        WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
+    const prev = prevQ.rows[0] || null;
+
     const client = await db.getClient();
     let regId;
     try {
@@ -485,7 +492,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     finally { client.release(); }
 
     await audit(req, 'register_product', 'application', appId,
-      { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null });
+      { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
+        origination: quote.origination != null ? quote.origination : undefined,
+        origPct: quote.origPct != null ? quote.origPct : undefined,
+        cashToClose: quote.cashToClose != null ? quote.cashToClose : undefined,
+        liquidity: (quote.liquidity ?? quote.liquidityRequired) != null ? (quote.liquidity ?? quote.liquidityRequired) : undefined,
+        previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined });
 
     // Registering the product satisfies the "Products & pricing" condition.
     try {
@@ -799,11 +811,18 @@ router.post('/loan-conditions/:cid/waive', async (req, res) => {
 });
 
 router.patch('/checklist/:itemId', async (req, res) => {
-  // access guard: non-privileged staff may only edit items on their own files
+  // access guard: non-privileged staff may only edit items on their own files.
+  // llc-scoped items (entity document slots) have no application_id — they're
+  // editable by anyone assigned to a file vesting in that LLC.
   if (!seesAll(req)) {
     const own = await db.query(
-      `SELECT 1 FROM checklist_items ci JOIN applications a ON a.id=ci.application_id
-        WHERE ci.id=$1 AND (a.loan_officer_id=$2 OR a.processor_id=$2)`,
+      `SELECT 1 FROM checklist_items ci
+        LEFT JOIN applications a ON a.id=ci.application_id
+        WHERE ci.id=$1 AND (
+          (a.id IS NOT NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2))
+          OR (ci.llc_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM applications ap
+                 WHERE ap.llc_id=ci.llc_id AND (ap.loan_officer_id=$2 OR ap.processor_id=$2))))`,
       [req.params.itemId, req.actor.id]);
     if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
   }
@@ -827,6 +846,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
   if (b.status && b.signedOff !== true) add('status=?', b.status);
   if (b.notes != null) add('notes=?', b.notes);
   if ('assigneeStaffId' in b) add('assignee_staff_id=?', b.assigneeStaffId || null);
+  // Requirement toggle — e.g. the LLC's Certificate of Good Standing is
+  // optional by default; the officer/processor can flip it to required (it
+  // then gates the entity's verification) and back.
+  if (typeof b.isRequired === 'boolean') add('is_required=?', b.isRequired);
 
   // Sign-off marks the item satisfied and stamps who/when; un-sign clears it.
   if (b.signedOff === true) {
@@ -1194,31 +1217,63 @@ router.get('/applications/:id/status-history', async (req, res) => {
 // Edit core loan-file data after creation (fix a typo'd price, wrong property
 // type, omitted assignment flag, etc.). Scoped by the /applications/:id guard
 // to admins + the assigned officer/processor. Money/unit fields are coerced.
+// Covers EVERY application field the intake collects (incl. refi economics),
+// and records a field-level before/after diff into the audit log so the
+// file's Activity feed shows exactly what changed.
 router.patch('/applications/:id/details', async (req, res) => {
   const b = req.body || {};
   const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
     arv: 'arv', rehabBudget: 'rehab_budget', sqftPre: 'sqft_pre', sqftPost: 'sqft_post',
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
+    requestedExpReo: 'requested_exp_reo', requestedIrMonths: 'requested_ir_months',
+    payoffAmount: 'payoff_amount', originalPurchasePrice: 'original_purchase_price',
     underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
-  const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy', rehabType: 'rehab_type' };
+  const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy',
+    rehabType: 'rehab_type', term: 'term', lender: 'lender', channel: 'channel', ppp: 'ppp' };
+  const DATE = { acquisitionDate: 'acquisition_date' };
+  const INT_KEYS = /^(requestedExp|requestedIr)/;
   const sets = [], vals = []; let i = 1;
+  const touchedCols = [];
   for (const [k, col] of Object.entries(NUM)) if (k in b) {
-    const n = k.indexOf('requestedExp') === 0 ? intField(b[k]) : (b[k] === '' || b[k] == null ? null : Number(b[k]));
+    const n = INT_KEYS.test(k) ? intField(b[k]) : (b[k] === '' || b[k] == null ? null : Number(b[k]));
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
-    sets.push(`${col}=$${i++}`); vals.push(n);
+    sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
-  for (const [k, col] of Object.entries(STR)) if (k in b) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : String(b[k]).slice(0, 200)); }
-  if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); }
-  if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? JSON.stringify(b.propertyAddress) : null); }
+  for (const [k, col] of Object.entries(STR)) if (k in b) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : String(b[k]).slice(0, 200)); touchedCols.push(col); }
+  for (const [k, col] of Object.entries(DATE)) if (k in b) {
+    const v = b[k] === '' || b[k] == null ? null : String(b[k]).slice(0, 10);
+    if (v != null && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return res.status(400).json({ error: `${k} must be a YYYY-MM-DD date` });
+    sets.push(`${col}=$${i++}`); vals.push(v); touchedCols.push(col);
+  }
+  if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); touchedCols.push('is_assignment'); }
+  if (b.propertyAddress !== undefined) { sets.push(`property_address=$${i++}`); vals.push(b.propertyAddress ? JSON.stringify(b.propertyAddress) : null); touchedCols.push('property_address'); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {
-    await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    // Before-image of exactly the touched columns — the audit trail records
+    // {field: {from, to}} so the Activity feed can say precisely what changed.
+    const beforeQ = await db.query(`SELECT ${touchedCols.join(',')} FROM applications WHERE id=$1`, [req.params.id]);
+    const before = beforeQ.rows[0] || {};
+    const upd = await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    if (upd.rowCount === 0) return res.status(404).json({ error: 'application not found' });
     if ('requestedExpFlips' in b || 'requestedExpHolds' in b || 'requestedExpGround' in b) {
       try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
     }
-    await audit(req, 'edit_application', 'application', req.params.id, { fields: Object.keys(b) });
-    res.json({ ok: true });
+    const afterQ = await db.query(`SELECT ${touchedCols.join(',')} FROM applications WHERE id=$1`, [req.params.id]);
+    const after = afterQ.rows[0] || {};
+    const norm = (v) => {
+      if (v == null || v === '') return null;
+      if (v instanceof Date) return v.toISOString().slice(0, 10);
+      if (typeof v === 'object') return JSON.stringify(v);
+      return String(v);
+    };
+    const changes = {};
+    for (const col of touchedCols) {
+      if (norm(before[col]) !== norm(after[col])) changes[col] = { from: norm(before[col]), to: norm(after[col]) };
+    }
+    await audit(req, 'edit_application', 'application', req.params.id,
+      { fields: Object.keys(b), changes: Object.keys(changes).length ? changes : undefined });
+    res.json({ ok: true, changed: Object.keys(changes) });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

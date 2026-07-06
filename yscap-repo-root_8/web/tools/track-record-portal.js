@@ -152,6 +152,20 @@
     syncT = setTimeout(runSync, 650);
   };
 
+  // The portal's full-screen tool sheet closes tools through a save handshake
+  // (same contract as the Scope of Work): flush any pending diff-sync, then
+  // confirm so the sheet can close without losing the last edit.
+  window.addEventListener("message", function (e) {
+    if (!e.data || e.data.type !== "ys-tool-save-close") return;
+    var reply = function () { try { window.parent.postMessage({ type: "ys-tool-saved" }, "*"); } catch (err) {} };
+    var waitFlushed = function () {
+      if (syncing || pendingSnap) { setTimeout(waitFlushed, 250); return; }
+      reply();
+    };
+    if (pendingSnap) { clearTimeout(syncT); runSync().then(waitFlushed, reply); }
+    else waitFlushed();
+  });
+
   async function runSync() {
     if (syncing) { syncT = setTimeout(runSync, 300); return; }
     var snapshot = pendingSnap;
