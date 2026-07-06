@@ -15,11 +15,17 @@ export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashb
   );
 }
 
-/* Centered full lockup for the public auth cards (login / register / verify …). */
+/* Centered lockup for the public auth cards (login / register / verify …).
+   A TEXT wordmark — not the logo image — so "YS CAPITAL GROUP" reads at one
+   uniform size (GROUP set apart only by the brand teal), matching the header.
+   The old image baked GROUP in as a smaller suffix, which couldn't be sized
+   with CSS. */
 export function BrandLockup() {
   return (
-    <div className="brand-lockup">
-      <img src={BRAND + 'lockup-dark.png'} alt="YS Capital Group — the answer is yes" />
+    <div className="brand-lockup" aria-label="YS Capital Group">
+      <img className="brand-lockup-mark" src={BRAND + 'mark-dark.png'} alt="" />
+      <div className="brand-lockup-word">YS&nbsp;CAPITAL&nbsp;<span className="brand-group">GROUP</span></div>
+      <div className="brand-lockup-tag">The answer is yes.</div>
     </div>
   );
 }
