@@ -92,6 +92,7 @@ textarea{min-height:90px;resize:vertical}
 .notice{padding:11px 14px;border-radius:var(--radius-sm);font-size:14px;margin-bottom:14px}
 .notice.err{background:rgba(224,115,107,.12);border:1px solid rgba(224,115,107,.4);color:#F3C4BF}
 .notice.ok{background:rgba(143,199,160,.12);border:1px solid rgba(143,199,160,.4);color:#CDE9D5}
+.notice.info{background:rgba(140,170,224,.12);border:1px solid rgba(140,170,224,.4);color:#C9D8F3}
 .savechip{font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px}
 .savechip .dot{width:7px;height:7px}
 .stepper{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}

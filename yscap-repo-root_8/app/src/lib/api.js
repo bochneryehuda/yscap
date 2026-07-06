@@ -1,18 +1,80 @@
 /* Thin fetch wrapper. Token lives in localStorage; every call is same-origin
-   against the Express backend (/auth, /api/borrower). */
+   against the Express backend (/auth, /api/borrower).
+
+   Resilience built in:
+   - GETs retry automatically on 502/503/504 and network drops (deploys,
+     server restarts) instead of surfacing "HTTP 502" to the user.
+   - Sessions slide: the backend returns a fresh token in X-Refresh-Token past
+     the old one's half-life; we store it, so active users are never logged out.
+   - A real 401 (expired/revoked session) clears the token once and notifies
+     the app (ys:auth-changed), so route guards bounce to the right login with
+     a clear message instead of leaving a half-broken page. */
 const KEY = 'ys_portal_token';
+export const NOTICE_KEY = 'ys_auth_notice';
 export const getToken = () => localStorage.getItem(KEY) || '';
 export const setToken = (t) => t ? localStorage.setItem(KEY, t) : localStorage.removeItem(KEY);
 export const clearToken = () => localStorage.removeItem(KEY);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RETRYABLE = [502, 503, 504];
+const RETRY_DELAYS = [700, 1800, 3500];   // ~6s total — covers a restart blip
+
+function friendlyError(status, data) {
+  if (data && data.error) return data.error;
+  if (RETRYABLE.includes(status)) return 'The server is briefly unavailable (it may be restarting) — please try again in a moment.';
+  if (status === 401) return 'Your session has expired — please sign in again.';
+  if (status === 403) return 'You don’t have access to that.';
+  if (status === 404) return 'That item could not be found.';
+  if (status === 413) return 'That file is too large to upload.';
+  return `Something went wrong (HTTP ${status}) — please try again.`;
+}
+
+// Session expired mid-use: clear the token ONCE, remember why, and let the
+// router (which watches ys:auth-changed) bounce to the correct login screen.
+function sessionExpired() {
+  if (!getToken()) return;
+  clearToken();
+  try { sessionStorage.setItem(NOTICE_KEY, 'You were signed out because your session expired. Please sign in again.'); } catch { /* private mode */ }
+  window.dispatchEvent(new Event('ys:auth-changed'));
+}
+
+// One fetch with retry-on-transient-failure (only for GETs — retrying a write
+// could double-submit) + refresh-token capture + global 401 handling.
+async function resilientFetch(path, opts, { isAuthCall = false } = {}) {
+  const canRetry = !opts.method || opts.method === 'GET';
+  let lastErr;
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(path, opts);
+    } catch (e) {   // network drop / server not accepting connections yet
+      lastErr = e;
+      if (canRetry && attempt < RETRY_DELAYS.length) { await sleep(RETRY_DELAYS[attempt]); continue; }
+      const err = new Error('Can’t reach the server — check your connection and try again.');
+      err.cause = lastErr; err.status = 0;
+      throw err;
+    }
+    if (canRetry && RETRYABLE.includes(res.status) && attempt < RETRY_DELAYS.length) {
+      await sleep(RETRY_DELAYS[attempt]);
+      continue;
+    }
+    const fresh = res.headers.get('X-Refresh-Token');
+    if (fresh && getToken()) setToken(fresh);
+    if (res.status === 401 && !isAuthCall && getToken()) sessionExpired();
+    return res;
+  }
+}
 
 // Fetch a binary document with the auth header and hand back a blob + filename.
 // (A plain <a href> can't send the Bearer token, so downloads go through fetch.)
 async function download(path) {
   const t = getToken();
-  const res = await fetch(path, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
+  const res = await resilientFetch(path, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
   if (!res.ok) {
     let data = null; try { data = await res.json(); } catch { /* empty */ }
-    throw new Error((data && data.error) || `HTTP ${res.status}`);
+    const err = new Error(friendlyError(res.status, data));
+    err.status = res.status; err.data = data;
+    throw err;
   }
   const cd = res.headers.get('Content-Disposition') || '';
   const m = /filename="([^"]+)"/.exec(cd);
@@ -39,17 +101,21 @@ function normalizeUpload(b) {
   return b;
 }
 
+// Login/MFA/registration endpoints answer 401 for bad credentials — that must
+// show as an error on the form, never trigger the global "session expired" path.
+const AUTH_CALL = /^\/auth\/((borrower|staff)\/(login|mfa\/verify|register)|mfa\/enable)/;
+
 async function req(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
   const t = getToken();
   if (t) headers.Authorization = `Bearer ${t}`;
-  const res = await fetch(path, {
+  const res = await resilientFetch(path, {
     method, headers, body: body != null ? JSON.stringify(body) : undefined,
-  });
+  }, { isAuthCall: AUTH_CALL.test(path) });
   let data = null;
   try { data = await res.json(); } catch { /* empty */ }
   if (!res.ok) {
-    const err = new Error((data && data.error) || `HTTP ${res.status}`);
+    const err = new Error(friendlyError(res.status, data));
     err.status = res.status; err.data = data;
     throw err;
   }
