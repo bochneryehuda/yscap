@@ -490,3 +490,45 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .wrap{padding:0 13px}
   .panel{padding:14px}
 }
+
+/* =====================================================================
+   TOUCH & READABILITY PASS — real tap targets on phones, no hover-gated
+   controls, legible micro-text, and calmer sticky chrome.
+   ===================================================================== */
+
+/* message pin/edit/delete were hover-revealed — phones have no hover */
+@media(hover:none){
+  .msg-actions{opacity:.85}
+}
+.msg-actions button{padding:2px 6px;min-width:26px;min-height:26px}
+
+/* notification settings columns: fixed on desktop, tighter on phones;
+   the whole cell (styled as a label) is the tap target */
+.notif-col{width:90px;flex:none}
+
+/* product studio footer: sticky on desktop where there's room, in the
+   normal flow on phones so it never sits over the studio */
+.studio-foot{position:sticky;bottom:0;background:var(--ink-1);padding:10px 0;z-index:5}
+
+@media(max-width:720px){
+  /* touch-primary controls get real hit areas (btn.small/.btn.link
+     out-specify the generic .btn rule above, so restate them) */
+  .btn.small{padding:9px 14px;font-size:13px}
+  .btn.link{padding:9px 8px}
+  .msg-tool{min-width:42px;min-height:42px}
+  .msg-actions button{min-width:34px;min-height:34px;font-size:1em}
+  .msg-rx{min-height:30px;padding:4px 10px}
+  .eye-btn{width:40px;height:36px}
+  input[type=checkbox],input[type=radio]{width:19px;height:19px}
+  /* micro-text floors — timestamps, sender names, labels */
+  .msg-time{font-size:11px}
+  .msg-from{font-size:11.5px}
+  .snap-k{font-size:11px}
+  .addr-foot{font-size:10.8px}
+  .badge{font-size:10.5px}
+  /* entity (LLC) rows: action cluster drops below the name */
+  .ent-row{flex-wrap:wrap}
+  .studio-foot{position:static;padding:6px 0}
+  .notif-col{width:64px}
+  .tm-hint{display:none}
+}

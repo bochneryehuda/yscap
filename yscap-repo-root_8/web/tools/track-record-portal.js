@@ -320,7 +320,12 @@
   /* ---- chrome for portal / embed mode ---- */
   function styleForPortal() {
     var css = "";
-    if (embed) css += ".topbar,.suite-footer,.fa-wrap,.float-actions{display:none!important}main{padding-top:0}.tr-hero{padding-top:1.2rem;padding-bottom:.6rem}.tr-hero h1{font-size:1.6rem}";
+    // The portal frame already says where you are — in embed mode drop the
+    // marketing hero (eyebrow + intro paragraph) too, so the tool starts at
+    // the top. Matters most on phones, where the hero filled the screen.
+    if (embed) css += ".topbar,.suite-footer,.fa-wrap,.float-actions{display:none!important}main{padding-top:0}" +
+      ".tr-hero .eyebrow,.tr-hero>p{display:none!important}" +
+      ".tr-hero{padding-top:1.2rem;padding-bottom:.6rem}.tr-hero h1{font-size:1.6rem}";
     css += ".tr-borrower-wrap input[disabled]{opacity:.7}";
     var s = document.createElement("style");
     s.textContent = css;

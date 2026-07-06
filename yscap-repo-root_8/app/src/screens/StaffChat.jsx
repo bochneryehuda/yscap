@@ -80,7 +80,7 @@ export default function StaffChat() {
               {shown.map(r => {
                 const unread = r.unread_borrower + r.unread_internal;
                 return (
-                  <Link key={r.id} to={`/internal/app/${r.id}`} className={`chat-row ${unread ? 'unread' : ''}`}>
+                  <Link key={r.id} to={`/internal/app/${r.id}?focus=chat`} className={`chat-row ${unread ? 'unread' : ''}`}>
                     <div className="chat-ava" style={{ position: 'relative' }}>{(r.first_name || '?')[0]}{(r.last_name || '')[0]}
                       {r.borrower_online && <span className="presence-dot" title="Borrower is online now" />}
                     </div>
@@ -93,7 +93,7 @@ export default function StaffChat() {
                         <span className="muted small">{ago(r.last_at)}</span>
                       </div>
                       <div className="chat-prev">
-                        {r.last_channel === 'internal' && <span className="pill" style={{ marginRight: 6, fontSize: '.62rem' }}>internal</span>}
+                        {r.last_channel === 'internal' && <span className="pill" style={{ marginRight: 6, fontSize: 11 }}>internal</span>}
                         {preview(r)}
                       </div>
                     </div>

@@ -107,6 +107,7 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
   const [mentionables, setMentionables] = useState(null);
   const [picker, setPicker] = useState(null);          // {trigger:'@'|'#', query, start}
   const [reactFor, setReactFor] = useState(null);      // message id with open emoji picker
+  const [editing, setEditing] = useState(null);        // {id, text} while editing a message inline
   const [recState, setRecState] = useState('idle');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -216,15 +217,14 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
     try { await react(mid, emoji); await load(); } catch { /* non-fatal */ }
   }
   async function doPin(m) { if (!pin) return; try { await pin(m.id); await load(); } catch { /* non-fatal */ } }
-  async function doEdit(m) {
-    if (!edit) return;
-    const next = window.prompt('Edit your message:', m.body || '');
-    if (next == null || !next.trim()) return;
-    try { await edit(m.id, next.trim()); await load(); } catch (e) { alert(e.message || 'Could not edit'); }
+  async function saveEdit() {
+    if (!edit || !editing || !editing.text.trim()) return;
+    try { await edit(editing.id, editing.text.trim()); setEditing(null); await load(); }
+    catch (e) { setErr(e.message || 'Could not edit'); }
   }
   async function doDelete(m) {
     if (!del || !window.confirm('Delete this message? This cannot be undone.')) return;
-    try { await del(m.id); await load(); } catch (e) { alert(e.message || 'Could not delete'); }
+    try { await del(m.id); await load(); } catch (e) { setErr(e.message || 'Could not delete'); }
   }
   function onRefClick(ref) {
     if (ref.type === 'document' && downloadAttachment) {
@@ -256,7 +256,17 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
                     {m.pinned && <div className="msg-from" style={{ color: 'var(--gold)' }}>📌 Pinned</div>}
                     {!isMine && <div className="msg-from">{m.sender_name || (m.sender_kind === 'staff' ? 'Loan team' : 'Borrower')}</div>}
                     <Attachment m={m} download={downloadAttachment} />
-                    {m.body && <div className="msg-body" style={m.deleted_at ? { fontStyle: 'italic', opacity: .6 } : undefined}>{renderBody(m.body, m.entity_refs, onRefClick)}</div>}
+                    {editing && editing.id === m.id ? (
+                      <div style={{ margin: '4px 0' }}>
+                        <textarea className="input" autoFocus rows={2} value={editing.text}
+                          style={{ minHeight: 56, fontSize: 14 }}
+                          onChange={e => setEditing({ id: m.id, text: e.target.value })} />
+                        <div className="row" style={{ gap: 6, marginTop: 6 }}>
+                          <button className="btn primary small" onClick={saveEdit} disabled={!editing.text.trim()}>Save</button>
+                          <button className="btn ghost small" onClick={() => setEditing(null)}>Cancel</button>
+                        </div>
+                      </div>
+                    ) : m.body && <div className="msg-body" style={m.deleted_at ? { fontStyle: 'italic', opacity: .6 } : undefined}>{renderBody(m.body, m.entity_refs, onRefClick)}</div>}
                     {m.checklist_item_id && (
                       <div className="msg-task">✦ Saved as task{m.task_label ? `: ${m.task_label.slice(0, 60)}` : ''}{m.task_status ? ` · ${m.task_status}` : ''}</div>
                     )}
@@ -267,7 +277,7 @@ export default function MessageThread({ mine, fetchMessages, send, downloadAttac
                       {!m.deleted_at && (
                         <span className="msg-actions">
                           {pin && <button title={m.pinned ? 'Unpin' : 'Pin'} onClick={() => doPin(m)}>📌</button>}
-                          {edit && isMine && <button title="Edit" onClick={() => doEdit(m)}>✎</button>}
+                          {edit && isMine && <button title="Edit" onClick={() => setEditing({ id: m.id, text: m.body || '' })}>✎</button>}
                           {del && isMine && <button title="Delete" onClick={() => doDelete(m)}>🗑</button>}
                         </span>
                       )}

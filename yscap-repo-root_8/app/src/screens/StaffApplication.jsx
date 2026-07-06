@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import MessageThread from '../components/MessageThread.jsx';
@@ -232,7 +232,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       {sowOpen && (
         <ToolModal
           title="Rehab Budget — Scope of Work (internal)"
-          url={`/tools/rehab-budget.html?app=${appId}&item=${sowOpen}&internal=1`}
+          url={`/tools/rehab-budget.html?app=${appId}&item=${sowOpen}&internal=1&embed=1`}
           onClose={() => setSowOpen(null)} />
       )}
     </div>
@@ -242,6 +242,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
 export default function StaffApplication() {
   const { id } = useParams();
   const nav = useNavigate();
+  const { search } = useLocation();
   const { role } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
   const [app, setApp] = useState(null);
@@ -318,6 +319,18 @@ export default function StaffApplication() {
     load();
     /* eslint-disable-next-line */
   }, [id]);
+
+  // Arriving from the Chat hub (?focus=chat): land on the conversation panel
+  // instead of the top of a very long page. Runs once per file, after render.
+  const focusedChat = useRef(false);
+  useEffect(() => { focusedChat.current = false; }, [id]);
+  useEffect(() => {
+    if (app && !focusedChat.current && new URLSearchParams(search).get('focus') === 'chat') {
+      focusedChat.current = true;
+      setTimeout(jumpToChat, 60);
+    }
+    /* eslint-disable-next-line */
+  }, [app]);
 
   async function revealSsn() {
     if (ssnFull) { setSsnFull(''); return; }        // toggle back to masked
