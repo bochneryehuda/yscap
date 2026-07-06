@@ -14,6 +14,7 @@ import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+import { US_STATES } from '../components/LlcManager.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -165,6 +166,45 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   const fileRef = useRef(null);
   const [upTarget, setUpTarget] = useState(null);   // {llcId, itemId, slotLabel, replaceDocumentId}
   const pickSlot = (t) => { setUpTarget(t); if (fileRef.current) { fileRef.current.value = ''; fileRef.current.click(); } };
+  // Full parity with the borrower: staff can enter/correct entity details and
+  // the ownership structure directly (not just review). A verified entity is
+  // locked — revoke verification first.
+  const [editId, setEditId] = useState(null);   // llc whose details are being edited
+  const [ef, setEf] = useState(null);           // {llcName, ein, formationState, formationDate, ownershipPct}
+  const [em, setEm] = useState(null);           // members [{fullName, ownershipPct, email}]
+  const [showCreate, setShowCreate] = useState(false);
+  const blankCreate = { llcName: '', ein: '', formationState: '', formationDate: '', ownershipPct: '' };
+  const [cf, setCf] = useState(blankCreate);
+  function beginEdit(l) {
+    setEditId(l.id); setErr('');
+    setEf({ llcName: l.llc_name || '', ein: l.ein || '', formationState: l.formation_state || '',
+      formationDate: l.formation_date ? String(l.formation_date).slice(0, 10) : '',
+      ownershipPct: l.ownership_pct == null ? '' : String(l.ownership_pct) });
+    setEm((l.members || []).map(m => ({ fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '' })));
+  }
+  async function saveEdit(l) {
+    setBusy('edit-' + l.id); setErr('');
+    try {
+      await api.staffUpdateLlc(l.id, ef);
+      await api.staffSaveLlcMembers(l.id, (em || []).filter(m => m.fullName.trim()).map(m => ({
+        fullName: m.fullName.trim(), ownershipPct: Number(m.ownershipPct), email: m.email.trim() || undefined })));
+      flash('Entity saved ✓ — the borrower sees the same details.');
+      setEditId(null); await load(); onChanged && await onChanged();
+    } catch (e) { setErr(e.message || 'Could not save the entity'); }
+    finally { setBusy(''); }
+  }
+  async function createEntity() {
+    if (!cf.llcName.trim()) { setErr('Entity name is required'); return; }
+    setBusy('create'); setErr('');
+    try {
+      await api.staffCreateLlc(app.borrower_id, {
+        llcName: cf.llcName.trim(), ein: cf.ein || undefined, formationState: cf.formationState || undefined,
+        formationDate: cf.formationDate || undefined, ownershipPct: cf.ownershipPct === '' ? undefined : Number(cf.ownershipPct) });
+      flash('Entity created ✓ — its document slots are ready for upload.');
+      setShowCreate(false); setCf(blankCreate); await load(); onChanged && await onChanged();
+    } catch (e) { setErr(e.message || 'Could not create the entity'); }
+    finally { setBusy(''); }
+  }
   async function onFile(e) {
     const file = (e.target.files || [])[0];
     if (!file || !upTarget) return;
@@ -216,17 +256,39 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onFile} />
-      <div className="row" style={{ marginBottom: 6 }}>
+      <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
         <h3>Borrower LLCs</h3>
         <div className="spacer" />
         <span className="muted small">{llcs ? `${llcs.length} entit${llcs.length === 1 ? 'y' : 'ies'}` : ''}</span>
+        <button className="btn ghost small" onClick={() => { setShowCreate(v => !v); setErr(''); }}>{showCreate ? 'Cancel' : '+ Add entity'}</button>
       </div>
       <p className="muted small" style={{ marginBottom: 10 }}>
-        The borrower's reusable entities. Review each document, then mark the whole LLC verified —
-        it auto-fulfills the LLC condition on this and every future file it vests.
+        The borrower's reusable entities. Enter or correct the entity's details, upload its documents, and
+        review each one — then mark the whole LLC verified. It auto-fulfills the LLC condition on this and
+        every future file it vests. Everything here mirrors what the borrower sees on their profile.
       </p>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
+      {showCreate && (
+        <div className="panel" style={{ marginBottom: 12, background: 'var(--ink-2)' }}>
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>New entity for this borrower</div>
+          <div className="ts-inputs">
+            <label style={{ gridColumn: '1 / -1' }}><span>Entity name *</span>
+              <input className="input" value={cf.llcName} onChange={e => setCf({ ...cf, llcName: e.target.value })} placeholder="Acme Holdings LLC" /></label>
+            <label><span>EIN</span>
+              <input className="input" value={cf.ein} placeholder="XX-XXXXXXX" onChange={e => setCf({ ...cf, ein: e.target.value })} /></label>
+            <label><span>Formation state</span>
+              <select className="input" value={cf.formationState} onChange={e => setCf({ ...cf, formationState: e.target.value })}>
+                <option value="">—</option>{US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select></label>
+            <label><span>Formation date</span>
+              <input className="input" type="date" value={cf.formationDate} onChange={e => setCf({ ...cf, formationDate: e.target.value })} /></label>
+            <label><span>Borrower ownership %</span>
+              <input className="input" type="number" min="0" max="100" value={cf.ownershipPct} onChange={e => setCf({ ...cf, ownershipPct: e.target.value })} /></label>
+          </div>
+          <button className="btn primary small" style={{ marginTop: 8 }} disabled={busy === 'create'} onClick={createEntity}>{busy === 'create' ? 'Creating…' : 'Create entity'}</button>
+        </div>
+      )}
       {llcs == null ? <p className="muted small">Loading…</p>
         : llcs.length === 0 ? <p className="muted small">No LLCs on this borrower's profile yet.</p>
         : llcs.map(l => {
@@ -255,7 +317,56 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
               </div>
               {open && (
                 <div style={{ width: '100%', paddingLeft: 20 }}>
-                  <div className="row" style={{ gap: 14, flexWrap: 'wrap', marginBottom: 6 }}>
+                  {editId === l.id ? (
+                    /* ---- editable entity details + ownership (staff parity) ---- */
+                    (() => {
+                      const eOwn = Number(ef.ownershipPct) || 0;
+                      const eMemTotal = (em || []).reduce((s, m) => s + (Number(m.ownershipPct) || 0), 0);
+                      const eTotal = eOwn + eMemTotal;
+                      return (
+                        <div style={{ marginBottom: 10 }}>
+                          <div className="ts-inputs">
+                            <label style={{ gridColumn: '1 / -1' }}><span>Entity name</span>
+                              <input className="input" value={ef.llcName} onChange={e => setEf({ ...ef, llcName: e.target.value })} /></label>
+                            <label><span>EIN</span>
+                              <input className="input" value={ef.ein} placeholder="XX-XXXXXXX" onChange={e => setEf({ ...ef, ein: e.target.value })} /></label>
+                            <label><span>Formation state</span>
+                              <select className="input" value={ef.formationState} onChange={e => setEf({ ...ef, formationState: e.target.value })}>
+                                <option value="">—</option>{US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                              </select></label>
+                            <label><span>Formation date</span>
+                              <input className="input" type="date" value={ef.formationDate} onChange={e => setEf({ ...ef, formationDate: e.target.value })} /></label>
+                            <label><span>Borrower ownership %</span>
+                              <input className="input" type="number" min="0" max="100" value={ef.ownershipPct} onChange={e => setEf({ ...ef, ownershipPct: e.target.value })} /></label>
+                          </div>
+                          <div style={{ fontWeight: 600, marginTop: 12 }}>Other members</div>
+                          <p className="muted small" style={{ marginBottom: 6 }}>Everyone besides the borrower, until ownership totals 100%.</p>
+                          {(em || []).map((m, i) => (
+                            <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                              <input className="input" style={{ flex: 2, minWidth: 150 }} placeholder="Member full name" value={m.fullName}
+                                onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, fullName: e.target.value } : x))} />
+                              <input className="input" style={{ width: 90 }} type="number" min="0.01" max="99.99" placeholder="%" value={m.ownershipPct}
+                                onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, ownershipPct: e.target.value } : x))} />
+                              <input className="input" style={{ flex: 2, minWidth: 150 }} type="email" placeholder="Email (optional)" value={m.email}
+                                onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+                              <button className="btn link small" onClick={() => setEm(ms => ms.filter((_, j) => j !== i))}>Remove</button>
+                            </div>
+                          ))}
+                          <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
+                            <button className="btn ghost small" onClick={() => setEm(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '' }])}>+ Add a member</button>
+                            <span className={`ts-badge ${Math.abs(eTotal - 100) <= 0.01 ? 'ok' : 'warn'}`}>
+                              {Math.abs(eTotal - 100) <= 0.01 ? 'Ownership 100% ✓' : `Ownership ${Math.round(eTotal * 100) / 100 || 0}%`}
+                            </span>
+                          </div>
+                          <div className="row" style={{ gap: 8, marginTop: 10 }}>
+                            <button className="btn primary small" disabled={busy === 'edit-' + l.id} onClick={() => saveEdit(l)}>{busy === 'edit-' + l.id ? 'Saving…' : 'Save entity'}</button>
+                            <button className="btn ghost small" disabled={busy === 'edit-' + l.id} onClick={() => { setEditId(null); setErr(''); }}>Cancel</button>
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                  <div className="row" style={{ gap: 14, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
                     <span className="muted small">Formed {l.formation_date ? new Date(l.formation_date).toLocaleDateString() : '—'}</span>
                     <span className="muted small">Borrower owns {l.ownership_pct != null ? `${l.ownership_pct}%` : '—'}</span>
                     {(l.members || []).map(m => (
@@ -267,7 +378,9 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                     <span className={`ts-badge ${Math.abs(total - 100) <= 0.01 ? 'ok' : 'warn'}`}>
                       {Math.abs(total - 100) <= 0.01 ? 'Ownership 100% ✓' : `Ownership ${total || 0}%`}
                     </span>
+                    {!l.is_verified && <button className="btn ghost small" onClick={() => beginEdit(l)}>Edit details</button>}
                   </div>
+                  )}
                   {(() => {
                     // Underwriting advisories: never gate verification, always visible.
                     const notes = [...(c.advisories || [])];
@@ -363,6 +476,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
 function StaffTrackRecordPanel({ borrowerId }) {
   const [snap, setSnap] = useState(null);
   const [dl, setDl] = useState(false);
+  const [preview, setPreview] = useState(false);
   const [full, setFull] = useState(false);   // full-screen tool sheet (same UX as the Scope of Work)
   const refreshSnap = useCallback(() => {
     api.staffTrackRecordSnapshot(borrowerId).then(setSnap).catch(() => {});
@@ -394,6 +508,10 @@ function StaffTrackRecordPanel({ borrowerId }) {
           Open full screen
         </button>
         {snap && (
+          <button className="btn ghost small" onClick={() => setPreview(true)}
+            title="Preview the borrower's saved static copy without downloading">Preview</button>
+        )}
+        {snap && (
           <button className="btn ghost small" disabled={dl} onClick={download}
             title="The borrower's saved static copy — refreshed automatically on every change">
             {dl ? '…' : '⤓ Saved copy (HTML)'}
@@ -401,6 +519,11 @@ function StaffTrackRecordPanel({ borrowerId }) {
         )}
         <span className="muted small">The borrower's live record — add, edit, verify, and attach docs. Changes save automatically.</span>
       </div>
+      {preview && snap && (
+        <DocPreview title="Track record — saved copy" filename={snap.filename} contentType="text/html"
+          load={() => api.staffDownloadDoc(snap.documentId)}
+          onDownload={download} onClose={() => setPreview(false)} />
+      )}
       <StaticToolFrame
         title="Borrower track record"
         src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}

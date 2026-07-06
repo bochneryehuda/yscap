@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { api } from '../lib/api.js';
 import { subscribeChat, getConnId } from '../lib/chatEvents.js';
+import DocPreview from './DocPreview.jsx';
 
 /* ChatThread — the conversation view (staff + borrower share it).
    Realtime over SSE: live messages, WHO-is-typing, presence, per-member
@@ -73,7 +74,12 @@ function Attachment({ m, download }) {
   const [url, setUrl] = useState(null);
   const [err, setErr] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState(false);
   const auto = m.attachment_kind === 'image' || m.attachment_kind === 'audio' || m.attachment_kind === 'video';
+  // Previewable, non-inline attachments (PDFs, plus any doc/text file) get a
+  // "see it without downloading" affordance — same modal used everywhere else.
+  const nm = String(m.attachment_name || '').toLowerCase();
+  const canPreview = m.attachment_kind === 'pdf' || /\.(pdf|txt|csv|html?|json|png|jpe?g|gif|webp)$/.test(nm);
   useEffect(() => {
     let alive = true, obj = null;
     if (auto && m.attachment_document_id) {
@@ -104,11 +110,19 @@ function Attachment({ m, download }) {
   if (m.attachment_kind === 'video' && url) return <video className="msg-att-video" controls src={url} />;
   if (auto && !url) return <div className="msg-att-file">Loading media…</div>;
   return (
-    <button className="msg-att-file" onClick={saveIt} disabled={busy} title="Download">
-      <span className="ic">{m.attachment_kind === 'pdf' ? '⎙' : '📎'}</span>
-      <span className="nm">{m.attachment_name || 'Attachment'}</span>
-      <span className="sz">{fmtSize(m.attachment_size)}{busy ? ' · downloading…' : ''}</span>
-    </button>
+    <div className="row" style={{ gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+      <button className="msg-att-file" onClick={canPreview ? () => setPreview(true) : saveIt} disabled={busy} title={canPreview ? 'Preview' : 'Download'}>
+        <span className="ic">{m.attachment_kind === 'pdf' ? '⎙' : '📎'}</span>
+        <span className="nm">{m.attachment_name || 'Attachment'}</span>
+        <span className="sz">{fmtSize(m.attachment_size)}{busy ? ' · downloading…' : ''}</span>
+      </button>
+      {canPreview && <button className="btn ghost small" onClick={saveIt} disabled={busy} title="Download">⤓</button>}
+      {preview && (
+        <DocPreview title={m.attachment_name || 'Attachment'} filename={m.attachment_name}
+          load={() => download(m.attachment_document_id)}
+          onDownload={saveIt} onClose={() => setPreview(false)} />
+      )}
+    </div>
   );
 }
 
@@ -336,7 +350,15 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
       const firstUnread = div != null && msgs.find(m => m.seq > div && !(m.sender_kind === me.kind && m.sender_id === me.id));
       if (firstUnread) {
         const el = scrollRef.current && scrollRef.current.querySelector(`[data-seq="${firstUnread.seq}"]`);
-        if (el) { el.scrollIntoView({ block: 'center' }); return; }
+        if (el) {
+          // Center the first-unread message WITHIN the chat box only. Using
+          // el.scrollIntoView() here scrolled every ancestor including the
+          // window, dragging the whole loan-file page down to the chat (which
+          // renders near the bottom) — the "opens scrolled to the bottom" bug.
+          const c = scrollRef.current;
+          c.scrollTop = (el.offsetTop - c.offsetTop) - c.clientHeight / 2 + el.clientHeight / 2;
+          return;
+        }
       }
       scrollToBottom(false);
     } else if (grew && atBottomRef.current) scrollToBottom(true);

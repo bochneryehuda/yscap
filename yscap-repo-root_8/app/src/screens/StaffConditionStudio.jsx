@@ -180,14 +180,27 @@ export default function StaffConditionStudio() {
   };
 
   const remove = async (d) => {
-    const warn = d.instanceCount > 0
-      ? `“${d.label}” is on ${d.instanceCount} file(s). It will be RETIRED (kept on those files, never added again). Continue?`
-      : `Delete “${d.label}”? It has never been used, so it will be removed completely.`;
-    if (!window.confirm(warn)) return;
+    let removeFromFiles = false;
+    if (d.instanceCount > 0) {
+      // Ask whether to also strip it off the files it's on, or just retire it.
+      const both = window.confirm(
+        `“${d.label}” is on ${d.instanceCount} file(s).\n\n` +
+        `• OK = DELETE it everywhere: remove it from those ${d.instanceCount} file(s) AND delete the definition. (Uploaded documents stay in each file's history, just unlinked.)\n` +
+        `• Cancel = choose to only retire it (kept on existing files, never added again).`);
+      if (both) {
+        removeFromFiles = true;
+      } else {
+        if (!window.confirm(`Retire “${d.label}” instead? It stays on the ${d.instanceCount} existing file(s) but is never added anywhere new.`)) return;
+      }
+    } else {
+      if (!window.confirm(`Delete “${d.label}”? It has never been used, so it will be removed completely.`)) return;
+    }
     setBusy(true);
     try {
-      const r = await api.adminDeleteConditionDef(d.id);
-      flash(true, r.deleted ? 'Deleted.' : 'Retired — existing files keep it; it will not be added anywhere new.');
+      const r = await api.adminDeleteConditionDef(d.id, removeFromFiles);
+      flash(true, r.removedFromFiles != null
+        ? `Deleted — removed from ${r.removedFromFiles} file(s) and the library.`
+        : r.deleted ? 'Deleted.' : 'Retired — existing files keep it; it will not be added anywhere new.');
       await load();
     } catch (e) { flash(false, e.message || 'could not delete'); }
     setBusy(false);

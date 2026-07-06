@@ -347,16 +347,34 @@ router.patch('/definitions/:id', async (req, res) => {
 
 // ---- delete (hard if never used, retire otherwise) ----
 router.delete('/definitions/:id', async (req, res) => {
+  // removeFromFiles: also strip this condition off the files it was placed on
+  // (so "I deleted it in the admin center but it stayed on the file" is fixed).
+  // Default keeps existing instances and just retires the definition.
+  const removeFromFiles = (req.query.removeFromFiles === '1' || req.query.removeFromFiles === 'true'
+    || (req.body && req.body.removeFromFiles === true));
   const cur = await db.query(
     `SELECT t.*, (SELECT count(*) FROM checklist_items ci WHERE ci.template_id=t.id) AS n
        FROM checklist_templates t WHERE t.id=$1`, [req.params.id]);
   if (!cur.rows[0]) return res.status(404).json({ error: 'condition not found' });
   const t = cur.rows[0];
-  if (Number(t.n) > 0) {
+  const n = Number(t.n);
+
+  if (removeFromFiles && n > 0) {
+    // Remove every instance of this definition from files, then hard-delete the
+    // definition. Documents linked to those items cascade (documents.checklist_item_id
+    // is ON DELETE SET NULL, so the bytes stay in the file's history).
+    const del = await db.query(`DELETE FROM checklist_items WHERE template_id=$1 RETURNING id`, [req.params.id]);
+    await db.query(`DELETE FROM checklist_templates WHERE id=$1`, [req.params.id]);
+    await audit(req, 'condition_def_deleted', 'checklist_template', req.params.id,
+      { label: t.label, removedFromFiles: del.rowCount });
+    return res.json({ ok: true, deleted: true, removedFromFiles: del.rowCount });
+  }
+
+  if (n > 0) {
     await db.query(`UPDATE checklist_templates SET is_active=false, updated_by=$2, updated_at=now() WHERE id=$1`,
       [req.params.id, req.actor.id]);
     await audit(req, 'condition_def_deactivated', 'checklist_template', req.params.id, { label: t.label, reason: 'delete_with_instances' });
-    return res.json({ ok: true, deactivated: true, instanceCount: Number(t.n) });
+    return res.json({ ok: true, deactivated: true, instanceCount: n });
   }
   await db.query(`DELETE FROM checklist_templates WHERE id=$1`, [req.params.id]);
   await audit(req, 'condition_def_deleted', 'checklist_template', req.params.id, { label: t.label });
