@@ -326,7 +326,7 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
         </div>
       </div>
 
-      {err && <div className="notice err" style={{ marginTop: 10 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
 
       {cur && <RegisteredProductDetails reg={cur} showAdmin={isStaff} />}

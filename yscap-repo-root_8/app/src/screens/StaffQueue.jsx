@@ -88,14 +88,15 @@ export default function StaffQueue() {
   const [exc, setExc] = useState(null);
   const [err, setErr] = useState('');
 
-  useEffect(() => {
-    // On failure, land on an empty list — leaving `mine` null kept the panel
-    // on "Loading…" forever underneath the error banner.
+  // On failure, land on an empty list — leaving `mine` null kept the panel
+  // on "Loading…" forever underneath the error banner.
+  const load = () => {
     api.staffApplications().then(setMine).catch(e => { setMine([]); setErr(e.message); });
     api.staffLeadCapture().then(setLeads).catch(() => setLeads([]));
     api.staffDashboard().then(setDash).catch(() => {});
     api.staffExceptions().then(setExc).catch(() => {});
-  }, []);
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   const [officer, setOfficer] = useState('');
   const [statusF, setStatusF] = useState('');
@@ -126,7 +127,8 @@ export default function StaffQueue() {
         </div>
       </div>
 
-      {err && <div className="notice err">{err}</div>}
+      {err && <div role="alert" className="notice err">{err}
+        <button className="btn link small" onClick={() => { setErr(''); load(); }}>Retry</button></div>}
       <Kpis d={dash} />
       <ExceptionStrip e={exc} />
       {tab === 'mine' && (

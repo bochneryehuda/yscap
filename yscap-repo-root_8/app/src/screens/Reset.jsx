@@ -27,7 +27,7 @@ export default function Reset() {
   if (!token)
     return (
       <AuthShell title="Reset link missing" subtitle="This page needs a valid reset link.">
-        <div className="notice err">Open the reset link from your email, or request a new one.</div>
+        <div role="alert" className="notice err">Open the reset link from your email, or request a new one.</div>
         <div className="row" style={{ marginTop: 16 }}>
           <button className="btn primary" onClick={() => nav('/forgot')}>Request a new link</button>
         </div>
@@ -46,11 +46,11 @@ export default function Reset() {
 
   return (
     <AuthShell title="Choose a new password" subtitle="Enter and confirm your new password below.">
-      {err && <div className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
       <div className="field"><label>New password</label>
-        <input className="input" type="password" value={pw} autoFocus onChange={e => setPw(e.target.value)} /></div>
+        <input className="input" type="password" autoComplete="new-password" value={pw} autoFocus onChange={e => setPw(e.target.value)} /></div>
       <div className="field"><label>Confirm password</label>
-        <input className="input" type="password" value={pw2} onChange={e => setPw2(e.target.value)}
+        <input className="input" type="password" autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && submit()} /></div>
       <div className="row" style={{ marginTop: 8 }}>
         <button className="btn primary" disabled={busy || !pw || !pw2} onClick={submit}>Update password</button>

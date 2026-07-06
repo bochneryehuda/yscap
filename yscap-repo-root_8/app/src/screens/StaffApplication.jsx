@@ -187,7 +187,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
         it auto-fulfills the LLC condition on this and every future file it vests.
       </p>
       {msg && <div className="notice ok">{msg}</div>}
-      {err && <div className="notice err">{err}</div>}
+      {err && <div role="alert" className="notice err">{err}</div>}
       {llcs == null ? <p className="muted small">Loading…</p>
         : llcs.length === 0 ? <p className="muted small">No LLCs on this borrower's profile yet.</p>
         : llcs.map(l => {
@@ -600,7 +600,7 @@ export default function StaffApplication() {
       .sort((a, b) => (a[1][0].sort_order || 0) - (b[1][0].sort_order || 0));
   }, [items, itemFilter]);
 
-  if (err && !app) return <div className="notice err">{err}</div>;
+  if (err && !app) return <div role="alert" className="notice err">{err}</div>;
   if (!app) return <div className="panel muted">Loading…</div>;
   const processors = team.filter(m => m.role === 'processor');
   const officers = team.filter(m => ['loan_officer', 'admin', 'super_admin'].includes(m.role));
@@ -651,7 +651,7 @@ export default function StaffApplication() {
       </div>
 
       {msg && <div className="notice ok">{msg}</div>}
-      {err && app && <div className="notice err">{err}</div>}
+      {err && app && <div role="alert" className="notice err">{err}</div>}
 
       <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
 

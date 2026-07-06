@@ -367,7 +367,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
 
   if (failed) {
     return (
-      <div className="notice err">
+      <div role="alert" className="notice err">
         The Term Sheet Studio could not be loaded. Refresh the page, or continue and your loan
         team will price the file with you.
       </div>

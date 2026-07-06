@@ -97,7 +97,7 @@ export default function Profile() {
     finally { setIdBusy(false); if (idRef.current) idRef.current.value = ''; }
   }
 
-  if (err && !p) return <div className="notice err">{err}</div>;
+  if (err && !p) return <div role="alert" className="notice err">{err}</div>;
   if (!p) return <div className="panel muted">Loading…</div>;
 
   return (
@@ -113,7 +113,7 @@ export default function Profile() {
       </div>
 
       {msg && <div className="notice ok">{msg}</div>}
-      {err && <div className="notice err">{err}</div>}
+      {err && <div role="alert" className="notice err">{err}</div>}
 
       {/* Identity & contact */}
       <div className="panel">

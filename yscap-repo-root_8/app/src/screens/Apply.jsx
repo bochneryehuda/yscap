@@ -376,7 +376,7 @@ export default function Apply() {
     else setErr('Incorrect admin password.');
   }
 
-  if (err && !form) return <div className="notice err">{err}</div>;
+  if (err && !form) return <div role="alert" className="notice err">{err}</div>;
   if (!form) return <div className="panel muted">Loading your application…</div>;
   const a = form.propertyAddress || {};
   const showRehab = needsRehab(form.program);
@@ -399,7 +399,7 @@ export default function Apply() {
         ))}
       </div>
 
-      {err && <div className="notice err">{err}</div>}
+      {err && <div role="alert" className="notice err">{err}</div>}
 
       {/* autoComplete off on the whole form so the browser never treats the
           subject-property address as the applicant's own contact card. */}

@@ -30,9 +30,9 @@ export default function Forgot() {
   return (
     <AuthShell title="Reset your password"
       subtitle="Enter your account email and we'll send you a secure reset link.">
-      {err && <div className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
       <div className="field"><label>Email</label>
-        <input className="input" type="email" value={email} autoFocus
+        <input className="input" type="email" autoComplete="username" value={email} autoFocus
           onChange={e => setEmail(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && email && submit()} /></div>
       <div className="row" style={{ marginTop: 8 }}>

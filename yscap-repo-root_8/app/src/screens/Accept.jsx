@@ -32,7 +32,7 @@ export default function Accept() {
   if (!token)
     return (
       <AuthShell title="Invitation missing" subtitle="This page needs a valid invitation link.">
-        <div className="notice err">Open the invitation link from your email.</div>
+        <div role="alert" className="notice err">Open the invitation link from your email.</div>
         <div className="row" style={{ marginTop: 16 }}>
           <button className="btn primary" onClick={() => nav('/login')}>Go to sign in</button>
         </div>
@@ -41,13 +41,13 @@ export default function Accept() {
 
   return (
     <AuthShell title="Activate your account" subtitle="Set a password to finish setting up your access.">
-      {err && <div className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
       <div className="field"><label>Full name</label>
-        <input className="input" value={fullName} onChange={e => setFullName(e.target.value)} /></div>
+        <input className="input" autoComplete="name" value={fullName} onChange={e => setFullName(e.target.value)} /></div>
       <div className="field"><label>Password</label>
-        <input className="input" type="password" value={pw} onChange={e => setPw(e.target.value)} /></div>
+        <input className="input" type="password" autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} /></div>
       <div className="field"><label>Confirm password</label>
-        <input className="input" type="password" value={pw2} onChange={e => setPw2(e.target.value)}
+        <input className="input" type="password" autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && submit()} /></div>
       <div className="row" style={{ marginTop: 8 }}>
         <button className="btn primary" disabled={busy || !pw || !pw2} onClick={submit}>Activate account</button>

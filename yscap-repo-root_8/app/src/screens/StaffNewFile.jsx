@@ -107,7 +107,7 @@ export default function StaffNewFile() {
         to this file at any time; once they join they'll see everything and can message you.
       </p>
 
-      {err && <div className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
 
       <form onSubmit={submit}>
         <div className="panel" style={{ marginBottom: 16 }}>

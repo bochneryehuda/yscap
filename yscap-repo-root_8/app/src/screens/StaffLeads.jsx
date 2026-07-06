@@ -22,7 +22,7 @@ export default function StaffLeads() {
     catch (e) { setErr(e.message); }
   }
 
-  if (err) return <div className="notice err">{err}</div>;
+  if (err) return <div role="alert" className="notice err">{err}</div>;
   if (rows == null) return <div className="panel muted">Loading leads…</div>;
 
   const shown = rows.filter(r => filter === 'all' ? true : (r.status !== 'archived' && r.status !== 'converted'));

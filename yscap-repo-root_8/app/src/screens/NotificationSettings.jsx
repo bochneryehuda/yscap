@@ -36,7 +36,7 @@ export default function NotificationSettings() {
     }
   }
 
-  if (err && !rows) return <div className="notice err">{err}</div>;
+  if (err && !rows) return <div role="alert" className="notice err">{err}</div>;
   if (!rows) return <div className="panel muted">Loading…</div>;
 
   return (
