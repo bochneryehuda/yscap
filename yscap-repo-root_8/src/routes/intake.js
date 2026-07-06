@@ -27,6 +27,11 @@ router.post('/', async (req, res) => {
   const p = req.body || {};
   const email = p.email || p.b1Email;
   if (!email) return res.status(400).json({ error: 'borrower email required' });
+  // The public site sends money/units as formatted strings ("$500,000", "1,200").
+  // Coerce to plain numbers or NULL before they hit typed numeric columns —
+  // inserting "$500,000" raw throws a Postgres 22P02 and 500s a real submission.
+  const num = (v) => { if (v == null || v === '') return null; const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : null; };
+  const int = (v) => { const n = num(v); return n == null ? null : Math.round(n); };
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
@@ -61,30 +66,37 @@ router.post('/', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'website_form',$15,'new',now()) RETURNING id`,
       [borrowerId, officerId, officerName, p.program || p.dealType || null, p.loanType || p.purpose || null,
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
-       p.propertyType || p.propType || null, p.units || p.units24 || p.unitsN || null,
-       p.purchasePrice || p.price || null, p.asIsValue || p.asIs || null, p.arv || null,
-       p.rehabBudget || p.rehab || null, p.loanAmount || null, p.ltv || null, JSON.stringify(redactPII(p))]);
+       p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
+       num(p.purchasePrice || p.price), num(p.asIsValue || p.asIs), num(p.arv),
+       num(p.rehabBudget || p.rehab), num(p.loanAmount), num(p.ltv), JSON.stringify(redactPII(p))]);
     const appId = a.rows[0].id;
     await client.query('COMMIT');
 
-    // 4) checklist + notification routing (outside the txn)
-    await generateChecklist(appId, borrowerId, p.program || p.dealType, p.loanType || p.purpose);
-    const addr = p.pStreet || p.propertyAddress?.line1 || 'new property';
-    if (officerId) {
-      await notify.notifyStaff(officerId, {
-        type: 'new_application', title: 'New application assigned to you',
-        body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
-        link: `/internal/app/${appId}` });
-    } else {
-      await notify.notifyAdmins({
-        type: 'unassigned_application', title: 'New application needs assignment (Lead Capture)',
-        body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
-        link: `/internal` });
-    }
+    // The borrower + application are now saved. Respond success IMMEDIATELY — the
+    // checklist + routing below are best-effort follow-ups, and a failure there
+    // must never turn into a 500 that makes the website resubmit the form and
+    // create a DUPLICATE application.
     res.status(201).json({ ok: true, borrowerId, applicationId: appId, assigned: !!officerId });
+    try {
+      await generateChecklist(appId, borrowerId, p.program || p.dealType, p.loanType || p.purpose);
+      const addr = p.pStreet || p.propertyAddress?.line1 || 'new property';
+      if (officerId) {
+        await notify.notifyStaff(officerId, {
+          type: 'new_application', title: 'New application assigned to you',
+          body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
+          link: `/internal/app/${appId}` });
+      } else {
+        await notify.notifyAdmins({
+          type: 'unassigned_application', title: 'New application needs assignment (Lead Capture)',
+          body: `${p.firstName || p.b1First || 'A borrower'} — ${addr}`, applicationId: appId,
+          link: `/internal` });
+      }
+    } catch (followUp) { console.error('[intake] post-commit follow-up failed:', db.describeError(followUp)); }
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
-    res.status(500).json({ error: e.message });
+    // Never leak raw DB error strings to the public endpoint.
+    console.error('[intake] failed:', db.describeError(e));
+    if (!res.headersSent) res.status(500).json({ error: 'could not save the application — please try again' });
   } finally { client.release(); }
 });
 
