@@ -1,0 +1,40 @@
+YS Capital Portal Export Instructions
+
+Place the CONTENTS of this folder at the root of the portal repository or Render service.
+
+Correct root contents include:
+- app
+- db
+- docs
+- src
+- web
+- package.json
+- package-lock.json
+- render.yaml
+
+Do not place this folder inside web, web/tools, web/portal, or another nested project folder.
+
+Render deployment:
+- render.yaml now runs:
+  npm install && npm --prefix app ci && npm --prefix app run build
+- That rebuilds the live portal bundle into web/portal during deploy.
+
+Manual deployment:
+- From this folder root, run:
+  npm install
+  npm --prefix app ci
+  npm --prefix app run build
+- Then upload/deploy the full folder.
+
+Important:
+- The marketing/dead term sheet generator remains at web/tools/term-sheet.html.
+- The live portal product registration now uses the same frozen Standard/Gold pricing engines and supports staff pricing/admin controls, Excel import/export, term sheets, and pre-approval output.
+- The duplicate borrower rehab-budget task is removed: rtl_p1_budget is the one live borrower tool and rtl_p3_sow1 stays a normal review/document checkpoint.
+- The live portal rehab budget now submits to the file, syncs applications.rehab_budget, and attaches generated CSV + printable packet exports to the checklist item.
+- The live portal track record now saves to the borrower profile and auto-clears the file task when profile experience meets the file's requested flip/hold/ground-up counts.
+
+Latest full export produced here:
+C:\Users\YehudaBochne_4r0c4on\OneDrive - YS CAPITAL GROUP\Documents\yscap\exports\yscap-portal-full-export-2026-07-06-rehab-track
+
+Zip:
+C:\Users\YehudaBochne_4r0c4on\OneDrive - YS CAPITAL GROUP\Documents\yscap\exports\yscap-portal-full-export-2026-07-06-rehab-track-v3.zip

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="YS Capital Group">
+  <rect width="512" height="512" rx="96" fill="#141B22"/>
+  <rect x="28" y="28" width="456" height="456" rx="72" fill="none" stroke="#7FA9B0" stroke-width="6" opacity="0.35"/>
+  <text x="256" y="300" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="230" fill="#F4F0E7" letter-spacing="4">YS</text>
+  <text x="256" y="392" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="46" letter-spacing="14" fill="#7FA9B0">GROUP</text>
+</svg>
