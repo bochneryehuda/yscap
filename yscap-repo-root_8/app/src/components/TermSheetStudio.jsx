@@ -237,8 +237,10 @@ function loadPdfEngine(doc) {
       s.src = src; s.onload = resolve; s.onerror = onerr;
       doc.head.appendChild(s);
     };
-    add('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
-      () => add('https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js', reject));
+    // Local vendored copy first (same-origin, instant); CDN as fallback.
+    add('/tools/vendor/jspdf.umd.min.js',
+      () => add('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+        () => add('https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js', reject)));
   });
 }
 

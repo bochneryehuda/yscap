@@ -124,4 +124,41 @@ async function notifyAdmins(opts) {
 async function _staffEmail(id)    { const r = await db.query(`SELECT email FROM staff_users WHERE id=$1`, [id]); return r.rows[0]?.email ? [r.rows[0].email] : []; }
 async function _borrowerEmail(id) { const r = await db.query(`SELECT email FROM borrowers   WHERE id=$1`, [id]); return r.rows[0]?.email ? [r.rows[0].email] : []; }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAdmins, buildEmail, NOTIFY_CATEGORIES, ALWAYS_IN_APP };
+/**
+ * File context for notifications: every notification about a file should say
+ * WHICH file — loan number, property, borrower, program — without the reader
+ * having to open the portal. Returns { label, addr, loanNo, borrowerName,
+ * meta } (meta = [{label,value}] lines rendered in the branded email).
+ * Best-effort: returns null on any error so a notification never fails.
+ */
+async function fileContext(appId, extraMeta = []) {
+  try {
+    const r = await db.query(
+      `SELECT a.ys_loan_number, a.property_address, a.program, a.loan_type, a.status,
+              a.purchase_price, a.arv, a.rehab_budget, a.loan_amount,
+              b.first_name, b.last_name, b.email, b.cell_phone
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+    const a = r.rows[0];
+    if (!a) return null;
+    const pa = a.property_address || {};
+    const addr = pa.oneLine || [pa.street || pa.line1, pa.city, pa.state].filter(Boolean).join(', ') || '(no address yet)';
+    const borrowerName = [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email || 'Borrower';
+    const loanNo = a.ys_loan_number || 'Loan # pending';
+    const money = (n) => (n == null ? null : '$' + Math.round(Number(n)).toLocaleString('en-US'));
+    const meta = [
+      { label: 'File', value: loanNo },
+      { label: 'Property', value: addr },
+      { label: 'Borrower', value: `${borrowerName}${a.email ? ` · ${a.email}` : ''}${a.cell_phone ? ` · ${a.cell_phone}` : ''}` },
+      a.program ? { label: 'Program', value: a.program } : null,
+      a.loan_type ? { label: 'Loan type', value: a.loan_type } : null,
+      a.purchase_price != null ? { label: 'Purchase price', value: money(a.purchase_price) } : null,
+      a.arv != null ? { label: 'ARV', value: money(a.arv) } : null,
+      a.rehab_budget != null ? { label: 'Rehab budget', value: money(a.rehab_budget) } : null,
+      a.loan_amount != null ? { label: 'Loan amount', value: money(a.loan_amount) } : null,
+      ...extraMeta,
+    ].filter(Boolean);
+    return { label: `${loanNo} · ${addr}`, addr, loanNo, borrowerName, meta };
+  } catch (_) { return null; }
+}
+
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAdmins, buildEmail, fileContext, NOTIFY_CATEGORIES, ALWAYS_IN_APP };

@@ -498,11 +498,21 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const row = t.rows[0] || {};
       const pctRate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : '—';
       const dollars = '$' + Math.round(total).toLocaleString('en-US');
-      const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''}`;
+      const money2 = (n) => (n == null ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
+      const szn = quote.sizing || {};
+      const ctx = await notify.fileContext(appId, [
+        { label: 'Registered product', value: [quote.programLabel, quote.productLabel].filter(Boolean).join(' - ') || pricing.PROGRAM_LABEL[program] },
+        { label: 'Total loan', value: `${dollars} @ ${pctRate}` },
+        szn.downPayment != null ? { label: 'Down payment', value: money2(szn.downPayment) } : null,
+        quote.cashToClose != null ? { label: 'Cash to close', value: money2(quote.cashToClose) } : null,
+        (quote.liquidity ?? quote.liquidityRequired) != null ? { label: 'Liquidity to verify', value: money2(quote.liquidity ?? quote.liquidityRequired) } : null,
+      ].filter(Boolean));
+      const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''} on ${ctx ? ctx.label : 'the file'} · cash to close ${money2(quote.cashToClose)} · liquidity ${money2(quote.liquidity ?? quote.liquidityRequired)}`;
       for (const sid of [row.loan_officer_id, row.processor_id]) {
         if (sid && sid !== req.actor.id) await notify.notifyStaff(sid, {
           type: 'product_registered', title: 'Product registered on ' + (row.ys_loan_number || 'a file'),
-          body, applicationId: appId });
+          body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
+          link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file' });
       }
     } catch (_) { /* notification is best-effort */ }
 
@@ -619,10 +629,12 @@ router.get('/applications/:id/checklist', async (req, res) => {
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             ci.assignee_staff_id, asg.full_name AS assignee_name,
-            ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at
+            ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
+            ci.reviewed_by, rv.full_name AS reviewed_by_name, ci.reviewed_at
        FROM checklist_items ci
        LEFT JOIN staff_users asg ON asg.id = ci.assignee_staff_id
        LEFT JOIN staff_users so  ON so.id  = ci.signed_off_by
+       LEFT JOIN staff_users rv  ON rv.id  = ci.reviewed_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   res.json(r.rows);
@@ -637,8 +649,14 @@ router.post('/applications/:id/checklist', async (req, res) => {
      VALUES ('application',$1,$2,$3,'document',$4,$5,'staff',$6) RETURNING id`,
     [req.params.id, b.label, b.audience || 'borrower', b.isRequired !== false, b.dueDate || null, req.actor.id]);
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
-  if (app.rows[0]) await notify.notifyBorrower(app.rows[0].borrower_id, {
-    type: 'condition_added', title: 'New document requested', body: b.label, applicationId: req.params.id });
+  if (app.rows[0]) {
+    const ctx = await notify.fileContext(req.params.id);
+    await notify.notifyBorrower(app.rows[0].borrower_id, {
+      type: 'condition_added', title: 'New document requested on your file',
+      body: `"${b.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
+      meta: (ctx && ctx.meta) || undefined,
+      applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
+  }
   await audit(req, 'add_checklist_item', 'application', req.params.id, { label: b.label });
   res.status(201).json({ ok: true, itemId: r.rows[0].id });
 });
@@ -786,6 +804,12 @@ router.patch('/checklist/:itemId', async (req, res) => {
   const b = req.body || {};
   const allowed = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
   if (b.status && !allowed.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+  // Completing a condition is the PROCESSOR's call (admins too). A loan
+  // officer marks it reviewed instead — a lighter stamp, never "satisfied".
+  const canComplete = ['processor', 'admin', 'super_admin', 'underwriter'].includes(req.actor.role);
+  if ((b.signedOff === true || b.status === 'satisfied') && !canComplete) {
+    return res.status(403).json({ error: 'Only the processor can complete a condition — mark it reviewed instead.' });
+  }
 
   const sets = ['updated_at=now()'];
   const params = [req.params.itemId];
@@ -801,6 +825,13 @@ router.patch('/checklist/:itemId', async (req, res) => {
     sets.push("signed_off_at=now()", "status='satisfied'");
   } else if (b.signedOff === false) {
     sets.push('signed_off_by=NULL', 'signed_off_at=NULL');
+  }
+  // Reviewed stamp (any assigned staff, typically the loan officer).
+  if (b.reviewed === true) {
+    add('reviewed_by=?', req.actor.id);
+    sets.push('reviewed_at=now()');
+  } else if (b.reviewed === false) {
+    sets.push('reviewed_by=NULL', 'reviewed_at=NULL');
   }
 
   const r = await db.query(`UPDATE checklist_items SET ${sets.join(', ')} WHERE id=$1`, params);
@@ -1463,19 +1494,27 @@ router.post('/applications/:id/messages', async (req, res) => {
 
     try {
       if (channel === 'borrower' && a.borrower_id) {
+        const senderRow = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+        const senderName = (senderRow.rows[0] && senderRow.rows[0].full_name) || 'Your loan team';
+        const ctxB = await notify.fileContext(req.params.id);
         await notify.notifyBorrower(a.borrower_id, {
-          type: 'message', title: 'New message from your loan team',
-          body: String(body).slice(0, 140), applicationId: req.params.id,
+          type: 'message', title: `New message from ${senderName}`,
+          body: `${ctxB ? ctxB.addr + ' — ' : ''}"${String(body).slice(0, 200)}"`,
+          meta: (ctxB && ctxB.meta) || undefined,
+          applicationId: req.params.id,
           link: `/app/${req.params.id}`, ctaLabel: 'Open the conversation' });
       } else if (channel === 'internal') {
         // Notify the rest of the file's team (assigned LO/processor + a task
         // assignee if any) — never the borrower, never the sender.
         const team = new Set([a.loan_officer_id, a.processor_id, b.assigneeStaffId].filter(Boolean));
         team.delete(req.actor.id);
+        const ctxI = await notify.fileContext(req.params.id);
         for (const sid of team)
           await notify.notifyStaff(sid, {
-            type: 'message', title: taskId ? 'New task from team chat' : 'New internal note on a file',
-            body: String(body).slice(0, 140), applicationId: req.params.id,
+            type: 'message', title: (taskId ? 'New task from team chat' : 'New internal note') + (ctxI ? ` on ${ctxI.loanNo}` : ' on a file'),
+            body: `${ctxI ? ctxI.label + ' — ' : ''}${String(body).slice(0, 200)}`,
+            meta: (ctxI && ctxI.meta) || undefined,
+            applicationId: req.params.id,
             link: `/internal/app/${req.params.id}`, ctaLabel: 'Open the file' });
       }
       // @mentions get a direct ping regardless of channel/assignment.
@@ -1585,6 +1624,11 @@ router.post('/documents/:id/review', async (req, res) => {
   const b = req.body || {};
   const action = b.action;
   if (!['accept', 'reject'].includes(action)) return res.status(400).json({ error: 'action must be accept or reject' });
+  // Accepting a document completes its condition — processor/admin only.
+  // Anyone on the file may reject (the document lands in the file's trash).
+  if (action === 'accept' && !['processor', 'admin', 'super_admin', 'underwriter'].includes(req.actor.role)) {
+    return res.status(403).json({ error: 'Only the processor can accept a document — you can reject it or mark the condition reviewed.' });
+  }
   if (action === 'reject' && !String(b.reason || '').trim()) return res.status(400).json({ error: 'a rejection reason is required' });
   try {
     const r = await db.query(
@@ -1609,9 +1653,16 @@ router.post('/documents/:id/review', async (req, res) => {
     // On rejection, tell the borrower what to fix.
     if (action === 'reject' && doc.borrower_id) {
       try {
+        let condLabel = '';
+        if (doc.checklist_item_id) {
+          const it = await db.query(`SELECT COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1`, [doc.checklist_item_id]);
+          if (it.rows[0]) condLabel = it.rows[0].label;
+        }
+        const ctx = doc.application_id ? await notify.fileContext(doc.application_id) : null;
         await notify.notifyBorrower(doc.borrower_id, {
-          type: 'doc_rejected', title: 'A document needs to be re-uploaded',
-          body: `"${doc.filename}" couldn't be accepted: ${String(b.reason).slice(0, 180)}`,
+          type: 'doc_rejected', title: condLabel ? `"${condLabel}" needs a new document` : 'A document needs to be re-uploaded',
+          body: `"${doc.filename}"${condLabel ? ` on condition "${condLabel}"` : ''}${ctx ? ` (${ctx.label})` : ''} couldn't be accepted: ${String(b.reason).slice(0, 180)}`,
+          meta: (ctx && ctx.meta) || undefined,
           applicationId: doc.application_id, link: `/app/${doc.application_id}`,
           ctaLabel: 'Upload a new version' });
       } catch (_) {}

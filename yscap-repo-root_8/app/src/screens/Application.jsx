@@ -218,8 +218,9 @@ export default function Application() {
   const [msg, setMsg] = useState('');
   const fileRef = useRef(null);
   const [target, setTarget] = useState(null);   // {itemId, slot, replaceDocumentId, photoId}
-  const [docFilter, setDocFilter] = useState('all');
+  const [docFilter, setDocFilter] = useState('open');   // default: only what still needs the borrower
   const [trBusy, setTrBusy] = useState(false);
+  const [trRows, setTrRows] = useState([]);     // the borrower's live track record
   const [sowOpen, setSowOpen] = useState(false);
 
   const activityFetcher = useCallback(() => api.activity(id), [id]);
@@ -229,9 +230,10 @@ export default function Application() {
     return Promise.all([
       api.application(id), api.checklist(id), api.documents(id).catch(() => []),
       api.conditions(id).catch(() => []), api.profile().catch(() => null),
-    ]).then(([a, c, d, cn, p]) => {
+      api.trackRecords().catch(() => []),
+    ]).then(([a, c, d, cn, p, tr]) => {
       if (idRef.current !== forId) return;
-      setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); setProfile(p);
+      setApp(a); setItems(c || []); setUploads(d || []); setConds(cn || []); setProfile(p); setTrRows(tr || []);
     }).catch(e => { if (idRef.current === forId) setErr(e.message); });
   };
 
@@ -316,10 +318,25 @@ export default function Application() {
   })();
 
   const currentDocsFor = (itemId) => uploads.filter(d => d.checklist_item_id === itemId && d.is_current !== false && d.review_status !== 'superseded');
+  const itemLabelById = Object.fromEntries(items.map(it => [it.id, it.label]));
   const sowExports = sowItem ? currentDocsFor(sowItem.id).filter(d => d.doc_kind === 'rehab_budget_export') : [];
   const req = experienceRequirement(app);
-  const trPayload = (trItem && trItem.tool_payload) || {};
-  const trCounts = trPayload.counts || {};
+  // Live experience counts straight from the borrower's track record — always
+  // in step with the general Track Record section, no save needed.
+  const liveCounts = (() => {
+    const c = { flips: 0, holds: 0, ground: 0, total: 0 };
+    for (const r of trRows) {
+      const t = String(r.deal_type || '').toLowerCase();
+      if (t.includes('ground')) c.ground++; else if (t.includes('flip')) c.flips++; else c.holds++;
+      c.total++;
+    }
+    return c;
+  })();
+  const stillNeeded = [
+    req.flips > liveCounts.flips ? `${req.flips - liveCounts.flips} more flip${req.flips - liveCounts.flips === 1 ? '' : 's'}` : null,
+    req.holds > liveCounts.holds ? `${req.holds - liveCounts.holds} more hold${req.holds - liveCounts.holds === 1 ? '' : 's'}` : null,
+    req.ground > liveCounts.ground ? `${req.ground - liveCounts.ground} more ground-up` : null,
+  ].filter(Boolean);
   const hasReq = req.flips + req.holds + req.ground > 0;
 
   const nDone = items.filter(it => isDone(it.status)).length;
@@ -353,7 +370,8 @@ export default function Application() {
         </div>
       </div>
 
-      <div id="product-studio"><ProductStudioPanel appId={id} app={app} onRegistered={load} mode="borrower" /></div>
+      <div id="product-studio"><ProductStudioPanel appId={id} app={app} onRegistered={load} mode="borrower"
+        toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} /></div>
 
       {/* ================= YOUR CONDITIONS — one list, everything the file needs ================= */}
       <div className="panel" style={{ marginTop: 18 }}>
@@ -361,12 +379,11 @@ export default function Application() {
           <h3>Your conditions</h3>
           <div className="spacer" />
           <span className="muted small">{nDone}/{items.length} complete</span>
-          <select className="input" style={{ maxWidth: 170 }} value={docFilter} onChange={e => setDocFilter(e.target.value)}>
-            <option value="all">All</option>
-            <option value="todo">To do</option>
-            <option value="review">In review</option>
-            <option value="attention">Needs attention</option>
+          <select className="input" style={{ maxWidth: 190 }} value={docFilter} onChange={e => setDocFilter(e.target.value)}>
+            <option value="open">Open (to do)</option>
+            <option value="review">Submitted — in review</option>
             <option value="done">Completed</option>
+            <option value="all">All conditions</option>
           </select>
         </div>
         <p className="muted small" style={{ marginBottom: 12 }}>
@@ -376,7 +393,10 @@ export default function Application() {
         <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onFile} />
         {(() => {
           const bucket = (s) => s === 'issue' ? 'attention' : s === 'received' ? 'review' : (s === 'satisfied' || s === 'done') ? 'done' : 'todo';
-          const show = (it) => docFilter === 'all' || bucket(it.status) === docFilter;
+          // Default view: submitted conditions disappear as you complete them —
+          // only what still needs you (to do / needs attention) stays visible.
+          const show = (it) => docFilter === 'all'
+            || (docFilter === 'open' ? ['todo', 'attention'].includes(bucket(it.status)) : bucket(it.status) === docFilter);
           return (
             <>
               {/* 0 — Products & pricing: open until a product is registered */}
@@ -423,12 +443,15 @@ export default function Application() {
                   issue={trItem.status === 'issue'}
                   title="Borrower track record & experience"
                   subtitle={hasReq
-                    ? `This file asks for ${[req.flips ? `${trCounts.flips ?? 0}/${req.flips} flips` : '', req.holds ? `${trCounts.holds ?? 0}/${req.holds} holds` : '', req.ground ? `${trCounts.ground ?? 0}/${req.ground} ground-up` : ''].filter(Boolean).join(', ')} — your track record is one record, shared by every file.`
-                    : 'Document your completed deals once — your track record is one record, shared by every file.'}
+                    ? `You've entered ${[req.flips ? `${liveCounts.flips}/${req.flips} flips` : '', req.holds ? `${liveCounts.holds}/${req.holds} holds` : '', req.ground ? `${liveCounts.ground}/${req.ground} ground-up` : ''].filter(Boolean).join(', ')}`
+                      + (stillNeeded.length ? ` — still need ${stillNeeded.join(', ')} to match your product registration.` : ' — requirement met ✓ submit it for this file.')
+                    : liveCounts.total
+                      ? `${liveCounts.total} deal${liveCounts.total === 1 ? '' : 's'} on your record — linked automatically to this file.`
+                      : 'Document your completed deals once — your track record is one record, shared by every file.'}
                   status={statusText(trItem)}
                   action={
                     <span className="row" style={{ gap: 6 }}>
-                      <Link className="btn primary small" to="/track-record">Open Track Record</Link>
+                      <Link className="btn primary small" to={`/track-record?app=${id}`}>Open Track Record</Link>
                       {!isDone(trItem.status) && <button className="btn ghost small" disabled={trBusy} onClick={() => submitTrackRecord(trItem)}>{trBusy ? '…' : 'Submit for this file'}</button>}
                     </span>
                   }
@@ -460,6 +483,9 @@ export default function Application() {
                 const q = registeredQuote;
                 const liq = q && (q.liquidity ?? q.liquidityRequired);
                 const nextSlot = `Document ${docs.length + 1}`;
+                // The registration's liquidity condition is one and the same —
+                // its full breakdown renders inside THIS condition.
+                const regCond = conds.find(c => c.linked_entity_type === 'product_registration');
                 return (
                   <ConditionRow
                     done={isDone(assetsItem.status)}
@@ -472,9 +498,14 @@ export default function Application() {
                         + '. Upload the bank statements that show it.'
                       : [assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
                     status={statusText(assetsItem)}
-                    open={docs.length > 0 || assetsItem.status === 'issue'}
+                    open={docs.length > 0 || assetsItem.status === 'issue' || !!q}
                     action={<button className="btn link small" onClick={() => pick({ itemId: assetsItem.id, slot: docs.length ? nextSlot : 'Document 1' })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
                   >
+                    {regCond && regCond.detail && (
+                      <div className="muted small" style={{ whiteSpace: 'pre-line', marginBottom: 8, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
+                        {regCond.detail}
+                      </div>
+                    )}
                     {assetsItem.status === 'issue' && assetsItem.rejection_reason && (
                       <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
                         Needs a new version: {assetsItem.rejection_reason}
@@ -531,8 +562,10 @@ export default function Application() {
                 );
               })}
 
-              {/* 6 — anything else your loan team flagged (read-only) */}
-              {conds.length > 0 && conds.map(c => (
+              {/* 6 — anything else your loan team flagged (read-only). The
+                  registered-liquidity condition is NOT repeated here — it is
+                  merged into the Assets & liquidity condition above. */}
+              {conds.filter(c => c.linked_entity_type !== 'product_registration').map(c => (
                 <ConditionRow key={c.id} done={false} title={c.title} subtitle={c.detail || 'Your loan team will follow up on this item.'}
                   status="Needs your attention" action={null} />
               ))}
@@ -560,8 +593,13 @@ export default function Application() {
             <div className="checkitem" key={d.id} style={{ opacity: d.is_current === false ? .6 : 1 }}>
               <span className={`dot ${rs === 'accepted' ? 'done' : 'outstanding'}`} />
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600 }}>{d.filename}</div>
-                <div className="muted small">{kb(d.size_bytes)}{d.slot_label ? ` · ${d.slot_label}` : ''} · {new Date(d.created_at).toLocaleDateString()}</div>
+                {/* The CONDITION is where the document lives — lead with it;
+                    the raw filename is secondary (often meaningless). */}
+                <div style={{ fontWeight: 600 }}>
+                  {itemLabelById[d.checklist_item_id] || (d.doc_kind === 'term_sheet' ? 'Term sheet' : d.doc_kind === 'photo_id' ? 'Government photo ID' : 'General upload')}
+                  {d.slot_label ? <span className="muted small" style={{ fontWeight: 400 }}> · {d.slot_label}</span> : null}
+                </div>
+                <div className="muted small">{d.filename} · {kb(d.size_bytes)} · {new Date(d.created_at).toLocaleDateString()}</div>
                 {rs === 'rejected' && d.rejection_reason && <div className="small" style={{ color: 'var(--danger)' }}>{d.rejection_reason}</div>}
               </div>
               <span className="pill" style={style}>{label}</span>
