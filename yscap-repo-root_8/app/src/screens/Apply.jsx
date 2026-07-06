@@ -23,11 +23,14 @@ const MARITAL = ['Single', 'Married', 'Separated', 'Divorced', 'Widowed'];
 const HOUSING = ['Rent', 'Own with mortgage', 'Own free and clear', 'Live with family', 'Other'];
 
 // Fix & Flip / Ground-Up / construction files use ARV + rehab budget; a straight
-// Bridge does not, so those fields are hidden for them.
+// Bridge does not, so those fields are hidden for them (same rule as the
+// static loan application: Bridge/Stabilized wipes rehab + ARV).
 const needsRehab = (program) => !program || /flip|ground|construction|rehab|not sure/i.test(program);
 const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
-// An assignment only applies to a purchase.
+// An assignment only applies to a purchase; a refinance swaps the purchase
+// price for payoff / original-purchase fields (static loan-application logic).
 const isPurchase = (loanType) => !loanType || /purchase/i.test(loanType);
+const isRefi = (loanType) => /refi/i.test(loanType || '');
 
 // Property type drives the unit-count control. Single-unit types default to 1
 // and never ask; 2–4 offers a dropdown; 5+ / mixed-use take a number.
@@ -54,10 +57,14 @@ export default function Apply() {
   const [officers, setOfficers] = useState([]);
   const [partners, setPartners] = useState([]);
   const [snap, setSnap] = useState(null);          // live Term Sheet Studio state (step 4)
+  const [appId, setAppId] = useState(null);        // set the moment the application is submitted (step 4 entry)
+  const [adminKey, setAdminKey] = useState('');    // admin pricing unlock (same gate as the static studio)
   const studioRef = useRef(null);
   const lastStudioSync = useRef('');
   const idRef = useRef(id);
   idRef.current = id;
+  const appIdRef = useRef(null);
+  appIdRef.current = appId;
 
   // load existing draft, or create a fresh one — then prefill the personal
   // section from the borrower's saved profile (empty fields only), so repeat
@@ -110,7 +117,41 @@ export default function Apply() {
     api.partners().then(setPartners).catch(() => {});
   }, []);
 
-  const doSave = useCallback((patch) => api.saveDraft(idRef.current, patch), []);
+  // Prefill the experience boxes from the borrower's live track record — the
+  // application should already know their flips / holds / ground-up / REO.
+  useEffect(() => {
+    if (!form) return;
+    if (form.requestedExpFlips || form.requestedExpHolds || form.requestedExpGround || form.requestedExpReo) return;
+    let live = true;
+    api.trackRecords().then(rows => {
+      if (!live || !rows || !rows.length) return;
+      const c = { flips: 0, holds: 0, ground: 0 };
+      for (const r of rows) {
+        const t = String(r.deal_type || '').toLowerCase();
+        if (t.includes('ground')) c.ground++;
+        else if (t.includes('flip')) c.flips++;
+        else c.holds++;
+      }
+      setForm(f => {
+        if (!f || f.requestedExpFlips || f.requestedExpHolds || f.requestedExpGround) return f;
+        const patch = {
+          requestedExpFlips: c.flips ? String(c.flips) : '',
+          requestedExpHolds: c.holds ? String(c.holds) : '',
+          requestedExpGround: c.ground ? String(c.ground) : '',
+          requestedExpReo: c.holds ? String(c.holds) : '',
+        };
+        save({ data: patch });
+        return { ...f, ...patch };
+      });
+    }).catch(() => {});
+    return () => { live = false; };
+    // prefill once, when the form first loads
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form == null]);
+
+  // Once the application is submitted (entering step 4), the draft is closed —
+  // further wizard edits stay local; the file is the record from then on.
+  const doSave = useCallback((patch) => (appIdRef.current ? Promise.resolve({ ok: true }) : api.saveDraft(idRef.current, patch)), []);
   const { status, save, flush } = useAutosave(doSave, 800);
 
   const set = (k, v) => {
@@ -167,16 +208,26 @@ export default function Apply() {
     // Don't let the clickable stepper jump past property basics with an
     // incomplete step 1 (street + type + units) — the file needs them.
     if (n > 1 && !(form && form.propertyAddress && form.propertyAddress.street && form.propertyType && form.units)) { setStep(1); return; }
+    // Reaching Products & Pricing SUBMITS the application: the file exists and
+    // the team is notified from this moment. Registering the product is the
+    // last step — skippable; it stays open as a condition on the file.
+    if (n === 4 && !appIdRef.current) {
+      setErr(''); setBusy(true);
+      try {
+        await flush();
+        const r = await api.submitDraft(id, {});
+        setAppId(r.applicationId);
+      } catch (e) {
+        if (e.status === 409 && e.data && e.data.applicationId) setAppId(e.data.applicationId);
+        else { setErr(e.message || 'Could not submit the application'); setBusy(false); return; }
+      }
+      setBusy(false);
+    }
     await flush(); setStep(n); save({ step: n });
   };
 
-  async function submit() {
-    setErr(''); setBusy(true);
-    try {
-      await flush();
-      const r = await api.submitDraft(id, {});
-      nav(`/app/${r.applicationId}`);
-    } catch (e) { setErr(e.message || 'Could not submit'); setBusy(false); }
+  function finishLater() {
+    if (appIdRef.current) nav(`/app/${appIdRef.current}`);
   }
 
   /* ---- Step 4: the real static Term Sheet Studio, prefilled from this
@@ -240,14 +291,18 @@ export default function Apply() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, form == null]);
 
-  async function registerAndSubmit() {
+  // The application is ALREADY submitted by the time step 4 renders — this
+  // only registers the product on it (the last, skippable step).
+  async function registerProduct() {
+    const target = appIdRef.current;
+    if (!target) { setErr('The application has not finished submitting — one moment.'); return; }
     const s = studioRef.current && studioRef.current.snapshot();
     if (!s) { setErr('The Term Sheet Studio is still loading — one moment.'); return; }
     if (!s.ready) { setErr('Complete the required pricing fields first: ' + s.missing.join(', ')); return; }
     if (!s.program) { setErr('Tap the Standard or Gold Standard card above to choose your product, then register.'); return; }
     const d = s.d;
     if (!d || d.status === 'INELIGIBLE' || !(d.totalLoan > 0)) {
-      setErr("This scenario isn't eligible as entered — adjust the deal above, or submit for manual review instead.");
+      setErr("This scenario isn't eligible as entered — adjust the deal above, or finish later and price it with your loan team.");
       return;
     }
     setErr(''); setBusy(true);
@@ -255,28 +310,57 @@ export default function Apply() {
       // the EXACT term sheet the static studio exports (best-effort)
       let pdf = null;
       try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
-      // final write-back + full priced snapshot = the file's placeholders
-      save({ data: { ...patchFromStudio(s.fields, form), productSelection: selectionFromSnapshot(s) } });
-      await flush();
-      const r = await api.submitDraft(id, {});
-      const appId = r.applicationId;
-      try {
-        await api.borrowerRegisterProduct(appId, s.program, {
-          targetLTC: (d.inp && d.inp.targetLTC) || undefined,
-          irMonths: s.fields.irMonths || 0,
-          term: s.fields.tsTerm,
-          fico: s.fields.fico,
-          expFlips: s.fields.expFlips, expHolds: s.fields.expBrrrr, expGround: s.fields.expGround,
+      const overrides = {
+        targetLTC: (d.inp && d.inp.targetLTC) || undefined,
+        irMonths: s.fields.irMonths || 0,
+        term: s.fields.tsTerm,
+        fico: s.fields.fico,
+        expFlips: s.fields.expFlips, expHolds: s.fields.expBrrrr, expGround: s.fields.expGround,
+      };
+      if (adminKey) {
+        // Admin-unlocked pricing: carry the studio's fee/markup/manual knobs.
+        Object.assign(overrides, {
+          markupStdPct: s.fields.tsYspStd, markupGoldPct: s.fields.tsYspGold,
+          origStdPct: s.fields.tsOrigStd, origGoldPct: s.fields.tsOrigGold,
+          lenderFee: s.fields.tsFeeUW, creditFee: s.fields.tsFeeCredit,
+          appraisalFee: s.fields.tsFeeAppr, titleFee: s.fields.tsFeeTitle,
+          manualPricing: !!s.fields.tsManualOn,
+          ovrAcqLTVPct: s.fields.tsManualOn ? s.fields.tsMLtv : undefined,
+          ovrARLTVPct: s.fields.tsManualOn ? s.fields.tsMArv : undefined,
+          ovrLTCPct: s.fields.tsManualOn ? s.fields.tsMLtc : undefined,
+          ovrRatePct: s.fields.tsManualOn ? s.fields.tsMRate : undefined,
+          ovrIrMonths: s.fields.tsManualOn ? s.fields.tsMIr : undefined,
         });
-      } catch (_) { /* file submitted — the product can be registered from the file page */ }
+      }
+      await api.borrowerRegisterProduct(target, s.program, overrides, adminKey || undefined);
       if (pdf && pdf.blob) {
         try {
           const dataBase64 = await blobToBase64(pdf.blob);
-          await api.uploadDoc({ applicationId: appId, filename: pdf.filename, contentType: 'application/pdf', dataBase64, docKind: 'term_sheet' });
+          await api.uploadDoc({ applicationId: target, filename: pdf.filename, contentType: 'application/pdf', dataBase64, docKind: 'term_sheet' });
         } catch (_) { /* sheet can be re-generated from the file page */ }
       }
-      nav(`/app/${appId}`);
-    } catch (e) { setErr(e.message || 'Could not submit'); setBusy(false); }
+      nav(`/app/${target}`);
+    } catch (e) {
+      const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
+      setErr(detail); setBusy(false);
+    }
+  }
+
+  function unlockAdminPricing() {
+    if (adminKey) { setAdminKey(''); return; }
+    const pw = window.prompt('Admin mode — enter the pricing admin password:');
+    if (pw == null) return;
+    // same soft gate as the static Term Sheet tool (cyrb53 hash)
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (let i = 0, ch; i < pw.length; i++) {
+      ch = pw.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    if (4294967296 * (2097151 & h2) + (h1 >>> 0) === 6019969998889003) setAdminKey(pw);
+    else setErr('Incorrect admin password.');
   }
 
   if (err && !form) return <div className="notice err">{err}</div>;
@@ -362,12 +446,36 @@ export default function Apply() {
                   <option value="">Select…</option>{LOAN_TYPES.map(p => <option key={p}>{p}</option>)}
                 </select></div>
             </div>
-            <div className="grid cols-2">
-              <div className="field"><label>Purchase price</label>
-                <MoneyInput value={form.purchasePrice || ''} onChange={v => set('purchasePrice', v)} /></div>
-              <div className="field"><label>As-is value</label>
-                <MoneyInput value={form.asIsValue || ''} onChange={v => set('asIsValue', v)} /></div>
-            </div>
+            {/* Purchase → purchase price. Refinance → the purchase price falls
+                away; payoff + original purchase + date acquired come up
+                (ported from the static loan application). */}
+            {!isRefi(form.loanType) ? (
+              <div className="grid cols-2">
+                <div className="field"><label>Purchase price</label>
+                  <MoneyInput value={form.purchasePrice || ''} onChange={v => set('purchasePrice', v)} /></div>
+                <div className="field"><label>As-is value</label>
+                  <MoneyInput value={form.asIsValue || ''} onChange={v => set('asIsValue', v)} /></div>
+              </div>
+            ) : (
+              <>
+                <div className="grid cols-3">
+                  <div className="field"><label>Current loan payoff</label>
+                    <MoneyInput value={form.payoffAmount || ''} onChange={v => set('payoffAmount', v)} /></div>
+                  <div className="field"><label>Original purchase price</label>
+                    <MoneyInput value={form.originalPurchasePrice || ''} onChange={v => set('originalPurchasePrice', v)} /></div>
+                  <div className="field"><label>Date acquired</label>
+                    <input className="input" type="date" value={form.acquisitionDate || ''} onChange={e => set('acquisitionDate', e.target.value)} /></div>
+                </div>
+                <div className="grid cols-2">
+                  <div className="field"><label>As-is value *</label>
+                    <MoneyInput value={form.asIsValue || ''} onChange={v => set('asIsValue', v)} /></div>
+                </div>
+                <p className="muted small" style={{ marginBottom: 12 }}>
+                  On a refinance we lend against the property's current (as-is) value; the payoff tells us
+                  what needs to be retired at closing{/cash/i.test(form.loanType || '') ? ' — anything above it is your cash-out' : ''}.
+                </p>
+              </>
+            )}
             {isPurchase(form.loanType) && (
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', margin: '2px 0 12px' }}>
                 <input type="checkbox" checked={!!form.isAssignment} onChange={e => set('isAssignment', e.target.checked)} />
@@ -410,17 +518,20 @@ export default function Apply() {
                     </div>
                   )}
                 </div>
-                <h3 style={{ margin: '14px 0 8px' }}>Experience used for this request</h3>
-                <div className="grid cols-3">
-                  <div className="field"><label>Fix &amp; flip deals</label>
-                    <input className="input" type="number" min="0" value={form.requestedExpFlips || ''} onChange={e => set('requestedExpFlips', e.target.value)} /></div>
-                  <div className="field"><label>Fix &amp; hold deals</label>
-                    <input className="input" type="number" min="0" value={form.requestedExpHolds || ''} onChange={e => set('requestedExpHolds', e.target.value)} /></div>
-                  <div className="field"><label>Ground-up deals</label>
-                    <input className="input" type="number" min="0" value={form.requestedExpGround || ''} onChange={e => set('requestedExpGround', e.target.value)} /></div>
-                </div>
               </>
             )}
+            <h3 style={{ margin: '14px 0 8px' }}>Experience used for this request</h3>
+            <p className="muted small" style={{ marginBottom: 8 }}>Prefilled from your track record — adjust if needed.</p>
+            <div className="grid cols-2">
+              <div className="field"><label>Fix &amp; flip deals</label>
+                <input className="input" type="number" min="0" value={form.requestedExpFlips || ''} onChange={e => set('requestedExpFlips', e.target.value)} /></div>
+              <div className="field"><label>Fix &amp; hold deals</label>
+                <input className="input" type="number" min="0" value={form.requestedExpHolds || ''} onChange={e => set('requestedExpHolds', e.target.value)} /></div>
+              <div className="field"><label>Ground-up deals</label>
+                <input className="input" type="number" min="0" value={form.requestedExpGround || ''} onChange={e => set('requestedExpGround', e.target.value)} /></div>
+              <div className="field"><label>Rental / REO properties owned now</label>
+                <input className="input" type="number" min="0" value={form.requestedExpReo || ''} onChange={e => set('requestedExpReo', e.target.value)} /></div>
+            </div>
             <p className="muted small">Final pricing and leverage are confirmed by your loan officer against program guidelines — these figures start the file.</p>
           </>
         )}
@@ -551,6 +662,13 @@ export default function Apply() {
         {step === 4 && (
           <>
             <h3 style={{ marginBottom: 4 }}>Price your deal & register your product</h3>
+            {appId && (
+              <div className="notice ok" style={{ marginBottom: 10 }}>
+                Your application is <strong>submitted</strong> — your loan team has it already.
+                Registering a product is the last step; skip it and it stays open as a condition
+                on your file, with a link to come back here.
+              </div>
+            )}
             <p className="muted small" style={{ marginBottom: 12 }}>
               This is the live YS Term Sheet Studio, prefilled from your application — the same
               guidelines, limits and pricing as our public tool. Adjust anything, compare the
@@ -558,8 +676,8 @@ export default function Apply() {
               and register: your loan amount, structure, cash to close, liquidity requirement and
               the signable term sheet PDF are all saved onto your loan file.
             </p>
-            <TermSheetStudio ref={studioRef} prefill={studioPrefill}
-              lockedIds={STUDIO_LOCKED} onState={onStudioState} />
+            <TermSheetStudio key={adminKey ? 'admin' : 'std'} ref={studioRef} prefill={studioPrefill}
+              lockedIds={STUDIO_LOCKED} onState={onStudioState} showAdmin={!!adminKey} />
           </>
         )}
 
@@ -567,15 +685,24 @@ export default function Apply() {
           {step > 1 && <button className="btn ghost" type="button" onClick={() => goStep(step - 1)}>Back</button>}
           <div className="spacer" />
           <SaveChip status={status} />
-          {step < 4 && <button className="btn primary" type="button" onClick={() => goStep(step + 1)} disabled={step === 1 && !step1Ready}>Continue</button>}
+          {step < 4 && (
+            <button className="btn primary" type="button" onClick={() => goStep(step + 1)} disabled={busy || (step === 1 && !step1Ready)}>
+              {step === 3 ? (busy ? 'Submitting…' : 'Submit & continue to Products & Pricing') : 'Continue'}
+            </button>
+          )}
           {step === 4 && (
             <>
-              <button className="btn ghost" type="button" onClick={submit} disabled={busy || !step1Ready}
-                title="Send the application to our team without registering a product — we'll price it with you.">
-                Submit for manual review
+              <button className="btn link small" type="button" onClick={unlockAdminPricing}
+                style={{ opacity: adminKey ? 1 : 0.45 }}
+                title="Admin mode — unlock markup, origination and fee overrides (password required)">
+                {adminKey ? 'Admin mode on — lock' : 'Admin mode'}
               </button>
-              <button className="btn primary" type="button" onClick={registerAndSubmit} disabled={busy || !step1Ready}>
-                {busy ? 'Submitting…' : 'Register product & submit application'}
+              <button className="btn ghost" type="button" onClick={finishLater} disabled={!appId}
+                title="Your application is already submitted — register the product later from your file.">
+                Finish later — go to my file
+              </button>
+              <button className="btn primary" type="button" onClick={registerProduct} disabled={busy || !appId}>
+                {busy ? 'Registering…' : 'Register this product'}
               </button>
             </>
           )}

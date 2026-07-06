@@ -137,14 +137,26 @@ function Item({ it, team, onPatch }) {
    separate section from the internal phase-by-phase checklist. */
 function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy }) {
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
+  const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
+  const [cardBusy, setCardBusy] = useState(false);
   const borrowerItems = items.filter(it => it.audience === 'borrower' || it.audience === 'both');
+  const ppItem = borrowerItems.find(it => it.tool_key === 'product_pricing');
   const sowItem = borrowerItems.find(it => it.tool_key === 'rehab_budget');
   const trItem = borrowerItems.find(it => it.tool_key === 'track_record');
   const contactItems = borrowerItems.filter(it => ['title_contact', 'insurance_contact'].includes(it.tool_key));
+  const cardItem = borrowerItems.find(it => it.tool_key === 'appraisal_card');
   const idItem = borrowerItems.find(it => it.template_code === 'rtl_p1_id');
-  const lead = [sowItem, trItem, ...contactItems, idItem].filter(Boolean);
+  const lead = [ppItem, sowItem, trItem, ...contactItems, cardItem, idItem].filter(Boolean);
   const rest = borrowerItems.filter(it => !lead.includes(it) && !it.tool_key);
   const ordered = [...lead, ...rest];
+
+  async function revealCard() {
+    if (card) { setCard(null); return; }
+    setCardBusy(true);
+    try { setCard(await api.staffAppraisalCard(appId)); }
+    catch (e) { alert(e.message || 'No card on file yet.'); }
+    finally { setCardBusy(false); }
+  }
   const docsFor = (itemId) => docs.filter(d => d.checklist_item_id === itemId && d.is_current && d.source_type !== 'chat_attachment');
   const signedCount = ordered.filter(it => it.signed_off_at).length;
 
@@ -172,14 +184,26 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 <div className="muted small">
                   {it.tool_key === 'rehab_budget' ? `Scope of Work builder${app.rehab_budget != null ? ` · total ${money(app.rehab_budget)}` : ''}`
                     : it.tool_key === 'track_record' ? 'Verified from the borrower\'s general track record (panel below)'
+                    : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
+                    : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
                     : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? 'Contact information form'
                     : it.item_kind}
                   {` · ${it.status}`}
                   {signed && ` · signed off by ${it.signed_off_name || 'staff'}`}
                 </div>
+                {it.tool_key === 'appraisal_card' && card && (
+                  <div className="small" style={{ marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
+                    {card.brand} <strong>{card.number.replace(/(\d{4})(?=\d)/g, '$1 ')}</strong> · exp {String(card.expMonth).padStart(2, '0')}/{card.expYear} · CVC {card.cvc} · ZIP {card.zip}
+                  </div>
+                )}
               </div>
               {it.tool_key === 'rehab_budget' && (
                 <button className="btn ghost small" onClick={() => setSowOpen(it.id)}>Open Scope of Work</button>
+              )}
+              {it.tool_key === 'appraisal_card' && (
+                <button className="btn ghost small" disabled={cardBusy} onClick={revealCard}>
+                  {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
+                </button>
               )}
               {signed
                 ? <button className="btn ghost small" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
