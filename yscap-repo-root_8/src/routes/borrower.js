@@ -217,10 +217,27 @@ router.post('/applications/:id/request-draw', async (req, res) => {
   res.json({ ok: true });
 });
 
+// A free-typed vesting entity (name only, never picked from the list) still
+// becomes a real profile LLC: match one of the borrower's entities by name,
+// else create it — so the file always links a real entity and the LLC
+// condition never has to re-ask for a name the borrower already gave.
+async function resolveEntityByName(borrowerId, name) {
+  const nm = String(name || '').trim().slice(0, 160);
+  if (!nm) return null;
+  const hit = await db.query(
+    `SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, nm]);
+  if (hit.rows[0]) return hit.rows[0].id;
+  const ins = await db.query(
+    `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, nm]);
+  try { await generateLlcChecklist(ins.rows[0].id); } catch (_) { /* best-effort */ }
+  return ins.rows[0].id;
+}
+
 router.post('/applications', async (req, res) => {
   const b = req.body || {};
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
+  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
   const r = await db.query(
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
@@ -242,7 +259,7 @@ router.post('/applications', async (req, res) => {
 
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
-    `SELECT a.*, l.llc_name, l.is_verified AS llc_verified,
+    `SELECT a.*, l.llc_name, l.is_verified AS llc_verified, l.formation_state AS llc_formation_state,
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
@@ -637,6 +654,17 @@ async function replaceMembers(llcId, members) {
   }
 }
 
+// Normalize an EIN to XX-XXXXXXX. Returns {ein} (null for blank) or {error}.
+function normalizeEin(raw) {
+  if (raw === undefined) return { ein: undefined };
+  const s = String(raw || '').trim();
+  if (!s) return { ein: null };
+  const digits = s.replace(/[^0-9]/g, '');
+  if (digits.length !== 9 || !/^\d{2}-?\d{7}$/.test(s.replace(/\s/g, '')))
+    return { error: 'EIN must be 9 digits (XX-XXXXXXX)' };
+  return { ein: `${digits.slice(0, 2)}-${digits.slice(2)}` };
+}
+
 router.post('/llcs', async (req, res) => {
   const b = req.body || {};
   if (!b.llcName) return res.status(400).json({ error: 'llcName required' });
@@ -644,12 +672,14 @@ router.post('/llcs', async (req, res) => {
     const p = Number(b.ownershipPct);
     if (!isFinite(p) || p < 0 || p > 100) return res.status(400).json({ error: 'ownership % must be between 0 and 100' });
   }
+  const ein = normalizeEin(b.ein);
+  if (ein.error) return res.status(400).json({ error: ein.error });
   const parsed = parseMembers(b.members, b.ownershipPct);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
   const r = await db.query(
     `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct)
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-    [me(req), b.llcName, b.ein || null, b.formationState || null, b.formationDate || null, b.ownershipPct || null]);
+    [me(req), b.llcName, ein.ein || null, b.formationState || null, b.formationDate || null, b.ownershipPct || null]);
   if (parsed.members && parsed.members.length) await replaceMembers(r.rows[0].id, parsed.members);
   // Requesting an LLC pulls its document requirements: EIN letter, formation docs, operating agreement.
   try { await generateLlcChecklist(r.rows[0].id); } catch (_) {}
@@ -663,6 +693,11 @@ router.patch('/llcs/:id', async (req, res) => {
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before making changes' });
   const b = req.body || {};
+  if (b.ein !== undefined) {
+    const ein = normalizeEin(b.ein);
+    if (ein.error) return res.status(400).json({ error: ein.error });
+    b.ein = ein.ein === null ? '' : ein.ein;
+  }
   const sets = [], vals = []; let i = 1;
   const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
@@ -1611,6 +1646,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
   // Only accept an LLC the borrower actually owns.
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
+  // A typed-but-never-picked entity name still links a real profile LLC.
+  if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
 
   // resolve officer (by email, else by name) -> null means Lead Capture
   let officerId = null, officerRow = null;
@@ -1716,11 +1753,12 @@ function normLoanType(text) {
 async function insertFromTemplate(tpl, owner) {
   const cols = ['template_id', 'scope', 'label', 'borrower_label', 'audience', 'item_kind',
                 'role_scope', 'phase', 'hint', 'borrower_hint', 'is_gate', 'is_milestone',
-                'sort_order', 'tool_key', 'clickup_field_id', 'created_by_kind'];
+                'sort_order', 'tool_key', 'clickup_field_id', 'created_by_kind', 'is_required'];
   const vals = [tpl.id, tpl.scope, tpl.label, tpl.borrower_label || null, tpl.audience, tpl.item_kind,
                 tpl.role_scope || 'any', tpl.phase || null, tpl.hint || null, tpl.borrower_hint || null,
                 tpl.is_gate || false, tpl.is_milestone || false,
-                tpl.sort_order || 100, tpl.tool_key || null, tpl.clickup_field_id || null, 'system'];
+                tpl.sort_order || 100, tpl.tool_key || null, tpl.clickup_field_id || null, 'system',
+                tpl.is_required !== false];
   for (const [k, v] of Object.entries(owner)) { cols.push(k); vals.push(v); }
   const ph = vals.map((_, i) => `$${i + 1}`).join(',');
   await db.query(`INSERT INTO checklist_items (${cols.join(',')}) VALUES (${ph})`, vals);

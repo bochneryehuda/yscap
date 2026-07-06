@@ -40,7 +40,7 @@ async function getSlots(llcId) {
   const r = await db.query(
     `SELECT ci.id AS item_id, t.code, COALESCE(ci.borrower_label, ci.label) AS label,
             COALESCE(ci.borrower_hint, ci.hint) AS hint, ci.status AS item_status,
-            t.sort_order,
+            COALESCE(ci.is_required, true) AS is_required, t.sort_order,
             d.id AS document_id, d.filename, d.content_type, d.size_bytes,
             d.review_status, d.rejection_reason, d.created_at AS uploaded_at,
             d.reviewed_at, s.full_name AS reviewed_by_name
@@ -59,10 +59,18 @@ async function getSlots(llcId) {
   return r.rows;
 }
 
-/* What still stands between this LLC and "verified". Empty array = ready. */
+// Loose-but-real EIN shape: 9 digits, optionally XX-XXXXXXX.
+const EIN_RE = /^\d{2}-?\d{7}$/;
+const isRequiredSlot = (s) => s.is_required !== false;
+
+/* What still stands between this LLC and "verified". Empty array = ready.
+   Optional slots (e.g. Certificate of Good Standing) never block for being
+   absent — but a REJECTED document in any slot always blocks: a verified
+   entity must never carry a rejected document. */
 function missingForVerification(llc, members, slots) {
   const missing = [];
   if (!llc.ein) missing.push('EIN');
+  else if (!EIN_RE.test(String(llc.ein).trim())) missing.push('EIN format looks invalid (expect XX-XXXXXXX)');
   if (!llc.formation_state) missing.push('formation state');
   if (!llc.formation_date) missing.push('formation date');
   const own = pct(llc.ownership_pct);
@@ -73,12 +81,31 @@ function missingForVerification(llc, members, slots) {
     if (Math.abs(total - 100) > EPS) missing.push(`ownership must total 100% (currently ${total.toFixed(2)}%)`);
   }
   for (const s of slots) {
+    if (s.document_id && s.review_status === 'rejected') { missing.push(`${s.label} was rejected`); continue; }
+    if (!isRequiredSlot(s)) continue;
     if (!s.document_id) missing.push(`${s.label} not uploaded`);
-    else if (s.review_status === 'rejected') missing.push(`${s.label} was rejected`);
     else if (s.review_status !== 'accepted') missing.push(`${s.label} not yet accepted`);
   }
-  if (slots.length < LLC_SLOT_CODES.length) missing.push('document requirements not generated');
+  if (slots.filter(isRequiredSlot).length < LLC_SLOT_CODES.length) missing.push('document requirements not generated');
   return missing;
+}
+
+/* Underwriting advisories that do NOT gate verification — surfaced as chips
+   on the staff panel (and softly to the borrower). Industry practice: a
+   Certificate of Good Standing is expected once the entity is over a year
+   old, and must be dated within ~90 days of closing. */
+function advisories(llc, slots) {
+  const out = [];
+  const gs = slots.find((s) => s.code === 'rtl_llc_goodstanding');
+  const ageDays = llc.formation_date ? (Date.now() - new Date(llc.formation_date).getTime()) / 86400000 : null;
+  if (gs) {
+    const gsAge = gs.document_id && gs.uploaded_at ? (Date.now() - new Date(gs.uploaded_at).getTime()) / 86400000 : null;
+    if (ageDays != null && ageDays > 365 && !gs.document_id)
+      out.push('Entity is over a year old — most programs need a Certificate of Good Standing');
+    if (gsAge != null && gsAge > 90)
+      out.push(`Certificate of Good Standing is ${Math.round(gsAge)} days old — programs typically want one dated within 90 days of closing`);
+  }
+  return out;
 }
 
 function completeness(llc, members, slots) {
@@ -87,18 +114,22 @@ function completeness(llc, members, slots) {
   const ownershipComplete = own != null && own <= 100 + EPS
     && (own >= 100 - EPS || Math.abs(own + memberTotal - 100) <= EPS);
   const infoComplete = !!(llc.ein && llc.formation_state && llc.formation_date);
-  const uploaded = slots.filter((s) => s.document_id).length;
-  const accepted = slots.filter((s) => s.document_id && s.review_status === 'accepted').length;
+  // The x/y counters track REQUIRED slots (optional ones never gate);
+  // rejections count across every slot — a rejected doc always needs action.
+  const required = slots.filter(isRequiredSlot);
+  const uploaded = required.filter((s) => s.document_id).length;
+  const accepted = required.filter((s) => s.document_id && s.review_status === 'accepted').length;
   const rejected = slots.filter((s) => s.document_id && s.review_status === 'rejected').length;
   return {
     info_complete: infoComplete,
     ownership_complete: ownershipComplete,
     member_total_pct: memberTotal,
-    docs_required: LLC_SLOT_CODES.length,
+    docs_required: required.length || LLC_SLOT_CODES.length,
     docs_uploaded: uploaded,
     docs_accepted: accepted,
     docs_rejected: rejected,
     ready_to_verify: missingForVerification(llc, members, slots).length === 0,
+    advisories: advisories(llc, slots),
   };
 }
 
@@ -131,9 +162,13 @@ async function syncLlcConditions(llcId, opts = {}) {
   if (!llc) return;
   const appId = opts.appId || null;
   const slots = await getSlots(llcId);
-  const uploaded = slots.filter((s) => s.document_id && s.review_status !== 'rejected').length;
+  // "All in" means every REQUIRED slot holds a live document; optional slots
+  // (Good Standing) never hold the condition back. A rejected doc in ANY slot
+  // flips the condition to needs-attention.
+  const required = slots.filter(isRequiredSlot);
+  const uploaded = required.filter((s) => s.document_id && s.review_status !== 'rejected').length;
   const rejected = slots.some((s) => s.document_id && s.review_status === 'rejected');
-  const allIn = slots.length >= LLC_SLOT_CODES.length && uploaded >= slots.length;
+  const allIn = required.length >= LLC_SLOT_CODES.length && uploaded >= required.length;
 
   const target = llc.is_verified ? 'satisfied' : rejected ? 'issue' : allIn ? 'received' : 'outstanding';
   // '[auto]'-prefixed notes are ours to overwrite; a note a staffer typed by

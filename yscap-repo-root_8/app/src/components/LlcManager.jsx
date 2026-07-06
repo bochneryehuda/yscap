@@ -37,7 +37,10 @@ function SlotRow({ llc, slot, onPick, onDownload, dlBusy, uploading, locked }) {
     <div className="checkitem" style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
       <span className={`dot ${rs === 'accepted' ? 'done' : 'outstanding'}`} style={{ marginTop: 5, ...(rs === 'rejected' ? { background: 'var(--danger)' } : {}) }} />
       <div style={{ flex: 1, minWidth: 180 }}>
-        <div style={{ fontWeight: 600 }}>{slot.label}</div>
+        <div style={{ fontWeight: 600 }}>
+          {slot.label}
+          {slot.is_required === false && <span className="muted small" style={{ fontWeight: 400 }}> · optional</span>}
+        </div>
         {slot.hint && <div className="muted small">{slot.hint}</div>}
         {d && <div className="muted small" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{slot.filename} · {new Date(slot.uploaded_at).toLocaleDateString()}</div>}
         {rs === 'rejected' && slot.rejection_reason && (

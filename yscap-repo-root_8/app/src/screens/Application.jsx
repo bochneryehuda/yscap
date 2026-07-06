@@ -286,6 +286,16 @@ function LlcCondition({ it, app, onChanged }) {
         </span>
       }
     >
+      {(() => {
+        const propState = app.property_address && app.property_address.state;
+        const formState = app.llc_formation_state;
+        return propState && formState && String(propState).toUpperCase() !== String(formState).toUpperCase() ? (
+          <p className="muted small" style={{ marginBottom: 8 }}>
+            Heads up: this LLC is formed in {formState} but the property is in {propState} — you'll likely
+            need to register the LLC as a foreign entity in {propState} before closing. Your loan team can help.
+          </p>
+        ) : null;
+      })()}
       <LlcManager llcId={app.llc_id} onChanged={onChanged} />
     </ConditionRow>
   );
