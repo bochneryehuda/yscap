@@ -11,6 +11,8 @@ const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
+const cfg = require('../config');
+const storage = require('../lib/storage');
 const { requireAuth, requireRole } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
@@ -1296,6 +1298,37 @@ router.get('/applications/:id/documents', async (req, res) => {
       WHERE d.application_id=$1 AND d.source_type <> 'chat_attachment'
       ORDER BY d.is_current DESC, d.created_at DESC`, [req.params.id]);
   res.json(r.rows);
+});
+
+// Attach a document to the file as staff. Used by the Term Sheet Studio panel
+// to save the registered term sheet PDF; docKind 'term_sheet' supersedes any
+// prior term sheet so only the latest registration's sheet stays current.
+router.post('/applications/:id/documents', async (req, res) => {
+  const b = req.body || {};
+  if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  const appOk = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+  if (!appOk.rows[0]) return res.status(404).json({ error: 'not found' });
+  const buf = Buffer.from(b.dataBase64, 'base64');
+  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
+  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  const r = await db.query(
+    `INSERT INTO documents (application_id,filename,content_type,size_bytes,storage_provider,storage_ref,
+                            uploaded_by_kind,uploaded_by_id,doc_kind,visibility)
+     VALUES ($1,$2,$3,$4,$5,$6,'staff',$7,$8,'borrower') RETURNING id`,
+    [req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
+     req.actor.id, docKind]);
+  if (docKind === 'term_sheet') {
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE application_id=$1 AND doc_kind='term_sheet' AND id<>$2 AND is_current=true`,
+      [req.params.id, r.rows[0].id]);
+  }
+  await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind });
+  res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the

@@ -1,12 +1,17 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
+import TermSheetStudio, {
+  buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64,
+} from '../components/TermSheetStudio.jsx';
 
-const STEPS = ['Property', 'Loan', 'Borrower & submit'];
+const STEPS = ['Property', 'Loan', 'Borrower', 'Price & register'];
+// The property identity is step 1's job — everything else in the studio is editable.
+const STUDIO_LOCKED = ['propAddr', 'addrTBD', 'propState'];
 // Ground-Up is a PROGRAM (not a loan type/purpose). DSCR Rental is intentionally
 // not offered here for now.
 const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'Not sure yet'];
@@ -48,6 +53,9 @@ export default function Apply() {
   const [busy, setBusy] = useState(false);
   const [officers, setOfficers] = useState([]);
   const [partners, setPartners] = useState([]);
+  const [snap, setSnap] = useState(null);          // live Term Sheet Studio state (step 4)
+  const studioRef = useRef(null);
+  const lastStudioSync = useRef('');
   const idRef = useRef(id);
   idRef.current = id;
 
@@ -168,6 +176,106 @@ export default function Apply() {
       await flush();
       const r = await api.submitDraft(id, {});
       nav(`/app/${r.applicationId}`);
+    } catch (e) { setErr(e.message || 'Could not submit'); setBusy(false); }
+  }
+
+  /* ---- Step 4: the real static Term Sheet Studio, prefilled from this
+     draft. The studio is the pricer of record: whatever is entered there is
+     written back onto the draft (and therefore the loan file), and
+     registering exports every priced detail + the exact studio PDF. ---- */
+
+  // Studio field readouts -> draft fields, so the file carries exactly what
+  // was priced. FICO merges into personal so it also reaches the profile.
+  const patchFromStudio = (f, cur) => {
+    const refi = /refinance/i.test(f.dealPurpose || '');
+    const patch = {
+      program: portalProgram(f.dealType),
+      loanType: portalLoanType(f.dealPurpose),
+      asIsValue: f.asIs, arv: f.arv, rehabBudget: f.construction,
+      requestedExpFlips: f.expFlips, requestedExpHolds: f.expBrrrr, requestedExpGround: f.expGround,
+      termMonths: f.tsTerm, irMonths: f.irMonths || '0',
+      isAssignment: !!f.isAssign && !refi,
+    };
+    if (!refi) patch.purchasePrice = f.price;
+    if (patch.isAssignment) {
+      patch.underlyingContractPrice = f.origPrice;
+      const fee = Math.max(0, (Number(f.price) || 0) - (Number(f.origPrice) || 0));
+      patch.assignmentFee = fee ? String(fee) : '';
+    }
+    if (f.rehabScope === 'heavy') patch.rehabType = 'Heavy / gut rehab';
+    if (f.fico) patch.personal = { ...((cur && cur.personal) || {}), fico: f.fico };
+    return patch;
+  };
+
+  const onStudioState = useCallback((s) => {
+    setSnap(s);
+    setForm((fm) => {
+      if (!fm) return fm;
+      const patch = patchFromStudio(s.fields, fm);
+      const key = JSON.stringify(patch);
+      if (key === lastStudioSync.current) return fm;
+      lastStudioSync.current = key;
+      save({ data: patch });
+      return { ...fm, ...patch };
+    });
+  }, [save]);
+
+  const studioPrefill = useMemo(() => {
+    if (step !== 4 || !form) return null;
+    const pa = form.propertyAddress || {};
+    return buildStudioState({
+      borrowerName: form.entityName || '',
+      address: pa.oneLine || '',
+      state: pa.state || '',
+      loanType: form.loanType, program: form.program,
+      propertyType: form.propertyType, units: form.units,
+      purchasePrice: form.purchasePrice, isAssignment: form.isAssignment,
+      underlyingContractPrice: form.underlyingContractPrice, assignmentFee: form.assignmentFee,
+      asIsValue: form.asIsValue, arv: form.arv, rehabBudget: form.rehabBudget, rehabType: form.rehabType,
+      fico: (form.personal || {}).fico,
+      expFlips: form.requestedExpFlips, expHolds: form.requestedExpHolds, expGround: form.requestedExpGround,
+      termMonths: form.termMonths, irMonths: form.irMonths,
+    });
+    // rebuilt on entering the step — inside it, the studio is the editor
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, form == null]);
+
+  async function registerAndSubmit() {
+    const s = studioRef.current && studioRef.current.snapshot();
+    if (!s) { setErr('The Term Sheet Studio is still loading — one moment.'); return; }
+    if (!s.ready) { setErr('Complete the required pricing fields first: ' + s.missing.join(', ')); return; }
+    if (!s.program) { setErr('Tap the Standard or Gold Standard card above to choose your product, then register.'); return; }
+    const d = s.d;
+    if (!d || d.status === 'INELIGIBLE' || !(d.totalLoan > 0)) {
+      setErr("This scenario isn't eligible as entered — adjust the deal above, or submit for manual review instead.");
+      return;
+    }
+    setErr(''); setBusy(true);
+    try {
+      // the EXACT term sheet the static studio exports (best-effort)
+      let pdf = null;
+      try { pdf = await studioRef.current.capturePdf(); } catch (_) { /* offline */ }
+      // final write-back + full priced snapshot = the file's placeholders
+      save({ data: { ...patchFromStudio(s.fields, form), productSelection: selectionFromSnapshot(s) } });
+      await flush();
+      const r = await api.submitDraft(id, {});
+      const appId = r.applicationId;
+      try {
+        await api.borrowerRegisterProduct(appId, s.program, {
+          targetLTC: (d.inp && d.inp.targetLTC) || undefined,
+          irMonths: s.fields.irMonths || 0,
+          term: s.fields.tsTerm,
+          fico: s.fields.fico,
+          expFlips: s.fields.expFlips, expHolds: s.fields.expBrrrr, expGround: s.fields.expGround,
+        });
+      } catch (_) { /* file submitted — the product can be registered from the file page */ }
+      if (pdf && pdf.blob) {
+        try {
+          const dataBase64 = await blobToBase64(pdf.blob);
+          await api.uploadDoc({ applicationId: appId, filename: pdf.filename, contentType: 'application/pdf', dataBase64, docKind: 'term_sheet' });
+        } catch (_) { /* sheet can be re-generated from the file page */ }
+      }
+      nav(`/app/${appId}`);
     } catch (e) { setErr(e.message || 'Could not submit'); setBusy(false); }
   }
 
@@ -440,13 +548,46 @@ export default function Apply() {
           </>
         )}
 
-        <div className="row" style={{ marginTop: 18 }}>
+        {step === 4 && (
+          <>
+            <h3 style={{ marginBottom: 4 }}>Price your deal & register your product</h3>
+            <p className="muted small" style={{ marginBottom: 12 }}>
+              This is the live YS Term Sheet Studio, prefilled from your application — the same
+              guidelines, limits and pricing as our public tool. Adjust anything, compare the
+              Standard and Gold Standard programs, choose your leverage, then tap a program card
+              and register: your loan amount, structure, cash to close, liquidity requirement and
+              the signable term sheet PDF are all saved onto your loan file.
+            </p>
+            <TermSheetStudio ref={studioRef} prefill={studioPrefill}
+              lockedIds={STUDIO_LOCKED} onState={onStudioState} />
+          </>
+        )}
+
+        <div className="row" style={{ marginTop: 18, flexWrap: 'wrap', gap: 8 }}>
           {step > 1 && <button className="btn ghost" type="button" onClick={() => goStep(step - 1)}>Back</button>}
           <div className="spacer" />
           <SaveChip status={status} />
-          {step < 3 && <button className="btn primary" type="button" onClick={() => goStep(step + 1)} disabled={step === 1 && !step1Ready}>Continue</button>}
-          {step === 3 && <button className="btn primary" type="button" onClick={submit} disabled={busy || !step1Ready}>Submit application</button>}
+          {step < 4 && <button className="btn primary" type="button" onClick={() => goStep(step + 1)} disabled={step === 1 && !step1Ready}>Continue</button>}
+          {step === 4 && (
+            <>
+              <button className="btn ghost" type="button" onClick={submit} disabled={busy || !step1Ready}
+                title="Send the application to our team without registering a product — we'll price it with you.">
+                Submit for manual review
+              </button>
+              <button className="btn primary" type="button" onClick={registerAndSubmit} disabled={busy || !step1Ready}>
+                {busy ? 'Submitting…' : 'Register product & submit application'}
+              </button>
+            </>
+          )}
         </div>
+        {step === 4 && (
+          <p className="muted small" style={{ marginTop: 8 }}>
+            {snap && !snap.ready ? `Still needed to price: ${snap.missing.join(', ')}.`
+              : snap && !snap.program ? 'Tap the Standard or Gold Standard card above to open your product.'
+              : snap && snap.d && snap.d.totalLoan > 0 ? `Selected: ${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${'$' + Math.round(snap.d.totalLoan).toLocaleString('en-US')} @ ${snap.d.rate ? snap.d.rate.toFixed(2) + '%' : '—'} · cash to close ${'$' + Math.round(snap.d.cashToClose).toLocaleString('en-US')} · liquidity to show ${'$' + Math.round(snap.d.liquidity).toLocaleString('en-US')}`
+              : ''}
+          </p>
+        )}
       </form>
     </>
   );

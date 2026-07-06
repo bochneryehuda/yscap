@@ -163,6 +163,7 @@ export const api = {
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
   staffRegisterProduct: (appId, program, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides }),
+  staffUploadAppDoc: (appId, b) => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b)),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
   staffWaiveCondition:   (cid, reason) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason }),
