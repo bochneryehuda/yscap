@@ -52,8 +52,11 @@ function isGroup(node) {
  * Validate a rule tree against the registry. Returns a list of human-readable
  * problems — empty list means the rule is valid. Depth is capped at 2 (a root
  * group plus one level of nested groups), matching the builder UI.
+ * Pass `fields` (a key→def map from registry.fieldMap()) to validate against
+ * built-in + custom fields; defaults to the static built-ins.
  */
-function validateRule(tree, { depth = 0 } = {}) {
+function validateRule(tree, { depth = 0, fields } = {}) {
+  const byKey = fields || registry.BY_KEY;
   const problems = [];
   if (!isGroup(tree)) return ['rule must be a group ({combinator, rules[]})'];
   if (!['and', 'or'].includes(tree.combinator)) problems.push(`bad combinator "${tree.combinator}"`);
@@ -62,11 +65,11 @@ function validateRule(tree, { depth = 0 } = {}) {
   if (tree.rules.length > 50) problems.push('too many conditions in one group (max 50)');
   for (const node of tree.rules) {
     if (isGroup(node)) {
-      problems.push(...validateRule(node, { depth: depth + 1 }));
+      problems.push(...validateRule(node, { depth: depth + 1, fields: byKey }));
       continue;
     }
     if (!node || typeof node !== 'object') { problems.push('malformed rule row'); continue; }
-    const f = registry.BY_KEY[node.field];
+    const f = byKey[node.field];
     if (!f) { problems.push(`unknown field "${node.field}"`); continue; }
     const allowed = OPERATORS_BY_TYPE[f.type] || [];
     if (!allowed.includes(node.operator)) {
@@ -112,8 +115,8 @@ function isBlank(v) {
 }
 
 /** Evaluate one {field, operator, value} row against the context. */
-function evalRow(row, ctx) {
-  const f = registry.BY_KEY[row.field];
+function evalRow(row, ctx, byKey) {
+  const f = (byKey || registry.BY_KEY)[row.field];
   if (!f) return false;
   const actual = ctx[row.field];
   switch (row.operator) {
@@ -180,9 +183,9 @@ function evalRow(row, ctx) {
 }
 
 /** Evaluate a whole tree. Invalid trees evaluate false (never fire). */
-function evaluateRule(tree, ctx) {
+function evaluateRule(tree, ctx, fields) {
   if (!isGroup(tree) || !tree.rules.length) return false;
-  const results = tree.rules.map((node) => (isGroup(node) ? evaluateRule(node, ctx) : evalRow(node, ctx)));
+  const results = tree.rules.map((node) => (isGroup(node) ? evaluateRule(node, ctx, fields) : evalRow(node, ctx, fields)));
   return tree.combinator === 'or' ? results.some(Boolean) : results.every(Boolean);
 }
 
@@ -197,15 +200,16 @@ function fmtValue(f, v) {
 }
 
 /** Plain-language summary: "Property state is any of NJ, NY and Loan amount is between $100,000 and $500,000". */
-function summarizeRule(tree, { depth = 0 } = {}) {
+function summarizeRule(tree, { depth = 0, fields } = {}) {
+  const byKey = fields || registry.BY_KEY;
   if (!isGroup(tree) || !tree.rules.length) return '';
   const joiner = tree.combinator === 'or' ? ' OR ' : ' and ';
   const parts = tree.rules.map((node) => {
     if (isGroup(node)) {
-      const inner = summarizeRule(node, { depth: depth + 1 });
+      const inner = summarizeRule(node, { depth: depth + 1, fields: byKey });
       return inner ? `(${inner})` : '';
     }
-    const f = registry.BY_KEY[node.field];
+    const f = byKey[node.field];
     if (!f) return '';
     const op = OPERATOR_LABEL[node.operator] || node.operator;
     if (NO_VALUE_OPS.includes(node.operator)) return `${f.label} ${op}`;

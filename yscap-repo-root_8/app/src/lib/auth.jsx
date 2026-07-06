@@ -21,6 +21,10 @@ const Ctx = createContext(null);
 
 export function AuthProvider({ children }) {
   const [token, setTok] = useState(getToken());
+  // Effective capabilities for the signed-in staffer (from /auth/me). The JWT
+  // only carries the role; permissions are resolved server-side, so we fetch
+  // them and expose can(cap) for nav/screen gating that mirrors the API gates.
+  const [perms, setPerms] = useState([]);
   const signIn  = useCallback((t) => { setToken(t); setTok(t); }, []);
   const signOut = useCallback(() => {
     // Revoke server-side first (bumps token_version, killing every copy of the
@@ -45,15 +49,28 @@ export function AuthProvider({ children }) {
     return () => { window.removeEventListener('ys:auth-changed', sync); window.removeEventListener('storage', sync); };
   }, []);
   const actor = actorFromToken(token);
+  const isStaff = actor?.kind === 'staff';
+  useEffect(() => {
+    let live = true;
+    if (isStaff) {
+      api.me().then((r) => { if (live) setPerms(Array.isArray(r?.permissions) ? r.permissions : []); }).catch(() => {});
+    } else {
+      setPerms([]);
+    }
+    return () => { live = false; };
+  }, [token, isStaff]);
+  const can = useCallback((cap) => perms.includes(cap), [perms]);
   return (
     <Ctx.Provider value={{
       token,
       actor,
       isAuthed: !!token,
       kind:     actor?.kind || null,        // 'borrower' | 'staff'
-      role:     actor?.role || null,        // borrower | loan_officer | processor | underwriter | admin | super_admin
-      isStaff:  actor?.kind === 'staff',
+      role:     actor?.role || null,        // borrower | loan_officer | processor | underwriter | admin | super_admin | loan_coordinator | software_setup
+      isStaff,
       isBorrower: actor?.kind === 'borrower',
+      permissions: perms,
+      can,
       signIn, signOut,
     }}>
       {children}

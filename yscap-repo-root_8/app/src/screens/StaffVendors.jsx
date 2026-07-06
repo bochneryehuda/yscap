@@ -47,8 +47,8 @@ function VendorForm({ initial, onSave, onCancel, busy }) {
 }
 
 export default function StaffVendors() {
-  const { role } = useAuth();
-  const isAdmin = role === 'admin' || role === 'super_admin';
+  const { can } = useAuth();
+  const isAdmin = can('manage_vendors');
   const [rows, setRows] = useState(null);
   const [type, setType] = useState('');
   const [q, setQ] = useState('');

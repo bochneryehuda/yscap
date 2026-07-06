@@ -314,6 +314,7 @@ export const api = {
   adminCreateStaff:  (b) => req('POST', '/api/admin/staff', b),
   adminUpdateStaff:  (id, b) => req('PATCH', `/api/admin/staff/${id}`, b),
   adminSetStaffPassword: (id, password) => req('POST', `/api/admin/staff/${id}/password`, { password }),
+  adminPermissionsMeta:  () => req('GET', '/api/admin/permissions-meta'),
   adminTestEmail:    (to) => req('POST', '/api/admin/test-email', { to }),
   roster:            () => req('GET', '/api/roster'),
 
@@ -325,6 +326,11 @@ export const api = {
   adminDeleteConditionDef: (id) => req('DELETE', `/api/admin/conditions/definitions/${id}`),
   adminPreviewRule:        (ruleLogic) => req('POST', '/api/admin/conditions/preview-rule', { ruleLogic }),
   adminRunAllConditions:   () => req('POST', '/api/admin/conditions/run-all'),
+  // admin-defined custom fields (used by information conditions + rules)
+  adminCustomFields:       () => req('GET', '/api/admin/conditions/custom-fields'),
+  adminCreateCustomField:  (b) => req('POST', '/api/admin/conditions/custom-fields', b),
+  adminUpdateCustomField:  (id, b) => req('PATCH', `/api/admin/conditions/custom-fields/${id}`, b),
+  adminDeleteCustomField:  (id) => req('DELETE', `/api/admin/conditions/custom-fields/${id}`),
 
   // ---- Condition Center: per-file (any staff) ----
   staffConditionMeta:        () => req('GET', '/api/staff/conditions/meta'),

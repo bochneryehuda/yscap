@@ -6,12 +6,13 @@ import { subscribeChat } from '../lib/chatEvents.js';
 import { Brand } from './Layout.jsx';
 
 const ROLE_LABEL = {
-  super_admin: 'Super Admin', admin: 'Admin',
-  loan_officer: 'Loan Officer', processor: 'Processor', underwriter: 'Underwriter',
+  super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter',
+  loan_officer: 'Loan Officer', loan_coordinator: 'Loan Coordinator',
+  processor: 'Loan Processor', software_setup: 'Software Setup',
 };
 
 export default function StaffLayout({ children }) {
-  const { signOut, role } = useAuth();
+  const { signOut, role, can } = useAuth();
   const nav = useNavigate();
   const [unread, setUnread] = useState(0);
   useEffect(() => {
@@ -44,6 +45,9 @@ export default function StaffLayout({ children }) {
   }, []);
   const consoleLabel = (role === 'admin' || role === 'super_admin')
     ? 'Admin console' : `${ROLE_LABEL[role] || 'Internal'} console`;
+  const canManageTeam = can('manage_team');
+  const canManageConditions = can('manage_conditions');
+  const canManageVendors = can('manage_vendors');
   return (
     <div className="shell">
       <header className="header">
@@ -56,9 +60,9 @@ export default function StaffLayout({ children }) {
               Chat{unread > 0 && <span className="chat-badge nav">{unread > 99 ? '99+' : unread}</span>}
             </NavLink>
             <NavLink to="/internal/leads">Leads</NavLink>
-            {(role === 'admin' || role === 'super_admin') && <NavLink to="/internal/conditions" title="Condition Center — the global condition library & rules">Conditions</NavLink>}
-            {(role === 'admin' || role === 'super_admin') && <NavLink to="/internal/team">Team</NavLink>}
-            {(role === 'admin' || role === 'super_admin') && <NavLink to="/internal/vendors" title="Title & insurance vendor directory">Vendors</NavLink>}
+            {canManageConditions && <NavLink to="/internal/conditions" title="Condition Center — the global condition library & rules">Conditions</NavLink>}
+            {canManageTeam && <NavLink to="/internal/team">Team</NavLink>}
+            {canManageVendors && <NavLink to="/internal/vendors" title="Title & insurance vendor directory">Vendors</NavLink>}
             <span className="pill" title="Your role">{ROLE_LABEL[role] || role || 'Internal'}</span>
             <button className="btn ghost small" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
           </nav>

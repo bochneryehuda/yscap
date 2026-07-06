@@ -12,10 +12,8 @@ const { requireAuth, requireRole } = require('../auth');
 
 router.use(requireAuth, requireRole('admin'));
 
-// The Condition Center studio — global condition library + rule engine.
-router.use('/conditions', require('./admin-conditions'));
-
-const ROLES = ['super_admin', 'admin', 'loan_officer', 'processor', 'underwriter'];
+const { ROLE_KEYS, CAPABILITIES, effectivePermissions, sanitizeOverrides } = require('../lib/permissions');
+const ROLES = ROLE_KEYS;
 const DEPTS = ['sales', 'operations'];
 
 /**
@@ -72,14 +70,26 @@ function roleGuard(req, currentRole, newRole) {
   return null;
 }
 
-// The full team, with the roster fields the admin console edits.
+// Roles + capability catalog + each role's default grants, for the Team UI.
+router.get('/permissions-meta', (req, res) => {
+  const { ROLES, ROLE_DEFAULTS } = require('../lib/permissions');
+  res.json({ roles: ROLES, capabilities: CAPABILITIES, roleDefaults: ROLE_DEFAULTS });
+});
+
+// The full team, with the roster fields the admin console edits. Each row
+// carries its raw permission overrides plus the resolved effective capability
+// list so the Team UI can show exactly what each person can do.
 router.get('/staff', async (req, res) => {
   const r = await db.query(
     `SELECT id,email,full_name,role,title,department,phone,cell,ext,
-            is_active,site_selectable,sort_order,mfa_enabled,
+            is_active,site_selectable,sort_order,mfa_enabled,permissions,
             (password_hash IS NOT NULL) AS has_login, last_login_at
        FROM staff_users ORDER BY department NULLS LAST, sort_order, full_name`);
-  res.json(r.rows);
+  res.json(r.rows.map((row) => ({
+    ...row,
+    permissions: row.permissions || null,
+    effectivePermissions: [...effectivePermissions(row.role, row.permissions)],
+  })));
 });
 
 // Create a staff member. They appear on the roster (if sales + site_selectable),
@@ -103,12 +113,13 @@ router.post('/staff', async (req, res) => {
     const g = roleGuard(req, existing.rows[0] && existing.rows[0].role, role);
     if (g) return res.status(g.code).json({ error: g.error });
 
-    const dept = b.department || (role === 'processor' || role === 'underwriter' ? 'operations' : 'sales');
+    const dept = b.department || (['processor', 'underwriter', 'loan_coordinator', 'software_setup'].includes(role) ? 'operations' : 'sales');
+    const permOverrides = sanitizeOverrides(b.permissions);
     const r = await db.query(
       `INSERT INTO staff_users
          (email,full_name,role,title,department,phone,cell,ext,
-          site_selectable,is_active,sort_order,password_hash)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11)
+          site_selectable,is_active,sort_order,password_hash,permissions)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,$10,$11,$12)
        ON CONFLICT (email) DO UPDATE SET
          full_name=EXCLUDED.full_name, title=EXCLUDED.title,
          department=EXCLUDED.department, phone=EXCLUDED.phone, cell=EXCLUDED.cell,
@@ -116,7 +127,8 @@ router.post('/staff', async (req, res) => {
          updated_at=now()
        RETURNING id, (xmax=0) AS created`,
       [email, fullName, role, b.title || null, dept, b.phone || null, b.cell || null, b.ext || null,
-       b.siteSelectable !== false, Number(b.sortOrder) || 100, b.password ? await C.hashPassword(b.password) : null]);
+       b.siteSelectable !== false, Number(b.sortOrder) || 100, b.password ? await C.hashPassword(b.password) : null,
+       permOverrides ? JSON.stringify(permOverrides) : null]);
     const staffId = r.rows[0].id;
     roster.bust();
 
@@ -154,6 +166,11 @@ router.patch('/staff/:id', async (req, res) => {
   };
   const sets = [], vals = []; let i = 1;
   for (const [k, v] of Object.entries(map)) if (v !== undefined) { sets.push(`${k}=$${i++}`); vals.push(v); }
+  // Permission overrides: {} or null clears them (fall back to role defaults).
+  if (b.permissions !== undefined) {
+    const ov = sanitizeOverrides(b.permissions);
+    sets.push(`permissions=$${i++}`); vals.push(ov ? JSON.stringify(ov) : null);
+  }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {

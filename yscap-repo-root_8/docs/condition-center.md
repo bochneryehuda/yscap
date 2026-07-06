@@ -7,9 +7,37 @@ reword, retire, or auto-apply conditions anymore.
 
 | Surface | Who | Where | What |
 |---|---|---|---|
-| **Condition studio** | admin / super_admin | `/internal/conditions` | Author the global library: every definition (built-in + custom), wording, type, internal/external visibility, category, and *when it applies* (every file / rule-based / manual) with a visual rule builder + live "matches N of M open files" preview. |
+| **Condition studio** | `manage_conditions` capability (admin / software_setup by default) | `/internal/conditions` | Author the global library: every definition (built-in + custom), wording, type, internal/external visibility, category, and *when it applies* (every file / rule-based / manual) with a visual rule builder + live "matches N of M open files" preview. Information conditions can **create a brand-new field** inline (see Custom fields). |
 | **Per-file panel** | all staff | Loan file → *Conditions to close* → "Add a condition" | One-off conditions of any type on a single file, attach a library definition, re-run the automatic rules for that file. |
 | **Borrower portal** | borrower | Loan file → *Conditions to close* | External conditions render by type: document upload (slots → Documents space → TPR), information field (typed input that writes into the real field), forms/tools, e-sign (visible now, ceremony activates with the DocuSign integration). |
+
+## Custom fields (038)
+
+An information condition can target a built-in writable field **or a brand-new
+field created on the spot** (built-in fields can be filled elsewhere; a custom
+field is data only that condition collects). `custom_fields` holds the
+definition (label, type, dropdown options, borrower wording);
+`application_field_values` holds each file's answer as jsonb. The field
+registry merges built-in + active custom fields at runtime
+(`field-registry.js fieldMap()`), so a custom field is usable in the rule
+builder like any other. Deleting a custom field that has values or conditions
+deactivates it (kept for existing rules/answers); an unused one hard-deletes.
+
+## Roles & permissions (039)
+
+Seven staff roles — `super_admin`, `admin`, `underwriter`, `loan_officer`,
+`loan_coordinator`, `processor`, `software_setup` — plus a per-user
+`permissions` jsonb of capability overrides on top of the role's defaults
+(`src/lib/permissions.js`). Capabilities: `see_all_files`,
+`sign_off_conditions`, `manage_conditions`, `waive_conditions`, `delete_files`,
+`manage_vendors`, `manage_team`, `platform_setup`. `super_admin` implicitly has
+all. Gates check capabilities (`can(actor, cap)` / `requirePermission(cap)`)
+rather than hard-coded role lists, so an admin can grant a coordinator "see all
+files" or a specific underwriter "manage the Condition Center" from the Team
+screen with no code change. `authenticate` resolves the DB role + overrides
+onto `req.actor` every request, so grants take effect immediately (no
+re-login); `/auth/me` returns the resolved capability list for the SPA to gate
+nav/screens the same way.
 
 ## Condition types
 

@@ -517,9 +517,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
   if (rows.some((it) => it.tool_key === 'info_field' && it.field_key)) {
     let ctx = null;
     try { const loaded = await conditionEngine.loadRuleContext(req.params.id); ctx = loaded && loaded.ctx; } catch (_) {}
+    const fieldsByKey = await conditionRegistry.fieldMap(db);
     for (const it of rows) {
       if (it.tool_key !== 'info_field' || !it.field_key) continue;
-      const f = conditionRegistry.BY_KEY[it.field_key];
+      const f = fieldsByKey[it.field_key];
       if (!f) continue;
       it.field_def = {
         key: f.key, type: f.type, options: f.options || undefined,
@@ -548,7 +549,8 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
     return res.status(400).json({ error: 'a value is required' });
   let saved;
   try {
-    saved = await conditionEngine.writeFieldValue(req.params.id, own.rows[0].borrower_id, item.field_key, req.body.value);
+    saved = await conditionEngine.writeFieldValue(req.params.id, own.rows[0].borrower_id, item.field_key, req.body.value,
+      { kind: 'borrower', id: me(req) });
   } catch (e) {
     return res.status(e.status || 400).json({ error: e.message });
   }

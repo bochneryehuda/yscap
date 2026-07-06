@@ -23,10 +23,13 @@ const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
 
-router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
-// admins + super-admins + underwriters (risk) see every file;
-// loan officers and processors see only files they are assigned to.
-const seesAll = (req) => ['admin', 'super_admin', 'underwriter'].includes(req.actor.role);
+const { can } = require('../lib/permissions');
+// Every staff persona reaches the console; per-file scoping + capability gates
+// (below) decide what each can see and do.
+router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter', 'loan_coordinator', 'software_setup'));
+// Who sees every file vs. only their assigned ones — now a capability, so an
+// admin can grant "see all files" to a coordinator without a code change.
+const seesAll = (req) => can(req.actor, 'see_all_files');
 // The standard post-closing trailing-doc set, seeded when a file funds.
 const POST_CLOSING_SET = [
   ['note', 'Final executed note'],
@@ -708,8 +711,9 @@ router.get('/conditions/meta', async (req, res) => {
     `SELECT * FROM checklist_templates
       WHERE is_active=true AND scope='application'
       ORDER BY sort_order, label`);
+  const fields = await conditionRegistry.fieldMap(db);
   res.json({
-    fields: conditionRegistry.publicFields(),
+    fields: await conditionRegistry.publicFieldsAll(db),
     operators: conditionRules.OPERATORS_BY_TYPE,
     operatorLabels: conditionRules.OPERATOR_LABEL,
     categories: CATEGORIES,
@@ -719,7 +723,7 @@ router.get('/conditions/meta', async (req, res) => {
       id: t.id, code: t.code, label: t.label, borrowerLabel: t.borrower_label,
       conditionType: conditionTypeOf(t), audience: t.audience, category: t.category,
       autoApply: t.auto_apply, fieldKey: t.field_key,
-      ruleSummary: t.rule_logic ? conditionRules.summarizeRule(t.rule_logic) : null,
+      ruleSummary: t.rule_logic ? conditionRules.summarizeRule(t.rule_logic, { fields }) : null,
     })),
   });
 });
@@ -740,7 +744,7 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
   }
   let fieldKey = null;
   if (type === 'info_field') {
-    const f = conditionRegistry.BY_KEY[b.fieldKey];
+    const f = (await conditionRegistry.fieldMap(db))[b.fieldKey];
     if (!f || !f.writable) return res.status(400).json({ error: 'an information condition needs a fillable field' });
     if (audience === 'staff') return res.status(400).json({ error: 'an information condition must be visible to the borrower' });
     fieldKey = b.fieldKey;
@@ -927,7 +931,7 @@ router.post('/loan-conditions/:cid/clear', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.post('/loan-conditions/:cid/waive', async (req, res) => {
-  if (!['admin', 'super_admin'].includes(req.actor.role)) return res.status(403).json({ error: 'admin only' });
+  if (!can(req.actor, 'waive_conditions')) return res.status(403).json({ error: 'you do not have permission to waive conditions' });
   const reason = String((req.body || {}).reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'a waive reason is required' });
   try {
@@ -959,7 +963,7 @@ router.patch('/checklist/:itemId', async (req, res) => {
   if (b.status && !allowed.includes(b.status)) return res.status(400).json({ error: 'bad status' });
   // Completing a condition is the PROCESSOR's call (admins too). A loan
   // officer marks it reviewed instead — a lighter stamp, never "satisfied".
-  const canComplete = ['processor', 'admin', 'super_admin', 'underwriter'].includes(req.actor.role);
+  const canComplete = can(req.actor, 'sign_off_conditions');
   if ((b.signedOff === true || b.status === 'satisfied') && !canComplete) {
     return res.status(403).json({ error: 'Only the processor can complete a condition — mark it reviewed instead.' });
   }
@@ -1526,7 +1530,7 @@ router.patch('/applications/:id', async (req, res) => {
 // Admin: soft-delete a file (keeps the row + audit trail; it disappears from
 // every borrower and staff surface). Restore reverses it. Admin/super_admin only.
 router.delete('/applications/:id', async (req, res) => {
-  if (!['admin', 'super_admin'].includes(req.actor.role)) return res.status(403).json({ error: 'admin only' });
+  if (!can(req.actor, 'delete_files')) return res.status(403).json({ error: 'you do not have permission to delete files' });
   try {
     const r = await db.query(`UPDATE applications SET deleted_at=now(), updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -1535,7 +1539,7 @@ router.delete('/applications/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.post('/applications/:id/restore', async (req, res) => {
-  if (!['admin', 'super_admin'].includes(req.actor.role)) return res.status(403).json({ error: 'admin only' });
+  if (!can(req.actor, 'delete_files')) return res.status(403).json({ error: 'you do not have permission to restore files' });
   try {
     const r = await db.query(`UPDATE applications SET deleted_at=NULL, updated_at=now() WHERE id=$1 RETURNING id`, [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -1829,12 +1833,25 @@ router.post('/applications/:id/documents', async (req, res) => {
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   const appOk = await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!appOk.rows[0]) return res.status(404).json({ error: 'not found' });
-  const borrowerId = appOk.rows[0].borrower_id;
+  let borrowerId = appOk.rows[0].borrower_id;
+  // LLC-slot upload: the document belongs to a borrower entity (application_id
+  // NULL, llc_id set) so it follows the entity to every vesting file — the same
+  // shape a borrower upload produces. Mirror the borrower's verified-lock.
+  let llcId = null;
+  if (b.llcId) {
+    const l = await db.query(`SELECT id, borrower_id, is_verified FROM llcs WHERE id=$1`, [b.llcId]);
+    if (!l.rows[0]) return res.status(404).json({ error: 'entity not found' });
+    if (l.rows[0].borrower_id !== appOk.rows[0].borrower_id) return res.status(403).json({ error: 'this entity is not on the borrower for this file' });
+    if (l.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before replacing its documents' });
+    llcId = l.rows[0].id;
+    borrowerId = l.rows[0].borrower_id;
+  }
   let itemLabel = '';
   if (b.checklistItemId) {
-    const it = await db.query(
-      `SELECT id, COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1 AND application_id=$2`,
-      [b.checklistItemId, req.params.id]);
+    // An LLC slot item has application_id NULL — look it up by llc_id instead.
+    const it = llcId
+      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
+      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
     if (!it.rows[0]) return res.status(404).json({ error: 'checklist item not found on this file' });
     itemLabel = it.rows[0].label;
   }
@@ -1846,10 +1863,11 @@ router.post('/applications/:id/documents', async (req, res) => {
   const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
-    `INSERT INTO documents (application_id,checklist_item_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,
+    `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,filename,content_type,size_bytes,storage_provider,storage_ref,
                             uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,$11,'borrower') RETURNING id`,
-    [req.params.id, b.checklistItemId || null, b.checklistItemId ? borrowerId : null,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'staff',$10,$11,$12,'borrower') RETURNING id`,
+    [llcId ? null : req.params.id, b.checklistItemId || null,
+     (b.checklistItemId || llcId) ? borrowerId : null, llcId,
      b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
      req.actor.id, docKind, slot]);
   if (docKind === 'term_sheet') {
@@ -1883,13 +1901,16 @@ router.post('/applications/:id/documents', async (req, res) => {
         const ctx = await notify.fileContext(req.params.id);
         await notify.notifyBorrower(borrowerId, {
           type: 'doc_uploaded', title: `Your loan team added a document to "${itemLabel}"`,
-          body: `"${b.filename}" was uploaded to condition "${itemLabel}"${slot ? ` (${slot})` : ''}${ctx ? ` on ${ctx.label}` : ''} on your behalf.`,
+          body: `"${b.filename}" was uploaded to ${llcId ? 'your entity documents' : `condition "${itemLabel}"`}${slot ? ` (${slot})` : ''}${ctx ? ` on ${ctx.label}` : ''} on your behalf.`,
           meta: (ctx && ctx.meta) || undefined,
-          applicationId: req.params.id, link: `/app/${req.params.id}` });
+          applicationId: llcId ? null : req.params.id, link: llcId ? '/entities' : `/app/${req.params.id}` });
       } catch (_) { /* best-effort */ }
     }
   }
-  await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null });
+  // An LLC-slot upload re-drives the umbrella LLC condition on every open file
+  // vesting in the entity (all slots present → received; etc).
+  if (llcId) { try { await llcLib.syncLlcConditions(llcId); } catch (_) { /* best-effort */ } }
+  await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 
@@ -1904,7 +1925,7 @@ router.post('/documents/:id/review', async (req, res) => {
   if (!['accept', 'reject'].includes(action)) return res.status(400).json({ error: 'action must be accept or reject' });
   // Accepting a document completes its condition — processor/admin only.
   // Anyone on the file may reject (the document lands in the file's trash).
-  if (action === 'accept' && !['processor', 'admin', 'super_admin', 'underwriter'].includes(req.actor.role)) {
+  if (action === 'accept' && !can(req.actor, 'sign_off_conditions')) {
     return res.status(403).json({ error: 'Only the processor can accept a document — you can reject it or mark the condition reviewed.' });
   }
   if (action === 'reject' && !String(b.reason || '').trim()) return res.status(400).json({ error: 'a rejection reason is required' });
@@ -2090,7 +2111,7 @@ router.get('/team', async (req, res) => {
 // entries — borrowers then autocomplete against the cleaned-up records.
 const VENDOR_TYPES = ['title_company', 'insurance_agent', 'attorney', 'contractor', 'other'];
 router.get('/vendors', async (req, res) => {
-  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const type = VENDOR_TYPES.includes(req.query.type) ? req.query.type : null;
   const r = await db.query(
     `SELECT sc.id, sc.contact_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address,
@@ -2106,7 +2127,7 @@ router.get('/vendors', async (req, res) => {
   res.json(r.rows);
 });
 router.post('/vendors', async (req, res) => {
-  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const b = req.body || {};
   const type = VENDOR_TYPES.includes(b.contactType) ? b.contactType : 'other';
   if (!b.companyName && !b.contactName && !b.email && !b.phone)
@@ -2120,7 +2141,7 @@ router.post('/vendors', async (req, res) => {
   res.status(201).json({ ok: true, vendorId: r.rows[0].id });
 });
 router.patch('/vendors/:id', async (req, res) => {
-  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const b = req.body || {};
   const map = { companyName: 'company_name', contactName: 'contact_name', email: 'email',
                 phone: 'phone', address: 'address', notes: 'notes' };
@@ -2136,7 +2157,7 @@ router.patch('/vendors/:id', async (req, res) => {
   res.json({ ok: true });
 });
 router.delete('/vendors/:id', async (req, res) => {
-  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const r = await db.query(`DELETE FROM service_contacts WHERE id=$1 RETURNING id`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'delete_vendor', 'service_contact', req.params.id);

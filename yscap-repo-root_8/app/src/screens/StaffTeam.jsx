@@ -2,35 +2,46 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
-const ROLES = [
-  { v: 'loan_officer', label: 'Loan Officer' },
-  { v: 'processor', label: 'Processor' },
-  { v: 'underwriter', label: 'Underwriter' },
-  { v: 'admin', label: 'Admin' },
-  { v: 'super_admin', label: 'Super Admin' },
+// Fallback role list (replaced live by GET /permissions-meta).
+const FALLBACK_ROLES = [
+  { key: 'loan_officer', label: 'Loan Officer' },
+  { key: 'loan_coordinator', label: 'Loan Coordinator' },
+  { key: 'processor', label: 'Loan Processor' },
+  { key: 'underwriter', label: 'Underwriter' },
+  { key: 'software_setup', label: 'Software Setup' },
+  { key: 'admin', label: 'Admin' },
+  { key: 'super_admin', label: 'Super Admin' },
 ];
-const ROLE_LABEL = Object.fromEntries(ROLES.map(r => [r.v, r.label]));
 const blankForm = () => ({
   fullName: '', email: '', role: 'loan_officer', title: '', department: 'sales',
   phone: '', cell: '', ext: '', siteSelectable: true, provision: 'invite', password: '',
 });
 
 export default function StaffTeam() {
-  const { role } = useAuth();
-  const isAdmin = role === 'admin' || role === 'super_admin';
+  const { can } = useAuth();
+  const isAdmin = can('manage_team');
   const [rows, setRows] = useState(null);
+  const [meta, setMeta] = useState({ roles: FALLBACK_ROLES, capabilities: [], roleDefaults: {} });
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [form, setForm] = useState(blankForm());
   const [busy, setBusy] = useState(false);
   const [pwFor, setPwFor] = useState(null);
   const [pwVal, setPwVal] = useState('');
+  const [permFor, setPermFor] = useState(null);   // staffer id whose permissions panel is open
   // Guards the welcome / password-reset email actions — a double-click was
   // sending the same email twice.
   const [mailBusy, setMailBusy] = useState(null);
 
+  const ROLES = meta.roles || FALLBACK_ROLES;
+  const ROLE_LABEL = Object.fromEntries(ROLES.map(r => [r.key, r.label]));
+
   const load = () => api.adminStaff().then(setRows).catch(e => setErr(e.message));
-  useEffect(() => { if (isAdmin) load(); }, [isAdmin]);
+  useEffect(() => {
+    if (!isAdmin) return;
+    load();
+    api.adminPermissionsMeta().then(setMeta).catch(() => {});
+  }, [isAdmin]);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const flash = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
@@ -73,7 +84,23 @@ export default function StaffTeam() {
     } catch (e) { setErr(e.message); }
   }
 
-  if (!isAdmin) return <div role="alert" className="notice err">Team management is available to admins only.</div>;
+  if (!isAdmin) return <div role="alert" className="notice err">You do not have permission to manage the team.</div>;
+
+  // Effective capability for a staffer given their (possibly overridden) grants.
+  const effectiveFor = (s) => new Set(s.effectivePermissions || meta.roleDefaults[s.role] || []);
+  async function togglePermission(s, cap, on) {
+    const defaults = new Set(meta.roleDefaults[s.role] || []);
+    const eff = effectiveFor(s);
+    // Start from the existing explicit overrides, then set/clear this cap.
+    const overrides = { ...(s.permissions || {}) };
+    const desired = new Set(eff); if (on) desired.add(cap); else desired.delete(cap);
+    // Only keep overrides that differ from the role default.
+    for (const c of (meta.capabilities || []).map(x => x.key)) {
+      const def = defaults.has(c), want = desired.has(c);
+      if (def === want) delete overrides[c]; else overrides[c] = want;
+    }
+    await patch(s.id, { permissions: overrides }, 'Permissions updated.');
+  }
 
   const groups = [
     { key: 'sales', label: 'Sales & Loan Coordinators' },
@@ -111,7 +138,7 @@ export default function StaffTeam() {
             <input className="input" type="email" value={form.email} onChange={e => set('email', e.target.value)} required /></div>
           <div className="field"><label>Role</label>
             <select className="input" value={form.role} onChange={e => set('role', e.target.value)}>
-              {ROLES.map(r => <option key={r.v} value={r.v}>{r.label}</option>)}
+              {ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
             </select></div>
           <div className="field"><label>Department</label>
             <select className="input" value={form.department} onChange={e => set('department', e.target.value)}>
@@ -165,7 +192,17 @@ export default function StaffTeam() {
                     {s.mfa_enabled ? ' · MFA on' : ''}
                   </div>
                 </div>
-                <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+                <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label className="muted small" style={{ display: 'flex', gap: 5, alignItems: 'center' }} title="Change this person's role">
+                    Role
+                    <select className="input" style={{ padding: '4px 8px', minHeight: 0 }} value={s.role}
+                      onChange={e => patch(s.id, { role: e.target.value }, 'Role updated.')}>
+                      {ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                    </select>
+                  </label>
+                  <button className="btn link" onClick={() => setPermFor(permFor === s.id ? null : s.id)}>
+                    {permFor === s.id ? 'Hide permissions' : 'Permissions'}
+                  </button>
                   <label className="muted small" style={{ display: 'flex', gap: 5, alignItems: 'center', cursor: 'pointer' }} title="Show on public site roster">
                     <input type="checkbox" checked={!!s.site_selectable}
                       onChange={e => patch(s.id, { siteSelectable: e.target.checked }, 'Roster updated.')} /> Site
@@ -192,6 +229,37 @@ export default function StaffTeam() {
                       value={pwVal} onChange={e => setPwVal(e.target.value)} />
                     <button className="btn primary" onClick={() => savePassword(s.id)}>Save password</button>
                     <button className="btn ghost" onClick={() => { setPwFor(null); setPwVal(''); }}>Cancel</button>
+                  </div>
+                )}
+                {permFor === s.id && (
+                  <div style={{ width: '100%', marginTop: 10, padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 10, background: 'var(--ink-2)' }}>
+                    <div className="row" style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+                      <strong className="small">What {s.full_name.split(' ')[0]} can do</strong>
+                      {s.role === 'super_admin'
+                        ? <span className="muted small">Super Admin — full access</span>
+                        : s.permissions && Object.keys(s.permissions).length > 0
+                          ? <button className="btn link small" onClick={() => patch(s.id, { permissions: {} }, 'Reset to role defaults.')}>Reset to {ROLE_LABEL[s.role]} defaults</button>
+                          : <span className="muted small">Using {ROLE_LABEL[s.role]} defaults</span>}
+                    </div>
+                    <div className="grid cols-2" style={{ gap: 6 }}>
+                      {(meta.capabilities || []).map(cap => {
+                        const eff = effectiveFor(s);
+                        const isDefault = new Set(meta.roleDefaults[s.role] || []).has(cap.key);
+                        const overridden = s.permissions && cap.key in s.permissions;
+                        return (
+                          <label key={cap.key} className="small" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: s.role === 'super_admin' ? 'not-allowed' : 'pointer', opacity: s.role === 'super_admin' ? 0.7 : 1 }} title={cap.hint}>
+                            <input type="checkbox" style={{ marginTop: 3 }} disabled={s.role === 'super_admin'}
+                              checked={s.role === 'super_admin' ? true : eff.has(cap.key)}
+                              onChange={e => togglePermission(s, cap.key, e.target.checked)} />
+                            <span>
+                              {cap.label}
+                              {overridden && <span className="pill" style={{ marginLeft: 6, fontSize: 10, borderColor: 'var(--gold)', color: 'var(--gold)' }}>{eff.has(cap.key) ? 'granted' : 'revoked'}</span>}
+                              {!overridden && isDefault && <span className="muted" style={{ marginLeft: 6, fontSize: 10 }}>(default)</span>}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
               </div>

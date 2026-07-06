@@ -71,7 +71,16 @@ async function loadRuleContext(appId) {
   const arv = num(a.arv);
   const cost = (num(a.purchase_price) || 0) + (num(a.rehab_budget) || 0);
 
+  // Admin-defined custom fields: per-application answers live in
+  // application_field_values and join the context like any built-in field.
+  const customValues = {};
+  try {
+    const cv = await db.query(`SELECT field_key, value FROM application_field_values WHERE application_id=$1`, [appId]);
+    for (const row of cv.rows) customValues[row.field_key] = row.value;
+  } catch (_) { /* table mid-migration — no custom values */ }
+
   const ctx = {
+    ...customValues,
     registered_program: a.pr_program || 'none',
     program_strategy: registry.normStrategy([a.program, a.loan_type, a.rehab_type].filter(Boolean).join(' ')),
     loan_purpose: registry.normLoanPurpose(a.loan_type),
@@ -173,6 +182,7 @@ async function evaluateApplication(appId, opts = {}) {
       WHERE is_active = true AND scope = 'application' AND auto_apply IN ('always','rules')
       ORDER BY sort_order, label`);
   if (!tpls.rows.length) return out;
+  const fields = await registry.fieldMap(db);
 
   const existing = await db.query(
     `SELECT ci.id, ci.template_id, ci.status, ci.origin_kind, ci.label, ci.notes,
@@ -194,12 +204,12 @@ async function evaluateApplication(appId, opts = {}) {
     let matches = false;
     if (tpl.auto_apply === 'always') matches = true;
     else if (tpl.auto_apply === 'rules' && tpl.rule_logic) {
-      try { matches = rules.evaluateRule(tpl.rule_logic, ctx); } catch (_) { matches = false; }
+      try { matches = rules.evaluateRule(tpl.rule_logic, ctx, fields); } catch (_) { matches = false; }
     }
 
     const instances = allByTemplate.get(tpl.id) || [];
     if (matches && !instances.length) {
-      const summary = tpl.auto_apply === 'rules' ? rules.summarizeRule(tpl.rule_logic) : 'applies to every file';
+      const summary = tpl.auto_apply === 'rules' ? rules.summarizeRule(tpl.rule_logic, { fields }) : 'applies to every file';
       const id = await instantiateTemplate(tpl, { application_id: appId }, {
         originKind: 'auto',
         originDetail: { templateVersion: tpl.version, rule: summary, reason: opts.reason || null },
@@ -271,13 +281,16 @@ async function evaluateBorrowerApplications(borrowerId, opts = {}) {
 }
 
 /**
- * Persist a borrower's answer to an info-field condition into the real column.
- * Returns { value } (normalized) or throws { status, message }.
+ * Persist a borrower's answer to an info-field condition — built-in fields
+ * write the real application/borrower column; admin-defined custom fields
+ * upsert into application_field_values. Returns { value } (normalized) or
+ * throws { status, message }.
  */
-async function writeFieldValue(appId, borrowerId, fieldKey, rawValue) {
-  const f = registry.BY_KEY[fieldKey];
+async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
+  const fields = await registry.fieldMap(db);
+  const f = fields[fieldKey];
   const target = registry.WRITE_TARGETS[fieldKey];
-  if (!f || !f.writable || !target) {
+  if (!f || !f.writable || (!target && !f.custom)) {
     const err = new Error('this field cannot be updated from a condition'); err.status = 400; throw err;
   }
   let value = rawValue;
@@ -300,7 +313,15 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue) {
     value = String(rawValue == null ? '' : rawValue).slice(0, 500);
   }
 
-  if (target.table === 'applications') {
+  if (f.custom) {
+    await db.query(
+      `INSERT INTO application_field_values (application_id, field_key, value, updated_by_kind, updated_by_id, updated_at)
+       VALUES ($1,$2,$3,$4,$5,now())
+       ON CONFLICT (application_id, field_key)
+       DO UPDATE SET value=EXCLUDED.value, updated_by_kind=EXCLUDED.updated_by_kind,
+                     updated_by_id=EXCLUDED.updated_by_id, updated_at=now()`,
+      [appId, fieldKey, JSON.stringify(value), by.kind || 'borrower', by.id || null]);
+  } else if (target.table === 'applications') {
     await db.query(`UPDATE applications SET ${target.column}=$2, updated_at=now() WHERE id=$1`, [appId, value]);
   } else {
     await db.query(`UPDATE borrowers SET ${target.column}=$2, updated_at=now() WHERE id=$1`, [borrowerId, value]);

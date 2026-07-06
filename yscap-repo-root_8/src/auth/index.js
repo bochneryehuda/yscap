@@ -21,6 +21,7 @@ const router = require('../lib/safe-router')();
 const db = require('../db');
 const C = require('../lib/crypto');
 const mail = require('../lib/email/catalog');
+const perms = require('../lib/permissions');
 const { randomInt } = require('crypto');
 
 const MAX_FAILED = 6;
@@ -58,7 +59,12 @@ async function authenticate(req, res, next) {
   const idCol = claims.kind === 'staff' ? 'id' : 'borrower_id';
   let r;
   try {
-    r = await db.query(`SELECT token_version FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
+    // For staff, also read the CURRENT role + permission overrides so a role or
+    // grant change takes effect immediately (not only after re-login) and so
+    // capability gates can run synchronously off req.actor.perms.
+    r = claims.kind === 'staff'
+      ? await db.query(`SELECT token_version, role, permissions FROM staff_users WHERE id=$1`, [claims.sub])
+      : await db.query(`SELECT token_version FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
   } catch (e) {
     console.error('[auth] token check failed (db):', db.describeError(e));
     return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
@@ -67,6 +73,11 @@ async function authenticate(req, res, next) {
   if (tv === null || tv !== (claims.tv || 0))
     return res.status(401).json({ error: 'session expired' });
   req.actor = { id: claims.sub, kind: claims.kind, role: claims.role };
+  if (claims.kind === 'staff') {
+    // Trust the DB role over the JWT claim (role can change mid-session).
+    req.actor.role = r.rows[0].role || claims.role;
+    req.actor.perms = perms.effectivePermissions(req.actor.role, r.rows[0].permissions);
+  }
   // Sliding session: past the token's half-life, hand back a fresh token so an
   // active user never gets logged out mid-work. The SPA stores it from this
   // header on every response; revocation still wins because tv is re-checked.
@@ -88,6 +99,14 @@ function requireRole(...roles) {
     if (!req.actor || req.actor.kind !== 'staff') return res.status(403).json({ error: 'forbidden' });
     // super_admin is the top of the hierarchy and satisfies every role gate.
     if (req.actor.role === 'super_admin' || roles.includes(req.actor.role)) return next();
+    return res.status(403).json({ error: 'forbidden' });
+  };
+}
+// Capability gate — checks req.actor.perms (resolved in authenticate).
+function requirePermission(cap) {
+  return (req, res, next) => {
+    if (!req.actor || req.actor.kind !== 'staff') return res.status(403).json({ error: 'forbidden' });
+    if (perms.can(req.actor, cap)) return next();
     return res.status(403).json({ error: 'forbidden' });
   };
 }
@@ -442,11 +461,15 @@ router.post('/logout', requireAuth, async (req, res) => {
 
 router.get('/me', requireAuth, async (req, res) => {
   if (req.actor.kind === 'staff') {
-    const r = await db.query(`SELECT id,email,full_name,role,mfa_enabled FROM staff_users WHERE id=$1`, [req.actor.id]);
-    return res.json({ kind: 'staff', ...r.rows[0] });
+    const r = await db.query(`SELECT id,email,full_name,role,mfa_enabled,permissions FROM staff_users WHERE id=$1`, [req.actor.id]);
+    const row = r.rows[0] || {};
+    // Resolve effective capabilities so the SPA can gate nav/screens the same
+    // way the server gates routes.
+    const permissions = [...perms.effectivePermissions(row.role, row.permissions)];
+    return res.json({ kind: 'staff', id: row.id, email: row.email, full_name: row.full_name, role: row.role, mfa_enabled: row.mfa_enabled, permissions });
   }
   const r = await db.query(`SELECT id,email,first_name,last_name,tier FROM borrowers WHERE id=$1`, [req.actor.id]);
   res.json({ kind: 'borrower', ...r.rows[0] });
 });
 
-module.exports = { router, authenticate, requireAuth, requireRole, requireBorrower };
+module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower };

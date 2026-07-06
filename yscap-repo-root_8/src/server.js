@@ -91,6 +91,13 @@ app.use('/api/leads', require('./routes/leads'));     // public marketing-tool s
 app.use('/api/intake', require('./routes/intake'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/staff', require('./routes/staff'));
+// The Condition Center studio is gated by the manage_conditions capability (not
+// admin-only), so an underwriter or software-setup persona granted it can author
+// the library. Mounted before /api/admin so it isn't shadowed by requireRole.
+{
+  const { requireAuth, requirePermission } = require('./auth');
+  app.use('/api/admin/conditions', requireAuth, requirePermission('manage_conditions'), require('./routes/admin-conditions'));
+}
 app.use('/api/admin', require('./routes/admin'));
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
 // routers: EventSource can't send an Authorization header, so this route does
