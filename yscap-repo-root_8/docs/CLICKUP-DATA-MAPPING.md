@@ -211,4 +211,88 @@ After you create whichever you want, I re-pull the IDs into the mapping. **Minim
 
 ---
 
+---
+
+## PART 6 — EXACT mapping logic (value-by-value crosswalks + transform algorithms) — **pre-approval**
+
+This is the precise logic the code will implement. Portal vocabulary is taken from the live app (`app/src/screens/Apply.jsx` constants + `field-registry.js` normalizers). **Please approve or correct each table.** Every enum is resolved through the **name→option-UUID** map on write and **orderindex→name** on read (Part 1).
+
+### 6.1 Program  (portal `applications.program` ⇄ ClickUp `*Program` `50eb857a`)
+Portal offers: `Fix & Flip w/ Construction` · `Bridge` · `Ground-Up Construction` · `Not sure yet`. ClickUp RTL options: Fix & Flip With Construction `31e3b89d` · bridge Without Construction `e8ff7301` · Private hard money `3222c2ec`.
+| Portal value | → ClickUp option (id) | ClickUp → portal |
+|---|---|---|
+| Fix & Flip w/ Construction | **Fix & Flip With Construction** `31e3b89d` | → Fix & Flip w/ Construction |
+| Bridge | **bridge Without Construction** `e8ff7301` | → Bridge |
+| Ground-Up Construction | **Fix & Flip With Construction** `31e3b89d` **+ set Loan type = Ground up** ⚠️ | (Program=F&F + Loan type=Ground up) → Ground-Up Construction |
+| Not sure yet | **leave Program empty** (officer sets) ⚠️ | — |
+| *(no portal equivalent)* | Private hard money `3222c2ec` | → **Bridge** ⚠️ (or add a portal "Private money" value?) |
+**⚠️ DECIDE:** (a) Ground-Up → is "F&F With Construction + Loan type Ground up" right, or should it be its own thing? (b) "Not sure yet" → leave blank vs default to F&F? (c) inbound "Private hard money" → show as Bridge, or add a portal program value?
+
+### 6.2 Loan type  (portal `loan_type` ⇄ ClickUp `*Loan type` `ee1b564f`)
+| Portal value | → ClickUp (id) |
+|---|---|
+| Purchase | Purchase `5eabaafc` |
+| Refinance — Rate & Term | Refi Rate & Term `64a66c30` |
+| Refinance — Cash-Out | Refi Cash-Out `7b12269e` |
+| *(Ground-Up program)* | Ground up `8a1137a5` |
+Inbound extras (Delayed Purchase Financing `163ad351`, HELOC `3ec0b186`, Second Closed end `9443787c`) → map to nearest / "other"; rare on RTL.
+
+### 6.3 Property type  (portal `property_type` ⇄ ClickUp `*Property Type` `541524d9`)
+| Portal value | → ClickUp (id) | Note |
+|---|---|---|
+| SFR (1 unit) | SFR `42070628` | |
+| Multi 2–4 | Multi 2-4 `95ef80f0` | |
+| Multi 5+ | Multi 5+ `64378328` | |
+| Mixed use | Mixed Use `93eb74bd` | |
+| Condo | **Warrantable condo** `8f6aa277` ⚠️ | ClickUp splits warrantable/non-warrantable; default warrantable, officer refines |
+| Townhouse | **SFR** `42070628` ⚠️ | ClickUp has no Townhouse option |
+ClickUp-only inbound: Co-Op `81736937`, New Construction `a09b3a6b`, Non-warrantable condo `470f43af` → map to nearest portal type.
+**⚠️ DECIDE:** Condo → default Warrantable? Townhouse → SFR (or add options in ClickUp)?
+
+### 6.4 Occupancy  (portal `occupancy` ⇄ ClickUp `* Occupancy` `df9d81b5`)
+Primary→Primary `5472309f` · Investment→Investment `e3f10e41` · Secondary→Secondary `ce9aed84`. **RTL default = Investment** when portal value is blank.
+
+### 6.5 Vesting  (portal LLC state ⇄ ClickUp `*Vesting` `173dc79a`)
+LLC linked → **LLC / Corp** `e3d7a04a` · no LLC (individual) → **Individual** `7bc896de` · (Trust `e579f9bf`, Need Transfer At Closing `eb657bb4` inbound-only). Derived from `applications.llc_id` presence.
+
+### 6.6 Rehab type  (portal `rehab_type` ⇄ ClickUp **Rehab Type** `NEW` dropdown)
+Cosmetic→Cosmetic · Moderate→Moderate · Heavy / gut rehab→Heavy · Adding square footage→Adding SF · Ground-up construction→Ground-up. (1:1 by design — I'll name the new ClickUp options to match.)
+
+### 6.7 Marital status  (portal `borrowers.marital_status` ⇄ ClickUp `Marital Status` `b91e06a6`, a YES/NO "married?" dropdown)
+Portal: Single/Married/Separated/Divorced/Widowed. **Push:** `Married` → YES `fddfc66d`; all others → NO `a0109516`. **Pull (lossy):** YES → `Married`; NO → leave portal value unchanged if already set, else `Single`. ⚠️ Confirm YES/NO = "is married?".
+
+### 6.8 Employment type  (portal `borrowers.employment_type` ⇄ ClickUp `Borrowers employment type` `33bf62d8`)
+W-2→W-2 · 1099→1099 · K1/S-Corp→K1 - S CORP · C CORP→C CORP · Self employed→Self employed (name-match).
+
+### 6.9 Housing status  (portal `HOUSING` ⇄ ClickUp `Primary Housing` dropdown `6ae80836`)
+Rent→Rent `290f4a30` · Own with mortgage→Mortgage `c350558d` · Own free and clear→own free and clear `499f8734` · Live with family→**Rent Free** `02bb4144` ⚠️ · Other→(leave blank) ⚠️. **⚠️ DECIDE** the "Live with family" / "Other" targets.
+
+### 6.10 Term  (portal `applications.term` ⇄ ClickUp `Term` `b67dd5fd`)
+RTL is short-term → default **12 Months** `cf6d0b1c` when blank; else 30 year `0e3720b6` / 15 year `80343c38` / Interest only `88a99c5c` / Other `4872cc72` by text.
+
+### 6.11 Citizenship / Contact type
+- Citizenship → ClickUp `Citizenship` `045f993c` is **short_text** → write the portal label verbatim ("US Citizen" etc.); no option map.
+- Contact type → ClickUp `Contact Type` `44120431`: INVESTOR/PRIMARY/FIRST TIME INVESTOR by name.
+
+### 6.12 Non-enum transform algorithms (exact)
+- **Borrower name:** push = `first_name + ' ' + last_name`; pull = split on the **last space** → last_name = last token, first_name = the rest. (Co-borrower name same.)
+- **Address (location):** push `{location:{lat,lng}, formatted_address}` — build `formatted_address` from `line1, city, state zip`; geocode to lat/lng (existing address provider). Pull: store `formatted_address` into `line1` best-effort + keep the components we can parse; keep `place_id`. *(We favor keeping the ClickUp `formatted_address` string intact.)*
+- **Date:** push = `Date → epoch ms` (date-only → 00:00 UTC); pull = `ms → YYYY-MM-DD`.
+- **Currency / number:** push = strip non-numeric → number; pull = `String(number)`. LTV is text in ClickUp → push the numeric string, pull → numeric.
+- **Phone:** push → normalize to `+1XXXXXXXXXX` intl; pull → keep digits for `cell_phone`.
+- **Users (officer/processor/underwriter):** portal `staff_users.clickup_user_id` (matched by email at backfill) ↔ ClickUp numeric id; write `{add:[id], rem:[oldId]}`.
+- **SSN:** push = decrypt→plaintext string; pull = encrypt into `ssn_encrypted` + set `ssn_last4`; **masked in all logs**.
+- **Card line (`684c900f`) split:** parse `/(\d[\d ]{11,22}\d)\D+(\d{1,2}\/\d{2,4})\D+(\d{3,4})/` → number, exp, cvv; fallback = tokens by whitespace; LLM fallback for messy input. Push = `"<number>  <exp>  <cvv>"`. Encrypted, masked.
+- **Status:** internal ↔ ClickUp status string verbatim; borrower-facing derived (Part 2).
+- **Checklist status:** normalize ClickUp label case-insensitively → 5-state; write the exact option UUID (Part 4).
+
+### 6.13 The decisions I need before locking the mapping module
+1. **Program:** Ground-Up handling (§6.1a) · "Not sure yet" (§6.1b) · inbound "Private hard money" (§6.1c).
+2. **Property type:** Condo → Warrantable? · Townhouse → SFR? (§6.3) — or add ClickUp options.
+3. **Housing:** "Live with family" and "Other" targets (§6.9).
+4. **Marital:** confirm YES/NO = "is married?" (§6.7).
+Everything else above is 1:1 and safe to lock.
+
+---
+
 *Verify each row. Flag any wrong direction, wrong source-of-record, wrong transform, or any field that's informational-only and should be dropped. Once locked, this file + the blueprint are the build contract.*
