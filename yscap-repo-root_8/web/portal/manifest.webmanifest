@@ -1,7 +1,7 @@
 {
   "name": "YS Capital Group Portal",
   "short_name": "YS Portal",
-  "description": "Your YS Capital Group loan file — documents, tasks, and messages in one place.",
+  "description": "Your YS Capital Group loan file \u2014 documents, tasks, and messages in one place.",
   "id": "/portal/",
   "start_url": "/portal/#/dashboard",
   "scope": "/portal/",
@@ -10,12 +10,43 @@
   "background_color": "#141B22",
   "theme_color": "#141B22",
   "icons": [
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ],
   "shortcuts": [
-    { "name": "Dashboard", "url": "/portal/#/dashboard" },
-    { "name": "Messages", "url": "/portal/#/dashboard" },
-    { "name": "Profile", "url": "/portal/#/profile" }
+    {
+      "name": "Dashboard",
+      "url": "/portal/#/dashboard"
+    },
+    {
+      "name": "Messages",
+      "url": "/portal/#/dashboard"
+    },
+    {
+      "name": "Profile",
+      "url": "/portal/#/profile"
+    }
   ]
 }
