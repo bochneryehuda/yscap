@@ -815,7 +815,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
   const params = [req.params.itemId];
   const add = (frag, val) => { params.push(val); sets.push(frag.replace('?', '$' + params.length)); };
 
-  if (b.status) add('status=?', b.status);
+  // Sign-off forces status='satisfied' below, so skip an explicit status here
+  // when signing off in the same call — otherwise the UPDATE sets the `status`
+  // column twice and Postgres rejects it (42601) with a 500.
+  if (b.status && b.signedOff !== true) add('status=?', b.status);
   if (b.notes != null) add('notes=?', b.notes);
   if ('assigneeStaffId' in b) add('assignee_staff_id=?', b.assigneeStaffId || null);
 
@@ -884,7 +887,8 @@ async function canSeeBorrowerId(req, borrowerId) {
   if (!borrowerId) return false;
   const r = await db.query(
     `SELECT 1 FROM applications
-      WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+      WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2)
+        AND deleted_at IS NULL LIMIT 1`,
     [borrowerId, req.actor.id]);
   return !!r.rows[0];
 }

@@ -435,7 +435,8 @@ export default function StaffApplication() {
     finally { setBusyAct(''); }
   }
   async function addLoanCondition() {
-    if (!cForm.title.trim()) return;
+    if (!cForm.title.trim() || busyAct) return;   // double-submit created the condition twice
+    setBusyAct('addcond');
     try {
       await api.staffAddLoanCondition(id, {
         title: cForm.title.trim(),
@@ -444,9 +445,10 @@ export default function StaffApplication() {
       });
       setCForm({ title: '', audience: 'staff', severity: 'standard' }); flash('Condition added ✓'); await load();
     } catch (e) { setErr(e.message || 'Could not add condition'); }
+    finally { setBusyAct(''); }
   }
-  async function clearCond(cid) { try { await api.staffClearCondition(cid); flash('Cleared ✓'); await load(); } catch (e) { setErr(e.message); } }
-  async function waiveCond(cid) { const r = window.prompt('Waive this condition — reason (required):'); if (!r) return; try { await api.staffWaiveCondition(cid, r); flash('Waived ✓'); await load(); } catch (e) { setErr(e.message); } }
+  async function clearCond(cid) { if (busyAct) return; setBusyAct('cond:' + cid); try { await api.staffClearCondition(cid); flash('Cleared ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
+  async function waiveCond(cid) { if (busyAct) return; const r = window.prompt('Waive this condition — reason (required):'); if (!r) return; setBusyAct('cond:' + cid); try { await api.staffWaiveCondition(cid, r); flash('Waived ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   async function addCondition() {
     if (!newCond.trim()) return;
     try { await api.staffAddCondition(id, { label: newCond.trim(), audience: 'staff' }); setNewCond(''); flash('Added ✓'); await load(); }

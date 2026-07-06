@@ -43,7 +43,10 @@ export default function Login() {
     } catch (e) { setErr(e.message || 'Could not create account'); }
     finally { setBusy(false); }
   }
-  const onKey = (fn) => (e) => { if (e.key === 'Enter') fn(); };
+  // Guard on `busy` so holding/double-tapping Enter can't fire a second auth
+  // request while one is already in flight (the button is disabled, but the
+  // key handler bypassed it).
+  const onKey = (fn) => (e) => { if (e.key === 'Enter' && !busy) fn(); };
 
   return (
     <div className="authbg">
