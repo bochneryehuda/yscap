@@ -8,9 +8,16 @@ const provider = require('../lib/email');
 const tpl = require('../lib/email/template');
 const mail = require('../lib/email/catalog');
 const roster = require('./roster');
-const { requireAuth, requireRole } = require('../auth');
+const { requireAuth, requirePermission } = require('../auth');
 
-router.use(requireAuth, requireRole('admin'));
+// Capability-gated admin surface (mirrors the file/condition surfaces): team &
+// roster management needs manage_team; integrations/email config needs
+// platform_setup — so a Software Setup persona granted platform_setup can wire
+// up integrations without also becoming a full admin, and a manage_team grantee
+// can run the roster. admin/super_admin hold both by default.
+router.use(requireAuth);
+router.use(['/staff', '/permissions-meta', '/borrowers'], requirePermission('manage_team'));
+router.use(['/test-email', '/integrations'], requirePermission('platform_setup'));
 
 const { ROLE_KEYS, CAPABILITIES, effectivePermissions, sanitizeOverrides } = require('../lib/permissions');
 const ROLES = ROLE_KEYS;
