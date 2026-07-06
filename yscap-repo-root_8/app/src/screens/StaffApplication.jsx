@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
-import MessageThread from '../components/MessageThread.jsx';
+import ChatThread from '../components/ChatThread.jsx';
+import { NewChatModal } from './StaffChat.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
@@ -1031,7 +1032,7 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-messages" title="Conversations"
-        info="Two channels: the borrower-facing thread, and the internal team channel the borrower never sees — where a message can be saved onto the file as a task.">
+        info="Every chat on this file: the borrower-facing chat, the internal Loan Team chat, the Officer ↔ Processor chat, and any group chats you create. Live typing, read receipts, and presence — internal chats are never visible to the borrower.">
       <ChatPanel appId={id} onTaskCreated={load} />
       </Section>
 
@@ -1183,42 +1184,43 @@ function TprExport({ appId }) {
   );
 }
 
+/* The file's chats: Borrower / Loan Team / Officer ↔ Processor / custom group
+   chats — pick one tab and the full live thread (typing, receipts, presence)
+   renders inline. "Open in Chat" jumps to the two-pane hub on the same chat. */
 function ChatPanel({ appId, onTaskCreated }) {
-  const [channel, setChannel] = useState('borrower');
-  const internal = channel === 'internal';
+  const { actor } = useAuth();
+  const me = { kind: 'staff', id: actor?.id };
+  const [convs, setConvs] = useState(null);
+  const [open, setOpen] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const load = useCallback(() => api.staffConversations().then(r => {
+    const mine = (r.conversations || []).filter(c => c.application_id === appId);
+    const KIND_ORDER = { borrower: 0, internal: 1, lo_processor: 2, custom: 3 };
+    mine.sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9));
+    setConvs(mine);
+    setOpen(o => (o && mine.some(c => c.id === o)) ? o : (mine[0] ? mine[0].id : null));
+  }).catch(() => {}), [appId]);
+  useEffect(() => { load(); }, [load]);
   return (
-    <div className="panel" id="conversations" style={{ marginTop: 18 }}>
-      <div className="row" style={{ marginBottom: 10, alignItems: 'center' }}>
-        <h3 style={{ margin: 0 }}>Conversations</h3>
+    <div id="conversations">
+      <div className="row" style={{ marginBottom: 10, alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+        {(convs || []).map(c => (
+          <button key={c.id} className={`btn small ${open === c.id ? 'primary' : 'ghost'}`} onClick={() => setOpen(c.id)}>
+            {c.emoji || '💬'} {c.name}
+            {c.unread > 0 && <span className="chat-badge" style={{ marginLeft: 6 }}>{c.unread}</span>}
+          </button>
+        ))}
+        <button className="btn ghost small" title="New group chat on this file" onClick={() => setCreating(true)}>＋ Group chat</button>
         <div className="spacer" />
-        <div className="row" style={{ gap: 6 }}>
-          <button className={`btn ${!internal ? 'primary' : 'ghost'}`} onClick={() => setChannel('borrower')}>Borrower</button>
-          <button className={`btn ${internal ? 'primary' : 'ghost'}`} onClick={() => setChannel('internal')}>Team (internal)</button>
-        </div>
+        {open && <Link className="btn link small" to={`/internal/chat?c=${open}`}>Open in Chat ↗</Link>}
       </div>
-      {/* Key by app id AND channel: this panel survives /internal/app/:id changes,
-          and without the id in the key the previous file's thread kept showing. */}
-      <MessageThread key={`${appId}:${channel}`} mine="staff" bare
-        header={<span />}
-        hint={internal
-          ? 'Internal channel — loan officer, processor, underwriting and admin only. The borrower can never see these messages. Tick the box to also save a message as a task on the file.'
-          : 'This thread is shared with the borrower.'}
-        taskOption={internal}
-        fetchMessages={() => api.staffMessages(appId, channel)}
-        downloadAttachment={(docId) => api.staffDownloadDoc(docId)}
-        react={(mid, emoji) => api.staffReact(mid, emoji)}
-        pin={(mid) => api.staffPinMessage(mid)}
-        edit={(mid, body) => api.staffEditMessage(mid, body)}
-        del={(mid) => api.staffDeleteMessage(mid)}
-        fetchMentionables={() => api.staffMentionables(appId)}
-        onOpenApplication={(id) => { window.location.hash = '#/internal/app/' + id; }}
-        send={async (body, opts) => {
-          const r = await api.staffPostMessage(appId, body, {
-            channel, makeTask: internal && opts?.makeTask, attachment: opts?.attachment,
-            entityRefs: opts?.entityRefs });   // was dropped — staff # mentions saved as plain text
-          if (r && r.taskId && onTaskCreated) onTaskCreated();
-          return r;
-        }} />
+      {open
+        ? <ChatThread key={open} conversationId={open} surface="staff" me={me} height="56vh"
+            onChanged={load} onTaskCreated={onTaskCreated}
+            onOpenApplication={(id) => { window.location.hash = '#/internal/app/' + id; }} />
+        : <p className="muted small">Loading conversations…</p>}
+      {creating && <NewChatModal appId={appId} onClose={() => setCreating(false)}
+        onCreated={(cid) => { setCreating(false); load().then(() => setOpen(cid)); }} />}
     </div>
   );
 }

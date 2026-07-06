@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
+import { subscribeChat } from '../lib/chatEvents.js';
 import { Brand } from './Layout.jsx';
 
 const ROLE_LABEL = {
@@ -15,12 +16,31 @@ export default function StaffLayout({ children }) {
   const [unread, setUnread] = useState(0);
   useEffect(() => {
     let alive = true;
-    const poll = () => api.staffChatInbox()
-      .then(rows => alive && setUnread(rows.reduce((n, r) => n + (r.unread_borrower || 0) + (r.unread_internal || 0), 0)))
+    const poll = () => api.staffConversations()
+      .then(r => alive && setUnread((r.conversations || []).reduce((n, c) => n + (c.unread || 0), 0)))
       .catch(() => {});
     poll();
-    const t = setInterval(poll, 45000);
-    return () => { alive = false; clearInterval(t); };
+    // Live: every unread:update carries the fresh account-wide total, so the
+    // badge moves the instant a message lands or is read on ANY device. The
+    // slow poll stays as a safety net for missed events.
+    const unsub = subscribeChat((event, data) => {
+      if (!alive) return;
+      if (event === 'unread:update' && data && typeof data.totalUnread === 'number') setUnread(data.totalUnread);
+      else if (event === 'message:new' || event === 'reconnect') poll();
+      else if (event === 'notify' && data && data.urgent) {
+        // Urgent re-ping: surface a lightweight toast even outside the chat.
+        try {
+          const el = document.createElement('div');
+          el.className = 'cv-toast';
+          el.textContent = `${data.title} — ${data.body || ''}`;
+          el.onclick = () => { window.location.hash = '#' + (data.link || '/internal/chat'); el.remove(); };
+          document.body.appendChild(el);
+          setTimeout(() => el.remove(), 6000);
+        } catch { /* cosmetic only */ }
+      }
+    });
+    const t = setInterval(poll, 120000);
+    return () => { alive = false; clearInterval(t); unsub(); };
   }, []);
   const consoleLabel = (role === 'admin' || role === 'super_admin')
     ? 'Admin console' : `${ROLE_LABEL[role] || 'Internal'} console`;

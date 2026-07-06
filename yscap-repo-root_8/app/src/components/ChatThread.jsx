@@ -112,7 +112,7 @@ function Attachment({ m, download }) {
   );
 }
 
-export default function ChatThread({ conversationId, surface, me, onChanged, onOpenApplication, height = '60vh' }) {
+export default function ChatThread({ conversationId, surface, me, onChanged, onTaskCreated, onOpenApplication, height = '60vh' }) {
   const isStaff = surface === 'staff';
   const cid = conversationId;
 
@@ -502,6 +502,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onO
       const serverMsg = r.message;
       myReadRef.current = Math.max(myReadRef.current, serverMsg.seq || 0);
       setMsgs(list => (list || []).map(x => x.client_msg_id === clientMsgId ? serverMsg : x));
+      if (r.taskId && onTaskCreated) onTaskCreated(r.taskId);
       onChanged && onChanged();
     } catch (e) {
       setMsgs(list => (list || []).map(x => x.client_msg_id === clientMsgId ? { ...x, _status: 'failed', _error: e.message } : x));
