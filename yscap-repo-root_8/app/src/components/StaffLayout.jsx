@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
-import InstallButton from './InstallButton.jsx';
 import { Brand } from './Layout.jsx';
 
 const ROLE_LABEL = {
@@ -39,8 +38,7 @@ export default function StaffLayout({ children }) {
             <NavLink to="/internal/leads">Leads</NavLink>
             {(role === 'admin' || role === 'super_admin') && <NavLink to="/internal/team">Team</NavLink>}
             <span className="pill" title="Your role">{ROLE_LABEL[role] || role || 'Internal'}</span>
-            <InstallButton />
-            <button className="btn link" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
+            <button className="btn ghost small" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
           </nav>
         </div>
       </header>
