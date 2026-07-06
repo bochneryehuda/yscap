@@ -396,13 +396,23 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
       const row = t.rows[0] || {};
       const rate = quote.noteRate != null ? (quote.noteRate * 100).toFixed(2) + '%' : 'n/a';
-      const body = `${pricing.PROGRAM_LABEL[program]} selected by borrower: ${money(total)} @ ${rate}`;
+      const sz = quote.sizing || {}, ccQ = quote.closingCosts || {};
+      const ctx = await notify.fileContext(appId, [
+        { label: 'Registered product', value: [quote.programLabel, quote.productLabel].filter(Boolean).join(' - ') || pricing.PROGRAM_LABEL[program] },
+        { label: 'Total loan', value: `${money(total)} @ ${rate}` },
+        sz.initialAdvance != null ? { label: 'Initial advance / holdback', value: `${money(sz.initialAdvance)} / ${money(sz.rehabHoldback)}` } : null,
+        sz.downPayment != null ? { label: 'Down payment', value: money(sz.downPayment) } : null,
+        quote.cashToClose != null ? { label: 'Cash to close', value: money(quote.cashToClose) } : null,
+        (quote.liquidity ?? quote.liquidityRequired) != null ? { label: 'Liquidity to verify', value: money(quote.liquidity ?? quote.liquidityRequired) } : null,
+        sz.ltcPct != null ? { label: 'LTC / LTV / ARV', value: `${(sz.ltcPct * 100).toFixed(1)}% / ${(sz.acqLtvPct * 100).toFixed(1)}% / ${(sz.arvPct * 100).toFixed(1)}%` } : null,
+      ].filter(Boolean));
+      const body = `${pricing.PROGRAM_LABEL[program]} registered by the borrower on ${ctx ? ctx.label : (row.ys_loan_number || 'a file')}: ${money(total)} @ ${rate} · cash to close ${money(quote.cashToClose)} · liquidity to verify ${money(quote.liquidity ?? quote.liquidityRequired)}.`;
       for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
         await notify.notifyStaff(sid, {
           type: 'product_registered',
-          title: 'Borrower selected a product on ' + (row.ys_loan_number || 'a file'),
-          body, applicationId: appId,
-          link: `/internal/app/${appId}`,
+          title: 'Borrower registered a product on ' + (row.ys_loan_number || 'a file'),
+          body, applicationId: appId, meta: (ctx && ctx.meta) || undefined,
+          link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
         });
       }
     } catch (_) {}
@@ -519,13 +529,16 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     const row = a.rows[0];
     if (row) {
       const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
-      const label = it.rows[0].tool_key === 'rehab_budget' ? 'rehab budget' : 'task';
+      const label = it.rows[0].tool_key === 'rehab_budget' ? 'rehab budget / scope of work' : 'task';
       const extra = it.rows[0].tool_key === 'rehab_budget' && isFinite(Number(payload.total))
-        ? ` — $${Math.round(Number(payload.total)).toLocaleString('en-US')}` : '';
+        ? ` — total $${Math.round(Number(payload.total)).toLocaleString('en-US')}` : '';
+      const ctx = await notify.fileContext(req.params.id);
       for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
         await notify.notifyStaff(sid, {
           type: 'tool_submitted', title: `${who} submitted their ${label}`,
-          body: `${row.ys_loan_number || 'A file'}${extra}`, applicationId: req.params.id });
+          body: `${ctx ? ctx.label : (row.ys_loan_number || 'A file')}${extra}. Fresh exports are attached to the condition.`,
+          meta: (ctx && ctx.meta) || undefined,
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, ctaLabel: 'Review the scope of work' });
       }
     }
   } catch (_) { /* notification is best-effort */ }
@@ -775,11 +788,13 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
     const row = a.rows[0];
     if (row) {
       const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+      const ctxCard = await notify.fileContext(req.params.id);
       for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
         await notify.notifyStaff(sid, {
           type: 'condition_added', title: `${who} added the appraisal card`,
-          body: `${row.ys_loan_number || 'A file'} — ${cardBrand(number)} ending ${number.slice(-4)}. The appraisal can be ordered.`,
-          applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
+          body: `${ctxCard ? ctxCard.label : (row.ys_loan_number || 'A file')} — ${cardBrand(number)} ending ${number.slice(-4)}. The appraisal can be ordered.`,
+          meta: (ctxCard && ctxCard.meta) || undefined,
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, ctaLabel: 'Open the loan file' });
     }
   } catch (_) { /* best-effort */ }
   res.status(201).json({ ok: true, last4: number.slice(-4), brand: cardBrand(number) });
@@ -1159,10 +1174,12 @@ router.post('/documents', async (req, res) => {
           const it = await db.query(`SELECT label FROM checklist_items WHERE id=$1`, [b.checklistItemId]);
           if (it.rows[0]) where = ` to condition "${it.rows[0].label}"${slot ? ` — ${slot}` : ''}`;
         } else if (slot) where = ` — ${slot}`;
+        const ctx = await notify.fileContext(b.applicationId);
         const opts = {
           type: 'doc_uploaded',
-          title: 'New document uploaded',
-          body: `${who} uploaded "${b.filename}"${where}.`,
+          title: 'New document uploaded' + (where ? '' : ' (general)'),
+          body: `${who} uploaded "${b.filename}"${where} on ${ctx ? ctx.label : 'the file'}.`,
+          meta: (ctx && ctx.meta) || undefined,
           applicationId: b.applicationId,
           link: `/internal/app/${b.applicationId}`,
           ctaLabel: 'Review the document',
@@ -1337,9 +1354,12 @@ router.post('/messages', async (req, res) => {
       const row = a.rows[0];
       if (row) {
         const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
+        const ctx = await notify.fileContext(b.applicationId);
         const opts = {
-          type: 'message', title: `New message from ${who}`,
-          body: String(b.body).slice(0, 140), applicationId: b.applicationId,
+          type: 'message', title: `New message from ${who} on ${ctx ? ctx.loanNo : 'a file'}`,
+          body: `${ctx ? ctx.label + ' — ' : ''}"${String(b.body).slice(0, 200)}"`,
+          meta: (ctx && ctx.meta) || undefined,
+          applicationId: b.applicationId,
           link: `/internal/app/${b.applicationId}`, ctaLabel: 'Open the conversation',
         };
         for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
@@ -1649,21 +1669,32 @@ router.post('/drafts/:id/submit', async (req, res) => {
 
   // notify staff (branded)
   const addr = (b.propertyAddress && (b.propertyAddress.oneLine || b.propertyAddress.street)) || 'a new property';
-  const meta = [{ label: 'Property', value: String(addr) }];
-  if (b.program) meta.push({ label: 'Program', value: b.program });
-  if (b.loanType) meta.push({ label: 'Loan type', value: b.loanType });
+  const exp = [b.requestedExpFlips && `${b.requestedExpFlips} flips`, b.requestedExpHolds && `${b.requestedExpHolds} holds`,
+               b.requestedExpGround && `${b.requestedExpGround} ground-up`, b.requestedExpReo && `${b.requestedExpReo} REO`]
+    .filter(Boolean).join(' · ');
+  const ctx = await notify.fileContext(appId, [
+    b.propertyType ? { label: 'Property type', value: `${b.propertyType}${b.units ? ` · ${b.units} unit(s)` : ''}` } : null,
+    /refi/i.test(b.loanType || '') && b.payoffAmount ? { label: 'Current payoff', value: '$' + Math.round(Number(b.payoffAmount)).toLocaleString('en-US') } : null,
+    b.asIsValue ? { label: 'As-is value', value: '$' + Math.round(Number(b.asIsValue)).toLocaleString('en-US') } : null,
+    exp ? { label: 'Experience claimed', value: exp } : null,
+    b.entityName ? { label: 'Vesting entity', value: b.entityName } : null,
+  ].filter(Boolean));
+  const meta = (ctx && ctx.meta) || [{ label: 'Property', value: String(addr) }];
+  const bodyLine = ctx
+    ? `${ctx.borrowerName} submitted ${ctx.loanNo} — ${ctx.addr}${b.program ? ` · ${b.program}` : ''}${b.loanType ? ` · ${b.loanType}` : ''}${b.purchasePrice ? ` · purchase $${Math.round(Number(b.purchasePrice)).toLocaleString('en-US')}` : ''}${b.rehabBudget ? ` · rehab $${Math.round(Number(b.rehabBudget)).toLocaleString('en-US')}` : ''}.`
+    : 'A borrower submitted a new loan application through the portal.';
   try {
     if (officerRow) {
       await notify.notifyStaff(officerId, {
-        type: 'new_application', title: 'New application submitted',
-        body: 'A borrower submitted a new loan application through the portal.',
+        type: 'new_application', title: 'New application submitted' + (ctx ? ` — ${ctx.loanNo}` : ''),
+        body: bodyLine,
         applicationId: appId, link: `/internal/app/${appId}`, meta,
         emailTo: officerRow.email, ctaLabel: 'Open the loan file',
       });
     } else {
       await notify.notifyAdmins({
-        type: 'unassigned_application', title: 'New application — Lead Capture',
-        body: 'A borrower submitted a new application with no loan officer selected. It is in Lead Capture.',
+        type: 'unassigned_application', title: 'New application — Lead Capture' + (ctx ? ` — ${ctx.loanNo}` : ''),
+        body: bodyLine + ' No loan officer was selected — it is in Lead Capture.',
         applicationId: appId, link: `/internal`, meta, ctaLabel: 'Open Lead Capture',
       });
     }

@@ -225,6 +225,25 @@
     }
   }
 
+  // Closing the portal overlay SAVES first: the host page asks for a full
+  // save (HTML + Excel + PDF onto the condition) and waits for confirmation.
+  window.addEventListener("message", function (e) {
+    if (!e.data || e.data.type !== "ys-tool-save-close") return;
+    var reply = function () { try { window.parent.postMessage({ type: "ys-tool-saved" }, "*"); } catch (err) {} };
+    var started = false;
+    var run = function () {
+      if (busy) {
+        // A save is already in flight — just wait for it to land, then confirm.
+        started = true;
+        setTimeout(run, 400);
+        return;
+      }
+      if (started) { reply(); return; }                  // the in-flight save finished
+      Promise.resolve(submit()).then(reply, reply);
+    };
+    run();
+  });
+
   function boot() { injectUI(); loadState(); }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
