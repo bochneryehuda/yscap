@@ -21,6 +21,7 @@ const TITLES = [
   [/^\/internal\/new/, 'New file'],
   [/^\/internal\/tasks/, 'My tasks'],
   [/^\/internal\/app\//, 'Loan file'],
+  [/^\/internal\/conditions/, 'Condition Center'],
   [/^\/internal\/team/, 'Team'],
   [/^\/internal\/leads/, 'Leads'],
   [/^\/internal\/vendors/, 'Vendors'],

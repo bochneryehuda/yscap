@@ -12,6 +12,7 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
+import AddConditionPanel from '../components/AddConditionPanel.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -393,7 +394,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   const cardItem = borrowerItems.find(it => it.tool_key === 'appraisal_card');
   const idItem = borrowerItems.find(it => it.template_code === 'rtl_p1_id');
   const lead = [ppItem, sowItem, trItem, ...contactItems, cardItem, idItem].filter(Boolean);
-  const rest = borrowerItems.filter(it => !lead.includes(it) && !it.tool_key);
+  // Condition Center items (info fields, e-sign) carry a tool_key too — keep
+  // them in the staff list alongside the plain document conditions.
+  const rest = borrowerItems.filter(it => !lead.includes(it) && (!it.tool_key || ['info_field', 'esign'].includes(it.tool_key)));
   const ordered = [...lead, ...rest];
 
   async function revealCard() {
@@ -426,9 +429,20 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
               <span className={`dot ${signed || it.status === 'satisfied' ? 'done' : 'outstanding'}`} style={{ marginTop: 4, ...(it.status === 'issue' ? { background: 'var(--danger)' } : {}) }} />
               <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600 }}>{it.label}</div>
+                <div style={{ fontWeight: 600 }}>
+                  {it.label}
+                  {it.origin_kind === 'auto' && (
+                    <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--gold)', color: 'var(--gold)' }}
+                      title={(it.origin_detail && it.origin_detail.rule) ? `Added automatically — applies when: ${it.origin_detail.rule}` : 'Added automatically by a condition rule'}>Auto</span>
+                  )}
+                </div>
                 <div className="muted small">
-                  {it.tool_key === 'rehab_budget' ? `Scope of Work builder${app.rehab_budget != null ? ` · total ${money(app.rehab_budget)}` : ''}`
+                  {it.tool_key === 'info_field' ? (() => {
+                      const p = it.tool_payload || {};
+                      return `Information request → ${it.field_key || 'field'}${p.value !== undefined ? ` · answered: ${p.value}` : ' · awaiting the borrower’s answer'}`;
+                    })()
+                    : it.tool_key === 'esign' ? `E-signature${it.esign_doc ? ` — ${it.esign_doc}` : ''} (activates with the e-sign integration)`
+                    : it.tool_key === 'rehab_budget' ? `Scope of Work builder${app.rehab_budget != null ? ` · total ${money(app.rehab_budget)}` : ''}`
                     : it.tool_key === 'track_record' ? (() => {
                         // live counts stamped on the condition by the server on
                         // every track-record change — no need to open the panel
@@ -534,7 +548,6 @@ export default function StaffApplication() {
   const [msg, setMsg] = useState('');
   const [lo, setLo] = useState('');
   const [proc, setProc] = useState('');
-  const [newDoc, setNewDoc] = useState('');
   const [newCond, setNewCond] = useState('');
   const [conds, setConds] = useState([]);
   const [gating, setGating] = useState(null);
@@ -745,13 +758,6 @@ export default function StaffApplication() {
     } catch (e) { setErr(e.message || 'Assign failed'); }
     finally { setBusyAct(''); }
   }
-  async function requestDoc() {
-    if (!newDoc.trim() || busyAct) return;   // double-Enter created duplicate items
-    setBusyAct('request');
-    try { await api.staffRequestDoc(id, { label: newDoc.trim(), audience: 'borrower' }); setNewDoc(''); flash('Requested ✓'); await load(); }
-    catch (e) { setErr(e.message || 'Failed'); }
-    finally { setBusyAct(''); }
-  }
   async function addLoanCondition() {
     if (!cForm.title.trim() || busyAct) return;   // double-submit created the condition twice
     setBusyAct('addcond');
@@ -943,15 +949,8 @@ export default function StaffApplication() {
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
         onUploadTo={pickUpload} />
       <div className="grid cols-2" style={{ marginTop: 14 }}>
-        <div className="panel">
-          <h3 style={{ marginBottom: 8 }}>Request a document (borrower) <InfoTip tip="Adds a new upload condition to the borrower's list and emails them." /></h3>
-          <div className="row" style={{ gap: 8 }}>
-            <input className="input" placeholder="e.g. Updated bank statement" value={newDoc}
-              onChange={e => setNewDoc(e.target.value)} onKeyDown={e => e.key === 'Enter' && requestDoc()} />
-            <button className="btn primary" onClick={requestDoc} disabled={busyAct === 'request'}>Request</button>
-          </div>
-          <p className="muted small" style={{ marginTop: 6 }}>Appears on the borrower's checklist and notifies them.</p>
-        </div>
+        <AddConditionPanel appId={id} items={items} onChanged={load}
+          onError={(t) => setErr(t)} onFlash={flash} />
         <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}
           cForm={cForm} setCForm={setCForm} addLoanCondition={addLoanCondition}
           clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} />

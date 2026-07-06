@@ -110,6 +110,19 @@ const AUDIT_RENDER = {
   assign_processor: { borrowerSafe: false, kind: 'edit', render: () => ({ verb: 'assigned the processor', label: null }) },
   invite_borrower: { borrowerSafe: false, kind: 'message', render: (d) => ({ verb: 'invited the borrower to the portal', label: (d && d.email) || null }) },
   add_checklist_item: { borrowerSafe: false, kind: 'condition', render: (d) => ({ verb: 'requested a document', label: (d && d.label) || null }) },
+  add_condition_custom: { borrowerSafe: false, kind: 'condition', render: (d) => ({ verb: 'added a condition to the file', label: (d && d.label) || null }) },
+  attach_condition: { borrowerSafe: false, kind: 'condition', render: (d) => ({ verb: 'attached a library condition', label: (d && d.label) || null }) },
+  conditions_auto_evaluated: {
+    borrowerSafe: false, kind: 'condition',
+    render(d) {
+      d = d || {};
+      const added = (d.added || []).length, removed = (d.removed || []).length;
+      const lines = [];
+      if (added) lines.push(`Added: ${d.added.join(', ')}`);
+      if (removed) lines.push(`Removed (never touched): ${d.removed.join(', ')}`);
+      return { verb: 'condition rules ran automatically', label: lines.join('\n') || null };
+    },
+  },
   export_tpr: { borrowerSafe: false, kind: 'document', render: () => ({ verb: 'exported the clean file (TPR)', label: null }) },
   view_appraisal_card: { borrowerSafe: false, kind: 'card', render: (d) => ({ verb: 'revealed the appraisal card', label: d && d.last4 ? `Card ending ${d.last4} (audited)` : '(audited)' }) },
   delete_application: { borrowerSafe: false, kind: 'status', render: (d) => ({ verb: 'deleted the file', label: (d && d.reason) || null }) },

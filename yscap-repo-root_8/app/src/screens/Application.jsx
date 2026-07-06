@@ -11,6 +11,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import { MoneyInput } from '../components/FormattedInputs.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -147,6 +148,90 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
       </div>
       {open && <div style={{ width: '100%', paddingLeft: 20 }}>{children}</div>}
     </div>
+  );
+}
+
+/* Information condition (Condition Center): asks for one piece of information
+   and writes the answer straight into the real field on the file. The typed
+   input (money / number / dropdown / date / text) comes from field_def. */
+function InfoFieldCondition({ it, appId, onSaved }) {
+  const done = isDone(it.status);
+  const fd = it.field_def || { type: 'text', label: it.label };
+  const submitted = it.tool_payload && it.tool_payload.value !== undefined ? it.tool_payload.value : undefined;
+  const current = submitted !== undefined ? submitted : (it.field_value ?? '');
+  const [open, setOpen] = useState(false);
+  const [val, setVal] = useState(current === null || current === undefined ? '' : String(current));
+  const [busy, setBusy] = useState(false);
+  const [formErr, setFormErr] = useState('');
+  const fmt = (v) => {
+    if (v === null || v === undefined || v === '') return null;
+    if (fd.type === 'money') return money(v);
+    if (fd.type === 'percent') return `${v}%`;
+    if (fd.type === 'enum') { const o = (fd.options || []).find((x) => x.v === v); return o ? o.label : String(v); }
+    return String(v);
+  };
+  async function submit() {
+    if (val === '' || busy) return;
+    setBusy(true); setFormErr('');
+    try {
+      await api.submitInfoCondition(appId, it.id, fd.type === 'boolean' ? val === 'true' : val);
+      setOpen(false);
+      await onSaved();
+    } catch (e) { setFormErr(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
+  const input = fd.type === 'money'
+    ? <MoneyInput value={val} onChange={setVal} />
+    : fd.type === 'enum'
+      ? <select className="input" value={val} onChange={(e) => setVal(e.target.value)}>
+          <option value="" disabled>Choose…</option>
+          {(fd.options || []).map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+        </select>
+    : fd.type === 'boolean'
+      ? <select className="input" value={val} onChange={(e) => setVal(e.target.value)}>
+          <option value="" disabled>Choose…</option><option value="true">Yes</option><option value="false">No</option>
+        </select>
+    : <input className="input" type={fd.type === 'date' ? 'date' : (fd.type === 'number' || fd.type === 'percent') ? 'number' : 'text'}
+        value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && submit()} />;
+  return (
+    <ConditionRow
+      done={done}
+      issue={it.status === 'issue'}
+      title={it.label}
+      subtitle={(it.hint || fd.hint || 'A quick piece of information your loan team needs — it saves straight onto your file.')
+        + (fmt(current) != null ? ` · Current answer: ${fmt(current)}` : '')}
+      status={done ? 'Submitted' : 'To do'}
+      open={open}
+      action={<button className="btn primary small" onClick={() => setOpen((o) => !o)}>{open ? 'Close' : done ? 'Update answer' : 'Enter information'}</button>}
+    >
+      {formErr && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{formErr}</div>}
+      <div className="row" style={{ gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div className="field" style={{ flex: 1, minWidth: 200, marginBottom: 0 }}>
+          <label>{fd.label || it.label}</label>
+          {input}
+        </div>
+        <button className="btn primary" onClick={submit} disabled={busy || val === ''}>{busy ? 'Saving…' : 'Save & submit'}</button>
+      </div>
+    </ConditionRow>
+  );
+}
+
+/* E-signature condition (Condition Center). The signing ceremony activates
+   when the e-sign integration goes live; until then the condition is visible
+   with a clear "coming soon" state so nothing is a surprise later. */
+function EsignCondition({ it }) {
+  const done = isDone(it.status);
+  return (
+    <ConditionRow
+      done={done}
+      issue={it.status === 'issue'}
+      title={it.label}
+      subtitle={(it.esign_doc ? `Document: ${it.esign_doc}. ` : '') + (done
+        ? 'Signed — the executed copy is on your file.'
+        : (it.hint || 'You\'ll review and e-sign this document right here — electronic signing is being finalized. Your loan team will let you know the moment it\'s ready.'))}
+      status={done ? 'Signed' : 'Awaiting signature'}
+      action={<button className="btn ghost small" disabled title="Electronic signing is being finalized — this button will open the signing ceremony">Review & sign — coming soon</button>}
+    />
   );
 }
 
@@ -429,6 +514,8 @@ export default function Application() {
   const ppItem = items.find(it => it.tool_key === 'product_pricing');
   const cardItem = items.find(it => it.tool_key === 'appraisal_card');
   const contactItems = items.filter(it => it.tool_key && CONTACT[it.tool_key]);
+  const infoItems = items.filter(it => it.tool_key === 'info_field');
+  const esignItems = items.filter(it => it.tool_key === 'esign');
   const idItem = items.find(it => it.template_code === 'rtl_p1_id');
   const llcItem = items.find(it => it.template_code === 'rtl_p1_llc');
   const assetsItem = items.find(it => it.template_code === 'rtl_p3_assets');
@@ -686,6 +773,11 @@ export default function Application() {
               {/* 4 — Company contacts (title / insurance) + appraisal card */}
               {contactItems.filter(show).map(it => <ContactCondition key={it.id} it={it} appId={id} onSaved={async () => { touch(it.id); await load(); }} />)}
               {cardItem && show(cardItem) && <CardCondition it={cardItem} appId={id} onSaved={async () => { touch(cardItem.id); await load(); }} />}
+
+              {/* 4a — Information conditions: typed answers written straight
+                  onto the file, and e-sign conditions (ceremony coming). */}
+              {infoItems.filter(show).map(it => <InfoFieldCondition key={it.id} it={it} appId={id} onSaved={async () => { touch(it.id); await load(); }} />)}
+              {esignItems.filter(show).map(it => <EsignCondition key={it.id} it={it} />)}
 
               {/* 4 — Government ID, fulfilled straight from the borrower profile */}
               {idItem && show(idItem) && (

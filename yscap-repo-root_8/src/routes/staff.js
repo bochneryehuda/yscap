@@ -18,6 +18,10 @@ const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication } = require('../lib/experience');
 const llcLib = require('../lib/llc');
+const conditionEngine = require('../lib/conditions/engine');
+const conditionRules = require('../lib/conditions/rules');
+const conditionRegistry = require('../lib/conditions/field-registry');
+const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
 
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter'));
 // admins + super-admins + underwriters (risk) see every file;
@@ -490,6 +494,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
+    // Registration rewrites loan amount / rate / program — re-run condition rules.
+    try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'product_registered' }); } catch (_) {}
 
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
@@ -554,6 +560,7 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
     const total = Number(payload.total);
     if (isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
+    try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
     res.json({ ok: true, itemId });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -608,6 +615,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     const total = Number(payload && payload.total);
     if (isFinite(total) && total >= 0) {
       await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
+      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
     }
   }
   // A resubmission outdates the previous exports: the old PDF/Excel are
@@ -640,6 +648,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
+            ci.field_key, ci.category, ci.origin_kind, ci.origin_detail, ci.esign_doc, ci.borrower_label,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             ci.assignee_staff_id, asg.full_name AS assignee_name,
@@ -685,6 +694,125 @@ router.post('/applications/:id/conditions', async (req, res) => {
     [req.params.id, b.label, b.audience || 'staff', b.isRequired !== false, b.notes || null, req.actor.id]);
   await audit(req, 'add_condition', 'application', req.params.id, { label: b.label });
   res.status(201).json({ ok: true, itemId: r.rows[0].id });
+});
+
+// ---------------- Condition Center: per-file conditions ----------------
+// Everything staff need to build a one-off condition on THIS file with the
+// same type system the admin studio uses (document / info field / form-tool /
+// e-sign / internal), plus attaching a library definition manually and
+// re-running the automatic rules on demand.
+
+// Field registry + type vocabulary + the attachable library, for the staff UI.
+router.get('/conditions/meta', async (req, res) => {
+  const lib = await db.query(
+    `SELECT * FROM checklist_templates
+      WHERE is_active=true AND scope='application'
+      ORDER BY sort_order, label`);
+  res.json({
+    fields: conditionRegistry.publicFields(),
+    operators: conditionRules.OPERATORS_BY_TYPE,
+    operatorLabels: conditionRules.OPERATOR_LABEL,
+    categories: CATEGORIES,
+    types: Object.entries(CONDITION_TYPES).map(([v, t]) => ({ v, label: t.label })),
+    tools: TOOLS,
+    library: lib.rows.map((t) => ({
+      id: t.id, code: t.code, label: t.label, borrowerLabel: t.borrower_label,
+      conditionType: conditionTypeOf(t), audience: t.audience, category: t.category,
+      autoApply: t.auto_apply, fieldKey: t.field_key,
+      ruleSummary: t.rule_logic ? conditionRules.summarizeRule(t.rule_logic) : null,
+    })),
+  });
+});
+
+// Add a custom condition of any type to this file.
+router.post('/applications/:id/conditions/custom', async (req, res) => {
+  const b = req.body || {};
+  const type = CONDITION_TYPES[b.conditionType] ? b.conditionType : null;
+  if (!type) return res.status(400).json({ error: 'pick a condition type' });
+  const label = String(b.label || '').trim();
+  if (!label) return res.status(400).json({ error: 'label required' });
+  const audience = ['borrower', 'staff', 'both'].includes(b.audience) ? b.audience
+    : (type === 'internal_task' || type === 'internal_condition' ? 'staff' : 'borrower');
+  let toolKey = CONDITION_TYPES[type].toolKey;
+  if (type === 'tool') {
+    if (!TOOLS.some((t) => t.v === b.toolKey)) return res.status(400).json({ error: 'pick a form/tool' });
+    toolKey = b.toolKey;
+  }
+  let fieldKey = null;
+  if (type === 'info_field') {
+    const f = conditionRegistry.BY_KEY[b.fieldKey];
+    if (!f || !f.writable) return res.status(400).json({ error: 'an information condition needs a fillable field' });
+    if (audience === 'staff') return res.status(400).json({ error: 'an information condition must be visible to the borrower' });
+    fieldKey = b.fieldKey;
+  }
+  const category = CATEGORIES.some((c) => c.v === b.category) ? b.category : null;
+  if ((type === 'internal_task' || type === 'internal_condition') && audience !== 'staff') {
+    return res.status(400).json({ error: 'internal items must have an internal audience' });
+  }
+  const r = await db.query(
+    `INSERT INTO checklist_items
+       (scope,application_id,label,borrower_label,hint,borrower_hint,audience,item_kind,tool_key,field_key,
+        esign_doc,category,is_required,due_date,notes,created_by_kind,created_by_id,origin_kind)
+     VALUES ('application',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'staff',$15,'manual_custom')
+     RETURNING id`,
+    [req.params.id, label.slice(0, 300),
+     String(b.borrowerLabel || '').trim().slice(0, 300) || null,
+     String(b.hint || '').trim().slice(0, 2000) || null,
+     String(b.borrowerHint || '').trim().slice(0, 2000) || null,
+     audience, CONDITION_TYPES[type].itemKind, toolKey || null, fieldKey,
+     type === 'esign' ? (String(b.esignDoc || '').trim().slice(0, 300) || null) : null,
+     category, b.isRequired !== false, b.dueDate || null,
+     String(b.notes || '').trim().slice(0, 2000) || null, req.actor.id]);
+  await audit(req, 'add_condition_custom', 'application', req.params.id, { label, type, audience });
+  if (audience !== 'staff') {
+    try {
+      const ctx = await notify.fileContext(req.params.id);
+      await notify.notifyAppBorrowers(req.params.id, {
+        type: 'condition_added', title: 'A new item was added to your file',
+        body: `"${b.borrowerLabel || label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
+        meta: (ctx && ctx.meta) || undefined,
+        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
+    } catch (_) { /* best-effort */ }
+  }
+  res.status(201).json({ ok: true, itemId: r.rows[0].id });
+});
+
+// Attach a library definition to this file by hand (dedup per template).
+router.post('/applications/:id/conditions/attach', async (req, res) => {
+  const tplId = (req.body || {}).templateId;
+  if (!tplId) return res.status(400).json({ error: 'templateId required' });
+  const t = await db.query(
+    `SELECT * FROM checklist_templates WHERE id=$1 AND is_active=true AND scope='application'`, [tplId]);
+  if (!t.rows[0]) return res.status(404).json({ error: 'condition definition not found' });
+  const dup = await db.query(
+    `SELECT 1 FROM checklist_items WHERE application_id=$1 AND template_id=$2 LIMIT 1`,
+    [req.params.id, tplId]);
+  if (dup.rows[0]) return res.status(409).json({ error: 'this condition is already on the file' });
+  const tpl = t.rows[0];
+  const itemId = await conditionEngine.instantiateTemplate(tpl, { application_id: req.params.id }, {
+    createdByKind: 'staff', createdById: req.actor.id, originKind: 'manual_library',
+    originDetail: { templateVersion: tpl.version },
+  });
+  await audit(req, 'attach_condition', 'application', req.params.id, { label: tpl.label, templateId: tplId });
+  if (tpl.audience !== 'staff') {
+    try {
+      const ctx = await notify.fileContext(req.params.id);
+      await notify.notifyAppBorrowers(req.params.id, {
+        type: 'condition_added', title: 'A new item was added to your file',
+        body: `"${tpl.borrower_label || tpl.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
+        meta: (ctx && ctx.meta) || undefined,
+        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
+    } catch (_) { /* best-effort */ }
+  }
+  res.status(201).json({ ok: true, itemId });
+});
+
+// Re-run the automatic condition rules for this one file.
+router.post('/applications/:id/conditions/reevaluate', async (req, res) => {
+  const result = await conditionEngine.evaluateApplication(req.params.id, {
+    actor: req.actor, reason: 'manual_reevaluate',
+  });
+  res.json({ ok: true, added: result.added, removed: result.removed });
 });
 
 // ---- post-closing ----
@@ -1165,6 +1293,8 @@ router.post('/track-records/:id/verify', async (req, res) => {
     `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
     [tr.rows[0].borrower_id]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
+  // Tier / verified-experience counts are rule-engine fields.
+  try { await conditionEngine.evaluateBorrowerApplications(tr.rows[0].borrower_id, { actor: req.actor, reason: 'track_record_verified' }); } catch (_) {}
   await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
   res.json({ ok: true, status });
 });
@@ -1273,7 +1403,13 @@ router.patch('/applications/:id/details', async (req, res) => {
     }
     await audit(req, 'edit_application', 'application', req.params.id,
       { fields: Object.keys(b), changes: Object.keys(changes).length ? changes : undefined });
-    res.json({ ok: true, changed: Object.keys(changes) });
+    // Field data changed — let the Condition Center engine re-check its rules.
+    let conditions = null;
+    if (Object.keys(changes).length) {
+      try { conditions = await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'details_edited' }); }
+      catch (_) { /* best-effort */ }
+    }
+    res.json({ ok: true, changed: Object.keys(changes), conditions });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1369,6 +1505,8 @@ router.patch('/applications/:id', async (req, res) => {
     // Funding seeds the post-closing trailing-doc checklist.
     if (status === 'funded') { try { await seedPostClosing(req.params.id); } catch (_) {} }
     await audit(req, 'status_change', 'application', req.params.id, { from: cur.rows[0].status, to: status, forced: forced || undefined });
+    // Status is a rule-engine field (e.g. "when the file reaches underwriting").
+    try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
     const label = STATUS_LABEL[status] || status;
     try {
       await notify.notifyAppBorrowers(req.params.id, {
