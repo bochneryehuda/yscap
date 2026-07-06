@@ -14,25 +14,41 @@ process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e &
 process.on('uncaughtException',  (e) => console.error('uncaughtException:',  e && e.message ? e.message : e));
 
 const app = express();
-app.use(express.json({ limit: '25mb' }));   // room for base64 document uploads
+// Body limit must comfortably exceed a max-size upload AFTER base64 inflation:
+// a MAX_UPLOAD_MB-byte file becomes ~1.37x that as base64 inside the JSON body,
+// plus envelope. A flat 25mb limit silently 413'd legitimate ~19-20MB uploads.
+const JSON_LIMIT_MB = Math.max(25, Math.ceil(cfg.maxUploadMb * 1.4) + 4);
+app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // --- API ---
-// Health check probes the database so a green check means the portal can
-// actually serve requests (account creation, login, etc.) — not just that the
-// process is up. Returns 200 when the DB is reachable, 503 when it isn't.
+// LIVENESS health check (Render points healthCheckPath here). It reports 200 as
+// long as THIS PROCESS can answer — it does NOT fail on a database blip. That is
+// deliberate: a transient DB hiccup must not make the platform kill a perfectly
+// healthy process (which would drop every in-flight request and surface to users
+// as a wall of 502s — turning a 5-second DB blip into a full restart storm).
+// Per-request handlers already answer a friendly 503 when the DB is unreachable.
+// The DB is probed with a SHORT timeout so a slow/hung DB can never stall this
+// endpoint itself. For a STRICT probe that fails on DB-down, call /api/health?strict=1.
 app.get('/api/health', async (req, res) => {
   const db = require('./db');
+  const strict = req.query.strict === '1' || req.query.deep === '1';
   let dbStatus = 'up';
   let dbError;
   try {
-    await db.query('SELECT 1');
+    // Bound the probe so this endpoint always answers fast, even if the DB hangs.
+    await Promise.race([
+      db.query('SELECT 1'),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('health db probe timeout')), 2500)),
+    ]);
   } catch (e) {
     dbStatus = 'down';
     dbError = db.describeError(e);
   }
   let storageInfo;
   try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
-  res.status(dbStatus === 'up' ? 200 : 503).json({
+  // Liveness: 200 unless the caller explicitly asked for a strict DB gate.
+  const code = (strict && dbStatus !== 'up') ? 503 : 200;
+  res.status(code).json({
     ok: dbStatus === 'up',
     env: cfg.env,
     db: dbStatus,
@@ -72,7 +88,13 @@ app.get('*', (req, res, next) => {
   // stale index.html referencing a purged bundle "unstyled" the whole portal —
   // and service workers then cache that poisoned response.
   if (/\.[a-z0-9]{2,8}$/i.test(req.path)) return res.status(404).type('text/plain').send('not found');
-  res.sendFile(path.join(webDir, 'index.html'), (err) => err && next());
+  // A deep link under /portal/ (e.g. a hard refresh, or a link without the #)
+  // must boot the SPA shell, not the marketing homepage — otherwise the portal
+  // "disappears" into the public site on refresh.
+  const shell = req.path.startsWith('/portal')
+    ? path.join(webDir, 'portal', 'index.html')
+    : path.join(webDir, 'index.html');
+  res.sendFile(shell, (err) => err && res.sendFile(path.join(webDir, 'index.html'), (e2) => e2 && next()));
 });
 
 // 404 for unmatched API routes
