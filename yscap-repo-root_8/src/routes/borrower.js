@@ -5,7 +5,7 @@
  *   · Checklists (borrower-visible) · Documents · Notifications · Messages
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
 const C = require('../lib/crypto');

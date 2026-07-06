@@ -12,7 +12,7 @@
  * details lookup, so the client calls /details with the suggestion id.
  */
 const express = require('express');
-const router = express.Router();
+const router = require('../lib/safe-router')();
 const cfg = require('../config');
 const { parseAddress, normalizeAddress, splitUnit } = require('../lib/address');
 

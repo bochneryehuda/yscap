@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
-import { getToken, setToken, clearToken } from './api.js';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { getToken, setToken, clearToken, api } from './api.js';
 
 /* Decode the JWT payload (base64url) WITHOUT verifying — this is only used to
    route the SPA (borrower vs. staff, and which staff role). Every API call is
@@ -23,10 +23,26 @@ export function AuthProvider({ children }) {
   const [token, setTok] = useState(getToken());
   const signIn  = useCallback((t) => { setToken(t); setTok(t); }, []);
   const signOut = useCallback(() => {
+    // Revoke server-side first (bumps token_version, killing every copy of the
+    // token in other tabs/devices), then clear locally. Best-effort: local
+    // sign-out must work even if the server is unreachable.
+    try { api.post('/auth/logout').catch(() => {}); } catch { /* ignore */ }
     clearToken(); setTok('');
     // Defense-in-depth: wipe the PWA shell cache on logout (it never holds PII,
     // but this keeps a shared device clean).
     try { navigator.serviceWorker?.controller?.postMessage('ys-clear-cache'); } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    // Stay in lock-step with the token wherever it changes:
+    // - ys:auth-changed: this tab's API layer stored a refreshed token or
+    //   cleared an expired one (global 401 handling).
+    // - storage: another tab signed in/out — without this, switching back to
+    //   an old tab left it running on a stale session (the "have to clear my
+    //   cookies" bug).
+    const sync = () => setTok(getToken());
+    window.addEventListener('ys:auth-changed', sync);
+    window.addEventListener('storage', sync);
+    return () => { window.removeEventListener('ys:auth-changed', sync); window.removeEventListener('storage', sync); };
   }, []);
   const actor = actorFromToken(token);
   return (
@@ -46,3 +62,17 @@ export function AuthProvider({ children }) {
 }
 
 export const useAuth = () => useContext(Ctx);
+
+/* One-shot "why am I on the login screen" notice (e.g. "your session expired"),
+   set by the API layer when it force-signs-out. Read once, then cleared, so it
+   doesn't linger after the next successful sign-in. */
+export function useAuthNotice() {
+  const [notice] = useState(() => {
+    try {
+      const n = sessionStorage.getItem('ys_auth_notice') || '';
+      if (n) sessionStorage.removeItem('ys_auth_notice');
+      return n;
+    } catch { return ''; }
+  });
+  return notice;
+}
