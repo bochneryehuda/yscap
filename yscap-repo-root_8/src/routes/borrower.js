@@ -399,6 +399,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     delete overrides.expFlips; delete overrides.expHolds; delete overrides.expGround;
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     const quote = pricing.quoteProgram(program, inputs);
+    // Gold Standard renovation cannot finance an interest reserve — never persist a
+    // requested reserve on the registered scenario for that program.
+    if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
     if (quote.status === 'INELIGIBLE') return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
     if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote });

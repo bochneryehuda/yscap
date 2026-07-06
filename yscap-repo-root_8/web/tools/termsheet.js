@@ -250,6 +250,9 @@
     if (goldChosenLTC) inp.targetLTC = goldChosenLTC;     // admin Gold leverage slider
     var R = GS.evaluate(inp);
     if (R.available === false) return { unavailable: true, gold: true, R: R, status: "UNAVAILABLE", reasons: R.reasons || [], totalLoan: 0 };
+    // Gold Standard renovation carries NO financed interest reserve — force the requested
+    // months to zero so nothing populates in the term sheet / studio (Gold path only).
+    if (R.kind === "reno") inp.irMonths = 0;
     if (manualOn()) { if (R.status === "INELIGIBLE") R.status = "MANUAL"; R.exitShortfall = 0; }   // admin-priced basis
     var s = R.sizing || {};
     var rate = (R.noteRate || 0) * 100;

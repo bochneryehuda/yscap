@@ -11,8 +11,9 @@
        rate. Leverage caps only limit the loan size.
      • Tiering is driven by EXPERIENCE (renovation/bridge vs. ground-up),
        with a FICO floor per tier. FICO is a price adjustment, not a tier.
-     • Financed interest reserve is in the COST BASIS only for ground-up;
-       for renovation/bridge it is financed but NOT in cost (capped by LTC).
+     • Financed interest reserve is in the COST BASIS only for ground-up.
+       Renovation (Light/Heavy Reno) may NOT finance an interest reserve at all —
+       it is always zero and never enters cost; bridge never carried one.
      • Liquidity to show = 5% of the loan amount (not N months).
      • Eligible in 27 states only; min/max loan route to manual review.
    Reuses the shared loan-sizing math from standard-program.js (YSP.sizeLoan,
@@ -239,9 +240,11 @@
     //   • Tier 2/3 (under 8 ground-up projects): full-term reserve REQUIRED → locked at 0.75 × term.
     //   • Tier 1 (8+ ground-up): optional; if taken, financed at the LESSER of the months chosen
     //     or 0.75 × term (choose less → get less; choose more → capped at 75%).
-    // Renovation/bridge: reserve allowed (financed) but NOT in cost, and NOT subject to the 75%
-    //   cap — the borrower's chosen months are financed (capped only by the term and leverage).
+    // Renovation (Light/Heavy Reno): a financed interest reserve is NOT PERMITTED. Whatever the
+    //   borrower requests is ignored — the reserve is always zero, never financed, and never enters
+    //   cost. Interest is paid as billed. (Bridge is acquisition-only and never carried a reserve.)
     var isGround = pr.kind === "ground";
+    var isReno = pr.kind === "reno";
     var baseTerm = isGround ? GU_DEFAULT_TERM : RB_DEFAULT_TERM;
     var termMonths = num(input.term) || baseTerm;
     // Max initial term: 24 months for construction, 18 for non-construction.
@@ -250,13 +253,16 @@
     if (termMonths > maxTerm) add("INELIGIBLE", (isGround ? "Construction" : "Non-construction") + " loans have a maximum initial term of " + maxTerm + " months on this program — you entered " + termMonths + ".");
     else if (termMonths > 0 && termMonths < minTerm) add("MANUAL", (isGround ? "Construction" : "Renovation / bridge") + " loans are offered from " + minTerm + " to " + maxTerm + " months — a " + termMonths + "-month term needs manual review.");
     var irMonthsReq = Math.max(0, num(input.irMonths));
+    // Renovation on this program cannot finance an interest reserve — force the request to zero
+    // so nothing populates, nothing is financed, and nothing enters cost regardless of the input.
+    if (isReno) irMonthsReq = 0;
     var irRequired = false, irLocked = false;
-    var reserveCapMonths = isGround ? 0.75 * termMonths : termMonths;   // 75% of term on construction; full term otherwise
+    var reserveCapMonths = isGround ? 0.75 * termMonths : (isReno ? 0 : termMonths);   // ground-up: 75% of term; reno: none; bridge: term
     if (isGround && tier >= 2) { irMonthsReq = reserveCapMonths; irRequired = true; irLocked = true; }   // mandatory, locked at 75% of full term
-    var irMonthsEff = Math.min(irMonthsReq, reserveCapMonths);          // lesser of chosen and the cap
+    var irMonthsEff = Math.min(irMonthsReq, reserveCapMonths);          // lesser of chosen and the cap (reno ⇒ 0)
     var reserveTermCapped = irMonthsReq > reserveCapMonths + 1e-9;      // borrower asked for more than the cap allows
     var reserveCapIsConstruction = isGround;                            // cap reason: 75%-of-term vs loan-term
-    var reserveInCost = isGround;                                       // <-- the key cost-basis difference
+    var reserveInCost = isGround;                                       // <-- the key cost-basis difference (reno: never in cost)
 
     // ---- caps row for the shared sizer ----
     var caps = {
@@ -380,7 +386,7 @@
       product: pr.product, productLabel: PRODUCT_LABEL[pr.product], kind: pr.kind,
       tier: tier, tierLabel: tierLabel(tier),
       caps: caps, noteRate: note, sizing: sizing, pricingReady: pricingReady,
-      reserveInCost: reserveInCost, irRequired: irRequired, irLocked: irLocked,
+      reserveInCost: reserveInCost, irRequired: irRequired, irLocked: irLocked, reserveEligible: !isReno,
       reserveTermCapped: reserveTermCapped, reserveTermMonths: reserveCapMonths, reserveCapIsConstruction: reserveCapIsConstruction, defaultTerm: baseTerm,
       exitShortfall: exitGap,
       assignment: assignment,
