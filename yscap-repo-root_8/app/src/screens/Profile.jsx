@@ -3,8 +3,8 @@ import { api } from '../lib/api.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
-import TrackRecord from '../components/TrackRecord.jsx';
 import Entities from '../components/Entities.jsx';
+import { Link } from 'react-router-dom';
 
 /* Canonical borrower profile — the single home for personal information so the
    loan application can skip the personal section entirely and pull from here.
@@ -227,7 +227,19 @@ export default function Profile() {
       )}
 
       <Entities />
-      <TrackRecord mode="borrower" />
+
+      {/* The track record is its own general section (one live record per
+          borrower, linked to every file) — not part of the profile form. */}
+      <div className="panel">
+        <div className="row" style={{ alignItems: 'center' }}>
+          <div>
+            <h3 style={{ marginBottom: 4 }}>Track record &amp; experience</h3>
+            <p className="muted small" style={{ margin: 0 }}>Your completed deals live in their own section and link to every loan file automatically.</p>
+          </div>
+          <div className="spacer" />
+          <Link className="btn primary" to="/track-record">Open Track Record →</Link>
+        </div>
+      </div>
 
       <div className="row" style={{ marginTop: 8 }}>
         <div className="spacer" />

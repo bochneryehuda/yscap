@@ -505,11 +505,89 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// ---------------- Scope of Work tool (staff side) ----------------
+// Staff open the same static Scope of Work builder as the borrower, on the
+// same condition: load/autosave the draft state, and submit to snapshot the
+// state + regenerate the PDF/Excel exports on the file.
+router.get('/applications/:id/checklist/:itemId/tool-state', async (req, res) => {
+  const r = await db.query(
+    `SELECT tool_state, tool_payload, status FROM checklist_items
+      WHERE id=$1 AND application_id=$2 AND tool_key IS NOT NULL`,
+    [req.params.itemId, req.params.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
+  const row = r.rows[0];
+  const state = row.tool_state || (row.tool_payload && row.tool_payload.state) || null;
+  res.json({ state, status: row.status, submitted: !!row.tool_payload });
+});
+router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) => {
+  const state = (req.body && typeof req.body.state === 'object') ? req.body.state : null;
+  if (!state) return res.status(400).json({ error: 'state required' });
+  const r = await db.query(
+    `UPDATE checklist_items SET tool_state=$3, updated_at=now()
+      WHERE id=$1 AND application_id=$2 AND tool_key IS NOT NULL RETURNING id`,
+    [req.params.itemId, req.params.id, JSON.stringify(state)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
+  res.json({ ok: true, savedAt: new Date().toISOString() });
+});
+router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
+  const it = await db.query(
+    `SELECT ci.id, ci.tool_key, a.borrower_id
+       FROM checklist_items ci JOIN applications a ON a.id=ci.application_id
+      WHERE ci.id=$1 AND ci.application_id=$2 AND ci.tool_key IS NOT NULL`,
+    [req.params.itemId, req.params.id]);
+  if (!it.rows[0]) return res.status(404).json({ error: 'tool task not found' });
+  const toolKey = it.rows[0].tool_key;
+  const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
+  const attachments = (Array.isArray(rawPayload.attachments) ? rawPayload.attachments : []).slice(0, 4)
+    .map((a) => ({
+      filename: String(a.filename || 'tool-export.txt').replace(/[\\/:*?"<>|]/g, '_').slice(0, 160),
+      contentType: String(a.contentType || 'application/octet-stream').slice(0, 120),
+      dataBase64: String(a.dataBase64 || ''),
+    })).filter((a) => a.filename && a.dataBase64);
+  const payload = { ...rawPayload };
+  delete payload.attachments;
+  if (attachments.length) payload.export_files = attachments.map((a) => ({ filename: a.filename, contentType: a.contentType }));
+  await db.query(
+    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status='received', updated_at=now() WHERE id=$1`,
+    [req.params.itemId, JSON.stringify(payload),
+     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
+  if (toolKey === 'rehab_budget') {
+    const total = Number(payload && payload.total);
+    if (isFinite(total) && total >= 0) {
+      await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
+    }
+  }
+  // A resubmission outdates the previous exports: the old PDF/Excel are
+  // superseded and the fresh ones become the current versions on the condition.
+  await db.query(
+    `UPDATE documents SET is_current=false,
+        review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+      WHERE checklist_item_id=$1 AND source_type='system' AND is_current=true`, [req.params.itemId]);
+  const out = [];
+  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  for (const a of attachments) {
+    const buf = Buffer.from(a.dataBase64, 'base64');
+    if (!buf.length || buf.length > maxBytes) continue;
+    const { ref, provider } = await storage.save(buf, { filename: a.filename });
+    const r = await db.query(
+      `INSERT INTO documents
+         (checklist_item_id,application_id,borrower_id,filename,content_type,size_bytes,
+          storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,source_type,visibility,doc_kind)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'system','borrower',$10) RETURNING id`,
+      [req.params.itemId, req.params.id, it.rows[0].borrower_id, a.filename, a.contentType, buf.length,
+       provider, ref, req.actor.id, toolKey + '_export']);
+    out.push({ id: r.rows[0].id, filename: a.filename });
+  }
+  await audit(req, 'staff_tool_submit', 'checklist_item', req.params.itemId, { toolKey, files: out.map((x) => x.filename) });
+  res.json({ ok: true, status: 'received', exports: out });
+});
+
 router.get('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
+            (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             ci.assignee_staff_id, asg.full_name AS assignee_name,
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at
@@ -764,13 +842,92 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
       `SELECT t.id, t.deal_type, t.property_address, t.purchase_price, t.sale_price, t.rehab_amount,
               t.purchase_date, t.sale_date, t.rent_amount, t.rent_date, t.refi_amount, t.refi_date,
               t.current_value, t.notes, t.is_verified, t.verified_at, t.docs_status,
-              l.llc_name AS entity_name, v.full_name AS verified_by_name
+              t.property_type, t.verification_status, t.lo_notes,
+              COALESCE(t.entity_name, l.llc_name) AS entity_name, v.full_name AS verified_by_name,
+              (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count
          FROM track_records t
          LEFT JOIN llcs l ON l.id = t.llc_id
          LEFT JOIN staff_users v ON v.id = t.verified_by
         WHERE t.borrower_id=$1 ORDER BY t.sale_date DESC NULLS LAST, t.created_at DESC`, [req.params.id]);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// Staff manage the borrower's general track record on their behalf: add,
+// edit, remove entries, and attach/read the per-entry supporting documents.
+const { trackRecordErrors, trackRecordCols } = require('./borrower');
+router.post('/borrowers/:id/track-records', async (req, res) => {
+  const b = req.body || {};
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+  const bad = trackRecordErrors(b);
+  if (bad) return res.status(400).json({ error: bad });
+  const cols = trackRecordCols(b);
+  const names = Object.keys(cols);
+  const vals = Object.values(cols);
+  const r = await db.query(
+    `INSERT INTO track_records (borrower_id,${names.join(',')})
+     VALUES ($1,${names.map((_, i) => '$' + (i + 2)).join(',')}) RETURNING id`,
+    [req.params.id, ...vals]);
+  try { await require('../lib/experience').syncExperienceChecklistForBorrower(req.params.id); } catch (_) {}
+  await audit(req, 'staff_add_track_record', 'track_record', r.rows[0].id);
+  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
+});
+router.put('/track-records/:id', async (req, res) => {
+  const b = req.body || {};
+  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+  if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+  const bad = trackRecordErrors(b);
+  if (bad) return res.status(400).json({ error: bad });
+  const cols = trackRecordCols(b);
+  if (b.loNotes !== undefined) cols.lo_notes = b.loNotes ? String(b.loNotes).slice(0, 1000) : null;
+  const names = Object.keys(cols);
+  const vals = Object.values(cols);
+  await db.query(
+    `UPDATE track_records SET ${names.map((n, i) => `${n}=$${i + 2}`).join(', ')}, updated_at=now() WHERE id=$1`,
+    [req.params.id, ...vals]);
+  try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
+  await audit(req, 'staff_edit_track_record', 'track_record', req.params.id);
+  res.json({ ok: true });
+});
+router.delete('/track-records/:id', async (req, res) => {
+  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+  if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+  await db.query(`DELETE FROM track_records WHERE id=$1`, [req.params.id]);
+  await db.query(
+    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
+    [tr.rows[0].borrower_id]);
+  try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
+  await audit(req, 'staff_delete_track_record', 'track_record', req.params.id);
+  res.json({ ok: true });
+});
+router.get('/track-records/:id/documents', async (req, res) => {
+  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+  if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+  const r = await db.query(
+    `SELECT id,filename,content_type,size_bytes,uploaded_by_kind,created_at FROM documents
+      WHERE track_record_id=$1 ORDER BY created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/track-records/:id/documents', async (req, res) => {
+  const b = req.body || {};
+  if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+  if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+  const buf = Buffer.from(b.dataBase64, 'base64');
+  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  const r = await db.query(
+    `INSERT INTO documents (borrower_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'staff',$8,'track_record_doc') RETURNING id`,
+    [tr.rows[0].borrower_id, req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
+  await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
+  await audit(req, 'staff_upload_track_record_doc', 'track_record', req.params.id, { filename: b.filename });
+  res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 router.get('/borrowers/:id/ssn', async (req, res) => {
   try {
@@ -791,17 +948,31 @@ router.post('/llcs/:id/verify', async (req, res) => {
   await audit(req, 'verify_llc', 'llc', req.params.id);
   res.json({ ok: true });
 });
+// Verification statuses mirror the static Track Record tool: pending review,
+// documentation required, verified (with docs), limited (public record only).
+// 'verified' and 'limited' both count toward the borrower's experience tier.
+const TR_STATUSES = ['pending', 'docs', 'verified', 'limited'];
 router.post('/track-records/:id/verify', async (req, res) => {
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  await db.query(`UPDATE track_records SET is_verified=true, verified_at=now(), verified_by=$2 WHERE id=$1`, [req.params.id, req.actor.id]);
+  const status = TR_STATUSES.includes(req.body && req.body.status) ? req.body.status : 'verified';
+  const counts = status === 'verified' || status === 'limited';
+  await db.query(
+    `UPDATE track_records
+        SET verification_status=$3,
+            is_verified=$4,
+            verified_at=CASE WHEN $4 THEN now() ELSE NULL END,
+            verified_by=CASE WHEN $4 THEN $2::uuid ELSE NULL END,
+            updated_at=now()
+      WHERE id=$1`, [req.params.id, req.actor.id, status, counts]);
   // recompute borrower tier = count of verified track records
   await db.query(
     `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
     [tr.rows[0].borrower_id]);
-  await audit(req, 'verify_track_record', 'track_record', req.params.id);
-  res.json({ ok: true });
+  try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
+  await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
+  res.json({ ok: true, status });
 });
 
 // ---------------- advance application status ----------------
@@ -1288,7 +1459,7 @@ router.get('/applications/:id/documents', async (req, res) => {
   // Formal documents only — chat attachments live in the conversation, not the
   // review queue. source_type/visibility are returned so the UI can badge.
   const r = await db.query(
-    `SELECT d.id,d.filename,d.content_type,d.size_bytes,d.checklist_item_id,d.uploaded_by_kind,d.created_at,
+    `SELECT d.id,d.filename,d.content_type,d.size_bytes,d.checklist_item_id,d.slot_label,d.doc_kind,d.uploaded_by_kind,d.created_at,
             d.review_status,d.rejection_reason,d.reviewed_at,d.is_current,d.replaces_document_id,
             d.source_type,d.visibility,
             s.full_name AS reviewed_by_name, ci.label AS item_label

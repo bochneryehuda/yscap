@@ -112,6 +112,7 @@ const TR=(function(){
     const root=$("#tr-app"); if(!root) return;
     root.innerHTML = viewSummary()+viewToolbar()+viewSections()+viewExportBar();
     wire();
+    if(window.TR_PORTAL_ONRENDER){ try{ window.TR_PORTAL_ONRENDER(); }catch(e){} }
     save();
   }
 
@@ -337,7 +338,12 @@ const TR=(function(){
   function enc(o){ return btoa(unescape(encodeURIComponent(JSON.stringify(o)))); }
   function dec(s){ try{ return JSON.parse(decodeURIComponent(escape(atob(s)))); }catch(e){ return null; } }
   let _saveT=null;
-  function save(){ clearTimeout(_saveT); _saveT=setTimeout(()=>{ try{ history.replaceState(null,"","#d="+enc(snap())); }catch(e){} },300); }
+  function save(){ clearTimeout(_saveT); _saveT=setTimeout(()=>{
+    // Portal bridge: when opened as the LIVE track record (borrower section /
+    // loan file), state persists to the server, not the URL hash.
+    if(window.TR_PORTAL){ if(window.TR_PORTAL_ONSAVE){ try{ window.TR_PORTAL_ONSAVE(snap()); }catch(e){} } return; }
+    try{ history.replaceState(null,"","#d="+enc(snap())); }catch(e){}
+  },300); }
   function restore(){ try{ const m=/[#&]d=([^&]+)/.exec(location.hash); if(m){ const o=dec(m[1]); if(o&&Array.isArray(o.props)){ S=blank(); S.borrower=o.borrower||""; S.props=o.props.map(p=>Object.assign(blankProp(p.kind),p)); } } }catch(e){} }
 
   /* ===================== EXPORT HELPERS (shared with rehab) ===================== */
@@ -559,6 +565,16 @@ const TR=(function(){
   }
   if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",boot); else boot();
 
-  return { share, exportXlsx, importXlsx, exportPdf, _state:()=>S };
+  /* Portal bridge accessor: replace the working set with server-loaded rows
+     (record ids are the server uuids) and re-render. */
+  function setState(o){
+    S=blank();
+    S.borrower=(o&&o.borrower)||"";
+    S.props=((o&&o.props)||[]).map(p=>Object.assign(blankProp(p.kind),p));
+    const nb=$("#tr-borrower"); if(nb) nb.value=S.borrower;
+    render();
+  }
+
+  return { share, exportXlsx, importXlsx, exportPdf, _state:()=>S, setState, snap:()=>snap() };
 })();
 if(typeof window!=="undefined") window.TR=TR;

@@ -6,10 +6,9 @@ import MessageThread from '../components/MessageThread.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
-import TrackRecord from '../components/TrackRecord.jsx';
-import RehabBudget, { RehabBudgetView } from '../components/RehabBudget.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
+import ToolModal from '../components/ToolModal.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -103,11 +102,9 @@ function Item({ it, team, onPatch }) {
             <button className="btn link small" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'View'} submission</button>
           )}
           {open && it.tool_payload && (
-            it.tool_key === 'rehab_budget'
-              ? <div style={{ marginTop: 6 }}><RehabBudgetView payload={it.tool_payload} /></div>
-              : <pre className="panel small" style={{ whiteSpace: 'pre-wrap', marginTop: 6, maxHeight: 220, overflow: 'auto' }}>
-                  {JSON.stringify(it.tool_payload, null, 2)}
-                </pre>
+            <pre className="panel small" style={{ whiteSpace: 'pre-wrap', marginTop: 6, maxHeight: 220, overflow: 'auto' }}>
+              {JSON.stringify(it.tool_payload, null, 2)}
+            </pre>
           )}
         </div>
       </div>
@@ -130,6 +127,90 @@ function Item({ it, team, onPatch }) {
         <input className="input" placeholder="Add a note…" value={notes} onChange={e => setNotes(e.target.value)} />
         <button className="btn ghost" onClick={() => onPatch(it.id, { notes })}>Save note</button>
       </div>
+    </div>
+  );
+}
+
+/* The borrower's conditions, as staff see them: the same single list the
+   borrower works through (Scope of Work, track record, contacts, ID, document
+   slots), with every uploaded PDF inline and full sign-off capability — a
+   separate section from the internal phase-by-phase checklist. */
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy }) {
+  const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
+  const borrowerItems = items.filter(it => it.audience === 'borrower' || it.audience === 'both');
+  const sowItem = borrowerItems.find(it => it.tool_key === 'rehab_budget');
+  const trItem = borrowerItems.find(it => it.tool_key === 'track_record');
+  const contactItems = borrowerItems.filter(it => ['title_contact', 'insurance_contact'].includes(it.tool_key));
+  const idItem = borrowerItems.find(it => it.template_code === 'rtl_p1_id');
+  const lead = [sowItem, trItem, ...contactItems, idItem].filter(Boolean);
+  const rest = borrowerItems.filter(it => !lead.includes(it) && !it.tool_key);
+  const ordered = [...lead, ...rest];
+  const docsFor = (itemId) => docs.filter(d => d.checklist_item_id === itemId && d.is_current && d.source_type !== 'chat_attachment');
+  const signedCount = ordered.filter(it => it.signed_off_at).length;
+
+  if (ordered.length === 0) return null;
+  return (
+    <div className="panel" style={{ marginTop: 18, borderColor: 'var(--gold)' }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3>Borrower conditions</h3>
+        <div className="spacer" />
+        <span className="muted small">{signedCount}/{ordered.length} signed off</span>
+      </div>
+      <p className="muted small" style={{ marginBottom: 12 }}>
+        The conditions list exactly as the borrower sees it — with each condition's uploaded documents and sign-off.
+      </p>
+      {ordered.map(it => {
+        const itemDocs = docsFor(it.id);
+        const signed = !!it.signed_off_at;
+        const done = signed || it.status === 'satisfied' || it.status === 'received';
+        return (
+          <div className="checkitem" key={it.id} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }}>
+            <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
+              <span className={`dot ${signed || it.status === 'satisfied' ? 'done' : 'outstanding'}`} style={{ marginTop: 4, ...(it.status === 'issue' ? { background: 'var(--danger)' } : {}) }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600 }}>{it.label}</div>
+                <div className="muted small">
+                  {it.tool_key === 'rehab_budget' ? `Scope of Work builder${app.rehab_budget != null ? ` · total ${money(app.rehab_budget)}` : ''}`
+                    : it.tool_key === 'track_record' ? 'Verified from the borrower\'s general track record (panel below)'
+                    : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? 'Contact information form'
+                    : it.item_kind}
+                  {` · ${it.status}`}
+                  {signed && ` · signed off by ${it.signed_off_name || 'staff'}`}
+                </div>
+              </div>
+              {it.tool_key === 'rehab_budget' && (
+                <button className="btn ghost small" onClick={() => setSowOpen(it.id)}>Open Scope of Work</button>
+              )}
+              {signed
+                ? <button className="btn ghost small" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
+                : <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>}
+            </div>
+            {itemDocs.length > 0 && (
+              <div style={{ width: '100%', paddingLeft: 20 }}>
+                {itemDocs.map((d, i) => {
+                  const rs = d.review_status || 'pending';
+                  return (
+                    <div className="row" key={d.id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
+                      <span className="muted small" style={{ minWidth: 90 }}>{d.slot_label || (d.source_type === 'system' ? 'Tool export' : `Document ${i + 1}`)}</span>
+                      <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
+                      <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+                      <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => onDownloadDoc(d)}>{dlBusy === d.id ? '…' : 'Download'}</button>
+                      {rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
+                      {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {sowOpen && (
+        <ToolModal
+          title="Rehab Budget — Scope of Work (staff)"
+          url={`/tools/rehab-budget.html?app=${appId}&item=${sowOpen}&staff=1`}
+          onClose={() => setSowOpen(null)} />
+      )}
     </div>
   );
 }
@@ -452,6 +533,9 @@ export default function StaffApplication() {
           ))}
       </div>
 
+      <BorrowerConditions appId={id} app={app} items={items} docs={docs}
+        onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy} />
+
       <div className="panel" style={{ marginTop: 18 }}>
         <div className="row" style={{ marginBottom: 6 }}>
           <h3>Documents</h3>
@@ -559,16 +643,20 @@ export default function StaffApplication() {
       </div>
 
       <EditFileDetails app={app} onSaved={load} />
-      {app.borrower_id && <TrackRecord mode="staff" borrowerId={app.borrower_id} />}
-      <div className="panel" style={{ marginTop: 18 }}>
-        <h3 style={{ marginBottom: 10 }}>Rehab budget / scope of work</h3>
-        <RehabBudget appId={id}
-          app={app}
-          initialPayload={(items.find(it => it.tool_key === 'rehab_budget') || {}).tool_payload || null}
-          submitFn={(p) => api.staffSaveRehabBudget(id, p)}
-          onSubmitted={load}
-          ctaLabel="Save rehab budget" />
-      </div>
+      {app.borrower_id && (
+        <div className="panel" style={{ marginTop: 18 }}>
+          <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
+            <h3>Track record &amp; experience</h3>
+            <div className="spacer" />
+            <span className="muted small">The borrower's live record — add, edit, verify, and attach docs. Changes save automatically.</span>
+          </div>
+          <iframe
+            title="Borrower track record"
+            src={`/tools/track-record.html?staff=1&borrower=${app.borrower_id}&embed=1`}
+            style={{ width: '100%', height: 640, border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 10, background: 'transparent' }}
+          />
+        </div>
+      )}
       <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="staff" />
       {app.status === 'funded' && <PostClosing appId={id} />}
       <TprExport appId={id} />
