@@ -10,6 +10,7 @@ import DealSnapshot from '../components/DealSnapshot.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import StaticToolFrame from '../components/StaticToolFrame.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -296,6 +297,55 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   );
 }
 
+/* The borrower's general track record, embedded seamlessly (no box, no inner
+   scrollbar): the SAME static builder the marketing site serves, bridged to
+   this borrower's live record. Every staff edit saves to the server and
+   refreshes the saved static HTML copy, which downloads right here. */
+function StaffTrackRecordPanel({ borrowerId }) {
+  const [snap, setSnap] = useState(null);
+  const [dl, setDl] = useState(false);
+  const refreshSnap = useCallback(() => {
+    api.staffTrackRecordSnapshot(borrowerId).then(setSnap).catch(() => {});
+  }, [borrowerId]);
+  useEffect(() => { refreshSnap(); }, [refreshSnap]);
+  useEffect(() => {
+    // the embedded tool announces every sync — the saved-copy link stays fresh
+    const onMsg = (e) => {
+      if (e.origin !== window.location.origin) return;
+      if (e.data && e.data.type === 'ys-tr-sync') setTimeout(refreshSnap, 3500);
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [refreshSnap]);
+  async function download() {
+    if (!snap) return;
+    setDl(true);
+    try { const { blob, filename } = await api.staffDownloadDoc(snap.documentId); saveBlob(blob, filename || snap.filename); }
+    catch (_) { /* surfaced by the button state */ }
+    finally { setDl(false); }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 6, alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <h3>Track record &amp; experience</h3>
+        <div className="spacer" />
+        {snap && (
+          <button className="btn ghost small" disabled={dl} onClick={download}
+            title="The borrower's saved static copy — refreshed automatically on every change">
+            {dl ? '…' : '⤓ Saved copy (HTML)'}
+          </button>
+        )}
+        <span className="muted small">The borrower's live record — add, edit, verify, and attach docs. Changes save automatically.</span>
+      </div>
+      <StaticToolFrame
+        title="Borrower track record"
+        src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
+        minHeight={520}
+      />
+    </div>
+  );
+}
+
 /* The borrower's conditions, as staff see them: the same single list the
    borrower works through (Scope of Work, track record, contacts, ID, document
    slots), with every uploaded PDF inline and full sign-off capability — a
@@ -349,7 +399,21 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 <div style={{ fontWeight: 600 }}>{it.label}</div>
                 <div className="muted small">
                   {it.tool_key === 'rehab_budget' ? `Scope of Work builder${app.rehab_budget != null ? ` · total ${money(app.rehab_budget)}` : ''}`
-                    : it.tool_key === 'track_record' ? 'Verified from the borrower\'s general track record (panel below)'
+                    : it.tool_key === 'track_record' ? (() => {
+                        // live counts stamped on the condition by the server on
+                        // every track-record change — no need to open the panel
+                        const p = it.tool_payload || {};
+                        const c = p.counts, r = p.required;
+                        if (!c) return 'Verified from the borrower\'s general track record (panel below)';
+                        const have = `On record: ${c.flips || 0} flip${c.flips === 1 ? '' : 's'} · ${c.holds || 0} hold${c.holds === 1 ? '' : 's'}${c.ground ? ` · ${c.ground} ground-up` : ''}`;
+                        const needsAny = r && (r.flips + r.holds + r.ground > 0);
+                        const short = needsAny ? [
+                          r.flips > (c.flips || 0) ? `${r.flips - (c.flips || 0)} flip${r.flips - c.flips === 1 ? '' : 's'}` : null,
+                          r.holds > (c.holds || 0) ? `${r.holds - (c.holds || 0)} hold${r.holds - c.holds === 1 ? '' : 's'}` : null,
+                          r.ground > (c.ground || 0) ? `${r.ground - (c.ground || 0)} ground-up` : null,
+                        ].filter(Boolean) : [];
+                        return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')}` : ' — requirement met ✓') : ''}`;
+                      })()
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
                     : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? 'Contact information form'
@@ -961,20 +1025,9 @@ export default function StaffApplication() {
 
       <Section id="sec-track" title="Track record"
         info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
-      {app.borrower_id ? (
-        <div className="panel" style={{ marginTop: 0 }}>
-          <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
-            <h3>Track record &amp; experience</h3>
-            <div className="spacer" />
-            <span className="muted small">The borrower's live record — add, edit, verify, and attach docs. Changes save automatically.</span>
-          </div>
-          <iframe
-            title="Borrower track record"
-            src={`/tools/track-record.html?internal=1&borrower=${app.borrower_id}&embed=1`}
-            style={{ width: '100%', height: 'min(640px, 75vh)', border: '1px solid var(--line, rgba(127,169,176,.25))', borderRadius: 10, background: 'transparent' }}
-          />
-        </div>
-      ) : <p className="muted small">No borrower linked yet.</p>}
+      {app.borrower_id
+        ? <StaffTrackRecordPanel borrowerId={app.borrower_id} />
+        : <p className="muted small">No borrower linked yet.</p>}
       </Section>
 
       <Section id="sec-messages" title="Conversations"

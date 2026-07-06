@@ -631,3 +631,53 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .file-nav a.active{border-bottom-color:var(--gold)}
   .file-section{scroll-margin-top:64px}
 }
+
+/* ===== static-tool embedding: seamless frames + full-screen tool sheet ===== */
+/* The static tools (Track Record, Scope of Work, Term Sheet Studio) render in
+   same-origin frames that disappear into the page: no border, no inner
+   scrollbar (auto-height), one page scroll. */
+.toolframe{position:relative;width:100%}
+.toolframe.fill{flex:1;display:flex;flex-direction:column;min-height:0}
+.toolframe-loading{position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;
+  align-items:center;justify-content:center;color:var(--muted);font-size:14px;min-height:120px}
+.toolframe-spinner{width:26px;height:26px;border-radius:50%;flex:none;
+  border:3px solid rgba(127,169,176,.25);border-top-color:var(--teal);
+  animation:toolspin .8s linear infinite}
+@keyframes toolspin{to{transform:rotate(360deg)}}
+
+/* The tool sheet: a full-screen page takeover (NOT a boxed popup) that slides
+   up from the bottom, with a slim sticky header and an edge-to-edge tool. */
+.toolsheet{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;
+  background:var(--ink);animation:sheetup .28s cubic-bezier(.32,.72,.35,1)}
+@keyframes sheetup{from{transform:translateY(24px);opacity:0}to{transform:none;opacity:1}}
+.toolsheet-head{display:flex;align-items:center;gap:12px;flex:none;
+  padding:calc(10px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) 10px calc(10px + env(safe-area-inset-left));
+  border-bottom:1px solid var(--line);background:linear-gradient(180deg,var(--ink-1),var(--ink))}
+.toolsheet-head::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,var(--teal-dp),var(--gold) 55%,var(--teal-dp))}
+.toolsheet-back{flex:none;width:40px;height:40px;border-radius:50%;border:1px solid var(--line);
+  background:transparent;color:var(--ivory);font-size:19px;line-height:1;cursor:pointer;transition:.15s}
+.toolsheet-back:hover{border-color:var(--teal-dp)}
+.toolsheet-titles{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.toolsheet-titles strong{font-family:var(--serif);font-size:16px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.toolsheet-titles .small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toolsheet-done{flex:none}
+.toolsheet-body{flex:1;min-height:0;position:relative;display:flex;flex-direction:column;
+  padding-bottom:env(safe-area-inset-bottom)}
+.toolsheet-savewash{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;
+  gap:12px;align-items:center;justify-content:center;background:rgba(20,27,34,.82);
+  backdrop-filter:blur(3px);color:var(--ivory);font-weight:600}
+@media(max-width:720px){
+  .toolsheet-titles .small{display:none}
+  .toolsheet-titles strong{font-size:15px}
+  .toolsheet-done{padding:9px 16px}
+}
+@media(prefers-reduced-motion:reduce){.toolsheet{animation:none}}
+
+/* live requirement chips (track record progress) */
+.reqchips{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.reqchip{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;
+  border:1px solid var(--line);font-size:12.5px;font-weight:600;letter-spacing:.02em;color:var(--muted)}
+.reqchip.met{border-color:var(--ok);color:var(--ok)}
+.reqchip.short{border-color:var(--gold);color:var(--gold)}
