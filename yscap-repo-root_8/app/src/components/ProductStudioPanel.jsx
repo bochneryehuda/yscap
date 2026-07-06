@@ -169,7 +169,18 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
   );
 }
 
-export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered }) {
+/* The studio's working scenario persists onto the "Products & pricing"
+   condition (tool_state): every edit autosaves, so closing the studio —
+   or the page — loses nothing, and reopening resumes exactly where the
+   user left off. */
+function studioStateFromFields(f) {
+  const checks = { isAssign: !!f.isAssign, addrTBD: !!f.addrTBD, sqft: !!f.sqft, tsManualOn: !!f.tsManualOn };
+  const v = {};
+  for (const k of Object.keys(f)) { if (!(k in checks) && f[k] !== '' && f[k] != null) v[k] = f[k]; }
+  return { v, c: checks };
+}
+
+export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered, toolItemId }) {
   const isStaff = mode === 'staff';
   const [data, setData] = useState(null);       // { current, history }
   const [profile, setProfile] = useState(null); // borrower profile (name + fico)
@@ -179,7 +190,27 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [adminKey, setAdminKey] = useState('');   // set after a correct admin-mode password
+  const [savedStudio, setSavedStudio] = useState(undefined);   // undefined = still loading, null = none saved
   const studioRef = useRef(null);
+  const studioSaveT = useRef(null);
+  const lastStudioSaved = useRef('');
+  const stateUrl = toolItemId
+    ? `${isStaff ? '/api/staff' : '/api/borrower'}/applications/${appId}/checklist/${toolItemId}/tool-state`
+    : null;
+
+  // Autosave the studio scenario onto the pricing condition (debounced).
+  const onStudioState = (s2) => {
+    setSnap(s2);
+    if (!stateUrl || !s2 || !s2.fields) return;
+    const state = studioStateFromFields(s2.fields);
+    const key = JSON.stringify(state);
+    if (key === lastStudioSaved.current) return;
+    clearTimeout(studioSaveT.current);
+    studioSaveT.current = setTimeout(() => {
+      lastStudioSaved.current = key;
+      api.put(stateUrl, { state }).catch(() => { lastStudioSaved.current = ''; });
+    }, 1200);
+  };
   const adminOn = isStaff || !!adminKey;
 
   function unlockAdmin() {
@@ -199,6 +230,8 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
       setData(d);
       if (!d.current) setOpenStudio(true);   // nothing registered yet -> open the studio
     }).catch((e) => alive && setErr(e.message || 'Could not load product registration'));
+    if (stateUrl) api.get(stateUrl).then((d) => alive && setSavedStudio((d && d.state && d.state.v) ? d.state : null)).catch(() => alive && setSavedStudio(null));
+    else setSavedStudio(null);
     if (!isStaff) api.profile().then((p) => alive && setProfile(p)).catch(() => {});
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -211,7 +244,9 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
   // Prefill: the registered scenario when there is one (so a re-open shows
   // exactly what was registered), otherwise the loan file itself.
   const prefill = useMemo(() => {
-    if (!data) return null;
+    if (!data || savedStudio === undefined) return null;
+    // The last working scenario (autosaved) wins — reopening resumes it.
+    if (savedStudio && savedStudio.v) return savedStudio;
     const name = isStaff
       ? ([app.first_name, app.last_name].filter(Boolean).join(' ') || app.entity_name || '')
       : ([profile && profile.first_name, profile && profile.last_name].filter(Boolean).join(' ') || '');
@@ -260,7 +295,7 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
     }
     return st;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, profile]);
+  }, [data, profile, savedStudio]);
 
   // Borrowers can price/choose but never change the file's deal economics
   // from here — those change through the loan team. Staff edit everything.
@@ -320,8 +355,9 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
         <h3 style={{ margin: 0 }}>Product registration & term sheet</h3>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           {cur && <span className="ts-badge ok">Registered · {cur.program === 'gold' ? 'Gold Standard' : 'Standard'} · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
-          <button className="btn ghost small" onClick={() => setOpenStudio((o) => !o)}>
-            {openStudio ? 'Close studio' : cur ? 'Reprice / re-register' : 'Open Term Sheet Studio'}
+          <button className="btn ghost small" onClick={() => setOpenStudio((o) => !o)}
+            title="Everything you enter autosaves to the file — reopening resumes where you left off.">
+            {openStudio ? 'Done — save & close' : cur ? 'Reprice / re-register' : 'Open Term Sheet Studio'}
           </button>
         </div>
       </div>
@@ -345,7 +381,7 @@ export default function ProductStudioPanel({ appId, app, mode = 'borrower', onRe
               : 'Prefilled from your loan file. Adjust your experience, credit and reserve, compare the programs, pick your leverage — then register your product. Deal numbers come from your file; ask your loan team to change those.'}
           </p>
           <TermSheetStudio key={adminOn ? 'admin' : 'std'} ref={studioRef} prefill={prefill} lockedIds={lockedIds}
-            showAdmin={adminOn} onState={setSnap} />
+            showAdmin={adminOn} onState={onStudioState} />
           <div className="row studio-foot" style={{ gap: 10, marginTop: 10, alignItems: 'center' }}>
             <button className="btn primary" disabled={busy || !canRegister} onClick={register}>
               {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}

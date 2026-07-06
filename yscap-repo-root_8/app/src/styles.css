@@ -29,11 +29,21 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .brand-mark{height:30px;width:auto;display:block;flex:none}
 .brand-word{font-family:var(--serif);font-weight:700;letter-spacing:2px;font-size:20px;
   color:var(--ivory);line-height:1;white-space:nowrap}
+/* GROUP is the SAME SIZE and weight as the rest of the wordmark — set apart
+   ONLY by the brand teal. This rule is global (header + auth lockup) so the
+   three words always match. LOCKED: do not shrink GROUP back to a small suffix
+   (a .42em "lockup-style" suffix was rejected as unprofessional). */
+.brand-group{font-style:normal;font-family:var(--serif);font-size:1em;font-weight:inherit;
+  letter-spacing:inherit;color:var(--teal-br,#AAD4D9);vertical-align:baseline}
 .brand .sub{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--teal);
   align-self:center;white-space:nowrap}
-/* full brand lockup, used centered on the public auth cards */
-.brand-lockup{display:flex;justify-content:center}
-.brand-lockup img{width:232px;max-width:74%;height:auto;display:block}
+/* Text lockup, centered on the public auth cards (login / register / verify).
+   Uniform-size wordmark instead of the old image whose GROUP was a small suffix. */
+.brand-lockup{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center}
+.brand-lockup-mark{height:46px;width:auto;display:block}
+.brand-lockup-word{font-family:var(--serif);font-weight:700;font-size:30px;letter-spacing:3px;
+  color:var(--ivory);line-height:1.05;white-space:nowrap}
+.brand-lockup-tag{font-size:12px;letter-spacing:3px;text-transform:uppercase;color:var(--teal)}
 .nav{display:flex;gap:22px;align-items:center}
 .nav a,.nav .btn,.nav .pill{white-space:nowrap}
 .nav a{color:var(--muted);font-weight:500;font-size:14px}
@@ -217,11 +227,10 @@ textarea{min-height:90px;resize:vertical}
 .progress{flex:1;height:7px;border-radius:999px;background:var(--ink-3,#2B3945);overflow:hidden}
 .progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--teal),var(--gold));transition:width .3s}
 
-/* brand: "GROUP" is NOT part of the name — a small, letterspaced sans suffix
-   sitting apart from the big serif "YS CAPITAL", exactly like the official
-   lockup. Do not restyle it to match the wordmark's size or face. */
-.brand-word .brand-group{font-style:normal;font-family:var(--sans);font-size:.42em;
-  letter-spacing:.34em;color:var(--teal,#7FA9B0);font-weight:600;vertical-align:baseline}
+/* brand: OWNER DECISION (2026-07-06, explicit and repeated) — "GROUP" carries
+   the SAME size and weight as "YS CAPITAL", one confident serif line, set apart
+   only by the brand teal. The .brand-group rule that enforces this now lives up
+   top (global, header + auth lockup). Do NOT re-add a shrunken suffix here. */
 /* SSN reveal eye toggle */
 .eye-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:24px;
   padding:0;border:1px solid var(--line);border-radius:6px;background:var(--ink-2);color:var(--teal);
@@ -250,8 +259,8 @@ textarea{min-height:90px;resize:vertical}
 a.checkitem{border-radius:10px;padding-left:12px;padding-right:12px;transition:background .12s,border-color .12s}
 a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
 
-/* the full auth lockup gets a hair more presence */
-.brand-lockup img{filter:drop-shadow(0 10px 26px rgba(0,0,0,.5))}
+/* the auth lockup mark gets a hair more presence */
+.brand-lockup-mark{filter:drop-shadow(0 10px 26px rgba(0,0,0,.5))}
 
 /* header collapses gracefully: below 960px the nav drops under the brand,
    everything stays on tidy lines instead of squeezing. */

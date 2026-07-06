@@ -351,12 +351,16 @@ const TR=(function(){
   /* ===================== EXPORT HELPERS (shared with rehab) ===================== */
   function loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement("script"); s.src=src; s.onload=res; s.onerror=rej; document.head.appendChild(s); }); }
   async function ensureXLSX(){ if(window.XLSX&&window.XLSX.utils) return;
-    try{ await loadScript("https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
-    catch(e){ await loadScript("https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
+    // Local vendored copy first (instant, works offline/behind firewalls); CDN as fallback.
+    try{ await loadScript("vendor/xlsx.bundle.js"); }
+    catch(e){ try{ await loadScript("https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); }
+    catch(e2){ await loadScript("https://unpkg.com/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"); } }
     if(!(window.XLSX&&window.XLSX.utils)) throw new Error("spreadsheet library failed to load"); }
-  async function ensurePDF(){ if(window.jspdf&&window.jspdf.jsPDF){ if(!window.jspdf.jsPDF.API.autoTable){ try{ await loadScript("https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"); }catch(e){} } return; }
-    try{ await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"); }catch(e){ await loadScript("https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"); }
-    try{ await loadScript("https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"); }catch(e){ await loadScript("https://unpkg.com/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"); }
+  async function ensurePDF(){ if(window.jspdf&&window.jspdf.jsPDF){ if(!window.jspdf.jsPDF.API.autoTable){ try{ await loadScript("vendor/jspdf.plugin.autotable.min.js"); }catch(e){ try{ await loadScript("https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"); }catch(e2){} } } return; }
+    try{ await loadScript("vendor/jspdf.umd.min.js"); }
+    catch(e){ try{ await loadScript("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"); }catch(e2){ await loadScript("https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"); } }
+    try{ await loadScript("vendor/jspdf.plugin.autotable.min.js"); }
+    catch(e){ try{ await loadScript("https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"); }catch(e2){ await loadScript("https://unpkg.com/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"); } }
     if(!(window.jspdf&&window.jspdf.jsPDF)) throw new Error("pdf load failed"); }
   function logoData(){ const L=(typeof window!=="undefined"&&window.RB_LOGO)?window.RB_LOGO:null; if(!L||!L.b64) return null; return { b64:L.b64, dataURI:"data:image/png;base64,"+L.b64, w:L.w||560, h:L.h||273 }; }
   function pdfSafe(s){ return String(s==null?"":s).replace(/\u2192/g,"to").replace(/\u2190/g,"<-").replace(/\u21b3/g,">").replace(/\u2713/g,"").replace(/\u2717|\u2715/g,"x").replace(/[\u2018\u2019]/g,"'").replace(/[\u201c\u201d]/g,'"').replace(/\u2026/g,"...").replace(/[\u2022\u25aa]/g,"-").replace(/&amp;/g,"&"); }

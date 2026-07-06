@@ -77,10 +77,15 @@ function Badge({ children, tone }) {
   return <span className="pill" style={tone === 'gold' ? { borderColor: 'var(--gold)', color: 'var(--gold)' } : undefined}>{children}</span>;
 }
 
-function Item({ it, team, onPatch }) {
+// Completing / signing off is the PROCESSOR's call (admins too); a loan
+// officer marks conditions REVIEWED instead — mirrored server-side.
+const canComplete = (role) => ['processor', 'admin', 'super_admin', 'underwriter'].includes(role);
+
+function Item({ it, team, onPatch, role }) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState(it.notes || '');
   const signed = !!it.signed_off_at;
+  const completer = canComplete(role);
   return (
     <div className="checkitem" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
@@ -98,6 +103,7 @@ function Item({ it, team, onPatch }) {
           {it.hint && <div className="muted small" style={{ marginTop: 4 }}>{it.hint}</div>}
           {it.assignee_name && <div className="muted small">Assigned to {it.assignee_name}</div>}
           {signed && <div className="muted small">Signed off by {it.signed_off_name || 'the internal team'} · {new Date(it.signed_off_at).toLocaleDateString()}</div>}
+          {it.reviewed_at && <div className="muted small">Reviewed by {it.reviewed_by_name || 'the loan officer'} · {new Date(it.reviewed_at).toLocaleDateString()}</div>}
           {it.tool_key && it.tool_submitted && (
             <button className="btn link small" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'View'} submission</button>
           )}
@@ -112,16 +118,20 @@ function Item({ it, team, onPatch }) {
       <div className="row" style={{ width: '100%', gap: 8, flexWrap: 'wrap' }}>
         <select className="input" style={{ maxWidth: 150 }} value={it.status}
           onChange={e => onPatch(it.id, { status: e.target.value })}>
-          {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          {STATUSES.filter(s => completer || s !== 'satisfied' || it.status === 'satisfied').map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <select className="input" style={{ maxWidth: 180 }} value={it.assignee_staff_id || ''}
           onChange={e => onPatch(it.id, { assigneeStaffId: e.target.value || null })}>
           <option value="">Unassigned</option>
           {team.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
         </select>
-        {signed
+        {it.reviewed_at
+          ? <button className="btn ghost" onClick={() => onPatch(it.id, { reviewed: false })}>Undo reviewed</button>
+          : <button className="btn ghost" onClick={() => onPatch(it.id, { reviewed: true })}>Mark reviewed</button>}
+        {completer && (signed
           ? <button className="btn ghost" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
-          : <button className="btn primary" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>}
+          : <button className="btn primary" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}
+        {!completer && <span className="muted small" style={{ alignSelf: 'center' }}>Completion is the processor's sign-off.</span>}
       </div>
       <div className="row" style={{ width: '100%', gap: 8 }}>
         <input className="input" placeholder="Add a note…" value={notes} onChange={e => setNotes(e.target.value)} />
@@ -289,7 +299,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
    borrower works through (Scope of Work, track record, contacts, ID, document
    slots), with every uploaded PDF inline and full sign-off capability — a
    separate section from the internal phase-by-phase checklist. */
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role }) {
+  const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
   const [cardBusy, setCardBusy] = useState(false);
@@ -359,9 +370,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
                 </button>
               )}
-              {signed
+              {it.reviewed_at
+                ? <button className="btn ghost small" title={`Reviewed by ${it.reviewed_by_name || 'staff'}`} onClick={() => onPatch(it.id, { reviewed: false })}>Reviewed ✓</button>
+                : <button className="btn ghost small" onClick={() => onPatch(it.id, { reviewed: true })}>Mark reviewed</button>}
+              {completer && (signed
                 ? <button className="btn ghost small" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
-                : <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>}
+                : <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}
             </div>
             {itemDocs.length > 0 && (
               <div style={{ width: '100%', paddingLeft: 20 }}>
@@ -373,7 +387,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                       <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
                       <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
                       <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => onDownloadDoc(d)}>{dlBusy === d.id ? '…' : 'Download'}</button>
-                      {rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
+                      {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
                       {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
                     </div>
                   );
@@ -756,7 +770,7 @@ export default function StaffApplication() {
           : phases.map(([k, arr]) => (
             <div key={k} style={{ marginTop: 10 }}>
               <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
-              {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} />)}
+              {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role} />)}
             </div>
           ))}
       </div>
@@ -764,7 +778,7 @@ export default function StaffApplication() {
       <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} />
 
-      <BorrowerConditions appId={id} app={app} items={items} docs={docs}
+      <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy} />
 
       <div className="panel" style={{ marginTop: 18 }}>
@@ -775,34 +789,61 @@ export default function StaffApplication() {
         </div>
         {docs.length === 0
           ? <p className="muted small">No documents uploaded yet. Request one below and the borrower will see it on their checklist.</p>
-          : docs.map(d => {
-            const rs = d.review_status || 'pending';
-            const tone = rs === 'accepted' ? 'done' : rs === 'rejected' ? '' : 'outstanding';
-            const pillStyle = rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' }
-              : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' }
-              : rs === 'superseded' ? { opacity: .6 } : { borderColor: 'var(--gold)', color: 'var(--gold)' };
-            return (
-            <div className="checkitem" key={d.id} style={{ alignItems: 'flex-start', flexWrap: 'wrap', opacity: d.is_current ? 1 : .6 }}>
-              <span className={`dot ${tone}`} style={{ marginTop: 4 }} />
-              <div style={{ flex: 1, minWidth: 200 }}>
-                <div style={{ fontWeight: 600 }}>{d.filename} {!d.is_current && <span className="muted small">· old version</span>}</div>
-                <div className="muted small">
-                  {kb(d.size_bytes)} · {d.item_label ? `${d.item_label} · ` : ''}uploaded by {d.uploaded_by_kind} · {new Date(d.created_at).toLocaleDateString()}
+          : (() => {
+            // Rejected / superseded documents live in the file's TRASH: kept
+            // for the record (named by their condition) but out of the working
+            // set and never part of the TPR / clean-file export.
+            const inTrash = (d) => d.review_status === 'rejected' || d.review_status === 'superseded' || d.is_current === false;
+            const working = docs.filter(d => !inTrash(d));
+            const trash = docs.filter(inTrash);
+            const row = (d) => {
+              const rs = d.review_status || 'pending';
+              const tone = rs === 'accepted' ? 'done' : rs === 'rejected' ? '' : 'outstanding';
+              const pillStyle = rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' }
+                : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' }
+                : rs === 'superseded' ? { opacity: .6 } : { borderColor: 'var(--gold)', color: 'var(--gold)' };
+              return (
+              <div className="checkitem" key={d.id} style={{ alignItems: 'flex-start', flexWrap: 'wrap', opacity: d.is_current ? 1 : .6 }}>
+                <span className={`dot ${tone}`} style={{ marginTop: 4 }} />
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  {/* The condition is the document's identity — filename second. */}
+                  <div style={{ fontWeight: 600 }}>
+                    {d.item_label || (d.doc_kind === 'term_sheet' ? 'Term sheet' : d.doc_kind === 'photo_id' ? 'Government photo ID' : 'General upload')}
+                    {d.slot_label && <span className="muted small" style={{ fontWeight: 400 }}> · {d.slot_label}</span>}
+                    {!d.is_current && <span className="muted small" style={{ fontWeight: 400 }}> · old version</span>}
+                  </div>
+                  <div className="muted small">
+                    {d.filename} · {kb(d.size_bytes)} · uploaded by {d.uploaded_by_kind} · {new Date(d.created_at).toLocaleDateString()}
+                  </div>
+                  {rs === 'rejected' && d.rejection_reason && <div className="small" style={{ color: 'var(--danger)', marginTop: 2 }}>Rejected: {d.rejection_reason}</div>}
+                  {d.reviewed_by_name && <div className="muted small">Reviewed by {d.reviewed_by_name}</div>}
                 </div>
-                {rs === 'rejected' && d.rejection_reason && <div className="small" style={{ color: 'var(--danger)', marginTop: 2 }}>Rejected: {d.rejection_reason}</div>}
-                {d.reviewed_by_name && <div className="muted small">Reviewed by {d.reviewed_by_name}</div>}
+                <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+                  <span className="pill" style={pillStyle}>{rs}</span>
+                  <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                    {dlBusy === d.id ? '…' : 'Download'}
+                  </button>
+                  {d.is_current && rs !== 'accepted' && canComplete(role) && <button className="btn primary small" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
+                  {d.is_current && rs !== 'rejected' && <button className="btn ghost small" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
+                </div>
               </div>
-              <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-                <span className="pill" style={pillStyle}>{rs}</span>
-                <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
-                  {dlBusy === d.id ? '…' : 'Download'}
-                </button>
-                {d.is_current && rs !== 'accepted' && <button className="btn primary small" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
-                {d.is_current && rs !== 'rejected' && <button className="btn ghost small" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
-              </div>
-            </div>
+              );
+            };
+            return (
+              <>
+                {working.length === 0 && <p className="muted small">Nothing in the working set.</p>}
+                {working.map(row)}
+                {trash.length > 0 && (
+                  <details style={{ marginTop: 10 }}>
+                    <summary className="muted small" style={{ cursor: 'pointer' }}>
+                      🗑 Trash — {trash.length} rejected / replaced document{trash.length === 1 ? '' : 's'} (kept for the record, excluded from the TPR export)
+                    </summary>
+                    {trash.map(row)}
+                  </details>
+                )}
+              </>
             );
-          })}
+          })()}
       </div>
 
       <div className="grid cols-2" style={{ marginTop: 18 }}>
@@ -888,7 +929,8 @@ export default function StaffApplication() {
           />
         </div>
       )}
-      <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="staff" />
+      <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="staff"
+        toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       {app.status === 'funded' && <PostClosing appId={id} />}
       <TprExport appId={id} />
       <ChatPanel appId={id} onTaskCreated={load} />
