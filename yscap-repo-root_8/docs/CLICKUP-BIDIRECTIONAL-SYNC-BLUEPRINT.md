@@ -123,7 +123,7 @@ Because the integration authenticates as **Yehuda's token**, ClickUp will fire w
 | `taskCreated` in Pipeline space, program ∈ RTL, **passes the duplicate guard (§4.4)** | Create portal application + borrower (keyed by task_id) |
 | `taskUpdated` / `taskStatusUpdated` on a mapped task | Apply the changed field(s) per field authority (§6); translate status (§5) |
 | `taskMoved` (folder change) | Re-resolve officer from the destination folder; update assignment |
-| `taskDeleted` | Mark portal file `clickup_unlinked` (do **not** hard-delete; see Q5) |
+| `taskDeleted` | **Unlink** the ClickUp link, **keep** the portal file + data, route to **Manual Review** (§12.1) for the officer to archive/delete/keep. Never hard-delete. *(owner-decided)* |
 | Reconciliation poll | Backfill + catch missed events |
 
 ### 4.3 New-file trigger — auto webhook + "Send to Portal" checkbox (emergency + force-resync)
@@ -300,7 +300,7 @@ Legend — **Dir:** `⇄` two-way · `←CU` ClickUp is source (pull-authoritati
 | Portal | ClickUp field | Field ID | Type | Dir | Source |
 |---|---|---|---|---|---|
 | applications.submitted_at | Date File Submitted | `51ef2193-6f42-4b6a-ab8e-d4bc13f0bd0c` | date | →CU | portal |
-| applications.expected_closing | Expected Closing Date | `de57d9fb-4c9e-4881-b6bf-fcf6268e44a6` | date | ⇄ | either |
+| applications.expected_closing | Expected Closing Date | `de57d9fb-4c9e-4881-b6bf-fcf6268e44a6` | date | ⇄ | two-way (owner) |
 | **applications.actual_closing** | **Actual Closing Date** | `0846edc7-8619-4ee6-827e-a673570d3057` | date | **←CU** | **ClickUp authoritative (per your instruction)** |
 | (status change ts) | Status Milestone change timestamp | `f88cd36d-e57d-4f3e-b4ac-da02da23e8af` | date | ←CU | ClickUp internal |
 
@@ -441,6 +441,7 @@ We snapshot the option lists at deploy and refresh them from ClickUp on a schedu
 | **`clickup_webhook_inbox`** (table) | Dedupe + durable inbound events. |
 | **`clickup_sync_activity`** *(or reuse `audit_log` with `entity_type='clickup'`)* | The full API activity log (§12). |
 | Editable **YS Loan Number** slot in the staff file UI | Per your instruction — enter/edit on our side, syncs up. |
+| Structured **card fields** — `card_number`, `card_exp`, `card_cvv` (encrypted) | Parsed from ClickUp's single-line card field (§13); PCI-sensitive, masked/never logged. |
 
 ---
 
@@ -480,7 +481,8 @@ For each file the officer can: **switch it back / re-classify**, **delete**, **a
 - **Sync sensitive fields both ways** (SSN, DOB, borrower address). On our side SSN stays **encrypted at rest** (existing `ssn_encrypted` + `ssn_last4`); we decrypt only in-memory at the moment of push and re-encrypt immediately on pull.
 - **Never log a sensitive value.** The activity log and `audit_log` store the **field name + a masked token** (e.g. `SSN ✱✱✱-✱✱-1594`), never the plaintext. Error messages are scrubbed via the existing `src/lib/redact.js`.
 - **Transport:** TLS only, token in the `Authorization` header, token stored server-side (env / secret), never shipped to the browser (matches current `client.js`).
-- **Card data** ("Credit card info for appraisal") is **not** mapped into the portal (no home for it, and no need) — we leave it in ClickUp untouched. Confirm.
+- **Card data — owner-decided: sync it, with smart splitting.** ClickUp's **Credit card info for appraisal** (`684c900f-…`) crams number + expiry + CVV into one line (e.g. `4266843539945489  05/31  789`). We add **structured card fields on the portal** (card number / expiration / security code) and a **parser at the boundary**: on **pull**, split the single ClickUp line into the three portal slots (regex + heuristics, with an LLM fallback for messy formats); on **push**, re-join the three slots into one line. Stored **encrypted at rest** (same envelope as SSN), **never logged**, masked everywhere (`✱✱✱✱ ✱✱✱✱ ✱✱✱✱ 5489`).
+  - ⚠️ **Compliance flag (your call on retention):** PCI-DSS discourages storing the **CVV/security code** after authorization, even encrypted. I'll build exactly as instructed; flagging so you can decide whether to persist the CVV or drop it after use.
 
 ---
 
@@ -510,7 +512,9 @@ In `app/src/screens/Apply.jsx` (Step 3), replace the always-shown officer dropdo
 
 **✅ Answered:** #2 sync identity → Yehuda's token (§0.1) · #3 duplicate handling → auto webhook + "Send to Portal" checkbox + wait-for-address-change + hot-poll (§4.3–4.4) · #4 on-hold → new borrower status (§5) · #6 officer reassign → set field + move task (§4.1) · **#1 descope → Manual Review queue (§12.1)** · **#7 processor → two-way (§6.2)** · **#9 new ClickUp fields → all approved; matching uses ≥2 identity fields, Portal File ID is a binding stamp not a trigger (§3.4, §10)** · **#11 condition "Issue obtaining" → staff only.**
 
-**⏳ Still need your call:** #5, #8, #10 below, + the card-data confirm (§13).
+Also answered: **#5 taskDeleted → unlink + Manual Review (§4.2)** · **card data → sync + smart-split into structured fields (§13)** · **Expected Closing Date → two-way (§6.8)**.
+
+**⏳ Still need your call (factual — reply in prose):** **#8 officer/processor roster reconciliation** and **#10 PPP + value-field canonicals** below.
 
 1. ~~Descope behavior~~ → **ANSWERED (Manual Review, §12.1).**
 2. **Dedicated bot user:** create a "YS Portal Bot" ClickUp seat + token for clean attribution & echo-suppression, or run on Yehuda's token? (recommended: bot)
