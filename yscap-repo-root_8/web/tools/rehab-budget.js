@@ -288,7 +288,11 @@ const RB = (function(){
   function enc(o){ return btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
   function dec(s){ try{ let b=String(s).replace(/-/g,"+").replace(/_/g,"/"); while(b.length%4)b+="="; return JSON.parse(decodeURIComponent(escape(atob(b)))); }catch(e){ return null; } }
   let saveT;
-  function save(){ clearTimeout(saveT); saveT=setTimeout(()=>{ try{ history.replaceState(null,"","#d="+enc(snap())+"&s="+step); }catch(e){} },250); }
+  function save(){ clearTimeout(saveT); saveT=setTimeout(()=>{ try{ history.replaceState(null,"","#d="+enc(snap())+"&s="+step); }catch(e){}
+    // Portal bridge hook: when the tool is opened from a loan file, every
+    // change also autosaves onto that file's Scope of Work condition.
+    if(window.RB_PORTAL_ONSAVE){ try{ window.RB_PORTAL_ONSAVE(snap()); }catch(e){} }
+  },250); }
   function shareUrl(){ return location.origin+location.pathname+"#d="+enc(snap()); }
   function restore(){ const m=/[#&]d=([^&]+)/.exec(location.hash||""); if(m){ const o=dec(m[1]); if(o){ S=Object.assign(blank(),o); S.vd=Object.assign(blank().vd,o.vd||{}); S.cont=Object.assign(blank().cont,o.cont||{}); S.gcFee=Object.assign(blank().gcFee,o.gcFee||{}); S.custom=o.custom||[]; const sm=/[#&]s=(\d+)/.exec(location.hash||""); if(sm){ step=Math.max(0,Math.min(STEPS.length-1,parseInt(sm[1],10)||0)); } return true; } } return false; }
   function flash(msg){ const f=$("#rb-flash"); f.textContent=msg; f.classList.add("show"); clearTimeout(flash._t); flash._t=setTimeout(()=>f.classList.remove("show"),2600); }
@@ -1033,9 +1037,24 @@ const RB = (function(){
     }catch(e){}
   }
 
+  /* ---------- portal bridge state accessors ----------
+     Used by rehab-budget-portal.js when the tool is opened from a loan file:
+     the saved condition state replaces the URL-hash state, and submit reads
+     the full state + grand total back out. */
+  function setState(o){
+    if(!o||typeof o!=="object") return;
+    S=Object.assign(blank(),o);
+    S.vd=Object.assign(blank().vd,o.vd||{});
+    S.cont=Object.assign(blank().cont,o.cont||{});
+    S.gcFee=Object.assign(blank().gcFee,o.gcFee||{});
+    S.custom=o.custom||[];
+    render();
+  }
+
   /* ---------- init ---------- */
   function init(){ restore(); prefillFromQuery(); render(); document.addEventListener("click",()=>{ document.querySelectorAll(".rb-tip.show").forEach(t=>t.classList.remove("show")); }); }
   document.addEventListener("DOMContentLoaded", init);
-  return { share, exportXlsx, importXlsx, exportPdf, emailLO };
+  return { share, exportXlsx, importXlsx, exportPdf, emailLO,
+           getState:()=>snap(), setState, grandTotal:()=>grand(), commit };
 })();
 if(typeof window!=="undefined") window.RB = RB;

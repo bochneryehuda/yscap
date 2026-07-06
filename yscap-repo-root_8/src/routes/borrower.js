@@ -134,6 +134,8 @@ router.put('/profile', async (req, res) => {
 // file (so a borrower is never asked for it again). Stores the bytes like any
 // document and points borrowers.photo_id_document_id at it. Any file's gov-ID
 // checklist item is auto-satisfied from this (see generateChecklist).
+// Passing applicationId links the ID to that file's gov-ID condition too, so an
+// upload made FROM a file's conditions list lands on the profile AND the file.
 router.post('/profile/photo-id', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
@@ -141,12 +143,22 @@ router.post('/profile/photo-id', async (req, res) => {
   if (!buf.length) return res.status(400).json({ error: 'empty file' });
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  let appId = null, appItemId = null;
+  if (b.applicationId) {
+    const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'application not found' });
+    appId = b.applicationId;
+    const it = await db.query(
+      `SELECT id FROM checklist_items
+        WHERE application_id=$1 AND template_id=(SELECT id FROM checklist_templates WHERE code='rtl_p1_id') LIMIT 1`, [appId]);
+    appItemId = it.rows[0] ? it.rows[0].id : null;
+  }
   try {
     const { ref, provider } = await storage.save(buf, { filename: b.filename });
     const d = await db.query(
-      `INSERT INTO documents (borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
-       VALUES ($1,$2,$3,$4,$5,$6,'borrower',$1,'photo_id') RETURNING id`,
-      [me(req), b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref]);
+      `INSERT INTO documents (borrower_id,application_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
+       VALUES ($1,$7,$8,$2,$3,$4,$5,$6,'borrower',$1,'photo_id') RETURNING id`,
+      [me(req), b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, appId, appItemId]);
     await db.query(`UPDATE borrowers SET photo_id_document_id=$2, updated_at=now() WHERE id=$1`, [me(req), d.rows[0].id]);
     // Satisfy any outstanding government-ID checklist item on the borrower's files.
     await db.query(
@@ -396,6 +408,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
             COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date, ci.notes,
+            (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             (SELECT d.rejection_reason FROM documents d
               WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
@@ -443,8 +456,10 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const payload = stripped.payload;
   const notes = (req.body && req.body.notes) ? String(req.body.notes).slice(0, 2000) : null;
   await db.query(
-    `UPDATE checklist_items SET tool_payload=$2, status='received', notes=COALESCE($3,notes), updated_at=now()
-      WHERE id=$1`, [req.params.itemId, JSON.stringify(payload), notes]);
+    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($4,tool_state), status='received', notes=COALESCE($3,notes), updated_at=now()
+      WHERE id=$1`,
+    [req.params.itemId, JSON.stringify(payload), notes,
+     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
   // The rehab-budget tool's grand total IS the file's rehab budget, which feeds
   // the pricing engine — sync it onto the application so terms reflect the SOW.
   if (it.rows[0].tool_key === 'rehab_budget') {
@@ -476,6 +491,36 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     }
   } catch (_) { /* notification is best-effort */ }
   res.json({ ok: true, status: 'received', exports: storedExports });
+});
+
+// ---------------- TOOL STATE (Scope of Work autosave) ----------------
+// The static Scope of Work builder autosaves its full state onto the condition
+// while the borrower works — reopening the tool restores exactly where they
+// left off. Submitting (POST …/tool above) snapshots the state + exports.
+router.get('/applications/:id/checklist/:itemId/tool-state', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const r = await db.query(
+    `SELECT tool_state, tool_payload, status FROM checklist_items
+      WHERE id=$1 AND application_id=$2 AND audience IN ('borrower','both') AND tool_key IS NOT NULL`,
+    [req.params.itemId, req.params.id]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
+  const row = r.rows[0];
+  const state = row.tool_state || (row.tool_payload && row.tool_payload.state) || null;
+  res.json({ state, status: row.status, submitted: !!row.tool_payload });
+});
+router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const state = (req.body && typeof req.body.state === 'object') ? req.body.state : null;
+  if (!state) return res.status(400).json({ error: 'state required' });
+  const r = await db.query(
+    `UPDATE checklist_items SET tool_state=$3, updated_at=now()
+      WHERE id=$1 AND application_id=$2 AND audience IN ('borrower','both') AND tool_key IS NOT NULL
+      RETURNING id`,
+    [req.params.itemId, req.params.id, JSON.stringify(state)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'tool task not found' });
+  res.json({ ok: true, savedAt: new Date().toISOString() });
 });
 
 // ---------------- LLCs + documents ----------------
@@ -605,14 +650,64 @@ router.post('/partners', async (req, res) => {
 });
 router.upsertPartner = upsertPartner;
 
-// ---------------- TRACK RECORDS (on the borrower profile) ----------------
+// ---------------- TRACK RECORDS (general per-borrower section) ----------------
+// A borrower's track record is one general dataset — never tied to a single
+// file. Loan-file experience conditions link here automatically.
 router.get('/track-records', async (req, res) => {
   const r = await db.query(
-    `SELECT t.*, l.llc_name AS entity_name FROM track_records t
+    `SELECT t.*, COALESCE(t.entity_name, l.llc_name) AS entity_name,
+            (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count
+       FROM track_records t
        LEFT JOIN llcs l ON l.id = t.llc_id
       WHERE t.borrower_id=$1 ORDER BY t.sale_date DESC NULLS LAST, t.created_at DESC`, [me(req)]);
   res.json(r.rows);
 });
+// Shared field validation + column mapping for create/update. Mirrors the
+// static Track Record tool's rules: a flip needs a sale; a hold needs a
+// lease-up or refinance exit; ground-up needs any exit.
+function trackRecordErrors(b) {
+  const dealType = b.dealType || 'flip';
+  const typeText = String(dealType).toLowerCase();
+  const addressText = b.propertyAddress && (b.propertyAddress.oneLine || b.propertyAddress.street || b.propertyAddress.line1);
+  if (!addressText) return 'property address is required';
+  if (!moneyField(b.purchasePrice)) return 'purchase price is required';
+  if (!b.purchaseDate) return 'purchase date is required';
+  if (!moneyField(b.rehabAmount)) return 'rehab budget is required';
+  const isHold = typeText.indexOf('hold') >= 0 || typeText.indexOf('rental') >= 0;
+  const isGround = typeText.indexOf('ground') >= 0;
+  if (!isHold && !isGround && (!moneyField(b.salePrice) || !b.saleDate)) {
+    return 'sale price and sale date are required for a fix-and-flip deal';
+  }
+  if (isHold && (!moneyField(b.rentAmount) && !moneyField(b.refiAmount))) {
+    return 'monthly rent or refinance amount is required for a fix-and-hold deal';
+  }
+  if (isHold && (!b.rentDate && !b.refiDate)) {
+    return 'rent date or refinance date is required for a fix-and-hold deal';
+  }
+  if (isGround && !((moneyField(b.salePrice) && b.saleDate) || (moneyField(b.rentAmount) && b.rentDate) || (moneyField(b.refiAmount) && b.refiDate))) {
+    return 'ground-up experience needs a sale, rent, or refinance exit';
+  }
+  return null;
+}
+function trackRecordCols(b) {
+  return {
+    property_address: JSON.stringify(b.propertyAddress),
+    deal_type: b.dealType || 'flip',
+    purchase_price: moneyField(b.purchasePrice),
+    sale_price: moneyField(b.salePrice),
+    rehab_amount: moneyField(b.rehabAmount),
+    purchase_date: b.purchaseDate || null,
+    sale_date: b.saleDate || null,
+    rent_amount: moneyField(b.rentAmount),
+    rent_date: b.rentDate || null,
+    refi_amount: moneyField(b.refiAmount),
+    refi_date: b.refiDate || null,
+    current_value: moneyField(b.currentValue),
+    notes: b.notes ? String(b.notes).slice(0, 1000) : null,
+    property_type: b.propertyType ? String(b.propertyType).slice(0, 60) : null,
+    entity_name: b.entityName ? String(b.entityName).slice(0, 160) : null,
+  };
+}
 router.post('/track-records', async (req, res) => {
   const b = req.body || {};
   // An LLC reference must be one of the borrower's own entities.
@@ -620,38 +715,39 @@ router.post('/track-records', async (req, res) => {
     const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
     if (!own.rows[0]) return res.status(404).json({ error: 'llc not found' });
   }
-  const dealType = b.dealType || 'flip';
-  const typeText = String(dealType).toLowerCase();
-  const addressText = b.propertyAddress && (b.propertyAddress.oneLine || b.propertyAddress.street || b.propertyAddress.line1);
-  if (!addressText) return res.status(400).json({ error: 'property address is required' });
-  if (!moneyField(b.purchasePrice)) return res.status(400).json({ error: 'purchase price is required' });
-  if (!b.purchaseDate) return res.status(400).json({ error: 'purchase date is required' });
-  if (!moneyField(b.rehabAmount)) return res.status(400).json({ error: 'rehab budget is required' });
-  const isHold = typeText.indexOf('hold') >= 0 || typeText.indexOf('rental') >= 0;
-  const isGround = typeText.indexOf('ground') >= 0;
-  if (!isHold && !isGround && (!moneyField(b.salePrice) || !b.saleDate)) {
-    return res.status(400).json({ error: 'sale price and sale date are required for a fix-and-flip deal' });
-  }
-  if (isHold && (!moneyField(b.rentAmount) && !moneyField(b.refiAmount))) {
-    return res.status(400).json({ error: 'monthly rent or refinance amount is required for a fix-and-hold deal' });
-  }
-  if (isHold && (!b.rentDate && !b.refiDate)) {
-    return res.status(400).json({ error: 'rent date or refinance date is required for a fix-and-hold deal' });
-  }
-  if (isGround && !((moneyField(b.salePrice) && b.saleDate) || (moneyField(b.rentAmount) && b.rentDate) || (moneyField(b.refiAmount) && b.refiDate))) {
-    return res.status(400).json({ error: 'ground-up experience needs a sale, rent, or refinance exit' });
-  }
+  const bad = trackRecordErrors(b);
+  if (bad) return res.status(400).json({ error: bad });
+  const cols = trackRecordCols(b);
+  const names = Object.keys(cols);
+  const vals = Object.values(cols);
   const r = await db.query(
-    `INSERT INTO track_records
-       (borrower_id,llc_id,property_address,deal_type,purchase_price,sale_price,rehab_amount,purchase_date,sale_date,
-        rent_amount,rent_date,refi_amount,refi_date,current_value,notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
-    [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), dealType,
-     moneyField(b.purchasePrice), moneyField(b.salePrice), moneyField(b.rehabAmount), b.purchaseDate || null, b.saleDate || null,
-     moneyField(b.rentAmount), b.rentDate || null, moneyField(b.refiAmount), b.refiDate || null,
-     moneyField(b.currentValue), b.notes ? String(b.notes).slice(0, 1000) : null]);
+    `INSERT INTO track_records (borrower_id,llc_id,${names.join(',')})
+     VALUES ($1,$2,${names.map((_, i) => '$' + (i + 3)).join(',')}) RETURNING id`,
+    [me(req), b.llcId || null, ...vals]);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
   res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
+});
+// Edit an entry — only the borrower's own, and only while it is unverified
+// (a verified entry is locked as underwriting evidence).
+router.put('/track-records/:id', async (req, res) => {
+  const b = req.body || {};
+  const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2 AND is_verified=false`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
+  if (b.llcId) {
+    const l = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
+    if (!l.rows[0]) return res.status(404).json({ error: 'llc not found' });
+  }
+  const bad = trackRecordErrors(b);
+  if (bad) return res.status(400).json({ error: bad });
+  const cols = trackRecordCols(b);
+  const names = Object.keys(cols);
+  const vals = Object.values(cols);
+  await db.query(
+    `UPDATE track_records SET llc_id=$3, ${names.map((n, i) => `${n}=$${i + 4}`).join(', ')}, updated_at=now()
+      WHERE id=$1 AND borrower_id=$2`,
+    [req.params.id, me(req), b.llcId || null, ...vals]);
+  try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  res.json({ ok: true });
 });
 // Delete a track-record entry — only the borrower's own, and only while it is
 // still unverified (a verified entry is locked as underwriting evidence).
@@ -662,6 +758,34 @@ router.delete('/track-records/:id', async (req, res) => {
   if (!r.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
   res.json({ ok: true });
+});
+// Supporting documents on ONE track-record entry (closing statement, deed,
+// lease…) — what staff verify against.
+router.get('/track-records/:id/documents', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const r = await db.query(
+    `SELECT id,filename,content_type,size_bytes,created_at FROM documents
+      WHERE track_record_id=$1 AND visibility='borrower' ORDER BY created_at`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/track-records/:id/documents', async (req, res) => {
+  const b = req.body || {};
+  if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const buf = Buffer.from(b.dataBase64, 'base64');
+  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  const r = await db.query(
+    `INSERT INTO documents (borrower_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,'borrower',$1,'track_record_doc') RETURNING id`,
+    [me(req), req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref]);
+  await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
+  await audit(req, 'upload_track_record_doc', 'track_record', req.params.id, { filename: b.filename });
+  res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 
 // ---------------- DOCUMENTS (upload metadata + bytes via storage) ----------------
@@ -686,12 +810,15 @@ router.post('/documents', async (req, res) => {
   // PDF captured from the Term Sheet Studio: each re-registration supersedes
   // the previous term sheet so exactly one is current on the file.
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
+  // Optional slot: a condition holds several coexisting documents, each in its
+  // own named slot. Re-uploading a slot supersedes only that slot's versions.
+  const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
-    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'borrower',$10,$11) RETURNING id`,
+    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'borrower',$10,$11,$12) RETURNING id`,
     [b.checklistItemId || null, b.applicationId || null, me(req), b.llcId || null,
-     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req), docKind]);
+     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req), docKind, slot]);
   if (docKind === 'term_sheet' && b.applicationId) {
     await db.query(
       `UPDATE documents SET is_current=false,
@@ -700,14 +827,24 @@ router.post('/documents', async (req, res) => {
       [b.applicationId, r.rows[0].id]);
   }
   if (b.checklistItemId) {
-    // A re-upload supersedes the borrower's prior versions for this item so a
-    // rejected/old document never stays part of the file; the new one is the
-    // current version, pending review again.
+    // A re-upload supersedes the borrower's prior versions so a rejected/old
+    // document never stays part of the file. With a slot (or an explicit
+    // replaceDocumentId), only THAT slot's versions are superseded — the
+    // condition's other documents coexist.
+    if (b.replaceDocumentId) {
+      await db.query(
+        `UPDATE documents SET is_current=false,
+            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+          WHERE id=$1 AND checklist_item_id=$2 AND borrower_id=$3`,
+        [b.replaceDocumentId, b.checklistItemId, me(req)]);
+    }
     await db.query(
       `UPDATE documents SET is_current=false,
           review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-        WHERE checklist_item_id=$1 AND borrower_id=$2 AND id<>$3 AND is_current=true`,
-      [b.checklistItemId, me(req), r.rows[0].id]);
+        WHERE checklist_item_id=$1 AND borrower_id=$2 AND id<>$3 AND is_current=true
+          AND ($4::text IS NOT NULL OR $5::uuid IS NULL)
+          AND ($4::text IS NULL OR slot_label IS NOT DISTINCT FROM $4)`,
+      [b.checklistItemId, me(req), r.rows[0].id, slot, b.replaceDocumentId || null]);
     await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
   }
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
@@ -723,10 +860,17 @@ router.post('/documents', async (req, res) => {
       const row = a.rows[0];
       if (row) {
         const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
+        // Say WHERE the document landed, not just its filename: the condition
+        // it was uploaded to and, when the condition has several slots, which.
+        let where = '';
+        if (b.checklistItemId) {
+          const it = await db.query(`SELECT label FROM checklist_items WHERE id=$1`, [b.checklistItemId]);
+          if (it.rows[0]) where = ` to condition "${it.rows[0].label}"${slot ? ` — ${slot}` : ''}`;
+        } else if (slot) where = ` — ${slot}`;
         const opts = {
           type: 'doc_uploaded',
           title: 'New document uploaded',
-          body: `${who} uploaded "${b.filename}".`,
+          body: `${who} uploaded "${b.filename}"${where}.`,
           applicationId: b.applicationId,
           link: `/staff/app/${b.applicationId}`,
           ctaLabel: 'Review the document',
@@ -743,7 +887,7 @@ router.post('/documents', async (req, res) => {
 // the conversation, not the document library (see 014_document_visibility).
 router.get('/documents', async (req, res) => {
   const r = await db.query(
-    `SELECT id,filename,content_type,size_bytes,application_id,llc_id,checklist_item_id,created_at,
+    `SELECT id,filename,content_type,size_bytes,application_id,llc_id,checklist_item_id,slot_label,doc_kind,created_at,
             review_status,rejection_reason,is_current
        FROM documents
       WHERE borrower_id=$1 AND ($2::uuid IS NULL OR application_id=$2)
@@ -1246,6 +1390,15 @@ async function insertFromTemplate(tpl, owner) {
 
 async function generateChecklist(appId, borrowerId, program, loanType, opts = {}) {
   const track = normLoanType([program, loanType].join(' '));
+  // Ground-up build? Drives the "Plans & permits (if applicable)" placeholder
+  // condition. Read the file itself so every caller gets the same answer.
+  let groundUp = /ground/i.test([program, loanType].join(' '));
+  if (!groundUp) {
+    try {
+      const a = await db.query(`SELECT rehab_type, loan_type, program FROM applications WHERE id=$1`, [appId]);
+      if (a.rows[0]) groundUp = /ground/i.test([a.rows[0].rehab_type, a.rows[0].loan_type, a.rows[0].program].join(' '));
+    } catch (_) { /* best-effort */ }
+  }
   const t = await db.query(
     `SELECT * FROM checklist_templates WHERE is_active=true AND scope IN ('application','borrower_profile')
        AND (applies_program IS NULL OR applies_program=$1)
@@ -1254,6 +1407,8 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
   for (const tpl of t.rows) {
     // Assignment paperwork is only required when the purchase is an assignment.
     if (tpl.code === 'rtl_p5_assign' && !opts.isAssignment) continue;
+    // Plans & permits placeholder only exists on ground-up construction files.
+    if (tpl.code === 'rtl_p1_plans' && !groundUp) continue;
     const owner = tpl.scope === 'application' ? { application_id: appId }
                 : tpl.scope === 'borrower_profile' ? { borrower_id: borrowerId }
                 : null; // llc-scoped items are created when an LLC is linked
@@ -1294,3 +1449,5 @@ router.generateLlcChecklist = generateLlcChecklist;
 module.exports = router;
 module.exports.generateChecklist = generateChecklist;
 module.exports.generateLlcChecklist = generateLlcChecklist;
+module.exports.trackRecordErrors = trackRecordErrors;
+module.exports.trackRecordCols = trackRecordCols;
