@@ -217,11 +217,12 @@ textarea{min-height:90px;resize:vertical}
 .progress{flex:1;height:7px;border-radius:999px;background:var(--ink-3,#2B3945);overflow:hidden}
 .progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--teal),var(--gold));transition:width .3s}
 
-/* brand: "GROUP" is NOT part of the name — a small, letterspaced sans suffix
-   sitting apart from the big serif "YS CAPITAL", exactly like the official
-   lockup. Do not restyle it to match the wordmark's size or face. */
-.brand-word .brand-group{font-style:normal;font-family:var(--sans);font-size:.42em;
-  letter-spacing:.34em;color:var(--teal,#7FA9B0);font-weight:600;vertical-align:baseline}
+/* brand: OWNER DECISION (2026-07-06, explicit and repeated) — "GROUP" carries
+   the SAME size and weight as "YS CAPITAL", one confident serif line, set
+   apart only by the brand teal. The tiny .42em lockup-style suffix was
+   rejected as unprofessional; do NOT shrink it back to match the logo image. */
+.brand-word .brand-group{font-style:normal;font-family:var(--serif);font-size:1em;
+  letter-spacing:inherit;color:var(--teal-br,#AAD4D9);font-weight:700;vertical-align:baseline}
 /* SSN reveal eye toggle */
 .eye-btn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:24px;
   padding:0;border:1px solid var(--line);border-radius:6px;background:var(--ink-2);color:var(--teal);
