@@ -856,3 +856,50 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .cv-modal-back{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;display:flex;
   align-items:center;justify-content:center;padding:20px}
 .cv-modal{width:100%;max-width:480px;max-height:85vh;overflow-y:auto}
+
+/* ============================ Condition Center ============================ */
+/* Rule builder — "field · operator · value" rows with ALL/ANY groups. */
+.rulebuilder{margin-top:6px}
+.rb-group{border:1px solid var(--line);border-radius:var(--radius-sm);padding:12px;background:var(--ink-2)}
+.rb-group.nested{margin:10px 0 4px 22px;background:var(--ink-1);border-style:dashed}
+.rb-head{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.rb-comb{max-width:230px;font-weight:700}
+.rb-row{display:grid;grid-template-columns:minmax(160px,1.2fr) minmax(120px,.8fr) minmax(160px,1.6fr) auto;
+  gap:8px;align-items:start;margin-bottom:8px}
+@media (max-width:820px){.rb-row{grid-template-columns:1fr;gap:6px}}
+.rb-value{min-width:0}
+.rb-range{display:flex;align-items:center;gap:8px}
+.rb-range .muted{flex-shrink:0}
+.rb-x{color:var(--muted);align-self:center}
+.rb-x:hover{color:var(--danger)}
+.rb-actions{display:flex;gap:8px;margin-top:4px;flex-wrap:wrap}
+.rb-chips{display:flex;flex-wrap:wrap;gap:6px}
+.rb-chip{border:1px solid var(--line);background:var(--ink-1);color:var(--muted);border-radius:999px;
+  padding:5px 12px;font-size:12.5px;cursor:pointer;font-family:var(--sans)}
+.rb-chip.on{background:var(--teal-dp);border-color:var(--teal);color:var(--ivory);font-weight:700}
+.rb-pct{position:absolute;right:12px;top:50%;transform:translateY(-50%);color:var(--muted);pointer-events:none}
+.rb-summary{margin-top:10px;padding:9px 12px;border-left:3px solid var(--gold);background:rgba(201,168,106,.07);
+  border-radius:0 8px 8px 0;font-size:13.5px;line-height:1.5}
+.cc-preview{margin-top:8px;min-height:20px}
+
+/* studio — type picker cards + apply-mode radios + library rows */
+.cc-typegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}
+.cc-typecard{display:flex;flex-direction:column;gap:5px;text-align:left;border:1px solid var(--line);
+  background:var(--ink-2);border-radius:var(--radius-sm);padding:12px 14px;cursor:pointer;color:var(--ivory);
+  font-family:var(--sans);font-size:14px;line-height:1.4}
+.cc-typecard .small{font-weight:400}
+.cc-typecard.on{border-color:var(--teal);box-shadow:0 0 0 1px var(--teal) inset;background:rgba(127,169,176,.09)}
+.cc-applyrow{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.cc-apply{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;
+  padding:9px 12px;cursor:pointer;font-size:14px;background:var(--ink-2)}
+.cc-apply.on{border-color:var(--teal);background:rgba(127,169,176,.09)}
+.cc-defrow{align-items:flex-start}
+.cc-defline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pill.cc-aud-borrower{border-color:var(--teal);color:var(--teal-br)}
+.pill.cc-aud-both{border-color:var(--teal);color:var(--teal-br)}
+.pill.cc-aud-staff{border-color:var(--line);color:var(--muted)}
+/* per-file add-condition panel */
+.cc-addgrid{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.cc-addtype{border:1px solid var(--line);background:var(--ink-2);color:var(--muted);border-radius:999px;
+  padding:6px 13px;font-size:13px;cursor:pointer;font-family:var(--sans)}
+.cc-addtype.on{background:var(--teal-dp);border-color:var(--teal);color:var(--ivory);font-weight:700}

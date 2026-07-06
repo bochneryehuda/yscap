@@ -56,6 +56,7 @@ export default function StaffLayout({ children }) {
               Chat{unread > 0 && <span className="chat-badge nav">{unread > 99 ? '99+' : unread}</span>}
             </NavLink>
             <NavLink to="/internal/leads">Leads</NavLink>
+            {(role === 'admin' || role === 'super_admin') && <NavLink to="/internal/conditions" title="Condition Center — the global condition library & rules">Conditions</NavLink>}
             {(role === 'admin' || role === 'super_admin') && <NavLink to="/internal/team">Team</NavLink>}
             {(role === 'admin' || role === 'super_admin') && <NavLink to="/internal/vendors" title="Title & insurance vendor directory">Vendors</NavLink>}
             <span className="pill" title="Your role">{ROLE_LABEL[role] || role || 'Internal'}</span>

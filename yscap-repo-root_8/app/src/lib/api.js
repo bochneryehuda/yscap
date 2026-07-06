@@ -316,4 +316,22 @@ export const api = {
   adminSetStaffPassword: (id, password) => req('POST', `/api/admin/staff/${id}/password`, { password }),
   adminTestEmail:    (to) => req('POST', '/api/admin/test-email', { to }),
   roster:            () => req('GET', '/api/roster'),
+
+  // ---- Condition Center: admin studio (global condition library + rules) ----
+  adminConditionFields:    () => req('GET', '/api/admin/conditions/fields'),
+  adminConditionDefs:      () => req('GET', '/api/admin/conditions/definitions'),
+  adminCreateConditionDef: (b) => req('POST', '/api/admin/conditions/definitions', b),
+  adminUpdateConditionDef: (id, b) => req('PATCH', `/api/admin/conditions/definitions/${id}`, b),
+  adminDeleteConditionDef: (id) => req('DELETE', `/api/admin/conditions/definitions/${id}`),
+  adminPreviewRule:        (ruleLogic) => req('POST', '/api/admin/conditions/preview-rule', { ruleLogic }),
+  adminRunAllConditions:   () => req('POST', '/api/admin/conditions/run-all'),
+
+  // ---- Condition Center: per-file (any staff) ----
+  staffConditionMeta:        () => req('GET', '/api/staff/conditions/meta'),
+  staffAddCustomCondition:   (appId, b) => req('POST', `/api/staff/applications/${appId}/conditions/custom`, b),
+  staffAttachCondition:      (appId, templateId) => req('POST', `/api/staff/applications/${appId}/conditions/attach`, { templateId }),
+  staffReevaluateConditions: (appId) => req('POST', `/api/staff/applications/${appId}/conditions/reevaluate`),
+
+  // ---- Condition Center: borrower answers an information condition ----
+  submitInfoCondition: (appId, itemId, value) => req('POST', `/api/borrower/applications/${appId}/checklist/${itemId}/info`, { value }),
 };

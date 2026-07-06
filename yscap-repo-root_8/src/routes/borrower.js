@@ -19,6 +19,8 @@ const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower } = require('../lib/experience');
 const llcLib = require('../lib/llc');
+const conditionEngine = require('../lib/conditions/engine');
+const conditionRegistry = require('../lib/conditions/field-registry');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -128,6 +130,11 @@ router.put('/profile', async (req, res) => {
   sets.push('updated_at=now()'); vals.push(me(req));
   await db.query(`UPDATE borrowers SET ${sets.join(',')} WHERE id=$${i}`, vals);
   await audit(req, 'update_profile', 'borrower', me(req));
+  // Profile fields (credit score, citizenship, home state…) feed the condition
+  // rule engine — re-check every open file this borrower is on.
+  if (b.fico !== undefined || b.citizenship !== undefined || b.currentAddress !== undefined) {
+    try { await conditionEngine.evaluateBorrowerApplications(me(req), { reason: 'profile_updated' }); } catch (_) {}
+  }
   res.json({ ok: true });
 });
 
@@ -413,6 +420,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
+    // Registration rewrites loan amount / rate / program — re-run condition rules.
+    try { await conditionEngine.evaluateApplication(appId, { reason: 'product_registered' }); } catch (_) {}
 
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
@@ -490,6 +499,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
             COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date,
+            ci.field_key, ci.esign_doc,
             -- ci.notes is the INTERNAL staff note (underwriting / capital-partner
             -- context) — never send it to a borrower. Only the borrower_* wording
             -- above is safe.
@@ -501,7 +511,74 @@ router.get('/applications/:id/checklist', async (req, res) => {
        FROM checklist_items ci
       WHERE ci.application_id=$1 AND ci.audience IN ('borrower','both')
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
-  res.json(r.rows);
+  // Info-field conditions carry their field definition (type/options/labels)
+  // and the field's current value so the portal can render a typed input.
+  const rows = r.rows;
+  if (rows.some((it) => it.tool_key === 'info_field' && it.field_key)) {
+    let ctx = null;
+    try { const loaded = await conditionEngine.loadRuleContext(req.params.id); ctx = loaded && loaded.ctx; } catch (_) {}
+    for (const it of rows) {
+      if (it.tool_key !== 'info_field' || !it.field_key) continue;
+      const f = conditionRegistry.BY_KEY[it.field_key];
+      if (!f) continue;
+      it.field_def = {
+        key: f.key, type: f.type, options: f.options || undefined,
+        label: f.borrowerLabel || f.label, hint: f.borrowerHint || undefined,
+      };
+      it.field_value = ctx ? (ctx[it.field_key] ?? null) : null;
+    }
+  }
+  res.json(rows);
+});
+
+// Borrower answers an information condition: the value is written into the
+// real application/borrower field (whitelisted in the field registry), the
+// condition moves to 'received', and the rule engine re-checks the file.
+router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const it = await db.query(
+    `SELECT id, field_key, status, borrower_label, label FROM checklist_items
+      WHERE id=$1 AND application_id=$2 AND audience IN ('borrower','both') AND tool_key='info_field'`,
+    [req.params.itemId, req.params.id]);
+  if (!it.rows[0]) return res.status(404).json({ error: 'information item not found' });
+  const item = it.rows[0];
+  if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
+  if ((req.body || {}).value === undefined || req.body.value === null || req.body.value === '')
+    return res.status(400).json({ error: 'a value is required' });
+  let saved;
+  try {
+    saved = await conditionEngine.writeFieldValue(req.params.id, own.rows[0].borrower_id, item.field_key, req.body.value);
+  } catch (e) {
+    return res.status(e.status || 400).json({ error: e.message });
+  }
+  await db.query(
+    `UPDATE checklist_items SET status='received',
+            tool_payload=$2, updated_at=now()
+      WHERE id=$1`,
+    [req.params.itemId, JSON.stringify({ infoField: item.field_key, value: saved.value, submittedAt: new Date().toISOString() })]);
+  await audit(req, 'submit_info_condition', 'checklist_item', req.params.itemId, { fieldKey: item.field_key });
+  // Field data changed → the engine may add/retract rule-driven conditions.
+  try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'info_condition_answered' }); } catch (_) {}
+  // Let the loan team know the borrower provided the info.
+  try {
+    const a = await db.query(
+      `SELECT a.loan_officer_id, a.processor_id, b.first_name, b.last_name
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
+    const row = a.rows[0];
+    if (row) {
+      const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+      const ctx = await notify.fileContext(req.params.id);
+      for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
+        await notify.notifyStaff(sid, {
+          type: 'tool_submitted', title: `${who} answered "${item.borrower_label || item.label}"`,
+          body: `${ctx ? ctx.label : 'A file'} — the condition is ready for review.`,
+          meta: (ctx && ctx.meta) || undefined,
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, ctaLabel: 'Review the file' });
+      }
+    }
+  } catch (_) { /* best-effort */ }
+  res.json({ ok: true, status: 'received', value: saved.value });
 });
 
 // Borrower-safe loan timeline: which milestones the file has reached and when.
@@ -551,6 +628,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     const total = Number(payload && payload.total);
     if (isFinite(total) && total >= 0) {
       await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
+      try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'rehab_budget_saved' }); } catch (_) {}
     }
   }
   const storedExports = await storeToolAttachments({
@@ -777,6 +855,8 @@ router.post('/applications/:id/link-llc', async (req, res) => {
   // LLC condition — recompute it from the NEWLY linked entity, even downgrading
   // an auto-satisfied item left behind by the old link.
   try { await llcLib.syncLlcConditions(b.llcId, { appId: req.params.id, reopen: true }); } catch (_) { /* best-effort */ }
+  // has_llc / llc_verified / llc_state are rule-engine fields.
+  try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'llc_linked' }); } catch (_) {}
   await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
   res.json({ ok: true });
 });
@@ -1823,8 +1903,12 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
       if (a.rows[0]) groundUp = /ground/i.test([a.rows[0].rehab_type, a.rows[0].loan_type, a.rows[0].program].join(' '));
     } catch (_) { /* best-effort */ }
   }
+  // auto_apply IS NULL = legacy templates instantiated here at creation.
+  // Templates managed by the Condition Center engine (auto_apply set) are
+  // attached/retracted by evaluateApplication() below instead.
   const t = await db.query(
     `SELECT * FROM checklist_templates WHERE is_active=true AND scope IN ('application','borrower_profile')
+       AND auto_apply IS NULL
        AND (applies_program IS NULL OR applies_program=$1)
        AND (applies_loan_type IS NULL OR applies_loan_type=$2)
      ORDER BY sort_order`, [program || null, track]);
@@ -1861,6 +1945,10 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
     if (av.rows[0] && av.rows[0].llc_id) await llcLib.syncLlcConditions(av.rows[0].llc_id, { appId });
   } catch (_) { /* best-effort */ }
   try { await syncExperienceChecklistForApplication(appId); } catch (_) { /* best-effort */ }
+  // Condition Center: attach every matching rule/always definition. The new
+  // file's items were just created, so skip the borrower notification — the
+  // borrower is looking at the fresh checklist already.
+  try { await conditionEngine.evaluateApplication(appId, { reason: 'application_created', notify: false }); } catch (_) { /* best-effort */ }
 }
 
 // Materialize the LLC document requirements (EIN letter, formation docs,

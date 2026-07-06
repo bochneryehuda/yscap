@@ -12,6 +12,9 @@ const { requireAuth, requireRole } = require('../auth');
 
 router.use(requireAuth, requireRole('admin'));
 
+// The Condition Center studio — global condition library + rule engine.
+router.use('/conditions', require('./admin-conditions'));
+
 const ROLES = ['super_admin', 'admin', 'loan_officer', 'processor', 'underwriter'];
 const DEPTS = ['sales', 'operations'];
 
