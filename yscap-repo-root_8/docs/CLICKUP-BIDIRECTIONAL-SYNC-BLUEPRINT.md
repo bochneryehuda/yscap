@@ -115,7 +115,9 @@ Because the integration authenticates as **Yehuda's token**, ClickUp will fire w
 | Staff/borrower edits a **mapped field** on an existing synced file | Debounced `application/update` with just the changed field(s) — coalesced over ~10s so rapid edits become one push |
 | **Internal status** changes (staff) | `application/status` → set ClickUp task status |
 | **Checklist/condition status** changes (§8) | `checklist/status` → set the mapped ClickUp dropdown |
-| Officer / processor / underwriter assigned or changed | `assignment/*` → set the ClickUp "users" field (and optionally move the task to that officer's folder — see Q6) |
+| **Officer** assigned/changed | `assignment/officer` → set the Loan Officer users field **and MOVE** the task into that officer's Pipeline folder |
+| **Processor** assigned/changed | `assignment/processor` → set the Processor users field **and ADD** the task to that processor's folder/list (multi-list, **keep home** in officer folder) |
+| **Underwriter** assigned/changed | `assignment/underwriter` → set the Underwriter users field only (no move/add) |
 
 ### 4.2 ClickUp → Portal
 | Trigger | Action |
@@ -340,13 +342,15 @@ The ClickUp "users" fields need the **numeric ClickUp user ID**. We populate `st
 | Yisroel Weinstock | yisroel@yscapgroup.com | 87450032 | 90118081048 | 90118110163 |
 | Simcha Shedrowitzky | simcha@yscapgroup.com | 87451319 | 90118094956 | 90118110164 |
 
-**Processors / ops** (Pipeline-only, never a lead target): Malky Katz `87335667` (malky@) `90117376201` · goldy@yscapgroup `87380437` (goldy@) `90117430703` · Lisa Katz `87431116` (lisa@) `90117952996` · Yonah Rapaport `90118065743` *(email pending — Q8)* · Ezra `90117447287` *(name/email pending — Q8)*.
+**Processors / ops** (Pipeline-only, never a lead target): Malky Katz `87335667` (malky@) `90117376201` · goldy@yscapgroup `87380437` (goldy@) `90117430703` · Lisa Katz `87431116` (lisa@) `90117952996` · **Yonah Rapaport** (`yonah@yscapgroup.com` — *assumed, verify*) `90118065743` · **Ezra Green** (`ezra@yscapgroup.com`) `90117447287` — *owner: give Ezra **some admin capabilities**; exact portal permissions to confirm at build.*
+
+> **Processor assignment mechanic (owner-clarified):** when a processor is assigned to a file, **ADD** the ClickUp task to that processor's folder/list (multi-home) — do **NOT move** it. The task keeps its home in the loan-officer folder and also appears in the processor's workflow view. Uses ClickUp's **"Tasks in Multiple Lists"** ClickApp (`add task to additional list`). This is the opposite of officer (re)assignment, which **moves** the task.
 
 **Underwriters:** Amanda Cooper `87439003` (amanda@) — **Underwriter manager** *(owner-confirmed)* → maps to the ClickUp **Underwriter** users field; not a loan-officer/lead target. · Shana `87435940` (shana@) `90117990325` — UW.
 
 **Reconciliation — owner decisions:**
 - **Chaim Lebowitz** (Pipeline `90118110153`) & **Mendel Bochner** (Pipeline `90118110154`) **ARE loan officers.** Action: create their **CRM folders + lists** set up like the others (folder `"<Name> CRM"` → `List`; space custom fields auto-inherit). *(Build task — see §18.)* **Feasibility:** the public API **can** create the folder + list, but **cannot** create automations or clone a saved list-view. Recommended: **duplicate an existing officer's CRM folder in the ClickUp UI and rename** — that copies lists, views, **and** automations. API folder/list creation is the fallback (you'd re-add views/automations manually).
-- **Still open (Q8):** Ezra's real name/email; Yonah Rapaport's email; confirm the **excluded** set (Samual Stein, Berish Mendlovic, Boruch Stauber).
+- **Resolved:** Ezra = **Ezra Green** (ezra@, processor + some admin); Yonah Rapaport = processor (yonah@ assumed); **excluded set confirmed** — Samual Stein, Berish Mendlovic, Boruch Stauber stay non-selectable.
 - Cosmetic: code has "Joshua **Freidlander**" vs ClickUp "Joshua **friedlander**"; " Josef Schnitzler CRM" has a stray leading space. We match by **email**, so sync is unaffected — just standardizing display names.
 
 ---
@@ -520,7 +524,7 @@ Also answered: **#5 taskDeleted → unlink + Manual Review (§4.2)** · **card d
 
 Round 3 answered: **#8 (partial)** Chaim Lebowitz & Mendel Bochner = **loan officers** (create CRM folders, §7/§18) · Amanda Cooper = **Underwriter manager** · **#10** PPP = N/A for RTL (revisit for DSCR); as-is → **new `RTL As-Is Value` field** (§6.5/§10).
 
-**⏳ Last remaining (small):** Ezra's real name/email · Yonah Rapaport's email · confirm the **excluded** set (Samual Stein, Berish Mendlovic, Boruch Stauber).
+**✅ ALL open questions resolved — the spec is fully locked.** Ezra = Ezra Green (ezra@, processor + some admin); Yonah Rapaport = processor (yonah@ assumed); excluded set confirmed; processor assignment = **add-to-list, not move** (§4.1). Build checklist: §18.
 
 1. ~~Descope behavior~~ → **ANSWERED (Manual Review, §12.1).**
 2. **Dedicated bot user:** create a "YS Portal Bot" ClickUp seat + token for clean attribution & echo-suppression, or run on Yehuda's token? (recommended: bot)
@@ -542,12 +546,13 @@ Round 3 answered: **#8 (partial)** Chaim Lebowitz & Mendel Bochner = **loan offi
 - [ ] **Create new custom fields** in the Loan Pipeline space: `Portal File ID` (text), `Send to Portal` (checkbox), `Portal File Link` (url), `Borrower Portal Status` (dropdown), `Sync Status / Last Error` (text), `Rehab Type` (dropdown), `RTL As-Is Value` (currency). *(API-creatable; I capture the new IDs into the mapping.)*
 - [ ] **Create CRM folders + lists** for **Chaim Lebowitz** and **Mendel Bochner** (`"<Name> CRM"` → `List`). *(Recommended: duplicate an existing officer's CRM folder in the ClickUp UI to also copy views + automations; API fallback creates bare folder+list.)*
 - [ ] **Register webhook(s)** on the Pipeline space (`POST /team/{team_id}/webhook`) for `taskCreated, taskUpdated, taskStatusUpdated, taskMoved, taskDeleted, taskAssigneeUpdated`; store the returned **webhook secret**.
+- [ ] **Confirm the "Tasks in Multiple Lists" ClickApp is enabled** (required so processor assignment can *add* a task to the processor's folder without moving it).
 - [ ] *(Optional, declined for now)* create a **YS Portal Bot** member + token.
 
 ### B. Portal DB migrations (idempotent, numbered)
 - [ ] `041_clickup_sync_core.sql`: add `applications.internal_status`, `clickup_status_updated_at`, `underwriter_id`, `clickup_shadow` (jsonb) + `clickup_shadow_hash`, `sync_state`, `clickup_last_synced_at`, `hot_poll_until`, `actual_appraised_value`, `approx_appraised_value`, `card_number`/`card_exp`/`card_cvv` (encrypted); extend `applications.status` CHECK **+= `on_hold`**; extend `sync_queue.status` **+= `dead`**.
 - [ ] `042_clickup_control.sql`: `clickup_field_mappings`, `clickup_webhook_inbox` (dedupe), seed mappings from this doc.
-- [ ] Backfill `staff_users.clickup_user_id` (match by email, §7) + add `underwriter` role rows (Amanda, Shana).
+- [ ] Backfill `staff_users.clickup_user_id` (match by email, §7): all 15 officers + **Chaim Lebowitz & Mendel Bochner** (new LOs) + processors (Malky, Goldy, Lisa, **Ezra Green**, **Yonah Rapaport**) + underwriters (**Amanda Cooper** = UW manager, Shana). Exclude Samual Stein, Berish Mendlovic, Boruch Stauber.
 
 ### C. Portal backend
 - [ ] Extend `src/clickup/client.js` (get task, set field, get filtered team tasks, create/verify webhook).
