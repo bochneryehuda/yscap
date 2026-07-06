@@ -813,14 +813,18 @@ export default function StaffApplication() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 12 }}>
-        <Link to="/internal" className="btn link">← Pipeline</Link>
-        <div className="spacer" />
-        {isAdmin && <button className="btn link small" style={{ color: 'var(--danger,#e06666)' }} onClick={deleteApp} title="Admin: delete this file">Delete file</button>}
-        <span className={`pill ${app.status}`}>{app.status}</span>
+      {/* The file's identity bar STAYS while you scroll — borrower, address,
+          loan number and status pin under the app header; only the sections
+          below (and the rail beside them) move. */}
+      <div className="file-top">
+        <Link to="/internal" className="btn link" style={{ flex: 'none' }}>← Pipeline</Link>
+        <div className="file-top-main">
+          <h1 className="file-top-addr">{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>
+          <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
+        </div>
+        {isAdmin && <button className="btn link small" style={{ color: 'var(--danger,#e06666)', flex: 'none' }} onClick={deleteApp} title="Admin: delete this file">Delete file</button>}
+        <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{app.status}</span>
       </div>
-      <h1 style={{ marginBottom: 4 }}>{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>
-      <p className="muted small" style={{ marginBottom: 12 }}>{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</p>
 
       {msg && <div className="notice ok">{msg}</div>}
       {err && app && <div role="alert" className="notice err">{err}</div>}
@@ -906,7 +910,13 @@ export default function StaffApplication() {
             <div className="metrow"><span className="k">Underlying price</span><span className="v">{money(app.underlying_contract_price)}</span></div>
             <div className="metrow"><span className="k">Assignment fee</span><span className="v">{money(app.assignment_fee)}</span></div>
           </>}
-          <div className="metrow"><span className="k">As-is</span><span className="v">{money(app.as_is_value)}</span></div>
+          <div className="metrow"><span className="k">As-is</span><span className="v">
+            {money(app.as_is_value ?? (app.is_assignment && app.underlying_contract_price != null
+              ? Number(app.underlying_contract_price) + Number(app.assignment_fee || 0)
+              : app.purchase_price))}
+            {app.as_is_value == null && app.purchase_price != null &&
+              <span className="muted small" style={{ fontWeight: 400 }} title="No as-is value entered — defaults to the final purchase price everywhere (incl. pricing)"> (= purchase)</span>}
+          </span></div>
           <div className="metrow"><span className="k">ARV</span><span className="v">{money(app.arv)}</span></div>
           <div className="metrow"><span className="k">Rehab</span><span className="v">{money(app.rehab_budget)}</span></div>
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>

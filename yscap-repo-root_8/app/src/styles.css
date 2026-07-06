@@ -576,11 +576,19 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
    ===================================================================== */
 .file-layout{display:grid;grid-template-columns:228px minmax(0,1fr);gap:26px;align-items:start}
 .file-main{min-width:0}
-/* The rail locks the moment it meets the bottom of the sticky header (72px
-   + breathing room) instead of sliding under it — locking "too late", halfway
-   into Application details, was called out explicitly. It also scrolls inside
-   itself if the section list is taller than the viewport. */
-.file-nav{position:sticky;top:86px;z-index:20;max-height:calc(100vh - 102px);overflow-y:auto;scrollbar-width:none}
+/* The file's identity bar: back link · address + loan number · status pill,
+   pinned right under the 72px app header. The "top part" of the file never
+   scrolls away — only the sections (and the rail beside them) move. */
+.file-top{position:sticky;top:72px;z-index:30;display:flex;align-items:center;gap:14px;
+  background:var(--ink);padding:10px 0;margin-bottom:10px;border-bottom:1px solid var(--line);
+  box-shadow:0 16px 20px -20px rgba(0,0,0,.9)}
+.file-top-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.file-top-addr{font-size:20px;line-height:1.2;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-top-main>.muted{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* The rail locks the moment it meets the bottom of the sticky stack (app
+   header + file identity bar) — it never slides underneath, and it scrolls
+   inside itself if the section list is taller than the viewport. */
+.file-nav{position:sticky;top:152px;z-index:20;max-height:calc(100vh - 168px);overflow-y:auto;scrollbar-width:none}
 .file-nav::-webkit-scrollbar{display:none}
 .file-nav ol{list-style:none;margin:0;padding:6px;background:var(--ink-1);
   border:1px solid var(--line);border-radius:var(--radius)}
@@ -593,8 +601,9 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   padding:1px 6px;border-radius:999px;background:var(--ink-3);color:var(--teal-br)}
 .file-nav a.active .file-nav-badge{background:var(--gold);color:var(--on-accent)}
 
-/* a section = an anchored, titled group; the anchor clears the sticky chrome */
-.file-section{scroll-margin-top:84px}
+/* a section = an anchored, titled group; the anchor clears the sticky chrome
+   (app header + file identity bar) */
+.file-section{scroll-margin-top:152px}
 .file-section + .file-section{margin-top:30px}
 .sec-head{display:flex;align-items:center;gap:10px;margin-bottom:12px;
   padding-bottom:8px;border-bottom:1px solid var(--line)}
@@ -633,6 +642,10 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 
 @media(max-width:900px){
   .file-layout{display:block}
+  /* phones: the identity bar flows normally (the wrapping header makes a
+     fixed offset unreliable) and the chip rail keeps its own stickiness */
+  .file-top{position:static;flex-wrap:wrap;box-shadow:none}
+  .file-top-addr{white-space:normal}
   .file-nav{position:sticky;top:0;margin:0 -24px 18px;padding:8px 16px;
     background:linear-gradient(180deg,var(--ink) 82%,transparent);border-bottom:1px solid var(--line)}
   .file-nav ol{display:flex;overflow-x:auto;gap:4px;padding:4px;scrollbar-width:none;border-radius:12px}
