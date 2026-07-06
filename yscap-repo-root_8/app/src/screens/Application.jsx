@@ -7,6 +7,8 @@ import ActivityFeed from '../components/ActivityFeed.jsx';
 import StatusTimeline from '../components/StatusTimeline.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import ToolModal from '../components/ToolModal.jsx';
+import LlcPicker from '../components/LlcPicker.jsx';
+import LlcManager from '../components/LlcManager.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -206,6 +208,87 @@ function experienceRequirement(app) {
   };
 }
 
+/* The LLC condition — fulfilled by the LINKED entity's state, never by ad-hoc
+   uploads. No entity linked: pick or create one. Linked but not verified:
+   set it up right here (details, ownership, three documents) — everything
+   saves to the borrower profile and is reused on every future loan. Linked
+   and verified: automatically satisfied, documents already on file. */
+function LlcCondition({ it, app, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [pick, setPick] = useState({ id: null, name: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const linked = !!app.llc_id;
+  const verified = !!app.llc_verified;
+
+  async function link(llcId) {
+    if (!llcId || busy) return;
+    setBusy(true); setErr('');
+    try { await api.linkLlc(app.id, llcId); setSwitching(false); setOpen(true); await onChanged(); }
+    catch (e) { setErr(e.message || 'Could not link the LLC'); }
+    finally { setBusy(false); }
+  }
+
+  if (!linked || switching) {
+    return (
+      <ConditionRow
+        done={false}
+        issue={it.status === 'issue'}
+        title={it.label || 'Your LLC (vesting entity)'}
+        subtitle="Which LLC is taking title? Pick one of your entities or create a new one — its details and documents live on your profile and are reused on every loan."
+        status="To do"
+        open
+        action={switching ? <button className="btn link small" onClick={() => setSwitching(false)}>Cancel</button> : null}
+      >
+        {err && <div className="notice err" style={{ marginBottom: 6 }}>{err}</div>}
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <LlcPicker value={pick.name} onPick={setPick} placeholder="Start typing your LLC name…" />
+          </div>
+          <button className="btn primary small" disabled={!pick.id || busy} onClick={() => link(pick.id)}>
+            {busy ? 'Linking…' : 'Link this LLC'}
+          </button>
+        </div>
+      </ConditionRow>
+    );
+  }
+
+  if (verified) {
+    return (
+      <ConditionRow
+        done
+        title={it.label || 'Your LLC (vesting entity)'}
+        subtitle={`${app.llc_name} is verified — its formation documents, EIN letter and operating agreement are on file and linked to this loan automatically.`}
+        status="Verified ✓"
+        open={open}
+        action={<button className="btn ghost small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : 'View LLC'}</button>}
+      >
+        <LlcManager llcId={app.llc_id} onChanged={onChanged} />
+      </ConditionRow>
+    );
+  }
+
+  return (
+    <ConditionRow
+      done={isDone(it.status)}
+      issue={it.status === 'issue'}
+      title={it.label || 'Your LLC (vesting entity)'}
+      subtitle={`Set up ${app.llc_name}: entity details, full ownership, and its three documents. It saves to your profile — you'll never be asked again once it's verified.`}
+      status={statusText(it)}
+      open={open}
+      action={
+        <span className="row" style={{ gap: 6 }}>
+          <button className="btn link small" onClick={() => setSwitching(true)}>Use a different LLC</button>
+          <button className="btn primary small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : 'Set up LLC'}</button>
+        </span>
+      }
+    >
+      <LlcManager llcId={app.llc_id} onChanged={onChanged} />
+    </ConditionRow>
+  );
+}
+
 export default function Application() {
   const { id } = useParams();
   const [app, setApp] = useState(null);
@@ -307,8 +390,9 @@ export default function Application() {
   const cardItem = items.find(it => it.tool_key === 'appraisal_card');
   const contactItems = items.filter(it => it.tool_key && CONTACT[it.tool_key]);
   const idItem = items.find(it => it.template_code === 'rtl_p1_id');
+  const llcItem = items.find(it => it.template_code === 'rtl_p1_llc');
   const assetsItem = items.find(it => it.template_code === 'rtl_p3_assets');
-  const usedIds = new Set([sowItem, trItem, idItem, assetsItem, ...contactItems].filter(Boolean).map(x => x.id));
+  const usedIds = new Set([sowItem, trItem, idItem, llcItem, assetsItem, ...contactItems].filter(Boolean).map(x => x.id));
   const docItems = items.filter(it => !usedIds.has(it.id) && !it.tool_key);
   const registeredQuote = (() => {
     if (!app.registered_quote) return null;
@@ -436,7 +520,10 @@ export default function Application() {
                 />
               )}
 
-              {/* 3 — Company contacts (title / insurance) + appraisal card */}
+              {/* 3 — The vesting LLC: linked entity's state drives this condition */}
+              {llcItem && show(llcItem) && <LlcCondition it={llcItem} app={app} onChanged={load} />}
+
+              {/* 4 — Company contacts (title / insurance) + appraisal card */}
               {contactItems.filter(show).map(it => <ContactCondition key={it.id} it={it} appId={id} onSaved={load} />)}
               {cardItem && show(cardItem) && <CardCondition it={cardItem} appId={id} onSaved={load} />}
 

@@ -170,10 +170,13 @@ export const api = {
   contacts:     (type) => req('GET', `/api/borrower/contacts${type ? `?type=${type}` : ''}`),
   saveContact:  (b) => req('POST', '/api/borrower/contacts', b),
 
-  // reusable LLC / vesting-entity database
+  // reusable LLC / vesting-entity database (info + ownership + 3 doc slots)
   llcs:         () => req('GET', '/api/borrower/llcs'),
+  llc:          (id) => req('GET', `/api/borrower/llcs/${id}`),
   createLlc:    (b) => req('POST', '/api/borrower/llcs', b),
   updateLlc:    (id, b) => req('PATCH', `/api/borrower/llcs/${id}`, b),
+  saveLlcMembers: (id, members) => req('PUT', `/api/borrower/llcs/${id}/members`, { members }),
+  linkLlc:      (appId, llcId) => req('POST', `/api/borrower/applications/${appId}/link-llc`, { llcId }),
 
   // investment track record (experience) — drives the pricing tier
   trackRecords:    () => req('GET', '/api/borrower/track-records'),
@@ -214,6 +217,8 @@ export const api = {
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
+  staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
+  staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id) => req('POST', `/api/staff/track-records/${id}/verify`),
   staffPatchItem:   (itemId, b) => req('PATCH', `/api/staff/checklist/${itemId}`, b),
   staffRequestDoc:  (appId, b) => req('POST', `/api/staff/applications/${appId}/checklist`, b),

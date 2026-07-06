@@ -48,7 +48,10 @@ export default function LlcPicker({ value, onPick, placeholder }) {
           {matches.map(l => (
             <div key={l.id} role="option" className="addr-item" onMouseDown={e => { e.preventDefault(); choose(l); }}>
               <span className="addr-pin">◆</span>
-              <span>{l.llc_name}{l.formation_state ? ` · ${l.formation_state}` : ''}{Number(l.doc_count) ? ` · ${l.doc_count} docs` : ''}</span>
+              <span>
+                {l.llc_name}{l.formation_state ? ` · ${l.formation_state}` : ''}
+                {l.is_verified ? ' · Verified ✓' : (l.completeness && Number(l.completeness.docs_uploaded) ? ` · ${l.completeness.docs_uploaded}/${l.completeness.docs_required} docs` : '')}
+              </span>
             </div>
           ))}
           {q && !exact && (
