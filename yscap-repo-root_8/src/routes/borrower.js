@@ -1069,6 +1069,23 @@ router.post('/track-records/:id/documents', async (req, res) => {
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 
+// The saved STATIC COPY of the track record: the live builder posts a fresh
+// self-contained HTML file after every change; one current copy per borrower,
+// downloadable from the Profile section and every file's experience condition.
+router.put('/track-record/snapshot', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const out = await require('../lib/track-record-snapshot').saveSnapshot(me(req), {
+      html: b.html, filename: b.filename, uploadedByKind: 'borrower', uploadedById: me(req),
+    });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message || 'could not save the snapshot' }); }
+});
+router.get('/track-record/snapshot', async (req, res) => {
+  try { res.json(await require('../lib/track-record-snapshot').latestSnapshot(me(req))); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- DOCUMENTS (upload metadata + bytes via storage) ----------------
 // Accepts base64 body {filename, contentType, dataBase64, applicationId|llcId, checklistItemId}
 router.post('/documents', async (req, res) => {

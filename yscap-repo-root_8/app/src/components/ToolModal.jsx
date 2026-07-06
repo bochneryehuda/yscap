@@ -1,14 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
-/* Full-screen overlay that hosts a static tool (Scope of Work builder) in an
-   iframe, connected to a loan-file condition. The tool autosaves while open,
-   and CLOSING SAVES TOO: "Save & back to my file" asks the tool to run its
-   full save (editable HTML + Excel + PDF onto the condition) via a
-   postMessage handshake before the overlay closes — so leaving never loses
-   the exports. A timeout guarantees the user is never trapped. */
+/* Full-screen workspace that hosts a static tool (Scope of Work builder)
+   connected to a loan-file condition. It reads as a PAGE of the portal, not a
+   popup: an edge-to-edge sheet that slides up with a slim sticky header —
+   no dark rim, no box-inside-a-box, safe-area aware on phones.
+
+   The tool autosaves while open, and CLOSING SAVES TOO: both the back arrow
+   and "Done" ask the tool to run its full save (editable HTML + Excel + PDF
+   onto the condition) via a postMessage handshake before the sheet closes —
+   so leaving never loses the exports. A timeout guarantees the user is never
+   trapped. */
 export default function ToolModal({ url, title, onClose }) {
   const frameRef = useRef(null);
   const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   const saveAndClose = useCallback(() => {
     if (saving) return;
@@ -37,17 +42,34 @@ export default function ToolModal({ url, title, onClose }) {
   }, [saveAndClose]);
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(6,10,12,.88)', display: 'flex', flexDirection: 'column', padding: '2vh 2vw' }}>
-      <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
-        <h3 style={{ color: '#f3efe6', margin: 0 }}>{title}</h3>
-        <span className="muted small tm-hint" style={{ marginLeft: 12 }}>Autosaves as you work — closing also saves the exports.</span>
-        <div className="spacer" />
-        <button className="btn primary" disabled={saving} onClick={saveAndClose}>
-          {saving ? 'Saving to your file…' : 'Done — save & back to my file'}
+    <div className="toolsheet" role="dialog" aria-modal="true" aria-label={title}>
+      <header className="toolsheet-head">
+        <button className="toolsheet-back" aria-label="Save and go back to your file"
+          disabled={saving} onClick={saveAndClose}>←</button>
+        <div className="toolsheet-titles">
+          <strong>{title}</strong>
+          <span className="muted small">Autosaves as you work — leaving saves to your file too.</span>
+        </div>
+        <button className="btn primary toolsheet-done" disabled={saving} onClick={saveAndClose}>
+          {saving ? 'Saving to your file…' : 'Done'}
         </button>
+      </header>
+      <div className="toolsheet-body">
+        {!loaded && (
+          <div className="toolframe-loading" aria-live="polite">
+            <span className="toolframe-spinner" aria-hidden="true" />
+            Loading…
+          </div>
+        )}
+        <iframe ref={frameRef} src={url} title={title} onLoad={() => setLoaded(true)}
+          style={{ flex: 1, width: '100%', height: '100%', border: 0, display: 'block', background: 'transparent', opacity: loaded ? 1 : 0, transition: 'opacity .25s ease' }} />
       </div>
-      <iframe ref={frameRef} src={url} title={title}
-        style={{ flex: 1, width: '100%', border: '1px solid rgba(127,169,176,.35)', borderRadius: 12, background: '#0b1014' }} />
+      {saving && (
+        <div className="toolsheet-savewash" aria-hidden="true">
+          <span className="toolframe-spinner" />
+          Saving your work to the loan file…
+        </div>
+      )}
     </div>
   );
 }

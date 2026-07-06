@@ -100,6 +100,13 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
                 updated_at=now()
           WHERE id=$1`,
         [item.id, JSON.stringify(payload)]);
+    } else if (wasAuto || !item.tool_payload) {
+      // Keep the live counts on the condition even when nothing changes
+      // status-wise, so every conditions list (borrower AND staff) shows
+      // "entered vs required" without the tool ever being opened.
+      await client.query(
+        `UPDATE checklist_items SET tool_payload=$2, updated_at=now() WHERE id=$1`,
+        [item.id, JSON.stringify(payload)]);
     }
   }
   return { required, counts, satisfied, itemId: item.id };
