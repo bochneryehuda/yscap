@@ -222,6 +222,32 @@ async function auditData() {
   out.matchStatus = await q(`SELECT match_status, count(*)::int n FROM clickup_task_index WHERE match_status IS NOT NULL GROUP BY 1 ORDER BY n DESC`);
   out.ambiguous = await q(`SELECT task_id, task_name FROM clickup_task_index WHERE match_status='ambiguous' LIMIT 25`);
   out.snapshotsStored = (await q(`SELECT count(*)::int n FROM clickup_task_index WHERE snapshot IS NOT NULL`))[0];
+  // ---- reconciliation diagnostics (portal vs ClickUp RTL SHORT MTM dashboard) ----
+  // Raw ClickUp status distribution for the linked RTL files, so we can map the
+  // portal's counts onto ClickUp's own dashboard buckets (which filter on raw
+  // statuses / status-type) and reverse-engineer its 30-active / 96-funded rule.
+  out.rtlInternalStatus = await q(
+    `SELECT COALESCE(internal_status,'(none)') st, count(*)::int n FROM applications
+      WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL GROUP BY 1 ORDER BY n DESC`);
+  // Raw status of data_only (blank / non-RTL *Program) tasks. A FUNDED status here
+  // is a likely "missing funded" the ClickUp RTL dashboard counts but the portal
+  // skipped for lack of a recognized RTL program label.
+  out.dataOnlyStatus = await q(
+    `SELECT COALESCE(snapshot->>'status','(none)') st, count(*)::int n FROM clickup_task_index
+      WHERE kind='data_only' GROUP BY 1 ORDER BY n DESC LIMIT 40`);
+  // Hard proof the address fix landed: linked files whose property_address is the
+  // NORMALIZED shape (has oneLine) vs still-raw vs blank.
+  out.addressShape = (await q(
+    `SELECT count(*) FILTER (WHERE property_address ? 'oneLine')::int normalized,
+            count(*) FILTER (WHERE property_address IS NOT NULL AND NOT (property_address ? 'oneLine'))::int raw_or_other,
+            count(*) FILTER (WHERE property_address IS NULL)::int none
+       FROM applications WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`))[0];
+  // Funded files still awaiting an actual closing date (K1: the "funded, no date yet" bucket).
+  out.fundedDateCoverage = (await q(
+    `SELECT count(*) FILTER (WHERE status='funded')::int funded_total,
+            count(*) FILTER (WHERE status='funded' AND actual_closing IS NULL)::int funded_no_date,
+            count(*) FILTER (WHERE status='funded' AND actual_closing IS NOT NULL)::int funded_dated
+       FROM applications WHERE deleted_at IS NULL`))[0];
   console.log('[audit] ' + JSON.stringify(out));
   return out;
 }
