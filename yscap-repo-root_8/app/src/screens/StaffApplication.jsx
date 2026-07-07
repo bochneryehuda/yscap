@@ -195,6 +195,30 @@ function ClickupFileData({ app }) {
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city, a.state, a.zip].filter(Boolean).join(', ') || '—');
+// Build the Rehab Budget / Scope of Work builder URL SEEDED from the file —
+// same prefill the borrower gets (address, transaction, property/project type,
+// target construction budget) plus internal=1 so it talks to the staff
+// tool-state endpoints. Previously the staff link was bare, so the builder
+// opened empty instead of pre-filled.
+function sowUrl(appId, itemId, app) {
+  const p = new URLSearchParams({ app: appId, item: itemId, internal: '1', embed: '1' });
+  const a = app || {};
+  const pa = a.property_address;
+  const addr = pa ? (pa.oneLine || [pa.street || pa.line1, pa.city, pa.state, pa.zip].filter(Boolean).join(', ')) : '';
+  if (addr) p.set('address', addr);
+  const units = Number(a.units) || 0;
+  if (units > 0) p.set('units', String(units));
+  p.set('propType', units >= 5 ? 'large' : units >= 2 ? 'multi' : 'single');
+  if (a.loan_type && /refi/i.test(a.loan_type)) p.set('txn', 'refi');
+  else if (a.loan_type && /purchase/i.test(a.loan_type)) p.set('txn', 'purchase');
+  const rt = String(a.rehab_type || a.program || '');
+  if (/ground/i.test(rt)) p.set('projType', 'ground');
+  else if (/heavy|gut/i.test(rt)) p.set('projType', 'heavy');
+  else if (/moderate/i.test(rt)) p.set('projType', 'moderate');
+  else if (/cosmetic/i.test(rt)) p.set('projType', 'cosmetic');
+  if (Number(a.rehab_budget) > 0) p.set('target', String(Math.round(Number(a.rehab_budget))));
+  return `/tools/rehab-budget.html?${p.toString()}`;
+}
 const STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
 const APP_STATUSES = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
 const APP_STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
@@ -1047,7 +1071,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       {sowOpen && (
         <ToolModal
           title="Rehab Budget — Scope of Work (internal)"
-          url={`/tools/rehab-budget.html?app=${appId}&item=${sowOpen}&internal=1&embed=1`}
+          url={sowUrl(appId, sowOpen, app)}
           onClose={() => setSowOpen(null)} />
       )}
       {trOpen && app.borrower_id && (
