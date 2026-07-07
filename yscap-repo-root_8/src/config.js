@@ -69,6 +69,13 @@ module.exports = {
   // --- auth / crypto ---
   jwtSecret:     resolveSecret('JWT_SECRET'),
   ssnKey:        resolveSecret('SSN_ENCRYPTION_KEY'),
+  // Stable HMAC key for SSN matching (borrower identity graph). Derived from the
+  // SSN encryption key so it needs no extra env var and stays stable across
+  // restarts — an ephemeral key would silently break historical matching.
+  // Override with SSN_MATCH_KEY if you ever rotate independently.
+  ssnMatchKey:   process.env.SSN_MATCH_KEY ||
+                 require('crypto').createHash('sha256')
+                   .update('ssn-match:' + (process.env.SSN_ENCRYPTION_KEY || 'dev-only-change-me')).digest('hex'),
   // Exposed on /api/health as jwtStable/ssnKeyStable — when true, the env var
   // is missing and sessions/SSNs won't survive a restart. Fix the env.
   jwtSecretGenerated: generatedSecrets.has('JWT_SECRET'),
@@ -124,8 +131,14 @@ module.exports = {
   // session sends admin overrides with a registration.
   adminPricingKey: process.env.ADMIN_PRICING_KEY || 'Yscg@12345',
 
-  // --- ClickUp (deferred; server-side token only) ---
-  clickupToken:  process.env.CLICKUP_API_TOKEN,
+  // --- ClickUp bidirectional sync (server-side token only) ---
+  clickupToken:         process.env.CLICKUP_API_TOKEN,
+  clickupTeamId:        process.env.CLICKUP_TEAM_ID || '9011888435',
+  clickupPipelineSpace: process.env.CLICKUP_PIPELINE_SPACE || '90113223301',
+  clickupCrmSpace:      process.env.CLICKUP_CRM_SPACE || '90113224042',
+  clickupWebhookSecret: process.env.CLICKUP_WEBHOOK_SECRET,           // persisted after webhook creation
+  clickupSyncEnabled:   process.env.CLICKUP_SYNC_ENABLED === '1',     // master switch (default off)
+  clickupPollSec:       parseInt(process.env.CLICKUP_POLL_SEC || '300', 10),
 
   // --- address autocomplete / verification (server-side proxy) ---
   // The frontend calls OUR /api/address/*; any real key lives only here, never

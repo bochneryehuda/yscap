@@ -60,13 +60,15 @@ On every webhook/poll we re-resolve the task's borrower and **keep linking** any
 - SSN is matched via keyed **hash**, never compared in plaintext; the plaintext stays encrypted. Logs stay masked.
 - Backfilled files/profiles are **internal/staff-only** until a borrower links; nothing is shown borrower-facing without a confirmed link.
 
-## 11. Decisions needed before building
-1. **Auto-link vs confirm** on registration: auto-link on strong (SSN) match but *suggest & confirm* on weaker 2-piece matches — or auto-link on any match — or always require staff/borrower confirmation?
-2. **SSN matching:** OK to store a keyed HMAC hash of the SSN (never plaintext) for linking, or match on last4 + name + DOB instead?
-3. **Track-record deal-type default:** fix&flip→flip, purchase+refi-same-address→hold, else default hold(unverified) — confirm.
-4. **Alt contacts:** add a `borrower_contacts` table to keep every email/phone — confirm.
-5. **Track-record source:** only **closed/funded** tasks become track-record lines (in-progress files don't) — confirm.
-6. **Backfill re-sync cadence:** webhooks (live) + a full reconciliation sweep every N (e.g. nightly) — confirm cadence.
+## 11. Decisions — ✅ RESOLVED (locked)
+1. **Auto-link:** ✅ **auto-link on a full SSN match; on weaker 2-piece matches (name+email/phone/DOB), show a "these look like your past files — confirm?" step** before linking. Never blind-link on weak signals.
+2. **SSN matching:** ✅ **keyed HMAC-SHA256(SSN, SSN_MATCH_KEY)** stored on borrowers + synced sources; plaintext stays encrypted, logs masked.
+3. **Track-record deal type:** ✅ fix&flip→**flip**; purchase+refi same property→**fix-&-hold**; else **default fix-&-hold, unverified/changeable**.
+4. **Alt contacts:** ✅ **`borrower_contacts` table** keeps every email/phone; one primary; all selectable.
+5. **Track-record source:** ✅ default — only **closed/funded** tasks become track-record lines *(owner may override later)*.
+6. **Cadence:** ✅ default — **live webhooks + a nightly full reconciliation sweep** *(owner may retune)*.
+
+**Confirmation UX (from #1):** a new `borrower_link_candidates` surface — when a registering borrower has a weak match, we present the candidate past-profile(s) for them (or staff) to confirm/merge; a strong SSN match links silently.
 
 ---
 
