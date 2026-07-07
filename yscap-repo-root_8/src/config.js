@@ -118,6 +118,9 @@ module.exports = {
   msClientSecret:process.env.MS_CLIENT_SECRET,
   // Resend provider:
   resendApiKey:  process.env.RESEND_API_KEY,
+  // Hosted card-OCR (appraisal "scan a photo"): OCR.space. Get a free key at
+  // https://ocr.space/ocrapi; unset falls back to the public demo key.
+  ocrSpaceApiKey: process.env.OCR_SPACE_API_KEY,
 
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'

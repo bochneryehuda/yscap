@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
+import { fileToBase64 } from '../lib/files.js';
 import { useAuth } from '../lib/auth.jsx';
 import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
@@ -202,7 +203,7 @@ function Badge({ children, tone }) {
 // capability (incl. the loan-coordinator persona and per-user overrides).
 const canComplete = (role) => ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview }) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState(it.notes || '');
   const signed = !!it.signed_off_at;
@@ -246,14 +247,23 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onReviewDoc, onDownlo
       </div>
 
       {isDoc && (onUploadTo || itemDocs.length > 0) && (
-        <div style={{ width: '100%', paddingLeft: 20 }}>
+        <div style={{ width: '100%', paddingLeft: 20 }}
+          className={(!slots && onDropTo) ? 'cond-drop' : undefined}
+          onDragOver={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
+          onDragLeave={(!slots && onDropTo) ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
+          onDrop={(!slots && onDropTo) ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = Array.from(e.dataTransfer.files || []); if (f.length) onDropTo(f, { itemId: it.id, slotBase: itemDocs.length }); } : undefined}>
           {slots ? (
-            /* Fixed named slots (e.g. Insurance → binder + invoice). */
+            /* Fixed named slots (e.g. Insurance → binder + invoice) — each slot is
+               its own drop target so a dropped file lands in the right slot. */
             slots.map(slot => {
               const doc = itemDocs.find(d => (d.slot_label || '') === slot.label);
               const rs = doc ? (doc.review_status || 'pending') : null;
+              const slotTarget = doc ? { itemId: it.id, slot: slot.label, replaceDocumentId: doc.id } : { itemId: it.id, slot: slot.label };
               return (
-                <div className="row" key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
+                <div className={`row${onDropTo ? ' cond-drop' : ''}`} key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}
+                  onDragOver={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
+                  onDragLeave={onDropTo ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
+                  onDrop={onDropTo ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = Array.from(e.dataTransfer.files || []); if (f.length) onDropTo(f, slotTarget); } : undefined}>
                   <span className="muted small" style={{ minWidth: 140 }}>{slot.label}</span>
                   {doc ? (
                     <>
@@ -391,21 +401,21 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     } catch (e) { setErr(e.message || 'Could not create the entity'); }
     finally { setBusy(''); }
   }
-  async function onFile(e) {
-    const files = Array.from((e.target && e.target.files) || []);
-    if (!files.length || !upTarget) return;
-    setBusy(upTarget.itemId); setErr('');
+  // Shared by the file picker AND per-slot drag-and-drop — target passed in.
+  async function uploadLlcFiles(fileList, tgt) {
+    const files = Array.from(fileList || []);
+    if (!files.length || !tgt) return;
+    setBusy(tgt.itemId); setErr('');
     try {
       // Upload every selected file to this entity slot. On a "replace" action only
       // the first file replaces the existing document; any extras are added as new
       // documents on the same slot.
       let first = true;
       for (const file of files) {
-        const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
         await api.staffUploadAppDoc(appId, {
-          llcId: upTarget.llcId, checklistItemId: upTarget.itemId, slot: upTarget.slotLabel || undefined,
-          replaceDocumentId: (first ? upTarget.replaceDocumentId : null) || undefined,
-          filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
+          llcId: tgt.llcId, checklistItemId: tgt.itemId, slot: tgt.slotLabel || undefined,
+          replaceDocumentId: (first ? tgt.replaceDocumentId : null) || undefined,
+          filename: file.name, contentType: file.type, dataBase64: await fileToBase64(file),
         });
         first = false;
       }
@@ -414,6 +424,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     } catch (e2) { setErr(e2.message || 'Upload failed'); }
     finally { setBusy(''); }
   }
+  const onFile = (e) => uploadLlcFiles(e.target && e.target.files, upTarget);
 
   const load = () => app.borrower_id
     ? api.staffBorrowerLlcs(app.borrower_id).then(setLlcs).catch(e => { setErr(e.message || 'Could not load LLCs'); setLlcs([]); })
@@ -599,8 +610,16 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                     // the officer/processor flips it to required per file/entity,
                     // and it then gates the LLC's verification.
                     const toggleable = /good standing/i.test(s.label || '');
+                    // Per-slot drag-and-drop: drop a file onto this slot to upload
+                    // it there (replaces the current doc if one exists). Locked
+                    // once the LLC is verified.
+                    const canDropSlot = !l.is_verified;
+                    const slotTarget = { llcId: l.id, itemId: s.item_id, slotLabel: s.slot_label || s.label, replaceDocumentId: s.document_id || undefined };
                     return (
-                      <div className="row" key={s.item_id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'center' }}>
+                      <div className={`row${canDropSlot ? ' cond-drop' : ''}`} key={s.item_id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0', alignItems: 'center' }}
+                        onDragOver={canDropSlot ? (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); } : undefined}
+                        onDragLeave={canDropSlot ? (e) => { e.currentTarget.classList.remove('drop-over'); } : undefined}
+                        onDrop={canDropSlot ? (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = Array.from(e.dataTransfer.files || []); if (f.length) uploadLlcFiles(f, slotTarget); } : undefined}>
                         <span className="muted small" style={{ minWidth: 170 }}>{s.label}{s.is_required === false ? ' (optional)' : ''}</span>
                         {toggleable && (
                           <button className="btn link small" disabled={!!busy}
@@ -761,7 +780,7 @@ function StaffTrackRecordPanel({ borrowerId }) {
    borrower works through (Scope of Work, track record, contacts, ID, document
    slots), with every uploaded PDF inline and full sign-off capability — a
    separate section from the internal phase-by-phase checklist. */
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onChanged, onPreview }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(false);    // borrower track record open full-screen (staff)
@@ -805,8 +824,15 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
         const done = signed || it.status === 'satisfied' || it.status === 'received';
+        // Drop a file onto a document condition to upload it (same as the button).
+        const canDrop = !it.tool_key && !!onDropTo;
+        const dropProps = canDrop ? {
+          onDragOver: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); },
+          onDragLeave: (e) => { e.currentTarget.classList.remove('drop-over'); },
+          onDrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = Array.from(e.dataTransfer.files || []); if (f.length) onDropTo(f, { itemId: it.id, slotBase: itemDocs.length }); },
+        } : {};
         return (
-          <div className="checkitem" key={it.id} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }}>
+          <div className={`checkitem${canDrop ? ' cond-drop' : ''}`} key={it.id} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 6 }} {...dropProps}>
             <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
               <span className={`dot ${signed || it.status === 'satisfied' ? 'done' : 'outstanding'}`} style={{ marginTop: 4, ...(it.status === 'issue' ? { background: 'var(--danger)' } : {}) }} />
               <div style={{ flex: 1 }}>
@@ -1127,26 +1153,24 @@ export default function StaffApplication() {
   const staffFileRef = useRef(null);
   const [uploadTarget, setUploadTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId}
   const pickUpload = (t) => { setUploadTarget(t || {}); staffFileRef.current && staffFileRef.current.click(); };
-  async function onStaffFile(e) {
-    const all = Array.from((e.target.files) || []);
-    if (!all.length || !uploadTarget) return;
-    const files = uploadTarget.replaceDocumentId ? all.slice(0, 1) : all;
+  // Shared by the file picker AND drag-and-drop — target passed explicitly.
+  async function uploadStaffFiles(fileList, tgt) {
+    const all = Array.from(fileList || []);
+    if (!all.length || !tgt) return;
+    const files = tgt.replaceDocumentId ? all.slice(0, 1) : all;
     setBusyAct('upload'); setErr('');
     try {
-      const slotBase = Number.isFinite(uploadTarget.slotBase) ? uploadTarget.slotBase : null;
+      const slotBase = Number.isFinite(tgt.slotBase) ? tgt.slotBase : null;
       for (let i = 0; i < files.length; i++) {
-        const dataUrl = await new Promise((res, rej) => {
-          const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(files[i]);
-        });
         await api.staffUploadAppDoc(id, {
-          checklistItemId: uploadTarget.itemId || undefined,
-          llcId: uploadTarget.llcId || undefined,
+          checklistItemId: tgt.itemId || undefined,
+          llcId: tgt.llcId || undefined,
           // LLC document slots are single-doc per slot (formation/EIN/…), so an
           // LLC upload keeps the slot's own label rather than "Document N".
-          slot: (uploadTarget.replaceDocumentId || uploadTarget.llcId) ? (uploadTarget.slot || undefined)
-            : slotBase != null ? `Document ${slotBase + i + 1}` : (uploadTarget.slot || undefined),
-          replaceDocumentId: uploadTarget.replaceDocumentId || undefined,
-          filename: files[i].name, contentType: files[i].type, dataBase64: String(dataUrl).split(',')[1],
+          slot: (tgt.replaceDocumentId || tgt.llcId) ? (tgt.slot || undefined)
+            : slotBase != null ? `Document ${slotBase + i + 1}` : (tgt.slot || undefined),
+          replaceDocumentId: tgt.replaceDocumentId || undefined,
+          filename: files[i].name, contentType: files[i].type, dataBase64: await fileToBase64(files[i]),
         });
       }
       flash(files.length > 1
@@ -1156,6 +1180,7 @@ export default function StaffApplication() {
     } catch (e2) { setErr(e2.message || 'Upload failed'); }
     finally { setBusyAct(''); if (staffFileRef.current) staffFileRef.current.value = ''; }
   }
+  const onStaffFile = (e) => uploadStaffFiles(e.target.files, uploadTarget);
   async function archiveApp() {
     const reason = window.prompt('Archive this file? It leaves the pipeline and stops counting in the dashboard, but is kept in the Archived folder and can be restored anytime. Optional reason:');
     if (reason === null) return;
@@ -1484,7 +1509,7 @@ export default function StaffApplication() {
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
-        onUploadTo={pickUpload} onChanged={load} onPreview={openPreview} />
+        onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview} />
       <div className="grid cols-2" style={{ marginTop: 14 }}>
         <AddConditionPanel appId={id} items={items} onChanged={load}
           onError={(t) => setErr(t)} onFlash={flash} />
@@ -1501,7 +1526,7 @@ export default function StaffApplication() {
           ? <p className="muted small">No internal conditions on this file.</p>
           : [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map(it => (
             <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
-              docs={docs} onUploadTo={pickUpload} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+              docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
               dlBusy={dlBusy} onPreview={openPreview} />))}
       </div>
       </Section>
@@ -1527,7 +1552,7 @@ export default function StaffApplication() {
             <div key={k} style={{ marginTop: 10 }}>
               <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
               {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
-                docs={docs} onUploadTo={pickUpload} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+                docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
                 dlBusy={dlBusy} onPreview={openPreview} />)}
             </div>
           ))}

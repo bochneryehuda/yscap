@@ -142,7 +142,11 @@ async function fileActivity(appId, onlySafe) {
         UNION ALL
         SELECT created_at, 'document', uploaded_by_kind, NULL,
                (visibility='borrower' AND source_type<>'chat_attachment'),
-               CASE WHEN review_status='accepted' THEN 'accepted a document'
+               -- Borrower feed ($2=true): the borrower's own action was the
+               -- UPLOAD; accept/flag are staff review actions and must not read
+               -- as "Borrower accepted a document". Staff feed keeps the detail.
+               CASE WHEN $2::bool THEN 'uploaded a document'
+                    WHEN review_status='accepted' THEN 'accepted a document'
                     WHEN review_status='rejected' THEN 'flagged a document for correction'
                     ELSE 'uploaded a document' END,
                filename
@@ -162,7 +166,9 @@ async function fileActivity(appId, onlySafe) {
                'moved the file to '||replace(to_status,'_',' '), NULL
           FROM application_status_history WHERE application_id=$1
      ) q
-     WHERE (NOT $2::bool OR q.borrower_safe)
+     -- Borrower feed ($2=true): only events the borrower THEMSELVES performed
+     -- (owner request) — never staff actions, status moves, or conditions.
+     WHERE (NOT $2::bool OR (q.borrower_safe AND q.actor = 'borrower'))
      ORDER BY at DESC NULLS LAST LIMIT 120`, [appId, !!onlySafe]);
 
   // The audit-log trail: what changed, exactly, and by whom.
@@ -190,6 +196,11 @@ async function fileActivity(appId, onlySafe) {
       };
     });
   } catch (_) { /* the feed must never fail on an audit hiccup */ }
+
+  // Borrower feed: only audit events the borrower themselves performed (their
+  // own uploads / edits) — staff-logged edits, reprices, reminders, closing
+  // dates, etc. are internal and stay off the borrower-facing log.
+  if (onlySafe) auditRows = auditRows.filter((row) => row.actor === 'borrower');
 
   const all = [...r.rows, ...auditRows]
     .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))

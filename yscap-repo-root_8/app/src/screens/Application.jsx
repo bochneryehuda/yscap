@@ -13,6 +13,7 @@ import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import { MoneyInput } from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -76,6 +77,8 @@ function CardCondition({ it, appId, onSaved }) {
   const [f, setF] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '', saveForReuse: true });
   const [busy, setBusy] = useState(false);
   const [formErr, setFormErr] = useState('');
+  const [scanning, setScanning] = useState('');
+  const scanRef = useRef(null);
   useEffect(() => { api.get(`/api/borrower/applications/${appId}/appraisal-card`).then(setSaved).catch(() => {}); }, [appId]);
   const digits = f.number.replace(/\D/g, '');
   const numberOk = luhnOk(digits);
@@ -91,6 +94,31 @@ function CardCondition({ it, appId, onSaved }) {
     } catch (e) { setFormErr(e.message || 'Could not save the card'); }
     finally { setBusy(false); }
   }
+  // Card scan via a HOSTED OCR API (owner choice, 2026-07-07). The photo is sent
+  // to our backend, which proxies to the OCR provider and returns the parsed
+  // number + expiry — the image is never persisted and card data is never
+  // logged. The borrower confirms/edits before saving; manual entry always works.
+  async function scanCard(file) {
+    if (!file) return;
+    setFormErr(''); setScanning('Reading your card…');
+    try {
+      const dataBase64 = await fileToBase64(file);
+      const r = await api.post(`/api/borrower/applications/${appId}/scan-card`, { dataBase64, contentType: file.type });
+      if (!r || (!r.number && !r.expMonth)) {
+        setScanning(''); setFormErr("Couldn't read the card from that photo — please enter the details below."); return;
+      }
+      setF(prev => ({
+        ...prev,
+        number: r.number ? String(r.number).replace(/(\d{4})(?=\d)/g, '$1 ').trim() : prev.number,
+        expMonth: r.expMonth || prev.expMonth,
+        expYear: r.expYear ? (String(r.expYear).length === 2 ? '20' + r.expYear : String(r.expYear)) : prev.expYear,
+      }));
+      setScanning('Scanned ✓ — double-check the number and expiry, then add the CVC (back of the card) and billing ZIP.');
+    } catch (e) {
+      setScanning('');
+      setFormErr("Card scanning isn't available right now — please enter the details below.");
+    }
+  }
   return (
     <ConditionRow
       done={done}
@@ -103,6 +131,13 @@ function CardCondition({ it, appId, onSaved }) {
       action={<button className="btn ghost small" onClick={() => setOpen(o => !o)}>{open ? 'Close' : saved ? 'Replace card' : 'Enter card details'}</button>}
     >
       {formErr && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{formErr}</div>}
+      <div className="row" style={{ gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input ref={scanRef} type="file" accept="image/*" style={{ display: 'none' }}
+          onChange={e => { const file = e.target.files && e.target.files[0]; e.target.value = ''; scanCard(file); }} />
+        <button type="button" className="btn ghost small" onClick={() => scanRef.current && scanRef.current.click()}>📷 Scan card from a photo</button>
+        <span className="muted small">Read on your device — the photo is never uploaded.</span>
+      </div>
+      {scanning && <div className="notice info" style={{ marginBottom: 8 }}>{scanning}</div>}
       <div className="grid cols-2">
         <div className="field" style={{ gridColumn: '1 / -1' }}><label>Card number</label>
           <input className="input" inputMode="numeric" autoComplete="off" value={f.number}
@@ -139,9 +174,22 @@ function CardCondition({ it, appId, onSaved }) {
 /* One row in the conditions list: dot + title + status pill + right action,
    with optional expandable body. Every condition on the file renders through
    this so the whole section reads as one uniform list. */
-function ConditionRow({ done, issue, title, subtitle, status, action, children, open }) {
+function ConditionRow({ done, issue, title, subtitle, status, action, children, open, onDropFiles }) {
+  const [over, setOver] = useState(false);
+  // When onDropFiles is provided the whole row accepts a dragged-in document —
+  // same upload as the button, you just drop the file onto the condition.
+  const dropProps = onDropFiles ? {
+    onDragOver: (e) => { e.preventDefault(); if (!over) setOver(true); },
+    onDragLeave: (e) => { if (e.currentTarget === e.target) setOver(false); },
+    onDrop: (e) => {
+      e.preventDefault(); setOver(false);
+      const f = Array.from(e.dataTransfer.files || []);
+      if (f.length) onDropFiles(f);
+    },
+  } : {};
   return (
-    <div className="checkitem" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
+    <div className={`checkitem${onDropFiles ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`}
+      style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }} {...dropProps}>
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <span className={`dot ${done ? 'done' : 'outstanding'}`} style={{ marginTop: 4, ...(issue ? { background: 'var(--danger)' } : {}) }} />
         <div style={{ flex: 1 }}>
@@ -152,6 +200,7 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
         {action}
       </div>
       {open && <div style={{ width: '100%', paddingLeft: 20 }}>{children}</div>}
+      {over && onDropFiles && <div className="drop-hint">Drop file to upload</div>}
     </div>
   );
 }
@@ -528,41 +577,37 @@ export default function Application() {
     /* eslint-disable-next-line */
   }, [id]);
 
-  const readB64 = (file) => new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(String(r.result).split(',')[1]);
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
+  const readB64 = fileToBase64;   // shared reader (lib/files.js)
 
   // Multi-select aware: picking several PDFs at once uploads them all onto the
   // condition, each in its own slot (Document N, N+1, …). Replacements and the
-  // photo ID stay single-file.
-  async function onFile(e) {
-    const all = Array.from((e.target.files) || []);
-    if (!all.length || !target) return;
-    const files = (target.photoId || target.replaceDocumentId) ? all.slice(0, 1) : all;
+  // photo ID stay single-file. Shared by the file picker AND drag-and-drop, so
+  // the target is passed explicitly rather than read from state.
+  async function uploadFiles(fileList, tgt) {
+    const all = Array.from(fileList || []);
+    if (!all.length || !tgt) return;
+    const files = (tgt.photoId || tgt.replaceDocumentId) ? all.slice(0, 1) : all;
     setErr('');
     try {
-      if (target.photoId) {
+      if (tgt.photoId) {
         // The government-ID condition saves to the PROFILE too, so the next
         // file's ID condition is fulfilled automatically.
         setMsg('Uploading…');
         await api.uploadPhotoId({ applicationId: id, filename: files[0].name, contentType: files[0].type, dataBase64: await readB64(files[0]) });
       } else {
-        const slotBase = Number.isFinite(target.slotBase) ? target.slotBase : null;
+        const slotBase = Number.isFinite(tgt.slotBase) ? tgt.slotBase : null;
         for (let i = 0; i < files.length; i++) {
           setMsg(files.length > 1 ? `Uploading ${i + 1} of ${files.length}…` : 'Uploading…');
-          const slot = target.replaceDocumentId ? (target.slot || undefined)
+          const slot = tgt.replaceDocumentId ? (tgt.slot || undefined)
             : slotBase != null ? `Document ${slotBase + i + 1}`
-            : (target.slot || undefined);
+            : (tgt.slot || undefined);
           await api.uploadDoc({
-            applicationId: id, checklistItemId: target.itemId || undefined,
-            slot, replaceDocumentId: target.replaceDocumentId || undefined,
+            applicationId: id, checklistItemId: tgt.itemId || undefined,
+            slot, replaceDocumentId: tgt.replaceDocumentId || undefined,
             filename: files[i].name, contentType: files[i].type, size: files[i].size, dataBase64: await readB64(files[i]),
           });
         }
-        touch(target.itemId);   // the condition stays visible in the Open view
+        touch(tgt.itemId);   // the condition stays visible in the Open view
       }
       setMsg(files.length > 1 ? `${files.length} files uploaded ✓` : 'Uploaded ✓');
       setTarget(null); await load();
@@ -570,6 +615,7 @@ export default function Application() {
     } catch (e2) { setMsg(''); setErr(e2.message || 'Upload failed'); }
     finally { if (fileRef.current) fileRef.current.value = ''; }
   }
+  const onFile = (e) => uploadFiles(e.target.files, target);
   const pick = (t) => { setTarget(t || {}); fileRef.current && fileRef.current.click(); };
 
   async function submitTrackRecord(it) {
@@ -912,6 +958,7 @@ export default function Application() {
                     : 'Upload once — it saves to your borrower profile and fulfills this condition on every future file automatically.'}
                   status={(profile && profile.photo_id_document_id) ? 'On file ✓' : statusText(idItem)}
                   action={<button className="btn ghost small" onClick={() => pick({ photoId: true })}>{profile && profile.photo_id_document_id ? 'Replace ID' : 'Upload ID'}</button>}
+                  onDropFiles={(f) => uploadFiles(f, { photoId: true })}
                 />
               )}
 
@@ -938,6 +985,7 @@ export default function Application() {
                     status={statusText(assetsItem)}
                     open={docs.length > 0 || assetsItem.status === 'issue' || !!q}
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: assetsItem.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
+                    onDropFiles={(f) => uploadFiles(f, { itemId: assetsItem.id, slotBase: docs.length })}
                   >
                     {regCond && regCond.detail && (
                       <div className="muted small" style={{ whiteSpace: 'pre-line', marginBottom: 8, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
@@ -979,6 +1027,7 @@ export default function Application() {
                     status={statusText(it)}
                     open={docs.length > 0 || needsFix}
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: it.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
+                    onDropFiles={(f) => uploadFiles(f, { itemId: it.id, slotBase: docs.length })}
                   >
                     {needsFix && it.rejection_reason && (
                       <div className="small" style={{ color: 'var(--danger)', marginBottom: 6 }}>
@@ -1066,7 +1115,7 @@ export default function Application() {
 
       <Section id="sec-activity" title="Activity" collapsible defaultOpen={false}
         info="The full audit log of this file — every application edit, reprice, upload, status change and sign-off, with exactly what changed.">
-      <ActivityFeed fetcher={activityFetcher} title="File audit log" />
+      <ActivityFeed fetcher={activityFetcher} title="File audit log" compact />
       </Section>
 
       </FileSections>

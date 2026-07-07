@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth, useAuthNotice } from '../lib/auth.jsx';
 import { BrandLockup } from '../components/Layout.jsx';
+import PasswordInput from '../components/PasswordInput.jsx';
 
 export default function Login() {
   const { signIn } = useAuth();
@@ -44,23 +45,26 @@ export default function Login() {
     finally { setBusy(false); }
   }
   // Guard on `busy` so holding/double-tapping Enter can't fire a second auth
-  // request while one is already in flight (the button is disabled, but the
-  // key handler bypassed it).
+  // request while one is already in flight.
   const onKey = (fn) => (e) => { if (e.key === 'Enter' && !busy) fn(); };
+
+  const submit = mode === 'login' ? submitLogin : mode === 'mfa' ? submitMfa : submitRegister;
+  const heading = mode === 'mfa' ? 'Enter your code'
+    : mode === 'register' ? 'Create your account'
+    : 'Sign in';
+  const subtitle = mode === 'mfa'
+    ? 'Open your authenticator app and enter the 6-digit code.'
+    : mode === 'register'
+      ? 'Set up your account to track your loan files, documents and status.'
+      : 'Access your loan files, documents and status with YS Capital Group.';
 
   return (
     <div className="authbg">
       <div className="authcard panel">
         <BrandLockup />
         <div className="gold-rule" />
-        {mode === 'login' && <h1>Borrower sign in</h1>}
-        {mode === 'mfa' && <h1>Enter your code</h1>}
-        {mode === 'register' && <h1>Create your account</h1>}
-        <p className="muted small" style={{ marginTop: 6 }}>
-          {mode === 'mfa'
-            ? 'Open your authenticator app and enter the 6-digit code.'
-            : 'Access your loan files, documents and status with YS Capital Group.'}
-        </p>
+        <h1>{heading}</h1>
+        <p className="muted small" style={{ marginTop: 6 }}>{subtitle}</p>
 
         {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
         {err && <div role="alert" className="notice err" style={{ marginTop: 16 }}>{err}</div>}
@@ -78,10 +82,19 @@ export default function Login() {
             <>
               <div className="field"><label>Email</label>
                 <input className="input" type="email" autoComplete="username" value={email}
-                  onChange={e => setEmail(e.target.value)} onKeyDown={onKey(mode === 'login' ? submitLogin : submitRegister)} /></div>
-              <div className="field"><label>Password</label>
-                <input className="input" type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password}
-                  onChange={e => setPassword(e.target.value)} onKeyDown={onKey(mode === 'login' ? submitLogin : submitRegister)} /></div>
+                  onChange={e => setEmail(e.target.value)} onKeyDown={onKey(submit)} /></div>
+              <div className="field">
+                <div className="field-row">
+                  <label>Password</label>
+                  {mode === 'login' &&
+                    <button className="btn link small pw-forgot" onClick={() => nav('/forgot')}>Forgot password?</button>}
+                </div>
+                <PasswordInput
+                  value={password}
+                  autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+                  onChange={e => setPassword(e.target.value)}
+                  onKeyDown={onKey(submit)} />
+              </div>
             </>
           )}
           {mode === 'mfa' && (
@@ -91,25 +104,21 @@ export default function Login() {
           )}
         </div>
 
-        <div className="row" style={{ marginTop: 8 }}>
-          {mode === 'login' && <button className="btn primary" disabled={busy} onClick={submitLogin}>Sign in</button>}
-          {mode === 'mfa' && <button className="btn primary" disabled={busy} onClick={submitMfa}>Verify</button>}
-          {mode === 'register' && <button className="btn primary" disabled={busy} onClick={submitRegister}>Create account</button>}
-          <div className="spacer" />
-          {mode === 'login' && <button className="btn link" onClick={() => { setErr(''); setMode('register'); }}>Create account</button>}
-          {mode !== 'login' && <button className="btn link" onClick={() => { setErr(''); setMode('login'); }}>Back to sign in</button>}
+        <button className="btn primary btn-block" style={{ marginTop: 8 }} disabled={busy} onClick={submit}>
+          {mode === 'login' ? 'Sign in' : mode === 'mfa' ? 'Verify' : 'Create account'}
+        </button>
+
+        <div className="auth-alt">
+          {mode === 'login'
+            ? <>New to YS&nbsp;Capital? <button className="btn link" onClick={() => { setErr(''); setMode('register'); }}>Create an account</button></>
+            : <button className="btn link" onClick={() => { setErr(''); setMode('login'); }}>← Back to sign in</button>}
         </div>
 
         {mode === 'login' && (
-          <div className="row" style={{ marginTop: 4 }}>
-            <button className="btn link small" onClick={() => nav('/forgot')}>Forgot password?</button>
-            <div className="spacer" />
-            <button className="btn link small" onClick={() => nav('/verify')}>Verify / resend email</button>
-          </div>
-        )}
-        {mode === 'login' && (
-          <div className="row" style={{ marginTop: 12, justifyContent: 'center' }}>
-            <button className="btn link small muted" onClick={() => nav('/internal/login')}>Internal sign in →</button>
+          <div className="auth-foot">
+            <button className="btn link small muted" onClick={() => nav('/verify')}>Verify email</button>
+            <span className="auth-foot-sep" aria-hidden="true">·</span>
+            <button className="btn link small muted" onClick={() => nav('/internal/login')}>Staff sign in</button>
           </div>
         )}
       </div>

@@ -19,6 +19,14 @@ const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
 const CITIZENSHIP = ['US Citizen', 'Permanent Resident', 'Foreign National'];
 const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
+// Plain-language explanations so a first-time borrower can tell the options apart.
+const REHAB_TYPE_INFO = {
+  'Cosmetic': 'Surface-level updates only — paint, flooring, fixtures, appliances, landscaping. No layout or structural changes.',
+  'Moderate': 'Cosmetic work plus some upgrades — e.g. a kitchen or bath remodel, new HVAC or roof, or minor reconfiguration. The building footprint stays the same.',
+  'Heavy / gut rehab': 'A down-to-the-studs renovation: replacing major systems (plumbing, electrical, roof) and/or reworking the interior layout — but without adding square footage.',
+  'Adding square footage': 'Expanding the existing structure — an addition, finishing a basement or attic, or raising the roofline — so the finished home is larger than it is today.',
+  'Ground-up construction': 'Building brand-new from the ground up (including after a teardown) — you are financing construction of a new structure, not renovating an existing one.',
+};
 const MARITAL = ['Single', 'Married', 'Separated', 'Divorced', 'Widowed'];
 const HOUSING = ['Rent', 'Own with mortgage', 'Own free and clear', 'Live with family', 'Other'];
 
@@ -52,6 +60,7 @@ export default function Apply() {
   const [id, setId] = useState(draftId || null);
   const [form, setForm] = useState(null);      // null = loading
   const [step, setStep] = useState(1);
+  const [showErrors, setShowErrors] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [officers, setOfficers] = useState([]);
@@ -212,14 +221,35 @@ export default function Apply() {
     save({ data: { loanOfficerName: name || '', loanOfficerEmail: (o && o.email) || '' } });
   };
 
+  // The property basics (street/type/units) are the only fields the file truly
+  // needs — everything else can be finished later. They're enforced at SUBMIT,
+  // not while navigating, so a borrower can fill sections in any order.
+  const propBasicsMissing = () => {
+    const pa = (form && form.propertyAddress) || {};
+    const miss = [];
+    if (!pa.street) miss.push('Street address');
+    if (!(form && form.propertyType)) miss.push('Property type');
+    if (!(form && form.units)) miss.push('Number of units');
+    return miss;
+  };
+
   const goStep = async (n) => {
-    // Don't let the clickable stepper jump past property basics with an
-    // incomplete step 1 (street + type + units) — the file needs them.
-    if (n > 1 && !(form && form.propertyAddress && form.propertyAddress.street && form.propertyType && form.units)) { setStep(1); return; }
-    // Reaching Products & Pricing SUBMITS the application: the file exists and
-    // the team is notified from this moment. Registering the product is the
-    // last step — skippable; it stays open as a condition on the file.
-    if (n === 4 && !appIdRef.current) {
+    // Steps 1–3: free navigation — fill any section in any order (owner request).
+    if (n >= 1 && n <= 3) {
+      try { await flush(); } catch (e) { setErr(e.message || 'Autosave hit a snag — your changes are on this device and will retry.'); }
+      setStep(n); save({ step: n });
+      return;
+    }
+    // n === 4 SUBMITS the application: the file exists and the team is notified
+    // from this moment. Enforce the property basics here and highlight anything
+    // still missing, bouncing back to step 1 rather than submitting a bad file.
+    const miss = propBasicsMissing();
+    if (miss.length) {
+      setShowErrors(true); setStep(1);
+      setErr(`Before submitting, complete the highlighted required field${miss.length > 1 ? 's' : ''}: ${miss.join(', ')}.`);
+      return;
+    }
+    if (!appIdRef.current) {
       setErr(''); setBusy(true);
       try {
         await flush();
@@ -236,7 +266,7 @@ export default function Apply() {
     // A failed flush isn't fatal here — the batch stays queued and retries on
     // the next change/submit — but surface it so the user knows.
     try { await flush(); } catch (e) { setErr(e.message || 'Autosave hit a snag — your changes are still on this device and will retry.'); }
-    setStep(n); save({ step: n });
+    setStep(4); save({ step: 4 });
   };
 
   function finishLater() {
@@ -381,6 +411,17 @@ export default function Apply() {
   const a = form.propertyAddress || {};
   const showRehab = needsRehab(form.program);
   const step1Ready = !!a.street && !!form.propertyType && !!form.units;
+  // Required-field highlighting (#12). Only step 1 has hard-required fields;
+  // errCls turns them red once the borrower has tried to advance/submit, and
+  // each clears itself the moment its field is filled.
+  const reqEmpty = { street: !a.street, propertyType: !form.propertyType, units: !form.units };
+  const errCls = (k) => (showErrors && reqEmpty[k]) ? ' input-err' : '';
+  const onContinue = () => {
+    // Non-blocking: highlight what's still needed but let the borrower keep
+    // going and finish it before submitting. Submit (step 4) enforces it.
+    if (step === 1 && (reqEmpty.street || reqEmpty.propertyType || reqEmpty.units)) setShowErrors(true);
+    goStep(step + 1);
+  };
 
   return (
     <>
@@ -408,7 +449,7 @@ export default function Apply() {
           <>
             <h3 style={{ marginBottom: 14 }}>Subject property</h3>
             <div className="field"><label>Street address *</label>
-              <AddressAutocomplete value={a.street || ''} placeholder="Start typing the property address…"
+              <AddressAutocomplete value={a.street || ''} className={'input' + errCls('street')} placeholder="Start typing the property address…"
                 onChange={v => setAddr('street', v)} onPick={pickAddr} /></div>
             <div className="grid cols-2">
               <div className="field"><label>Apt / Unit</label>
@@ -424,25 +465,26 @@ export default function Apply() {
             </div>
             <div className="grid cols-2">
               <div className="field"><label>Property type *</label>
-                <select className="input" value={form.propertyType || ''} onChange={e => setPropertyType(e.target.value)}>
+                <select className={'input' + errCls('propertyType')} value={form.propertyType || ''} onChange={e => setPropertyType(e.target.value)}>
                   <option value="">Select…</option>{PROP_TYPES.map(p => <option key={p}>{p}</option>)}
                 </select></div>
               {unitsMode(form.propertyType) === 'select24' && (
                 <div className="field"><label>Number of units *</label>
-                  <select className="input" value={form.units || ''} onChange={e => set('units', e.target.value)}>
+                  <select className={'input' + errCls('units')} value={form.units || ''} onChange={e => set('units', e.target.value)}>
                     <option value="">Select…</option><option>2</option><option>3</option><option>4</option>
                   </select></div>
               )}
               {unitsMode(form.propertyType) === 'multi' && (
                 <div className="field"><label>Number of units *</label>
-                  <input className="input" type="number" min="5" value={form.units || ''} onChange={e => set('units', e.target.value)} placeholder="5 or more" /></div>
+                  <input className={'input' + errCls('units')} type="number" min="5" value={form.units || ''} onChange={e => set('units', e.target.value)} placeholder="5 or more" /></div>
               )}
               {unitsMode(form.propertyType) === 'single' && form.propertyType && (
                 <div className="field"><label>Number of units</label>
                   <input className="input" value="1 unit" disabled readOnly /></div>
               )}
             </div>
-            {!step1Ready && <p className="muted small">Property address and type are required to continue{unitsMode(form.propertyType) !== 'single' ? ', plus the number of units' : ''}.</p>}
+            {!step1Ready && <p className={showErrors ? 'small' : 'muted small'} style={showErrors ? { color: 'var(--danger)', marginTop: 4 } : undefined}>
+              Property address and type{unitsMode(form.propertyType) !== 'single' ? ', plus the number of units,' : ''} are required before you submit — you can still fill the other sections first.</p>}
           </>
         )}
 
@@ -521,7 +563,16 @@ export default function Apply() {
                   <div className="field"><label>Rehab type</label>
                     <select className="input" value={form.rehabType || ''} onChange={e => set('rehabType', e.target.value)}>
                       <option value="">Select...</option>{REHAB_TYPES.map(x => <option key={x}>{x}</option>)}
-                    </select></div>
+                    </select>
+                    {form.rehabType && REHAB_TYPE_INFO[form.rehabType] &&
+                      <p className="muted small" style={{ marginTop: 6 }}>{REHAB_TYPE_INFO[form.rehabType]}</p>}
+                    <details style={{ marginTop: 6 }}>
+                      <summary className="small" style={{ cursor: 'pointer', color: 'var(--teal-br)' }}>Not sure? What each option means</summary>
+                      <ul className="muted small" style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                        {REHAB_TYPES.map(x => <li key={x} style={{ marginBottom: 4 }}><strong style={{ color: 'var(--ivory)' }}>{x}:</strong> {REHAB_TYPE_INFO[x]}</li>)}
+                      </ul>
+                    </details>
+                  </div>
                   {needsSqft(form.rehabType) && (
                     <div className="grid cols-2" style={{ margin: 0 }}>
                       <div className="field"><label>Existing sq ft</label>
@@ -726,7 +777,7 @@ export default function Apply() {
           <div className="spacer" />
           <SaveChip status={status} />
           {step < 4 && (
-            <button className="btn primary" type="button" onClick={() => goStep(step + 1)} disabled={busy || (step === 1 && !step1Ready)}>
+            <button className="btn primary" type="button" onClick={onContinue} disabled={busy}>
               {step === 3 ? (busy ? 'Submitting…' : 'Submit & continue to Products & Pricing') : 'Continue'}
             </button>
           )}

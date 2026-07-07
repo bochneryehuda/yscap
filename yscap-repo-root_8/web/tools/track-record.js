@@ -76,13 +76,22 @@ const TR=(function(){
       if(hm!=null && hm<0) errs.push("The exit date is before the purchase date.");
       else if(hm!=null && hm>MAX_HOLD_MO) alerts.push("More than 12 months between purchase and exit ("+hm+" mo) — long for a "+(p.kind==="flip"?"flip":"value-add hold")+"; underwriting will likely ask about this.");
       const ma=monthsAgo(ex);
-      if(ma!=null && ma>EXIT_WINDOW_MO) warns.push("Exit is older than 3 years ("+(Math.floor(ma/12))+" yr ago) — it may not count toward your current experience tier.");
+      if(ma!=null && ma>EXIT_WINDOW_MO) warns.push("Exit is older than 3 years ("+(Math.floor(ma/12))+" yr ago) — it does NOT count toward your experience tier or brackets.");
+      else if(ma!=null && ma<0) warns.push("Exit date is in the future — it won't count toward your experience tier until it actually closes.");
     }
     return {errs,alerts,warns};
   }
   function recordOK(p){ return validate(p).errs.length===0; }   // blocking errors only
-  function qualifies(p){ // recent = a valid exit dated within the last 36 months (today or upcoming also counts)
-    if(!recordOK(p)) return false; const ma=monthsAgo(exitDate(p)); return ma!=null && ma<=EXIT_WINDOW_MO;
+  function qualifies(p){
+    // OWNER-DIRECTED — FROZEN (2026-07-07): ONLY a completed exit whose date is
+    // within the last 3 years counts toward experience / brackets. An exit MORE
+    // than 3 years ago counts toward NOTHING — not the tier, not experience, not
+    // through anything. A future-dated exit also does not count (it hasn't
+    // happened yet). Applies to the sale date (flips) and the lease/refi date
+    // (holds) via exitDate(). Do not widen this window without owner direction.
+    if(!recordOK(p)) return false;
+    const ma=monthsAgo(exitDate(p));
+    return ma!=null && ma>=0 && ma<=EXIT_WINDOW_MO;
   }
 
   /* ---------- portfolio summary ---------- */
@@ -124,11 +133,11 @@ const TR=(function(){
         '<div class="tr-rank-main"><span class="tr-rank-eyebrow">Experience ranking</span><span class="tr-rank-tier">'+s.tier+'</span></div>'+
         '<div class="tr-rank-prog">'+
           '<div class="tr-rank-bar"><span style="width:'+Math.min(100,s.qual/10*100)+'%"></span></div>'+
-          '<div class="tr-rank-sub">'+s.qual+' qualifying exit'+(s.qual===1?"":"s")+' in the last 3 years · '+s.tnext+'</div>'+
+          '<div class="tr-rank-sub">'+s.qual+' of '+s.total+' deal'+(s.total===1?"":"s")+' count as qualifying exits — completed and closed within the last 3 years · '+s.tnext+'</div>'+
         '</div>'+
       '</div>'+
       '<div class="tr-stats">'+
-        stat(s.total, "Total deals")+
+        stat(s.total, "Deals on record")+
         stat(s.flips, "Fix &amp; flips")+
         stat(s.holds, "Fix &amp; holds")+
         stat(money(s.vol), "Acquisition volume")+

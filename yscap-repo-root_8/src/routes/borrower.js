@@ -952,6 +952,24 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
   res.json(r.rows[0] || null);
 });
 
+// Scan a photo of the credit card via a hosted OCR API and return the parsed
+// number + expiry for the borrower to confirm. The image is NOT persisted and
+// card data is never logged. (Owner chose a hosted OCR API over on-device.)
+router.post('/applications/:id/scan-card', async (req, res) => {
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const b = req.body || {};
+  if (!b.dataBase64) return res.status(400).json({ error: 'no image provided' });
+  try {
+    const parsed = await require('../lib/integrations/card-ocr').scanCard({ dataBase64: b.dataBase64, contentType: b.contentType });
+    // Return only what we could read; the borrower confirms/edits before saving.
+    res.json({ number: parsed.number || '', expMonth: parsed.expMonth || '', expYear: parsed.expYear || '' });
+  } catch (e) {
+    // Never surface raw provider errors (may echo request content) to the client.
+    res.status(502).json({ error: 'Could not read the card from that photo — please enter the details below.' });
+  }
+});
+
 // ---- Reuse the saved appraisal card on the next file ----
 // Masked availability of the borrower's own reusable card (never decrypts the
 // PAN). The portal calls this on an outstanding appraisal_card condition to

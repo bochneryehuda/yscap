@@ -15,6 +15,7 @@ export default function Dashboard() {
   const [msg, setMsg] = useState('');
   const [unread, setUnread] = useState({});
   const [drawBusy, setDrawBusy] = useState(null);
+  const [outByLoan, setOutByLoan] = useState({});
 
   const load = () => {
     // Each panel loads independently: a failing drafts/notifications call must
@@ -30,6 +31,21 @@ export default function Dashboard() {
       setUnread(map);
     }).catch(() => {});
   }, []);
+
+  // Pull each active loan's outstanding checklist items so the dashboard can
+  // show WHAT is still needed, grouped by loan — the loans list endpoint only
+  // returns per-file counts, not the item names.
+  useEffect(() => {
+    if (!apps) return;
+    let live = true;
+    const DONE = ['received', 'satisfied', 'waived', 'cleared', 'accepted'];
+    apps
+      .filter(a => !['declined', 'withdrawn'].includes(a.status) && (a.borrower_total || 0) > (a.borrower_done || 0))
+      .forEach(a => api.checklist(a.id)
+        .then(items => { if (live) setOutByLoan(m => ({ ...m, [a.id]: (items || []).filter(i => !DONE.includes(i.status)) })); })
+        .catch(() => {}));
+    return () => { live = false; };
+  }, [apps]);
 
   const [creating, setCreating] = useState(false);
   async function newApplication() {
@@ -51,6 +67,7 @@ export default function Dashboard() {
     finally { setDrawBusy(null); }
   }
   const pct = (a) => a.borrower_total > 0 ? Math.round((a.borrower_done / a.borrower_total) * 100) : 0;
+  const scrollToLoans = () => document.getElementById('loans')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   // Notifications: mark read on open (clears the header bell badge) and navigate
   // to the linked file; plus a "mark all read".
@@ -94,9 +111,47 @@ export default function Dashboard() {
           {unreadTotal > 0 && (
             <div className="next-item"><span className="ni-n">💬 {unreadTotal}</span><span className="ni-l">new message{unreadTotal === 1 ? '' : 's'} from your loan team</span></div>
           )}
-          <div className="next-item"><span className="ni-n">{activeApps.length}</span><span className="ni-l">active file{activeApps.length === 1 ? '' : 's'}</span></div>
+          <div className="next-item next-clickable" role="button" tabIndex={0}
+            onClick={scrollToLoans}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); scrollToLoans(); } }}
+            title="View your loans">
+            <span className="ni-n">{activeApps.length}</span>
+            <span className="ni-l">active file{activeApps.length === 1 ? '' : 's'} — view your loans →</span>
+          </div>
         </div>
       )}
+
+      {apps && (() => {
+        const groups = (apps || []).filter(a => (outByLoan[a.id] || []).length > 0);
+        if (!groups.length) return null;
+        const itemLabel = (it) => it.label || it.borrower_label || it.field_label || 'Item';
+        const st = (s) => s === 'issue' ? 'Needs attention' : s === 'received' ? 'In review' : 'To do';
+        return (
+          <div className="panel" style={{ marginBottom: 18 }}>
+            <h3 style={{ marginBottom: 4 }}>Outstanding documents &amp; items</h3>
+            <p className="muted small" style={{ marginBottom: 6 }}>Everything your loans still need, grouped by property. Click any item to open the file.</p>
+            {groups.map(a => (
+              <div key={a.id} style={{ marginTop: 12 }}>
+                <div className="row" style={{ marginBottom: 2 }}>
+                  <Link to={`/app/${a.id}`} style={{ fontWeight: 600 }}>{addrLine(a.property_address)}</Link>
+                  <div className="spacer" />
+                  <span className="muted small">{(outByLoan[a.id] || []).length} outstanding</span>
+                </div>
+                {(outByLoan[a.id] || []).map(it => (
+                  <Link to={`/app/${a.id}`} key={it.id} className="checkitem" style={{ textDecoration: 'none', color: 'inherit' }}>
+                    <span className="dot outstanding" style={it.status === 'issue' ? { background: 'var(--danger)' } : undefined} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 500 }}>{itemLabel(it)}</div>
+                      {it.status === 'issue' && it.rejection_reason && <div className="small" style={{ color: 'var(--danger)' }}>Needs a fix: {it.rejection_reason}</div>}
+                    </div>
+                    <span className="muted small" style={{ whiteSpace: 'nowrap' }}>{st(it.status)}</span>
+                  </Link>
+                ))}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {drafts.length > 0 && (
         <div className="panel" style={{ marginBottom: 18 }}>
@@ -125,7 +180,7 @@ export default function Dashboard() {
             <button className="btn primary" onClick={newApplication}>Start an application</button>
           </div>
         ) : (
-          <div className="grid cols-2">
+          <div className="grid cols-2" id="loans">
             {apps.map(a => (
               <Link to={`/app/${a.id}`} key={a.id} className="panel" style={{ textDecoration: 'none', color: 'inherit' }}>
                 <div className="row" style={{ marginBottom: 10 }}>
