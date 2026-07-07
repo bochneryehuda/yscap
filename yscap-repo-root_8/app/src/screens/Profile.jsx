@@ -5,6 +5,7 @@ import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
 import Entities from '../components/Entities.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+import { fileToBase64 } from '../lib/files.js';
 import { Link } from 'react-router-dom';
 
 /* Canonical borrower profile — the single home for personal information so the
@@ -109,17 +110,16 @@ export default function Profile() {
     finally { setBusy(false); }
   }
 
-  async function onPhotoId(e) {
-    const file = e.target.files && e.target.files[0];
+  async function uploadPhotoIdFile(file) {
     if (!file) return;
     setIdBusy(true); setErr('');
     try {
-      const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
-      await api.uploadPhotoId({ filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1] });
+      await api.uploadPhotoId({ filename: file.name, contentType: file.type, dataBase64: await fileToBase64(file) });
       setHasPhotoId(true); flash('Photo ID saved to your profile ✓ — you won\'t be asked for it again.');
     } catch (e2) { setErr(e2.message || 'Could not upload the ID'); }
     finally { setIdBusy(false); if (idRef.current) idRef.current.value = ''; }
   }
+  const onPhotoId = (e) => uploadPhotoIdFile(e.target.files && e.target.files[0]);
 
   if (err && !p) return <div role="alert" className="notice err">{err}</div>;
   if (!p) return <div className="panel muted">Loading…</div>;
@@ -177,14 +177,17 @@ export default function Profile() {
         </div>
       </div>
 
-      {/* Photo ID (collected once) */}
-      <div className="panel">
+      {/* Photo ID (collected once) — drag a file anywhere onto this card to upload */}
+      <div className="panel dropzone"
+        onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('drop-over'); }}
+        onDragLeave={e => { e.currentTarget.classList.remove('drop-over'); }}
+        onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('drop-over'); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadPhotoIdFile(f); }}>
         <div className="row" style={{ marginBottom: 6 }}>
           <h3>Government photo ID</h3>
           <div className="spacer" />
           <span className={`pill ${hasPhotoId ? 'done' : ''}`}>{hasPhotoId ? 'On file' : 'Not on file'}</span>
         </div>
-        <p className="muted small" style={{ marginBottom: 10 }}>Upload a clear photo of your government-issued ID once. It's saved to your profile and reused on every file — you'll never be asked again.</p>
+        <p className="muted small" style={{ marginBottom: 10 }}>Upload a clear photo of your government-issued ID once — or drag the file onto this card. It's saved to your profile and reused on every file, so you'll never be asked again.</p>
         <input ref={idRef} type="file" accept="image/*,application/pdf" style={{ display: 'none' }} onChange={onPhotoId} />
         <button className="btn ghost" disabled={idBusy} onClick={() => idRef.current && idRef.current.click()}>
           {idBusy ? 'Uploading…' : hasPhotoId ? 'Replace photo ID' : 'Upload photo ID'}

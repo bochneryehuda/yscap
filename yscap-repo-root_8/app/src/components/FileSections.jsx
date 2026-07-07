@@ -52,19 +52,50 @@ export default function FileSections({ sections, children, top = null }) {
   const [active, setActive] = useState(sections[0] && sections[0].id);
   const clickLock = useRef(0);
 
+  // Active-section tracking driven by LIVE section positions (not just the
+  // sections whose intersection toggled in a given callback). The old
+  // IntersectionObserver only inspected the changed entries, so a section that
+  // stayed continuously visible after a collapse/expand could never be
+  // re-selected (the rail "stuck" on the next section), and scroll-up lagged
+  // because the section you were reading hadn't re-toggled. Reading each
+  // section's real getBoundingClientRect on every (rAF-throttled) scroll makes
+  // both directions accurate, and a ResizeObserver re-syncs the rail the moment
+  // a section collapses/expands — even without any scrolling.
   useEffect(() => {
-    const obs = new IntersectionObserver((entries) => {
-      if (Date.now() < clickLock.current) return;   // let the click's smooth-scroll win
-      // Highest visible section wins — reads naturally while scrolling.
-      const vis = entries.filter(e => e.isIntersecting)
-        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-      if (vis[0]) setActive(vis[0].target.id);
-    }, { rootMargin: '-150px 0px -55% 0px', threshold: 0 });   // clears header + file identity bar
-    for (const s of sections) {
-      const el = document.getElementById(s.id);
-      if (el) obs.observe(el);
-    }
-    return () => obs.disconnect();
+    const ids = sections.map(s => s.id);
+    let raf = 0;
+
+    const compute = () => {
+      raf = 0;
+      if (Date.now() < clickLock.current) return;   // let a nav click's smooth-scroll win
+      const line = 160;                              // trigger line below the sticky header + identity bar
+      let current = null, firstBelow = null;
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        const top = el.getBoundingClientRect().top;
+        if (top <= line) current = id;               // last section whose head has crossed the line
+        else if (firstBelow == null) firstBelow = id;
+      }
+      const next = current || firstBelow || ids[0];
+      if (next) setActive(prev => (prev === next ? prev : next));
+    };
+    const schedule = () => { if (!raf) raf = requestAnimationFrame(compute); };
+
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    const ro = new ResizeObserver(schedule);
+    const main = document.querySelector('.file-main');
+    if (main) ro.observe(main);
+    for (const id of ids) { const el = document.getElementById(id); if (el) ro.observe(el); }
+
+    compute();   // initial sync
+    return () => {
+      window.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [sections.map(s => s.id).join('|')]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   function go(e, id) {

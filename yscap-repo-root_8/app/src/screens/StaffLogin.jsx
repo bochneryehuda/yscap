@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth, useAuthNotice } from '../lib/auth.jsx';
 import { BrandLockup } from '../components/Layout.jsx';
+import PasswordInput from '../components/PasswordInput.jsx';
 
 export default function StaffLogin() {
   const { signIn } = useAuth();
@@ -36,16 +37,18 @@ export default function StaffLogin() {
   // Guard on `busy` so Enter can't re-fire while a request is already in flight.
   const onKey = (fn) => (e) => { if (e.key === 'Enter' && !busy) fn(); };
 
+  const submit = mode === 'login' ? submitLogin : submitMfa;
+
   return (
     <div className="authbg">
       <div className="authcard panel">
         <BrandLockup />
         <div className="gold-rule" />
-        <h1>{mode === 'mfa' ? 'Enter your code' : 'Internal sign in'}</h1>
+        <h1>{mode === 'mfa' ? 'Enter your code' : 'Staff sign in'}</h1>
         <p className="muted small" style={{ marginTop: 6 }}>
           {mode === 'mfa'
             ? 'Open your authenticator app and enter the 6-digit code.'
-            : 'Loan officers, processors, underwriters and administrators.'}
+            : 'For loan officers, processors, underwriters and administrators.'}
         </p>
 
         {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
@@ -57,9 +60,17 @@ export default function StaffLogin() {
               <div className="field"><label>Work email</label>
                 <input className="input" type="email" autoComplete="username" value={email}
                   onChange={e => setEmail(e.target.value)} onKeyDown={onKey(submitLogin)} autoFocus /></div>
-              <div className="field"><label>Password</label>
-                <input className="input" type="password" autoComplete="current-password" value={password}
-                  onChange={e => setPassword(e.target.value)} onKeyDown={onKey(submitLogin)} /></div>
+              <div className="field">
+                <div className="field-row">
+                  <label>Password</label>
+                  <button className="btn link small pw-forgot" onClick={() => nav('/forgot')}>Forgot password?</button>
+                </div>
+                <PasswordInput
+                  value={password}
+                  autoComplete="current-password"
+                  onChange={e => setPassword(e.target.value)}
+                  onKeyDown={onKey(submitLogin)} />
+              </div>
             </>
           )}
           {mode === 'mfa' && (
@@ -69,17 +80,18 @@ export default function StaffLogin() {
           )}
         </div>
 
-        <div className="row" style={{ marginTop: 8 }}>
-          {mode === 'login'
-            ? <button className="btn primary" disabled={busy} onClick={submitLogin}>Sign in</button>
-            : <button className="btn primary" disabled={busy} onClick={submitMfa}>Verify</button>}
-          <div className="spacer" />
-          {mode === 'login'
-            ? <button className="btn link small" onClick={() => nav('/forgot')}>Forgot password?</button>
-            : <button className="btn link" onClick={() => { setErr(''); setMode('login'); }}>Back</button>}
-        </div>
-        <div className="row" style={{ marginTop: 10 }}>
-          <button className="btn link small" onClick={() => nav('/login')}>← Borrower sign in</button>
+        <button className="btn primary btn-block" style={{ marginTop: 8 }} disabled={busy} onClick={submit}>
+          {mode === 'login' ? 'Sign in' : 'Verify'}
+        </button>
+
+        {mode === 'mfa' && (
+          <div className="auth-alt">
+            <button className="btn link" onClick={() => { setErr(''); setMode('login'); }}>← Back</button>
+          </div>
+        )}
+
+        <div className="auth-foot">
+          <button className="btn link small muted" onClick={() => nav('/login')}>← Borrower sign in</button>
         </div>
       </div>
     </div>

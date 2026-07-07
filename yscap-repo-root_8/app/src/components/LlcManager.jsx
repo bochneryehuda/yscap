@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import DocPreview from './DocPreview.jsx';
+import { fileToBase64 } from '../lib/files.js';
 
 /* One LLC, fully managed: entity details, ownership structure (the borrower's
    own % plus every other member until it totals 100%), and the three fixed
@@ -27,7 +28,14 @@ export function llcBadge(llc) {
   return { cls: 'warn', text: 'Setup incomplete' };
 }
 
-function SlotRow({ llc, slot, onPick, onDownload, onPreview, dlBusy, uploading, locked }) {
+function SlotRow({ llc, slot, onPick, onDownload, onPreview, dlBusy, uploading, locked, onDropFiles }) {
+  const [over, setOver] = useState(false);
+  const canDrop = !locked && !!onDropFiles;
+  const drop = canDrop ? {
+    onDragOver: (e) => { e.preventDefault(); if (!over) setOver(true); },
+    onDragLeave: (e) => { if (e.currentTarget === e.target) setOver(false); },
+    onDrop: (e) => { e.preventDefault(); setOver(false); const f = Array.from(e.dataTransfer.files || []); if (f.length) onDropFiles(f); },
+  } : {};
   const d = slot.document_id ? slot : null;
   const rs = d ? slot.review_status : null;
   const pill = !d ? { text: 'Not uploaded', style: undefined }
@@ -35,7 +43,8 @@ function SlotRow({ llc, slot, onPick, onDownload, onPreview, dlBusy, uploading, 
     : rs === 'rejected' ? { text: 'Rejected', style: { borderColor: 'var(--danger)', color: 'var(--danger)' } }
     : { text: 'In review', style: { borderColor: 'var(--gold)', color: 'var(--gold)' } };
   return (
-    <div className="checkitem" style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
+    <div className={`checkitem${canDrop ? ' cond-drop' : ''}${over ? ' drop-over' : ''}`} style={{ alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }} {...drop}>
+      {over && canDrop && <div className="drop-hint">Drop file to upload</div>}
       <span className={`dot ${rs === 'accepted' ? 'done' : 'outstanding'}`} style={{ marginTop: 5, ...(rs === 'rejected' ? { background: 'var(--danger)' } : {}) }} />
       <div style={{ flex: 1, minWidth: 180 }}>
         <div style={{ fontWeight: 600 }}>
@@ -113,21 +122,17 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
   }
 
   const pickSlot = (slot) => { slotRef.current = slot; fileRef.current && fileRef.current.click(); };
-  async function onFile(e) {
-    const files = Array.from((e.target && e.target.files) || []);
-    const slot = slotRef.current;
+  // Shared by the file picker AND drag-and-drop: upload every file to this slot
+  // (a condition can hold several documents).
+  async function uploadToSlot(fileList, slot) {
+    const files = Array.from(fileList || []);
     if (!files.length || !slot) return;
     setBusy('upload'); setErr('');
     try {
-      // Upload EVERY selected file to this slot (a condition can hold several
-      // documents), so picking multiple PDFs at once uploads them all.
       for (const file of files) {
-        const dataUrl = await new Promise((res, rej) => {
-          const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file);
-        });
         await api.uploadDoc({
           llcId, checklistItemId: slot.item_id,
-          filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
+          filename: file.name, contentType: file.type, dataBase64: await fileToBase64(file),
         });
       }
       flash(files.length > 1 ? `Uploaded ${files.length} files ✓` : 'Uploaded ✓'); await load(); onChanged && onChanged();
@@ -136,6 +141,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
     // in this finally could race a second slot's file dialog already open.
     finally { setBusy(''); if (fileRef.current) fileRef.current.value = ''; }
   }
+  const onFile = (e) => uploadToSlot((e.target && e.target.files) || [], slotRef.current);
   async function downloadSlot(slot) {
     setDlBusy(slot.document_id);
     try { const { blob, filename } = await api.downloadDoc(slot.document_id); saveBlob(blob, filename || slot.filename); }
@@ -233,7 +239,8 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
         <input ref={fileRef} type="file" multiple accept=".pdf,application/pdf,image/*" style={{ display: 'none' }} onChange={onFile} />
         {(llc.slots || []).map(s => (
           <SlotRow key={s.item_id} llc={llc} slot={s} onPick={pickSlot} onDownload={downloadSlot}
-            onPreview={setPreviewSlot} dlBusy={dlBusy} uploading={busy === 'upload'} locked={locked} />
+            onPreview={setPreviewSlot} dlBusy={dlBusy} uploading={busy === 'upload'} locked={locked}
+            onDropFiles={(files) => uploadToSlot(files, s)} />
         ))}
         {busy === 'upload' && <p className="muted small">Uploading…</p>}
       </div>

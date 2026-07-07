@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import AuthShell from '../components/AuthShell.jsx';
+import PasswordInput from '../components/PasswordInput.jsx';
 
 export default function Reset() {
   const [params] = useSearchParams();
@@ -48,9 +49,9 @@ export default function Reset() {
     <AuthShell title="Choose a new password" subtitle="Enter and confirm your new password below.">
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
       <div className="field"><label>New password</label>
-        <input className="input" type="password" autoComplete="new-password" value={pw} autoFocus onChange={e => setPw(e.target.value)} /></div>
+        <PasswordInput autoComplete="new-password" value={pw} autoFocus onChange={e => setPw(e.target.value)} /></div>
       <div className="field"><label>Confirm password</label>
-        <input className="input" type="password" autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)}
+        <PasswordInput autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && submit()} /></div>
       <div className="row" style={{ marginTop: 8 }}>
         <button className="btn primary" disabled={busy || !pw || !pw2} onClick={submit}>Update password</button>

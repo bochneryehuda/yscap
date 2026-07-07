@@ -8,24 +8,23 @@ const BRAND = import.meta.env.BASE_URL + 'brand/';
 export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'YS Capital Group' }) {
   return (
     <Link to={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>
-      <img className="brand-mark" src={BRAND + 'mark-dark.png'} alt="" />
-      <span className="brand-word">YS&nbsp;CAPITAL&nbsp;<span className="brand-group">GROUP</span></span>
+      {/* OWNER DECISION (2026-07-07): header uses the real full logo image too
+          (matching the redesigned login), not the small mark + typed wordmark. */}
+      <img className="brand-logo" src={BRAND + 'lockup-dark.png'} alt="YS Capital Group" />
       {consoleLabel && <span className="sub">{consoleLabel}</span>}
     </Link>
   );
 }
 
 /* Centered lockup for the public auth cards (login / register / verify …).
-   A TEXT wordmark — not the logo image — so "YS CAPITAL GROUP" reads at one
-   uniform size (GROUP set apart only by the brand teal), matching the header.
-   The old image baked GROUP in as a smaller suffix, which couldn't be sized
-   with CSS. */
+   OWNER DECISION (2026-07-07): use the real full logo image here instead of a
+   typed wordmark — the small mark + typed name read as unprofessional. The
+   dark-optimised lockup (light mark on transparent) sits on the dark auth card.
+   The header (Brand, above) keeps its uniform text wordmark. */
 export function BrandLockup() {
   return (
     <div className="brand-lockup" aria-label="YS Capital Group">
-      <img className="brand-lockup-mark" src={BRAND + 'mark-dark.png'} alt="" />
-      <div className="brand-lockup-word">YS&nbsp;CAPITAL&nbsp;<span className="brand-group">GROUP</span></div>
-      <div className="brand-lockup-tag">The answer is yes.</div>
+      <img className="brand-lockup-img" src={BRAND + 'lockup-dark.png'} alt="YS Capital Group" />
     </div>
   );
 }

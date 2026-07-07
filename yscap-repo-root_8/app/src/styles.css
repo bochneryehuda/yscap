@@ -27,6 +27,8 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .header .wrap{display:flex;align-items:center;justify-content:space-between;gap:28px;height:72px}
 .brand{display:flex;align-items:center;gap:12px;flex:none;min-width:0}
 .brand-mark{height:30px;width:auto;display:block;flex:none}
+/* header full-logo lockup (owner 2026-07-07) */
+.brand-logo{height:36px;width:auto;display:block;flex:none;max-width:min(60vw,340px);object-fit:contain}
 .brand-word{font-family:var(--serif);font-weight:700;letter-spacing:2px;font-size:20px;
   color:var(--ivory);line-height:1;white-space:nowrap}
 /* GROUP is the SAME SIZE, weight AND colour as the rest of the wordmark — the
@@ -37,13 +39,11 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
   letter-spacing:inherit;color:inherit;vertical-align:baseline}
 .brand .sub{font-size:10px;letter-spacing:3px;text-transform:uppercase;color:var(--teal);
   align-self:center;white-space:nowrap}
-/* Text lockup, centered on the public auth cards (login / register / verify).
-   Uniform-size wordmark instead of the old image whose GROUP was a small suffix. */
+/* Real logo image, centered on the public auth cards (login / register / verify).
+   OWNER DECISION (2026-07-07): the full brand lockup image replaces the typed
+   wordmark — a small mark + typed name read as unprofessional on the login. */
 .brand-lockup{display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center}
-.brand-lockup-mark{height:46px;width:auto;display:block}
-.brand-lockup-word{font-family:var(--serif);font-weight:700;font-size:30px;letter-spacing:3px;
-  color:var(--ivory);line-height:1.05;white-space:nowrap}
-.brand-lockup-tag{font-size:12px;letter-spacing:3px;text-transform:uppercase;color:var(--teal)}
+.brand-lockup-img{width:100%;max-width:300px;height:auto;display:block}
 .nav{display:flex;gap:22px;align-items:center}
 .nav a,.nav .btn,.nav .pill{white-space:nowrap}
 .nav a{color:var(--muted);font-weight:500;font-size:14px}
@@ -66,6 +66,8 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
   color:var(--ivory);border-radius:var(--radius-sm);padding:11px 13px;font:inherit;font-size:15px}
 .input:focus,select:focus,textarea:focus{outline:none;border-color:var(--teal-dp);
   box-shadow:0 0 0 3px rgba(127,169,176,.15)}
+/* required-field highlight (e.g. new-application "Next" validation) */
+.input-err,.input-err:focus{border-color:var(--danger);box-shadow:0 0 0 3px rgba(224,115,107,.20)}
 textarea{min-height:90px;resize:vertical}
 
 /* buttons */
@@ -99,12 +101,37 @@ textarea{min-height:90px;resize:vertical}
 .checkitem{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
 .dot.done{background:var(--ok)} .dot.outstanding{background:var(--gold)}
+/* drag-and-drop target on a condition / upload row (and generic upload cards) */
+.dropzone{transition:border-color .12s,background .12s}
+.dropzone.drop-over{border-color:var(--teal);background:rgba(127,169,176,.10);border-style:dashed}
+.cond-drop{transition:border-color .12s,background .12s}
+.cond-drop.drop-over{border-color:var(--teal);background:rgba(127,169,176,.10);border-style:dashed;position:relative}
+.drop-hint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  border-radius:var(--radius-sm);background:rgba(20,27,34,.72);color:var(--teal-br);font-weight:600;
+  font-size:13px;pointer-events:none;letter-spacing:.03em;z-index:2}
 
 /* auth screen */
 .authbg{min-height:100%;display:flex;align-items:center;justify-content:center;padding:24px;
   background:radial-gradient(900px 520px at 50% -8%, rgba(127,169,176,.12), transparent 62%), var(--ink)}
 .authcard{width:100%;max-width:428px;padding:28px 30px}
 .authcard .gold-rule{margin:16px 0 20px}
+/* auth layout helpers — one clear primary action, quiet secondary links */
+.btn-block{width:100%}
+.field-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.field-row label{margin-bottom:0}
+.pw-forgot{padding:0 !important}
+.auth-alt{margin-top:18px;text-align:center;font-size:14px;color:var(--muted)}
+.auth-alt .btn.link{padding:2px 4px}
+.auth-foot{margin-top:18px;padding-top:14px;border-top:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.auth-foot-sep{color:var(--muted);opacity:.5}
+/* password field reveal toggle */
+.pw-wrap{position:relative}
+.pw-wrap .pw-input{padding-right:66px}
+.pw-toggle{position:absolute;top:50%;right:7px;transform:translateY(-50%);background:none;border:0;
+  color:var(--teal-br);font:inherit;font-size:12px;font-weight:600;letter-spacing:.04em;
+  text-transform:uppercase;cursor:pointer;padding:6px 8px;border-radius:6px}
+.pw-toggle:hover{color:var(--ivory);background:var(--ink-3)}
 .notice{padding:11px 14px;border-radius:var(--radius-sm);font-size:14px;margin-bottom:14px}
 .notice.err{background:rgba(224,115,107,.12);border:1px solid rgba(224,115,107,.4);color:#F3C4BF}
 .notice.ok{background:rgba(143,199,160,.12);border:1px solid rgba(143,199,160,.4);color:#CDE9D5}
@@ -223,6 +250,14 @@ textarea{min-height:90px;resize:vertical}
 .mention-item .l{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mention-item .k{color:var(--muted,#8A979C);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em}
 
+/* compact audit log (borrower file activity) — terse, one line per event */
+.auditlog{list-style:none;margin:0;padding:0}
+.auditlog-row{display:flex;gap:10px;align-items:baseline;padding:4px 0;font-size:13px;line-height:1.5;
+  border-top:1px solid var(--line)}
+.auditlog-row:first-child{border-top:0}
+.al-time{flex:none;width:64px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.al-text{flex:1;min-width:0;overflow-wrap:anywhere}
+
 /* progress bars (borrower checklist %, staff file %) */
 .progress{flex:1;height:7px;border-radius:999px;background:var(--ink-3,#2B3945);overflow:hidden}
 .progress-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--teal),var(--gold));transition:width .3s}
@@ -259,8 +294,8 @@ textarea{min-height:90px;resize:vertical}
 a.checkitem{border-radius:10px;padding-left:12px;padding-right:12px;transition:background .12s,border-color .12s}
 a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
 
-/* the auth lockup mark gets a hair more presence */
-.brand-lockup-mark{filter:drop-shadow(0 10px 26px rgba(0,0,0,.5))}
+/* the auth lockup gets a hair more presence */
+.brand-lockup-img{filter:drop-shadow(0 12px 30px rgba(0,0,0,.45))}
 
 /* header collapses gracefully: below 960px the nav drops under the brand,
    everything stays on tidy lines instead of squeezing. */
@@ -279,6 +314,7 @@ a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
 @media(max-width:520px){
   .brand .sub{display:none}
   .brand-word{font-size:16px;letter-spacing:1.5px}
+  .brand-logo{height:28px}
 }
 
 /* =====================================================================
@@ -397,6 +433,9 @@ a.checkitem:hover{transform:translateY(-1px)}
 .next-item.ok{border-left:3px solid var(--ok)}
 .next-item .ni-n{font-family:var(--serif,'Fraunces',serif);font-size:22px;font-weight:700;line-height:1;white-space:nowrap}
 .next-item .ni-l{font-size:13px;color:var(--muted);line-height:1.3}
+.next-clickable{cursor:pointer;transition:border-color .12s,transform .12s,background .12s}
+.next-clickable:hover{border-color:var(--teal-dp);transform:translateY(-1px)}
+.next-clickable:focus-visible{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px rgba(127,169,176,.18)}
 
 /* ===== Rehab budget builder ===== */
 .rb-tool{width:100%;background:var(--ink-2);border:1px solid var(--line);border-radius:10px;padding:14px 16px}

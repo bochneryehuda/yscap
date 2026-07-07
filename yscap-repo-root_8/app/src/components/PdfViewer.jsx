@@ -118,7 +118,11 @@ export default function PdfViewer({ data, onError }) {
         {status === 'loading' && <span style={{ color: '#eee', margin: 'auto' }}>Loading PDF…</span>}
         {status === 'ready' && Array.from({ length: numPages }, (_, i) => (
           <div key={i} ref={el => { pageRefs.current[i] = el; }}
-            style={{ background: '#fff', boxShadow: '0 2px 10px rgba(0,0,0,0.4)', minHeight: 40 }} />
+            // flexShrink:0 is essential: this scroll container is a column flex,
+            // and the explicit minHeight overrides the default min-height:auto,
+            // so without it multi-page PDFs get each wrapper squashed and the
+            // fixed-height canvases overlap — the "top of the doc repeated" bug.
+            style={{ background: '#fff', boxShadow: '0 2px 10px rgba(0,0,0,0.4)', minHeight: 40, flexShrink: 0 }} />
         ))}
       </div>
     </div>
