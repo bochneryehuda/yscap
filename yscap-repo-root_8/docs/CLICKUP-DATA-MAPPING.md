@@ -316,7 +316,7 @@ RTL is short-term → default **12 Months** `cf6d0b1c` when blank; else 30 year 
 
 **7.3 Backend-only fields (captured & stored, but NOT shown in the portal front-end):**
 - **channel** and **occupancy** → stored backend-only; not surfaced in the portal UI. (occupancy may still feed backend rules; RTL default = Investment.)
-- **Lender = the NOTE BUYER.** Store it; **visible only to loan-officer / admin (staff) logins; NEVER borrower-facing** — borrowers must not see the note buyer. Direction ←CU.
+- **Lender = the NOTE BUYER.** Store it; **visible to ALL staff logins (LO, processor, underwriter, admin); NEVER borrower-facing** — borrowers must not see the note buyer. Direction ←CU.
 - **Approximate / Actual Appraised Value** → **informational only, backend; never used in any pricing/eligibility logic** (future over/under-appraisal analytics only).
 
 **7.4 Generic backend capture — "keep it in the back."** Every ClickUp field we do **not** explicitly map is still captured into a hidden per-file store (`applications.clickup_extra` jsonb) so nothing is lost — but it is **never displayed** in the portal/borrower UI until you specifically ask. No new data surfaces without your say-so.
@@ -329,10 +329,11 @@ RTL is short-term → default **12 Months** `cf6d0b1c` when blank; else 30 year 
 - **CU → portal:** a subtask on the main task → create/update the **second borrower** in our system from the subtask's personal fields.
 - **portal → CU:** a second borrower in our file → **create a subtask** and fill **only personal info** (name, email, phone, DOB, SSN, FICO, address, citizenship, employment) — NOT property/loan economics (those stay on the parent).
 - Subtask uses the same space-level PII field ids; we store its id in `applications.co_borrower_task_id`.
+- **Identifying the co-borrower subtask (resolved):** the subtask whose **borrower fields are populated** (Borrower Name / Email) is the co-borrower profile. Non-profile subtasks (checklist items, etc.) are ignored.
 
 **7.8 Cross-reference keys (reaffirmed).** We store the ClickUp **task id** on our side (`applications.clickup_pipeline_task_id`, already present) — our binding stamp, mirroring ClickUp's `YS Portal File ID`. Co-borrower subtask id stored too.
 
-**7.9 Reusable appraisal card.** A "save this card to my profile" toggle stores the card on the **borrower profile** (encrypted); the next file auto-fills it and auto-satisfies the card condition (same carry-across as SSN/LLCs). CVV persisted, never dropped.
+**7.9 Reusable appraisal card.** A "save this card to my profile" toggle stores the card on the **borrower profile** (encrypted); the next file auto-fills it and auto-satisfies the card condition (same carry-across as SSN/LLCs). CVV persisted, never dropped. **On auto-fill (resolved):** also set ClickUp **Deposit Received = "Customer credit card used"** (`f92f21c6`) and **auto-satisfy the appraisal-card condition** on the new file — no re-asking. SSN and card values are **excluded** from the `clickup_extra` raw capture (they live only in their encrypted columns).
 
 **7.10 Display rule (global).** Do not display ANY newly-pulled/unmapped field in the portal or borrower UI until explicitly instructed. Backend capture is silent.
 
