@@ -134,6 +134,9 @@ const KNOWN = new Set([
   F.EXTRA.loanOfficerPhone, F.EXTRA.processorEmail, F.EXTRA.underwriterEmail,
   F.SYNC.sendToPortal, F.SYNC.portalFileId, F.SYNC.portalFileLink, F.SYNC.syncStatus, F.SYNC.borrowerPortalStatus,
   F.CRM.contactType, F.CRM.phoneNumber, F.CRM.pipelineLink, F.PIPELINE.crmLink, F.SHARED.companyLead,
+  // Checklist status dropdowns (handled by the checklist pull, not the generic
+  // field map) — list them here so readTaskFields never dumps them into extra.
+  ...Object.values(F.CHECKLIST).map((c) => c.fieldId),
 ]);
 
 // ---- write helpers --------------------------------------------------------
