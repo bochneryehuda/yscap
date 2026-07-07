@@ -170,7 +170,15 @@ function addressField(id, addr) {
  * returns { name, statusName, customFields:[{id,value}] }
  */
 function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
-  const { app = {}, borrower = {}, llc = null } = ctx;
+  const { app = {}, llc = null } = ctx;
+  // SAFETY (post-incident): NEVER push synthetic / placeholder borrower values back
+  // to ClickUp. Tasks with no real contact get a shadow profile (noemail+<taskid>@
+  // clickup.local, first/last = "Unknown"); pushing those would clobber the real
+  // ClickUp value with portal-internal junk. Blank them so `put` skips them.
+  const borrower = { ...(ctx.borrower || {}) };
+  if (borrower.email && /@clickup\.local$/i.test(String(borrower.email))) borrower.email = undefined;
+  if (borrower.first_name === 'Unknown') borrower.first_name = undefined;
+  if (borrower.last_name === 'Unknown') borrower.last_name = undefined;
   const cf = [];
   const put = (id, value) => { if (id && value !== undefined && value !== null && value !== '') cf.push({ id, value }); };
   const src = { a: app, b: borrower, l: llc || {} };
