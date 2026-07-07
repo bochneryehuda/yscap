@@ -344,4 +344,39 @@ function readTaskFields(task, options = {}) {
   return out;
 }
 
-module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation };
+// ---- scoped-push resolver -------------------------------------------------
+// Map a set of "changed" logical keys (application/borrower column names plus a
+// few synthetic keys) to the ClickUp custom-field ids they affect, so an edit
+// pushes ONLY those fields and can never rewrite the rest of the task. Unknown
+// keys resolve to nothing (safe: that field simply isn't pushed).
+const COL_TO_CU = {};
+for (const f of FIELD_MAP) { if (f.dir !== 'pull' && f.col) COL_TO_CU[f.col] = f.cu; }
+
+function resolveOnly(onlyKeys) {
+  const cuIds = new Set();
+  let status = false;
+  for (const raw of onlyKeys || []) {
+    const k = String(raw);
+    switch (k) {
+      case 'status': case 'internal_status':
+        status = true; cuIds.add(F.SYNC.borrowerPortalStatus); break;
+      case 'officer': case 'loan_officer_id':
+        cuIds.add(F.SHARED.loanOfficer); break;
+      case 'processor': case 'processor_id':
+        cuIds.add(F.PIPELINE.processor); break;
+      case 'property_address':
+        cuIds.add(F.PIPELINE.subjectAddress); break;
+      case 'email':
+        cuIds.add(F.SHARED.borrowerEmail); break;
+      case 'first_name': case 'last_name':
+        cuIds.add(F.SHARED.borrowerName); break;
+      case 'llc_id':
+        cuIds.add(F.PIPELINE.vesting); cuIds.add(F.PIPELINE.llcName); cuIds.add(F.PIPELINE.ein); break;
+      default:
+        if (COL_TO_CU[k]) cuIds.add(COL_TO_CU[k]);
+    }
+  }
+  return { cuIds, status };
+}
+
+module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly };
