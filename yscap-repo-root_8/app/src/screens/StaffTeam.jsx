@@ -29,6 +29,7 @@ export default function StaffTeam() {
   const [pwFor, setPwFor] = useState(null);
   const [pwVal, setPwVal] = useState('');
   const [permFor, setPermFor] = useState(null);   // staffer id whose permissions panel is open
+  const [shareOpen, setShareOpen] = useState(false); // "see specific officers' files" picker expanded
   // Guards the welcome / password-reset email actions — a double-click was
   // sending the same email twice.
   const [mailBusy, setMailBusy] = useState(null);
@@ -260,6 +261,37 @@ export default function StaffTeam() {
                         );
                       })}
                     </div>
+                    {/* Shared file access: grant this staffer access to specific
+                        loan officers' files even when unassigned. Hidden if they
+                        already see every file. */}
+                    {s.role !== 'super_admin' && !effectiveFor(s).has('see_all_files') && (() => {
+                      const officers = (rows || []).filter(o => o.role === 'loan_officer' && o.id !== s.id);
+                      const sel = new Set(s.visibleOfficerIds || []);
+                      const on = sel.size > 0 || shareOpen;
+                      return (
+                        <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+                          <label className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}
+                            title="Share specific officers' files with this person without assigning them.">
+                            <input type="checkbox" checked={on}
+                              onChange={e => { if (e.target.checked) setShareOpen(true); else { setShareOpen(false); if (sel.size) patch(s.id, { visibleOfficerIds: [] }, 'Cleared shared file access.'); } }} />
+                            <strong>See files from specific loan officers</strong>
+                            <span className="muted">(even if unassigned)</span>
+                          </label>
+                          {on && (
+                            <div className="grid cols-2" style={{ gap: 6, marginTop: 8, paddingLeft: 26 }}>
+                              {officers.length === 0 && <span className="muted small">No other loan officers yet.</span>}
+                              {officers.map(o => (
+                                <label key={o.id} className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                                  <input type="checkbox" checked={sel.has(o.id)}
+                                    onChange={e => { const next = new Set(s.visibleOfficerIds || []); if (e.target.checked) next.add(o.id); else next.delete(o.id); patch(s.id, { visibleOfficerIds: [...next] }, 'Updated shared file access.'); }} />
+                                  <span>{o.full_name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>

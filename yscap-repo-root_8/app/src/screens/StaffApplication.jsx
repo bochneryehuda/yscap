@@ -346,17 +346,24 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     finally { setBusy(''); }
   }
   async function onFile(e) {
-    const file = (e.target.files || [])[0];
-    if (!file || !upTarget) return;
+    const files = Array.from((e.target && e.target.files) || []);
+    if (!files.length || !upTarget) return;
     setBusy(upTarget.itemId); setErr('');
     try {
-      const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
-      await api.staffUploadAppDoc(appId, {
-        llcId: upTarget.llcId, checklistItemId: upTarget.itemId, slot: upTarget.slotLabel || undefined,
-        replaceDocumentId: upTarget.replaceDocumentId || undefined,
-        filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
-      });
-      flash('Uploaded to the entity ✓ — the borrower sees it too.');
+      // Upload every selected file to this entity slot. On a "replace" action only
+      // the first file replaces the existing document; any extras are added as new
+      // documents on the same slot.
+      let first = true;
+      for (const file of files) {
+        const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+        await api.staffUploadAppDoc(appId, {
+          llcId: upTarget.llcId, checklistItemId: upTarget.itemId, slot: upTarget.slotLabel || undefined,
+          replaceDocumentId: (first ? upTarget.replaceDocumentId : null) || undefined,
+          filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
+        });
+        first = false;
+      }
+      flash(files.length > 1 ? `Uploaded ${files.length} files to the entity ✓ — the borrower sees them too.` : 'Uploaded to the entity ✓ — the borrower sees it too.');
       setUpTarget(null); await load(); onChanged && await onChanged();
     } catch (e2) { setErr(e2.message || 'Upload failed'); }
     finally { setBusy(''); }
@@ -395,7 +402,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   if (!app.borrower_id) return null;
   return (
     <div className="panel" style={{ marginTop: 18 }}>
-      <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onFile} />
+      <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={onFile} />
       <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
         <h3>Borrower LLCs</h3>
         <div className="spacer" />
