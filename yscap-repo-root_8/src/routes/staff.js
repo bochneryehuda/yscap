@@ -2077,6 +2077,10 @@ router.get('/chat/inbox', async (req, res) => {
                         ORDER BY created_at DESC LIMIT 1) lm ON true
         WHERE a.deleted_at IS NULL ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
       ) q
+      -- The chat hub (outside a file) is a list of REAL conversations, not every
+      -- file that exists: only surface files that actually have back-and-forth
+      -- messages. A file with no messages is reached from the file itself, not here.
+      WHERE q.last_at IS NOT NULL
       ORDER BY (q.unread_borrower + q.unread_internal) DESC,
                q.closed ASC,
                q.last_at DESC NULLS LAST,

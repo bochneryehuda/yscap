@@ -20,32 +20,51 @@ const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
 
 const numOrNull = (v) => (v === '' || v == null) ? null : Number(String(v).replace(/[^0-9.]/g, '')) || null;
 
+// This new-file form auto-saves as the officer types (no Save button): the
+// in-progress state is persisted to localStorage on every change and restored on
+// mount, so nothing typed is ever lost to a refresh or navigation. It is cleared
+// the moment the file is successfully created.
+const DRAFT_KEY = 'ys-staff-newfile-draft';
+function readNewFileDraft() {
+  try { const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); return (d && typeof d === 'object') ? d : null; }
+  catch (_) { return null; }
+}
+
 export default function StaffNewFile() {
   const nav = useNavigate();
   const { role } = useAuth();
   const seesAll = ['admin', 'super_admin', 'underwriter'].includes(role);
   const [team, setTeam] = useState([]);
+  const _d = readNewFileDraft();   // restore any in-progress draft (lazy, once, pre-persist)
   const [f, setF] = useState({
     firstName: '', lastName: '', email: '', phone: '',
     program: '', loanType: '', propertyType: '', units: '',
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
     requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '',
     loanOfficerId: '', processorId: '', inviteBorrower: true,
+    ...(_d && _d.f ? _d.f : {}),
   });
-  const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '' });
+  const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '', ...(_d && _d.addr ? _d.addr : {}) });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [savedAt, setSavedAt] = useState(_d ? true : false);
 
   // Borrower-name typeahead: match prior borrowers so a new file links to the
   // existing record (no duplicate) and known contact info pre-fills. `borrowerId`
   // holds the linked borrower; any manual edit to a borrower field unlinks it.
   const [matches, setMatches] = useState([]);
   const [showMatches, setShowMatches] = useState(false);
-  const [borrowerId, setBorrowerId] = useState(null);
+  const [borrowerId, setBorrowerId] = useState(_d && _d.borrowerId ? _d.borrowerId : null);
   const searchSeq = useRef(0);
   const nameBox = useRef(null);
 
   useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
+
+  // Auto-save the in-progress form to localStorage on every change (no Save
+  // button). Restored on mount via the lazy initializers above.
+  useEffect(() => {
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ f, addr, borrowerId })); setSavedAt(true); } catch (_) {}
+  }, [f, addr, borrowerId]);
 
   // Debounced search on the borrower's name (first + last combined). Once a
   // borrower is linked we stop searching until the staffer edits the name again.
@@ -138,6 +157,7 @@ export default function StaffNewFile() {
         inviteBorrower: !!f.inviteBorrower,
       };
       const r = await api.staffCreateFile(body);
+      try { localStorage.removeItem(DRAFT_KEY); } catch (_) {}   // draft consumed — file created
       nav(`/internal/app/${r.applicationId}`);
     } catch (e2) {
       setErr(e2.message || 'Could not create the file.');
@@ -150,6 +170,7 @@ export default function StaffNewFile() {
       <div className="row" style={{ marginBottom: 16 }}>
         <Link to="/internal" className="btn link">← Pipeline</Link>
         <div className="spacer" />
+        {savedAt && <span className="savechip"><span className="dot done" />Draft saved — nothing you type is lost</span>}
       </div>
       <h1 style={{ marginBottom: 4 }}>New loan file</h1>
       <p className="muted small" style={{ marginBottom: 18 }}>
