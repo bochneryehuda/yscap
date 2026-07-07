@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -36,9 +36,56 @@ export default function StaffNewFile() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
+  // Borrower-name typeahead: match prior borrowers so a new file links to the
+  // existing record (no duplicate) and known contact info pre-fills. `borrowerId`
+  // holds the linked borrower; any manual edit to a borrower field unlinks it.
+  const [matches, setMatches] = useState([]);
+  const [showMatches, setShowMatches] = useState(false);
+  const [borrowerId, setBorrowerId] = useState(null);
+  const searchSeq = useRef(0);
+  const nameBox = useRef(null);
+
   useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
 
+  // Debounced search on the borrower's name (first + last combined). Once a
+  // borrower is linked we stop searching until the staffer edits the name again.
+  useEffect(() => {
+    if (borrowerId) { setMatches([]); return; }
+    const q = `${f.firstName} ${f.lastName}`.trim();
+    if (q.length < 2) { setMatches([]); setShowMatches(false); return; }
+    const mine = ++searchSeq.current;
+    const t = setTimeout(() => {
+      api.staffBorrowerSearch(q)
+        .then(rows => { if (mine === searchSeq.current) { setMatches(rows || []); setShowMatches(true); } })
+        // Degrade gracefully: on any failure just show no dropdown (plain input).
+        .catch(() => { if (mine === searchSeq.current) setMatches([]); });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [f.firstName, f.lastName, borrowerId]);
+
+  // Close the dropdown on an outside click (matches AddressAutocomplete).
+  useEffect(() => {
+    function onDoc(e) { if (nameBox.current && !nameBox.current.contains(e.target)) setShowMatches(false); }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  // Borrower identity fields: a manual edit unlinks any picked borrower so the
+  // name search re-enables and the file won't force-link the wrong record.
+  const setBorrowerField = (k, v) => { if (borrowerId) setBorrowerId(null); setF(s => ({ ...s, [k]: v })); };
+  function pickBorrower(bo) {
+    setF(s => ({
+      ...s,
+      firstName: bo.first_name || s.firstName,
+      lastName: bo.last_name || s.lastName,
+      email: bo.email || s.email,
+      phone: bo.cell_phone || s.phone,
+    }));
+    setBorrowerId(bo.id);
+    setShowMatches(false);
+    setMatches([]);
+  }
   const setA = (k, v) => setAddr(s => ({ ...s, [k]: v }));
   const pickAddr = (a) => setAddr(s => ({
     ...s, street: a.line1 || s.street, unit: a.unit || s.unit,
@@ -68,6 +115,9 @@ export default function StaffNewFile() {
     try {
       const body = {
         borrower: { firstName: f.firstName.trim(), lastName: f.lastName.trim(), email: f.email.trim(), phone: f.phone.trim() || undefined },
+        // Link to the picked prior borrower; the backend also match-or-creates by
+        // email (the auto-filled address), so either way no duplicate is created.
+        borrowerId: borrowerId || undefined,
         propertyAddress: buildAddress(),
         propertyType: f.propertyType || undefined,
         units: f.units ? Number(f.units) : undefined,
@@ -113,16 +163,45 @@ export default function StaffNewFile() {
         <div className="panel" style={{ marginBottom: 16 }}>
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>
           <div className="grid cols-2">
-            <div className="field"><label>First name *</label>
-              <input className="input" value={f.firstName} onChange={e => set('firstName', e.target.value)} required /></div>
+            <div className="field" ref={nameBox} style={{ position: 'relative' }}>
+              <label>First name *</label>
+              <input className="input" value={f.firstName} autoComplete="off"
+                onChange={e => setBorrowerField('firstName', e.target.value)}
+                onFocus={() => { if (matches.length) setShowMatches(true); }} required />
+              {showMatches && matches.length > 0 && (
+                <div className="addr-menu" role="listbox">
+                  {matches.map(bo => {
+                    const n = bo.prior_files || 0;
+                    return (
+                      <div key={bo.id} role="option" className="addr-item"
+                        onMouseDown={e => { e.preventDefault(); pickBorrower(bo); }}>
+                        <span className="addr-pin">●</span>
+                        <span>
+                          <strong>{[bo.first_name, bo.last_name].filter(Boolean).join(' ') || '—'}</strong>
+                          {bo.email ? ' · ' + bo.email : ''}
+                          {' · ' + n + ' prior file' + (n === 1 ? '' : 's')}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             <div className="field"><label>Last name</label>
-              <input className="input" value={f.lastName} onChange={e => set('lastName', e.target.value)} /></div>
+              <input className="input" value={f.lastName} autoComplete="off" onChange={e => setBorrowerField('lastName', e.target.value)} /></div>
             <div className="field"><label>Email *</label>
-              <input className="input" type="email" value={f.email} onChange={e => set('email', e.target.value)} required
+              <input className="input" type="email" value={f.email} onChange={e => setBorrowerField('email', e.target.value)} required
                 placeholder="borrower@email.com" /></div>
             <div className="field"><label>Cell phone</label>
-              <input className="input" value={f.phone} onChange={e => set('phone', e.target.value)} placeholder="Optional" /></div>
+              <input className="input" value={f.phone} onChange={e => setBorrowerField('phone', e.target.value)} placeholder="Optional" /></div>
           </div>
+          {borrowerId && (
+            <p className="muted small" style={{ marginTop: 6 }}>
+              Linking to an existing borrower — this file won't create a duplicate.{' '}
+              <button type="button" className="btn link" style={{ padding: 0 }}
+                onClick={() => setBorrowerId(null)}>Create as new instead</button>
+            </p>
+          )}
           <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', marginTop: 4 }}>
             <input type="checkbox" checked={f.inviteBorrower} onChange={e => set('inviteBorrower', e.target.checked)} />
             <span>Email the borrower an invite to join this file now</span>
