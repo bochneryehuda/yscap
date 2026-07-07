@@ -66,6 +66,74 @@ function Completeness({ app, borrower }) {
   );
 }
 
+/* Staff-only file detail the team keeps in ClickUp — pulled onto the file for a
+   complete picture (rates, carrying costs, valuation, title/insurance, liens,
+   pipeline status). Read-only here; ClickUp remains the source of truth for these
+   (pull-only, never pushed back). Only populated rows show, grouped for a fast scan. */
+function ClickupFileData({ app }) {
+  const cash = (n) => (n == null || n === '' ? null : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 }));
+  const str = (v) => (v == null || v === '' ? null : String(v));
+  const groups = [
+    ['Rates', [
+      ['Actual interest rate', str(app.actual_rate)],
+      ['Desired interest rate', str(app.desired_rate)],
+      ['Prepayment penalty', str(app.prepayment_penalty)],
+    ]],
+    ['Carrying costs', [
+      ['Property taxes', cash(app.property_taxes)],
+      ['Property insurance', cash(app.property_insurance)],
+      ['HOA', cash(app.property_hoa)],
+      ['Rental income', cash(app.rental_income)],
+    ]],
+    ['Valuation', [
+      ['Appraised rental value', cash(app.appraised_rental_value)],
+      ['Approx. appraised rental', cash(app.approx_appraised_rental_value)],
+      ['CDA value', cash(app.cda_value)],
+      ["Appraiser's name", str(app.appraiser_name)],
+    ]],
+    ['Liens', [
+      ['1st lien', cash(app.first_lien)],
+      ['2nd lien', cash(app.second_lien)],
+    ]],
+    ['Title & insurance', [
+      ['Title company', str(app.title_company)],
+      ['Title contact', str(app.title_company_contact)],
+      ['Insurance company', str(app.insurance_company)],
+      ['Insurance contact', str(app.insurance_company_contact)],
+    ]],
+    ['Pipeline', [
+      ['Application submitted', str(app.application_submitted)],
+      ['Encompass', str(app.encompass_status)],
+    ]],
+  ];
+  const shown = groups
+    .map(([g, rows]) => [g, rows.filter(([, v]) => v != null)])
+    .filter(([, rows]) => rows.length);
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <h3>File detail from ClickUp</h3>
+        <div className="spacer" />
+        <span className="muted small">Pulled from the pipeline · read-only</span>
+      </div>
+      {shown.length === 0
+        ? <p className="muted small">No additional pipeline detail synced for this file yet.</p>
+        : (
+          <div className="grid cols-2" style={{ gap: '2px 24px' }}>
+            {shown.map(([g, rows]) => (
+              <div key={g} style={{ breakInside: 'avoid' }}>
+                <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', margin: '10px 0 4px' }}>{g}</div>
+                {rows.map(([k, v]) => (
+                  <div className="metrow" key={k}><span className="k">{k}</span><span className="v">{v}</span></div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+    </div>
+  );
+}
+
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
@@ -1197,6 +1265,7 @@ export default function StaffApplication() {
         info="What the borrower filled out — completeness at a glance, plus the editable deal numbers. Changing them here flows straight into pricing.">
       <Completeness app={app} borrower={borrower} />
       <EditFileDetails app={app} onSaved={load} />
+      <ClickupFileData app={app} />
       </Section>
 
       <Section id="sec-pricing" title="Loan structure & pricing"

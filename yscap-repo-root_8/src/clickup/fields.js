@@ -165,6 +165,25 @@ const EXTRA = {
   loanOfficerPhone:   '94026464-bca6-4414-9a9c-f9e238d0533a', // phone
   processorEmail:     '4f7b2c03-44da-47a5-8d4c-c0aa823b1283', // email
   underwriterEmail:   '951c3a1d-05c5-4387-8203-1e2b8d0d329c', // email
+  // Additional staff-workflow fields (pull-only, live-verified) — richer file data.
+  actualRate:         'cf4fd648-efe9-47fc-b547-f166978d97de', // short_text (Actual Intrest Rate)
+  desiredRate:        'bf47a4c9-3489-48b2-b4c3-531ca417ec3f', // short_text (Desired Intrest Rate)
+  propertyTaxes:      '5e4ed4c7-6425-4f3b-974b-11df2252a45b', // currency
+  propertyInsurance:  '941037c6-d0f4-437e-b339-fb7657214fdc', // currency
+  propertyHoa:        '69d5d460-728a-4f25-9a58-571a4269b8e8', // currency
+  rentalIncome:       '6d7bf524-c33d-4322-a9d7-47c3fc66a427', // currency
+  prepaymentPenalty:  'a7a92ef5-0011-49bf-9009-625064e6007e', // drop_down (free label)
+  titleCompany:       '2c734172-ea63-40b4-b151-aca9cab05969', // short_text (Desired Title Company)
+  insuranceCompany:   'dc0b20e7-6b7b-462c-acaf-e9fecb8e84c9', // short_text
+  firstLien:          '43d93738-5d9b-40ea-a2d0-db34ff97576b', // currency
+  secondLien:         '2c156e2b-9b58-4145-9f3a-fac4642fd79f', // currency
+  appraisedRentalValue:'b9cf2bbd-54be-4235-8d14-4387b16aa601',// currency (Actual Appraised Rental Value)
+  approxAppraisedRentalValue:'90cb717f-13be-4a13-944b-21a3026c105f', // currency (Approximate Appraised Rental Value)
+  cdaValue:           'c80b6083-7e47-4608-87a5-9c04126d3007', // currency
+  appraiserName:      '53716901-832d-4e9a-a819-a2124800bb10', // short_text
+  titleCompanyContact:'252cd875-adfa-4344-89e0-bdd1f0347d91', // email (Title Company Contact)
+  insuranceCompanyContact:'0627751b-c206-4bbf-bd3e-943a99481fa8', // short_text (Insurance Company Contact Info)
+  applicationSubmitted:'e1c2b5d7-14f4-47fe-98a5-13d733029f23', // drop_down (YES/NO/NOT YET)
 };
 // Deposit Received option: "Customer credit card used" (reusable card auto-fill).
 const DEPOSIT_CARD_USED_OPT = 'f92f21c6-c5c3-4e85-986d-102a5e15ed71';
