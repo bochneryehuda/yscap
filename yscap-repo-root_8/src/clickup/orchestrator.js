@@ -88,8 +88,10 @@ async function loadPushContext(appId) {
     llc: row.llc_name ? { llc_name: row.llc_name, ein: row.ein } : null,
     registeredProgram: row.registered_program || 'none',
     externalStatus: row.status,
-    officerClickupId: row.officer_cuid || null,
-    processorClickupId: row.processor_cuid || null,
+    // ClickUp "users" fields need a NUMERIC id; node-pg returns bigint as a
+    // string, so coerce or the assignment write is silently rejected.
+    officerClickupId: row.officer_cuid != null ? Number(row.officer_cuid) : null,
+    processorClickupId: row.processor_cuid != null ? Number(row.processor_cuid) : null,
     officerName: row.officer_name || row.loan_officer_name || null,
     portalAppId: appId,
     portalFileLink: `${cfg.appUrl}${cfg.portalPath}/#/internal/app/${appId}`,

@@ -114,17 +114,21 @@ const _byStaffEmail   = (e) => CLICKUP_STAFF.find((s) => _norm(s.staffEmail) ===
 function emailForPipelineFolder(folderId) {
   return folderId != null ? (_pipelineToStaff[String(folderId)] || null) : null;
 }
-/** The loan-officer STAFF email for a task: the Loan Officer Email field
- *  (translated ClickUp→staff email), else the pipeline folder's owner. */
+/** The loan-officer STAFF email for a task. The pipeline FOLDER is the primary
+ *  signal (it's where the file physically lives — the source of ownership); the
+ *  Loan Officer Email field is the fallback when the folder isn't a mapped
+ *  officer folder (e.g. a shared/system folder). Prevents a stale email field
+ *  from silently reassigning a file out of the folder it lives in. */
 function loanOfficerEmailFor(read, folderId) {
+  const byFolder = CLICKUP_STAFF.find((x) => x.role === 'loan_officer' && x.pipeline === String(folderId));
+  if (byFolder) return byFolder.staffEmail;
   const field = _norm(read && read.loanOfficerEmail);
   if (field) {
     const s = _byClickupEmail(field) || _byStaffEmail(field);
     if (s && s.role === 'loan_officer') return s.staffEmail;
     return field;   // unknown but present — may still be a valid staff email
   }
-  const byFolder = CLICKUP_STAFF.find((x) => x.role === 'loan_officer' && x.pipeline === String(folderId));
-  return byFolder ? byFolder.staffEmail : null;
+  return null;
 }
 /** The processor STAFF email for a task (Processor Email field, translated). */
 function processorEmailFor(read) {
