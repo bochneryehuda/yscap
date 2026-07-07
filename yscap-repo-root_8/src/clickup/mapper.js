@@ -59,6 +59,28 @@ const FIELD_MAP = [
   { cu: F.EXTRA.acquisitionDate, t: 'a', col: 'acquisition_date', type: 'date', dir: 'both' },
   { cu: F.SYNC.approxAppraisedValue, t: 'a', col: 'approx_appraised_value', type: 'currency', dir: 'pull' }, // informational
   { cu: F.SYNC.actualAppraisedValue, t: 'a', col: 'actual_appraised_value', type: 'currency', dir: 'pull' }, // informational
+  // --- application: additional staff-workflow detail (pull-only display; ClickUp owns) ---
+  // Richer file data the team keeps in ClickUp — rates, carrying costs, valuation,
+  // title/insurance, liens, pipeline status. Never pushed back (no echo/clobber).
+  { cu: F.EXTRA.actualRate, t: 'a', col: 'actual_rate', type: 'text', dir: 'pull' },
+  { cu: F.EXTRA.desiredRate, t: 'a', col: 'desired_rate', type: 'text', dir: 'pull' },
+  { cu: F.EXTRA.propertyTaxes, t: 'a', col: 'property_taxes', type: 'currency', dir: 'pull' },
+  { cu: F.EXTRA.propertyInsurance, t: 'a', col: 'property_insurance', type: 'currency', dir: 'pull' },
+  { cu: F.EXTRA.propertyHoa, t: 'a', col: 'property_hoa', type: 'currency', dir: 'pull' },
+  { cu: F.EXTRA.rentalIncome, t: 'a', col: 'rental_income', type: 'currency', dir: 'pull' },
+  { cu: F.EXTRA.prepaymentPenalty, t: 'a', col: 'prepayment_penalty', type: 'dropdown', dir: 'pull' }, // free label ("5 Years"…"Non")
+  { cu: F.EXTRA.titleCompany, t: 'a', col: 'title_company', type: 'text', dir: 'pull' },
+  { cu: F.EXTRA.titleCompanyContact, t: 'a', col: 'title_company_contact', type: 'text', dir: 'pull' },
+  { cu: F.EXTRA.insuranceCompany, t: 'a', col: 'insurance_company', type: 'text', dir: 'pull' },
+  { cu: F.EXTRA.insuranceCompanyContact, t: 'a', col: 'insurance_company_contact', type: 'text', dir: 'pull' },
+  { cu: F.EXTRA.firstLien, t: 'a', col: 'first_lien', type: 'currency', dir: 'pull' },
+  { cu: F.EXTRA.secondLien, t: 'a', col: 'second_lien', type: 'currency', dir: 'pull' },
+  { cu: F.EXTRA.appraisedRentalValue, t: 'a', col: 'appraised_rental_value', type: 'currency', dir: 'pull' },
+  { cu: F.EXTRA.approxAppraisedRentalValue, t: 'a', col: 'approx_appraised_rental_value', type: 'currency', dir: 'pull' },
+  { cu: F.EXTRA.cdaValue, t: 'a', col: 'cda_value', type: 'currency', dir: 'pull' },
+  { cu: F.EXTRA.appraiserName, t: 'a', col: 'appraiser_name', type: 'text', dir: 'pull' },
+  { cu: F.PIPELINE.encompassStatus, t: 'a', col: 'encompass_status', type: 'dropdown', dir: 'pull' }, // free label
+  { cu: F.EXTRA.applicationSubmitted, t: 'a', col: 'application_submitted', type: 'dropdown', dir: 'pull' }, // free label (YES/NO/NOT YET)
   // --- application: numbers & dates ---
   { cu: F.PIPELINE.ysLoanNumber, t: 'a', col: 'ys_loan_number', type: 'text', dir: 'both' },
   { cu: F.PIPELINE.investorLoanNo, t: 'a', col: 'investor_loan_number', type: 'text', dir: 'pull' },
