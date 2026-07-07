@@ -780,6 +780,79 @@ function StaffTrackRecordPanel({ borrowerId }) {
    borrower works through (Scope of Work, track record, contacts, ID, document
    slots), with every uploaded PDF inline and full sign-off capability — a
    separate section from the internal phase-by-phase checklist. */
+// #65 — the second borrower on a file. Shows the linked co-borrower (name,
+// contact, DOB, SSN reveal) and lets staff add/link or remove one. The record is
+// created encrypted + identity-matched server-side; removing only unlinks it.
+function CoBorrowerBlock({ appId, app, onChanged }) {
+  const has = !!app.co_borrower_id;
+  const [adding, setAdding] = useState(false);
+  const [f, setF] = useState({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [coSsn, setCoSsn] = useState('');
+  const [ssnBusy, setSsnBusy] = useState(false);
+  async function save() {
+    setBusy(true); setErr('');
+    try {
+      await api.staffSetCoBorrower(appId, { firstName: f.firstName, lastName: f.lastName, email: f.email, phone: f.phone || undefined, dob: f.dob || undefined, ssn: f.ssn || undefined });
+      setAdding(false); setF({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' }); await onChanged();
+    } catch (e) { setErr(e.message || 'Could not save the co-borrower'); } finally { setBusy(false); }
+  }
+  async function remove() {
+    if (!window.confirm('Remove the co-borrower from this file? The borrower record is kept for other files.')) return;
+    setBusy(true); setErr('');
+    try { await api.staffSetCoBorrower(appId, { unlink: true }); await onChanged(); }
+    catch (e) { setErr(e.message || 'Could not remove the co-borrower'); } finally { setBusy(false); }
+  }
+  async function revealCoSsn() {
+    if (coSsn) { setCoSsn(''); return; }
+    setSsnBusy(true);
+    try { const r = await api.staffBorrowerSsn(app.co_borrower_id); setCoSsn(r.ssn); } catch (_) {} finally { setSsnBusy(false); }
+  }
+  return (
+    <div style={{ marginTop: 10, borderTop: '1px solid var(--line)', paddingTop: 10 }}>
+      <div className="row" style={{ alignItems: 'center', marginBottom: 6 }}>
+        <span className="k" style={{ fontWeight: 600 }}>Co-borrower</span>
+        <div className="spacer" />
+        {has && !adding && <button className="btn link small" onClick={remove} disabled={busy}>Remove</button>}
+        {!has && !adding && <button className="btn ghost small" onClick={() => { setAdding(true); setErr(''); }}>+ Add co-borrower</button>}
+      </div>
+      {has && !adding && <>
+        <div className="metrow"><span className="k">Name</span><span className="v">{app.co_first_name} {app.co_last_name}</span></div>
+        <div className="metrow"><span className="k">Email</span><span className="v">{app.co_email || '—'}</span></div>
+        <div className="metrow"><span className="k">Phone</span><span className="v">{app.co_cell_phone || '—'}</span></div>
+        {app.co_date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{new Date(app.co_date_of_birth).toLocaleDateString()}</span></div>}
+        <div className="metrow"><span className="k">SSN</span>
+          <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+            <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '.02em' }}>{coSsn || (app.co_ssn_last4 ? `•••-••-${app.co_ssn_last4}` : '—')}</span>
+            {app.co_ssn_last4 && (
+              <button className="eye-btn" onClick={revealCoSsn} disabled={ssnBusy} title={coSsn ? 'Hide the full number' : 'Reveal the full number (logged)'}>
+                {ssnBusy ? '…' : (coSsn ? EyeOff : Eye)}
+              </button>
+            )}
+          </span>
+        </div>
+      </>}
+      {adding && <>
+        <div className="ts-inputs" style={{ marginTop: 6 }}>
+          <label><span>First name</span><input className="input" value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} /></label>
+          <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>Email</span><input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></label>
+          <label><span>Phone</span><input className="input" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></label>
+          <label><span>Date of birth</span><input className="input" type="date" value={f.dob} onChange={e => setF({ ...f, dob: e.target.value })} /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>SSN (stored encrypted)</span><input className="input" value={f.ssn} onChange={e => setF({ ...f, ssn: e.target.value })} placeholder="XXX-XX-XXXX" /></label>
+        </div>
+        {err && <div role="alert" className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+        <div className="row" style={{ gap: 8, marginTop: 8 }}>
+          <button className="btn primary small" onClick={save} disabled={busy || !f.firstName.trim() || !f.lastName.trim() || !f.email.trim()}>{busy ? 'Saving…' : 'Save co-borrower'}</button>
+          <button className="btn ghost small" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
+        </div>
+      </>}
+      {err && !adding && <div role="alert" className="notice err" style={{ marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
 function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
@@ -1466,6 +1539,7 @@ export default function StaffApplication() {
                 )}
               </span>
             </div>
+            <CoBorrowerBlock appId={id} app={app} onChanged={load} />
           </> : <p className="muted small">Loading borrower…</p>}
         </div>
         <div className="panel">

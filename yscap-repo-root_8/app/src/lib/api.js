@@ -229,6 +229,7 @@ export const api = {
   staffInviteBorrower: (appId) => req('POST', `/api/staff/applications/${appId}/invite-borrower`),
   staffLeadCapture: () => req('GET', '/api/staff/lead-capture'),
   staffApplication: (id) => req('GET', `/api/staff/applications/${id}`),
+  staffSetCoBorrower: (id, body) => req('POST', `/api/staff/applications/${id}/co-borrower`, body),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
   staffAppDocuments:(id) => req('GET', `/api/staff/applications/${id}/documents`),
   staffReviewDoc:   (id, action, reason, opts) => req('POST', `/api/staff/documents/${id}/review`, { action, reason, ...(opts || {}) }),
