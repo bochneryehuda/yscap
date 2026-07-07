@@ -284,8 +284,30 @@ router.get('/applications/:id', async (req, res) => {
        ) pr ON true
       WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND a.deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-  res.json(r.rows[0]);
+  // SECURITY / privacy: this is a borrower-facing response built from SELECT a.*,
+  // so strip every internal/staff-only column before sending. Above all `lender`
+  // is the capital-partner / note-buyer name, which must NEVER reach a borrower
+  // surface (frozen session rule); also drop ClickUp/sync internals and the
+  // staff-only pipeline detail fields.
+  res.json(stripInternalAppFields(r.rows[0]));
 });
+
+// Columns on `applications` that must never be returned to a borrower.
+const BORROWER_HIDDEN_APP_FIELDS = [
+  'lender', 'investor_loan_number', 'channel', 'clickup_extra',
+  'clickup_pipeline_task_id', 'clickup_folder_id', 'clickup_list_id',
+  'internal_status', 'sync_state', 'clickup_last_synced_at', 'clickup_status_updated_at', 'hot_poll_until',
+  // staff-only pipeline detail pulled from ClickUp (Round 3)
+  'title_company', 'title_company_contact', 'insurance_company', 'insurance_company_contact',
+  'appraiser_name', 'cda_value', 'first_lien', 'second_lien', 'actual_rate', 'desired_rate',
+  'encompass_status', 'application_submitted', 'prepayment_penalty', 'property_taxes',
+  'property_insurance', 'property_hoa', 'rental_income', 'appraised_rental_value', 'approx_appraised_rental_value',
+];
+function stripInternalAppFields(row) {
+  if (!row || typeof row !== 'object') return row;
+  for (const k of BORROWER_HIDDEN_APP_FIELDS) delete row[k];
+  return row;
+}
 
 async function loadFileForPricing(appId, borrowerId) {
   const a = await db.query(
@@ -500,8 +522,8 @@ router.get('/applications/:id/checklist', async (req, res) => {
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
   const r = await db.query(
-    `SELECT ci.id, COALESCE(ci.borrower_label,ci.label) AS label, ci.status, ci.item_kind, ci.phase,
-            COALESCE(ci.borrower_hint,ci.hint) AS hint, ci.is_required, ci.due_date,
+    `SELECT ci.id, COALESCE(ci.borrower_label,'An item your loan team needs') AS label, ci.status, ci.item_kind, ci.phase,
+            ci.borrower_hint AS hint, ci.is_required, ci.due_date,
             ci.field_key, ci.esign_doc,
             -- ci.notes is the INTERNAL staff note (underwriting / capital-partner
             -- context) — never send it to a borrower. Only the borrower_* wording

@@ -63,7 +63,7 @@ async function authenticate(req, res, next) {
     // grant change takes effect immediately (not only after re-login) and so
     // capability gates can run synchronously off req.actor.perms.
     r = claims.kind === 'staff'
-      ? await db.query(`SELECT token_version, role, permissions FROM staff_users WHERE id=$1`, [claims.sub])
+      ? await db.query(`SELECT token_version, role, permissions, is_active FROM staff_users WHERE id=$1`, [claims.sub])
       : await db.query(`SELECT token_version FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
   } catch (e) {
     console.error('[auth] token check failed (db):', db.describeError(e));
@@ -72,6 +72,12 @@ async function authenticate(req, res, next) {
   const tv = r.rows[0] ? r.rows[0].token_version : null;
   if (tv === null || tv !== (claims.tv || 0))
     return res.status(401).json({ error: 'session expired' });
+  // SECURITY: a deactivated staffer must lose access immediately. Deactivation
+  // (admin toggle) doesn't bump token_version, so without this check an existing
+  // session would keep renewing (sliding token) and retain access to loan files,
+  // borrower PII and decrypted SSNs until a separate password reset.
+  if (claims.kind === 'staff' && r.rows[0].is_active === false)
+    return res.status(401).json({ error: 'account deactivated' });
   req.actor = { id: claims.sub, kind: claims.kind, role: claims.role };
   if (claims.kind === 'staff') {
     // Trust the DB role over the JWT claim (role can change mid-session).
@@ -132,6 +138,31 @@ router.post('/borrower/register', async (req, res) => {
   }
   try {
     await client.query('BEGIN');
+    // SECURITY: a borrower row may already exist for this email as a captured
+    // website lead or a staff-originated file — carrying real PII (and possibly
+    // linked applications/SSN). Self-registration must NEVER silently bind
+    // credentials to that pre-existing record and hand back a live session (that
+    // is account + PII takeover). Detect it BEFORE creating anything.
+    const pre = await client.query(`SELECT id FROM borrowers WHERE lower(email)=lower($1)`, [email]);
+    if (pre.rows[0]) {
+      const id0 = pre.rows[0].id;
+      const hasAuth = await client.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [id0]);
+      await client.query('ROLLBACK');
+      if (hasAuth.rows[0]) return res.status(409).json({ error: 'account exists — log in' });
+      // Pre-existing record with no login yet: require proof of email ownership.
+      // Issue a claim (invite) token and email it; create NO credentials here, so
+      // an attacker can neither obtain a session nor squat a password on the record.
+      try {
+        const claim = C.randomToken(24);
+        await db.query(
+          `INSERT INTO invite_tokens (token_hash,kind,email,expires_at)
+           VALUES ($1,'borrower',$2, now() + interval '7 days')`, [C.sha256(claim), email]);
+        await mail.send('borrowerInvite', email, {
+          firstName: firstName || '', acceptUrl: mail.link('/accept?token=' + claim) }).catch(() => {});
+      } catch (_) { /* email is best-effort; the security guarantee is the no-session return */ }
+      return res.status(202).json({ verifyRequired: true,
+        message: 'We found an existing record for this email. Check your email to activate your account.' });
+    }
     const b = await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
        VALUES ($1,$2,$3,$4)
@@ -396,6 +427,16 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
     } else if (!ASSIGNABLE_ROLES.includes(inviteRole)) {
       return res.status(400).json({ error: 'bad role' });
     }
+    // SECURITY: an invite to an existing super_admin's email would, via accept()'s
+    // ON CONFLICT DO UPDATE, overwrite that account's password AND return its
+    // unchanged super_admin role — a takeover. Never let a non-super-admin invite
+    // (and thereby seize) an existing super_admin. Mirrors the /auth/staff guard.
+    if (email) {
+      const ex = await db.query(`SELECT role FROM staff_users WHERE lower(email)=lower($1)`, [email]);
+      if (ex.rows[0] && ex.rows[0].role === 'super_admin' && req.actor.role !== 'super_admin') {
+        return res.status(403).json({ error: 'only a super admin can invite or modify a super admin account' });
+      }
+    }
   }
   const token = C.randomToken(24);
   await db.query(
@@ -429,6 +470,15 @@ router.post('/accept', async (req, res, next) => {
   if (!row) return res.status(400).json({ error: 'invalid or expired invite' });
   try {
     if (row.kind === 'staff') {
+      // SECURITY (defense in depth): never let accept() silently seize a
+      // pre-existing super_admin account (overwriting its password + returning its
+      // role) unless the invite itself was for super_admin — which only a
+      // super_admin can create. Blocks the invite→accept takeover even if a bad
+      // invite slipped through.
+      const existing = await db.query(`SELECT role FROM staff_users WHERE lower(email)=lower($1)`, [row.email]);
+      if (existing.rows[0] && existing.rows[0].role === 'super_admin' && row.role !== 'super_admin') {
+        return res.status(403).json({ error: 'cannot take over an existing super admin account' });
+      }
       const s = await db.query(
         `INSERT INTO staff_users (email,full_name,role,password_hash) VALUES ($1,$2,$3,$4)
          ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash RETURNING id,role,token_version`,
