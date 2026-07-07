@@ -39,6 +39,7 @@ function buildMaskedSnapshot(read, extra = {}) {
   const ssn4 = b.ssn ? String(b.ssn).replace(/\D/g, '').slice(-4) : null;
   return {
     status: read.internalStatus || null,
+    rawProgram: read.rawProgram || null,   // raw ClickUp *Program label (non-RTL preserved)
     app: read.app || {},
     borrower: { ...b, ssn: ssn4 ? `***-**-${ssn4}` : undefined },
     llc: read.llc || {},

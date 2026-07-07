@@ -45,7 +45,7 @@ const PIPELINE = {
   investorLoanNo:    '8ff507cc-24f8-4aea-beec-349c7d575980',
   program:           '50eb857a-d8b1-4c48-9ffe-20b15cdf1338', // drop_down
   loanType:          'ee1b564f-13cb-4841-af4c-e0f762cbcf52', // drop_down
-  lender:            'a914ec5a-7419-480f-9c28-882f979e8702', // drop_down
+  lender:            'a914ec5a-7419-480f-9c28-982f979e8702', // drop_down (note buyer; staff-only)
   channel:           '6eb27010-b23a-46a7-9040-40d68d930e9d', // Wholesale/correspondent
   occupancy:         'df9d81b5-0b5d-4e09-a44a-4bbfb3b0291c', // drop_down
   propertyType:      '541524d9-255f-4484-ac6d-1011ac60e87b', // drop_down
