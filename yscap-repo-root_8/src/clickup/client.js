@@ -12,7 +12,34 @@ function token() {
   return t;
 }
 
+// ── HARD STOP: this integration may NEVER delete a ClickUp task (a loan file). ──
+// Owner-directed and non-negotiable: deleting or archiving a file in the portal
+// must leave the ClickUp task FULLY intact and active. ClickUp is the system of
+// record — we only ever READ and UPDATE tasks there, never remove them. This
+// guard lives at the single choke point every ClickUp request funnels through,
+// so no code path (present, future, a refactor slip, or a copy-paste) can ever
+// issue a task deletion, no matter what happens in the portal.
+//
+// It blocks any DELETE addressed to a specific task — the destructive
+// `DELETE /task/{id}` file-delete AND `DELETE /list/{id}/task/{id}` (removing a
+// file from a list). Webhook plumbing (`DELETE /webhook/{id}`) is unrelated to
+// files and stays allowed. If the business ever deliberately wants a task
+// removed, that must be a conscious human action outside this sync — never an
+// automatic consequence of a portal change.
+const TASK_PATH_RE = /(^|\/)task\/[^/?]+/; // any endpoint addressing a specific task
+function guardNoTaskDeletion(method, path) {
+  if (String(method).toUpperCase() !== 'DELETE') return;
+  if (TASK_PATH_RE.test(String(path))) {
+    const e = new Error(
+      `BLOCKED: ClickUp task deletion is permanently disabled (DELETE ${path}). ` +
+      `Portal file deletions never touch ClickUp — ClickUp is the system of record.`);
+    e.code = 'CLICKUP_DELETE_FORBIDDEN';
+    throw e;
+  }
+}
+
 async function call(path, { method = 'GET', body } = {}) {
+  guardNoTaskDeletion(method, path); // never delete a ClickUp file — see guard above
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: { Authorization: token(), 'Content-Type': 'application/json' },
@@ -78,6 +105,9 @@ function getFilteredTeamTasks(teamId, params = {}) {
 // Multi-home (processor assignment ADDS without moving). Requires the
 // "Tasks in Multiple Lists" ClickApp.
 const addTaskToList      = (listId, taskId) => call(`/list/${listId}/task/${taskId}`, { method: 'POST' });
+// NOTE: this is intentionally blocked by guardNoTaskDeletion (it is a DELETE on a
+// task path). Kept only for interface symmetry with addTaskToList; the sync never
+// removes a file from a list. See the HARD STOP note above.
 const removeTaskFromList = (listId, taskId) => call(`/list/${listId}/task/${taskId}`, { method: 'DELETE' });
 
 // Webhooks
@@ -105,4 +135,5 @@ module.exports = {
   getTask, getListFields, getFilteredTeamTasks,
   addTaskToList, removeTaskFromList,
   createWebhook, listWebhooks, updateWebhook, deleteWebhook, verifyWebhookSignature,
+  guardNoTaskDeletion, // exported for the safety test; the guard is enforced inside call()
 };
