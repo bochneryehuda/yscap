@@ -1435,7 +1435,7 @@ export default function StaffApplication() {
       <div className="file-top">
         <Link to="/internal" className="btn link" style={{ flex: 'none' }}>← Pipeline</Link>
         <div className="file-top-main">
-          <h1 className="file-top-addr">{app.first_name} {app.last_name} · {propAddress === '—' ? 'Address pending' : propAddress}</h1>
+          <h1 className="file-top-addr">{app.first_name} {app.last_name}{app.co_borrower_id ? ` & ${app.co_first_name || ''} ${app.co_last_name || ''}`.trimEnd() : ''} · {propAddress === '—' ? 'Address pending' : propAddress}</h1>
           <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
         </div>
         {canDelete && (app.deleted_at
