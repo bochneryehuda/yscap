@@ -45,6 +45,18 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, hint: 'Enter via the secure SSN field on the borrower profile.' },
   { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'number' },
   { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
+  // #73 — when a co-borrower is linked, THEIR personal info is required too (not
+  // a condition — required fields). Filled in the Co-borrower panel (so edit:
+  // false here). Gated to payloads that actually carry the co-borrower join
+  // (the staff file), so they never show as spuriously-missing on the borrower's
+  // own completeness view.
+  ...((app.co_borrower_id && ('co_first_name' in app)) ? [
+    { key: 'co_name', label: 'Co-borrower name', ok: !!(app.co_first_name && app.co_last_name), edit: false, hint: 'Enter in the Co-borrower panel.' },
+    { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, hint: 'Enter in the Co-borrower panel.' },
+    { key: 'co_phone', label: 'Co-borrower phone', ok: !!app.co_cell_phone, edit: false, hint: 'Enter in the Co-borrower panel.' },
+    { key: 'co_dob', label: 'Co-borrower date of birth', ok: !!app.co_date_of_birth, edit: false, hint: 'Enter in the Co-borrower panel.' },
+    { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, hint: 'Enter in the Co-borrower panel (stored encrypted).' },
+  ] : []),
 ];
 
 /* Application completeness with INLINE editing — click a missing field to enter
