@@ -57,9 +57,12 @@ async function pushOutboxOnce() {
   try {
     if (job.entity_type === 'application') {
       // Scoped push: the job carries the specific fields the edit changed
-      // (payload.only). Pass them through so only those are written to ClickUp.
-      const only = job.payload && Array.isArray(job.payload.only) ? job.payload.only : null;
-      await orchestrator.pushApplication(job.entity_id, { force: true, only });
+      // (payload.only). A queue job MUST name its fields — a job with no field
+      // set (a legacy job enqueued before scoped push, or an empty set) is
+      // skipped rather than pushed, so it can NEVER fall back to a full-payload
+      // overwrite. Full pushes happen only via the explicit admin repush.
+      const only = job.payload && Array.isArray(job.payload.only) ? job.payload.only.filter(Boolean) : [];
+      if (only.length) await orchestrator.pushApplication(job.entity_id, { force: true, only });
     }
     await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
   } catch (e) {
