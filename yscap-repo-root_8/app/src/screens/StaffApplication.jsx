@@ -834,6 +834,9 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
         <div className="metrow"><span className="k">Email</span><span className="v">{app.co_email || '—'}</span></div>
         <div className="metrow"><span className="k">Phone</span><span className="v">{app.co_cell_phone || '—'}</span></div>
         {app.co_date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{new Date(app.co_date_of_birth).toLocaleDateString()}</span></div>}
+        <div className="metrow"><span className="k">FICO</span><span className="v">{app.co_fico || '—'}</span></div>
+        <div className="metrow"><span className="k">Citizenship</span><span className="v">{app.co_citizenship || '—'}</span></div>
+        <div className="metrow"><span className="k">Tier</span><span className="v">{app.co_tier || '—'}</span></div>
         <div className="metrow"><span className="k">SSN</span>
           <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
             <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '.02em' }}>{coSsn || (app.co_ssn_last4 ? `•••-••-${app.co_ssn_last4}` : '—')}</span>
