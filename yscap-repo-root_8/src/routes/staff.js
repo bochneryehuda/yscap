@@ -18,6 +18,7 @@ const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication } = require('../lib/experience');
 const { enqueueClickupPush } = require('../clickup/enqueue');
+const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRules = require('../lib/conditions/rules');
@@ -284,6 +285,16 @@ router.post('/clickup/sync-mine', async (req, res) => {
     .then((n) => console.log('[sync-mine]', req.actor.id, 'folder', folderId, 'ingested', n))
     .catch((e) => console.error('[sync-mine] failed', e.message));
   res.json({ ok: true, started: true, folderId: String(folderId) });
+});
+
+// The known internal (ClickUp) task statuses we mirror 1:1 (the KEYS of the
+// EXTERNAL_FOR map), each with the borrower-facing status it derives to. Feeds
+// the staff "Internal (ClickUp) status" picker.
+router.get('/clickup/internal-statuses', (req, res) => {
+  const list = Object.keys(statusMap.EXTERNAL_FOR).map((value) => ({
+    value, external: statusMap.externalFor(value),
+  }));
+  res.json(list);
 });
 
 // Exception dashboard — how many files are in each "needs attention" bucket,
@@ -1868,6 +1879,35 @@ router.patch('/applications/:id', async (req, res) => {
           applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
     } catch (_) { /* notify best-effort */ }
     res.json({ ok: true, status });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Set the EXACT ClickUp task status (internal_status) directly — the 38-status
+// workflow, not the 9 borrower-facing buckets. The borrower-facing `status` is
+// re-derived from it (statusMap.externalFor) and the scoped push mirrors both to
+// ClickUp. The /applications/:id path middleware already enforces per-file auth.
+router.post('/applications/:id/internal-status', async (req, res) => {
+  const internalStatus = req.body && req.body.internalStatus;
+  if (!statusMap.isKnownInternal(internalStatus)) return res.status(400).json({ error: 'unknown internal status' });
+  const external = statusMap.externalFor(internalStatus);
+  try {
+    const cur = await db.query(`SELECT status, internal_status FROM applications WHERE id=$1`, [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (statusMap.norm(cur.rows[0].internal_status) === statusMap.norm(internalStatus))
+      return res.json({ ok: true, unchanged: true, internal_status: internalStatus, status: external });
+    await db.query(
+      `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
+      [req.params.id, internalStatus, external]);
+    enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // push ONLY the status (task status + borrower_portal_status mirror)
+    // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.
+    await db.query(
+      `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
+       VALUES ($1,$2,$3,$4,$5)`, [req.params.id, cur.rows[0].status, external, req.actor.id, false]);
+    await audit(req, 'internal_status_change', 'application', req.params.id,
+      { from: cur.rows[0].internal_status, to: internalStatus, external });
+    // Status is a rule-engine field — re-run conditions on the new external bucket.
+    try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'status_change' }); } catch (_) {}
+    res.json({ ok: true, internal_status: internalStatus, status: external });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
