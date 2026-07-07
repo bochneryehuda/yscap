@@ -13,6 +13,8 @@ import { useAuth } from '../lib/auth.jsx';
      - Activity: recent sync events (masked; never shows SSN/card).
      - Per-file re-sync: force one application both ways. */
 
+const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city, a.state].filter(Boolean).join(', ') || '—');
+
 function Stat({ label, value, tone }) {
   return (
     <div className="panel" style={{ background: 'var(--ink-2)', padding: '10px 14px', minWidth: 120 }}>
@@ -54,18 +56,30 @@ export default function StaffClickup() {
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [appId, setAppId] = useState('');
+  const [review, setReview] = useState(null);     // manual-review queue rows
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
   const loadHealth = () => api.clickupHealth().then(setHealth).catch(e => setErr(e.message));
   const loadActivity = () => api.clickupActivity().then(r => setActivity(r.rows || [])).catch(() => {});
+  const loadReview = () => api.clickupManualReview().then(r => setReview(r.rows || [])).catch(() => {});
 
   useEffect(() => {
     if (!isAdmin) return;
-    loadHealth(); loadActivity();
-    const t = setInterval(() => { loadHealth(); loadActivity(); }, 20000);
+    loadHealth(); loadActivity(); loadReview();
+    const t = setInterval(() => { loadHealth(); loadActivity(); loadReview(); }, 20000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
+
+  async function resolveReview(id, action) {
+    setBusy(`mr:${id}:${action}`); setErr('');
+    try {
+      await api.clickupResolveManualReview(id, action);
+      flash(action === 'link' ? 'File linked ✓' : 'File descoped ✓');
+      loadReview(); loadHealth();
+    } catch (e) { setErr(e.message || 'Resolve failed'); }
+    finally { setBusy(''); }
+  }
 
   async function runBackfill(mode) {
     setBusy(mode); setErr(''); setDry(null);
@@ -100,7 +114,7 @@ export default function StaffClickup() {
           <p className="muted small">Validate and operate the ClickUp ⇄ portal sync. Start with a dry-run — it reads only, writes nothing.</p>
         </div>
         <div className="spacer" />
-        <button className="btn ghost small" onClick={() => { loadHealth(); loadActivity(); flash('Refreshed'); }}>Refresh</button>
+        <button className="btn ghost small" onClick={() => { loadHealth(); loadActivity(); loadReview(); flash('Refreshed'); }}>Refresh</button>
       </div>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
@@ -123,6 +137,46 @@ export default function StaffClickup() {
         <CountRow title="Applications by sync state" obj={health?.counts} />
         <CountRow title="Webhook inbox" obj={health?.inbox} />
         <CountRow title="Outbound queue" obj={health?.queue} />
+      </div>
+
+      {/* manual review queue */}
+      <div className="panel" style={{ marginTop: 14 }}>
+        <div className="row" style={{ marginBottom: 4, alignItems: 'baseline', gap: 8 }}>
+          <h3 style={{ margin: 0 }}>Manual Review</h3>
+          <span className="pill">{review == null ? '…' : review.length}</span>
+        </div>
+        <p className="muted small">Files the inbound sync flagged as ambiguous. <b>Link</b> keeps the file synced to its ClickUp task; <b>Descope</b> pauses sync for the file. Neither writes to ClickUp.</p>
+        {review == null ? <p className="muted small">Loading…</p>
+          : review.length === 0 ? <p className="muted small">Nothing awaiting review — the queue is clear.</p>
+          : <div style={{ overflowX: 'auto' }}>
+              <table className="table" style={{ width: '100%', minWidth: 720, fontSize: 13 }}>
+                <thead><tr>
+                  <th style={{ textAlign: 'left' }}>Borrower</th><th style={{ textAlign: 'left' }}>Property</th>
+                  <th style={{ textAlign: 'left' }}>YS #</th><th style={{ textAlign: 'left' }}>Task</th>
+                  <th style={{ textAlign: 'left' }}>Reason</th><th style={{ textAlign: 'right' }}>Resolve</th>
+                </tr></thead>
+                <tbody>
+                  {review.map((r) => {
+                    const reason = r.match_status
+                      ? `${r.match_status}${r.match_detail ? ` · ${typeof r.match_detail === 'string' ? r.match_detail : JSON.stringify(r.match_detail)}` : ''}`
+                      : '—';
+                    return (
+                      <tr key={r.id}>
+                        <td>{[r.first_name, r.last_name].filter(Boolean).join(' ') || '—'}</td>
+                        <td>{addrLine(r.property_address)}</td>
+                        <td>{r.ys_loan_number || '—'}</td>
+                        <td className="muted small">{r.clickup_pipeline_task_id || '—'}</td>
+                        <td className="muted small">{reason}</td>
+                        <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                          <button className="btn small" disabled={!!busy} onClick={() => resolveReview(r.id, 'link')}>{busy === `mr:${r.id}:link` ? '…' : 'Link'}</button>{' '}
+                          <button className="btn ghost small" disabled={!!busy} onClick={() => resolveReview(r.id, 'descope')}>{busy === `mr:${r.id}:descope` ? '…' : 'Descope'}</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>}
       </div>
 
       {/* backfill / dry-run */}

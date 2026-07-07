@@ -14,6 +14,7 @@ const db = require('../db');
 const cfg = require('../config');
 const C = require('../lib/crypto');
 const mapper = require('./mapper');
+const F = require('./fields');
 const identity = require('./identity');
 const statusMap = require('./status');
 const crosswalk = require('./crosswalk');
@@ -179,6 +180,28 @@ async function resolveStaffByEmail(email) {
   return r.rows[0] ? { id: r.rows[0].id, name: r.rows[0].full_name } : { id: null, name: null };
 }
 
+/** Resolve a ClickUp numeric user id → an active staff_users row (mirrors
+ *  resolveStaffByEmail). Used for "users" custom fields — e.g. Underwriter —
+ *  where the ClickUp member id is the stable key into staff_users.clickup_user_id. */
+async function resolveStaffByClickupUserId(clickupUserId) {
+  if (clickupUserId == null || clickupUserId === '') return { id: null, name: null };
+  const r = await db.query(
+    `SELECT id, full_name FROM staff_users WHERE clickup_user_id=$1 AND is_active=true LIMIT 1`, [clickupUserId]
+  ).catch(() => ({ rows: [] }));
+  return r.rows[0] ? { id: r.rows[0].id, name: r.rows[0].full_name } : { id: null, name: null };
+}
+
+/** First ClickUp user id from a "users" custom field on a raw task (or null).
+ *  Mirrors the mapper's officer/processor read: take the first user, prefer .id.
+ *  The Underwriter field is in the mapper's KNOWN set (never surfaced in extra),
+ *  so we read it straight off the task here. */
+function firstUserIdFromField(task, fieldId) {
+  const cf = ((task && task.custom_fields) || []).find((c) => c && c.id === fieldId);
+  if (!cf || !Array.isArray(cf.value) || !cf.value.length) return null;
+  const u = cf.value[0];
+  return (u && (u.id != null ? u.id : u)) || null;
+}
+
 const _addrOf = (v) => (v && (v.formatted_address || v.oneLine)) || null;
 
 /**
@@ -295,6 +318,9 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   const a = read.app || {};
   const lo = await resolveStaffByEmail(loanOfficerEmail);
   const pr = await resolveStaffByEmail(processorEmail);
+  // Underwriter comes from ClickUp's "Underwriter" users field (may hold several
+  // users — take the first), matched to staff_users by clickup_user_id. Pull-only.
+  const uw = await resolveStaffByClickupUserId(firstUserIdFromField(task, F.PIPELINE.underwriter));
   const internal = read.internalStatus;
   const external = statusMap.externalFor(internal) || 'processing';
   const cols = {
@@ -321,6 +347,8 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     clickup_extra: Object.keys(read.extra).length ? JSON.stringify(read.extra) : null,
     // Officer assignment (COALESCE on update: reassign when resolved, keep when not).
     loan_officer_id: lo.id, loan_officer_name: lo.name, processor_id: pr.id,
+    // Underwriter assignment — same COALESCE semantics: set when resolved, keep when not.
+    underwriter_id: uw.id,
     clickup_folder_id: folderId != null ? Number(folderId) : null,
   };
 
