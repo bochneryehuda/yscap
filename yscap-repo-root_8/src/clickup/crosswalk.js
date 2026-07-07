@@ -96,11 +96,11 @@ const FIELDS = {
       on_hold: 'on_hold', declined: 'declined', withdrawn: 'withdrawn',
     },
   },
-  // Registered product (Standard / Gold Standard) -> new "YS Program" field.
-  // Portal-authoritative, one-way (§7.1/7.5). id filled once the owner adds the field.
+  // Registered product -> ClickUp "RTL Loan Program" field (Standard / Gold).
+  // Portal-authoritative, one-way (§7.1/7.5).
   registered_program: {
-    id: null,                                        // NEW ClickUp "YS Program" field (owner adding)
-    to: { standard: 'Standard', gold: 'Gold Standard', none: null },
+    id: 'aae034e4-633c-40db-85b4-7d8cfe33501b',
+    to: { standard: 'The Standard program', gold: 'The Gold program', none: null },
   },
 };
 
