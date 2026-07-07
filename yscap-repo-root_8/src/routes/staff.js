@@ -127,7 +127,12 @@ router.get('/dashboard', async (req, res) => {
                        count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('month', now()) - interval '1 month' AND actual_closing < date_trunc('month', now()))::int funded_last_month,
                        count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('year', now()))::int funded_ytd,
                        COALESCE(sum(loan_amount) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('year', now())),0)::bigint funded_ytd_value,
-                       COALESCE(sum(loan_amount) FILTER (WHERE status='funded'),0)::bigint funded_lifetime_value
+                       COALESCE(sum(loan_amount) FILTER (WHERE status='funded'),0)::bigint funded_lifetime_value,
+                       -- K1: funded but no actual closing date YET (ClickUp can add the
+                       -- date later). Still counted as funded; held in a dateless bucket
+                       -- and auto-moves into its month once a date lands.
+                       count(*) FILTER (WHERE status='funded' AND actual_closing IS NULL)::int funded_no_date,
+                       COALESCE(sum(loan_amount) FILTER (WHERE status='funded' AND actual_closing IS NULL),0)::bigint funded_no_date_value
                   FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params),
       seesAll(req)
         ? db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived')`)
@@ -152,6 +157,7 @@ router.get('/dashboard', async (req, res) => {
       // funded broken out by actual closing date (MTM), + running dollar totals
       fundedMtd: t.funded_mtd, fundedLastMonth: t.funded_last_month, fundedYtd: t.funded_ytd,
       fundedYtdValue: Number(t.funded_ytd_value), fundedLifetimeValue: Number(t.funded_lifetime_value),
+      fundedNoDate: t.funded_no_date, fundedNoDateValue: Number(t.funded_no_date_value),
       fundedByMonth: fundedByMonth.rows.map((r) => ({ month: r.ym, count: r.c, value: Number(r.v) })),
       openLeads: leads.rows[0].c,
       stale: aging.rows[0].c,           // active files untouched > 5 days

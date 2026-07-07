@@ -248,6 +248,36 @@ async function auditData() {
             count(*) FILTER (WHERE status='funded' AND actual_closing IS NULL)::int funded_no_date,
             count(*) FILTER (WHERE status='funded' AND actual_closing IS NOT NULL)::int funded_dated
        FROM applications WHERE deleted_at IS NULL`))[0];
+  // The EXACT data_only FUNDED files that are missing a *Program in ClickUp but
+  // carry RTL signals (ARV / rehab budget / rehab type) — the concrete candidates
+  // behind the portal-vs-ClickUp funded-count gap. Listed with name + address so
+  // they can be opened in ClickUp and verified.
+  const FUNDED_RAW = `('closed reconciled','closed (6-email funded)','non del closed reconciled','refinanced','waiting for final docs','in purchase review','purchase conditions','pa issued-post closing.')`;
+  out.rtlFundedMissingProgram = await q(
+    `SELECT task_id, task_name,
+            snapshot->>'status' AS status,
+            NULLIF(snapshot->'app'->>'arv','') AS arv,
+            NULLIF(snapshot->'app'->>'rehab_budget','') AS rehab_budget,
+            NULLIF(snapshot->'app'->>'rehab_type','') AS rehab_type,
+            NULLIF(snapshot->'app'->>'loan_type','') AS loan_type,
+            NULLIF(snapshot->'app'->>'dscr_ratio','') AS dscr_ratio
+       FROM clickup_task_index
+      WHERE kind='data_only'
+        AND lower(btrim(COALESCE(snapshot->>'status',''))) IN ${FUNDED_RAW}
+        AND (snapshot->>'rawProgram') IS NULL
+        AND (NULLIF(snapshot->'app'->>'arv','') IS NOT NULL
+             OR NULLIF(snapshot->'app'->>'rehab_budget','') IS NOT NULL
+             OR NULLIF(snapshot->'app'->>'rehab_type','') IS NOT NULL)
+      ORDER BY task_name LIMIT 40`);
+  // Breakdown of ALL data_only funded files by their *Program label (blank vs
+  // DSCR/non-QM), + how many of each carry an RTL signal — sizes the whole gap.
+  out.dataOnlyFundedByProgram = await q(
+    `SELECT COALESCE(NULLIF(snapshot->>'rawProgram',''),'(blank program)') raw_program, count(*)::int n,
+            count(*) FILTER (WHERE NULLIF(snapshot->'app'->>'arv','') IS NOT NULL
+                                OR NULLIF(snapshot->'app'->>'rehab_budget','') IS NOT NULL)::int with_rtl_signal
+       FROM clickup_task_index
+      WHERE kind='data_only' AND lower(btrim(COALESCE(snapshot->>'status',''))) IN ${FUNDED_RAW}
+      GROUP BY 1 ORDER BY n DESC LIMIT 30`);
   console.log('[audit] ' + JSON.stringify(out));
   return out;
 }
