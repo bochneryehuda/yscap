@@ -74,13 +74,19 @@ async function pushOutboxOnce() {
 // updated_at and clickup_last_synced_at together, pulled changes never look
 // dirty — so this cannot loop.
 async function sweepDirtyOnce() {
+  // Go-live guard: when CLICKUP_OUTBOUND_SINCE is set, only push apps that are
+  // already linked to a ClickUp task OR were created at/after the cutoff. This
+  // stops the sweep from bulk-pushing the pre-existing portal backlog (which
+  // would create duplicate ClickUp tasks). Empty cutoff = push everything dirty.
+  const since = cfg.clickupOutboundSince || null;
   const r = await db.query(
     `SELECT a.id FROM applications a
       WHERE a.deleted_at IS NULL
         AND a.sync_state NOT IN ('manual_review','descoped')
         AND (a.clickup_pipeline_task_id IS NOT NULL OR a.program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction'))
+        AND ($1::timestamptz IS NULL OR a.clickup_pipeline_task_id IS NOT NULL OR a.created_at >= $1::timestamptz)
         AND (a.clickup_last_synced_at IS NULL OR a.updated_at > a.clickup_last_synced_at + interval '10 seconds')
-      ORDER BY a.updated_at LIMIT 5`);
+      ORDER BY a.updated_at LIMIT 5`, [since]);
   let n = 0;
   for (const row of r.rows) {
     try { await orchestrator.pushApplication(row.id, { force: true }); n++; }
@@ -240,7 +246,8 @@ function start() {
   // inbound/backfill can run and be validated first, before the portal is
   // allowed to write to production ClickUp.
   if (cfg.clickupOutboundEnabled) {
-    console.log('[clickup-sync] outbound writes ENABLED (portal → ClickUp)');
+    console.log('[clickup-sync] outbound writes ENABLED (portal → ClickUp)' +
+      (cfg.clickupOutboundSince ? ` — new files only (created >= ${cfg.clickupOutboundSince}) + already-linked` : ' — all dirty apps (no cutoff)'));
     setInterval(() => tick(pushOutboxOnce, 'push'), 4000);
     setInterval(() => tick(sweepDirtyOnce, 'dirty'), 8000);
   } else {
