@@ -831,7 +831,11 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppBorrowers(req.params.id, {
         type: 'condition_added', title: 'A new item was added to your file',
-        body: `"${b.borrowerLabel || label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
+        // Never interpolate the internal label — it can carry underwriting /
+        // capital-partner (note-buyer) context. Borrower wording or a generic line.
+        body: b.borrowerLabel
+          ? `"${b.borrowerLabel}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`
+          : `A new item was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
         meta: (ctx && ctx.meta) || undefined,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
     } catch (_) { /* best-effort */ }
@@ -861,7 +865,10 @@ router.post('/applications/:id/conditions/attach', async (req, res) => {
       const ctx = await notify.fileContext(req.params.id);
       await notify.notifyAppBorrowers(req.params.id, {
         type: 'condition_added', title: 'A new item was added to your file',
-        body: `"${tpl.borrower_label || tpl.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
+        // Borrower wording only — never fall back to the internal tpl.label.
+        body: tpl.borrower_label
+          ? `"${tpl.borrower_label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`
+          : `A new item was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
         meta: (ctx && ctx.meta) || undefined,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
     } catch (_) { /* best-effort */ }
