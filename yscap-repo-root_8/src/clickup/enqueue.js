@@ -46,4 +46,23 @@ async function enqueueClickupPush(appId, only = []) {
   } catch (_) { /* best-effort */ }
 }
 
-module.exports = { enqueueClickupPush };
+// Enqueue a SCOPED push of ONE checklist condition's status to its ClickUp
+// dropdown. Self-gating: no-ops unless the item is mapped (clickup_field_id set)
+// AND its file is linked to a ClickUp task — so it is safe to wire at every
+// checklist status-transition site. The logical key `checklist:<fieldId>` routes
+// through the same changed-fields-only push, so it can never rewrite the task.
+async function enqueueChecklistStatusPush(itemId) {
+  if (!itemId || !cfg.clickupSyncEnabled) return;
+  try {
+    const r = await db.query(
+      `SELECT ci.application_id, ci.clickup_field_id
+         FROM checklist_items ci JOIN applications a ON a.id = ci.application_id
+        WHERE ci.id=$1 AND ci.clickup_field_id IS NOT NULL
+          AND a.clickup_pipeline_task_id IS NOT NULL AND a.deleted_at IS NULL`, [itemId]);
+    const row = r.rows[0];
+    if (!row) return;                       // unmapped item / unlinked file → no-op
+    await enqueueClickupPush(row.application_id, [`checklist:${row.clickup_field_id}`]);
+  } catch (_) { /* best-effort */ }
+}
+
+module.exports = { enqueueClickupPush, enqueueChecklistStatusPush };
