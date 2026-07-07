@@ -68,6 +68,27 @@ async function pushOutboxOnce() {
   return true;
 }
 
+// ---- dirty sweep (portal edits → ClickUp, no write-path wiring needed) -----
+// Pushes any RTL / already-linked application whose updated_at is newer than its
+// last sync (10s debounce lets rapid edits settle). Because ingest sets
+// updated_at and clickup_last_synced_at together, pulled changes never look
+// dirty — so this cannot loop.
+async function sweepDirtyOnce() {
+  const r = await db.query(
+    `SELECT a.id FROM applications a
+      WHERE a.deleted_at IS NULL
+        AND a.sync_state NOT IN ('manual_review','descoped')
+        AND (a.clickup_pipeline_task_id IS NOT NULL OR a.program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction'))
+        AND (a.clickup_last_synced_at IS NULL OR a.updated_at > a.clickup_last_synced_at + interval '10 seconds')
+      ORDER BY a.updated_at LIMIT 5`);
+  let n = 0;
+  for (const row of r.rows) {
+    try { await orchestrator.pushApplication(row.id, { force: true }); n++; }
+    catch (e) { console.error('[clickup-sync] push dirty', row.id, e.message); }
+  }
+  return n > 0;
+}
+
 // ---- inbound (ClickUp → portal) ------------------------------------------
 async function processInboxOnce() {
   const r = await db.query(
@@ -148,8 +169,9 @@ function start() {
   console.log('[clickup-sync] worker started');
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
   setInterval(() => tick(pushOutboxOnce, 'push'), 4000);
+  setInterval(() => tick(sweepDirtyOnce, 'dirty'), 8000);
   setInterval(() => tick(processInboxOnce, 'inbox'), 4000);
   setInterval(() => { reconcileOnce().catch((e) => console.error('[clickup-sync] reconcile', e.message)); }, (cfg.clickupPollSec || 300) * 1000);
 }
 
-module.exports = { start, pushOutboxOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, canMaterialize, PIPELINE_FOLDERS };
