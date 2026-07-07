@@ -15,7 +15,19 @@ const IDENTITY_KEYS = [
   'address', 'loanNumber', 'borrowerName', 'dob', 'email', 'ssn', 'phone', 'purchasePrice',
 ];
 
+const crypto = require('crypto');
 const digits = (v) => String(v == null ? '' : v).replace(/\D/g, '');
+
+/**
+ * Deterministic, keyed SSN hash for the identity graph. Same SSN (however
+ * formatted) → same hash; plaintext never stored/compared. Uses the last 9
+ * digits. Returns null for a missing/short SSN.
+ */
+function ssnHash(ssn, key) {
+  const d = digits(ssn);
+  if (d.length < 9 || !key) return null;
+  return crypto.createHmac('sha256', key).update(d.slice(-9)).digest('hex');
+}
 const lower  = (v) => String(v == null ? '' : v).trim().toLowerCase();
 
 function normAddress(v) {
@@ -81,5 +93,5 @@ function bestMatch(candidate, existing, threshold = 2) {
 }
 
 module.exports = {
-  IDENTITY_KEYS, normalizeIdentity, populatedCount, countMatches, isMatch, canMaterialize, bestMatch,
+  IDENTITY_KEYS, normalizeIdentity, populatedCount, countMatches, isMatch, canMaterialize, bestMatch, ssnHash,
 };

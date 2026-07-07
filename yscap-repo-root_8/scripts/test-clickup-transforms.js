@@ -105,6 +105,9 @@ eq('identity cantMaterialize', id.canMaterialize({ email: 'a@b.com' }), false);
 const best = id.bestMatch(recA, [{ id: 'app1', identity: { borrowerName: 'DOV STEINER', email: 'dov@x.com' } },
                                   { id: 'app2', identity: { email: 'dov@x.com' } }]);
 eq('identity bestMatch', best && best.record.id, 'app1');
+eq('ssnHash same value diff format', id.ssnHash('066-88-9965', 'k'), id.ssnHash('066889965', 'k'));
+eq('ssnHash diff key differs', id.ssnHash('066889965', 'k1') === id.ssnHash('066889965', 'k2'), false);
+eq('ssnHash short -> null', id.ssnHash('123', 'k'), null);
 
 // echo suppression
 echo._clear();
