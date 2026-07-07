@@ -146,10 +146,13 @@ async function reconcileOnce() {
 }
 
 // ---- historical backfill (one-shot, paced) --------------------------------
-async function runBackfill({ createFiles = true, pageLimit = 1000 } = {}) {
+// folders: optional subset (e.g. one officer's pipeline folder for a self-serve
+// re-sync); defaults to every configured pipeline folder.
+async function runBackfill({ createFiles = true, pageLimit = 1000, folders = null } = {}) {
   const options = await optionMap();
   let total = 0;
-  for (const folder of PIPELINE_FOLDERS()) {
+  const folderList = (folders && folders.length) ? folders : PIPELINE_FOLDERS();
+  for (const folder of folderList) {
     for (let page = 0; page < pageLimit; page++) {
       let res;
       try { res = await clickup.getFilteredTeamTasks(cfg.clickupTeamId, { folderIds: [folder], includeClosed: true, page, subtasks: true }); }
@@ -160,7 +163,9 @@ async function runBackfill({ createFiles = true, pageLimit = 1000 } = {}) {
         try {
           const full = t.custom_fields ? t : await clickup.getTask(t.id, { include: ['custom_fields'] });
           const read = mapper.readTaskFields(full, options);
-          await ingest.ingestTask(full, options, { createFile: createFiles && canMaterialize(read) });
+          // folderId fallback: the per-folder loop knows the folder even if the
+          // filtered task payload omits task.folder (officer resolution).
+          await ingest.ingestTask(full, options, { createFile: createFiles && canMaterialize(read), folderId: folder });
           total++;
         } catch (e) { console.error('[backfill] task failed', t.id, e.message); }
       }
@@ -168,6 +173,18 @@ async function runBackfill({ createFiles = true, pageLimit = 1000 } = {}) {
     }
   }
   console.log(`[backfill] ingested ${total} tasks`);
+  // Verification summary (assignment + match outcomes) — no PII, safe to log.
+  try {
+    const s = await db.query(
+      `SELECT count(*)::int linked, count(*) FILTER (WHERE loan_officer_id IS NOT NULL)::int assigned,
+              count(DISTINCT loan_officer_id)::int distinct_officers
+         FROM applications WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`);
+    const mi = await db.query(`SELECT match_status, count(*)::int n FROM clickup_task_index WHERE match_status IS NOT NULL GROUP BY match_status ORDER BY n DESC`);
+    const st = await db.query(`SELECT status, count(*)::int n FROM applications WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL GROUP BY status ORDER BY n DESC`);
+    console.log('[backfill] linked apps:', JSON.stringify(s.rows[0]));
+    console.log('[backfill] match_status:', JSON.stringify(mi.rows));
+    console.log('[backfill] borrower-status spread:', JSON.stringify(st.rows));
+  } catch (e) { console.error('[backfill] summary failed', e.message); }
   return total;
 }
 
@@ -226,6 +243,13 @@ function start() {
 
   if (!cfg.clickupSyncEnabled) { console.log('[clickup-sync] disabled (CLICKUP_SYNC_ENABLED!=1)'); return; }
   console.log('[clickup-sync] worker started');
+
+  // Warm the dropdown-option cache immediately so outbound pushes for already-
+  // linked tasks resolve dropdown option ids from the first tick (the cache is
+  // space-level and shared; without this, the first ~poll-interval of linked
+  // pushes silently dropped dropdown fields).
+  optionMap().then(() => console.log('[clickup-sync] option cache warmed'))
+    .catch((e) => console.error('[clickup-sync] option cache warm failed', e.message));
 
   // Stage 1 — one-shot inbound backfill on boot (identity graph, and RTL files
   // when mode='full'). Inbound only; writes to the portal, never to ClickUp.

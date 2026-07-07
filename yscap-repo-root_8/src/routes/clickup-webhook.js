@@ -14,6 +14,26 @@ const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
 const clickup = require('../clickup/client');
+const F = require('../clickup/fields');
+
+// Custom-field ids whose values are PII and must never be stored in cleartext
+// in the inbox jsonb (they arrive in taskUpdated history_items before/after).
+const SENSITIVE_FIELD_IDS = new Set([F.SHARED.borrowerSSN, F.EXTRA.card]);
+function redactClickupPayload(p) {
+  try {
+    if (p && Array.isArray(p.history_items)) {
+      for (const h of p.history_items) {
+        const fid = h && (h.field === 'custom_field' ? (h.custom_field && h.custom_field.id) : h.field_id);
+        if (fid && SENSITIVE_FIELD_IDS.has(String(fid))) {
+          if (h.before != null) h.before = '[redacted]';
+          if (h.after != null) h.after = '[redacted]';
+          if (h.data != null) h.data = '[redacted]';
+        }
+      }
+    }
+  } catch (_) { /* redaction best-effort; never block the ack */ }
+  return p;
+}
 
 // Raw body just for this route (Buffer), so the signature covers exact bytes.
 router.use(express.raw({ type: '*/*', limit: '3mb' }));
@@ -35,12 +55,13 @@ router.post('/', async (req, res) => {
 
   const eventId = crypto.createHash('sha256').update(raw).digest('hex'); // idempotency key for redeliveries
   const taskId = payload.task_id || (payload.history_items && payload.history_items[0] && payload.history_items[0].parent_id) || null;
+  const stored = redactClickupPayload(payload);   // strip SSN/card values before persisting
 
   try {
     await db.query(
       `INSERT INTO clickup_webhook_inbox (event_id, event, task_id, payload)
        VALUES ($1,$2,$3,$4) ON CONFLICT (event_id) DO NOTHING`,
-      [eventId, payload.event || null, taskId, JSON.stringify(payload)]);
+      [eventId, payload.event || null, taskId, JSON.stringify(stored)]);
   } catch (e) {
     console.error('[clickup-webhook] inbox insert failed:', db.describeError ? db.describeError(e) : e.message);
     // Still 200 — ClickUp retries are fine; we just didn't record this one.

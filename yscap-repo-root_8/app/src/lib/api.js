@@ -280,6 +280,9 @@ export const api = {
   clickupBackfill:  (mode, sample) => req('POST', '/api/admin/clickup/backfill', { mode, sample }),
   clickupRepush:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repush`),
   clickupRepull:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repull`),
+  clickupSyncFolder:(folderId, createFiles) => req('POST', '/api/admin/clickup/sync-folder', { folderId, createFiles }),
+  // self-serve: pull my own ClickUp pipeline folder into the portal
+  staffSyncMyClickup: () => req('POST', '/api/staff/clickup/sync-mine'),
 
   // ---- chat v3: conversations (staff) ----
   staffConversations:      () => req('GET', '/api/staff/chat/conversations'),

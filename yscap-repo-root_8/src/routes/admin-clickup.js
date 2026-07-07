@@ -51,6 +51,18 @@ router.post('/backfill', async (req, res) => {
   res.json({ mode, started: true, note: 'running in background; watch /activity + /health' });
 });
 
+// Materialize/refresh a specific pipeline folder (or all when folderId omitted),
+// assigning loan officers. createFiles defaults true. Runs in the background.
+router.post('/sync-folder', async (req, res) => {
+  if (!cfg.clickupToken) return res.status(400).json({ error: 'CLICKUP_API_TOKEN not set' });
+  const folderId = req.body && req.body.folderId ? String(req.body.folderId) : null;
+  const createFiles = !(req.body && req.body.createFiles === false);
+  sync.runBackfill({ createFiles, folders: folderId ? [folderId] : null })
+    .then((n) => console.log('[sync-folder]', folderId || 'ALL', 'ingested', n))
+    .catch((e) => console.error('[sync-folder]', e.message));
+  res.json({ started: true, folderId: folderId || 'all', createFiles });
+});
+
 router.get('/activity', async (req, res) => {
   const r = await db.query(
     `SELECT action, entity_type, entity_id, detail, created_at FROM audit_log
