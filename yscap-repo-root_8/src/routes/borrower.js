@@ -981,6 +981,48 @@ router.post('/applications/:id/appraisal-card/from-saved', async (req, res) => {
   } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
 });
 
+// Borrower-side application completeness: fill a missing field inline from the
+// completeness panel. Same whitelist as staff (SSN excluded — it has its own
+// secure flow). Scoped to the borrower's own file.
+const B_COMPLETE_APP = { program: 'text', loan_type: 'text', property_type: 'text',
+  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
+const B_COMPLETE_BORROWER = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
+router.post('/applications/:id/complete-fields', async (req, res) => {
+  const own = await db.query(
+    `SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+    [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const bid = own.rows[0].borrower_id;
+  const b = req.body || {};
+  try {
+    const appVals = [req.params.id], appSets = [], appKeys = [];
+    for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      let v = b[k];
+      if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
+    }
+    if (appSets.length) {
+      appSets.push('updated_at=now()');
+      await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
+      try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, appKeys); } catch (_) {}
+    }
+    // Personal fields update the actor's OWN profile only — a co-borrower must
+    // not overwrite the primary borrower's DOB / phone / FICO / citizenship
+    // (their own values differ). App/deal fields above are file-level and either
+    // party may fill them.
+    const brVals = [me(req)], brSets = [];
+    for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      let v = b[k];
+      if (t === 'int') { v = parseInt(v, 10); if (!Number.isFinite(v)) continue; }
+      brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
+    }
+    if (brSets.length) { brSets.push('updated_at=now()'); await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals); }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+});
+
 // ---------------- SERVICE CONTACTS (title company / insurance agent) ----------------
 // Reusable across files: the borrower enters a contact once and links it on
 // future files via autocomplete. tool_key on the checklist item decides which
@@ -1921,6 +1963,17 @@ function normLoanType(text) {
 
 // Insert a checklist_items row from a template row, carrying workflow columns.
 async function insertFromTemplate(tpl, owner) {
+  // Idempotency: never create a second copy of the same template for the same
+  // owner (application / borrower_profile / llc). This lets generateChecklist run
+  // repeatedly — a ClickUp re-ingest, a self-serve re-sync, or the RTL backfill —
+  // and only fill genuine gaps rather than duplicating a file's conditions. On a
+  // brand-new file there are no items yet, so the create path is unchanged.
+  const [ownerCol, ownerVal] = Object.entries(owner)[0] || [];
+  if (ownerCol && ownerVal != null) {
+    const existing = await db.query(
+      `SELECT 1 FROM checklist_items WHERE template_id=$1 AND ${ownerCol}=$2 LIMIT 1`, [tpl.id, ownerVal]);
+    if (existing.rows[0]) return;
+  }
   const cols = ['template_id', 'scope', 'label', 'borrower_label', 'audience', 'item_kind',
                 'role_scope', 'phase', 'hint', 'borrower_hint', 'is_gate', 'is_milestone',
                 'sort_order', 'tool_key', 'clickup_field_id', 'tpr_exclude', 'created_by_kind', 'is_required'];
@@ -2005,10 +2058,42 @@ async function generateLlcChecklist(llcId) {
   }
 }
 
+// One-shot backfill: apply the RTL condition set + internal checklist to every
+// ACTIVE or CLOSED (funded) RTL file that is missing items — including files
+// imported from ClickUp and manually-entered files. Cancelled (withdrawn/declined)
+// and deleted files are skipped. generateChecklist is idempotent (insertFromTemplate
+// dedups per template+owner), so this only fills genuine gaps. Guarded by a
+// data_migrations marker so it runs once; bump the key to re-run after adding
+// templates. `version` lets a later template addition force a fresh pass.
+const RTL_PROGRAMS_BACKFILL = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'];
+async function backfillRtlChecklists(version = 'v1') {
+  const key = `backfill_rtl_checklists_${version}`;
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS data_migrations (key text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`);
+    const done = await db.query(`SELECT 1 FROM data_migrations WHERE key=$1`, [key]);
+    if (done.rows[0]) return { skipped: true };
+    const files = await db.query(
+      `SELECT id, borrower_id, program, loan_type FROM applications
+        WHERE deleted_at IS NULL
+          AND status NOT IN ('declined','withdrawn')
+          AND program = ANY($1::text[])
+        ORDER BY created_at`, [RTL_PROGRAMS_BACKFILL]);
+    let filled = 0;
+    for (const f of files.rows) {
+      try { await generateChecklist(f.id, f.borrower_id, f.program, f.loan_type, {}); filled++; }
+      catch (e) { console.error('[checklist-backfill] file', f.id, e.message); }
+    }
+    await db.query(`INSERT INTO data_migrations(key) VALUES ($1) ON CONFLICT DO NOTHING`, [key]);
+    console.log(`[checklist-backfill] ${key}: processed ${filled}/${files.rows.length} RTL files`);
+    return { processed: filled, total: files.rows.length };
+  } catch (e) { console.error('[checklist-backfill]', e.message); return { error: e.message }; }
+}
+
 router.generateChecklist = generateChecklist;
 router.generateLlcChecklist = generateLlcChecklist;
 module.exports = router;
 module.exports.generateChecklist = generateChecklist;
+module.exports.backfillRtlChecklists = backfillRtlChecklists;
 module.exports.generateLlcChecklist = generateLlcChecklist;
 module.exports.trackRecordErrors = trackRecordErrors;
 module.exports.trackRecordCols = trackRecordCols;

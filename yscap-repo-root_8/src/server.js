@@ -199,6 +199,13 @@ if (require.main === module) {
         const { ensureSchema, bootstrapAdmin } = require('./migrate-boot');
         await ensureSchema();
         await bootstrapAdmin();   // opt-in: seeds first admin when ADMIN_EMAIL/PASSWORD set
+        // One-shot: ensure every active/closed RTL file (imported or manual) has
+        // its full condition set + internal checklist. Idempotent + marker-guarded,
+        // so it fills gaps once and is a fast no-op on later boots. Fire-and-forget
+        // so it never delays the server coming up.
+        require('./routes/borrower').backfillRtlChecklists('v1')
+          .then((r) => r && !r.skipped && console.log('[boot] RTL checklist backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] RTL checklist backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }

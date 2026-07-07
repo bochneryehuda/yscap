@@ -90,11 +90,13 @@ router.get('/staff', async (req, res) => {
   const r = await db.query(
     `SELECT id,email,full_name,role,title,department,phone,cell,ext,
             is_active,site_selectable,sort_order,mfa_enabled,permissions,
+            COALESCE(visible_officer_ids,'{}')::uuid[] AS visible_officer_ids,
             (password_hash IS NOT NULL) AS has_login, last_login_at
        FROM staff_users ORDER BY department NULLS LAST, sort_order, full_name`);
   res.json(r.rows.map((row) => ({
     ...row,
     permissions: row.permissions || null,
+    visibleOfficerIds: row.visible_officer_ids || [],
     effectivePermissions: [...effectivePermissions(row.role, row.permissions)],
   })));
 });
@@ -177,6 +179,16 @@ router.patch('/staff/:id', async (req, res) => {
   if (b.permissions !== undefined) {
     const ov = sanitizeOverrides(b.permissions);
     sets.push(`permissions=$${i++}`); vals.push(ov ? JSON.stringify(ov) : null);
+  }
+  // Shared file access: the specific loan officers whose files this staffer may
+  // see even when unassigned. Validated to UUIDs + deduped; [] clears it. Read
+  // fresh by the scope checks each request, so it takes effect immediately.
+  if (b.visibleOfficerIds !== undefined) {
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const ids = Array.isArray(b.visibleOfficerIds)
+      ? [...new Set(b.visibleOfficerIds.map(String).filter((x) => UUID.test(x)))]
+      : [];
+    sets.push(`visible_officer_ids=$${i++}::uuid[]`); vals.push(ids);
   }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);

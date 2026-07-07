@@ -29,41 +29,84 @@ const EyeOff = (
 
 /* What the borrower has and hasn't completed — so the officer sees at a glance
    what still needs chasing without opening every panel. */
-function Completeness({ app, borrower }) {
-  const checks = [
-    ['Property address', !!(app.property_address && (app.property_address.oneLine || app.property_address.street))],
-    ['Property type', !!app.property_type],
-    ['Program', !!app.program],
-    ['Loan type', !!app.loan_type],
-    ['Purchase price', app.purchase_price != null],
-    ['ARV', app.arv != null],
-    ['Rehab budget', app.rehab_budget != null],
-    ['Borrower phone', !!(borrower && borrower.cell_phone)],
-    ['Date of birth', !!(borrower && borrower.date_of_birth)],
-    ['SSN on file', !!(borrower && borrower.ssn_last4)],
-    ['FICO', !!(borrower && borrower.fico)],
-    ['Citizenship', !!(borrower && borrower.citizenship)],
-  ];
-  const done = checks.filter(([, ok]) => ok).length;
-  const missing = checks.filter(([, ok]) => !ok);
+// Field metadata shared by the staff + borrower completeness panels. `edit`
+// false = filled elsewhere (address picker / secure SSN flow) so we only hint.
+const COMPLETENESS_FIELDS = (app, borrower) => [
+  { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false, hint: 'Set from the property address field on the file.' },
+  { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
+  { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
+  { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
+  { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
+  { key: 'arv', label: 'ARV', ok: app.arv != null, type: 'money' },
+  { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
+  { key: 'cell_phone', label: 'Borrower phone', ok: !!(borrower && borrower.cell_phone), type: 'tel' },
+  { key: 'date_of_birth', label: 'Date of birth', ok: !!(borrower && borrower.date_of_birth), type: 'date' },
+  { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, hint: 'Enter via the secure SSN field on the borrower profile.' },
+  { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'number' },
+  { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
+];
+
+/* Application completeness with INLINE editing — click a missing field to enter
+   it right there; it saves to the file (and syncs to ClickUp) without a form.
+   `endpoint` differs for staff vs borrower; `onSaved` reloads the file. */
+function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Application completeness' }) {
+  const [editing, setEditing] = useState(null);
+  const [val, setVal] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const fields = COMPLETENESS_FIELDS(app, borrower);
+  const done = fields.filter((x) => x.ok).length;
+  const missing = fields.filter((x) => !x.ok);
+  const start = (f) => { setEditing(f.key); setVal(''); setErr(''); };
+  async function save(f) {
+    if (val === '' || val == null) return;
+    setBusy(true); setErr('');
+    try { await api.post(endpoint, { [f.key]: val }); setEditing(null); setVal(''); await onSaved(); }
+    catch (e) { setErr(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row" style={{ marginBottom: 8 }}>
-        <h3>Application completeness</h3>
+        <h3>{heading}</h3>
         <div className="spacer" />
-        <span className={`pill ${missing.length ? '' : 'done'}`}>{done}/{checks.length} complete</span>
+        <span className={`pill ${missing.length ? '' : 'done'}`}>{done}/{fields.length} complete</span>
       </div>
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
       {missing.length === 0
         ? <p className="muted small">Everything the application asks for has been provided.</p>
         : (
-          <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-            {missing.map(([label]) => (
-              <span key={label} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>Missing: {label}</span>
+          <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            {missing.map((f) => editing === f.key ? (
+              <span key={f.key} className="row" style={{ gap: 4, alignItems: 'center' }}>
+                {f.type === 'select'
+                  ? <select className="input" style={{ maxWidth: 200 }} value={val} onChange={(e) => setVal(e.target.value)} autoFocus>
+                      <option value="" disabled>{f.label}…</option>
+                      {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  : <input className="input" style={{ maxWidth: 170 }} autoFocus
+                      type={f.type === 'date' ? 'date' : f.type === 'number' || f.type === 'money' ? 'number' : f.type === 'tel' ? 'tel' : 'text'}
+                      inputMode={f.type === 'money' || f.type === 'number' ? 'numeric' : undefined}
+                      placeholder={f.label} value={val} onChange={(e) => setVal(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && save(f)} />}
+                <button className="btn primary small" disabled={busy || val === ''} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
+                <button className="btn ghost small" onClick={() => setEditing(null)}>✕</button>
+              </span>
+            ) : f.edit === false ? (
+              <span key={f.key} className="pill" style={{ borderColor: 'var(--muted)', color: 'var(--muted)' }} title={f.hint}>Missing: {f.label}</span>
+            ) : (
+              <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
+                onClick={() => start(f)} title="Click to enter it now">+ {f.label}</button>
             ))}
           </div>
         )}
     </div>
   );
+}
+
+function Completeness({ app, borrower, appId, onSaved }) {
+  return <CompletenessPanel app={app} borrower={borrower}
+    endpoint={`/api/staff/applications/${appId}/complete-fields`} onSaved={onSaved} />;
 }
 
 /* Staff-only file detail the team keeps in ClickUp — pulled onto the file for a
@@ -103,7 +146,9 @@ function ClickupFileData({ app }) {
     ]],
     ['Pipeline', [
       ['Application submitted', str(app.application_submitted)],
-      ['Encompass', str(app.encompass_status)],
+      // Encompass origin ("File originally started in Encompass") is intentionally
+      // NOT displayed on any front-end surface (owner-directed) — it stays in the
+      // backend (encompass_status column) but is never shown to staff or borrower.
     ]],
   ];
   const shown = groups
@@ -344,17 +389,24 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     finally { setBusy(''); }
   }
   async function onFile(e) {
-    const file = (e.target.files || [])[0];
-    if (!file || !upTarget) return;
+    const files = Array.from((e.target && e.target.files) || []);
+    if (!files.length || !upTarget) return;
     setBusy(upTarget.itemId); setErr('');
     try {
-      const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
-      await api.staffUploadAppDoc(appId, {
-        llcId: upTarget.llcId, checklistItemId: upTarget.itemId, slot: upTarget.slotLabel || undefined,
-        replaceDocumentId: upTarget.replaceDocumentId || undefined,
-        filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
-      });
-      flash('Uploaded to the entity ✓ — the borrower sees it too.');
+      // Upload every selected file to this entity slot. On a "replace" action only
+      // the first file replaces the existing document; any extras are added as new
+      // documents on the same slot.
+      let first = true;
+      for (const file of files) {
+        const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+        await api.staffUploadAppDoc(appId, {
+          llcId: upTarget.llcId, checklistItemId: upTarget.itemId, slot: upTarget.slotLabel || undefined,
+          replaceDocumentId: (first ? upTarget.replaceDocumentId : null) || undefined,
+          filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
+        });
+        first = false;
+      }
+      flash(files.length > 1 ? `Uploaded ${files.length} files to the entity ✓ — the borrower sees them too.` : 'Uploaded to the entity ✓ — the borrower sees it too.');
       setUpTarget(null); await load(); onChanged && await onChanged();
     } catch (e2) { setErr(e2.message || 'Upload failed'); }
     finally { setBusy(''); }
@@ -393,7 +445,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   if (!app.borrower_id) return null;
   return (
     <div className="panel" style={{ marginTop: 18 }}>
-      <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={onFile} />
+      <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={onFile} />
       <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
         <h3>Borrower LLCs</h3>
         <div className="spacer" />
@@ -1382,7 +1434,7 @@ export default function StaffApplication() {
 
       <Section id="sec-application" title="Application details"
         info="What the borrower filled out — completeness at a glance, plus the editable deal numbers. Changing them here flows straight into pricing.">
-      <Completeness app={app} borrower={borrower} />
+      <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
       <EditFileDetails app={app} onSaved={load} />
       <ClickupFileData app={app} />
       </Section>

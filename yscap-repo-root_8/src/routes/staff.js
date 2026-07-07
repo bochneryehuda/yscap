@@ -58,7 +58,9 @@ async function canTouchApp(req, appId) {
   // an assigned officer could keep mutating (conditions/messages/post-closing)
   // a file an admin soft-deleted.
   const r = await db.query(
-    `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2) AND deleted_at IS NULL`,
+    `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL
+        AND (loan_officer_id=$2 OR processor_id=$2
+             OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))`,
     [appId, req.actor.id]);
   return !!r.rows[0];
 }
@@ -74,10 +76,16 @@ async function audit(req, action, entity_type, entity_id, detail) {
      VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
     [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, detail || null]);
 }
-// officers/processors only see their files; admins/super-admins/underwriters see all
+// officers/processors only see their files; admins/super-admins/underwriters see all.
+// PLUS: a staffer may be granted access to specific loan officers' files (their
+// visible_officer_ids). The uncorrelated subquery reads that list off the actor's
+// staff row, so this stays a SINGLE-param ($SCOPE) clause — no caller changes.
+const VISIBLE_OFFICERS_SQL = (alias, p) =>
+  `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
+  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p}))`;
 function scopeClause(req, alias = 'a') {
   if (seesAll(req)) return { where: '', params: [] };
-  return { where: `AND (${alias}.loan_officer_id=$SCOPE OR ${alias}.processor_id=$SCOPE)`, params: [req.actor.id] };
+  return { where: `AND ${VISIBLE_OFFICERS_SQL(alias, '$SCOPE')}`, params: [req.actor.id] };
 }
 
 // Guard every /applications/:id* route: a non-privileged staffer may only touch
@@ -89,7 +97,9 @@ router.use('/applications/:id', async (req, res, next) => {
     // A soft-deleted file is inaccessible to non-privileged staff (admins can
     // still reach it to restore); this blocks open/mutate-by-direct-link.
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL AND (loan_officer_id=$2 OR processor_id=$2)`,
+      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL
+          AND (loan_officer_id=$2 OR processor_id=$2
+               OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))`,
       [req.params.id, req.actor.id]);
     if (!r.rows[0]) return res.status(403).json({ error: 'forbidden' });
     next();
@@ -97,9 +107,25 @@ router.use('/applications/:id', async (req, res, next) => {
 });
 
 // ---------------- dashboard KPIs ----------------
+// Dashboard scope = role scope PLUS the pipeline view the staffer is looking at.
+// A scoped user (loan_officer/processor) is always limited to their own files.
+// A seesAll user (admin/underwriter) sees everyone by default, but can narrow the
+// KPIs to match the pipeline view: ?mine=1 (only their files) or ?officerId=<uuid>
+// (one officer's files) — so "Monthly production" et al. reflect exactly what the
+// list below shows. The view can only ever NARROW, never widen, a user's access.
+function dashboardScope(req) {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const mine = req.query.mine === '1' || req.query.mine === 'true';
+  const officerId = UUID.test(String(req.query.officerId || '')) ? String(req.query.officerId) : null;
+  if (!seesAll(req)) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$1))`, params: [req.actor.id] };
+  if (mine) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1)`, params: [req.actor.id] };
+  if (officerId) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1)`, params: [officerId] };
+  return { where: '', params: [] };
+}
+
 router.get('/dashboard', async (req, res) => {
   try {
-    const s = scopeClause(req);
+    const s = dashboardScope(req);
     const w = s.where.replace(/\$SCOPE/g, '$1');
     // Status GROUPS (owner-defined): active = any in-progress status; closed =
     // funded; cancelled = withdrawn/declined. These drive the dashboard so a held
@@ -301,7 +327,7 @@ router.get('/applications', async (req, res) => {
     const orderBy = SORTS[String(q.sort || '')] || SORTS.created_desc;
 
     const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
-                        a.clickup_pipeline_task_id,a.property_address,
+                        a.clickup_pipeline_task_id,a.property_address,a.lender,
                         a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
                         b.first_name,b.last_name,b.email,
                         (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
@@ -424,22 +450,14 @@ router.post('/applications', async (req, res) => {
       [firstName, lastName || '', email, bo.phone || null]);
     const borrowerId = br.rows[0].id;
 
-    // SECURITY: a scoped officer/processor must not be able to originate a file
-    // against a PRE-EXISTING borrower they have no prior relationship with —
-    // that would auto-assign them and unlock the borrower's decrypted SSN and
-    // documents (canSeeBorrower keys off assignment to ANY of the borrower's
-    // files). seesAll staff, and staff already on one of the borrower's files,
-    // are allowed; everyone else must route it through an admin.
-    if (!br.rows[0].created && !seesAll(req)) {
-      const rel = await db.query(
-        `SELECT 1 FROM applications WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
-        [borrowerId, req.actor.id]);
-      if (!rel.rows[0]) {
-        // Undo the borrower row if THIS request just created it (it didn't here,
-        // since created=false), then refuse.
-        return res.status(403).json({ error: 'This borrower already has a file with YS. Ask an admin to originate or assign this file to you.' });
-      }
-    }
+    // A borrower may have MANY files (one per property) and any staffer may open
+    // a new one for an existing borrower (owner-directed). Opening a file assigns
+    // the creator to THAT file only; a borrower's PII (SSN) + shared profile/LLC
+    // docs then become visible, which is inherent to working any file for them.
+    // Cross-file safety still holds: APPLICATION documents are authorized solely
+    // by assignment to their own application (see canSeeDocument), so this never
+    // exposes another officer's file for the same borrower; every SSN reveal and
+    // document download remains audited.
 
     // Resolve the assigned officer: explicit pick, else the creator when they
     // are a loan officer (their own pipeline), else null => Lead Capture.
@@ -489,7 +507,18 @@ router.post('/applications', async (req, res) => {
 
     try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType, { isAssignment }); }
     catch (e) { console.error('[staff-origination] checklist failed:', db.describeError(e)); }
-    await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId });
+    // Oversight flag: a scoped staffer opening a file for a PRE-EXISTING borrower
+    // they had no prior relationship with now gains that borrower's PII (SSN) +
+    // shared profile docs. This is allowed (owner-directed multi-file), but we
+    // stamp a high-signal audit flag so cross-officer originations are reviewable.
+    let crossBorrower = false;
+    if (!br.rows[0].created && !seesAll(req)) {
+      const rel = await db.query(
+        `SELECT 1 FROM applications WHERE borrower_id=$1 AND id<>$3 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+        [borrowerId, req.actor.id, appId]);
+      crossBorrower = !rel.rows[0];
+    }
+    await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId, crossBorrower: crossBorrower || undefined });
 
     // Optionally invite the borrower to the portal for this file right away.
     let invited = null;
@@ -1235,10 +1264,12 @@ router.patch('/checklist/:itemId', async (req, res) => {
       `SELECT 1 FROM checklist_items ci
         LEFT JOIN applications a ON a.id=ci.application_id
         WHERE ci.id=$1 AND (
-          (a.id IS NOT NULL AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2))
+          (a.id IS NOT NULL AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2
+             OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))
           OR (ci.llc_id IS NOT NULL AND EXISTS (
                 SELECT 1 FROM applications ap
-                 WHERE ap.llc_id=ci.llc_id AND ap.deleted_at IS NULL AND (ap.loan_officer_id=$2 OR ap.processor_id=$2))))`,
+                 WHERE ap.llc_id=ci.llc_id AND ap.deleted_at IS NULL AND (ap.loan_officer_id=$2 OR ap.processor_id=$2
+                   OR ap.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))))`,
       [req.params.itemId, req.actor.id]);
     if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
   }
@@ -1249,7 +1280,13 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // officer marks it reviewed instead — a lighter stamp, never "satisfied".
   const canComplete = can(req.actor, 'sign_off_conditions');
   if ((b.signedOff === true || b.status === 'satisfied') && !canComplete) {
-    return res.status(403).json({ error: 'Only the processor can complete a condition — mark it reviewed instead.' });
+    return res.status(403).json({ error: 'Only a processor or underwriter can complete a condition — mark it reviewed instead.' });
+  }
+  // The lighter "reviewed" stamp is tied to its own capability (loan officers have
+  // it; processors/underwriters/admins do too). Sign-off holders implicitly may
+  // review as well, so accept either capability for a review-only action.
+  if (b.reviewed === true && !can(req.actor, 'review_conditions') && !canComplete) {
+    return res.status(403).json({ error: 'You do not have permission to review conditions on this file.' });
   }
   // Data-integrity gates on the three tool-backed conditions: a product must be
   // registered, the rehab budget must agree across SOW/file/product, and
@@ -1344,8 +1381,10 @@ async function canSeeBorrowerId(req, borrowerId) {
   if (!borrowerId) return false;
   const r = await db.query(
     `SELECT 1 FROM applications
-      WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2)
-        AND deleted_at IS NULL LIMIT 1`,
+      WHERE borrower_id=$1 AND deleted_at IS NULL
+        AND (loan_officer_id=$2 OR processor_id=$2
+             OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))
+      LIMIT 1`,
     [borrowerId, req.actor.id]);
   return !!r.rows[0];
 }
@@ -1884,6 +1923,48 @@ router.post('/applications/:id/closing-date', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Inline "application completeness" editing: fill a missing field straight from
+// the completeness panel (no full form). Whitelisted app + borrower fields only;
+// SSN has its own secure reveal/enter flow and is NEVER set here. App-field
+// changes enqueue a scoped ClickUp push. Behind the /applications/:id guard.
+const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type: 'text',
+  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
+const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
+async function completeFields(req, res, borrowerScoped) {
+  const b = req.body || {};
+  try {
+    const brRow = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+    if (!brRow.rows[0]) return res.status(404).json({ error: 'not found' });
+    const bid = brRow.rows[0].borrower_id;
+    const appVals = [req.params.id]; const appSets = []; const appKeys = [];
+    for (const [k, t] of Object.entries(COMPLETE_APP_FIELDS)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      let v = b[k];
+      if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
+    }
+    if (appSets.length) {
+      appSets.push('updated_at=now()');
+      await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
+      enqueueClickupPush(req.params.id, appKeys).catch(() => {});
+    }
+    const brVals = [bid]; const brSets = [];
+    for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      let v = b[k];
+      if (t === 'int') { v = parseInt(v, 10); if (!Number.isFinite(v)) continue; }
+      brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
+    }
+    if (brSets.length) {
+      brSets.push('updated_at=now()');
+      await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals);
+    }
+    if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brSets.length });
+    res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length });
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+}
+router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
+
 router.patch('/applications/:id', async (req, res) => {
   const { status } = req.body || {};
   const force = !!(req.body && req.body.force);
@@ -2047,8 +2128,12 @@ router.get('/chat/inbox', async (req, res) => {
          LEFT JOIN LATERAL (SELECT body, channel, sender_kind, attachment_kind, created_at
                          FROM messages m WHERE m.application_id=a.id
                         ORDER BY created_at DESC LIMIT 1) lm ON true
-        WHERE a.deleted_at IS NULL ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
+        WHERE a.deleted_at IS NULL ${scoped ? `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}` : ''}
       ) q
+      -- The chat hub (outside a file) is a list of REAL conversations, not every
+      -- file that exists: only surface files that actually have back-and-forth
+      -- messages. A file with no messages is reached from the file itself, not here.
+      WHERE q.last_at IS NOT NULL
       ORDER BY (q.unread_borrower + q.unread_internal) DESC,
                q.closed ASC,
                q.last_at DESC NULLS LAST,
@@ -2533,9 +2618,12 @@ async function canSeeDocument(req, doc) {
   if (doc.application_id) {
     // An application document is authorized SOLELY by assignment to its own
     // application — never fall through to the borrower's other files, or an
-    // officer on App1 could reach App2 of the same borrower.
+    // officer on App1 could reach App2 of the same borrower. (A shared-officer
+    // grant still applies per-application via the visible_officer_ids expansion.)
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL AND (loan_officer_id=$2 OR processor_id=$2)`,
+      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL
+          AND (loan_officer_id=$2 OR processor_id=$2
+               OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))`,
       [doc.application_id, req.actor.id]);
     return !!r.rows[0];
   }
@@ -2543,7 +2631,10 @@ async function canSeeDocument(req, doc) {
     // Only borrower/llc-scoped documents (no application_id) use the
     // borrower-wide fallback.
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+      `SELECT 1 FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL
+          AND (loan_officer_id=$2 OR processor_id=$2
+               OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))
+        LIMIT 1`,
       [doc.borrower_id, req.actor.id]);
     if (r.rows[0]) return true;
   }

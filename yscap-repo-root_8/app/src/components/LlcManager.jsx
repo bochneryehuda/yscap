@@ -114,19 +114,23 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
 
   const pickSlot = (slot) => { slotRef.current = slot; fileRef.current && fileRef.current.click(); };
   async function onFile(e) {
-    const file = e.target.files && e.target.files[0];
+    const files = Array.from((e.target && e.target.files) || []);
     const slot = slotRef.current;
-    if (!file || !slot) return;
+    if (!files.length || !slot) return;
     setBusy('upload'); setErr('');
     try {
-      const dataUrl = await new Promise((res, rej) => {
-        const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file);
-      });
-      await api.uploadDoc({
-        llcId, checklistItemId: slot.item_id,
-        filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
-      });
-      flash('Uploaded ✓'); await load(); onChanged && onChanged();
+      // Upload EVERY selected file to this slot (a condition can hold several
+      // documents), so picking multiple PDFs at once uploads them all.
+      for (const file of files) {
+        const dataUrl = await new Promise((res, rej) => {
+          const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file);
+        });
+        await api.uploadDoc({
+          llcId, checklistItemId: slot.item_id,
+          filename: file.name, contentType: file.type, dataBase64: String(dataUrl).split(',')[1],
+        });
+      }
+      flash(files.length > 1 ? `Uploaded ${files.length} files ✓` : 'Uploaded ✓'); await load(); onChanged && onChanged();
     } catch (e2) { setErr(e2.message || 'Upload failed'); }
     // slotRef is NOT cleared here: pickSlot always re-arms it, and clearing it
     // in this finally could race a second slot's file dialog already open.
@@ -226,7 +230,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
         <p className="muted small" style={{ marginBottom: 4 }}>
           Uploaded once here, reviewed by your loan team, and reused automatically on every loan this LLC takes title on.
         </p>
-        <input ref={fileRef} type="file" accept=".pdf,application/pdf,image/*" style={{ display: 'none' }} onChange={onFile} />
+        <input ref={fileRef} type="file" multiple accept=".pdf,application/pdf,image/*" style={{ display: 'none' }} onChange={onFile} />
         {(llc.slots || []).map(s => (
           <SlotRow key={s.item_id} llc={llc} slot={s} onPick={pickSlot} onDownload={downloadSlot}
             onPreview={setPreviewSlot} dlBusy={dlBusy} uploading={busy === 'upload'} locked={locked} />

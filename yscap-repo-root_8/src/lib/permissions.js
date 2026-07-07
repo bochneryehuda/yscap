@@ -27,7 +27,12 @@ const ROLE_LABEL = Object.fromEntries(ROLES.map((r) => [r.key, r.label]));
 
 const CAPABILITIES = [
   { key: 'see_all_files', label: 'See every loan file', hint: 'Otherwise only files they are assigned to as officer/processor/coordinator.' },
-  { key: 'sign_off_conditions', label: 'Review & sign off conditions', hint: 'Accept documents and sign off checklist items.' },
+  // Two-tier condition workflow: a loan officer marks a condition REVIEWED (a
+  // lighter "I looked at it" stamp), while a processor / underwriter is the one
+  // who SIGNS OFF (completes) the condition. Separate capabilities so the two
+  // actions are tied to the right people.
+  { key: 'review_conditions', label: 'Mark conditions reviewed', hint: 'Loan officers stamp a condition "reviewed"; it does NOT complete/sign it off.' },
+  { key: 'sign_off_conditions', label: 'Review & sign off conditions', hint: 'Processors / underwriters accept documents and complete (sign off) checklist items.' },
   { key: 'manage_conditions', label: 'Manage the Condition Center', hint: 'Author the global condition library and rule engine.' },
   { key: 'waive_conditions', label: 'Waive conditions', hint: 'Waive a condition with a reason instead of clearing it.' },
   { key: 'delete_files', label: 'Delete / restore files', hint: 'Soft-delete a loan file and restore it.' },
@@ -41,14 +46,15 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
   super_admin: CAP_KEYS.slice(),
-  admin: ['see_all_files', 'sign_off_conditions', 'manage_conditions', 'waive_conditions', 'delete_files', 'manage_vendors', 'manage_team', 'platform_setup'],
+  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'manage_conditions', 'waive_conditions', 'delete_files', 'manage_vendors', 'manage_team', 'platform_setup'],
   // Underwriters run per-file conditions + sign-off + waive; the GLOBAL studio
   // (manage_conditions) is admin/software-setup by default but an admin can
   // grant it to a specific underwriter from the Team screen.
-  underwriter: ['see_all_files', 'sign_off_conditions', 'waive_conditions'],
-  loan_coordinator: ['see_all_files', 'sign_off_conditions'],
-  processor: ['sign_off_conditions'],
-  loan_officer: [],
+  underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'waive_conditions'],
+  loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions'],
+  processor: ['review_conditions', 'sign_off_conditions'],
+  // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
+  loan_officer: ['review_conditions'],
   software_setup: ['manage_conditions', 'platform_setup'],
 };
 

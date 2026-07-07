@@ -239,6 +239,9 @@ function Row({ a }) {
           {a.ys_loan_number || 'Loan # pending'} · {a.program || '—'} · {a.loan_type || '—'} · {money(a.loan_amount)}
           {a.loan_officer_name ? ` · LO: ${a.loan_officer_name}` : ' · Unassigned'}
           {a.internal_status ? ` · ClickUp: ${a.internal_status}` : ''}
+          {/* Note buyer / where the file is sold — INTERNAL staff pipeline only
+              (this whole screen is staff-gated; the borrower API strips `lender`). */}
+          {a.lender ? <> · <span style={{ color: 'var(--gold)' }}>Sold to: {a.lender}</span></> : ''}
         </div>
         {a.total_items > 0 && (
           <div className="row" style={{ gap: 8, marginTop: 6 }}>
@@ -302,13 +305,28 @@ export default function StaffQueue() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverKey]);
 
-  // Dashboard, leads, exceptions, and the unfiltered facet list load once.
+  // Leads, exceptions, and the unfiltered facet list load once.
   const loadContext = useCallback(() => {
     api.staffApplications().then(setAllFiles).catch(() => setAllFiles([]));
     api.staffLeadCapture().then(setLeads).catch(() => setLeads([]));
-    api.staffDashboard().then(setDash).catch(() => {});
     api.staffExceptions().then(setExc).catch(() => {});
   }, []);
+
+  // The dashboard KPIs / monthly production follow the pipeline VIEW: "my files
+  // only" (?mine=1) or a single officer (?officerId) narrows the numbers to match
+  // the list. Refetch whenever that view changes so the KPIs stay in sync.
+  const dashKey = useMemo(() => JSON.stringify({
+    mine: searchParams.get('mine') === '1' ? '1' : '',
+    officerId: searchParams.get('officerId') || '',
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [qs]);
+  useEffect(() => {
+    const { mine, officerId } = JSON.parse(dashKey);
+    const p = {};
+    if (mine) p.mine = '1';
+    if (officerId) p.officerId = officerId;
+    api.staffDashboard(p).then(setDash).catch(() => {});
+  }, [dashKey]);
 
   useEffect(() => { loadContext(); }, [loadContext]);
   useEffect(() => { fetchList(); }, [fetchList]); // refetch whenever the URL filters change
