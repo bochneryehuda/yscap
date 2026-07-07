@@ -594,6 +594,7 @@ router.get('/applications/:id', async (req, res) => {
             cb.email AS co_email, cb.cell_phone AS co_cell_phone,
             cb.date_of_birth AS co_date_of_birth, cb.ssn_last4 AS co_ssn_last4,
             cb.fico AS co_fico, cb.current_address AS co_current_address,
+            cb.citizenship AS co_citizenship, cb.tier AS co_tier,
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
