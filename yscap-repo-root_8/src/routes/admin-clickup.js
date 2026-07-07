@@ -17,6 +17,16 @@ const orchestrator = require('../clickup/orchestrator');
 
 router.use(requireAuth, requirePermission('platform_setup'));
 
+// Best-effort audit row for admin actions taken from the Control Center.
+async function audit(req, action, appId, detail) {
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+       VALUES ('staff',$1,$2,'application',$3,$4,$5,$6)`,
+      [req.actor.id, action, appId || null, req.ip, req.get('user-agent') || null, detail || null]);
+  } catch (_) { /* audit best-effort */ }
+}
+
 router.get('/health', async (req, res) => {
   const out = {
     enabled: cfg.clickupSyncEnabled, tokenSet: !!cfg.clickupToken, webhookSecretSet: !!cfg.clickupWebhookSecret,
@@ -92,6 +102,42 @@ router.post('/file/:appId/repull', async (req, res) => {
   if (!taskId) return res.status(404).json({ error: 'no linked ClickUp task' });
   try { res.json(await sync.ingestOne(taskId)); }
   catch (e) { res.status(502).json({ error: String(e.message) }); }
+});
+
+// ---- Manual Review queue -------------------------------------------------
+// Files the inbound sync flagged as ambiguous (sync_state='manual_review').
+// match_status/match_detail live on clickup_task_index (keyed by the ClickUp
+// task id), so we LEFT JOIN it to surface WHY the file was flagged.
+router.get('/manual-review', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT a.id, b.first_name, b.last_name, a.property_address, a.ys_loan_number,
+              a.clickup_pipeline_task_id, ti.match_status, ti.match_detail
+         FROM applications a
+         JOIN borrowers b ON b.id = a.borrower_id
+         LEFT JOIN clickup_task_index ti ON ti.task_id = a.clickup_pipeline_task_id
+        WHERE a.sync_state='manual_review' AND a.deleted_at IS NULL
+        ORDER BY a.created_at DESC, a.id`);
+    res.json({ rows: r.rows });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// Resolve one file out of the queue. link => 'linked', descope => 'descoped'.
+// Never touches ClickUp and never deletes anything.
+router.post('/manual-review/:appId/resolve', async (req, res) => {
+  const action = req.body && req.body.action;
+  const next = action === 'link' ? 'linked' : action === 'descope' ? 'descoped' : null;
+  if (!next) return res.status(400).json({ error: "action must be 'link' or 'descope'" });
+  try {
+    const r = await db.query(
+      `UPDATE applications SET sync_state=$1, updated_at=now()
+        WHERE id=$2 AND sync_state='manual_review' AND deleted_at IS NULL
+        RETURNING id, sync_state`,
+      [next, req.params.appId]);
+    if (r.rowCount === 0) return res.status(404).json({ error: 'file not found in Manual Review' });
+    await audit(req, 'clickup_manual_review_resolve', req.params.appId, { action, sync_state: next });
+    res.json({ ok: true, id: r.rows[0].id, sync_state: r.rows[0].sync_state });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
 
 module.exports = router;
