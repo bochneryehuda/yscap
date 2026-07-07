@@ -55,7 +55,12 @@ async function pushOutboxOnce() {
   const job = r.rows[0];
   if (!job) return false;
   try {
-    if (job.entity_type === 'application') await orchestrator.pushApplication(job.entity_id, { force: true });
+    if (job.entity_type === 'application') {
+      // Scoped push: the job carries the specific fields the edit changed
+      // (payload.only). Pass them through so only those are written to ClickUp.
+      const only = job.payload && Array.isArray(job.payload.only) ? job.payload.only : null;
+      await orchestrator.pushApplication(job.entity_id, { force: true, only });
+    }
     await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
   } catch (e) {
     const attempts = job.attempts + 1;

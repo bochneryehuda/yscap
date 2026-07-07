@@ -1188,7 +1188,7 @@ router.post('/applications/:id/assign', async (req, res) => {
         link: `/internal/app/${req.params.id}` });
       await audit(req, 'assign_processor', 'application', req.params.id, { processorId });
     }
-    enqueueClickupPush(req.params.id).catch(() => {}); // propagate officer/processor to ClickUp promptly
+    enqueueClickupPush(req.params.id, ['officer', 'processor']).catch(() => {}); // propagate officer/processor to ClickUp promptly
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1620,7 +1620,7 @@ router.patch('/applications/:id/details', async (req, res) => {
     const before = beforeQ.rows[0] || {};
     const upd = await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'application not found' });
-    enqueueClickupPush(req.params.id).catch(() => {}); // propagate edited file details to ClickUp promptly
+    enqueueClickupPush(req.params.id, touchedCols).catch(() => {}); // propagate ONLY the edited columns to ClickUp promptly
     if ('requestedExpFlips' in b || 'requestedExpHolds' in b || 'requestedExpGround' in b) {
       try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
     }
@@ -1733,7 +1733,7 @@ router.patch('/applications/:id', async (req, res) => {
     }
     await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
-    enqueueClickupPush(req.params.id).catch(() => {}); // propagate the status change to ClickUp promptly
+    enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // propagate ONLY the status change to ClickUp promptly
     // Record the transition on the file's timeline.
     await db.query(
       `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)

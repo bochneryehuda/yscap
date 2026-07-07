@@ -109,9 +109,6 @@ app.use('/api/admin', require('./routes/admin'));
 // routers: EventSource can't send an Authorization header, so this route does
 // its own token verification from a query parameter.
 app.use('/api/events', require('./routes/events'));
-// TEMPORARY: post-incident read-only diagnostics, gated by INCIDENT_DIAG_TOKEN.
-// Remove once the ClickUp restore is complete.
-app.use('/api/_diag', require('./routes/incident-diag'));
 
 // --- Static site (your existing build drops into web/) ---
 const webDir = path.join(__dirname, '..', cfg.webDir);

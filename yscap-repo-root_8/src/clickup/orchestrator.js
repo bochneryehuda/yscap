@@ -116,6 +116,15 @@ async function pushApplication(appId, opts = {}) {
   const ysProgramFieldId = null; // set once the "YS Program" field is created + re-pulled
   const built = mapper.buildTaskFields(ctx, options, ysProgramFieldId);
 
+  // Scoped push (SAFETY, post-incident): when the queue job names the specific
+  // fields a staff edit changed (opts.only), push ONLY those custom fields — an
+  // edit to one field can never rewrite the rest of the ClickUp task. A FULL
+  // push happens only on task creation, or on an explicit resync (no opts.only,
+  // e.g. the admin per-file "repush" button).
+  const scoped = (taskId && Array.isArray(opts.only) && opts.only.length) ? mapper.resolveOnly(opts.only) : null;
+  const fieldsToPush = scoped ? built.customFields.filter((c) => scoped.cuIds.has(c.id)) : built.customFields;
+  const pushStatus = scoped ? scoped.status : true;
+
   let id = taskId;
   if (!id) {
     if (!listId) throw new Error('no target list for application ' + appId);
@@ -124,25 +133,31 @@ async function pushApplication(appId, opts = {}) {
     await db.query(`UPDATE applications SET clickup_pipeline_task_id=$1, sync_state='linked', clickup_last_synced_at=now(), updated_at=now() WHERE id=$2`, [id, appId]);
   } else {
     // field-by-field update (setField) so we can stamp echo per field
-    for (const c of built.customFields) {
+    for (const c of fieldsToPush) {
       try { await clickup.setField(id, c.id, c.value); echo.markPushed(id, c.id, c.value); }
       catch (e) { console.error('[clickup] setField failed', c.id, e.message); }
     }
-    if (built.statusName) { try { await clickup.updateTask(id, { status: built.statusName }); } catch (_) {} }
+    if (pushStatus && built.statusName) { try { await clickup.updateTask(id, { status: built.statusName }); } catch (_) {} }
     await db.query(`UPDATE applications SET clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`, [appId]);
   }
 
   // Shadow the pushed values for echo comparison. NEVER store plaintext PII at
   // rest: SSN / appraisal-card values are replaced with a short salted hash so
-  // the shadow is still comparable but carries no readable secret.
+  // the shadow is still comparable but carries no readable secret. On a scoped
+  // push, MERGE the pushed fields into the existing shadow (don't claim fields
+  // we didn't write) so echo suppression stays accurate.
   const SENSITIVE = new Set([F.SHARED.borrowerSSN, F.EXTRA.card]);
   const hashVal = (v) => 'h:' + require('crypto').createHmac('sha256', cfg.ssnKey).update(String(v)).digest('hex').slice(0, 24);
-  const shadow = {};
-  for (const c of built.customFields) shadow[c.id] = SENSITIVE.has(c.id) ? hashVal(c.value) : c.value;
+  const pushedIds = new Set(fieldsToPush.map((c) => c.id));
+  const shadow = scoped ? { ...(ctx._row.clickup_shadow || {}) } : {};
+  for (const c of built.customFields) {
+    if (scoped && !pushedIds.has(c.id)) continue;
+    shadow[c.id] = SENSITIVE.has(c.id) ? hashVal(c.value) : c.value;
+  }
   await db.query(`UPDATE applications SET clickup_shadow=$1, clickup_shadow_hash=$2 WHERE id=$3`,
     [JSON.stringify(shadow), echo.shadowHash(shadow), appId]).catch(() => {});
-  await logSync('push', appId, id, { fields: built.customFields.length });
-  return { taskId: id, fields: built.customFields.length };
+  await logSync('push', appId, id, { fields: fieldsToPush.length, scoped: !!scoped });
+  return { taskId: id, fields: fieldsToPush.length, scoped: !!scoped };
 }
 
 /** Resolve the destination list: officer's pipeline folder, else Lead Capture. */
