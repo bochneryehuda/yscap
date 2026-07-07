@@ -266,6 +266,12 @@ function readTaskFields(task, options = {}) {
   // Portal File ID stamp — the authoritative binding written by our own push.
   const stamp = m[F.SYNC.portalFileId];
   if (stamp && stamp.value) out.portalFileId = String(stamp.value).trim();
+  // Raw *Program label (before RTL crosswalk) so non-RTL/long-term programs
+  // (DSCR, Non-QM, HELOC…) are preserved in the snapshot rather than lost as null.
+  const prog = m[F.PIPELINE.program];
+  if (prog && prog.value != null) {
+    out.rawProgram = T.dropdownIndexToLabel(options[F.PIPELINE.program] || prog.type_config?.options || [], prog.value);
+  }
 
   // everything unmapped -> extra (backend-only). Exclude SSN + card (encrypted columns only).
   for (const c of (task && task.custom_fields) || []) {

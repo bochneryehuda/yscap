@@ -226,6 +226,46 @@ async function auditData() {
   return out;
 }
 
+// ---- field-value diff audit (portal value vs live ClickUp value) ----------
+// Re-reads each linked task from ClickUp and compares field-by-field with the
+// stored portal value — surfaces transformation bugs, stale data, and fields
+// present in ClickUp but missing in the portal (and vice-versa). Read-only.
+async function auditFieldDiff({ limit = 120 } = {}) {
+  const options = await optionMap();
+  const apps = await db.query(
+    `SELECT id, clickup_pipeline_task_id, clickup_folder_id, program, loan_type, property_type, loan_amount,
+            purchase_price, arv, rehab_budget, ys_loan_number, lender, term, units, occupancy, internal_status, status
+       FROM applications WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL
+      ORDER BY updated_at DESC LIMIT $1`, [limit]).then((r) => r.rows).catch(() => []);
+  const NUM = new Set(['loan_amount', 'purchase_price', 'arv', 'rehab_budget', 'units']);
+  const FIELDS = ['program', 'loan_type', 'property_type', 'occupancy', 'loan_amount', 'purchase_price', 'arv', 'rehab_budget', 'ys_loan_number', 'lender', 'term', 'units', 'internal_status'];
+  const mismatch = {}, missingPortal = {}, missingClickup = {}, samples = [];
+  let checked = 0, folderMismatch = 0, taskErr = 0;
+  for (const app of apps) {
+    let task; try { task = await clickup.getTask(app.clickup_pipeline_task_id); } catch { taskErr++; continue; }
+    const read = mapper.readTaskFields(task, options);
+    checked++;
+    const cuFolder = task.folder && task.folder.id;
+    if (cuFolder && app.clickup_folder_id && String(cuFolder) !== String(app.clickup_folder_id)) folderMismatch++;
+    for (const f of FIELDS) {
+      const pv = f === 'internal_status' ? app.internal_status : app[f];
+      const cv = f === 'internal_status' ? read.internalStatus : read.app[f];
+      const P = pv == null || pv === '' ? null : String(pv);
+      const C = cv == null || cv === '' ? null : String(cv);
+      if (C != null && P == null) { missingPortal[f] = (missingPortal[f] || 0) + 1; continue; }
+      if (C == null && P != null) { missingClickup[f] = (missingClickup[f] || 0) + 1; continue; }
+      if (P != null && C != null && P !== C) {
+        if (NUM.has(f) && Math.abs(Number(P) - Number(C)) < 1) continue;   // numeric rounding
+        mismatch[f] = (mismatch[f] || 0) + 1;
+        if (samples.length < 20) samples.push({ field: f, portal: P.slice(0, 40), clickup: C.slice(0, 40), task: app.clickup_pipeline_task_id });
+      }
+    }
+  }
+  const out = { checked, taskErr, folderMismatch, mismatch, missingPortal, missingClickup, samples };
+  console.log('[audit-diff] ' + JSON.stringify(out));
+  return out;
+}
+
 // ---- dry-run backfill (READ-ONLY validation, zero DB writes) --------------
 // Fetches a sample of real tasks per folder, runs the mapper, and reports what
 // WOULD happen — for validating the mapping/identity graph before enabling sync.
@@ -302,7 +342,12 @@ function start() {
   // One-shot data audit on boot (CLICKUP_RUN_AUDIT=1) — logs the coverage /
   // assignment / completeness report after any backfill has had time to run.
   if (cfg.clickupRunAudit) {
-    setTimeout(() => { auditData().catch((e) => console.error('[audit]', e.message)); }, cfg.clickupRunBackfill ? 45000 : 3000);
+    setTimeout(() => {
+      auditData()
+        .catch((e) => console.error('[audit]', e.message))
+        .then(() => auditFieldDiff({ limit: 120 }))
+        .catch((e) => console.error('[audit-diff]', e.message));
+    }, cfg.clickupRunBackfill ? 60000 : 3000);
   }
 
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
@@ -329,4 +374,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, dryRunBackfill, auditData, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, canMaterialize, PIPELINE_FOLDERS };

@@ -68,6 +68,11 @@ router.get('/audit', async (req, res) => {
   try { res.json(await sync.auditData()); }
   catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
+// Deeper field-by-field diff (re-reads ClickUp; heavier).
+router.get('/audit-diff', async (req, res) => {
+  try { res.json(await sync.auditFieldDiff({ limit: Number(req.query.limit) || 120 })); }
+  catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
 
 router.get('/activity', async (req, res) => {
   const r = await db.query(
