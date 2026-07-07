@@ -23,6 +23,9 @@ app.use(require('./lib/security').securityHeaders);
 // a MAX_UPLOAD_MB-byte file becomes ~1.37x that as base64 inside the JSON body,
 // plus envelope. A flat 25mb limit silently 413'd legitimate ~19-20MB uploads.
 const JSON_LIMIT_MB = Math.max(25, Math.ceil(cfg.maxUploadMb * 1.4) + 4);
+// ClickUp webhook is mounted BEFORE the JSON parser — it needs the RAW body to
+// verify the HMAC signature (it applies its own express.raw()).
+app.use('/api/clickup/webhook', require('./routes/clickup-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
@@ -200,6 +203,9 @@ if (require.main === module) {
     if (cfg.env === 'production' || process.env.RUN_SYNC === '1') {
       try { require('./sync/queue').start(); } catch (e) { console.warn('sync queue not started:', e.message); }
     }
+    // ClickUp bidirectional sync worker (self-gated by CLICKUP_SYNC_ENABLED;
+    // a no-op until the master switch is on, so it's safe to wire now).
+    try { require('./sync/clickup-sync').start(); } catch (e) { console.warn('clickup sync not started:', e.message); }
     // Chat's deferred-notification sweeper (email-if-still-unread + urgent
     // re-pings). Cheap interval; safe to run alongside everything else.
     try { require('./lib/chat').startSweeper(); } catch (e) { console.warn('chat sweeper not started:', e.message); }

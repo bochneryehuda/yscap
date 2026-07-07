@@ -117,4 +117,65 @@ const CHECKLIST = {
   },
 };
 
-module.exports = { SPACES, SHARED, CRM, PIPELINE, CHECKLIST };
+// ---- Sync-integration fields (created in the ClickUp UI for this build) ----
+const SYNC = {
+  sendToPortal:         'b5fca1d2-2d8b-436c-a3ea-67f7a159e036', // checkbox — emergency/force-resync trigger
+  portalFileId:         '6bca11f0-47d5-460f-b915-30fc78c6e4c8', // short_text — binding stamp (our app UUID)
+  portalFileLink:       '7b369ef5-452b-4448-8329-0683491e8917', // url
+  syncStatus:           'c5bc086e-7f7f-446f-9571-b2e5089c9ff8', // short_text — sync health / last error
+  borrowerPortalStatus: 'a47ce5e3-eea7-4f70-93ca-8062dee4d1b7', // drop_down — mirrors borrower-facing status
+  rtlAsIsValue:         'b70b4451-c971-40ba-a4a6-48d919c6416d', // currency — portal as_is_value
+  rehabType:            'fb8814d4-c457-4b8f-af42-671e1e1ad752', // drop_down — portal rehab_type
+  // read-only appraised-value pulls
+  approxAppraisedValue: '834d0ffb-38ac-4358-b1ea-13f5d345dd91', // currency
+  actualAppraisedValue: '9356ceea-f3b2-4373-9271-d1354214db47', // currency
+};
+
+// Borrower Portal Status option ids (labels == our external status values).
+const BORROWER_PORTAL_STATUS_OPT = {
+  new:            'cb960fa4-550e-4a65-a476-2c792f120322',
+  in_review:      '4e84f586-1953-443d-a5fd-9b7e8368639b',
+  processing:     '0544e93c-e2cd-415c-9d69-1fc55355c3e2',
+  underwriting:   'd4703d43-a247-48e2-a377-da4fa16c8a7a',
+  approved:       '751a513c-40c1-48ca-87f6-477a79252c96',
+  clear_to_close: 'cfbc4acd-a5e3-42ad-bb6e-cbdb96785714',
+  funded:         '22e8563b-d705-4a20-97b7-30205ebc65f5',
+  on_hold:        'e1247b8b-0092-48a9-b509-64a9b368e294',
+  declined:       '0d5a9326-9d76-4153-ba4f-4cf64711385f',
+  withdrawn:      'cbd1ad43-4491-4a40-b62c-9de7e8212ad2',
+};
+
+// Additional Pipeline fields referenced by the mapper (live-verified ids).
+const EXTRA = {
+  citizenship:        '045f993c-4c7a-4a03-b71d-44e3ed15aa07', // short_text
+  maritalStatus:      'b91e06a6-ed47-4249-afa5-eaaedf7b4c3e', // drop_down YES/NO
+  employmentType:     '33bf62d8-fa4f-45e5-9c91-a51ce78e5e32', // drop_down
+  employment:         '04f7b699-7e55-49f3-b1a2-77f0ee0fc560', // short_text
+  dependents:         '19ce13e0-bdcd-43c3-b365-7b07f1f3824e', // short_text
+  yearsAtResidence:   'fabf5994-e218-43ee-9694-3b2e0caf2a12', // short_text
+  priorAddress:       '616f218e-7bb3-4ee2-9f94-f9f96a054516', // location
+  ratePct:            'ca47de7f-40b7-4a98-b540-2378c0e87954', // number (Desired Rate %)
+  assignmentFee:      '6d62e510-9ef7-4d96-b81f-fa1251b11c26', // currency
+  underlyingPrice:    '1a83ab87-bb06-4f20-8187-2bc0476d1f05', // currency
+  originalPurchase:   '253e80ff-9a76-432e-a2ac-366db5a2c3c5', // currency (Refi)
+  acquisitionDate:    'dd703e85-247e-4b3b-9664-f73c4877162c', // date
+  card:               '684c900f-9e5a-4e73-9115-f2bebb9783b6', // short_text (appraisal card)
+  depositReceived:    'b0e894cc-7551-4e2b-85ea-50aadc6a1de0', // drop_down
+  loanOfficerPhone:   '94026464-bca6-4414-9a9c-f9e238d0533a', // phone
+  processorEmail:     '4f7b2c03-44da-47a5-8d4c-c0aa823b1283', // email
+  underwriterEmail:   '951c3a1d-05c5-4387-8203-1e2b8d0d329c', // email
+};
+// Deposit Received option: "Customer credit card used" (reusable card auto-fill).
+const DEPOSIT_CARD_USED_OPT = 'f92f21c6-c5c3-4e85-986d-102a5e15ed71';
+
+// New dropdown OPTION ids added to existing fields for this build.
+const NEW_OPTIONS = {
+  programGroundUp:      '137b2bb7-b81b-48cb-a03e-4df92945b106', // *Program
+  propertyCondo:        '37837896-111e-42de-a208-00ce4ed678f4', // *Property Type
+  propertyTownhouse:    '5a07ddd9-7d9d-4959-91b6-8392807be24f', // *Property Type
+};
+
+module.exports = {
+  SPACES, SHARED, CRM, PIPELINE, CHECKLIST, SYNC, EXTRA,
+  BORROWER_PORTAL_STATUS_OPT, NEW_OPTIONS, DEPOSIT_CARD_USED_OPT,
+};

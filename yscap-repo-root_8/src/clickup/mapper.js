@@ -1,0 +1,251 @@
+/**
+ * The mapping core — turns a portal file into a ClickUp task payload (push) and
+ * a ClickUp task into a portal patch (pull). Pure-ish: no DB/HTTP, so it's
+ * unit-testable with fixtures. The orchestrator geocodes addresses, resolves
+ * officer/processor ids, encrypts SSN/card, and does the DB writes around it.
+ *
+ * Implements docs/CLICKUP-DATA-MAPPING.md Parts 3 + 6 + 7. Directions:
+ *   both  — ⇄     push — portal→CU only     pull — CU→portal only
+ * Dropdowns write the option UUID (resolved from the live option list) and read
+ * the orderindex integer, always through crosswalk/transforms.
+ */
+const F = require('./fields');
+const X = require('./crosswalk');
+const T = require('./transforms');
+
+const ACTUAL_CLOSING = '0846edc7-8619-4ee6-827e-a673570d3057'; // date, pull-only
+
+// Single field descriptor used by BOTH directions.
+// t: portal table (b=borrower, a=application, l=llc)
+// type: dropdown|currency|number|date|text|phone|checkbox
+// enumKey: crosswalk key (dropdowns that translate values); omit for free dropdowns (lender/channel)
+// dir: both|push|pull
+const FIELD_MAP = [
+  // --- borrower ---
+  { cu: F.SHARED.borrowerEmail, t: 'b', col: 'email', type: 'text', dir: 'both' },
+  { cu: F.SHARED.borrowerCell, t: 'b', col: 'cell_phone', type: 'phone', dir: 'both' },
+  { cu: F.SHARED.borrowerDOB, t: 'b', col: 'date_of_birth', type: 'date', dir: 'both' },
+  { cu: F.SHARED.borrowerFICO, t: 'b', col: 'fico', type: 'number', dir: 'both' },
+  { cu: F.EXTRA.citizenship, t: 'b', col: 'citizenship', type: 'text', dir: 'both' },
+  { cu: F.EXTRA.employment, t: 'b', col: 'employer', type: 'text', dir: 'both' },
+  { cu: F.EXTRA.dependents, t: 'b', col: 'dependents_count', type: 'number', dir: 'both' },
+  { cu: F.EXTRA.yearsAtResidence, t: 'b', col: 'years_at_residence', type: 'number', dir: 'both' },
+  { cu: F.EXTRA.employmentType, t: 'b', col: 'employment_type', type: 'dropdown', enumKey: 'employment_type', dir: 'both' },
+  { cu: F.SHARED.primaryHousingType, t: 'b', col: 'housing_status', type: 'dropdown', enumKey: 'housing_status', dir: 'both' },
+  { cu: F.SHARED.primaryHousingAmt, t: 'b', col: 'housing_payment', type: 'currency', dir: 'both' },
+  // --- application: product ---
+  { cu: F.PIPELINE.program, t: 'a', col: 'program', type: 'dropdown', enumKey: 'program', dir: 'both' },
+  { cu: F.PIPELINE.loanType, t: 'a', col: 'loan_type', type: 'dropdown', enumKey: 'loan_type', dir: 'both' },
+  { cu: F.PIPELINE.propertyType, t: 'a', col: 'property_type', type: 'dropdown', enumKey: 'property_type', dir: 'both' },
+  { cu: F.PIPELINE.occupancy, t: 'a', col: 'occupancy', type: 'dropdown', enumKey: 'occupancy', dir: 'pull' }, // backend-only
+  { cu: F.PIPELINE.term, t: 'a', col: 'term', type: 'dropdown', enumKey: 'term', dir: 'both' },
+  { cu: F.PIPELINE.units, t: 'a', col: 'units', type: 'number', dir: 'both' },
+  { cu: F.PIPELINE.lender, t: 'a', col: 'lender', type: 'dropdown', dir: 'pull' },   // note buyer; free label; staff-only display
+  { cu: F.PIPELINE.channel, t: 'a', col: 'channel', type: 'dropdown', dir: 'pull' }, // backend-only
+  { cu: F.PIPELINE.pppType, t: 'a', col: 'ppp', type: 'text', dir: 'both' },
+  // --- application: economics ---
+  { cu: F.PIPELINE.ltv, t: 'a', col: 'ltv', type: 'number', dir: 'push' },     // portal owns pricing (§7.1)
+  { cu: F.EXTRA.ratePct, t: 'a', col: 'rate_pct', type: 'number', dir: 'push' }, // portal owns (§7.1)
+  { cu: F.PIPELINE.loanAmount, t: 'a', col: 'loan_amount', type: 'currency', dir: 'both' },
+  { cu: F.PIPELINE.purchasePrice, t: 'a', col: 'purchase_price', type: 'currency', dir: 'both' },
+  { cu: F.SYNC.rtlAsIsValue, t: 'a', col: 'as_is_value', type: 'currency', dir: 'both' },
+  { cu: F.PIPELINE.arv, t: 'a', col: 'arv', type: 'currency', dir: 'both' },
+  { cu: F.PIPELINE.constructionBudget, t: 'a', col: 'rehab_budget', type: 'currency', dir: 'both' },
+  { cu: F.SYNC.rehabType, t: 'a', col: 'rehab_type', type: 'dropdown', enumKey: 'rehab_type', dir: 'both' },
+  { cu: F.PIPELINE.dscrRatio, t: 'a', col: 'dscr_ratio', type: 'number', dir: 'both' },
+  { cu: F.EXTRA.assignmentFee, t: 'a', col: 'assignment_fee', type: 'currency', dir: 'both' },
+  { cu: F.EXTRA.underlyingPrice, t: 'a', col: 'underlying_contract_price', type: 'currency', dir: 'both' },
+  { cu: F.EXTRA.originalPurchase, t: 'a', col: 'original_purchase_price', type: 'currency', dir: 'both' },
+  { cu: F.EXTRA.acquisitionDate, t: 'a', col: 'acquisition_date', type: 'date', dir: 'both' },
+  { cu: F.SYNC.approxAppraisedValue, t: 'a', col: 'approx_appraised_value', type: 'currency', dir: 'pull' }, // informational
+  { cu: F.SYNC.actualAppraisedValue, t: 'a', col: 'actual_appraised_value', type: 'currency', dir: 'pull' }, // informational
+  // --- application: numbers & dates ---
+  { cu: F.PIPELINE.ysLoanNumber, t: 'a', col: 'ys_loan_number', type: 'text', dir: 'both' },
+  { cu: F.PIPELINE.investorLoanNo, t: 'a', col: 'investor_loan_number', type: 'text', dir: 'pull' },
+  { cu: F.PIPELINE.expectedClosing, t: 'a', col: 'expected_closing', type: 'date', dir: 'both' },
+  { cu: F.PIPELINE.dateSubmitted, t: 'a', col: 'submitted_at', type: 'date', dir: 'push' },
+  { cu: ACTUAL_CLOSING, t: 'a', col: 'actual_closing', type: 'date', dir: 'pull' },
+  // --- llc ---
+  { cu: F.PIPELINE.llcName, t: 'l', col: 'llc_name', type: 'text', dir: 'both' },
+  { cu: F.PIPELINE.ein, t: 'l', col: 'ein', type: 'text', dir: 'both' },
+];
+
+// CU field ids the mapper "knows" (mapped, special, or intentionally ignored) —
+// everything else on a task is captured into clickup_extra (§7.4).
+const KNOWN = new Set([
+  ...FIELD_MAP.map((f) => f.cu),
+  F.SHARED.borrowerName, F.SHARED.borrowerAddress, F.SHARED.loanOfficer, F.SHARED.loanOfficerEmail,
+  F.PIPELINE.subjectAddress, F.PIPELINE.vesting, F.PIPELINE.processor, F.PIPELINE.underwriter,
+  F.PIPELINE.coBorrowerFlag, F.PIPELINE.coBorrowerName, F.PIPELINE.secondBorrowerEmail, F.PIPELINE.secondBorrowerCell,
+  F.EXTRA.priorAddress, F.EXTRA.card, F.EXTRA.maritalStatus, F.EXTRA.depositReceived,
+  F.EXTRA.loanOfficerPhone, F.EXTRA.processorEmail, F.EXTRA.underwriterEmail,
+  F.SYNC.sendToPortal, F.SYNC.portalFileId, F.SYNC.portalFileLink, F.SYNC.syncStatus, F.SYNC.borrowerPortalStatus,
+  F.CRM.contactType, F.CRM.phoneNumber, F.CRM.pipelineLink, F.PIPELINE.crmLink, F.SHARED.companyLead,
+]);
+
+// ---- write helpers --------------------------------------------------------
+function writeValue(f, val, options) {
+  if (val == null || val === '') return undefined;
+  switch (f.type) {
+    case 'dropdown': {
+      const label = f.enumKey ? X.toClickUpLabel(f.enumKey, val) : String(val);
+      if (!label) return undefined;
+      return T.dropdownLabelToId(options[f.cu] || [], label) || undefined;
+    }
+    case 'currency': case 'number': return T.numToString(T.parseMoney(val) != null ? T.parseMoney(val) : val);
+    case 'date': return T.toEpochMs(val);
+    case 'phone': return T.normalizePhone(val);
+    case 'checkbox': return val ? 'true' : 'false';
+    default: return String(val);
+  }
+}
+
+function addressField(id, addr) {
+  // Only emit a location field when we have coordinates (ClickUp requires lat/lng).
+  if (!addr || addr.lat == null || addr.lng == null) return null;
+  const formatted = addr.formatted_address || addr.oneLine ||
+    [addr.line1 || addr.street, addr.city, [addr.state, addr.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  return { id, value: { location: { lat: addr.lat, lng: addr.lng }, formatted_address: formatted } };
+}
+
+/**
+ * Build the ClickUp task payload from portal data.
+ * ctx: { app, borrower, llc, coBorrower, registeredProgram, externalStatus,
+ *        officerClickupId, processorClickupId, portalAppId, portalFileLink, card }
+ * options: { [fieldId]: optionList }  (live dropdown options for writes)
+ * ysProgramFieldId: id of the new "YS Program" field once created (else null)
+ * returns { name, statusName, customFields:[{id,value}] }
+ */
+function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
+  const { app = {}, borrower = {}, llc = null } = ctx;
+  const cf = [];
+  const put = (id, value) => { if (id && value !== undefined && value !== null && value !== '') cf.push({ id, value }); };
+  const src = { a: app, b: borrower, l: llc || {} };
+
+  for (const f of FIELD_MAP) {
+    if (f.dir === 'pull') continue;                       // pull-only never pushed
+    put(f.cu, writeValue(f, src[f.t][f.col], options));
+  }
+
+  // specials
+  put(F.SHARED.borrowerName, T.joinName(borrower.first_name, borrower.last_name));
+  if (borrower.ssn) put(F.SHARED.borrowerSSN, String(borrower.ssn));  // orchestrator supplies decrypted
+  const bAddr = addressField(F.SHARED.borrowerAddress, borrower.current_address);
+  if (bAddr) cf.push(bAddr);
+  const sAddr = addressField(F.PIPELINE.subjectAddress, app.property_address);
+  if (sAddr) cf.push(sAddr);
+  // vesting from LLC presence (§7.6)
+  put(F.PIPELINE.vesting, writeValue({ cu: F.PIPELINE.vesting, type: 'dropdown', enumKey: 'vesting' },
+    llc ? 'LLC / Corp' : 'Individual', options));
+  // registered product -> YS Program (push only), once the field exists
+  if (ysProgramFieldId) {
+    const lbl = X.toClickUpLabel('registered_program', ctx.registeredProgram);
+    const optId = lbl && T.dropdownLabelToId(options[ysProgramFieldId] || [], lbl);
+    if (optId) put(ysProgramFieldId, optId);
+  }
+  // marital (AI-normalized -> YES/NO)
+  if (borrower.marital_status != null && borrower.marital_status !== '') {
+    const married = T.normalizeMarried(borrower.marital_status);
+    if (married !== null) {
+      const label = married ? 'YES' : 'NO';
+      put(F.EXTRA.maritalStatus, T.dropdownLabelToId(options[F.EXTRA.maritalStatus] || [], label));
+    }
+  }
+  // borrower-facing status mirror (push only)
+  if (ctx.externalStatus) {
+    put(F.SYNC.borrowerPortalStatus, T.dropdownLabelToId(options[F.SYNC.borrowerPortalStatus] || [], ctx.externalStatus));
+  }
+  // officer / processor users fields
+  if (ctx.officerClickupId) put(F.SHARED.loanOfficer, { add: [ctx.officerClickupId] });
+  if (ctx.processorClickupId) put(F.PIPELINE.processor, { add: [ctx.processorClickupId] });
+  // co-borrower summary flags on the parent (full profile lives in a subtask, §7.7)
+  if (ctx.coBorrower) {
+    put(F.PIPELINE.coBorrowerFlag, T.dropdownLabelToId(options[F.PIPELINE.coBorrowerFlag] || [], 'YES'));
+    put(F.PIPELINE.coBorrowerName, T.joinName(ctx.coBorrower.first_name, ctx.coBorrower.last_name));
+    put(F.PIPELINE.secondBorrowerEmail, ctx.coBorrower.email);
+    put(F.PIPELINE.secondBorrowerCell, T.normalizePhone(ctx.coBorrower.cell_phone));
+  }
+  // appraisal card (joined single line)
+  if (ctx.card) put(F.EXTRA.card, T.joinCardLine(ctx.card));
+  // binding stamps
+  if (ctx.portalAppId) put(F.SYNC.portalFileId, String(ctx.portalAppId));
+  if (ctx.portalFileLink) put(F.SYNC.portalFileLink, ctx.portalFileLink);
+
+  const name = `${T.joinName(borrower.first_name, borrower.last_name) || 'New Borrower'}${
+    app.property_address && (app.property_address.oneLine || app.property_address.line1)
+      ? ' - ' + (app.property_address.oneLine || app.property_address.line1) : ''}`;
+  return { name, statusName: app.internal_status || null, customFields: cf };
+}
+
+// ---- read (pull) ----------------------------------------------------------
+function cfMap(task) {
+  const m = {};
+  for (const c of (task && task.custom_fields) || []) m[c.id] = c;
+  return m;
+}
+function readValue(f, cf, options) {
+  if (!cf || cf.value == null) return undefined;
+  switch (f.type) {
+    case 'dropdown': {
+      const list = options[f.cu] || cf.type_config?.options || [];
+      const label = T.dropdownIndexToLabel(list, cf.value);
+      if (label == null) return undefined;
+      return f.enumKey ? X.fromClickUpLabel(f.enumKey, label) : label;   // free dropdown -> raw label
+    }
+    case 'currency': case 'number': return T.parseMoney(cf.value);
+    case 'date': return T.fromEpochMs(cf.value);
+    case 'checkbox': return cf.value === true || cf.value === 'true';
+    default: return typeof cf.value === 'string' ? cf.value : String(cf.value);
+  }
+}
+
+/**
+ * Read a ClickUp task into a portal patch. Applies only pull/both fields; push-
+ * only fields (LTV/rate/YS-Program) are never taken from ClickUp. Unmapped
+ * fields are captured into `extra` (backend-only, §7.4). SSN/card excluded from extra.
+ * returns { app:{}, borrower:{}, llc:{}, internalStatus, extra:{}, cardLine, coBorrowerFlagYes }
+ */
+function readTaskFields(task, options = {}) {
+  const m = cfMap(task);
+  const out = { app: {}, borrower: {}, llc: {}, extra: {}, internalStatus: task && task.status };
+  const dst = { a: out.app, b: out.borrower, l: out.llc };
+
+  for (const f of FIELD_MAP) {
+    if (f.dir === 'push') continue;                       // portal-owned, never pulled
+    const v = readValue(f, m[f.cu], options);
+    if (v !== undefined) dst[f.t][f.col] = v;
+  }
+
+  // specials (read)
+  const nm = m[F.SHARED.borrowerName];
+  if (nm && nm.value) { const p = T.splitName(nm.value); out.borrower.first_name = p.first; out.borrower.last_name = p.last; }
+  const ssn = m[F.SHARED.borrowerSSN];
+  if (ssn && ssn.value) out.borrower.ssn = String(ssn.value);           // orchestrator encrypts
+  const bAddr = m[F.SHARED.borrowerAddress];
+  if (bAddr && bAddr.value) out.borrower.current_address = bAddr.value;  // keep CU location object
+  const sAddr = m[F.PIPELINE.subjectAddress];
+  if (sAddr && sAddr.value) out.app.property_address = sAddr.value;
+  const mar = m[F.EXTRA.maritalStatus];
+  if (mar && mar.value != null) {
+    const label = T.dropdownIndexToLabel(options[F.EXTRA.maritalStatus] || mar.type_config?.options || [], mar.value);
+    if (label) out.borrower.marital_status = /yes/i.test(label) ? 'Married' : undefined; // NO -> keep existing
+  }
+  const card = m[F.EXTRA.card];
+  if (card && card.value) out.cardLine = String(card.value);            // orchestrator parses + encrypts
+  const cob = m[F.PIPELINE.coBorrowerFlag];
+  if (cob && cob.value != null) {
+    const label = T.dropdownIndexToLabel(options[F.PIPELINE.coBorrowerFlag] || cob.type_config?.options || [], cob.value);
+    out.coBorrowerFlagYes = /yes/i.test(label || '');
+  }
+
+  // everything unmapped -> extra (backend-only). Exclude SSN + card (encrypted columns only).
+  for (const c of (task && task.custom_fields) || []) {
+    if (KNOWN.has(c.id)) continue;
+    if (c.id === F.SHARED.borrowerSSN || c.id === F.EXTRA.card) continue;
+    if (c.value == null || c.value === '') continue;
+    out.extra[c.name || c.id] = c.value;
+  }
+  return out;
+}
+
+module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue };
