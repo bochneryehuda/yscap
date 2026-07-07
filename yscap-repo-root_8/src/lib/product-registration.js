@@ -48,25 +48,12 @@ async function replaceProductConditions(client, { appId, registrationId, quote, 
         AND status IN ('open','borrower_responded')`,
     [appId, PRODUCT_CONDITION_TYPE]);
 
-  const liquidity = num(quote.liquidityRequired || quote.liquidity);
-  if (liquidity > 0) {
-    const detail = assetDetail(quote);
-    await client.query(
-      `INSERT INTO conditions
-         (application_id,title,borrower_title,detail,borrower_detail,audience,severity,
-          linked_entity_type,linked_entity_id,created_by)
-       VALUES ($1,$2,$3,$4,$5,'both','prior_to_docs',$6,$7,$8)`,
-      [
-        appId,
-        `Verify assets for ${money(liquidity)} liquidity requirement`,
-        'Verify assets / liquidity',
-        detail,
-        detail,
-        PRODUCT_CONDITION_TYPE,
-        registrationId,
-        registeredByStaffId || null,
-      ]);
-  }
+  // NOTE: the liquidity / "verify assets" requirement is NOT created here as a
+  // separate underwriting condition anymore — it lives as the single dynamic
+  // checklist condition rtl_p3_assets (see src/lib/liquidity.js), which shows in
+  // the regular conditions-to-close, carries the full cash-to-close breakdown,
+  // and reopens ONLY when the required liquidity goes up. Creating it here too
+  // produced a duplicate that reopened on every re-register regardless.
 
   if (quote.status === 'MANUAL') {
     await client.query(

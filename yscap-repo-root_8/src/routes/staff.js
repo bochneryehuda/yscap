@@ -743,11 +743,16 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         liquidity: (quote.liquidity ?? quote.liquidityRequired) != null ? (quote.liquidity ?? quote.liquidityRequired) : undefined,
         previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined });
 
-    // Registering the product satisfies the "Products & pricing" condition.
+    // Registering (or RE-registering) the product REOPENS the "Products & pricing"
+    // condition for re-verification: a new registration changes the structure, so
+    // any prior review / sign-off is cleared and the condition returns to
+    // 'received' (awaiting re-verification), even if it was already signed off.
     try {
       await db.query(
-        `UPDATE checklist_items SET status='received', updated_at=now()
-          WHERE application_id=$1 AND tool_key='product_pricing' AND status <> 'satisfied'`, [appId]);
+        `UPDATE checklist_items
+            SET status='received', signed_off_at=NULL, signed_off_by=NULL,
+                reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+          WHERE application_id=$1 AND tool_key='product_pricing'`, [appId]);
     } catch (_) { /* condition may not exist on older files */ }
 
     // Dynamic liquidity: the registered quote knows the exact cash-to-close +
@@ -1208,9 +1213,9 @@ router.post('/loan-conditions/:cid/waive', async (req, res) => {
 //   rtl_p3_reo      — verified track-record experience must meet the registered
 //                     product's claimed experience (re-register with less, or
 //                     verify more, until they agree).
-async function signOffGate(itemId) {
+async function signOffGate(itemId, actor) {
   const it = await db.query(
-    `SELECT ci.application_id, ci.tool_key, ci.tool_payload,
+    `SELECT ci.application_id, ci.tool_key, ci.tool_payload, ci.item_kind,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
@@ -1222,6 +1227,25 @@ async function signOffGate(itemId) {
   const isInsurance = code === 'rtl_cond_insurance';
   const isTitle = code === 'rtl_cond_title';
   const isFraud = code === 'rtl_cond_fraud';
+
+  // EMERGENCY doc-gate (owner-directed): a DOCUMENT-upload condition can never be
+  // signed off with ZERO documents on it — the sign-off would attest to a file
+  // that isn't there. Applies to everyone (LO, processor, underwriter, admin,
+  // semi-admin); ONLY a super_admin may override. Tool-backed conditions
+  // (product / budget / experience / appraisal card) are verified by their own
+  // rules below, and the entity-fulfilled LLC condition is verified from the
+  // linked LLC — those are exempt. Insurance/title/fraud have stricter slot
+  // rules handled just below (and return before reaching here).
+  if (item.item_kind === 'document' && !item.tool_key
+      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud) {
+    if (!actor || actor.role !== 'super_admin') {
+      const has = await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+           AND COALESCE(review_status,'') <> 'rejected' LIMIT 1`, [itemId]);
+      if (!has.rows.length)
+        return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded. (Only a super-admin can override this.)';
+    }
+  }
 
   // Document-gated conditions: cannot be signed off until the required upload(s)
   // are present on the item (current, non-rejected versions). slot_label carries
@@ -1261,7 +1285,9 @@ async function signOffGate(itemId) {
     `SELECT inputs, quote FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [item.application_id])).rows[0] || null;
   const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
-  const eq = (a, c) => Math.round(Number(a) || 0) === Math.round(Number(c) || 0);
+  // Exact match to the cent (owner-directed): the Scope of Work must equal the
+  // file budget and the registered product budget EXACTLY, not just to the dollar.
+  const eq = (a, c) => Math.round((Number(a) || 0) * 100) === Math.round((Number(c) || 0) * 100);
 
   if (isProduct) {
     if (!reg) return 'Register a product first — this condition can only be signed off once a product is registered on the file in the Term Sheet Studio.';
@@ -1339,7 +1365,7 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // verified experience must back the registered product. Blocks the sign-off
   // (422) with a plain-language reason until everything lines up.
   if (b.signedOff === true || b.status === 'satisfied') {
-    const gate = await signOffGate(req.params.itemId);
+    const gate = await signOffGate(req.params.itemId, req.actor);
     if (gate) return res.status(422).json({ error: gate });
   }
 
@@ -1805,11 +1831,27 @@ async function advancementBlockers(appId, target) {
        FROM conditions
       WHERE application_id=$1 AND status IN ('open','borrower_responded') AND severity = ANY($2::text[])
       ORDER BY severity, created_at`, [appId, sevs]);
+  // Every REQUIRED document/condition on the file that isn't cleared (signed off
+  // or satisfied) also blocks clear-to-close — the readiness widget used to
+  // count only the underwriting `conditions` rows + gate items, so it showed a
+  // tiny number ("2 to clear") while a dozen real conditions were still open.
+  // Gate items are counted separately below, so exclude them here to avoid a
+  // double count. Internal checklist TASKS are workflow, not conditions, so they
+  // don't gate here (their milestone subset is captured by is_gate).
+  const checklistConds = await db.query(
+    `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title
+       FROM checklist_items ci
+      WHERE ci.application_id=$1
+        AND ci.item_kind IN ('document','condition')
+        AND COALESCE(ci.is_required, true) = true
+        AND COALESCE(ci.is_gate, false) = false
+        AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
+      ORDER BY ci.sort_order, ci.created_at`, [appId]);
   const gates = await db.query(
     `SELECT id, label FROM checklist_items
       WHERE application_id=$1 AND is_gate=true AND NOT (signed_off_at IS NOT NULL OR status='satisfied')
       ORDER BY sort_order, created_at`, [appId]);
-  return { conditions: conds.rows, gates: gates.rows };
+  return { conditions: [...conds.rows, ...checklistConds.rows], gates: gates.rows };
 }
 
 // Readiness for the gated transitions — powers the "conditions to close" widget.

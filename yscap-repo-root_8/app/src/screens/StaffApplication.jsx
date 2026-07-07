@@ -786,7 +786,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   const [trOpen, setTrOpen] = useState(false);    // borrower track record open full-screen (staff)
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
   const [cardBusy, setCardBusy] = useState(false);
-  const borrowerItems = items.filter(it => it.audience === 'borrower' || it.audience === 'both');
+  // #66 — role-aware visibility: default hides what's already off THIS viewer's
+  // plate (LO clears on review/"complete"; processor·underwriter on sign-off;
+  // anyone on satisfied). The picker re-shows cleared items or everything.
+  const [condFilter, setCondFilter] = useState('todo');
+  // #64 — the LLC condition is NOT a plain row here: it IS the vesting-entity
+  // setup, rendered in full in the "LLC condition" section (LlcReview). Excluded
+  // from this list so it isn't duplicated as a bare condition row.
+  const borrowerItems = items.filter(it => (it.audience === 'borrower' || it.audience === 'both') && it.template_code !== 'rtl_p1_llc');
   const ppItem = borrowerItems.find(it => it.tool_key === 'product_pricing');
   const sowItem = borrowerItems.find(it => it.tool_key === 'rehab_budget');
   const trItem = borrowerItems.find(it => it.tool_key === 'track_record');
@@ -808,19 +815,31 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   }
   const docsFor = (itemId) => docs.filter(d => d.checklist_item_id === itemId && d.is_current && d.source_type !== 'chat_attachment');
   const signedCount = ordered.filter(it => it.signed_off_at).length;
+  const isLO = role === 'loan_officer';
+  const offMyPlate = (it) => it.status === 'satisfied' || !!it.signed_off_at || (isLO && !!it.reviewed_at);
+  const visible = ordered.filter(it => condFilter === 'all' ? true : condFilter === 'cleared' ? offMyPlate(it) : !offMyPlate(it));
 
   if (ordered.length === 0) return null;
   return (
     <div className="panel" style={{ marginTop: 18, borderColor: 'var(--gold)' }}>
-      <div className="row" style={{ marginBottom: 6 }}>
+      <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
         <h3>Borrower conditions</h3>
         <div className="spacer" />
+        <select className="input" style={{ maxWidth: 170 }} value={condFilter} onChange={e => setCondFilter(e.target.value)}
+          title={isLO ? 'To do = still needs your review' : 'To do = still needs your sign-off'}>
+          <option value="todo">{isLO ? 'To review' : 'To sign off'}</option>
+          <option value="cleared">Cleared</option>
+          <option value="all">Show all</option>
+        </select>
         <span className="muted small">{signedCount}/{ordered.length} signed off</span>
       </div>
       <p className="muted small" style={{ marginBottom: 12 }}>
         The conditions list exactly as the borrower sees it — with each condition's uploaded documents and sign-off.
       </p>
-      {ordered.map(it => {
+      {visible.length === 0 && (
+        <p className="muted small">Nothing {isLO ? 'left to review' : 'left to sign off'} — switch to “Cleared” or “Show all” to see the rest.</p>
+      )}
+      {visible.map(it => {
         const itemDocs = docsFor(it.id);
         const signed = !!it.signed_off_at;
         const done = signed || it.status === 'satisfied' || it.status === 'received';
@@ -1286,7 +1305,11 @@ export default function StaffApplication() {
   }
 
   const [itemFilter, setItemFilter] = useState('all');
+  const [internalCondFilter, setInternalCondFilter] = useState('todo');   // #66 internal-conditions role-aware filter
   const bucketOf = (s) => s === 'issue' ? 'rejected' : s === 'received' ? 'submitted' : s === 'satisfied' ? 'satisfied' : 'outstanding';
+  // #66 — role-aware "off my plate": LO clears on review, processor/underwriter
+  // on sign-off, anyone on satisfied. Default hides those; picker re-shows them.
+  const condOffPlate = (it) => it.status === 'satisfied' || !!it.signed_off_at || (role === 'loan_officer' && !!it.reviewed_at);
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
   // so they must not be listed twice.
@@ -1323,7 +1346,7 @@ export default function StaffApplication() {
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
     { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
-    { id: 'sec-entity', label: 'Entity (LLC) review' },
+    { id: 'sec-entity', label: 'LLC condition', badge: app.llc_id && app.llc_verified ? '✓' : '' },
     { id: 'sec-track', label: 'Track record' },
     { id: 'sec-checklist', label: 'Internal checklist', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
     { id: 'sec-documents', label: 'Documents & exports', badge: docs.length || '' },
@@ -1522,12 +1545,32 @@ export default function StaffApplication() {
       <Section id="sec-internal-conds" title="Internal conditions"
         info="Staff-only document conditions (e.g. Insurance binder + invoice, Title). They sync with ClickUp and appear in the TPR export like any condition, but are NEVER shared with the borrower — separate from the phase-by-phase internal checklist below.">
       <div className="panel" style={{ marginTop: 0 }}>
-        {internalConds.length === 0
-          ? <p className="muted small">No internal conditions on this file.</p>
-          : [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map(it => (
-            <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
-              docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
-              dlBusy={dlBusy} onPreview={openPreview} />))}
+        {(() => {
+          const sorted = [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+          const vis = sorted.filter(it => internalCondFilter === 'all' ? true : internalCondFilter === 'cleared' ? condOffPlate(it) : !condOffPlate(it));
+          const isLO = role === 'loan_officer';
+          return (<>
+            {internalConds.length > 0 && (
+              <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
+                <div className="spacer" />
+                <select className="input" style={{ maxWidth: 170 }} value={internalCondFilter} onChange={e => setInternalCondFilter(e.target.value)}>
+                  <option value="todo">{isLO ? 'To review' : 'To sign off'}</option>
+                  <option value="cleared">Cleared</option>
+                  <option value="all">Show all</option>
+                </select>
+                <span className="muted small">{internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/{internalConds.length} cleared</span>
+              </div>
+            )}
+            {internalConds.length === 0
+              ? <p className="muted small">No internal conditions on this file.</p>
+              : vis.length === 0
+                ? <p className="muted small">Nothing {isLO ? 'left to review' : 'left to sign off'} — switch to “Cleared” or “Show all”.</p>
+                : vis.map(it => (
+                  <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
+                    docs={docs} onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+                    dlBusy={dlBusy} onPreview={openPreview} />))}
+          </>);
+        })()}
       </div>
       </Section>
 
@@ -1559,8 +1602,8 @@ export default function StaffApplication() {
       </div>
       </Section>
 
-      <Section id="sec-entity" title="Vesting entity (LLC) — verification"
-        info="Verify the LLC taking title on this property inline: entity details, ownership structure and the three formation documents. Marking it verified auto-satisfies the internal LLC condition on every open file it vests.">
+      <Section id="sec-entity" title="LLC condition — vesting entity"
+        info="This IS the LLC condition for the file — set up and verify the LLC taking title inline (entity details, ownership, the three documents). It's the same entity the borrower fills in on their side, so completing it here clears their condition and vice-versa; marking it verified satisfies the LLC condition on every open file it vests. No separate LLC condition row is shown — this is it.">
       <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
       </Section>
