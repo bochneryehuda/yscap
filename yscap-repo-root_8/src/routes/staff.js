@@ -142,7 +142,18 @@ router.get('/dashboard', async (req, res) => {
                        -- date later). Still counted as funded; held in a dateless bucket
                        -- and auto-moves into its month once a date lands.
                        count(*) FILTER (WHERE status='funded' AND actual_closing IS NULL)::int funded_no_date,
-                       COALESCE(sum(loan_amount) FILTER (WHERE status='funded' AND actual_closing IS NULL),0)::bigint funded_no_date_value
+                       COALESCE(sum(loan_amount) FILTER (WHERE status='funded' AND actual_closing IS NULL),0)::bigint funded_no_date_value,
+                       -- Portfolio-health KPIs (industry-standard lending metrics):
+                       -- avg funded loan size YTD, avg days from submit→close (cycle time),
+                       -- and pipeline-aging buckets for the ACTIVE book (how long each
+                       -- open file has been in the pipeline). Pull-through is derived in JS.
+                       COALESCE(avg(loan_amount) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('year', now())),0)::bigint avg_funded_ytd,
+                       COALESCE(round(avg(EXTRACT(epoch FROM (actual_closing::timestamptz - submitted_at))/86400.0)
+                                FILTER (WHERE status='funded' AND actual_closing IS NOT NULL AND submitted_at IS NOT NULL))::int,0) avg_cycle_days,
+                       count(*) FILTER (WHERE ${ACTIVE_SQL} AND created_at >= now() - interval '7 days')::int age_0_7,
+                       count(*) FILTER (WHERE ${ACTIVE_SQL} AND created_at < now() - interval '7 days' AND created_at >= now() - interval '14 days')::int age_8_14,
+                       count(*) FILTER (WHERE ${ACTIVE_SQL} AND created_at < now() - interval '14 days' AND created_at >= now() - interval '30 days')::int age_15_30,
+                       count(*) FILTER (WHERE ${ACTIVE_SQL} AND created_at < now() - interval '30 days')::int age_30p
                   FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params),
       seesAll(req)
         ? db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived')`)
@@ -166,6 +177,12 @@ router.get('/dashboard', async (req, res) => {
     const fundedMomPct = t.funded_last_month > 0
       ? Math.round((fundedMomDelta / t.funded_last_month) * 100)
       : null;
+    // Pull-through = funded / (funded + cancelled): of every file that reached a
+    // terminal state, the share that actually closed. A truer conversion signal
+    // than funded/total (which is diluted by the still-open active book). Null
+    // when nothing has reached a terminal state yet.
+    const terminal = t.funded + t.cancelled;
+    const pullThrough = terminal > 0 ? Math.round((t.funded / terminal) * 100) : null;
     res.json({
       byStatus: byStatus.rows,
       total: t.total, pipelineValue: Number(t.pipeline_value), active: t.active,
@@ -180,6 +197,11 @@ router.get('/dashboard', async (req, res) => {
       openLeads: leads.rows[0].c,
       stale: aging.rows[0].c,           // active files untouched > 5 days
       conversion: t.total ? Math.round((t.funded / t.total) * 100) : 0,
+      // Portfolio-health block
+      pullThrough,
+      avgFundedYtd: Number(t.avg_funded_ytd),
+      avgCycleDays: t.avg_cycle_days,
+      aging: { a0_7: t.age_0_7, a8_14: t.age_8_14, a15_30: t.age_15_30, a30p: t.age_30p },
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -211,6 +233,16 @@ router.get('/applications', async (req, res) => {
 
     if (q.status) where.push(`a.status = ${add(String(q.status))}`);
     if (q.program) where.push(`a.program = ${add(String(q.program))}`);
+    if (q.loanType) where.push(`a.loan_type = ${add(String(q.loanType))}`);
+    // Free-text search across borrower name, YS loan number, and property address.
+    // One bound ILIKE value, matched against several columns — never interpolated.
+    if (q.q !== undefined && String(q.q).trim() !== '') {
+      const like = `%${String(q.q).trim().slice(0, 80)}%`;
+      const p = add(like);
+      where.push(`((b.first_name || ' ' || b.last_name) ILIKE ${p}
+                   OR a.ys_loan_number ILIKE ${p}
+                   OR COALESCE(a.property_address->>'oneLine','') ILIKE ${p})`);
+    }
     if (q.officerId) {
       if (!UUID_RE.test(String(q.officerId))) return res.status(400).json({ error: 'invalid officerId' });
       where.push(`a.loan_officer_id = ${add(String(q.officerId))}`);
@@ -257,6 +289,17 @@ router.get('/applications', async (req, res) => {
     let offset = parseInt(q.offset, 10);
     if (!Number.isFinite(offset) || offset < 0) offset = 0;
 
+    // Sort — strict whitelist (never interpolate user text into ORDER BY). NULLS
+    // LAST keeps blank amounts/dates from floating to the top of a sort.
+    const SORTS = {
+      created_desc: 'a.created_at DESC',
+      created_asc: 'a.created_at ASC',
+      amount_desc: 'a.loan_amount DESC NULLS LAST',
+      amount_asc: 'a.loan_amount ASC NULLS LAST',
+      closing_desc: 'a.actual_closing DESC NULLS LAST',
+    };
+    const orderBy = SORTS[String(q.sort || '')] || SORTS.created_desc;
+
     const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
                         a.clickup_pipeline_task_id,a.property_address,
                         a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
@@ -265,7 +308,7 @@ router.get('/applications', async (req, res) => {
                         (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
-                 WHERE ${where.join(' AND ')} ORDER BY a.created_at DESC
+                 WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;
     const r = await db.query(sql, params);
     res.json(r.rows);

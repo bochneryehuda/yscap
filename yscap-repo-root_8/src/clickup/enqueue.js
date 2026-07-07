@@ -22,9 +22,14 @@ async function enqueueClickupPush(appId, only = []) {
   if (!keys.length) return;
   const keysJson = JSON.stringify(keys);
   try {
-    // Merge the changed-field set into an existing queued/processing job (union),
-    // so rapid successive edits accumulate into ONE scoped push (push reads live
-    // data at drain time, so only the field SET needs to survive).
+    // Merge the changed-field set into an existing QUEUED job (union), so rapid
+    // successive edits accumulate into ONE scoped push (push reads live data at
+    // drain time, so only the field SET needs to survive). We deliberately do NOT
+    // merge into a 'processing' job: the drainer snapshots payload.only when it
+    // grabs the job, so a field merged after that snapshot would be marked done
+    // without ever being pushed. Letting it fall through to a fresh INSERT below
+    // guarantees the new field gets its own queued job (there is no dirty-sweep
+    // backstop, so a lost merge would be a permanently lost push).
     const merged = await db.query(
       `UPDATE sync_queue
           SET payload = jsonb_build_object('only', to_jsonb(ARRAY(
@@ -35,7 +40,7 @@ async function enqueueClickupPush(appId, only = []) {
                 ) u WHERE e IS NOT NULL AND e <> ''))),
               updated_at = now()
         WHERE target='clickup' AND direction='push' AND entity_type='application'
-          AND entity_id=$1 AND status IN ('queued','processing')
+          AND entity_id=$1 AND status='queued'
         RETURNING id`,
       [appId, keysJson]);
     if (merged.rowCount > 0) return;

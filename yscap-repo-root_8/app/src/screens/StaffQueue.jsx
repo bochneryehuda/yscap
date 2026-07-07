@@ -29,9 +29,10 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const monthShort = (ym) => MONTHS[Number(ym.split('-')[1]) - 1] || ym;
 
 // The server-side filter params (everything except UI-only keys like `mine`/`tab`).
-const SERVER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag', 'limit', 'offset'];
+const SERVER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'sort', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag', 'limit', 'offset'];
 // The subset that counts as an "active filter" for Clear-filters / KPI-active UI.
-const FILTER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag'];
+// `sort` is a view preference, not a filter, so it's intentionally excluded.
+const FILTER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag'];
 const paramsEqual = (a, b) => {
   const ak = Object.keys(a), bk = Object.keys(b);
   return ak.length === bk.length && ak.every((k) => String(a[k]) === String(b[k]));
@@ -186,6 +187,48 @@ function ProductionBlock({ d }) {
   );
 }
 
+// Portfolio-health strip: industry-standard lending KPIs that read the whole
+// book at a glance — pull-through (funded of everything that reached a terminal
+// state), average time-to-close, average funded size, and a pipeline-aging
+// breakdown of the active book. The aging chips deep-link into the stalled view.
+function HealthBlock({ d }) {
+  if (!d) return null;
+  const ag = d.aging || {};
+  const agingTotal = (ag.a0_7 || 0) + (ag.a8_14 || 0) + (ag.a15_30 || 0) + (ag.a30p || 0);
+  const stats = [
+    { k: 'Pull-through', v: d.pullThrough != null ? `${d.pullThrough}%` : '—', sub: 'funded of terminal' },
+    { k: 'Avg time to close', v: d.avgCycleDays ? `${d.avgCycleDays} days` : '—', sub: 'submit → funded' },
+    { k: 'Avg funded (YTD)', v: d.avgFundedYtd ? bigMoney(d.avgFundedYtd) : '—', sub: 'per closed loan' },
+  ];
+  if (d.pullThrough == null && !d.avgCycleDays && !d.avgFundedYtd && !agingTotal) return null;
+  return (
+    <div className="panel" style={{ marginBottom: 18 }}>
+      <div className="row" style={{ marginBottom: 10 }}><h3 style={{ margin: 0 }}>Portfolio health</h3></div>
+      <div className="row" style={{ gap: 26, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        {stats.map(s => (
+          <div key={s.k}>
+            <div className="kpi-v" style={{ fontSize: '1.35rem' }}>{s.v}</div>
+            <div className="kpi-k">{s.k}</div>
+            <div className="muted small">{s.sub}</div>
+          </div>
+        ))}
+        {agingTotal > 0 && (
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div className="kpi-k" style={{ marginBottom: 6 }}>Active pipeline aging</div>
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              {[['0–7d', ag.a0_7, 'var(--ok)'], ['8–14d', ag.a8_14, 'var(--teal)'],
+                ['15–30d', ag.a15_30, 'var(--gold)'], ['30d+', ag.a30p, 'var(--danger)']].map(([lbl, n, c]) => (
+                <span key={lbl} className="pill" style={{ borderColor: c, color: c }}
+                  title={`${n || 0} active file(s) open ${lbl}`}>{lbl}: {n || 0}</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Row({ a }) {
   const pct = a.total_items > 0 ? Math.round((a.done_items / a.total_items) * 100) : 0;
   return (
@@ -236,7 +279,9 @@ export default function StaffQueue() {
   const serverKey = useMemo(() => {
     const p = {};
     SERVER_KEYS.forEach(k => { const v = searchParams.get(k); if (v) p[k] = v; });
-    if (!SERVER_KEYS.some(k => searchParams.get(k))) p.group = 'active';
+    // `sort` is a view preference, not a filter — sorting alone must not suppress
+    // the default ACTIVE pipeline (else picking a sort would silently show all).
+    if (!SERVER_KEYS.some(k => k !== 'sort' && searchParams.get(k))) p.group = 'active';
     return JSON.stringify(p);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qs]);
@@ -296,6 +341,8 @@ export default function StaffQueue() {
   const statusF = searchParams.get('status') || '';
   const officerF = searchParams.get('officerId') || '';
   const programF = searchParams.get('program') || '';
+  const sortF = searchParams.get('sort') || 'created_desc';
+  const searchF = searchParams.get('q') || '';
   const minAmount = searchParams.get('minAmount') || '';
   const maxAmount = searchParams.get('maxAmount') || '';
   const mineOnly = searchParams.get('mine') === '1';
@@ -361,6 +408,7 @@ export default function StaffQueue() {
         <button className="btn link small" onClick={() => { setErr(''); loadContext(); fetchList(); }}>Retry</button></div>}
       <Kpis d={dash} activeParams={curFilter} />
       <ProductionBlock d={dash} />
+      <HealthBlock d={dash} />
       <ExceptionStrip e={exc} />
       {tab === 'mine' && (
         <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -375,6 +423,10 @@ export default function StaffQueue() {
               </button>
             ))}
           </div>
+          <input className="input" style={{ maxWidth: 240 }} type="search" value={searchF}
+            placeholder="Search name, loan #, address"
+            onChange={e => setParam({ q: e.target.value })}
+            title="Search by borrower name, YS loan number, or property address" />
           <select className="input" style={{ maxWidth: 180 }} value={statusF} onChange={e => setParam({ status: e.target.value })}
             title="Refine by exact status within the selected group">
             <option value="">All statuses</option>
@@ -410,6 +462,14 @@ export default function StaffQueue() {
             <span className="muted small">–</span>
             <input className="input" style={{ maxWidth: 150 }} type="date" value={dateTo} onChange={e => setParam({ [toKey]: e.target.value })} />
           </div>
+          <select className="input" style={{ maxWidth: 170 }} value={sortF} onChange={e => setParam({ sort: e.target.value })}
+            title="Sort the pipeline">
+            <option value="created_desc">Newest first</option>
+            <option value="created_asc">Oldest first</option>
+            <option value="amount_desc">Loan amount ↓</option>
+            <option value="amount_asc">Loan amount ↑</option>
+            <option value="closing_desc">Closing date ↓</option>
+          </select>
           {seesAllFiles && (
             <label className="row small" style={{ gap: 6, alignItems: 'center', cursor: 'pointer' }}
               title="Show only files assigned to you">

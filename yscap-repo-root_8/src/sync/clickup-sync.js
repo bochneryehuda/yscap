@@ -76,31 +76,16 @@ async function pushOutboxOnce() {
   return true;
 }
 
-// ---- dirty sweep (portal edits → ClickUp, no write-path wiring needed) -----
-// Pushes any RTL / already-linked application whose updated_at is newer than its
-// last sync (10s debounce lets rapid edits settle). Because ingest sets
-// updated_at and clickup_last_synced_at together, pulled changes never look
-// dirty — so this cannot loop.
+// ---- dirty sweep (RETIRED — do not reintroduce) ---------------------------
+// The old dirty-sweep did a FULL, unscoped push of every "dirty" file. That is
+// exactly the behavior that caused the ClickUp-overwrite incident (it pushed
+// mapped/synthetic values over real ClickUp data and echo-looped). Outbound is
+// now enqueue-on-write + scoped push ONLY (pushOutboxOnce). This function is
+// permanently retired to a no-op so it can never be re-wired into a full
+// overwrite path; it stays exported only so any stale caller/test is a safe
+// no-op rather than a crash. Returns false so a `while (await fn())` drains once.
 async function sweepDirtyOnce() {
-  // Go-live guard: when CLICKUP_OUTBOUND_SINCE is set, only push apps that are
-  // already linked to a ClickUp task OR were created at/after the cutoff. This
-  // stops the sweep from bulk-pushing the pre-existing portal backlog (which
-  // would create duplicate ClickUp tasks). Empty cutoff = push everything dirty.
-  const since = cfg.clickupOutboundSince || null;
-  const r = await db.query(
-    `SELECT a.id FROM applications a
-      WHERE a.deleted_at IS NULL
-        AND a.sync_state NOT IN ('manual_review','descoped')
-        AND (a.clickup_pipeline_task_id IS NOT NULL OR a.program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction'))
-        AND ($1::timestamptz IS NULL OR a.clickup_pipeline_task_id IS NOT NULL OR a.created_at >= $1::timestamptz)
-        AND (a.clickup_last_synced_at IS NULL OR a.updated_at > a.clickup_last_synced_at + interval '3 seconds')
-      ORDER BY a.updated_at LIMIT 12`, [since]);
-  let n = 0;
-  for (const row of r.rows) {
-    try { await orchestrator.pushApplication(row.id, { force: true }); n++; }
-    catch (e) { console.error('[clickup-sync] push dirty', row.id, e.message); }
-  }
-  return n > 0;
+  return false;
 }
 
 // ---- inbound (ClickUp → portal) ------------------------------------------
@@ -151,6 +136,32 @@ async function reconcileOnce() {
   }
   _watermark = Date.now();
   return tasks.length;
+}
+
+// ---- program reconcile (one-shot) -----------------------------------------
+// Re-check every LINKED, non-descoped RTL file against its CURRENT ClickUp task
+// program. If the program was changed to something we don't build yet (non-RTL,
+// e.g. Short-Term Rehab → DSCR), ingestTask descopes it — removes it from the
+// portal, ClickUp untouched. Bounded to already-linked files (cheap), idempotent
+// (descoped files are excluded next run), and read-only against ClickUp. Catches
+// the backlog of flips that predate the descope logic or that are older than the
+// reconcile poll's rolling window. Never creates or deletes anything in ClickUp.
+async function reconcileLinkedProgramsOnce() {
+  const r = await db.query(
+    `SELECT clickup_pipeline_task_id AS task_id FROM applications
+      WHERE clickup_pipeline_task_id IS NOT NULL AND deleted_at IS NULL
+        AND sync_state NOT IN ('descoped','manual_review')
+      ORDER BY updated_at DESC`);
+  let checked = 0, descoped = 0;
+  for (const row of r.rows) {
+    try {
+      const res = await ingestOne(row.task_id);
+      checked++;
+      if (res && res.matchStatus === 'descoped') descoped++;
+    } catch (e) { console.error('[clickup] reconcile-programs task failed', row.task_id, e.message); }
+  }
+  console.log(`[clickup-sync] reconcile-programs: checked ${checked} linked files, descoped ${descoped}`);
+  return { checked, descoped };
 }
 
 // ---- historical backfill (one-shot, paced) --------------------------------
@@ -414,6 +425,14 @@ function start() {
     }, cfg.clickupRunBackfill ? 60000 : 3000);
   }
 
+  // One-shot program reconcile: descope any file whose ClickUp program was flipped
+  // to a non-RTL type (e.g. Short-Term Rehab → DSCR) before the descope logic
+  // existed or outside the reconcile poll's window. Portal-only, ClickUp untouched,
+  // idempotent. Delayed so the option cache + any boot backfill settle first.
+  setTimeout(() => {
+    reconcileLinkedProgramsOnce().catch((e) => console.error('[clickup-sync] reconcile-programs', e.message));
+  }, cfg.clickupRunBackfill ? 120000 : 15000);
+
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
 
   // Inbound loops (ClickUp → portal) always run when the master switch is on —
@@ -442,4 +461,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, canMaterialize, PIPELINE_FOLDERS };
