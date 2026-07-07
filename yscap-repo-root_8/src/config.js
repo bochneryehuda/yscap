@@ -143,6 +143,11 @@ module.exports = {
   clickupOutboundEnabled: process.env.CLICKUP_OUTBOUND_ENABLED === '1', // gate portal -> ClickUp writes
   clickupRunDryrun:       process.env.CLICKUP_DRYRUN === '1',           // boot: read-only validation to logs, no loops
   clickupRunBackfill:     (process.env.CLICKUP_RUN_BACKFILL || '').trim(), // boot one-shot: '' | 'data' | 'full'
+  // Outbound go-live cutoff (ISO timestamp). When set, the dirty-sweep only
+  // pushes apps that are ALREADY linked to a ClickUp task OR were created at/after
+  // this time — so enabling outbound never bulk-pushes the pre-existing portal
+  // backlog (which would create duplicate ClickUp tasks). Empty = no cutoff.
+  clickupOutboundSince:   (process.env.CLICKUP_OUTBOUND_SINCE || '').trim(),
 
   // --- address autocomplete / verification (server-side proxy) ---
   // The frontend calls OUR /api/address/*; any real key lives only here, never
