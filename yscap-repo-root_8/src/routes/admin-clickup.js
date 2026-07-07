@@ -63,6 +63,12 @@ router.post('/sync-folder', async (req, res) => {
   res.json({ started: true, folderId: folderId || 'all', createFiles });
 });
 
+// Data-coverage / assignment / completeness audit (portal vs ClickUp).
+router.get('/audit', async (req, res) => {
+  try { res.json(await sync.auditData()); }
+  catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
 router.get('/activity', async (req, res) => {
   const r = await db.query(
     `SELECT action, entity_type, entity_id, detail, created_at FROM audit_log

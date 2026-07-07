@@ -155,6 +155,7 @@ module.exports = {
   // portal application for the same loan. Turn on only once inbound identity
   // matching is in place, or to deliberately mirror ClickUp files into the portal.
   clickupInboundCreateFiles: process.env.CLICKUP_INBOUND_CREATE_FILES === '1',
+  clickupRunAudit:           process.env.CLICKUP_RUN_AUDIT === '1',   // boot: log data-coverage/assignment audit
 
   // --- address autocomplete / verification (server-side proxy) ---
   // The frontend calls OUR /api/address/*; any real key lives only here, never

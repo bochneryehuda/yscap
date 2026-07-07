@@ -281,6 +281,7 @@ export const api = {
   clickupRepush:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repush`),
   clickupRepull:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repull`),
   clickupSyncFolder:(folderId, createFiles) => req('POST', '/api/admin/clickup/sync-folder', { folderId, createFiles }),
+  clickupAudit:     () => req('GET', '/api/admin/clickup/audit'),
   // self-serve: pull my own ClickUp pipeline folder into the portal
   staffSyncMyClickup: () => req('POST', '/api/staff/clickup/sync-mine'),
 

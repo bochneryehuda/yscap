@@ -31,6 +31,26 @@ function identityFrom(read) {
   };
 }
 
+/** A masked, structured snapshot of a task's mapped data for long-term
+ *  preservation + auditing. SSN → last-4 only; card → boolean. `unmapped` holds
+ *  every ClickUp field we did NOT map into the portal (audit: what we're missing). */
+function buildMaskedSnapshot(read, extra = {}) {
+  const b = read.borrower || {};
+  const ssn4 = b.ssn ? String(b.ssn).replace(/\D/g, '').slice(-4) : null;
+  return {
+    status: read.internalStatus || null,
+    app: read.app || {},
+    borrower: { ...b, ssn: ssn4 ? `***-**-${ssn4}` : undefined },
+    llc: read.llc || {},
+    unmapped: read.extra || {},
+    coBorrower: read.coBorrowerFlagYes || undefined,
+    loanOfficerEmail: extra.loanOfficerEmail || read.loanOfficerEmail || null,
+    processorEmail: extra.processorEmail || read.processorEmail || null,
+    portalFileId: read.portalFileId || null,
+    hasCard: !!read.cardLine,
+  };
+}
+
 async function recordContacts(borrowerId, borrower, taskId) {
   for (const [kind, val] of [['email', borrower.email], ['phone', borrower.cell_phone]]) {
     if (!val) continue;
@@ -234,14 +254,22 @@ async function ingestTask(task, options = {}, opts = {}) {
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
   }
 
+  // Preserve a MASKED snapshot of every task's mapped data — RTL and non-RTL
+  // (long-term) alike — so no ClickUp data is lost even for file types we don't
+  // materialize as loan files yet. SSN/card are masked; never cleartext here.
+  const snapshot = buildMaskedSnapshot(read, { loanOfficerEmail, processorEmail });
   await db.query(
-    `INSERT INTO clickup_task_index (task_id, kind, program, ssn_hash, borrower_id, application_id, llc_id, match_status, match_detail, last_seen)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+    `INSERT INTO clickup_task_index (task_id, kind, program, ssn_hash, borrower_id, application_id, llc_id,
+        match_status, match_detail, snapshot, snapshot_at, task_name, folder_id, internal_status, last_seen)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),$11,$12,$13,now())
      ON CONFLICT (task_id) DO UPDATE SET program=EXCLUDED.program, ssn_hash=EXCLUDED.ssn_hash,
         borrower_id=EXCLUDED.borrower_id, application_id=COALESCE(EXCLUDED.application_id, clickup_task_index.application_id),
-        llc_id=EXCLUDED.llc_id, match_status=EXCLUDED.match_status, match_detail=EXCLUDED.match_detail, last_seen=now()`,
+        llc_id=EXCLUDED.llc_id, match_status=EXCLUDED.match_status, match_detail=EXCLUDED.match_detail,
+        snapshot=EXCLUDED.snapshot, snapshot_at=now(), task_name=EXCLUDED.task_name, folder_id=EXCLUDED.folder_id,
+        internal_status=EXCLUDED.internal_status, last_seen=now()`,
     [task.id, isRtl ? 'rtl_file' : 'data_only', program, identity.ssnHash(read.borrower.ssn, cfg.ssnMatchKey),
-     borrowerId, applicationId, llcId, matchStatus, matchDetail ? JSON.stringify(matchDetail) : null]).catch(() => {});
+     borrowerId, applicationId, llcId, matchStatus, matchDetail ? JSON.stringify(matchDetail) : null,
+     JSON.stringify(snapshot), task.name || null, folderId ? String(folderId) : null, read.internalStatus || null]).catch(() => {});
 
   return { borrowerId, llcId, applicationId, isRtl, matchStatus };
 }
