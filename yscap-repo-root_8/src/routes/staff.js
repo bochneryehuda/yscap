@@ -424,22 +424,14 @@ router.post('/applications', async (req, res) => {
       [firstName, lastName || '', email, bo.phone || null]);
     const borrowerId = br.rows[0].id;
 
-    // SECURITY: a scoped officer/processor must not be able to originate a file
-    // against a PRE-EXISTING borrower they have no prior relationship with —
-    // that would auto-assign them and unlock the borrower's decrypted SSN and
-    // documents (canSeeBorrower keys off assignment to ANY of the borrower's
-    // files). seesAll staff, and staff already on one of the borrower's files,
-    // are allowed; everyone else must route it through an admin.
-    if (!br.rows[0].created && !seesAll(req)) {
-      const rel = await db.query(
-        `SELECT 1 FROM applications WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
-        [borrowerId, req.actor.id]);
-      if (!rel.rows[0]) {
-        // Undo the borrower row if THIS request just created it (it didn't here,
-        // since created=false), then refuse.
-        return res.status(403).json({ error: 'This borrower already has a file with YS. Ask an admin to originate or assign this file to you.' });
-      }
-    }
+    // A borrower may have MANY files (one per property) and any staffer may open
+    // a new one for an existing borrower (owner-directed). Opening a file assigns
+    // the creator to THAT file only; a borrower's PII (SSN) + shared profile/LLC
+    // docs then become visible, which is inherent to working any file for them.
+    // Cross-file safety still holds: APPLICATION documents are authorized solely
+    // by assignment to their own application (see canSeeDocument), so this never
+    // exposes another officer's file for the same borrower; every SSN reveal and
+    // document download remains audited.
 
     // Resolve the assigned officer: explicit pick, else the creator when they
     // are a loan officer (their own pipeline), else null => Lead Capture.

@@ -100,23 +100,58 @@ main, .footer{ position:relative; z-index:2; }
 :root[data-theme="light"] .prepay{ background:linear-gradient(110deg,rgba(63,123,132,.12),rgba(255,255,255,.5)); border-color:var(--teal); }
 .nav-inner{
     max-width:var(--maxw); margin:0 auto; padding:1rem 1.5rem;
-    display:flex; align-items:center; gap:2rem;
+    display:flex; align-items:center; gap:1.2rem;
+    /* one horizontal row; never allow the row itself to wrap */
+    flex-wrap:nowrap;
 }
 .nav-brand img{ height:30px; width:auto; transition:opacity .3s; }
 .nav-brand:hover img{ opacity:.8; }
-.nav-links{ display:flex; gap:1.7rem; margin-left:auto; }
+/* Left-side quick links: sit next to the logo (left), even spacing, single line.
+   No margin-left:auto here — the actions block below claims the right edge, so
+   links stay on the left and are balanced against the right-side actions. */
+.nav-links{ display:flex; align-items:center; gap:1.1rem; flex-wrap:nowrap; }
 .nav-links a{
     font-size:.9rem; color:var(--muted); font-weight:500; position:relative; transition:color .3s;
+    /* Root-cause fix: keep each quick link on ONE line. Without this the anchors
+       wrapped mid-phrase ("Investor Suite" -> two lines) when the flex row got
+       tight, rendering tiny and uneven. */
+    white-space:nowrap;
 }
 .nav-links a::after{
     content:""; position:absolute; left:0; bottom:-6px; height:1px; width:0; background:var(--teal); transition:width .3s var(--ease);
 }
 .nav-links a:hover{ color:var(--ivory); }
 .nav-links a:hover::after{ width:100%; }
-.nav-actions{ display:flex; align-items:center; gap:.5rem; }
+/* Right-side actions: pushed to the right edge to balance the left quick links. */
+.nav-actions{ display:flex; align-items:center; gap:.45rem; margin-left:auto; }
+/* Compact the two secondary (ghost) actions slightly so the full row fits on one
+   line; the primary "Apply Now" solid button keeps its emphasis. */
+.nav-actions .btn-ghost{ padding-left:.85rem; padding-right:.85rem; }
 .nav-toggle{ display:none; flex-direction:column; gap:5px; background:none; border:0; cursor:pointer; padding:6px; margin-left:auto; }
 .nav-toggle span{ width:24px; height:2px; background:var(--ivory); transition:.3s; }
 .nav-mobile{ display:none; }
+
+/* The desktop row carries the logo + 8 quick links + 3 actions. That is wide, so
+   collapse to the hamburger/mobile menu below ~1200px (up from 768px) — this
+   guarantees the horizontal nav only renders where it comfortably fits on ONE
+   line, and never squeezes the quick links into the tiny/wrapped state again.
+   The existing .nav-mobile menu (which lists every link) handles all narrower
+   widths. */
+@media (max-width:1200px){
+    .nav-links, .nav-actions{ display:none; }
+    .nav-toggle{ display:flex; }
+    .nav.open .nav-toggle span:nth-child(1){ transform:translateY(7px) rotate(45deg); }
+    .nav.open .nav-toggle span:nth-child(2){ opacity:0; }
+    .nav.open .nav-toggle span:nth-child(3){ transform:translateY(-7px) rotate(-45deg); }
+    .nav-mobile{
+        display:flex; flex-direction:column; gap:.3rem; padding:0 1.5rem;
+        max-height:0; overflow:hidden; transition:max-height .4s var(--ease), padding .4s;
+        background:rgba(11,16,20,.96); backdrop-filter:blur(16px);
+    }
+    .nav.open .nav-mobile{ max-height:420px; padding:1rem 1.5rem 1.5rem; }
+    .nav-mobile a{ padding:.7rem 0; color:var(--ivory-soft); border-bottom:1px solid var(--line-2); }
+    .nav-mobile .btn{ margin-top:.8rem; }
+}
 
 /* ===========================================================
    HERO
@@ -570,19 +605,8 @@ section{ padding:6rem 1.5rem; }
     .footer-top{ grid-template-columns:1fr 1fr; }
 }
 @media (max-width:768px){
-    .nav-links, .nav-actions{ display:none; }
-    .nav-toggle{ display:flex; }
-    .nav.open .nav-toggle span:nth-child(1){ transform:translateY(7px) rotate(45deg); }
-    .nav.open .nav-toggle span:nth-child(2){ opacity:0; }
-    .nav.open .nav-toggle span:nth-child(3){ transform:translateY(-7px) rotate(-45deg); }
-    .nav-mobile{
-        display:flex; flex-direction:column; gap:.3rem; padding:0 1.5rem;
-        max-height:0; overflow:hidden; transition:max-height .4s var(--ease), padding .4s;
-        background:rgba(11,16,20,.96); backdrop-filter:blur(16px);
-    }
-    .nav.open .nav-mobile{ max-height:420px; padding:1rem 1.5rem 1.5rem; }
-    .nav-mobile a{ padding:.7rem 0; color:var(--ivory-soft); border-bottom:1px solid var(--line-2); }
-    .nav-mobile .btn{ margin-top:.8rem; }
+    /* Nav collapse rules moved up to the @media (max-width:1200px) block above,
+       which also matches here, so the hamburger/mobile menu still applies. */
 
     .hero{ padding:9rem 1.2rem 4rem; }
     .hero-stats{ grid-template-columns:repeat(2,1fr); }

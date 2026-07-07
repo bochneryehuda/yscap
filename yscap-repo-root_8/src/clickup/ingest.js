@@ -355,6 +355,26 @@ async function descopeFlipped(taskId) {
 }
 
 /**
+ * Give a freshly linked/created RTL file its full workflow — the RTL condition
+ * set (internal + external conditions) and the internal (staff) checklist —
+ * exactly like a manually-created file. Only runs when the file has NO checklist
+ * items yet (so a re-ingest never re-generates); generateChecklist itself is also
+ * idempotent (insertFromTemplate dedups per template+owner). Lazy-require avoids
+ * any load-order coupling with the borrower router. Portal-only, best-effort.
+ */
+async function ensureRtlChecklist(appId) {
+  try {
+    const has = await db.query(`SELECT 1 FROM checklist_items WHERE application_id=$1 LIMIT 1`, [appId]);
+    if (has.rows[0]) return;                      // already has a checklist — the boot backfill fills any gaps
+    const row = await db.query(
+      `SELECT borrower_id, program, loan_type FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
+    const a = row.rows[0];
+    if (!a) return;
+    await require('../routes/borrower').generateChecklist(appId, a.borrower_id, a.program, a.loan_type, {});
+  } catch (e) { console.error('[ingest] ensureRtlChecklist failed', appId, e.message); }
+}
+
+/**
  * Ingest one ClickUp task. `options` = live dropdown option map.
  * Builds the identity graph for every task; materializes / links an RTL loan
  * file (with loan-officer assignment) only for in-scope programs.
@@ -399,10 +419,12 @@ async function ingestTask(task, options = {}, opts = {}) {
     }
   }
 
-  // PULL-ONLY checklist status mirror — ClickUp dropdown → portal condition — for
-  // a linked RTL file only (application id present). Writes solely to the portal
-  // DB; NEVER enqueues/pushes to ClickUp (loopback guard). Best-effort inside.
+  // A linked RTL file gets the full RTL workflow — the condition set (internal +
+  // external conditions) AND the internal checklist — exactly like a manually-
+  // created file, generated ONCE if the file has none yet. Then mirror the ClickUp
+  // checklist-field statuses onto those conditions. Both are portal-only (no push).
   if (isRtl && applicationId) {
+    await ensureRtlChecklist(applicationId);
     await applyChecklistStatuses(applicationId, task, options);
   }
 
