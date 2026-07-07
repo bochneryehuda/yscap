@@ -1831,11 +1831,27 @@ async function advancementBlockers(appId, target) {
        FROM conditions
       WHERE application_id=$1 AND status IN ('open','borrower_responded') AND severity = ANY($2::text[])
       ORDER BY severity, created_at`, [appId, sevs]);
+  // Every REQUIRED document/condition on the file that isn't cleared (signed off
+  // or satisfied) also blocks clear-to-close — the readiness widget used to
+  // count only the underwriting `conditions` rows + gate items, so it showed a
+  // tiny number ("2 to clear") while a dozen real conditions were still open.
+  // Gate items are counted separately below, so exclude them here to avoid a
+  // double count. Internal checklist TASKS are workflow, not conditions, so they
+  // don't gate here (their milestone subset is captured by is_gate).
+  const checklistConds = await db.query(
+    `SELECT ci.id, COALESCE(ci.label, ci.borrower_label, 'Condition') AS title
+       FROM checklist_items ci
+      WHERE ci.application_id=$1
+        AND ci.item_kind IN ('document','condition')
+        AND COALESCE(ci.is_required, true) = true
+        AND COALESCE(ci.is_gate, false) = false
+        AND NOT (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')
+      ORDER BY ci.sort_order, ci.created_at`, [appId]);
   const gates = await db.query(
     `SELECT id, label FROM checklist_items
       WHERE application_id=$1 AND is_gate=true AND NOT (signed_off_at IS NOT NULL OR status='satisfied')
       ORDER BY sort_order, created_at`, [appId]);
-  return { conditions: conds.rows, gates: gates.rows };
+  return { conditions: [...conds.rows, ...checklistConds.rows], gates: gates.rows };
 }
 
 // Readiness for the gated transitions — powers the "conditions to close" widget.
