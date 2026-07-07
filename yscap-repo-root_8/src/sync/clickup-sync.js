@@ -119,7 +119,9 @@ async function ingestOne(taskId) {
   const task = await clickup.getTask(taskId, { include: ['custom_fields'] });
   const options = await optionMap();
   const read = mapper.readTaskFields(task, options);
-  const createFile = canMaterialize(read);
+  // Inbound new-file creation is gated (see cfg.clickupInboundCreateFiles) to
+  // avoid duplicating an existing unlinked portal app; linked files still update.
+  const createFile = cfg.clickupInboundCreateFiles && canMaterialize(read);
   return ingest.ingestTask(task, options, { createFile });
 }
 
@@ -136,7 +138,7 @@ async function reconcileOnce() {
     try {
       const full = t.custom_fields ? t : await clickup.getTask(t.id, { include: ['custom_fields'] });
       const read = mapper.readTaskFields(full, options);
-      await ingest.ingestTask(full, options, { createFile: canMaterialize(read) });
+      await ingest.ingestTask(full, options, { createFile: cfg.clickupInboundCreateFiles && canMaterialize(read) });
     } catch (e) { console.error('[clickup] reconcile task failed', t.id, e.message); }
   }
   _watermark = Date.now();
@@ -239,6 +241,10 @@ function start() {
 
   // Inbound loops (ClickUp → portal) always run when the master switch is on —
   // the portal is the mirror, so pulling is always safe.
+  console.log('[clickup-sync] inbound ' +
+    (cfg.clickupInboundCreateFiles
+      ? 'materializes new RTL loan files (CLICKUP_INBOUND_CREATE_FILES=1)'
+      : 'identity-graph + linked-file updates only — new-file creation OFF (CLICKUP_INBOUND_CREATE_FILES!=1)'));
   setInterval(() => tick(processInboxOnce, 'inbox'), 4000);
   setInterval(() => { reconcileOnce().catch((e) => console.error('[clickup-sync] reconcile', e.message)); }, (cfg.clickupPollSec || 300) * 1000);
 

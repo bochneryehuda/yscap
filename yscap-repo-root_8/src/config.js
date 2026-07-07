@@ -148,6 +148,13 @@ module.exports = {
   // this time — so enabling outbound never bulk-pushes the pre-existing portal
   // backlog (which would create duplicate ClickUp tasks). Empty = no cutoff.
   clickupOutboundSince:   (process.env.CLICKUP_OUTBOUND_SINCE || '').trim(),
+  // Inbound file materialization gate (default off). When off, the reconcile /
+  // webhook-inbox loops maintain the identity graph and UPDATE already-linked
+  // loan files, but never CREATE new portal loan files from a ClickUp task —
+  // which (without identity-based dedup) could duplicate an existing unlinked
+  // portal application for the same loan. Turn on only once inbound identity
+  // matching is in place, or to deliberately mirror ClickUp files into the portal.
+  clickupInboundCreateFiles: process.env.CLICKUP_INBOUND_CREATE_FILES === '1',
 
   // --- address autocomplete / verification (server-side proxy) ---
   // The frontend calls OUR /api/address/*; any real key lives only here, never
