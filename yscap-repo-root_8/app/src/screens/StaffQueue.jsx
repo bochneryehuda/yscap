@@ -47,14 +47,19 @@ function ExceptionStrip({ e }) {
 function Kpis({ d }) {
   if (!d) return null;
   const tiles = [
-    // Pipeline value is now ACTIVE-only (funded/withdrawn/declined excluded).
-    { k: 'Active pipeline', v: bigMoney(d.pipelineValue), sub: `${d.active} open file${d.active === 1 ? '' : 's'}` },
+    // Pipeline value is now ACTIVE-only (funded/withdrawn/declined excluded). The
+    // sub-line shows the "actively processing" count that matches ClickUp's
+    // "Active RTL Files" card (excludes on-hold + early-stage).
+    { k: 'Active pipeline', v: bigMoney(d.pipelineValue),
+      sub: `${d.active} open · ${d.activelyProcessing != null ? d.activelyProcessing : d.active} processing${d.onHold ? ` · ${d.onHold} on hold` : ''}` },
     // Funded bucketed by ACTUAL closing date — matches the ClickUp MTM dashboard.
     { k: 'Funded (YTD)', v: d.fundedYtd != null ? d.fundedYtd : '—', sub: d.fundedYtdValue != null ? bigMoney(d.fundedYtdValue) : null },
-    { k: 'Funded (all time)', v: d.funded, sub: d.fundedLifetimeValue != null ? bigMoney(d.fundedLifetimeValue) : null },
+    { k: 'Funded (all time)', v: d.funded,
+      sub: `${d.fundedLifetimeValue != null ? bigMoney(d.fundedLifetimeValue) : ''}${d.fundedNoDate ? ` · ${d.fundedNoDate} awaiting date` : ''}` },
     { k: 'New this week', v: d.newThisWeek, sub: 'real intakes' },
     { k: 'Open leads', v: d.openLeads },
-    { k: 'Needs attention', v: d.stale, alert: d.stale > 0 },
+    // Ops/AI signal: active files that have gone stale (untouched > 7 days).
+    { k: 'Needs attention', v: d.stalled != null ? d.stalled : d.stale, alert: (d.stalled != null ? d.stalled : d.stale) > 0, sub: 'stalled > 7 days' },
   ];
   return (
     <div className="kpi-row">
@@ -93,7 +98,10 @@ function Row({ a }) {
 }
 
 export default function StaffQueue() {
-  const { role, actor } = useAuth();
+  const { role, actor, can } = useAuth();
+  // Scope the UI on the SAME signal the backend uses — the see_all_files
+  // capability, not a hardcoded role list — so per-user grants/revokes match.
+  const seesAllFiles = can('see_all_files') || seesAllFiles;
   const nav = useNavigate();
   const [tab, setTab] = useState('mine');       // mine | leads
   const [mine, setMine] = useState(null);
@@ -140,7 +148,7 @@ export default function StaffQueue() {
       (!statusF || a.status === statusF) &&
       (!mineOnly || (actor && a.loan_officer_id === actor.id) || (actor && a.processor_id === actor.id)));
   }
-  const mineLabel = seesAll(role) ? 'All applications' : 'My pipeline';
+  const mineLabel = seesAllFiles ? 'All applications' : 'My pipeline';
   // Status options are DERIVED from the data (+ the canonical set) so no file can
   // ever be un-selectable / hidden by a status not in a fixed list (e.g. on_hold).
   const CANON = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
@@ -192,14 +200,14 @@ export default function StaffQueue() {
             <option value="">All statuses</option>
             {STATUS_ORDER.filter(s => groupF === 'all' || inGroup(groupF, s)).map(s => <option key={s} value={s}>{LABEL[s]}</option>)}
           </select>
-          {seesAll(role) && officers.length > 1 && (
+          {seesAllFiles && officers.length > 1 && (
             <select className="input" style={{ maxWidth: 220 }} value={officer} onChange={e => setOfficer(e.target.value)}
               title="Filter the team pipeline by loan officer">
               <option value="">All officers (team view)</option>
               {officers.map(o => <option key={o} value={o}>{o}</option>)}
             </select>
           )}
-          {seesAll(role) && (
+          {seesAllFiles && (
             <label className="row small" style={{ gap: 6, alignItems: 'center', cursor: 'pointer' }}
               title="Show only files assigned to you">
               <input type="checkbox" checked={mineOnly} onChange={e => setMineOnly(e.target.checked)} />
