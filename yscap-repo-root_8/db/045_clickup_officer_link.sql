@@ -26,15 +26,20 @@ UPDATE staff_users SET clickup_user_id=87369209,  pipeline_folder_id=90117307844
 UPDATE staff_users SET clickup_user_id=87396408,  pipeline_folder_id=90117588937, crm_folder_id=90117589009 WHERE lower(email)='abraham@yscapgroup.com';
 UPDATE staff_users SET clickup_user_id=87406875,  pipeline_folder_id=90117693051, crm_folder_id=90117693135 WHERE lower(email)='sol@yscapgroup.com';
 UPDATE staff_users SET clickup_user_id=87406877,  pipeline_folder_id=90117693037, crm_folder_id=90117693155 WHERE lower(email)='josef@yscapgroup.com';
-UPDATE staff_users SET clickup_user_id=87406874,  pipeline_folder_id=90117692994, crm_folder_id=90117693166 WHERE lower(email)='yitzchak@yscapgroup.com';
+-- Isaac Zadmehr: portal email is isaac@ (ClickUp uses yitzchak@).
+UPDATE staff_users SET clickup_user_id=87406874,  pipeline_folder_id=90117692994, crm_folder_id=90117693166 WHERE lower(email)='isaac@yscapgroup.com';
 UPDATE staff_users SET clickup_user_id=87441231,  pipeline_folder_id=90118028635, crm_folder_id=90118110162 WHERE lower(email)='pinchus@yscapgroup.com';
 UPDATE staff_users SET clickup_user_id=87450032,  pipeline_folder_id=90118081048, crm_folder_id=90118110163 WHERE lower(email)='yisroel@yscapgroup.com';
 UPDATE staff_users SET clickup_user_id=87451319,  pipeline_folder_id=90118094956, crm_folder_id=90118110164 WHERE lower(email)='simcha@yscapgroup.com';
+-- Loan officers with a pipeline folder but no ClickUp member (folder-only assign)
+UPDATE staff_users SET pipeline_folder_id=90118110153 WHERE lower(email)='chaim@yscapgroup.com';
+UPDATE staff_users SET pipeline_folder_id=90118110154 WHERE lower(email)='mendelb@yscapgroup.com';
 -- Processors (pipeline only)
 UPDATE staff_users SET clickup_user_id=87335667,  pipeline_folder_id=90117376201 WHERE lower(email)='malky@yscapgroup.com';
 UPDATE staff_users SET clickup_user_id=87380437,  pipeline_folder_id=90117430703 WHERE lower(email)='goldy@yscapgroup.com';
 UPDATE staff_users SET clickup_user_id=87431116,  pipeline_folder_id=90117952996 WHERE lower(email)='lisa@yscapgroup.com';
-UPDATE staff_users SET clickup_user_id=87435940,  pipeline_folder_id=90117990325 WHERE lower(email)='shana@yscapgroup.com';
+UPDATE staff_users SET pipeline_folder_id=90118065743 WHERE lower(email)='yonah@yscapgroup.com';
+UPDATE staff_users SET pipeline_folder_id=90117447287 WHERE lower(email)='ezra@yscapgroup.com';
 
 CREATE INDEX IF NOT EXISTS idx_staff_users_clickup_user  ON staff_users(clickup_user_id)    WHERE clickup_user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_staff_users_pipeline_folder ON staff_users(pipeline_folder_id) WHERE pipeline_folder_id IS NOT NULL;

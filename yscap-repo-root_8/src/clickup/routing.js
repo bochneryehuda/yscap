@@ -72,48 +72,66 @@ const OPEN_ITEMS = [
 // (2) the pipeline FOLDER the task lives in. Both resolve to an email — the
 // STABLE key to match our staff_users (names drift in spelling/case; emails
 // don't). Emails + ClickUp user ids pulled from the live workspace members list.
+// staffEmail = the PORTAL staff_users email (the canonical lookup key). Where the
+// ClickUp workspace uses a different email for the same person, clickupEmail
+// records it so a task's "Loan Officer Email" field (which carries the ClickUp
+// address) still resolves to the right staff row. clickupEmail omitted == same.
 const CLICKUP_STAFF = [
-  // loan officers  (email, clickupUserId, pipeline folder, crm folder)
-  { email: 'joshua@yscapgroup.com',  clickupUserId: 81586262,  pipeline: '90116357907', crm: '90116357856', role: 'loan_officer' },
-  { email: 'esther@yscapgroup.com',  clickupUserId: 81441384,  pipeline: '90115283054', crm: '90115283061', role: 'loan_officer' },
-  { email: 'solomon@yscapgroup.com', clickupUserId: 81441383,  pipeline: '90115017331', crm: '90115018413', role: 'loan_officer' },
-  { email: 'yehuda@yscapgroup.com',  clickupUserId: 120151948, pipeline: '90115017377', crm: '90115018437', role: 'loan_officer' },
-  { email: 'yosef@yscapgroup.com',   clickupUserId: 81466296,  pipeline: '90115279409', crm: '90115279344', role: 'loan_officer' },
-  { email: 'moshe@yscapgroup.com',   clickupUserId: 81537660,  pipeline: '90115913843', crm: '90115913766', role: 'loan_officer' },
-  { email: 'shia@yscapgroup.com',    clickupUserId: 81561587,  pipeline: '90116152676', crm: '90116152663', role: 'loan_officer' },
-  { email: 'mendel@yscapgroup.com',  clickupUserId: 87369209,  pipeline: '90117307844', crm: '90117576712', role: 'loan_officer' },
-  { email: 'abraham@yscapgroup.com', clickupUserId: 87396408,  pipeline: '90117588937', crm: '90117589009', role: 'loan_officer' },
-  { email: 'sol@yscapgroup.com',     clickupUserId: 87406875,  pipeline: '90117693051', crm: '90117693135', role: 'loan_officer' },
-  { email: 'josef@yscapgroup.com',   clickupUserId: 87406877,  pipeline: '90117693037', crm: '90117693155', role: 'loan_officer' },
-  { email: 'yitzchak@yscapgroup.com',clickupUserId: 87406874,  pipeline: '90117692994', crm: '90117693166', role: 'loan_officer' },
-  { email: 'pinchus@yscapgroup.com', clickupUserId: 87441231,  pipeline: '90118028635', crm: '90118110162', role: 'loan_officer' },
-  { email: 'yisroel@yscapgroup.com', clickupUserId: 87450032,  pipeline: '90118081048', crm: '90118110163', role: 'loan_officer' },
-  { email: 'simcha@yscapgroup.com',  clickupUserId: 87451319,  pipeline: '90118094956', crm: '90118110164', role: 'loan_officer' },
+  // loan officers
+  { staffEmail: 'joshua@yscapgroup.com',  clickupUserId: 81586262,  pipeline: '90116357907', crm: '90116357856', role: 'loan_officer' },
+  { staffEmail: 'esther@yscapgroup.com',  clickupUserId: 81441384,  pipeline: '90115283054', crm: '90115283061', role: 'loan_officer' },
+  { staffEmail: 'solomon@yscapgroup.com', clickupUserId: 81441383,  pipeline: '90115017331', crm: '90115018413', role: 'loan_officer' },
+  { staffEmail: 'yehuda@yscapgroup.com',  clickupUserId: 120151948, pipeline: '90115017377', crm: '90115018437', role: 'loan_officer' },
+  { staffEmail: 'yosef@yscapgroup.com',   clickupUserId: 81466296,  pipeline: '90115279409', crm: '90115279344', role: 'loan_officer' },
+  { staffEmail: 'moshe@yscapgroup.com',   clickupUserId: 81537660,  pipeline: '90115913843', crm: '90115913766', role: 'loan_officer' },
+  { staffEmail: 'shia@yscapgroup.com',    clickupUserId: 81561587,  pipeline: '90116152676', crm: '90116152663', role: 'loan_officer' },
+  { staffEmail: 'mendel@yscapgroup.com',  clickupUserId: 87369209,  pipeline: '90117307844', crm: '90117576712', role: 'loan_officer' },
+  { staffEmail: 'abraham@yscapgroup.com', clickupUserId: 87396408,  pipeline: '90117588937', crm: '90117589009', role: 'loan_officer' },
+  { staffEmail: 'sol@yscapgroup.com',     clickupUserId: 87406875,  pipeline: '90117693051', crm: '90117693135', role: 'loan_officer' },
+  { staffEmail: 'josef@yscapgroup.com',   clickupUserId: 87406877,  pipeline: '90117693037', crm: '90117693155', role: 'loan_officer' },
+  // Isaac Zadmehr: portal email differs from ClickUp (yitzchak@).
+  { staffEmail: 'isaac@yscapgroup.com',   clickupEmail: 'yitzchak@yscapgroup.com', clickupUserId: 87406874, pipeline: '90117692994', crm: '90117693166', role: 'loan_officer' },
+  { staffEmail: 'pinchus@yscapgroup.com', clickupUserId: 87441231,  pipeline: '90118028635', crm: '90118110162', role: 'loan_officer' },
+  { staffEmail: 'yisroel@yscapgroup.com', clickupUserId: 87450032,  pipeline: '90118081048', crm: '90118110163', role: 'loan_officer' },
+  { staffEmail: 'simcha@yscapgroup.com',  clickupUserId: 87451319,  pipeline: '90118094956', crm: '90118110164', role: 'loan_officer' },
+  // Have pipeline folders but no ClickUp workspace member (assign by folder only).
+  { staffEmail: 'chaim@yscapgroup.com',   clickupUserId: null, pipeline: '90118110153', crm: null, role: 'loan_officer' },
+  { staffEmail: 'mendelb@yscapgroup.com', clickupUserId: null, pipeline: '90118110154', crm: null, role: 'loan_officer' },
   // processors (pipeline-only)
-  { email: 'malky@yscapgroup.com',   clickupUserId: 87335667,  pipeline: '90117376201', crm: null, role: 'processor' },
-  { email: 'goldy@yscapgroup.com',   clickupUserId: 87380437,  pipeline: '90117430703', crm: null, role: 'processor' },
-  { email: 'lisa@yscapgroup.com',    clickupUserId: 87431116,  pipeline: '90117952996', crm: null, role: 'processor' },
-  { email: 'shana@yscapgroup.com',   clickupUserId: 87435940,  pipeline: '90117990325', crm: null, role: 'processor' },
+  { staffEmail: 'malky@yscapgroup.com',   clickupUserId: 87335667,  pipeline: '90117376201', crm: null, role: 'processor' },
+  { staffEmail: 'goldy@yscapgroup.com',   clickupUserId: 87380437,  pipeline: '90117430703', crm: null, role: 'processor' },
+  { staffEmail: 'lisa@yscapgroup.com',    clickupUserId: 87431116,  pipeline: '90117952996', crm: null, role: 'processor' },
+  { staffEmail: 'yonah@yscapgroup.com',   clickupUserId: null,      pipeline: '90118065743', crm: null, role: 'processor' },
+  { staffEmail: 'ezra@yscapgroup.com',    clickupUserId: null,      pipeline: '90117447287', crm: null, role: 'processor' },
 ];
-const _pipelineToEmail = {};
-for (const s of CLICKUP_STAFF) if (s.pipeline) _pipelineToEmail[String(s.pipeline)] = s.email;
+const _norm = (e) => (e ? String(e).toLowerCase().trim() : null);
+const _pipelineToStaff = {};
+for (const s of CLICKUP_STAFF) if (s.pipeline) _pipelineToStaff[String(s.pipeline)] = s.staffEmail;
+const _byClickupEmail = (e) => CLICKUP_STAFF.find((s) => _norm(s.clickupEmail) === e);
+const _byStaffEmail   = (e) => CLICKUP_STAFF.find((s) => _norm(s.staffEmail) === e);
 
-/** Officer/processor email that owns a pipeline folder (null if unmapped). */
+/** Portal staff email that owns a pipeline folder (null if unmapped). */
 function emailForPipelineFolder(folderId) {
-  return folderId != null ? (_pipelineToEmail[String(folderId)] || null) : null;
+  return folderId != null ? (_pipelineToStaff[String(folderId)] || null) : null;
 }
-/** The loan-officer email for a task: the Loan Officer Email field, else the
- *  pipeline folder's owner. Returns null → caller falls back to Lead Capture. */
+/** The loan-officer STAFF email for a task: the Loan Officer Email field
+ *  (translated ClickUp→staff email), else the pipeline folder's owner. */
 function loanOfficerEmailFor(read, folderId) {
-  const fromField = read && read.loanOfficerEmail ? String(read.loanOfficerEmail).toLowerCase().trim() : null;
-  if (fromField) return fromField;
-  const s = CLICKUP_STAFF.find((x) => x.role === 'loan_officer' && x.pipeline === String(folderId));
-  return s ? s.email : null;
+  const field = _norm(read && read.loanOfficerEmail);
+  if (field) {
+    const s = _byClickupEmail(field) || _byStaffEmail(field);
+    if (s && s.role === 'loan_officer') return s.staffEmail;
+    return field;   // unknown but present — may still be a valid staff email
+  }
+  const byFolder = CLICKUP_STAFF.find((x) => x.role === 'loan_officer' && x.pipeline === String(folderId));
+  return byFolder ? byFolder.staffEmail : null;
 }
-/** The processor email for a task: the Processor Email field only (a file's home
- *  folder is the officer's; processors are multi-homed). */
+/** The processor STAFF email for a task (Processor Email field, translated). */
 function processorEmailFor(read) {
-  return read && read.processorEmail ? String(read.processorEmail).toLowerCase().trim() : null;
+  const field = _norm(read && read.processorEmail);
+  if (!field) return null;
+  const s = _byClickupEmail(field) || _byStaffEmail(field);
+  return s ? s.staffEmail : field;
 }
 
 /**
