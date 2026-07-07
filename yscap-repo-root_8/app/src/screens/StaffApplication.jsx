@@ -157,11 +157,20 @@ function Badge({ children, tone }) {
 // capability (incl. the loan-coordinator persona and per-user overrides).
 const canComplete = (role) => ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
 
-function Item({ it, team, onPatch, role }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview }) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState(it.notes || '');
   const signed = !!it.signed_off_at;
   const completer = canComplete(role);
+  // Staff-only DOCUMENT conditions (e.g. Insurance, Title) get an upload area in
+  // the internal checklist, mirroring the borrower-conditions document block.
+  // `it.slots` is a FIXED named-slot array (Insurance → binder + invoice) or
+  // null/absent for a FREE-FORM multi-document condition (Title).
+  const isDoc = it.item_kind === 'document';
+  const slots = Array.isArray(it.slots) && it.slots.length ? it.slots : null;
+  const itemDocs = (isDoc && docs)
+    ? docs.filter(d => d.checklist_item_id === it.id && d.is_current && d.source_type !== 'chat_attachment')
+    : [];
   return (
     <div className="checkitem" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
@@ -190,6 +199,67 @@ function Item({ it, team, onPatch, role }) {
           )}
         </div>
       </div>
+
+      {isDoc && (onUploadTo || itemDocs.length > 0) && (
+        <div style={{ width: '100%', paddingLeft: 20 }}>
+          {slots ? (
+            /* Fixed named slots (e.g. Insurance → binder + invoice). */
+            slots.map(slot => {
+              const doc = itemDocs.find(d => (d.slot_label || '') === slot.label);
+              const rs = doc ? (doc.review_status || 'pending') : null;
+              return (
+                <div className="row" key={slot.key || slot.label} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
+                  <span className="muted small" style={{ minWidth: 140 }}>{slot.label}</span>
+                  {doc ? (
+                    <>
+                      <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.filename}</span>
+                      <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+                      {onPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => onPreview(doc)}>Preview</button>}
+                      <button className="btn ghost small" disabled={dlBusy === doc.id} onClick={() => onDownloadDoc(doc)}>{dlBusy === doc.id ? '…' : 'Download'}</button>
+                      {onUploadTo && <button className="btn link small" title="Replace this document with a new version" onClick={() => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id })}>Replace</button>}
+                      {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(doc, 'accept')}>Accept</button>}
+                      {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(doc, 'reject')}>Reject</button>}
+                    </>
+                  ) : (
+                    <>
+                      <span className="small muted" style={{ flex: 1 }}>not uploaded</span>
+                      {onUploadTo && <button className="btn ghost small" onClick={() => onUploadTo({ itemId: it.id, slot: slot.label })}>Upload</button>}
+                    </>
+                  )}
+                </div>
+              );
+            })
+          ) : (
+            /* Free-form: any number of documents, additive (e.g. Title). */
+            <>
+              {itemDocs.map((d, i) => {
+                const rs = d.review_status || 'pending';
+                return (
+                  <div className="row" key={d.id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
+                    <span className="muted small" style={{ minWidth: 90 }}>{d.slot_label || `Document ${i + 1}`}</span>
+                    <span className="small" style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
+                    <span className="pill" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+                    {onPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => onPreview(d)}>Preview</button>}
+                    <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => onDownloadDoc(d)}>{dlBusy === d.id ? '…' : 'Download'}</button>
+                    {onUploadTo && d.source_type !== 'system' && <button className="btn link small" title="Replace this document with a new version" onClick={() => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id })}>Replace</button>}
+                    {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
+                    {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
+                  </div>
+                );
+              })}
+              {onUploadTo && (
+                <div style={{ padding: '3px 0' }}>
+                  <button className="btn ghost small"
+                    title="Upload documents into this condition (multiple at once supported)"
+                    onClick={() => onUploadTo({ itemId: it.id, slotBase: itemDocs.length })}>
+                    {itemDocs.length ? '+ Add another document' : 'Upload'}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       <div className="row" style={{ width: '100%', gap: 8, flexWrap: 'wrap' }}>
         <select className="input" style={{ maxWidth: 150 }} value={it.status}
@@ -1354,7 +1424,9 @@ export default function StaffApplication() {
           : phases.map(([k, arr]) => (
             <div key={k} style={{ marginTop: 10 }}>
               <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
-              {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role} />)}
+              {arr.map(it => <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
+                docs={docs} onUploadTo={pickUpload} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+                dlBusy={dlBusy} onPreview={openPreview} />)}
             </div>
           ))}
       </div>

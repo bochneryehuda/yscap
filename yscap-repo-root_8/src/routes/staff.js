@@ -811,6 +811,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
             ci.field_key, ci.category, ci.origin_kind, ci.origin_detail, ci.esign_doc, ci.borrower_label,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
+            (SELECT slots FROM checklist_templates t WHERE t.id=ci.template_id) AS slots,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             ci.assignee_staff_id, asg.full_name AS assignee_name,
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
@@ -1034,9 +1035,10 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
         WHERE (application_id=$1
                OR (application_id IS NULL AND llc_id IS NOT NULL
                    AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
-          AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'`, [req.params.id])).rows[0].c;
+          AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'
+          AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = documents.checklist_item_id AND ci.tpr_exclude IS TRUE)`, [req.params.id])).rows[0].c;
     const missing = (await db.query(
-      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied' ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
+      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied' AND tpr_exclude IS NOT TRUE ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
     res.json({ includedCount: included, missing });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -2271,14 +2273,20 @@ router.post('/applications/:id/documents', async (req, res) => {
     borrowerId = l.rows[0].borrower_id;
   }
   let itemLabel = '';
+  let itemAudience = null;
   if (b.checklistItemId) {
     // An LLC slot item has application_id NULL — look it up by llc_id instead.
     const it = llcId
-      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
-      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
+      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
+      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
     if (!it.rows[0]) return res.status(404).json({ error: 'checklist item not found on this file' });
     itemLabel = it.rows[0].label;
+    itemAudience = it.rows[0].audience;
   }
+  // Internal (staff-audience) conditions like Insurance / Title never leak to the
+  // borrower: store the document staff-only and skip the borrower notification.
+  const staffOnly = itemAudience === 'staff';
+  const docVisibility = staffOnly ? 'staff_only' : 'borrower';
   const buf = Buffer.from(b.dataBase64, 'base64');
   if (!buf.length) return res.status(400).json({ error: 'empty file' });
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
@@ -2289,11 +2297,11 @@ router.post('/applications/:id/documents', async (req, res) => {
   const r = await db.query(
     `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,filename,content_type,size_bytes,storage_provider,storage_ref,
                             uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'staff',$10,$11,$12,'borrower') RETURNING id`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'staff',$10,$11,$12,$13) RETURNING id`,
     [llcId ? null : req.params.id, b.checklistItemId || null,
      (b.checklistItemId || llcId) ? borrowerId : null, llcId,
      b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
-     req.actor.id, docKind, slot]);
+     req.actor.id, docKind, slot, docVisibility]);
   if (docKind === 'term_sheet') {
     await db.query(
       `UPDATE documents SET is_current=false,
@@ -2321,7 +2329,8 @@ router.post('/applications/:id/documents', async (req, res) => {
     await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
     // The shared list works both ways — tell the borrower their team added it.
-    if (borrowerId) {
+    // Staff-only (internal) conditions are never surfaced or emailed to them.
+    if (borrowerId && !staffOnly) {
       try {
         const ctx = await notify.fileContext(req.params.id);
         await notify.notifyBorrower(borrowerId, {

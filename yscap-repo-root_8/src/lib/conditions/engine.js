@@ -141,12 +141,12 @@ async function loadRuleContext(appId) {
 async function instantiateTemplate(tpl, owner, extra = {}) {
   const cols = ['template_id', 'scope', 'label', 'borrower_label', 'audience', 'item_kind',
                 'role_scope', 'phase', 'hint', 'borrower_hint', 'is_gate', 'is_milestone',
-                'sort_order', 'tool_key', 'clickup_field_id', 'created_by_kind', 'created_by_id', 'is_required',
+                'sort_order', 'tool_key', 'clickup_field_id', 'tpr_exclude', 'created_by_kind', 'created_by_id', 'is_required',
                 'field_key', 'category', 'esign_doc', 'origin_kind', 'origin_detail'];
   const vals = [tpl.id, tpl.scope, tpl.label, tpl.borrower_label || null, tpl.audience, tpl.item_kind,
                 tpl.role_scope || 'any', tpl.phase || null, tpl.hint || null, tpl.borrower_hint || null,
                 tpl.is_gate || false, tpl.is_milestone || false,
-                tpl.sort_order || 100, tpl.tool_key || null, tpl.clickup_field_id || null,
+                tpl.sort_order || 100, tpl.tool_key || null, tpl.clickup_field_id || null, tpl.tpr_exclude || false,
                 extra.createdByKind || 'system', extra.createdById || null, tpl.is_required !== false,
                 tpl.field_key || null, tpl.category || null, tpl.esign_doc || null,
                 extra.originKind || null, extra.originDetail ? JSON.stringify(extra.originDetail) : null];

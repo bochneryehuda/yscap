@@ -115,6 +115,10 @@ const CHECKLIST = {
     fieldId: 'd60eef93-d13a-404b-9523-72826e2e37b0',
     options: { requested:'3d0970ce-4e0c-43cf-94d4-cf8cd0f7d951', received:'d8c18154-403d-488c-8dde-bcf734dcfdba', issue:'6953e927-d1ae-49ad-a5f2-86c3499ae421' },
   },
+  iska: {
+    fieldId: 'd6c23813-8041-4e8e-916e-89b9ee21e4cc',
+    options: { requested:'972c4082-c062-4245-b597-afa42e3e2e35', received:'d1afcb06-e355-4379-aa88-54e3db062add', issue:'03316140-2180-492b-a5b2-71b51d4da6ef' },
+  },
 };
 
 // ---- Sync-integration fields (created in the ClickUp UI for this build) ----
