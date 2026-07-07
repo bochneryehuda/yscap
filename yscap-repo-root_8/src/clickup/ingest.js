@@ -19,6 +19,8 @@ const identity = require('./identity');
 const statusMap = require('./status');
 const crosswalk = require('./crosswalk');
 const routing = require('./routing');
+const transforms = require('./transforms');
+const checklist = require('./checklist');
 
 const RTL_PROGRAMS = new Set(['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction']);
 const CLOSED_STATUSES = (s) => statusMap.externalFor(s) === 'funded';
@@ -261,6 +263,56 @@ async function findExistingApp(task, read, borrowerId) {
 }
 
 /**
+ * PULL-ONLY: mirror the ClickUp checklist status dropdowns onto the portal's
+ * document conditions for a LINKED RTL file. Reads the task's dropdown fields,
+ * translates each to a portal status, and applies the authority / no-downgrade
+ * rule (the portal is the system of record). Writes ONLY to checklist_items and
+ * touches ONLY items whose clickup_field_id was seeded (db/050) — unmapped
+ * fields (title/insurance/signedTermSheet) never match a row and are skipped.
+ *
+ * CRITICAL LOOPBACK GUARD: this function contains NO enqueue/push of any kind.
+ * The physical absence of any outbound call here is what prevents a pull→push
+ * echo. It is best-effort (try/catch) so a checklist glitch never breaks ingest.
+ */
+async function applyChecklistStatuses(appId, task, options = {}) {
+  try {
+    if (!appId || !task) return;
+    const cfById = {};
+    for (const c of (task.custom_fields || [])) { if (c && c.id) cfById[c.id] = c; }
+
+    for (const fieldId of Object.keys(checklist.BY_FIELD)) {
+      const cf = cfById[fieldId];
+      if (!cf || cf.value == null || cf.value === '') continue;
+
+      // ClickUp reads a dropdown as the option's orderindex INTEGER; translate to
+      // the option UUID via the same helper the mapper uses. Fall back to treating
+      // the value as a direct UUID only if it is a REAL option for this field.
+      const optList = options[fieldId] || (cf.type_config && cf.type_config.options) || [];
+      let optId = transforms.dropdownIndexToId(optList, cf.value);
+      if (!optId && checklist.normalizeInbound(fieldId, String(cf.value))) optId = String(cf.value);
+      if (!optId) continue;
+
+      const inbound = checklist.normalizeInbound(fieldId, optId);
+      if (!inbound) continue;
+
+      // Only mapped items are ever touched (clickup_field_id seeded by db/050).
+      const row = await db.query(
+        `SELECT id, status FROM checklist_items
+          WHERE application_id=$1 AND clickup_field_id=$2
+          ORDER BY updated_at DESC LIMIT 1`, [appId, fieldId]);
+      if (!row.rows[0]) continue;
+
+      const cur = row.rows[0].status;
+      if (!checklist.shouldApplyInbound(inbound, cur)) continue;
+
+      await db.query(
+        `UPDATE checklist_items SET status=$2, clickup_option_id=$3, updated_at=now() WHERE id=$1`,
+        [row.rows[0].id, inbound, optId]);
+    }
+  } catch (_) { /* best-effort — a checklist glitch never breaks ingest */ }
+}
+
+/**
  * Ingest one ClickUp task. `options` = live dropdown option map.
  * Builds the identity graph for every task; materializes / links an RTL loan
  * file (with loan-officer assignment) only for in-scope programs.
@@ -285,6 +337,13 @@ async function ingestTask(task, options = {}, opts = {}) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
       { allowCreate: opts.createFile === true, folderId, loanOfficerEmail, processorEmail });
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
+  }
+
+  // PULL-ONLY checklist status mirror — ClickUp dropdown → portal condition — for
+  // a linked RTL file only (application id present). Writes solely to the portal
+  // DB; NEVER enqueues/pushes to ClickUp (loopback guard). Best-effort inside.
+  if (isRtl && applicationId) {
+    await applyChecklistStatuses(applicationId, task, options);
   }
 
   // Preserve a MASKED snapshot of every task's mapped data — RTL and non-RTL
@@ -390,5 +449,6 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 }
 
 module.exports = {
-  ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication, identityFrom, RTL_PROGRAMS,
+  ingestTask, resolveBorrower, upsertLlc, upsertTrackRecord, linkOrCreateApplication,
+  applyChecklistStatuses, identityFrom, RTL_PROGRAMS,
 };
