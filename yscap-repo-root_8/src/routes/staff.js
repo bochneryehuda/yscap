@@ -17,6 +17,7 @@ const { requireAuth, requireRole } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication } = require('../lib/experience');
+const { enqueueClickupPush } = require('../clickup/enqueue');
 const llcLib = require('../lib/llc');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRules = require('../lib/conditions/rules');
@@ -122,6 +123,14 @@ router.get('/dashboard', async (req, res) => {
                        count(*) FILTER (WHERE status='funded')::int funded,
                        count(*) FILTER (WHERE ${ACTIVE_SQL})::int active,
                        count(*) FILTER (WHERE ${CANCELLED_SQL})::int cancelled,
+                       -- "Actively processing" = files being worked (this matches the
+                       -- ClickUp "Active RTL Files" card): excludes new/in_review (early)
+                       -- and on_hold. Lets the portal show the same active number ClickUp does.
+                       count(*) FILTER (WHERE status IN ('processing','underwriting','approved','clear_to_close'))::int actively_processing,
+                       count(*) FILTER (WHERE status='on_hold')::int on_hold,
+                       -- Ops/AI signal: active files gone stale (untouched > 7 days) — the
+                       -- files silently stalling in the pipeline that need a nudge.
+                       count(*) FILTER (WHERE ${ACTIVE_SQL} AND updated_at < now() - interval '7 days')::int stalled,
                        -- Funded bucketed by ACTUAL closing date (the ClickUp MTM basis).
                        count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('month', now()))::int funded_mtd,
                        count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('month', now()) - interval '1 month' AND actual_closing < date_trunc('month', now()))::int funded_last_month,
@@ -152,7 +161,7 @@ router.get('/dashboard', async (req, res) => {
     res.json({
       byStatus: byStatus.rows,
       total: t.total, pipelineValue: Number(t.pipeline_value), active: t.active,
-      cancelled: t.cancelled,
+      cancelled: t.cancelled, activelyProcessing: t.actively_processing, onHold: t.on_hold, stalled: t.stalled,
       funded: t.funded, newThisWeek: t.new_week,
       // funded broken out by actual closing date (MTM), + running dollar totals
       fundedMtd: t.funded_mtd, fundedLastMonth: t.funded_last_month, fundedYtd: t.funded_ytd,
@@ -171,7 +180,7 @@ router.get('/applications', async (req, res) => {
   const s = scopeClause(req);
   const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
                       a.clickup_pipeline_task_id,a.property_address,
-                      a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,
+                      a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
                       b.first_name,b.last_name,b.email,
                       (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
                       (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
@@ -1179,6 +1188,7 @@ router.post('/applications/:id/assign', async (req, res) => {
         link: `/internal/app/${req.params.id}` });
       await audit(req, 'assign_processor', 'application', req.params.id, { processorId });
     }
+    enqueueClickupPush(req.params.id).catch(() => {}); // propagate officer/processor to ClickUp promptly
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1610,6 +1620,7 @@ router.patch('/applications/:id/details', async (req, res) => {
     const before = beforeQ.rows[0] || {};
     const upd = await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'application not found' });
+    enqueueClickupPush(req.params.id).catch(() => {}); // propagate edited file details to ClickUp promptly
     if ('requestedExpFlips' in b || 'requestedExpHolds' in b || 'requestedExpGround' in b) {
       try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
     }
@@ -1722,6 +1733,7 @@ router.patch('/applications/:id', async (req, res) => {
     }
     await db.query(`UPDATE applications SET status=$2, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, status]);
+    enqueueClickupPush(req.params.id).catch(() => {}); // propagate the status change to ClickUp promptly
     // Record the transition on the file's timeline.
     await db.query(
       `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
