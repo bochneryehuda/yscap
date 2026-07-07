@@ -73,7 +73,7 @@ function CardCondition({ it, appId, onSaved }) {
   const done = isDone(it.status);
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(null);   // masked card on file
-  const [f, setF] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
+  const [f, setF] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '', saveForReuse: true });
   const [busy, setBusy] = useState(false);
   const [formErr, setFormErr] = useState('');
   useEffect(() => { api.get(`/api/borrower/applications/${appId}/appraisal-card`).then(setSaved).catch(() => {}); }, [appId]);
@@ -86,7 +86,7 @@ function CardCondition({ it, appId, onSaved }) {
     try {
       const r = await api.post(`/api/borrower/applications/${appId}/appraisal-card`, f);
       setSaved({ last4: r.last4, brand: r.brand, exp_month: f.expMonth, exp_year: f.expYear, billing_zip: f.zip });
-      setF({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
+      setF({ number: '', expMonth: '', expYear: '', cvc: '', zip: '', saveForReuse: f.saveForReuse });
       setOpen(false); await onSaved();
     } catch (e) { setFormErr(e.message || 'Could not save the card'); }
     finally { setBusy(false); }
@@ -125,6 +125,10 @@ function CardCondition({ it, appId, onSaved }) {
           <input className="input" inputMode="numeric" placeholder="ZIP" maxLength={10} value={f.zip}
             onChange={e => setF({ ...f, zip: e.target.value })} /></div>
       </div>
+      <label className="row" style={{ gap: 8, alignItems: 'flex-start', margin: '4px 0 12px', cursor: 'pointer' }}>
+        <input type="checkbox" checked={!!f.saveForReuse} onChange={e => setF({ ...f, saveForReuse: e.target.checked })} style={{ marginTop: 3 }} />
+        <span className="small">Save this card for my next file — we'll apply it automatically so you don't have to re-enter it. Stored encrypted; you can replace it any time.</span>
+      </label>
       <button className="btn primary" onClick={submit} disabled={busy || !digits || !f.expMonth || !f.expYear || !f.cvc || !f.zip}>
         {busy ? 'Saving…' : 'Save & submit'}
       </button>

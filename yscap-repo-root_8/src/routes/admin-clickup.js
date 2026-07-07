@@ -104,6 +104,18 @@ router.post('/file/:appId/repull', async (req, res) => {
   catch (e) { res.status(502).json({ error: String(e.message) }); }
 });
 
+// Re-check every linked file's ClickUp program and descope any that were flipped
+// to a non-RTL type (e.g. Short-Term Rehab → DSCR). Portal-only; ClickUp untouched.
+// Returns {checked, descoped}. Safe to run any time (idempotent).
+router.post('/reconcile-programs', async (req, res) => {
+  if (!cfg.clickupToken) return res.status(400).json({ error: 'CLICKUP_API_TOKEN not set' });
+  try {
+    const out = await sync.reconcileLinkedProgramsOnce();
+    await audit(req, 'clickup_reconcile_programs', null, JSON.stringify(out));
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(502).json({ error: String(e.message) }); }
+});
+
 // ---- Manual Review queue -------------------------------------------------
 // Files the inbound sync flagged as ambiguous (sync_state='manual_review').
 // match_status/match_detail live on clickup_task_index (keyed by the ClickUp

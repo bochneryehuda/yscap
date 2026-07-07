@@ -139,7 +139,32 @@ async function applySavedCardToApplication({ applicationId, profileBorrowerId, a
   return { ok: true, last4, brand };
 }
 
+/**
+ * Auto-apply the borrower's saved reusable card to a NEW file, with no tap.
+ * Called right after a file's checklist is generated: if the borrower opted into
+ * "save to next file" (save_card_for_reuse=true, a card on file) AND this new
+ * file has an OUTSTANDING appraisal_card condition, copy the card and satisfy the
+ * condition automatically. No-op (and never throws) otherwise — file creation
+ * must never be blocked by this. Returns { applied, last4? }.
+ */
+async function autoApplySavedCardIfOptedIn(applicationId, borrowerId) {
+  try {
+    // Only when the borrower opted in and actually has a card to reuse.
+    const saved = await getSavedCard(borrowerId);
+    if (!saved.available) return { applied: false };
+    // Only when this file has an appraisal_card condition that isn't done yet
+    // (never re-key or overwrite a card the borrower already entered on this file).
+    const cond = await db.query(
+      `SELECT 1 FROM checklist_items
+        WHERE application_id=$1 AND tool_key='appraisal_card'
+          AND status NOT IN ('received','satisfied') LIMIT 1`, [applicationId]);
+    if (!cond.rows[0]) return { applied: false };
+    const out = await applySavedCardToApplication({ applicationId, profileBorrowerId: borrowerId, actorId: borrowerId });
+    return out.ok ? { applied: true, last4: out.last4, brand: out.brand } : { applied: false };
+  } catch (_) { return { applied: false }; }
+}
+
 module.exports = {
   cardBrand, formatExp, parseExp,
-  saveCardForReuse, getSavedCard, applySavedCardToApplication,
+  saveCardForReuse, getSavedCard, applySavedCardToApplication, autoApplySavedCardIfOptedIn,
 };

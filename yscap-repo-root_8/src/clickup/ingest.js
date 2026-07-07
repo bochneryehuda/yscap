@@ -313,6 +313,40 @@ async function applyChecklistStatuses(appId, task, options = {}) {
 }
 
 /**
+ * A file that was materialized as an RTL loan but whose ClickUp *Program was
+ * later changed to something we don't build on the portal yet (DSCR / long-term
+ * — anything outside RTL_PROGRAMS): remove it from the portal so it stops showing
+ * as an active loan file. This is an INTENTIONAL program change, never an
+ * error/mismatch.
+ *
+ * Mechanism = the portal's own soft-delete (deleted_at) + sync_state='descoped':
+ *   • deleted_at  → drops it from every active portal list (same as the Archived
+ *                   folder), fully reversible.
+ *   • descoped    → the outbound sweep already excludes it, and a re-flip back to
+ *                   RTL restores it (see linkOrCreateApplication).
+ * NEVER touches ClickUp — the client-layer hard stop + the orchestrator's
+ * deleted_at guard guarantee no outbound push/delete. The task's data is still
+ * preserved as a masked clickup_task_index snapshot (data_only).
+ * Returns { id, program } when a file was descoped, else null.
+ */
+async function descopeFlipped(taskId) {
+  try {
+    const r = await db.query(
+      `UPDATE applications
+          SET sync_state='descoped', deleted_at=COALESCE(deleted_at, now()), updated_at=now()
+        WHERE clickup_pipeline_task_id=$1 AND sync_state <> 'descoped'
+        RETURNING id, program`, [taskId]);
+    if (!r.rows[0]) return null;
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+       VALUES ('system', NULL, 'clickup_descope_flip', 'application', $1, $2)`,
+      [r.rows[0].id, JSON.stringify({ taskId, from: r.rows[0].program,
+        reason: 'ClickUp program changed to an unsupported (non-RTL) type; removed from portal, ClickUp left untouched' })]).catch(() => {});
+    return r.rows[0];
+  } catch (_) { return null; }
+}
+
+/**
  * Ingest one ClickUp task. `options` = live dropdown option map.
  * Builds the identity graph for every task; materializes / links an RTL loan
  * file (with loan-officer assignment) only for in-scope programs.
@@ -337,6 +371,14 @@ async function ingestTask(task, options = {}, opts = {}) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
       { allowCreate: opts.createFile === true, folderId, loanOfficerEmail, processorEmail });
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
+  } else {
+    // Unsupported program (DSCR / long-term / anything outside RTL_PROGRAMS): pull
+    // the task for DATA ONLY (masked snapshot below) — never materialize a loan
+    // file, never flag it as an error/mismatch. If a file was PREVIOUSLY built as
+    // RTL and the program was later corrected in ClickUp (e.g. Short-Term Rehab →
+    // DSCR), descope it: remove it from the portal WITHOUT touching ClickUp.
+    const desc = await descopeFlipped(task.id);
+    if (desc) { applicationId = desc.id; matchStatus = 'descoped'; matchDetail = { from: desc.program, to: program }; }
   }
 
   // PULL-ONLY checklist status mirror — ClickUp dropdown → portal condition — for
@@ -424,8 +466,14 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
   if (targetId) {
+    // Restore-on-reflip: if this file had been auto-descoped because its program
+    // was previously changed to a non-RTL type, flipping it back to an RTL program
+    // brings it back (clear deleted_at). We ONLY un-delete a file that WE descoped
+    // (sync_state='descoped') — an admin-archived file (deleted_at set, sync_state
+    // still 'linked') is left archived so the pull never resurrects it.
     await db.query(
       `UPDATE applications SET ${set}, clickup_pipeline_task_id=$${vals.length + 2}, sync_state='linked',
+              deleted_at = CASE WHEN sync_state='descoped' THEN NULL ELSE deleted_at END,
               clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
       [targetId, ...vals, task.id]);
     return { applicationId: targetId, matchStatus, detail };

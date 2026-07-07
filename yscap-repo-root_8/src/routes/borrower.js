@@ -262,6 +262,9 @@ router.post('/applications', async (req, res) => {
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
   await generateChecklist(appId, me(req), b.program, b.loanType, { isAssignment: !!b.isAssignment });
+  // Auto-apply the saved appraisal card to this new file (no tap) when the
+  // borrower previously chose "save to next file". Best-effort; never blocks.
+  try { await apprCard.autoApplySavedCardIfOptedIn(appId, me(req)); } catch (_) {}
   await audit(req, 'create_application', 'application', appId);
   res.status(201).json({ ok: true, applicationId: appId });
 });
@@ -1864,6 +1867,9 @@ router.post('/drafts/:id/submit', async (req, res) => {
   }
 
   await generateChecklist(appId, me(req), b.program, b.loanType, { isAssignment: !!b.isAssignment });
+  // Auto-apply the saved appraisal card to this new file (no tap) when the
+  // borrower previously chose "save to next file". Best-effort; never blocks.
+  try { await apprCard.autoApplySavedCardIfOptedIn(appId, me(req)); } catch (_) {}
   await db.query(`UPDATE application_drafts SET submitted_application_id=$1, updated_at=now() WHERE id=$2 AND borrower_id=$3`,
     [appId, req.params.id, me(req)]);
   await audit(req, 'submit_application', 'application', appId);

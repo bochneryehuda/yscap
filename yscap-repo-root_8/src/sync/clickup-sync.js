@@ -153,6 +153,32 @@ async function reconcileOnce() {
   return tasks.length;
 }
 
+// ---- program reconcile (one-shot) -----------------------------------------
+// Re-check every LINKED, non-descoped RTL file against its CURRENT ClickUp task
+// program. If the program was changed to something we don't build yet (non-RTL,
+// e.g. Short-Term Rehab → DSCR), ingestTask descopes it — removes it from the
+// portal, ClickUp untouched. Bounded to already-linked files (cheap), idempotent
+// (descoped files are excluded next run), and read-only against ClickUp. Catches
+// the backlog of flips that predate the descope logic or that are older than the
+// reconcile poll's rolling window. Never creates or deletes anything in ClickUp.
+async function reconcileLinkedProgramsOnce() {
+  const r = await db.query(
+    `SELECT clickup_pipeline_task_id AS task_id FROM applications
+      WHERE clickup_pipeline_task_id IS NOT NULL AND deleted_at IS NULL
+        AND sync_state NOT IN ('descoped','manual_review')
+      ORDER BY updated_at DESC`);
+  let checked = 0, descoped = 0;
+  for (const row of r.rows) {
+    try {
+      const res = await ingestOne(row.task_id);
+      checked++;
+      if (res && res.matchStatus === 'descoped') descoped++;
+    } catch (e) { console.error('[clickup] reconcile-programs task failed', row.task_id, e.message); }
+  }
+  console.log(`[clickup-sync] reconcile-programs: checked ${checked} linked files, descoped ${descoped}`);
+  return { checked, descoped };
+}
+
 // ---- historical backfill (one-shot, paced) --------------------------------
 // folders: optional subset (e.g. one officer's pipeline folder for a self-serve
 // re-sync); defaults to every configured pipeline folder.
@@ -414,6 +440,14 @@ function start() {
     }, cfg.clickupRunBackfill ? 60000 : 3000);
   }
 
+  // One-shot program reconcile: descope any file whose ClickUp program was flipped
+  // to a non-RTL type (e.g. Short-Term Rehab → DSCR) before the descope logic
+  // existed or outside the reconcile poll's window. Portal-only, ClickUp untouched,
+  // idempotent. Delayed so the option cache + any boot backfill settle first.
+  setTimeout(() => {
+    reconcileLinkedProgramsOnce().catch((e) => console.error('[clickup-sync] reconcile-programs', e.message));
+  }, cfg.clickupRunBackfill ? 120000 : 15000);
+
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
 
   // Inbound loops (ClickUp → portal) always run when the master switch is on —
@@ -442,4 +476,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, canMaterialize, PIPELINE_FOLDERS };
