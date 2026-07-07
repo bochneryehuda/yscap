@@ -99,29 +99,60 @@ router.get('/dashboard', async (req, res) => {
   try {
     const s = scopeClause(req);
     const w = s.where.replace(/\$SCOPE/g, '$1');
-    const [byStatus, totals, leads, aging] = await Promise.all([
+    // Status GROUPS (owner-defined): active = any in-progress status; closed =
+    // funded; cancelled = withdrawn/declined. These drive the dashboard so a held
+    // or closed file never inflates the live pipeline. NOTE: at the `status` level
+    // ClickUp 'cancelled/trash/recalled' all map to 'withdrawn' (see clickup/status.js).
+    const ACTIVE_SQL = `status NOT IN ('funded','declined','withdrawn')`;
+    const CANCELLED_SQL = `status IN ('declined','withdrawn')`;
+    // A genuinely NEW file is a real portal/staff intake this week — NOT a row the
+    // ClickUp backfill just inserted (those default created_at=now() and would make
+    // the whole back-book look "new"). Exclude backfilled origin.
+    const NEW_SQL = `created_at > now() - interval '7 days' AND COALESCE(source,'') <> 'clickup_backfill'`;
+    const [byStatus, totals, leads, aging, fundedByMonth] = await Promise.all([
       // Every figure must exclude archived (soft-deleted) files — otherwise an
       // archived/removed loan keeps inflating the counts and pipeline dollars.
       db.query(`SELECT status, count(*)::int c, COALESCE(sum(loan_amount),0)::bigint v
                   FROM applications a WHERE a.deleted_at IS NULL ${w} GROUP BY status`, s.params),
       db.query(`SELECT count(*)::int total,
-                       COALESCE(sum(loan_amount),0)::bigint pipeline_value,
-                       count(*) FILTER (WHERE created_at > now() - interval '7 days')::int new_week,
+                       -- Pipeline value = ACTIVE (open) files ONLY. Funded/withdrawn/
+                       -- declined are excluded so the number reflects live pipeline.
+                       COALESCE(sum(loan_amount) FILTER (WHERE ${ACTIVE_SQL}),0)::bigint pipeline_value,
+                       count(*) FILTER (WHERE ${NEW_SQL})::int new_week,
                        count(*) FILTER (WHERE status='funded')::int funded,
-                       count(*) FILTER (WHERE status NOT IN ('funded','declined','withdrawn'))::int active
+                       count(*) FILTER (WHERE ${ACTIVE_SQL})::int active,
+                       count(*) FILTER (WHERE ${CANCELLED_SQL})::int cancelled,
+                       -- Funded bucketed by ACTUAL closing date (the ClickUp MTM basis).
+                       count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('month', now()))::int funded_mtd,
+                       count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('month', now()) - interval '1 month' AND actual_closing < date_trunc('month', now()))::int funded_last_month,
+                       count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('year', now()))::int funded_ytd,
+                       COALESCE(sum(loan_amount) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('year', now())),0)::bigint funded_ytd_value,
+                       COALESCE(sum(loan_amount) FILTER (WHERE status='funded'),0)::bigint funded_lifetime_value
                   FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params),
       seesAll(req)
         ? db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived')`)
         : db.query(`SELECT count(*)::int c FROM leads WHERE status NOT IN ('converted','archived') AND (officer_id=$1 OR officer_id IS NULL)`, [req.actor.id]),
       db.query(`SELECT count(*)::int c FROM applications a
-                 WHERE a.deleted_at IS NULL AND status NOT IN ('funded','declined','withdrawn')
+                 WHERE a.deleted_at IS NULL AND ${ACTIVE_SQL}
                    AND updated_at < now() - interval '5 days' ${w}`, s.params),
+      // Month-to-month funded closings (by actual closing date) — mirrors the
+      // ClickUp "RTL SHORT MTM" dashboard so the two can be compared side by side.
+      db.query(`SELECT to_char(date_trunc('month', actual_closing),'YYYY-MM') ym,
+                       count(*)::int c, COALESCE(sum(loan_amount),0)::bigint v
+                  FROM applications a
+                 WHERE a.deleted_at IS NULL AND status='funded' AND actual_closing IS NOT NULL ${w}
+                 GROUP BY 1 ORDER BY 1 DESC LIMIT 18`, s.params),
     ]);
     const t = totals.rows[0];
     res.json({
       byStatus: byStatus.rows,
       total: t.total, pipelineValue: Number(t.pipeline_value), active: t.active,
+      cancelled: t.cancelled,
       funded: t.funded, newThisWeek: t.new_week,
+      // funded broken out by actual closing date (MTM), + running dollar totals
+      fundedMtd: t.funded_mtd, fundedLastMonth: t.funded_last_month, fundedYtd: t.funded_ytd,
+      fundedYtdValue: Number(t.funded_ytd_value), fundedLifetimeValue: Number(t.funded_lifetime_value),
+      fundedByMonth: fundedByMonth.rows.map((r) => ({ month: r.ym, count: r.c, value: Number(r.v) })),
       openLeads: leads.rows[0].c,
       stale: aging.rows[0].c,           // active files untouched > 5 days
       conversion: t.total ? Math.round((t.funded / t.total) * 100) : 0,
