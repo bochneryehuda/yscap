@@ -590,12 +590,17 @@ router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
     `SELECT a.*, b.first_name,b.last_name,b.email,b.cell_phone,b.fico,
             l.llc_name AS entity_name, l.is_verified AS entity_verified,
+            cb.first_name AS co_first_name, cb.last_name AS co_last_name,
+            cb.email AS co_email, cb.cell_phone AS co_cell_phone,
+            cb.date_of_birth AS co_date_of_birth, cb.ssn_last4 AS co_ssn_last4,
+            cb.fico AS co_fico, cb.current_address AS co_current_address,
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
             pr.created_at AS registered_at
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
      LEFT JOIN llcs l ON l.id=a.llc_id
+     LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
      LEFT JOIN LATERAL (
        SELECT program, product_label, status, note_rate, total_loan, quote, created_at
          FROM product_registrations
@@ -605,6 +610,69 @@ router.get('/applications/:id', async (req, res) => {
      WHERE a.id=$1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json(r.rows[0]);
+});
+
+// Set / link / unlink the CO-BORROWER on a file. Staff enter the second
+// borrower's identity (or link an existing borrower id); it creates/updates an
+// ENCRYPTED borrower record (SSN encrypted at rest + hashed for the identity
+// graph, so it re-links on future files) and binds applications.co_borrower_id.
+// Unlink clears the link only — it never deletes the borrower record. The
+// /applications/:id path middleware already scoped the actor to this file.
+router.post('/applications/:id/co-borrower', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const appId = req.params.id;
+    const ar = await db.query(`SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1`, [appId]);
+    const app = ar.rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+
+    if (b.unlink === true) {
+      await db.query(`UPDATE applications SET co_borrower_id=NULL, updated_at=now() WHERE id=$1`, [appId]);
+      await audit(req, 'unlink_co_borrower', 'application', appId, {});
+      return res.json({ ok: true, unlinked: true });
+    }
+
+    let coId = b.borrowerId || null;
+    if (!coId) {
+      const first = String(b.firstName || '').trim();
+      const last = String(b.lastName || '').trim();
+      const email = String(b.email || '').trim().toLowerCase();
+      if (!first || !last) return res.status(400).json({ error: 'co-borrower first and last name are required' });
+      if (!email) return res.status(400).json({ error: 'co-borrower email is required' });
+      const ssn = b.ssn ? String(b.ssn) : null;
+      const identity = require('../clickup/identity');
+      const ssnHash = ssn ? identity.ssnHash(ssn, cfg.ssnMatchKey) : null;
+      const ssnEnc = ssn ? C.encryptSSN(ssn) : null;
+      const ssnLast4 = ssn ? ssn.replace(/\D/g, '').slice(-4) : null;
+      // Identity graph: match an existing borrower by SSN-hash first (so the same
+      // person across files stays one record), else create/update by email.
+      if (ssnHash) {
+        const m = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 LIMIT 1`, [ssnHash]);
+        if (m.rows[0]) coId = m.rows[0].id;
+      }
+      if (!coId) {
+        const ins = await db.query(
+          `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
+           ON CONFLICT (email) DO UPDATE SET
+             first_name=COALESCE(NULLIF(borrowers.first_name,''),EXCLUDED.first_name),
+             last_name=COALESCE(NULLIF(borrowers.last_name,''),EXCLUDED.last_name),
+             cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
+             date_of_birth=COALESCE(borrowers.date_of_birth,EXCLUDED.date_of_birth),
+             ssn_encrypted=COALESCE(borrowers.ssn_encrypted,EXCLUDED.ssn_encrypted),
+             ssn_last4=COALESCE(borrowers.ssn_last4,EXCLUDED.ssn_last4),
+             ssn_hash=COALESCE(borrowers.ssn_hash,EXCLUDED.ssn_hash),
+             updated_at=now()
+           RETURNING id`,
+          [first, last, email, b.phone || null, b.dob || null, ssnEnc, ssnLast4, ssnHash]);
+        coId = ins.rows[0].id;
+      }
+    }
+    if (coId === app.borrower_id) return res.status(400).json({ error: 'the co-borrower must be a different person than the primary borrower' });
+    await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1`, [appId, coId]);
+    await audit(req, 'set_co_borrower', 'application', appId, { coBorrowerId: coId });
+    res.json({ ok: true, coBorrowerId: coId });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
 /* ---------------- Product registration / term sheet ----------------

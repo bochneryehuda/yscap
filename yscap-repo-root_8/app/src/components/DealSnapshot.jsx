@@ -50,6 +50,7 @@ export default function DealSnapshot({ app, gating }) {
       </div>
       <div className="snap-grid">
         {cell('Borrower', [app.first_name, app.last_name].filter(Boolean).join(' ') || '—')}
+        {app.co_borrower_id && cell('Co-borrower', [app.co_first_name, app.co_last_name].filter(Boolean).join(' ') || '—')}
         {cell('Entity', app.entity_name || '—')}
         {cell('Property', addrLine(app.property_address))}
         {cell('Type', [app.property_type, app.units ? `${app.units}u` : null].filter(Boolean).join(' · ') || '—')}
