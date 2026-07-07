@@ -145,6 +145,29 @@ const BORROWER_PORTAL_STATUS_OPT = {
   withdrawn:      'cbd1ad43-4491-4a40-b62c-9de7e8212ad2',
 };
 
+// Additional Pipeline fields referenced by the mapper (live-verified ids).
+const EXTRA = {
+  citizenship:        '045f993c-4c7a-4a03-b71d-44e3ed15aa07', // short_text
+  maritalStatus:      'b91e06a6-ed47-4249-afa5-eaaedf7b4c3e', // drop_down YES/NO
+  employmentType:     '33bf62d8-fa4f-45e5-9c91-a51ce78e5e32', // drop_down
+  employment:         '04f7b699-7e55-49f3-b1a2-77f0ee0fc560', // short_text
+  dependents:         '19ce13e0-bdcd-43c3-b365-7b07f1f3824e', // short_text
+  yearsAtResidence:   'fabf5994-e218-43ee-9694-3b2e0caf2a12', // short_text
+  priorAddress:       '616f218e-7bb3-4ee2-9f94-f9f96a054516', // location
+  ratePct:            'ca47de7f-40b7-4a98-b540-2378c0e87954', // number (Desired Rate %)
+  assignmentFee:      '6d62e510-9ef7-4d96-b81f-fa1251b11c26', // currency
+  underlyingPrice:    '1a83ab87-bb06-4f20-8187-2bc0476d1f05', // currency
+  originalPurchase:   '253e80ff-9a76-432e-a2ac-366db5a2c3c5', // currency (Refi)
+  acquisitionDate:    'dd703e85-247e-4b3b-9664-f73c4877162c', // date
+  card:               '684c900f-9e5a-4e73-9115-f2bebb9783b6', // short_text (appraisal card)
+  depositReceived:    'b0e894cc-7551-4e2b-85ea-50aadc6a1de0', // drop_down
+  loanOfficerPhone:   '94026464-bca6-4414-9a9c-f9e238d0533a', // phone
+  processorEmail:     '4f7b2c03-44da-47a5-8d4c-c0aa823b1283', // email
+  underwriterEmail:   '951c3a1d-05c5-4387-8203-1e2b8d0d329c', // email
+};
+// Deposit Received option: "Customer credit card used" (reusable card auto-fill).
+const DEPOSIT_CARD_USED_OPT = 'f92f21c6-c5c3-4e85-986d-102a5e15ed71';
+
 // New dropdown OPTION ids added to existing fields for this build.
 const NEW_OPTIONS = {
   programGroundUp:      '137b2bb7-b81b-48cb-a03e-4df92945b106', // *Program
@@ -152,4 +175,7 @@ const NEW_OPTIONS = {
   propertyTownhouse:    '5a07ddd9-7d9d-4959-91b6-8392807be24f', // *Property Type
 };
 
-module.exports = { SPACES, SHARED, CRM, PIPELINE, CHECKLIST, SYNC, BORROWER_PORTAL_STATUS_OPT, NEW_OPTIONS };
+module.exports = {
+  SPACES, SHARED, CRM, PIPELINE, CHECKLIST, SYNC, EXTRA,
+  BORROWER_PORTAL_STATUS_OPT, NEW_OPTIONS, DEPOSIT_CARD_USED_OPT,
+};
