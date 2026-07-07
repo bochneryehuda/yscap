@@ -136,7 +136,7 @@ function ClickupFileData({ app }) {
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
-const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
+const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city, a.state, a.zip].filter(Boolean).join(', ') || '—');
 const STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
 const APP_STATUSES = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
 const APP_STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
@@ -1110,6 +1110,10 @@ export default function StaffApplication() {
   const processors = team.filter(m => m.role === 'processor');
   const officers = team.filter(m => ['loan_officer', 'admin', 'super_admin'].includes(m.role));
   const procName = (team.find(m => m.id === app.processor_id) || {}).full_name;
+  const uwName = (team.find(m => m.id === app.underwriter_id) || {}).full_name;
+  // Headline the file with the property's one-line address (incl. zip) so it's
+  // instantly obvious which property this file is — with a graceful fallback.
+  const propAddress = addrLine(app.property_address);
 
   const borrowerItems = items.filter(it => it.audience === 'borrower' || it.audience === 'both');
   const nCondOpen = borrowerItems.filter(it => !it.signed_off_at && it.status !== 'satisfied').length;
@@ -1134,7 +1138,7 @@ export default function StaffApplication() {
       <div className="file-top">
         <Link to="/internal" className="btn link" style={{ flex: 'none' }}>← Pipeline</Link>
         <div className="file-top-main">
-          <h1 className="file-top-addr">{app.first_name} {app.last_name} · {addrLine(app.property_address)}</h1>
+          <h1 className="file-top-addr">{app.first_name} {app.last_name} · {propAddress === '—' ? 'Address pending' : propAddress}</h1>
           <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
         </div>
         {canDelete && (app.deleted_at
@@ -1190,7 +1194,7 @@ export default function StaffApplication() {
         <span className="muted small">Setting an expected date notifies the borrower.</span>
       </div>
 
-      <PropertyPhoto address={addrLine(app.property_address) !== '—' ? addrLine(app.property_address) : ''} />
+      <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
 
       <div className="grid cols-2" style={{ marginTop: 14 }}>
         <div className="panel">
@@ -1245,6 +1249,7 @@ export default function StaffApplication() {
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
           <div className="metrow"><span className="k">Loan officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}</span></div>
           <div className="metrow"><span className="k">Processor</span><span className="v">{procName || '—'}</span></div>
+          {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
           <div className="gold-rule" style={{ margin: '10px 0' }} />
           <div className="field"><label>Assign loan officer</label>
             <select className="input" value={lo} onChange={e => setLo(e.target.value)}>

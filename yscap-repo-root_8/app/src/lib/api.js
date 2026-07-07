@@ -233,6 +233,7 @@ export const api = {
   staffAppDocuments:(id) => req('GET', `/api/staff/applications/${id}/documents`),
   staffReviewDoc:   (id, action, reason, opts) => req('POST', `/api/staff/documents/${id}/review`, { action, reason, ...(opts || {}) }),
   staffDownloadDoc: (id) => download(`/api/staff/documents/${id}/download`),
+  staffBorrowerSearch: (q) => req('GET', '/api/staff/borrowers/search?q=' + encodeURIComponent(q)),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),

@@ -1311,6 +1311,38 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+// Borrower name typeahead for staff origination (StaffNewFile): match prior
+// borrowers by name so a new file can LINK to the existing borrower instead of
+// creating a duplicate, and known contact info can be pre-filled. Registered
+// BEFORE /borrowers/:id so Express doesn't capture "search" as an :id. Scoped
+// like every other staff read: seesAll staff match all borrowers; everyone else
+// only borrowers on a file they're the loan officer/processor on. The search
+// text is ALWAYS bound as %q% — never interpolated into SQL.
+router.get('/borrowers/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json([]);
+    const params = ['%' + q + '%'];
+    let scope = '';
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      scope = `AND EXISTS (SELECT 1 FROM applications a
+                            WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
+                              AND (a.loan_officer_id=$2 OR a.processor_id=$2))`;
+    }
+    const r = await db.query(
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
+              (SELECT count(*)::int FROM applications
+                 WHERE borrower_id=b.id AND deleted_at IS NULL) AS prior_files
+         FROM borrowers b
+        WHERE (b.first_name ILIKE $1 OR b.last_name ILIKE $1
+               OR (b.first_name||' '||b.last_name) ILIKE $1)
+          ${scope}
+        ORDER BY b.last_name, b.first_name
+        LIMIT 10`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
 // (A borrower's entities live at GET /borrowers/:id/llcs below — the full
 // review bundle; its rows carry id/llc_name/is_verified for the track-record
 // tool's linker plus members/slots/completeness for the LLC review panel.)

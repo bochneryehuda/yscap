@@ -19,6 +19,7 @@ const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower } = require('../lib/experience');
 const llcLib = require('../lib/llc');
+const apprCard = require('../lib/appraisal-card');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
 
@@ -870,6 +871,25 @@ function cardBrand(num) {
   if (/^6(011|5)/.test(s)) return 'Discover';
   return 'Card';
 }
+// Tell the assigned LO + processor the appraisal card is on the file so they
+// can place the order. Best-effort; carries only brand + last4 (never the PAN).
+async function notifyAppraisalCardAdded(appId, brand, last4) {
+  try {
+    const a = await db.query(
+      `SELECT a.loan_officer_id, a.processor_id, a.ys_loan_number, b.first_name, b.last_name
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+    const row = a.rows[0];
+    if (!row) return;
+    const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+    const ctxCard = await notify.fileContext(appId);
+    for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
+      await notify.notifyStaff(sid, {
+        type: 'condition_added', title: `${who} added the appraisal card`,
+        body: `${ctxCard ? ctxCard.label : (row.ys_loan_number || 'A file')} — ${brand} ending ${last4}. The appraisal can be ordered.`,
+        meta: (ctxCard && ctxCard.meta) || undefined,
+        applicationId: appId, link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file' });
+  } catch (_) { /* best-effort */ }
+}
 router.post('/applications/:id/appraisal-card', async (req, res) => {
   const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -886,6 +906,7 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
   if (cvc.length < 3 || cvc.length > 4) return res.status(400).json({ error: 'security code must be 3 or 4 digits' });
   const zip = String(b.zip || '').trim().slice(0, 10);
   if (!zip) return res.status(400).json({ error: 'billing ZIP is required' });
+  const saveForReuse = b.saveForReuse === true || b.saveForReuse === 'true';
   try {
   // encryptSSN yields binary (bytea shape) — base64 it for the text column.
   const enc = C.encryptSSN(JSON.stringify({ number, cvc })).toString('base64');
@@ -900,24 +921,20 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
   await db.query(
     `UPDATE checklist_items SET status='received', updated_at=now()
       WHERE application_id=$1 AND tool_key='appraisal_card'`, [req.params.id]);
-  await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4: number.slice(-4) });
-  try {
-    const a = await db.query(
-      `SELECT a.loan_officer_id, a.processor_id, a.ys_loan_number, b.first_name, b.last_name
-         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [req.params.id]);
-    const row = a.rows[0];
-    if (row) {
-      const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
-      const ctxCard = await notify.fileContext(req.params.id);
-      for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
-        await notify.notifyStaff(sid, {
-          type: 'condition_added', title: `${who} added the appraisal card`,
-          body: `${ctxCard ? ctxCard.label : (row.ys_loan_number || 'A file')} — ${cardBrand(number)} ending ${number.slice(-4)}. The appraisal can be ordered.`,
-          meta: (ctxCard && ctxCard.meta) || undefined,
-          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, ctaLabel: 'Open the loan file' });
-    }
-  } catch (_) { /* best-effort */ }
-  res.status(201).json({ ok: true, last4: number.slice(-4), brand: cardBrand(number) });
+  // Opt-in: also persist an encrypted, reusable copy on the borrower's profile
+  // (PAN + CVV encrypted at rest with the same GCM helper). Best-effort — the
+  // per-file card is already saved, so a reuse-copy failure must not 500 the
+  // primary action. Never log card data.
+  let savedForReuse = false;
+  if (saveForReuse) {
+    try {
+      await apprCard.saveCardForReuse(me(req), { number, cvc, expMonth, expYear: fullYear, zip });
+      savedForReuse = true;
+    } catch (e) { console.error('[appraisal-card] save-for-reuse failed:', db.describeError(e)); }
+  }
+  await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4: number.slice(-4), savedForReuse });
+  await notifyAppraisalCardAdded(req.params.id, cardBrand(number), number.slice(-4));
+  res.status(201).json({ ok: true, last4: number.slice(-4), brand: cardBrand(number), savedForReuse });
   } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
 });
 // Masked view for the borrower's own condition row.
@@ -928,6 +945,35 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
     `SELECT last4, brand, exp_month, exp_year, billing_zip, updated_at
        FROM application_payment_cards WHERE application_id=$1`, [req.params.id]);
   res.json(r.rows[0] || null);
+});
+
+// ---- Reuse the saved appraisal card on the next file ----
+// Masked availability of the borrower's own reusable card (never decrypts the
+// PAN). The portal calls this on an outstanding appraisal_card condition to
+// offer a one-tap "use my saved card" instead of re-keying it.
+router.get('/saved-appraisal-card', async (req, res) => {
+  try {
+    res.json(await apprCard.getSavedCard(me(req)));
+  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+});
+// Copy the borrower's saved card onto THIS application (a new file) and satisfy
+// its appraisal_card condition — mirrors the direct-entry POST above. Only the
+// borrower who owns the profile and is on this file can trigger it: the profile
+// read is scoped to me(req) and the app must belong to me(req). (The shared
+// copy logic lives in src/lib/appraisal-card.js so an authorized-staff route
+// can reuse the exact same path.)
+router.post('/applications/:id/appraisal-card/from-saved', async (req, res) => {
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  try {
+    const out = await apprCard.applySavedCardToApplication({
+      applicationId: req.params.id, profileBorrowerId: me(req), actorId: me(req),
+    });
+    if (!out.ok) return res.status(400).json({ error: out.error });
+    await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4: out.last4, reused: true });
+    await notifyAppraisalCardAdded(req.params.id, out.brand, out.last4);
+    res.status(201).json({ ok: true, last4: out.last4, brand: out.brand, reused: true });
+  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
 });
 
 // ---------------- SERVICE CONTACTS (title company / insurance agent) ----------------
