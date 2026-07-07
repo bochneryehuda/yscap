@@ -6,6 +6,16 @@ import { useAuth } from '../lib/auth.jsx';
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
 const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
+// Status GROUPS (owner-defined). The pipeline defaults to ACTIVE so closed/
+// cancelled files never clutter the working view. Active = anything in-progress
+// (incl. on hold); Closed = funded; Cancelled = withdrawn/declined.
+const STATUS_GROUPS = {
+  active: ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'on_hold'],
+  closed: ['funded'],
+  cancelled: ['declined', 'withdrawn'],
+};
+const GROUP_LABEL = { active: 'Active', closed: 'Closed', cancelled: 'Cancelled', all: 'All' };
+const inGroup = (g, status) => g === 'all' || (STATUS_GROUPS[g] || []).includes(status);
 const seesAll = (role) => ['admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
 const bigMoney = (n) => n == null ? '$0' : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? '$' + Math.round(n / 1e3) + 'K' : '$' + n;
 
@@ -37,11 +47,13 @@ function ExceptionStrip({ e }) {
 function Kpis({ d }) {
   if (!d) return null;
   const tiles = [
-    { k: 'Active files', v: d.active },
-    { k: 'Pipeline value', v: bigMoney(d.pipelineValue) },
-    { k: 'New this week', v: d.newThisWeek },
+    // Pipeline value is now ACTIVE-only (funded/withdrawn/declined excluded).
+    { k: 'Active pipeline', v: bigMoney(d.pipelineValue), sub: `${d.active} open file${d.active === 1 ? '' : 's'}` },
+    // Funded bucketed by ACTUAL closing date — matches the ClickUp MTM dashboard.
+    { k: 'Funded (YTD)', v: d.fundedYtd != null ? d.fundedYtd : '—', sub: d.fundedYtdValue != null ? bigMoney(d.fundedYtdValue) : null },
+    { k: 'Funded (all time)', v: d.funded, sub: d.fundedLifetimeValue != null ? bigMoney(d.fundedLifetimeValue) : null },
+    { k: 'New this week', v: d.newThisWeek, sub: 'real intakes' },
     { k: 'Open leads', v: d.openLeads },
-    { k: 'Funded', v: d.funded },
     { k: 'Needs attention', v: d.stale, alert: d.stale > 0 },
   ];
   return (
@@ -50,6 +62,7 @@ function Kpis({ d }) {
         <div key={t.k} className={`kpi${t.alert ? ' alert' : ''}`}>
           <div className="kpi-v">{t.v}</div>
           <div className="kpi-k">{t.k}</div>
+          {t.sub && <div className="muted small" style={{ marginTop: 2 }}>{t.sub}</div>}
         </div>
       ))}
     </div>
@@ -115,12 +128,15 @@ export default function StaffQueue() {
 
   const [officer, setOfficer] = useState('');
   const [statusF, setStatusF] = useState('');
+  const [groupF, setGroupF] = useState('active'); // default view = ACTIVE pipeline only
   const officers = [...new Set((mine || []).map(a => a.loan_officer_name).filter(Boolean))].sort();
   const baseList = tab === 'mine' ? mine : leads;
+  const groupCount = (g) => (mine || []).filter(a => inGroup(g, a.status)).length;
   let list = baseList;
   if (tab === 'mine' && baseList) {
     list = baseList.filter(a =>
       (!officer || a.loan_officer_name === officer) &&
+      inGroup(groupF, a.status) &&
       (!statusF || a.status === statusF) &&
       (!mineOnly || (actor && a.loan_officer_id === actor.id) || (actor && a.processor_id === actor.id)));
   }
@@ -160,9 +176,21 @@ export default function StaffQueue() {
       <ExceptionStrip e={exc} />
       {tab === 'mine' && (
         <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select className="input" style={{ maxWidth: 200 }} value={statusF} onChange={e => setStatusF(e.target.value)}>
+          {/* Primary lens: Active (default) / Closed / Cancelled / All — so the
+              working pipeline never shows funded or withdrawn files unless asked. */}
+          <div className="row" style={{ gap: 4 }}>
+            {['active', 'closed', 'cancelled', 'all'].map(g => (
+              <button key={g} className={`btn ${groupF === g ? 'primary' : 'ghost'} small`}
+                onClick={() => { setGroupF(g); setStatusF(''); }}
+                title={g === 'active' ? 'In-progress files (default)' : g === 'closed' ? 'Funded files' : g === 'cancelled' ? 'Withdrawn / declined' : 'Every file'}>
+                {GROUP_LABEL[g]}{mine ? ` (${groupCount(g)})` : ''}
+              </button>
+            ))}
+          </div>
+          <select className="input" style={{ maxWidth: 180 }} value={statusF} onChange={e => setStatusF(e.target.value)}
+            title="Refine by exact status within the selected group">
             <option value="">All statuses</option>
-            {STATUS_ORDER.map(s => <option key={s} value={s}>{LABEL[s]}</option>)}
+            {STATUS_ORDER.filter(s => groupF === 'all' || inGroup(groupF, s)).map(s => <option key={s} value={s}>{LABEL[s]}</option>)}
           </select>
           {seesAll(role) && officers.length > 1 && (
             <select className="input" style={{ maxWidth: 220 }} value={officer} onChange={e => setOfficer(e.target.value)}
