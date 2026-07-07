@@ -71,9 +71,12 @@ const addComment = (taskId, comment_text) =>
   call(`/task/${taskId}/comment`, { method: 'POST', body: { comment_text } });
 
 // GET a single task (custom_fields are included by default on v2).
-function getTask(taskId, { customTaskIds = false, teamId } = {}) {
+// includeSubtasks=true asks ClickUp to attach a shallow `subtasks[]` array
+// ({id,name,status,...}) — used to locate a co-borrower profile subtask.
+function getTask(taskId, { customTaskIds = false, teamId, includeSubtasks = false } = {}) {
   const q = new URLSearchParams();
   if (customTaskIds) { q.set('custom_task_ids', 'true'); if (teamId) q.set('team_id', teamId); }
+  if (includeSubtasks) q.set('include_subtasks', 'true');
   const qs = q.toString();
   return call(`/task/${taskId}${qs ? `?${qs}` : ''}`);
 }
