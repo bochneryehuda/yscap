@@ -705,6 +705,55 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   );
 }
 
+/* ClickUp sync panel — staff-only surface on the file overview.
+   Shows the two-layer status (exact ClickUp mirror vs. borrower-facing), the
+   YS loan number, the note buyer (internal only — never borrower-facing), the
+   link to the ClickUp task, and last-synced time. Admins (platform_setup) can
+   force a re-push / re-pull. */
+function ClickupSyncPanel({ app, canSetup, onResynced }) {
+  const [busy, setBusy] = useState('');
+  const [note, setNote] = useState('');
+  const taskId = app.clickup_pipeline_task_id;
+  const state = app.sync_state || 'unlinked';
+  const onHold = app.status === 'on_hold' || /hold/i.test(app.internal_status || '');
+  async function resync(dir) {
+    setBusy(dir); setNote('');
+    try {
+      const r = dir === 'push' ? await api.clickupRepush(app.id) : await api.clickupRepull(app.id);
+      setNote(dir === 'push' ? `Pushed to ClickUp ✓${r && r.taskId ? ` (task ${r.taskId})` : ''}` : 'Pulled from ClickUp ✓');
+      if (onResynced) onResynced();
+    } catch (e) { setNote(e.message || 'Re-sync failed'); }
+    finally { setBusy(''); }
+  }
+  return (
+    <div className="panel" style={{ background: 'var(--ink-2)', marginBottom: 16 }}>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <b className="small">ClickUp sync</b>
+        <span className="pill" title="Sync state">{state}</span>
+        {onHold && <span className="pill" style={{ background: 'rgba(224,168,0,.15)', color: 'var(--warn,#e0a800)' }}>On hold</span>}
+        {taskId
+          ? <a className="btn link small" href={`https://app.clickup.com/t/${taskId}`} target="_blank" rel="noreferrer">Open task ↗</a>
+          : <span className="muted small">not linked to a ClickUp task yet</span>}
+        <div className="spacer" />
+        {canSetup && taskId && (
+          <>
+            <button className="btn ghost small" disabled={!!busy} onClick={() => resync('pull')}>{busy === 'pull' ? 'Pulling…' : 'Pull ← ClickUp'}</button>
+            <button className="btn ghost small" disabled={!!busy} onClick={() => resync('push')}>{busy === 'push' ? 'Pushing…' : 'Push → ClickUp'}</button>
+          </>
+        )}
+      </div>
+      <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginTop: 8 }}>
+        <span className="muted small">Internal status (ClickUp mirror): <b>{app.internal_status || '—'}</b></span>
+        <span className="muted small">Borrower sees: <b>{app.status || '—'}</b></span>
+        {app.ys_loan_number && <span className="muted small">YS loan #: <b>{app.ys_loan_number}</b></span>}
+        {app.lender && <span className="muted small" title="Note buyer / capital partner — internal only, never shown to the borrower">Note buyer: <b>{app.lender}</b></span>}
+        {app.clickup_last_synced_at && <span className="muted small">Last synced: {new Date(app.clickup_last_synced_at).toLocaleString()}</span>}
+      </div>
+      {note && <div className="muted small" style={{ marginTop: 6 }}>{note}</div>}
+    </div>
+  );
+}
+
 export default function StaffApplication() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -1039,6 +1088,7 @@ export default function StaffApplication() {
       <Section id="sec-overview" title="File overview"
         info="Status, milestone gating, assignments and the deal at a glance — the control panel for this file.">
       <DealSnapshot app={app} gating={gating} />
+      <ClickupSyncPanel app={app} canSetup={can('platform_setup')} onResynced={load} />
       <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16 }}>
         <span className="muted small">Advance status</span>
         <select className="input" style={{ maxWidth: 190 }} value={app.status} onChange={e => changeStatus(e.target.value)}>
