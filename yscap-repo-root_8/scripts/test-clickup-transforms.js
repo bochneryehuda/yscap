@@ -3,6 +3,8 @@
 const t = require('../src/clickup/transforms');
 const status = require('../src/clickup/status');
 const x = require('../src/clickup/crosswalk');
+const id = require('../src/clickup/identity');
+const echo = require('../src/clickup/echo');
 
 let pass = 0, fail = 0;
 const eq = (name, got, exp) => {
@@ -89,6 +91,29 @@ const PROG_LIST = [
 ];
 eq('cw resolveWriteId Bridge', x.resolveWriteId('program', 'Bridge', PROG_LIST), 'e8ff7301-6a64-4d5c-b4d4-48c8dd707eaa');
 eq('cw resolveReadValue idx1', x.resolveReadValue('program', 1, PROG_LIST), 'Bridge');
+
+// identity (>=2 field match)
+const recA = { address: '123 Main St, Newark, NJ 07103', borrowerName: 'Dov Steiner', email: 'dov@x.com',
+  ssn: '066-88-9965', phone: '(917) 538-1594', loanNumber: 'YSCAP258134754', dob: '1998-07-31', purchasePrice: '$405,000' };
+eq('identity populated 8', id.populatedCount(recA), 8);
+eq('identity 2-match', id.countMatches(recA, { borrowerName: 'DOV STEINER', email: 'dov@x.com' }), 2);
+eq('identity isMatch', id.isMatch(recA, { borrowerName: 'DOV STEINER', email: 'dov@x.com' }), true);
+eq('identity 1-nomatch', id.isMatch(recA, { email: 'dov@x.com' }), false);
+eq('identity phone last10', id.normalizeIdentity({ phone: '+1 (917) 538-1594' }).phone, '9175381594');
+eq('identity canMaterialize', id.canMaterialize({ borrowerName: 'X', email: 'a@b.com' }), true);
+eq('identity cantMaterialize', id.canMaterialize({ email: 'a@b.com' }), false);
+const best = id.bestMatch(recA, [{ id: 'app1', identity: { borrowerName: 'DOV STEINER', email: 'dov@x.com' } },
+                                  { id: 'app2', identity: { email: 'dov@x.com' } }]);
+eq('identity bestMatch', best && best.record.id, 'app1');
+
+// echo suppression
+echo._clear();
+echo.markPushed('task1', 'fieldX', 'hello');
+eq('echo window hit', echo.isEcho('task1', 'fieldX', 'hello'), true);
+eq('echo window miss', echo.isEcho('task1', 'fieldX', 'world'), false);
+eq('echo shadow equality', echo.isEcho('task1', 'fieldY', 'abc', 'abc'), true);
+eq('echo shadow diff', echo.isEcho('task1', 'fieldY', 'abc', 'xyz'), false);
+eq('echo hash stable', echo.valueHash({ a: 1, b: 2 }), echo.valueHash({ b: 2, a: 1 }));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
