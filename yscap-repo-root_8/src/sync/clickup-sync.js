@@ -85,8 +85,8 @@ async function sweepDirtyOnce() {
         AND a.sync_state NOT IN ('manual_review','descoped')
         AND (a.clickup_pipeline_task_id IS NOT NULL OR a.program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction'))
         AND ($1::timestamptz IS NULL OR a.clickup_pipeline_task_id IS NOT NULL OR a.created_at >= $1::timestamptz)
-        AND (a.clickup_last_synced_at IS NULL OR a.updated_at > a.clickup_last_synced_at + interval '10 seconds')
-      ORDER BY a.updated_at LIMIT 5`, [since]);
+        AND (a.clickup_last_synced_at IS NULL OR a.updated_at > a.clickup_last_synced_at + interval '3 seconds')
+      ORDER BY a.updated_at LIMIT 12`, [since]);
   let n = 0;
   for (const row of r.rows) {
     try { await orchestrator.pushApplication(row.id, { force: true }); n++; }
@@ -423,8 +423,8 @@ function start() {
   if (cfg.clickupOutboundEnabled) {
     console.log('[clickup-sync] outbound writes ENABLED (portal → ClickUp)' +
       (cfg.clickupOutboundSince ? ` — new files only (created >= ${cfg.clickupOutboundSince}) + already-linked` : ' — all dirty apps (no cutoff)'));
-    setInterval(() => tick(pushOutboxOnce, 'push'), 4000);
-    setInterval(() => tick(sweepDirtyOnce, 'dirty'), 8000);
+    setInterval(() => tick(pushOutboxOnce, 'push'), 3000);
+    setInterval(() => tick(sweepDirtyOnce, 'dirty'), 3000);
   } else {
     console.log('[clickup-sync] outbound writes DISABLED (CLICKUP_OUTBOUND_ENABLED!=1) — inbound/reconcile only');
   }
