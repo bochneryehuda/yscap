@@ -17,7 +17,7 @@ const { requireAuth, requireRole } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication } = require('../lib/experience');
-const { enqueueClickupPush } = require('../clickup/enqueue');
+const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
 const conditionEngine = require('../lib/conditions/engine');
@@ -1249,6 +1249,9 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // A wrong/deleted item id used to answer {ok:true} — the UI showed a sign-off
   // that never persisted. Phantom success is this repo's #1 bug class.
   if (r.rowCount === 0) return res.status(404).json({ error: 'checklist item not found' });
+  // Propagate a mapped condition's status to its ClickUp dropdown (scoped push;
+  // self-gating no-op for unmapped items / unlinked files).
+  enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
   res.json({ ok: true });
 });
 
@@ -2316,6 +2319,7 @@ router.post('/applications/:id/documents', async (req, res) => {
           AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
       [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
     await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
+    enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
     // The shared list works both ways — tell the borrower their team added it.
     if (borrowerId) {
       try {
@@ -2387,6 +2391,7 @@ router.post('/documents/:id/review', async (req, res) => {
         await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
           [doc.checklist_item_id, action === 'accept' ? 'satisfied' : 'issue']);
       }
+      enqueueChecklistStatusPush(doc.checklist_item_id).catch(() => {}); // mapped conditions → ClickUp dropdown
     }
     await audit(req, action === 'accept' ? (requestMore ? 'accept_document_request_more' : 'accept_document') : 'reject_document', 'document', doc.id,
       action === 'reject' ? { reason: b.reason } : requestMore ? { note: moreNote } : null);

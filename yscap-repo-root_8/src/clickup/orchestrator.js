@@ -97,6 +97,15 @@ async function loadPushContext(appId) {
     portalFileLink: `${cfg.appUrl}${cfg.portalPath}/#/internal/app/${appId}`,
     _row: row,
   };
+  // Phase B: mapped checklist condition statuses, for a possible SCOPED push to
+  // their ClickUp dropdowns (only ever pushed when a checklist:<fieldId> key is
+  // explicitly named in opts.only — see pushApplication).
+  try {
+    const ck = await db.query(
+      `SELECT clickup_field_id AS "fieldId", status FROM checklist_items
+        WHERE application_id=$1 AND clickup_field_id IS NOT NULL`, [appId]);
+    ctx.checklist = ck.rows;
+  } catch (_) { ctx.checklist = []; }
   return ctx;
 }
 
@@ -124,6 +133,14 @@ async function pushApplication(appId, opts = {}) {
   const scoped = (taskId && Array.isArray(opts.only) && opts.only.length) ? mapper.resolveOnly(opts.only) : null;
   const fieldsToPush = scoped ? built.customFields.filter((c) => scoped.cuIds.has(c.id)) : built.customFields;
   const pushStatus = scoped ? scoped.status : true;
+  // Checklist option-writes are appended ONLY for explicitly-scoped checklist
+  // keys, and NEVER on create (built.customFields alone builds a new task). This
+  // is the structural guarantee that a create/full-repush can't touch a ClickUp
+  // checklist dropdown.
+  const chosen = [...fieldsToPush];
+  if (scoped && scoped.checklistFieldIds && scoped.checklistFieldIds.size) {
+    for (const c of built.checklistFields) if (scoped.checklistFieldIds.has(c.id)) chosen.push(c);
+  }
 
   let id = taskId;
   if (!id) {
@@ -132,9 +149,12 @@ async function pushApplication(appId, opts = {}) {
     id = task.id;
     await db.query(`UPDATE applications SET clickup_pipeline_task_id=$1, sync_state='linked', clickup_last_synced_at=now(), updated_at=now() WHERE id=$2`, [id, appId]);
   } else {
-    // field-by-field update (setField) so we can stamp echo per field
-    for (const c of fieldsToPush) {
-      try { await clickup.setField(id, c.id, c.value); echo.markPushed(id, c.id, c.value); }
+    // field-by-field update (setField) so we can stamp echo per field. Checklist
+    // fields stamp echo with the round-trip TOKEN (the status the option reads
+    // back as), not the option UUID, so inbound echo suppression matches.
+    for (const c of chosen) {
+      const echoVal = c.token != null ? c.token : c.value;
+      try { await clickup.setField(id, c.id, c.value); echo.markPushed(id, c.id, echoVal); }
       catch (e) { console.error('[clickup] setField failed', c.id, e.message); }
     }
     if (pushStatus && built.statusName) { try { await clickup.updateTask(id, { status: built.statusName }); } catch (_) {} }
@@ -148,16 +168,21 @@ async function pushApplication(appId, opts = {}) {
   // we didn't write) so echo suppression stays accurate.
   const SENSITIVE = new Set([F.SHARED.borrowerSSN, F.EXTRA.card]);
   const hashVal = (v) => 'h:' + require('crypto').createHmac('sha256', cfg.ssnKey).update(String(v)).digest('hex').slice(0, 24);
-  const pushedIds = new Set(fieldsToPush.map((c) => c.id));
+  const pushedIds = new Set(chosen.map((c) => c.id));
   const shadow = scoped ? { ...(ctx._row.clickup_shadow || {}) } : {};
   for (const c of built.customFields) {
     if (scoped && !pushedIds.has(c.id)) continue;
     shadow[c.id] = SENSITIVE.has(c.id) ? hashVal(c.value) : c.value;
   }
+  // Checklist fields: shadow the round-trip TOKEN (status), matching inbound
+  // normalizeInbound output, so a subsequent pull of our own write is suppressed.
+  for (const c of built.checklistFields) {
+    if (pushedIds.has(c.id)) shadow[c.id] = (c.token != null ? c.token : c.value);
+  }
   await db.query(`UPDATE applications SET clickup_shadow=$1, clickup_shadow_hash=$2 WHERE id=$3`,
     [JSON.stringify(shadow), echo.shadowHash(shadow), appId]).catch(() => {});
-  await logSync('push', appId, id, { fields: fieldsToPush.length, scoped: !!scoped });
-  return { taskId: id, fields: fieldsToPush.length, scoped: !!scoped };
+  await logSync('push', appId, id, { fields: chosen.length, scoped: !!scoped });
+  return { taskId: id, fields: chosen.length, scoped: !!scoped };
 }
 
 /** Resolve the destination list: officer's pipeline folder, else Lead Capture. */

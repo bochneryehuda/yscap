@@ -22,6 +22,7 @@ const llcLib = require('../lib/llc');
 const apprCard = require('../lib/appraisal-card');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
+const { enqueueChecklistStatusPush } = require('../clickup/enqueue');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
@@ -586,6 +587,7 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
             tool_payload=$2, updated_at=now()
       WHERE id=$1`,
     [req.params.itemId, JSON.stringify({ infoField: item.field_key, value: saved.value, submittedAt: new Date().toISOString() })]);
+  enqueueChecklistStatusPush(req.params.itemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   await audit(req, 'submit_info_condition', 'checklist_item', req.params.itemId, { fieldKey: item.field_key });
   // Field data changed → the engine may add/retract rule-driven conditions.
   try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'info_condition_answered' }); } catch (_) {}
@@ -1028,6 +1030,7 @@ router.post('/contacts', async (req, res) => {
       `UPDATE checklist_items SET status='received', updated_at=now()
         WHERE id=$1 AND application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)`,
       [b.checklistItemId, me(req)]);
+    enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   }
   await audit(req, 'save_contact', 'borrower', me(req), { contactType: type, applicationId: b.applicationId || null });
   res.status(201).json({ ok: true, contactId });
@@ -1297,6 +1300,7 @@ router.post('/documents', async (req, res) => {
           AND ($4::text IS NULL OR slot_label IS NOT DISTINCT FROM $4)`,
       [b.checklistItemId, me(req), r.rows[0].id, slot, b.replaceDocumentId || null]);
     await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
+    enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   }
   // An LLC document changed — recompute the LLC condition on every open file
   // vesting in this entity (all three in => the condition moves to review).

@@ -13,6 +13,7 @@ const F = require('./fields');
 const X = require('./crosswalk');
 const T = require('./transforms');
 const ADDR = require('../lib/address');
+const checklist = require('./checklist');   // 5-state document-status ⇄ dropdown map
 
 /**
  * Normalize a ClickUp `location` custom-field value into the portal's canonical
@@ -238,7 +239,17 @@ function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
   const name = `${T.joinName(borrower.first_name, borrower.last_name) || 'New Borrower'}${
     app.property_address && (app.property_address.oneLine || app.property_address.line1)
       ? ' - ' + (app.property_address.oneLine || app.property_address.line1) : ''}`;
-  return { name, statusName: app.internal_status || null, customFields: cf };
+  // Checklist condition statuses go in a SEPARATE array — NEVER merged into
+  // customFields — so a task create or a full/admin repush (which push only
+  // customFields) can never overwrite a ClickUp checklist dropdown. These reach
+  // ClickUp ONLY when a `checklist:<fieldId>` key is explicitly scoped (§Phase B).
+  const checklistFields = [];
+  for (const item of (ctx.checklist || [])) {
+    if (!item || !item.fieldId) continue;
+    const r = checklist.resolveOutbound(item.fieldId, item.status);
+    if (r) checklistFields.push({ id: item.fieldId, value: r.optionUUID, token: r.token });
+  }
+  return { name, statusName: app.internal_status || null, customFields: cf, checklistFields };
 }
 
 // ---- read (pull) ----------------------------------------------------------
@@ -357,6 +368,7 @@ for (const f of FIELD_MAP) { if (f.dir !== 'pull' && f.col) COL_TO_CU[f.col] = f
 
 function resolveOnly(onlyKeys) {
   const cuIds = new Set();
+  const checklistFieldIds = new Set();   // `checklist:<fieldId>` keys — kept SEPARATE
   let status = false;
   for (const raw of onlyKeys || []) {
     const k = String(raw);
@@ -376,10 +388,13 @@ function resolveOnly(onlyKeys) {
       case 'llc_id':
         cuIds.add(F.PIPELINE.vesting); cuIds.add(F.PIPELINE.llcName); cuIds.add(F.PIPELINE.ein); break;
       default:
-        if (COL_TO_CU[k]) cuIds.add(COL_TO_CU[k]);
+        if (k.startsWith('checklist:')) {
+          const fid = k.slice('checklist:'.length);
+          if (checklist.BY_FIELD[fid]) checklistFieldIds.add(fid);   // ignore unknown fields
+        } else if (COL_TO_CU[k]) cuIds.add(COL_TO_CU[k]);
     }
   }
-  return { cuIds, status };
+  return { cuIds, status, checklistFieldIds };
 }
 
 module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly };
