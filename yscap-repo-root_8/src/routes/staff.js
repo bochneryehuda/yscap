@@ -1090,10 +1090,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
       `SELECT 1 FROM checklist_items ci
         LEFT JOIN applications a ON a.id=ci.application_id
         WHERE ci.id=$1 AND (
-          (a.id IS NOT NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2))
+          (a.id IS NOT NULL AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2))
           OR (ci.llc_id IS NOT NULL AND EXISTS (
                 SELECT 1 FROM applications ap
-                 WHERE ap.llc_id=ci.llc_id AND (ap.loan_officer_id=$2 OR ap.processor_id=$2))))`,
+                 WHERE ap.llc_id=ci.llc_id AND ap.deleted_at IS NULL AND (ap.loan_officer_id=$2 OR ap.processor_id=$2))))`,
       [req.params.itemId, req.actor.id]);
     if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
   }
