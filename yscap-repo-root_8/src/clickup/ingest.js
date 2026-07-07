@@ -386,6 +386,17 @@ async function ingestTask(task, options = {}, opts = {}) {
   const folderId = (task && task.folder && task.folder.id) || opts.folderId || null;
 
   const { borrowerId } = await resolveBorrower(read, task.id);
+  // #65 — a co-borrower named on the parent task (flag YES + a second-borrower
+  // name/email) is resolved into its OWN encrypted, identity-matched borrower
+  // record (reusing resolveBorrower) so the second borrower auto-surfaces on the
+  // file. Best-effort; never blocks the primary ingest.
+  let coBorrowerId = null;
+  if (read.coBorrower && (read.coBorrower.first_name || read.coBorrower.email)) {
+    try {
+      const co = await resolveBorrower({ borrower: read.coBorrower }, task.id);
+      if (co.borrowerId && co.borrowerId !== borrowerId) coBorrowerId = co.borrowerId;
+    } catch (_) { /* co-borrower is best-effort */ }
+  }
   const llcId = await upsertLlc(borrowerId, read.llc.llc_name, read.llc.ein, task.id);
   if (CLOSED_STATUSES(read.internalStatus)) { try { await upsertTrackRecord(borrowerId, read, task.id); } catch (_) {} }
 
@@ -397,7 +408,7 @@ async function ingestTask(task, options = {}, opts = {}) {
   let applicationId = null, matchStatus = isRtl ? null : 'data_only', matchDetail = null;
   if (isRtl) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
-      { allowCreate: opts.createFile === true, folderId, loanOfficerEmail, processorEmail });
+      { allowCreate: opts.createFile === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId });
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
   } else {
     // Unsupported program (DSCR / long-term / anything outside RTL_PROGRAMS): pull
@@ -455,7 +466,7 @@ async function ingestTask(task, options = {}, opts = {}) {
  * Returns { applicationId, matchStatus, detail }.
  */
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
-  const { allowCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null } = ctx;
+  const { allowCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null } = ctx;
   const a = read.app || {};
   const lo = await resolveStaffByEmail(loanOfficerEmail);
   const pr = await resolveStaffByEmail(processorEmail);
@@ -520,6 +531,11 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
               deleted_at = CASE WHEN sync_state='descoped' THEN NULL ELSE deleted_at END,
               clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
       [targetId, ...vals, task.id]);
+    // Co-borrower: fill ONLY when the file has none yet — never clobber an
+    // existing link (a staff-set/corrected co-borrower stays put).
+    if (coBorrowerId) {
+      try { await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1 AND co_borrower_id IS NULL`, [targetId, coBorrowerId]); } catch (_) {}
+    }
     return { applicationId: targetId, matchStatus, detail };
   }
   if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };
@@ -530,8 +546,8 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // it a freshly-pulled file has clickup_last_synced_at=NULL, which the outbound
   // dirty-sweep reads as "dirty" and immediately echoes back to ClickUp — a pull→
   // push loopback for every inbound-created file.
-  const keys = ['borrower_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', 'clickup_last_synced_at', ...Object.keys(cols)];
-  const insVals = [borrowerId, llcId, task.id, 'clickup_backfill', 'linked', new Date(), ...vals];
+  const keys = ['borrower_id', 'co_borrower_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', 'clickup_last_synced_at', ...Object.keys(cols)];
+  const insVals = [borrowerId, coBorrowerId, llcId, task.id, 'clickup_backfill', 'linked', new Date(), ...vals];
   const ph = insVals.map((_, i) => `$${i + 1}`).join(',');
   const r = await db.query(
     `INSERT INTO applications (${keys.join(',')}) VALUES (${ph})

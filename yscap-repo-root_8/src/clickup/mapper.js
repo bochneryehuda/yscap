@@ -321,6 +321,20 @@ function readTaskFields(task, options = {}) {
     const label = T.dropdownIndexToLabel(options[F.PIPELINE.coBorrowerFlag] || cob.type_config?.options || [], cob.value);
     out.coBorrowerFlagYes = /yes/i.test(label || '');
   }
+  // Co-borrower summary carried on the PARENT task (name / 2nd email / 2nd cell).
+  // The full profile lives in a ClickUp subtask, but these are enough to surface
+  // and link the second borrower automatically. Built only when the flag is YES
+  // or a co-borrower name is present.
+  const cobName = m[F.PIPELINE.coBorrowerName];
+  const cobEmail = m[F.PIPELINE.secondBorrowerEmail];
+  const cobCell = m[F.PIPELINE.secondBorrowerCell];
+  if (out.coBorrowerFlagYes || (cobName && cobName.value)) {
+    const co = {};
+    if (cobName && cobName.value) { const p = T.splitName(String(cobName.value)); co.first_name = p.first; co.last_name = p.last; }
+    if (cobEmail && cobEmail.value) co.email = String(cobEmail.value).toLowerCase().trim();
+    if (cobCell && cobCell.value) co.cell_phone = typeof T.normalizePhone === 'function' ? T.normalizePhone(String(cobCell.value)) : String(cobCell.value);
+    if (co.first_name || co.email) out.coBorrower = co;
+  }
 
   // Officer / processor identity for INBOUND assignment. The Loan Officer "users"
   // field is frequently empty, so the reliable signals are the Loan Officer Email
