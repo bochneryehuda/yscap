@@ -317,9 +317,14 @@ router.get('/applications', async (req, res) => {
 
     // Sort — strict whitelist (never interpolate user text into ORDER BY). NULLS
     // LAST keeps blank amounts/dates from floating to the top of a sort.
+    // "Newest/Oldest first" sorts by the REAL file date — the ClickUp task
+    // creation date for imported files, falling back to created_at for native
+    // portal files. (Sorting on created_at alone clustered the whole imported
+    // back-book at one import timestamp, so the sort looked broken.)
+    const CREATED = 'COALESCE(a.clickup_created_at, a.submitted_at, a.created_at)';
     const SORTS = {
-      created_desc: 'a.created_at DESC',
-      created_asc: 'a.created_at ASC',
+      created_desc: `${CREATED} DESC`,
+      created_asc: `${CREATED} ASC`,
       amount_desc: 'a.loan_amount DESC NULLS LAST',
       amount_asc: 'a.loan_amount ASC NULLS LAST',
       closing_desc: 'a.actual_closing DESC NULLS LAST',

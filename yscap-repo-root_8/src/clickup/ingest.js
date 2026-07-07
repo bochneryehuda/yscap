@@ -491,6 +491,10 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     // Underwriter assignment — same COALESCE semantics: set when resolved, keep when not.
     underwriter_id: uw.id,
     clickup_folder_id: folderId != null ? Number(folderId) : null,
+    // Real ClickUp task creation date (epoch ms) so the pipeline's Newest/Oldest
+    // sort reflects true file chronology, not the one-time import timestamp. Set
+    // once (COALESCE on update keeps it) and backfilled on the next reconcile.
+    clickup_created_at: task && task.date_created ? new Date(Number(task.date_created)) : null,
   };
 
   // Which existing app? task_id link first, then stamp/identity.
