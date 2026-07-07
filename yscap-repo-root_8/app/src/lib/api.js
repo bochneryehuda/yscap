@@ -101,6 +101,20 @@ function normalizeUpload(b) {
   return b;
 }
 
+// Build a `?a=b&c=d` query string from a params object, skipping null/undefined/
+// empty values (so callers can pass a sparse filter object and unset filters just
+// disappear). Returns '' for no/empty params, keeping bare-path callers unchanged.
+function qs(params) {
+  if (!params) return '';
+  const u = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v == null || v === '') continue;
+    u.append(k, v);
+  }
+  const s = u.toString();
+  return s ? `?${s}` : '';
+}
+
 // Login/MFA/registration endpoints answer 401 for bad credentials — that must
 // show as an error on the form, never trigger the global "session expired" path.
 const AUTH_CALL = /^\/auth\/((borrower|staff)\/(login|mfa\/verify|register)|mfa\/enable)/;
@@ -204,7 +218,11 @@ export const api = {
   staffMfaVerify: (challenge, code) => req('POST', '/auth/staff/mfa/verify', { challenge, code }),
   me:             () => req('GET', '/auth/me'),
   staffTeam:        () => req('GET', '/api/staff/team'),
-  staffApplications:() => req('GET', '/api/staff/applications'),
+  // Optional server-side filters (see /api/staff/applications): group, status,
+  // officerId, processorId, program, minAmount, maxAmount, fundedFrom/To,
+  // createdFrom/To, flag ('stalled'|'nodate'), limit, offset. Called bare it
+  // returns the full scoped pipeline (used to build filter facets + counts).
+  staffApplications:(params) => req('GET', '/api/staff/applications' + qs(params)),
   staffMyTasks:     () => req('GET', '/api/staff/my-tasks'),
   staffExceptions:  () => req('GET', '/api/staff/exceptions'),
   staffCreateFile:  (b) => req('POST', '/api/staff/applications', b),

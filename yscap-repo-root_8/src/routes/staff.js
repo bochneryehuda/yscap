@@ -158,6 +158,13 @@ router.get('/dashboard', async (req, res) => {
                  GROUP BY 1 ORDER BY 1 DESC LIMIT 18`, s.params),
     ]);
     const t = totals.rows[0];
+    // Month-over-month funded momentum: this month's funded count vs. last
+    // month's, as an absolute delta and a rounded % change (null when there's
+    // no prior-month base to divide by).
+    const fundedMomDelta = t.funded_mtd - t.funded_last_month;
+    const fundedMomPct = t.funded_last_month > 0
+      ? Math.round((fundedMomDelta / t.funded_last_month) * 100)
+      : null;
     res.json({
       byStatus: byStatus.rows,
       total: t.total, pipelineValue: Number(t.pipeline_value), active: t.active,
@@ -165,6 +172,7 @@ router.get('/dashboard', async (req, res) => {
       funded: t.funded, newThisWeek: t.new_week,
       // funded broken out by actual closing date (MTM), + running dollar totals
       fundedMtd: t.funded_mtd, fundedLastMonth: t.funded_last_month, fundedYtd: t.funded_ytd,
+      fundedMomDelta, fundedMomPct,
       fundedYtdValue: Number(t.funded_ytd_value), fundedLifetimeValue: Number(t.funded_lifetime_value),
       fundedNoDate: t.funded_no_date, fundedNoDateValue: Number(t.funded_no_date_value),
       fundedByMonth: fundedByMonth.rows.map((r) => ({ month: r.ym, count: r.c, value: Number(r.v) })),
@@ -176,19 +184,91 @@ router.get('/dashboard', async (req, res) => {
 });
 
 // ---------------- pipeline ----------------
+// Optional filter params — all AND-combined; with no filter params this returns
+// the same scoped pipeline (same row shape, same ORDER BY) as before. Every
+// user-supplied value is bound as a placeholder (never interpolated into SQL);
+// scopeClause() still enforces per-file authorization.
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 router.get('/applications', async (req, res) => {
-  const s = scopeClause(req);
-  const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
-                      a.clickup_pipeline_task_id,a.property_address,
-                      a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
-                      b.first_name,b.last_name,b.email,
-                      (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
-                      (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
-                         AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
-               FROM applications a JOIN borrowers b ON b.id=a.borrower_id
-               WHERE a.deleted_at IS NULL ${s.where.replace(/\$SCOPE/g, '$1')} ORDER BY a.created_at DESC`;
-  const r = await db.query(sql, s.params);
-  res.json(r.rows);
+  try {
+    const q = req.query;
+    const s = scopeClause(req);
+    // Scope params always occupy the leading placeholders ($1 when present);
+    // add() appends each filter value and hands back its own placeholder so the
+    // numbering stays correct regardless of which filters are active.
+    const params = [...s.params];
+    const add = (val) => { params.push(val); return `$${params.length}`; };
+    const where = ['a.deleted_at IS NULL'];
+    if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
+
+    // status GROUP — same predicates the dashboard uses.
+    if (q.group === 'active') where.push(`a.status NOT IN ('funded','declined','withdrawn')`);
+    else if (q.group === 'cancelled') where.push(`a.status IN ('declined','withdrawn')`);
+    else if (q.group === 'closed') where.push(`a.status = 'funded'`);
+    // 'all'/absent → no status-group predicate.
+
+    if (q.status) where.push(`a.status = ${add(String(q.status))}`);
+    if (q.program) where.push(`a.program = ${add(String(q.program))}`);
+    if (q.officerId) {
+      if (!UUID_RE.test(String(q.officerId))) return res.status(400).json({ error: 'invalid officerId' });
+      where.push(`a.loan_officer_id = ${add(String(q.officerId))}`);
+    }
+    if (q.processorId) {
+      if (!UUID_RE.test(String(q.processorId))) return res.status(400).json({ error: 'invalid processorId' });
+      where.push(`a.processor_id = ${add(String(q.processorId))}`);
+    }
+
+    // Numeric bounds on loan_amount — coerce safely, ignore non-numeric input.
+    if (q.minAmount !== undefined && q.minAmount !== '') {
+      const n = Number(q.minAmount);
+      if (Number.isFinite(n)) where.push(`a.loan_amount >= ${add(n)}`);
+    }
+    if (q.maxAmount !== undefined && q.maxAmount !== '') {
+      const n = Number(q.maxAmount);
+      if (Number.isFinite(n)) where.push(`a.loan_amount <= ${add(n)}`);
+    }
+
+    // Date bounds — must be YYYY-MM-DD; reject anything malformed.
+    for (const [key, col, op] of [
+      ['fundedFrom', 'a.actual_closing', '>='],
+      ['fundedTo', 'a.actual_closing', '<='],
+      ['createdFrom', 'a.created_at', '>='],
+      ['createdTo', 'a.created_at', '<='],
+    ]) {
+      const v = q[key];
+      if (v === undefined || v === '') continue;
+      if (!DATE_RE.test(String(v))) return res.status(400).json({ error: `invalid ${key}` });
+      where.push(`${col} ${op} ${add(String(v))}`);
+    }
+
+    // Ops flags — mirror the dashboard's stale (active + untouched > 5 days) and
+    // its dateless-funded (K1) bucket.
+    if (q.flag === 'stalled') {
+      where.push(`a.status NOT IN ('funded','declined','withdrawn') AND a.updated_at < now() - interval '5 days'`);
+    } else if (q.flag === 'nodate') {
+      where.push(`a.status = 'funded' AND a.actual_closing IS NULL`);
+    }
+
+    let limit = parseInt(q.limit, 10);
+    if (!Number.isFinite(limit)) limit = 500;
+    limit = Math.min(1000, Math.max(1, limit));
+    let offset = parseInt(q.offset, 10);
+    if (!Number.isFinite(offset) || offset < 0) offset = 0;
+
+    const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
+                        a.clickup_pipeline_task_id,a.property_address,
+                        a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
+                        b.first_name,b.last_name,b.email,
+                        (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
+                        (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
+                           AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
+                 FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+                 WHERE ${where.join(' AND ')} ORDER BY a.created_at DESC
+                 LIMIT ${add(limit)} OFFSET ${add(offset)}`;
+    const r = await db.query(sql, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // Self-serve ClickUp re-sync: pull THIS staffer's own pipeline folder into the
