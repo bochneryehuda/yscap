@@ -103,7 +103,9 @@ function ClickupFileData({ app }) {
     ]],
     ['Pipeline', [
       ['Application submitted', str(app.application_submitted)],
-      ['Encompass', str(app.encompass_status)],
+      // Encompass origin ("File originally started in Encompass") is intentionally
+      // NOT displayed on any front-end surface (owner-directed) — it stays in the
+      // backend (encompass_status column) but is never shown to staff or borrower.
     ]],
   ];
   const shown = groups

@@ -97,9 +97,25 @@ router.use('/applications/:id', async (req, res, next) => {
 });
 
 // ---------------- dashboard KPIs ----------------
+// Dashboard scope = role scope PLUS the pipeline view the staffer is looking at.
+// A scoped user (loan_officer/processor) is always limited to their own files.
+// A seesAll user (admin/underwriter) sees everyone by default, but can narrow the
+// KPIs to match the pipeline view: ?mine=1 (only their files) or ?officerId=<uuid>
+// (one officer's files) — so "Monthly production" et al. reflect exactly what the
+// list below shows. The view can only ever NARROW, never widen, a user's access.
+function dashboardScope(req) {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const mine = req.query.mine === '1' || req.query.mine === 'true';
+  const officerId = UUID.test(String(req.query.officerId || '')) ? String(req.query.officerId) : null;
+  if (!seesAll(req)) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1)`, params: [req.actor.id] };
+  if (mine) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1)`, params: [req.actor.id] };
+  if (officerId) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1)`, params: [officerId] };
+  return { where: '', params: [] };
+}
+
 router.get('/dashboard', async (req, res) => {
   try {
-    const s = scopeClause(req);
+    const s = dashboardScope(req);
     const w = s.where.replace(/\$SCOPE/g, '$1');
     // Status GROUPS (owner-defined): active = any in-progress status; closed =
     // funded; cancelled = withdrawn/declined. These drive the dashboard so a held
@@ -301,7 +317,7 @@ router.get('/applications', async (req, res) => {
     const orderBy = SORTS[String(q.sort || '')] || SORTS.created_desc;
 
     const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
-                        a.clickup_pipeline_task_id,a.property_address,
+                        a.clickup_pipeline_task_id,a.property_address,a.lender,
                         a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
                         b.first_name,b.last_name,b.email,
                         (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
