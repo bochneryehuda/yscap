@@ -507,7 +507,18 @@ router.post('/applications', async (req, res) => {
 
     try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType, { isAssignment }); }
     catch (e) { console.error('[staff-origination] checklist failed:', db.describeError(e)); }
-    await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId });
+    // Oversight flag: a scoped staffer opening a file for a PRE-EXISTING borrower
+    // they had no prior relationship with now gains that borrower's PII (SSN) +
+    // shared profile docs. This is allowed (owner-directed multi-file), but we
+    // stamp a high-signal audit flag so cross-officer originations are reviewable.
+    let crossBorrower = false;
+    if (!br.rows[0].created && !seesAll(req)) {
+      const rel = await db.query(
+        `SELECT 1 FROM applications WHERE borrower_id=$1 AND id<>$3 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+        [borrowerId, req.actor.id, appId]);
+      crossBorrower = !rel.rows[0];
+    }
+    await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId, crossBorrower: crossBorrower || undefined });
 
     // Optionally invite the borrower to the portal for this file right away.
     let invited = null;
@@ -1929,7 +1940,7 @@ async function completeFields(req, res, borrowerScoped) {
     for (const [k, t] of Object.entries(COMPLETE_APP_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'money') { v = Number(String(v).replace(/[^0-9.]/g, '')); if (!Number.isFinite(v)) continue; }
+      if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     if (appSets.length) {
@@ -2117,7 +2128,7 @@ router.get('/chat/inbox', async (req, res) => {
          LEFT JOIN LATERAL (SELECT body, channel, sender_kind, attachment_kind, created_at
                          FROM messages m WHERE m.application_id=a.id
                         ORDER BY created_at DESC LIMIT 1) lm ON true
-        WHERE a.deleted_at IS NULL ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
+        WHERE a.deleted_at IS NULL ${scoped ? `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}` : ''}
       ) q
       -- The chat hub (outside a file) is a list of REAL conversations, not every
       -- file that exists: only surface files that actually have back-and-forth

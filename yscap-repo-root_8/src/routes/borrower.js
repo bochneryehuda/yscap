@@ -999,7 +999,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'money') { v = Number(String(v).replace(/[^0-9.]/g, '')); if (!Number.isFinite(v)) continue; }
+      if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     if (appSets.length) {
@@ -1007,7 +1007,11 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, appKeys); } catch (_) {}
     }
-    const brVals = [bid], brSets = [];
+    // Personal fields update the actor's OWN profile only — a co-borrower must
+    // not overwrite the primary borrower's DOB / phone / FICO / citizenship
+    // (their own values differ). App/deal fields above are file-level and either
+    // party may fill them.
+    const brVals = [me(req)], brSets = [];
     for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
