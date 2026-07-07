@@ -17,6 +17,7 @@ const mapper = require('./mapper');
 const identity = require('./identity');
 const statusMap = require('./status');
 const crosswalk = require('./crosswalk');
+const routing = require('./routing');
 
 const RTL_PROGRAMS = new Set(['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction']);
 const CLOSED_STATUSES = (s) => statusMap.externalFor(s) === 'funded';
@@ -54,13 +55,19 @@ async function resolveBorrower(read, taskId) {
     const r = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 LIMIT 1`, [ssnHash]);
     if (r.rows[0]) { await recordContacts(r.rows[0].id, b, taskId); return { borrowerId: r.rows[0].id, created: false }; }
   }
-  // 2) email exact (a common strong-ish signal)
+  // 2) email exact — a strong-ish signal, BUT guard against a shared email for
+  //    two different people: if both sides have an SSN-hash and they DIFFER, do
+  //    NOT merge (that would attach this loan/PII to the wrong borrower). Fall
+  //    through to create a distinct profile instead.
   if (b.email) {
-    const r = await db.query(`SELECT id FROM borrowers WHERE email=$1 LIMIT 1`, [String(b.email).toLowerCase().trim()]);
+    const r = await db.query(`SELECT id, ssn_hash FROM borrowers WHERE email=$1 LIMIT 1`, [String(b.email).toLowerCase().trim()]);
     if (r.rows[0]) {
-      if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, r.rows[0].id]);
-      await recordContacts(r.rows[0].id, b, taskId);
-      return { borrowerId: r.rows[0].id, created: false };
+      const ssnConflict = ssnHash && r.rows[0].ssn_hash && ssnHash !== r.rows[0].ssn_hash;
+      if (!ssnConflict) {
+        if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, r.rows[0].id]);
+        await recordContacts(r.rows[0].id, b, taskId);
+        return { borrowerId: r.rows[0].id, created: false };
+      }
     }
   }
   // 3) weak: >=2 identity fields among recent candidates (name/phone) -> create + queue confirm
@@ -133,46 +140,109 @@ async function upsertTrackRecord(borrowerId, read, taskId) {
   return r.rows[0].id;
 }
 
+/** Resolve a ClickUp officer/processor email → an active staff_users row. */
+async function resolveStaffByEmail(email) {
+  if (!email) return { id: null, name: null };
+  const r = await db.query(
+    `SELECT id, full_name FROM staff_users WHERE lower(email)=lower($1) AND is_active=true LIMIT 1`, [email]
+  ).catch(() => ({ rows: [] }));
+  return r.rows[0] ? { id: r.rows[0].id, name: r.rows[0].full_name } : { id: null, name: null };
+}
+
+const _addrOf = (v) => (v && (v.formatted_address || v.oneLine)) || null;
+
+/**
+ * Find which EXISTING portal app a task belongs to, without creating one:
+ *   1) Portal File ID stamp (authoritative — written by our own push).
+ *   2) Within the resolved borrower's unlinked RTL apps, an app-level match on
+ *      normalized property ADDRESS or ys_loan_number (each uniquely identifies
+ *      the deal for a fixed borrower). Single strong match links; multiple ->
+ *      ambiguous (Manual Review); none -> null (create).
+ * Returns { id, how, detail } | { ambiguous, detail } | null.
+ */
+async function findExistingApp(task, read, borrowerId) {
+  if (read.portalFileId) {
+    const s = await db.query(
+      `SELECT id, clickup_pipeline_task_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [read.portalFileId]
+    ).catch(() => ({ rows: [] }));
+    if (s.rows[0]) {
+      const linked = s.rows[0].clickup_pipeline_task_id;
+      if (!linked || linked === task.id) return { id: s.rows[0].id, how: 'linked_stamp', detail: { stamp: read.portalFileId } };
+      return { ambiguous: true, detail: { stamp: read.portalFileId, boundToTask: linked } };
+    }
+    // stale stamp (app deleted) -> fall through to identity
+  }
+  const cand = await db.query(
+    `SELECT id, property_address, ys_loan_number, purchase_price FROM applications
+      WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NULL
+        AND program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction')`, [borrowerId]
+  ).catch(() => ({ rows: [] }));
+  if (!cand.rows.length) return null;
+  const tn = identity.normalizeIdentity({
+    address: _addrOf(read.app.property_address), loanNumber: read.app.ys_loan_number, purchasePrice: read.app.purchase_price,
+  });
+  const strong = [];
+  for (const c of cand.rows) {
+    const cn = identity.normalizeIdentity({ address: _addrOf(c.property_address), loanNumber: c.ys_loan_number, purchasePrice: c.purchase_price });
+    const addr = tn.address && tn.address === cn.address;
+    const loan = tn.loanNumber && tn.loanNumber === cn.loanNumber;
+    if (addr || loan) strong.push({ id: c.id, addr: !!addr, loan: !!loan });
+  }
+  if (strong.length === 1) return { id: strong[0].id, how: 'linked_identity', detail: strong[0] };
+  if (strong.length > 1)  return { ambiguous: true, detail: { candidates: strong.map((s) => s.id) } };
+  return null;
+}
+
 /**
  * Ingest one ClickUp task. `options` = live dropdown option map.
- * Builds the identity graph for every task; materializes an RTL loan file only
- * when createFile and the program is in scope.
+ * Builds the identity graph for every task; materializes / links an RTL loan
+ * file (with loan-officer assignment) only for in-scope programs.
  */
 async function ingestTask(task, options = {}, opts = {}) {
   const read = mapper.readTaskFields(task, options);
   const program = read.app.program || null;
   const isRtl = program && RTL_PROGRAMS.has(program);
+  const folderId = (task && task.folder && task.folder.id) || opts.folderId || null;
 
   const { borrowerId } = await resolveBorrower(read, task.id);
   const llcId = await upsertLlc(borrowerId, read.llc.llc_name, read.llc.ein, task.id);
   if (CLOSED_STATUSES(read.internalStatus)) { try { await upsertTrackRecord(borrowerId, read, task.id); } catch (_) {} }
 
-  // Always link/UPDATE an already-linked RTL file; only CREATE a new portal loan
-  // file when allowed (opts.createFile !== false). This lets inbound stay safe
-  // by default — the identity graph is maintained and linked files stay fresh,
-  // without materializing new files that could duplicate an existing unlinked
-  // portal application for the same loan.
-  let applicationId = null;
+  // Loan officer comes from the PIPELINE folder (or the Loan Officer Email field);
+  // processor from the Processor Email field. Both resolve to a staff_users id.
+  const loanOfficerEmail = routing.loanOfficerEmailFor(read, folderId);
+  const processorEmail = routing.processorEmailFor(read);
+
+  let applicationId = null, matchStatus = isRtl ? null : 'data_only', matchDetail = null;
   if (isRtl) {
-    applicationId = await linkOrCreateApplication(task, read, borrowerId, llcId, { allowCreate: opts.createFile !== false });
+    const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
+      { allowCreate: opts.createFile === true, folderId, loanOfficerEmail, processorEmail });
+    applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
   }
 
   await db.query(
-    `INSERT INTO clickup_task_index (task_id, kind, program, ssn_hash, borrower_id, application_id, llc_id, last_seen)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,now())
+    `INSERT INTO clickup_task_index (task_id, kind, program, ssn_hash, borrower_id, application_id, llc_id, match_status, match_detail, last_seen)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
      ON CONFLICT (task_id) DO UPDATE SET program=EXCLUDED.program, ssn_hash=EXCLUDED.ssn_hash,
-        borrower_id=EXCLUDED.borrower_id, application_id=EXCLUDED.application_id, llc_id=EXCLUDED.llc_id, last_seen=now()`,
+        borrower_id=EXCLUDED.borrower_id, application_id=COALESCE(EXCLUDED.application_id, clickup_task_index.application_id),
+        llc_id=EXCLUDED.llc_id, match_status=EXCLUDED.match_status, match_detail=EXCLUDED.match_detail, last_seen=now()`,
     [task.id, isRtl ? 'rtl_file' : 'data_only', program, identity.ssnHash(read.borrower.ssn, cfg.ssnMatchKey),
-     borrowerId, applicationId, llcId]).catch(() => {});
+     borrowerId, applicationId, llcId, matchStatus, matchDetail ? JSON.stringify(matchDetail) : null]).catch(() => {});
 
-  return { borrowerId, llcId, applicationId, isRtl };
+  return { borrowerId, llcId, applicationId, isRtl, matchStatus };
 }
 
-/** Create or update the RTL loan file from a task (pull side).
- *  allowCreate=false updates an already-linked file but never inserts a new one. */
-async function linkOrCreateApplication(task, read, borrowerId, llcId, { allowCreate = true } = {}) {
+/**
+ * Link a task to its portal RTL file (assigning the loan officer) or, when
+ * allowed, create one. allowCreate=false still LINKS (stamp/identity) and
+ * UPDATES an existing file — only new-file creation is gated.
+ * Returns { applicationId, matchStatus, detail }.
+ */
+async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
+  const { allowCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null } = ctx;
   const a = read.app || {};
-  const found = await db.query(`SELECT id FROM applications WHERE clickup_pipeline_task_id=$1 LIMIT 1`, [task.id]);
+  const lo = await resolveStaffByEmail(loanOfficerEmail);
+  const pr = await resolveStaffByEmail(processorEmail);
   const internal = read.internalStatus;
   const external = statusMap.externalFor(internal) || 'processing';
   const cols = {
@@ -184,20 +254,44 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, { allowCre
     expected_closing: a.expected_closing, actual_closing: a.actual_closing,
     approx_appraised_value: a.approx_appraised_value, actual_appraised_value: a.actual_appraised_value,
     property_address: a.property_address ? JSON.stringify(a.property_address) : null,
-    internal_status: internal, status: external, clickup_extra: Object.keys(read.extra).length ? JSON.stringify(read.extra) : null,
+    internal_status: internal, status: external,
+    clickup_extra: Object.keys(read.extra).length ? JSON.stringify(read.extra) : null,
+    // Officer assignment (COALESCE on update: reassign when resolved, keep when not).
+    loan_officer_id: lo.id, loan_officer_name: lo.name, processor_id: pr.id,
+    clickup_folder_id: folderId != null ? Number(folderId) : null,
   };
-  if (found.rows[0]) {
-    const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
-    await db.query(`UPDATE applications SET ${set}, clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
-      [found.rows[0].id, ...Object.values(cols)]);
-    return found.rows[0].id;
+
+  // Which existing app? task_id link first, then stamp/identity.
+  let targetId = null, matchStatus = null, detail = null;
+  const byTask = await db.query(`SELECT id FROM applications WHERE clickup_pipeline_task_id=$1 LIMIT 1`, [task.id]);
+  if (byTask.rows[0]) { targetId = byTask.rows[0].id; matchStatus = 'linked_task'; }
+  else {
+    const m = await findExistingApp(task, read, borrowerId);
+    if (m && m.ambiguous) return { applicationId: null, matchStatus: 'ambiguous', detail: m.detail };
+    if (m && m.id) { targetId = m.id; matchStatus = m.how; detail = m.detail || null; }
   }
-  if (!allowCreate) return null;   // inbound file materialization gated off — don't create a new portal file
+
+  const vals = Object.values(cols);
+  const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
+  if (targetId) {
+    await db.query(
+      `UPDATE applications SET ${set}, clickup_pipeline_task_id=$${vals.length + 2}, sync_state='linked',
+              clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
+      [targetId, ...vals, task.id]);
+    return { applicationId: targetId, matchStatus, detail };
+  }
+  if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };
+
+  // Create (race-safe: the partial unique index on clickup_pipeline_task_id makes
+  // a concurrent duplicate INSERT resolve to the existing row instead of a dup).
   const keys = ['borrower_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', ...Object.keys(cols)];
-  const vals = [borrowerId, llcId, task.id, 'clickup_backfill', 'linked', ...Object.values(cols)];
-  const ph = vals.map((_, i) => `$${i + 1}`).join(',');
-  const r = await db.query(`INSERT INTO applications (${keys.join(',')}) VALUES (${ph}) RETURNING id`, vals);
-  return r.rows[0].id;
+  const insVals = [borrowerId, llcId, task.id, 'clickup_backfill', 'linked', ...vals];
+  const ph = insVals.map((_, i) => `$${i + 1}`).join(',');
+  const r = await db.query(
+    `INSERT INTO applications (${keys.join(',')}) VALUES (${ph})
+     ON CONFLICT (clickup_pipeline_task_id) WHERE clickup_pipeline_task_id IS NOT NULL
+     DO UPDATE SET clickup_last_synced_at=now(), updated_at=now() RETURNING id`, insVals);
+  return { applicationId: r.rows[0].id, matchStatus: 'created' };
 }
 
 module.exports = {

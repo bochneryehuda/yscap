@@ -103,6 +103,10 @@ async function pushApplication(appId, opts = {}) {
   if (!cfg.clickupSyncEnabled && !opts.force) return { skipped: 'sync disabled' };
   const ctx = await loadPushContext(appId);
   if (!ctx) return { skipped: 'not found' };
+  // HARD RULE: a file archived/deleted in the portal must NEVER be deleted or
+  // deactivated in ClickUp — ClickUp stays the source of record. We simply do
+  // not push deleted files (and there is no deleteTask path anywhere in the sync).
+  if (ctx._row.deleted_at) return { skipped: 'portal-deleted (ClickUp left untouched)' };
 
   const taskId = ctx._row.clickup_pipeline_task_id || null;
   const listId = taskId ? null : await resolveTargetList(ctx);
@@ -126,8 +130,13 @@ async function pushApplication(appId, opts = {}) {
     await db.query(`UPDATE applications SET clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`, [appId]);
   }
 
-  // shadow the pushed values for echo comparison
-  const shadow = {}; for (const c of built.customFields) shadow[c.id] = c.value;
+  // Shadow the pushed values for echo comparison. NEVER store plaintext PII at
+  // rest: SSN / appraisal-card values are replaced with a short salted hash so
+  // the shadow is still comparable but carries no readable secret.
+  const SENSITIVE = new Set([F.SHARED.borrowerSSN, F.EXTRA.card]);
+  const hashVal = (v) => 'h:' + require('crypto').createHmac('sha256', cfg.ssnKey).update(String(v)).digest('hex').slice(0, 24);
+  const shadow = {};
+  for (const c of built.customFields) shadow[c.id] = SENSITIVE.has(c.id) ? hashVal(c.value) : c.value;
   await db.query(`UPDATE applications SET clickup_shadow=$1, clickup_shadow_hash=$2 WHERE id=$3`,
     [JSON.stringify(shadow), echo.shadowHash(shadow), appId]).catch(() => {});
   await logSync('push', appId, id, { fields: built.customFields.length });

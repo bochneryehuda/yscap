@@ -72,5 +72,19 @@ eq('read lender label', read.app.lender, 'Blue Lake');
 eq('read extra capture', read.extra['Clear File Notes'], 'note text');
 eq('read status', read.internalStatus, 'self procesing');
 
+// ---- status returned as an OBJECT (real ClickUp v2 shape) must normalize ----
+const objTask = { status: { status: 'ctc (4-email)', color: '#fff', orderindex: 5, type: 'custom' }, custom_fields: [
+  { id: F.SHARED.loanOfficerEmail, type: 'email', value: 'Simcha@YSCapGroup.com' },
+  { id: F.EXTRA.processorEmail, type: 'email', value: 'Malky@YSCapGroup.com' },
+  { id: F.SYNC.portalFileId, type: 'short_text', value: '570e422e-8d51-44c0-b112-181edd8016be' },
+  { id: F.SHARED.loanOfficer, type: 'users', value: [{ id: 87451319, username: 'Simcha' }] },
+] };
+const objRead = M.readTaskFields(objTask);
+eq('object status -> name string', objRead.internalStatus, 'ctc (4-email)');
+eq('read loan officer email (lowered)', objRead.loanOfficerEmail, 'simcha@yscapgroup.com');
+eq('read processor email (lowered)', objRead.processorEmail, 'malky@yscapgroup.com');
+eq('read portal file id stamp', objRead.portalFileId, '570e422e-8d51-44c0-b112-181edd8016be');
+eq('read loan officer clickup id', objRead.loanOfficerClickupId, 87451319);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

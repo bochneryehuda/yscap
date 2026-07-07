@@ -132,7 +132,8 @@ router.get('/dashboard', async (req, res) => {
 // ---------------- pipeline ----------------
 router.get('/applications', async (req, res) => {
   const s = scopeClause(req);
-  const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.property_address,
+  const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
+                      a.clickup_pipeline_task_id,a.property_address,
                       a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,
                       b.first_name,b.last_name,b.email,
                       (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
@@ -142,6 +143,21 @@ router.get('/applications', async (req, res) => {
                WHERE a.deleted_at IS NULL ${s.where.replace(/\$SCOPE/g, '$1')} ORDER BY a.created_at DESC`;
   const r = await db.query(sql, s.params);
   res.json(r.rows);
+});
+
+// Self-serve ClickUp re-sync: pull THIS staffer's own pipeline folder into the
+// portal (materialize/refresh + reassign their RTL files) — no developer needed.
+// Runs in the background; the UI refreshes its pipeline after a moment.
+router.post('/clickup/sync-mine', async (req, res) => {
+  if (!cfg.clickupToken) return res.status(400).json({ error: 'ClickUp is not configured' });
+  const r = await db.query(`SELECT pipeline_folder_id, full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+  const folderId = r.rows[0] && r.rows[0].pipeline_folder_id;
+  if (!folderId) return res.status(400).json({ error: 'No ClickUp pipeline folder is linked to your account — ask an admin.' });
+  const sync = require('../sync/clickup-sync');
+  sync.runBackfill({ createFiles: true, folders: [String(folderId)], pageLimit: 50 })
+    .then((n) => console.log('[sync-mine]', req.actor.id, 'folder', folderId, 'ingested', n))
+    .catch((e) => console.error('[sync-mine] failed', e.message));
+  res.json({ ok: true, started: true, folderId: String(folderId) });
 });
 
 // Exception dashboard — how many files are in each "needs attention" bucket,

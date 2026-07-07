@@ -207,7 +207,16 @@ function readValue(f, cf, options) {
  */
 function readTaskFields(task, options = {}) {
   const m = cfMap(task);
-  const out = { app: {}, borrower: {}, llc: {}, extra: {}, internalStatus: task && task.status };
+  // ClickUp v2 returns status as an OBJECT { status, color, orderindex, type };
+  // some endpoints/fixtures give a bare string. Normalize to the status NAME so
+  // internal_status is a clean string and externalFor() resolves correctly
+  // (storing the object poisoned internal_status and forced the 'processing'
+  // fallback for every file).
+  const rawStatus = task && task.status;
+  const internalStatus = (rawStatus && typeof rawStatus === 'object')
+    ? (rawStatus.status != null ? String(rawStatus.status) : null)
+    : (rawStatus != null && rawStatus !== '' ? String(rawStatus) : null);
+  const out = { app: {}, borrower: {}, llc: {}, extra: {}, internalStatus };
   const dst = { a: out.app, b: out.borrower, l: out.llc };
 
   for (const f of FIELD_MAP) {
@@ -237,6 +246,26 @@ function readTaskFields(task, options = {}) {
     const label = T.dropdownIndexToLabel(options[F.PIPELINE.coBorrowerFlag] || cob.type_config?.options || [], cob.value);
     out.coBorrowerFlagYes = /yes/i.test(label || '');
   }
+
+  // Officer / processor identity for INBOUND assignment. The Loan Officer "users"
+  // field is frequently empty, so the reliable signals are the Loan Officer Email
+  // field + the task's pipeline FOLDER (resolved by the ingest layer). We surface
+  // all three; ingest prefers email, then folder.
+  const loEmail = m[F.SHARED.loanOfficerEmail];
+  if (loEmail && loEmail.value) out.loanOfficerEmail = String(loEmail.value).toLowerCase().trim();
+  const prEmail = m[F.EXTRA.processorEmail];
+  if (prEmail && prEmail.value) out.processorEmail = String(prEmail.value).toLowerCase().trim();
+  const loUsers = m[F.SHARED.loanOfficer];
+  if (loUsers && Array.isArray(loUsers.value) && loUsers.value.length) {
+    const u = loUsers.value[0]; out.loanOfficerClickupId = (u && (u.id != null ? u.id : u)) || null;
+  }
+  const prUsers = m[F.PIPELINE.processor];
+  if (prUsers && Array.isArray(prUsers.value) && prUsers.value.length) {
+    const u = prUsers.value[0]; out.processorClickupId = (u && (u.id != null ? u.id : u)) || null;
+  }
+  // Portal File ID stamp — the authoritative binding written by our own push.
+  const stamp = m[F.SYNC.portalFileId];
+  if (stamp && stamp.value) out.portalFileId = String(stamp.value).trim();
 
   // everything unmapped -> extra (backend-only). Exclude SSN + card (encrypted columns only).
   for (const c of (task && task.custom_fields) || []) {
