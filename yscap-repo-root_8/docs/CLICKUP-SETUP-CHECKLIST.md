@@ -92,7 +92,24 @@ Set on the portal service (Render): `CLICKUP_API_TOKEN` (your key), `CLICKUP_TEA
 
 ---
 
-## I. One decision still open (not a ClickUp task)
+## I. Decisions — resolved
 
-- **CVV retention (PCI):** do we persist the appraisal-card security code long-term (encrypted), or
-  parse it through and drop it after use? Your call.
+- **CVV retention:** ✅ **persist** long-term (encrypted), never dropped. (owner-decided)
+
+---
+
+## J. Round-4 ClickUp changes (new to-do)
+
+- [ ] **Remove the `Ground up` option** from the **`*Loan type`** field (Ground-Up now lives only on `*Program`).
+- [ ] **Create a new field `YS Program`** — **Dropdown**, options **`Standard`**, **`Gold Standard`** (maps from our registered product; portal-authoritative / one-way).
+
+*(When done, tell me — I re-pull the `YS Program` field id and confirm `Ground up` is gone.)*
+
+---
+
+## K. What I'm capturing silently in the backend (no UI, per your instruction)
+
+- **Note buyer / Lender** — stored, shown to **staff (LO/admin) only**, never to borrowers.
+- **channel, occupancy, appraised values** — backend only, no portal display; appraised values are informational (no pricing logic).
+- **Every unmapped ClickUp field** → hidden `clickup_extra` store on the file; nothing displayed until you ask.
+- **ClickUp task id + co-borrower subtask id** stored on our side as binding stamps.

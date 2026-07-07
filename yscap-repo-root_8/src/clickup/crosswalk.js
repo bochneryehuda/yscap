@@ -96,6 +96,12 @@ const FIELDS = {
       on_hold: 'on_hold', declined: 'declined', withdrawn: 'withdrawn',
     },
   },
+  // Registered product (Standard / Gold Standard) -> new "YS Program" field.
+  // Portal-authoritative, one-way (§7.1/7.5). id filled once the owner adds the field.
+  registered_program: {
+    id: null,                                        // NEW ClickUp "YS Program" field (owner adding)
+    to: { standard: 'Standard', gold: 'Gold Standard', none: null },
+  },
 };
 
 const _norm = (s) => String(s == null ? '' : s).trim().toLowerCase();
