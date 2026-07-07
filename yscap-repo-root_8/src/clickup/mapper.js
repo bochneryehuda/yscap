@@ -137,11 +137,11 @@ function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
   // vesting from LLC presence (§7.6)
   put(F.PIPELINE.vesting, writeValue({ cu: F.PIPELINE.vesting, type: 'dropdown', enumKey: 'vesting' },
     llc ? 'LLC / Corp' : 'Individual', options));
-  // registered product -> YS Program (push only), once the field exists
-  if (ysProgramFieldId) {
-    const lbl = X.toClickUpLabel('registered_program', ctx.registeredProgram);
-    const optId = lbl && T.dropdownLabelToId(options[ysProgramFieldId] || [], lbl);
-    if (optId) put(ysProgramFieldId, optId);
+  // registered product -> "RTL Loan Program" (Standard/Gold, push-only)
+  {
+    const fid = F.SYNC.rtlLoanProgram;
+    const optId = X.resolveWriteId('registered_program', ctx.registeredProgram, options[fid] || []);
+    if (optId) put(fid, optId);
   }
   // marital (AI-normalized -> YES/NO)
   if (borrower.marital_status != null && borrower.marital_status !== '') {

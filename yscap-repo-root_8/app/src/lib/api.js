@@ -274,6 +274,13 @@ export const api = {
   staffPostMessage: (appId, body, opts = {}) => req('POST', `/api/staff/applications/${appId}/messages`, { body, ...opts }),
   adminIntegrations:() => req('GET', '/api/admin/integrations'),
 
+  // ---- ClickUp Control Center (admin / platform_setup) ----
+  clickupHealth:    () => req('GET', '/api/admin/clickup/health'),
+  clickupActivity:  () => req('GET', '/api/admin/clickup/activity'),
+  clickupBackfill:  (mode, sample) => req('POST', '/api/admin/clickup/backfill', { mode, sample }),
+  clickupRepush:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repush`),
+  clickupRepull:    (appId) => req('POST', `/api/admin/clickup/file/${appId}/repull`),
+
   // ---- chat v3: conversations (staff) ----
   staffConversations:      () => req('GET', '/api/staff/chat/conversations'),
   staffConversation:       (cid) => req('GET', `/api/staff/conversations/${cid}`),

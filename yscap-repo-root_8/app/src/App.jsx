@@ -29,6 +29,7 @@ import StaffArchived from './screens/StaffArchived.jsx';
 import StaffLeads from './screens/StaffLeads.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 import StaffChat from './screens/StaffChat.jsx';
+import StaffClickup from './screens/StaffClickup.jsx';
 
 /* Borrower-only area. Internal users who land here are bounced to their console. */
 function Private({ children }) {
@@ -100,6 +101,7 @@ export default function App() {
           <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
+          <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />
 
           {/* legacy /staff/* deep links (old emails, bookmarks) → /internal/* */}
           <Route path="/staff" element={<LegacyStaffRedirect />} />

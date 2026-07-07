@@ -658,12 +658,39 @@ export default function Apply() {
               <LlcPicker value={form.entityName || ''} placeholder="e.g. 1420 Bedford Holdings LLC"
                 onPick={({ id, name }) => setForm(f => { const next = { ...(f || {}), entityName: name, llcId: id }; save({ data: { entityName: name, llcId: id } }); return next; })} />
               <p className="muted small" style={{ marginTop: 4 }}>Reuse an LLC you've used before, or create a new one — we'll ask for its EIN letter, formation docs, and operating agreement once.</p></div>
-            <div className="field"><label>Requested loan officer</label>
-              <select className="input" value={form.loanOfficerName || ''} onChange={e => pickOfficer(e.target.value)}>
-                <option value="">No preference — send to Lead Capture</option>
-                {officers.map(o => <option key={o.email || o.name} value={o.name}>{o.name}{o.title ? ` — ${o.title}` : ''}</option>)}
-              </select></div>
-            <p className="muted small">Leave the officer blank and your file goes to our Lead Capture desk for prompt assignment.</p>
+            {(() => {
+              // Explicit officer question. OFF (default) → file routes to the
+              // Lead Capture desk; the backend keys routing off a blank officer,
+              // so "No" clears any prior pick. The answer persists on the draft.
+              const worksWithOfficer = form.worksWithOfficer != null ? !!form.worksWithOfficer : !!form.loanOfficerName;
+              const setYes = () => { setForm(f => ({ ...(f || {}), worksWithOfficer: true })); save({ data: { worksWithOfficer: true } }); };
+              const setNo = () => {
+                setForm(f => ({ ...(f || {}), worksWithOfficer: false, loanOfficerName: '', loanOfficerEmail: '' }));
+                save({ data: { worksWithOfficer: false, loanOfficerName: '', loanOfficerEmail: '' } });
+              };
+              return (
+                <>
+                  <div className="field"><label>Do you already work with a specific loan officer?</label>
+                    <div className="row" style={{ gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                      <button type="button" className={`btn ${worksWithOfficer ? 'primary' : 'ghost'} small`} onClick={setYes}>Yes, I have an officer</button>
+                      <button type="button" className={`btn ${!worksWithOfficer ? 'primary' : 'ghost'} small`} onClick={setNo}>No — assign one for me</button>
+                    </div>
+                  </div>
+                  {worksWithOfficer && (
+                    <div className="field"><label>Requested loan officer</label>
+                      <select className="input" value={form.loanOfficerName || ''} onChange={e => pickOfficer(e.target.value)}>
+                        <option value="">Select your loan officer…</option>
+                        {officers.map(o => <option key={o.email || o.name} value={o.name}>{o.name}{o.title ? ` — ${o.title}` : ''}</option>)}
+                      </select></div>
+                  )}
+                  <p className="muted small">
+                    {worksWithOfficer
+                      ? 'We’ll route your file straight to your officer.'
+                      : 'Your file will go to our Lead Capture desk for prompt assignment.'}
+                  </p>
+                </>
+              );
+            })()}
             <div className="panel" style={{ background: 'var(--ink-2)', marginTop: 8 }}>
               <div className="metrow"><span className="k">Property</span><span className="v">{a.oneLine || '—'}</span></div>
               <div className="metrow"><span className="k">Program</span><span className="v">{form.program || '—'}</span></div>

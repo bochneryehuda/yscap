@@ -203,13 +203,49 @@ async function dryRunBackfill({ samplePerFolder = 8 } = {}) {
 
 // ---- loops ----------------------------------------------------------------
 function start() {
+  // Stage 0 — DRY-RUN validation boot mode. Read-only: fetch a sample of real
+  // tasks, run the mapper, and dump what WOULD happen to the logs. Runs even
+  // when the master switch is off (it writes nothing), so the mapping/identity
+  // graph can be validated against production ClickUp before anything is live.
+  if (cfg.clickupRunDryrun) {
+    if (!cfg.clickupToken) { console.log('[clickup-sync] DRY-RUN requested but CLICKUP_API_TOKEN not set'); return; }
+    console.log('[clickup-sync] DRY-RUN starting (read-only, no writes)…');
+    dryRunBackfill({ samplePerFolder: 8 })
+      .then((s) => console.log('[clickup-sync] DRY-RUN result:', JSON.stringify(s, null, 2)))
+      .catch((e) => console.error('[clickup-sync] DRY-RUN failed', e.message));
+    return; // validation-only boot; do not start the live loops
+  }
+
   if (!cfg.clickupSyncEnabled) { console.log('[clickup-sync] disabled (CLICKUP_SYNC_ENABLED!=1)'); return; }
   console.log('[clickup-sync] worker started');
+
+  // Stage 1 — one-shot inbound backfill on boot (identity graph, and RTL files
+  // when mode='full'). Inbound only; writes to the portal, never to ClickUp.
+  if (cfg.clickupRunBackfill) {
+    const createFiles = cfg.clickupRunBackfill === 'full';
+    console.log(`[clickup-sync] boot backfill (mode=${cfg.clickupRunBackfill}, createFiles=${createFiles})…`);
+    runBackfill({ createFiles })
+      .then((n) => console.log('[clickup-sync] boot backfill ingested', n))
+      .catch((e) => console.error('[clickup-sync] boot backfill', e.message));
+  }
+
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
-  setInterval(() => tick(pushOutboxOnce, 'push'), 4000);
-  setInterval(() => tick(sweepDirtyOnce, 'dirty'), 8000);
+
+  // Inbound loops (ClickUp → portal) always run when the master switch is on —
+  // the portal is the mirror, so pulling is always safe.
   setInterval(() => tick(processInboxOnce, 'inbox'), 4000);
   setInterval(() => { reconcileOnce().catch((e) => console.error('[clickup-sync] reconcile', e.message)); }, (cfg.clickupPollSec || 300) * 1000);
+
+  // Stage 2 — outbound loops (portal → ClickUp writes) are gated separately so
+  // inbound/backfill can run and be validated first, before the portal is
+  // allowed to write to production ClickUp.
+  if (cfg.clickupOutboundEnabled) {
+    console.log('[clickup-sync] outbound writes ENABLED (portal → ClickUp)');
+    setInterval(() => tick(pushOutboxOnce, 'push'), 4000);
+    setInterval(() => tick(sweepDirtyOnce, 'dirty'), 8000);
+  } else {
+    console.log('[clickup-sync] outbound writes DISABLED (CLICKUP_OUTBOUND_ENABLED!=1) — inbound/reconcile only');
+  }
 }
 
 module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, dryRunBackfill, canMaterialize, PIPELINE_FOLDERS };

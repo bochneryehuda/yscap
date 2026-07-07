@@ -126,6 +126,7 @@ const SYNC = {
   borrowerPortalStatus: 'a47ce5e3-eea7-4f70-93ca-8062dee4d1b7', // drop_down — mirrors borrower-facing status
   rtlAsIsValue:         'b70b4451-c971-40ba-a4a6-48d919c6416d', // currency — portal as_is_value
   rehabType:            'fb8814d4-c457-4b8f-af42-671e1e1ad752', // drop_down — portal rehab_type
+  rtlLoanProgram:       'aae034e4-633c-40db-85b4-7d8cfe33501b', // drop_down — Standard/Gold (push-only)
   // read-only appraised-value pulls
   approxAppraisedValue: '834d0ffb-38ac-4358-b1ea-13f5d345dd91', // currency
   actualAppraisedValue: '9356ceea-f3b2-4373-9271-d1354214db47', // currency
