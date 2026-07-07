@@ -163,6 +163,44 @@ async function runBackfill({ createFiles = true, pageLimit = 1000 } = {}) {
   return total;
 }
 
+// ---- dry-run backfill (READ-ONLY validation, zero DB writes) --------------
+// Fetches a sample of real tasks per folder, runs the mapper, and reports what
+// WOULD happen — for validating the mapping/identity graph before enabling sync.
+async function dryRunBackfill({ samplePerFolder = 8 } = {}) {
+  const options = await optionMap();
+  const stats = { folders: 0, tasksSeen: 0, rtl: 0, dataOnly: 0, materializable: 0, withSSN: 0, withLLC: 0, programs: {}, samples: [] };
+  for (const folder of PIPELINE_FOLDERS()) {
+    stats.folders++;
+    let res;
+    try { res = await clickup.getFilteredTeamTasks(cfg.clickupTeamId, { folderIds: [folder], includeClosed: true, subtasks: true }); }
+    catch (e) { continue; }
+    const tasks = ((res && res.tasks) || []).slice(0, samplePerFolder);
+    for (const t of tasks) {
+      try {
+        const full = t.custom_fields ? t : await clickup.getTask(t.id, { include: ['custom_fields'] });
+        const read = mapper.readTaskFields(full, options);
+        stats.tasksSeen++;
+        const prog = read.app.program || '(none)';
+        stats.programs[prog] = (stats.programs[prog] || 0) + 1;
+        const isRtl = read.app.program && ingest.RTL_PROGRAMS.has(read.app.program);
+        if (isRtl) stats.rtl++; else stats.dataOnly++;
+        if (canMaterialize(read)) stats.materializable++;
+        if (read.borrower.ssn) stats.withSSN++;
+        if (read.llc.llc_name) stats.withLLC++;
+        if (stats.samples.length < 12) stats.samples.push({
+          task: full.id, status: read.internalStatus, external: statusMap.externalFor(read.internalStatus),
+          program: read.app.program, loan_type: read.app.loan_type, property_type: read.app.property_type,
+          loan_amount: read.app.loan_amount, arv: read.app.arv, ys_loan: read.app.ys_loan_number,
+          borrower: `${read.borrower.first_name || ''} ${read.borrower.last_name || ''}`.trim(),
+          hasSSN: !!read.borrower.ssn, llc: read.llc.llc_name || null, lender: read.app.lender || null,
+          extraKeys: Object.keys(read.extra).length,
+        });
+      } catch (e) { /* skip */ }
+    }
+  }
+  return stats;
+}
+
 // ---- loops ----------------------------------------------------------------
 function start() {
   if (!cfg.clickupSyncEnabled) { console.log('[clickup-sync] disabled (CLICKUP_SYNC_ENABLED!=1)'); return; }
@@ -174,4 +212,4 @@ function start() {
   setInterval(() => { reconcileOnce().catch((e) => console.error('[clickup-sync] reconcile', e.message)); }, (cfg.clickupPollSec || 300) * 1000);
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, dryRunBackfill, canMaterialize, PIPELINE_FOLDERS };
