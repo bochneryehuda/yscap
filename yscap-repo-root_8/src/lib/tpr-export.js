@@ -52,12 +52,14 @@ async function buildTprExport(appId) {
                  AND d.llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
         AND d.review_status='accepted' AND d.is_current=true
         AND d.source_type <> 'chat_attachment'
+        AND (ci.tpr_exclude IS NOT TRUE)
       ORDER BY ci.sort_order NULLS LAST, d.created_at`, [appId])).rows;
 
   // Required document items still missing an accepted doc — the pre-flight list.
   const missing = (await db.query(
     `SELECT COALESCE(label,'(document)') AS label FROM checklist_items
       WHERE application_id=$1 AND item_kind='document' AND status <> 'satisfied'
+        AND (tpr_exclude IS NOT TRUE)
       ORDER BY sort_order`, [appId])).rows.map(r => r.label);
 
   const files = [];

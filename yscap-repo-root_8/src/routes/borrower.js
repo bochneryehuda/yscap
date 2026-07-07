@@ -1917,11 +1917,11 @@ function normLoanType(text) {
 async function insertFromTemplate(tpl, owner) {
   const cols = ['template_id', 'scope', 'label', 'borrower_label', 'audience', 'item_kind',
                 'role_scope', 'phase', 'hint', 'borrower_hint', 'is_gate', 'is_milestone',
-                'sort_order', 'tool_key', 'clickup_field_id', 'created_by_kind', 'is_required'];
+                'sort_order', 'tool_key', 'clickup_field_id', 'tpr_exclude', 'created_by_kind', 'is_required'];
   const vals = [tpl.id, tpl.scope, tpl.label, tpl.borrower_label || null, tpl.audience, tpl.item_kind,
                 tpl.role_scope || 'any', tpl.phase || null, tpl.hint || null, tpl.borrower_hint || null,
                 tpl.is_gate || false, tpl.is_milestone || false,
-                tpl.sort_order || 100, tpl.tool_key || null, tpl.clickup_field_id || null, 'system',
+                tpl.sort_order || 100, tpl.tool_key || null, tpl.clickup_field_id || null, tpl.tpr_exclude || false, 'system',
                 tpl.is_required !== false];
   for (const [k, v] of Object.entries(owner)) { cols.push(k); vals.push(v); }
   const ph = vals.map((_, i) => `$${i + 1}`).join(',');
