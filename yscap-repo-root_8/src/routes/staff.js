@@ -1912,6 +1912,48 @@ router.post('/applications/:id/closing-date', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Inline "application completeness" editing: fill a missing field straight from
+// the completeness panel (no full form). Whitelisted app + borrower fields only;
+// SSN has its own secure reveal/enter flow and is NEVER set here. App-field
+// changes enqueue a scoped ClickUp push. Behind the /applications/:id guard.
+const COMPLETE_APP_FIELDS = { program: 'text', loan_type: 'text', property_type: 'text',
+  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
+const COMPLETE_BORROWER_FIELDS = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
+async function completeFields(req, res, borrowerScoped) {
+  const b = req.body || {};
+  try {
+    const brRow = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+    if (!brRow.rows[0]) return res.status(404).json({ error: 'not found' });
+    const bid = brRow.rows[0].borrower_id;
+    const appVals = [req.params.id]; const appSets = []; const appKeys = [];
+    for (const [k, t] of Object.entries(COMPLETE_APP_FIELDS)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      let v = b[k];
+      if (t === 'money') { v = Number(String(v).replace(/[^0-9.]/g, '')); if (!Number.isFinite(v)) continue; }
+      appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
+    }
+    if (appSets.length) {
+      appSets.push('updated_at=now()');
+      await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
+      enqueueClickupPush(req.params.id, appKeys).catch(() => {});
+    }
+    const brVals = [bid]; const brSets = [];
+    for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      let v = b[k];
+      if (t === 'int') { v = parseInt(v, 10); if (!Number.isFinite(v)) continue; }
+      brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
+    }
+    if (brSets.length) {
+      brSets.push('updated_at=now()');
+      await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals);
+    }
+    if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brSets.length });
+    res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length });
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+}
+router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
+
 router.patch('/applications/:id', async (req, res) => {
   const { status } = req.body || {};
   const force = !!(req.body && req.body.force);

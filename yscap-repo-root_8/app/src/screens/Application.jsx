@@ -393,6 +393,77 @@ function LlcCondition({ it, app, onChanged }) {
   );
 }
 
+/* Borrower application completeness — the missing pieces of YOUR application,
+   filled in RIGHT HERE (no separate form). Each missing field is a button that
+   opens an inline input and saves straight onto your file. */
+function BorrowerCompleteness({ app, profile, appId, onSaved }) {
+  const [editing, setEditing] = useState(null);
+  const [val, setVal] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const b = profile || {};
+  const fields = [
+    { key: 'property_address', label: 'Property address', ok: !!(app.property_address && (app.property_address.oneLine || app.property_address.street)), edit: false },
+    { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
+    { key: 'purchase_price', label: 'Purchase price', ok: app.purchase_price != null, type: 'money' },
+    { key: 'arv', label: 'ARV (estimate)', ok: app.arv != null, type: 'money' },
+    { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
+    { key: 'cell_phone', label: 'Your phone', ok: !!b.cell_phone, type: 'tel' },
+    { key: 'date_of_birth', label: 'Date of birth', ok: !!b.date_of_birth, type: 'date' },
+    { key: 'fico', label: 'Estimated FICO', ok: b.fico != null, type: 'number' },
+    { key: 'citizenship', label: 'Citizenship', ok: !!b.citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
+  ];
+  const done = fields.filter((x) => x.ok).length;
+  const missing = fields.filter((x) => !x.ok);
+  async function save(f) {
+    if (val === '' || val == null) return;
+    setBusy(true); setErr('');
+    try { await api.post(`/api/borrower/applications/${appId}/complete-fields`, { [f.key]: val }); setEditing(null); setVal(''); await onSaved(); }
+    catch (e) { setErr(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="panel" style={{ marginBottom: 16 }}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <h3 style={{ margin: 0 }}>Complete your application</h3>
+        <div className="spacer" />
+        <span className={`pill ${missing.length ? '' : 'done'}`}>{done}/{fields.length} complete</span>
+      </div>
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
+      {missing.length === 0
+        ? <p className="muted small">Thanks — your application has everything we asked for.</p>
+        : (
+          <>
+            <p className="muted small" style={{ marginBottom: 8 }}>A few details are still missing — tap any to fill it in right here.</p>
+            <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              {missing.map((f) => editing === f.key ? (
+                <span key={f.key} className="row" style={{ gap: 4, alignItems: 'center' }}>
+                  {f.type === 'select'
+                    ? <select className="input" style={{ maxWidth: 200 }} value={val} onChange={(e) => setVal(e.target.value)} autoFocus>
+                        <option value="" disabled>{f.label}…</option>
+                        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    : <input className="input" style={{ maxWidth: 170 }} autoFocus
+                        type={f.type === 'date' ? 'date' : f.type === 'number' || f.type === 'money' ? 'number' : f.type === 'tel' ? 'tel' : 'text'}
+                        inputMode={f.type === 'money' || f.type === 'number' ? 'numeric' : undefined}
+                        placeholder={f.label} value={val} onChange={(e) => setVal(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && save(f)} />}
+                  <button className="btn primary small" disabled={busy || val === ''} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
+                  <button className="btn ghost small" onClick={() => setEditing(null)}>✕</button>
+                </span>
+              ) : f.edit === false ? (
+                <span key={f.key} className="pill" style={{ borderColor: 'var(--muted)', color: 'var(--muted)' }}>Missing: {f.label}</span>
+              ) : (
+                <button key={f.key} className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)', cursor: 'pointer', background: 'none' }}
+                  onClick={() => { setEditing(f.key); setVal(''); setErr(''); }}>+ {f.label}</button>
+              ))}
+            </div>
+          </>
+        )}
+    </div>
+  );
+}
+
 export default function Application() {
   const { id } = useParams();
   const [app, setApp] = useState(null);
@@ -615,6 +686,7 @@ export default function Application() {
 
       <Section id="sec-application" title="Application details"
         info="What you told us on your application — the borrower, the property and the transaction. Ask your loan team to correct anything here.">
+      <BorrowerCompleteness app={app} profile={profile} appId={id} onSaved={load} />
       <div className="grid cols-2">
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>

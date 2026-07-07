@@ -981,6 +981,44 @@ router.post('/applications/:id/appraisal-card/from-saved', async (req, res) => {
   } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
 });
 
+// Borrower-side application completeness: fill a missing field inline from the
+// completeness panel. Same whitelist as staff (SSN excluded — it has its own
+// secure flow). Scoped to the borrower's own file.
+const B_COMPLETE_APP = { program: 'text', loan_type: 'text', property_type: 'text',
+  purchase_price: 'money', as_is_value: 'money', arv: 'money', rehab_budget: 'money' };
+const B_COMPLETE_BORROWER = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
+router.post('/applications/:id/complete-fields', async (req, res) => {
+  const own = await db.query(
+    `SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+    [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const bid = own.rows[0].borrower_id;
+  const b = req.body || {};
+  try {
+    const appVals = [req.params.id], appSets = [], appKeys = [];
+    for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      let v = b[k];
+      if (t === 'money') { v = Number(String(v).replace(/[^0-9.]/g, '')); if (!Number.isFinite(v)) continue; }
+      appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
+    }
+    if (appSets.length) {
+      appSets.push('updated_at=now()');
+      await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
+      try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, appKeys); } catch (_) {}
+    }
+    const brVals = [bid], brSets = [];
+    for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
+      if (!(k in b) || b[k] === '' || b[k] == null) continue;
+      let v = b[k];
+      if (t === 'int') { v = parseInt(v, 10); if (!Number.isFinite(v)) continue; }
+      brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
+    }
+    if (brSets.length) { brSets.push('updated_at=now()'); await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals); }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+});
+
 // ---------------- SERVICE CONTACTS (title company / insurance agent) ----------------
 // Reusable across files: the borrower enters a contact once and links it on
 // future files via autocomplete. tool_key on the checklist item decides which
