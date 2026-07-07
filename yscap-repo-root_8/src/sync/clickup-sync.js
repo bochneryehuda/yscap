@@ -421,10 +421,14 @@ function start() {
   // inbound/backfill can run and be validated first, before the portal is
   // allowed to write to production ClickUp.
   if (cfg.clickupOutboundEnabled) {
-    console.log('[clickup-sync] outbound writes ENABLED (portal → ClickUp)' +
-      (cfg.clickupOutboundSince ? ` — new files only (created >= ${cfg.clickupOutboundSince}) + already-linked` : ' — all dirty apps (no cutoff)'));
+    // SAFETY (post-incident): outbound pushes ONLY changes explicitly enqueued by a
+    // staff edit in the portal (enqueue-on-write). The old "dirty sweep" auto-pushed
+    // ANY file whose updated_at moved — including files just re-ingested FROM ClickUp
+    // (a round-trip), which overwrote ClickUp with the portal's mapped/synthetic
+    // values and looped. The sweep is intentionally NOT started; only the queue
+    // drain runs, so nothing reaches ClickUp unless a human changed it in the portal.
+    console.log('[clickup-sync] outbound writes ENABLED — enqueue-on-write ONLY (no auto-sweep)');
     setInterval(() => tick(pushOutboxOnce, 'push'), 3000);
-    setInterval(() => tick(sweepDirtyOnce, 'dirty'), 3000);
   } else {
     console.log('[clickup-sync] outbound writes DISABLED (CLICKUP_OUTBOUND_ENABLED!=1) — inbound/reconcile only');
   }
