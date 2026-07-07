@@ -37,7 +37,11 @@ module.exports = {
   name: 'graph',
   async sendMail({ to, subject, text, html }) {
     const token = await getToken();
-    const from = cfg.notifyFrom;
+    // NOTIFY_FROM may be a display-name form ("YS Capital <noreply@ys.com>"); the
+    // Graph /users/{id} path needs a BARE address/UPN or every send fails with 400.
+    const rawFrom = cfg.notifyFrom || '';
+    const fromMatch = String(rawFrom).match(/<([^>]+)>/);
+    const from = (fromMatch ? fromMatch[1] : rawFrom).trim();
     const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(from)}/sendMail`;
     const message = {
       subject,

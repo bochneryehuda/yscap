@@ -201,7 +201,9 @@ router.post('/borrower/login', async (req, res, next) => {
       `SELECT b.id, a.password_hash, a.mfa_enabled, a.token_version, a.failed_attempts, a.locked_until
        FROM borrowers b JOIN borrower_auth a ON a.borrower_id=b.id WHERE b.email=$1`, [email]);
     const row = r.rows[0];
-    if (!row) return res.status(401).json({ error: 'invalid credentials' });
+    // Run a real password hash even when the account doesn't exist, so the
+    // response time doesn't reveal whether the email is registered (enumeration).
+    if (!row) { await C.hashPassword(String(password || '')).catch(() => {}); return res.status(401).json({ error: 'invalid credentials' }); }
     if (row.locked_until && new Date(row.locked_until) > new Date())
       return res.status(423).json({ error: 'account locked — try later' });
     if (!(await C.verifyPassword(password, row.password_hash))) {

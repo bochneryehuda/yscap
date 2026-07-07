@@ -62,11 +62,12 @@ async function buildTprExport(appId) {
 
   const files = [];
   const manifestDocs = [];
+  const unavailable = [];
   const counters = {};
   for (const d of docs) {
     let bytes;
     try { bytes = await storage.read(d.storage_ref); }
-    catch (_) { continue; } // skip an unreadable blob rather than fail the whole export
+    catch (_) { unavailable.push({ source: d.filename, requirement: d.item_label || null }); continue; } // record the unreadable blob so the export never misrepresents a clean file as complete
     const folder = folderFor(d.item_label || d.filename);
     counters[folder] = (counters[folder] || 0) + 1;
     const nn = String(counters[folder]).padStart(2, '0');
@@ -77,7 +78,7 @@ async function buildTprExport(appId) {
     manifestDocs.push({ file: name, source: d.filename, requirement: d.item_label || null, accepted_by: d.reviewed_by_name || null, accepted_at: d.reviewed_at || d.created_at });
   }
 
-  const propLabel = (app.property_address && (app.property_address.oneLine || app.property_address.street)) || 'Property';
+  const propLabel = (app.property_address && (app.property_address.oneLine || app.property_address.line1 || app.property_address.street)) || 'Property';
   const manifest = {
     generated_at: new Date().toISOString(),
     lender: 'YS Capital Group',
@@ -98,6 +99,9 @@ async function buildTprExport(appId) {
     } : null,
     included_documents: manifestDocs,
     included_count: manifestDocs.length,
+    // Accepted docs whose stored bytes were unreadable (skipped from the ZIP) —
+    // surfaced so the clean-file export is never silently misrepresented as complete.
+    unavailable_documents: unavailable,
     missing_or_not_yet_accepted: missing,
   };
   if (registration) {
