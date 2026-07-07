@@ -12,6 +12,37 @@
 const F = require('./fields');
 const X = require('./crosswalk');
 const T = require('./transforms');
+const ADDR = require('../lib/address');
+
+/**
+ * Normalize a ClickUp `location` custom-field value into the portal's canonical
+ * address object. ClickUp returns `{ location:{lat,lng}, formatted_address }`
+ * (or occasionally a bare string) — a shape NOTHING in the portal renders: every
+ * reader/display/track-record/identity path wants `oneLine`/`line1`/`city`/
+ * `state`/`zip`. Storing the raw ClickUp value made addresses look "missing"
+ * everywhere even though they were imported. Parse `formatted_address` into
+ * discrete components (city/state/zip), keep lat/lng, and preserve the original
+ * formatted string for identity matching. Returns undefined when unusable.
+ */
+function normalizeClickupLocation(v) {
+  if (!v) return undefined;
+  let formatted = null, lat = null, lng = null;
+  if (typeof v === 'string') {
+    formatted = v;
+  } else if (typeof v === 'object') {
+    formatted = v.formatted_address || v.formattedAddress || v.value || null;
+    const loc = v.location || v.position || v.geolocation || null;
+    if (loc) { lat = loc.lat != null ? loc.lat : loc.latitude; lng = loc.lng != null ? loc.lng : loc.longitude; }
+  } else { return undefined; }
+  const out = formatted ? ADDR.normalizeAddress(ADDR.parseAddress(formatted)) : ADDR.normalizeAddress({});
+  if (formatted) {
+    out.formatted_address = formatted;
+    if (!out.oneLine) out.oneLine = String(formatted).replace(/,?\s*(USA|United States)\.?$/i, '').trim();
+  }
+  if (lat != null && lat !== '') out.lat = Number(lat);
+  if (lng != null && lng !== '') out.lng = Number(lng);
+  return (out.oneLine || out.line1 || out.formatted_address) ? out : undefined;
+}
 
 const ACTUAL_CLOSING = '0846edc7-8619-4ee6-827e-a673570d3057'; // date, pull-only
 
@@ -253,9 +284,9 @@ function readTaskFields(task, options = {}) {
   const ssn = m[F.SHARED.borrowerSSN];
   if (ssn && ssn.value) out.borrower.ssn = String(ssn.value);           // orchestrator encrypts
   const bAddr = m[F.SHARED.borrowerAddress];
-  if (bAddr && bAddr.value) out.borrower.current_address = bAddr.value;  // keep CU location object
+  if (bAddr && bAddr.value) { const a = normalizeClickupLocation(bAddr.value); if (a) out.borrower.current_address = a; }
   const sAddr = m[F.PIPELINE.subjectAddress];
-  if (sAddr && sAddr.value) out.app.property_address = sAddr.value;
+  if (sAddr && sAddr.value) { const a = normalizeClickupLocation(sAddr.value); if (a) out.app.property_address = a; }
   const mar = m[F.EXTRA.maritalStatus];
   if (mar && mar.value != null) {
     const label = T.dropdownIndexToLabel(options[F.EXTRA.maritalStatus] || mar.type_config?.options || [], mar.value);
@@ -305,4 +336,4 @@ function readTaskFields(task, options = {}) {
   return out;
 }
 
-module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue };
+module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation };

@@ -147,8 +147,12 @@ async function upsertTrackRecord(borrowerId, read, taskId) {
   if (isRefi && (priorSameAddr.rows.length || exists.rows.length)) { dealType = 'fix-and-hold'; inferred = true; }
 
   if (exists.rows[0]) {
-    await db.query(`UPDATE track_records SET deal_type=$2, inferred=$3, updated_at=now() WHERE id=$1`,
-      [exists.rows[0].id, dealType, inferred]).catch(() => {});
+    // Also (re)fill the property address — early track records were written with
+    // the raw ClickUp location shape (or none), so a re-run repopulates them with
+    // the normalized address. COALESCE keeps an existing value if this read lacks one.
+    await db.query(`UPDATE track_records SET deal_type=$2, inferred=$3,
+                      property_address=COALESCE($4, property_address), updated_at=now() WHERE id=$1`,
+      [exists.rows[0].id, dealType, inferred, a.property_address ? JSON.stringify(a.property_address) : null]).catch(() => {});
     return exists.rows[0].id;
   }
   const r = await db.query(
