@@ -790,7 +790,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // plate (LO clears on review/"complete"; processor·underwriter on sign-off;
   // anyone on satisfied). The picker re-shows cleared items or everything.
   const [condFilter, setCondFilter] = useState('todo');
-  const borrowerItems = items.filter(it => it.audience === 'borrower' || it.audience === 'both');
+  // #64 — the LLC condition is NOT a plain row here: it IS the vesting-entity
+  // setup, rendered in full in the "LLC condition" section (LlcReview). Excluded
+  // from this list so it isn't duplicated as a bare condition row.
+  const borrowerItems = items.filter(it => (it.audience === 'borrower' || it.audience === 'both') && it.template_code !== 'rtl_p1_llc');
   const ppItem = borrowerItems.find(it => it.tool_key === 'product_pricing');
   const sowItem = borrowerItems.find(it => it.tool_key === 'rehab_budget');
   const trItem = borrowerItems.find(it => it.tool_key === 'track_record');
@@ -1343,7 +1346,7 @@ export default function StaffApplication() {
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
     { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
-    { id: 'sec-entity', label: 'Entity (LLC) review' },
+    { id: 'sec-entity', label: 'LLC condition', badge: app.llc_id && app.llc_verified ? '✓' : '' },
     { id: 'sec-track', label: 'Track record' },
     { id: 'sec-checklist', label: 'Internal checklist', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
     { id: 'sec-documents', label: 'Documents & exports', badge: docs.length || '' },
@@ -1599,8 +1602,8 @@ export default function StaffApplication() {
       </div>
       </Section>
 
-      <Section id="sec-entity" title="Vesting entity (LLC) — verification"
-        info="Verify the LLC taking title on this property inline: entity details, ownership structure and the three formation documents. Marking it verified auto-satisfies the internal LLC condition on every open file it vests.">
+      <Section id="sec-entity" title="LLC condition — vesting entity"
+        info="This IS the LLC condition for the file — set up and verify the LLC taking title inline (entity details, ownership, the three documents). It's the same entity the borrower fills in on their side, so completing it here clears their condition and vice-versa; marking it verified satisfies the LLC condition on every open file it vests. No separate LLC condition row is shown — this is it.">
       <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
       </Section>
