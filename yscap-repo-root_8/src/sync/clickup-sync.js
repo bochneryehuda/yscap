@@ -188,6 +188,44 @@ async function runBackfill({ createFiles = true, pageLimit = 1000, folders = nul
   return total;
 }
 
+// ---- data audit (portal vs ClickUp coverage; assignment; completeness) ----
+// Runs server-side from the DB (applications + clickup_task_index snapshots) and
+// logs a masked report so data quality can be verified from the logs. Answers:
+// who's unassigned, what's missing, which ClickUp fields we're NOT capturing,
+// and what long-term (non-RTL) data we preserved.
+async function auditData() {
+  const q = (sql, p = []) => db.query(sql, p).then((r) => r.rows).catch((e) => [{ error: e.message }]);
+  const out = {};
+  out.filesPerOfficer = await q(
+    `SELECT COALESCE(loan_officer_name,'(unassigned)') officer, count(*)::int n
+       FROM applications WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL
+      GROUP BY 1 ORDER BY n DESC`);
+  out.unassignedByFolder = await q(
+    `SELECT clickup_folder_id, count(*)::int n FROM applications
+      WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL AND loan_officer_id IS NULL
+      GROUP BY 1 ORDER BY n DESC`);
+  out.completeness = (await q(
+    `SELECT count(*)::int total,
+            count(*) FILTER (WHERE property_address IS NULL)::int no_address,
+            count(*) FILTER (WHERE loan_amount IS NULL)::int no_loan_amount,
+            count(*) FILTER (WHERE program IS NULL)::int no_program,
+            count(*) FILTER (WHERE ys_loan_number IS NULL)::int no_ys_loan,
+            count(*) FILTER (WHERE loan_officer_id IS NULL)::int no_officer,
+            count(*) FILTER (WHERE internal_status IS NULL)::int no_status
+       FROM applications WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`))[0];
+  out.topUnmappedFields = await q(
+    `SELECT k AS field, count(*)::int n FROM clickup_task_index, LATERAL jsonb_object_keys(snapshot->'unmapped') k
+      WHERE snapshot ? 'unmapped' GROUP BY k ORDER BY n DESC LIMIT 30`);
+  out.nonRtlPrograms = await q(
+    `SELECT COALESCE(program,'(none)') program, count(*)::int n FROM clickup_task_index
+      WHERE kind='data_only' GROUP BY 1 ORDER BY n DESC LIMIT 30`);
+  out.matchStatus = await q(`SELECT match_status, count(*)::int n FROM clickup_task_index WHERE match_status IS NOT NULL GROUP BY 1 ORDER BY n DESC`);
+  out.ambiguous = await q(`SELECT task_id, task_name FROM clickup_task_index WHERE match_status='ambiguous' LIMIT 25`);
+  out.snapshotsStored = (await q(`SELECT count(*)::int n FROM clickup_task_index WHERE snapshot IS NOT NULL`))[0];
+  console.log('[audit] ' + JSON.stringify(out));
+  return out;
+}
+
 // ---- dry-run backfill (READ-ONLY validation, zero DB writes) --------------
 // Fetches a sample of real tasks per folder, runs the mapper, and reports what
 // WOULD happen — for validating the mapping/identity graph before enabling sync.
@@ -261,6 +299,12 @@ function start() {
       .catch((e) => console.error('[clickup-sync] boot backfill', e.message));
   }
 
+  // One-shot data audit on boot (CLICKUP_RUN_AUDIT=1) — logs the coverage /
+  // assignment / completeness report after any backfill has had time to run.
+  if (cfg.clickupRunAudit) {
+    setTimeout(() => { auditData().catch((e) => console.error('[audit]', e.message)); }, cfg.clickupRunBackfill ? 45000 : 3000);
+  }
+
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
 
   // Inbound loops (ClickUp → portal) always run when the master switch is on —
@@ -285,4 +329,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, dryRunBackfill, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, runBackfill, dryRunBackfill, auditData, canMaterialize, PIPELINE_FOLDERS };
