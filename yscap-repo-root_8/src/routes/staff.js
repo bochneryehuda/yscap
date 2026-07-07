@@ -628,6 +628,7 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
 
     if (b.unlink === true) {
       await db.query(`UPDATE applications SET co_borrower_id=NULL, updated_at=now() WHERE id=$1`, [appId]);
+      try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, null); } catch (_) {}
       await audit(req, 'unlink_co_borrower', 'application', appId, {});
       return res.json({ ok: true, unlinked: true });
     }
@@ -670,6 +671,9 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     }
     if (coId === app.borrower_id) return res.status(400).json({ error: 'the co-borrower must be a different person than the primary borrower' });
     await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1`, [appId, coId]);
+    // The co-borrower's government-ID condition (named with their name) appears
+    // on the file the moment they're linked.
+    try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, coId); } catch (_) {}
     await audit(req, 'set_co_borrower', 'application', appId, { coBorrowerId: coId });
     res.json({ ok: true, coBorrowerId: coId });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
