@@ -173,6 +173,18 @@ async function runBackfill({ createFiles = true, pageLimit = 1000, folders = nul
     }
   }
   console.log(`[backfill] ingested ${total} tasks`);
+  // Verification summary (assignment + match outcomes) — no PII, safe to log.
+  try {
+    const s = await db.query(
+      `SELECT count(*)::int linked, count(*) FILTER (WHERE loan_officer_id IS NOT NULL)::int assigned,
+              count(DISTINCT loan_officer_id)::int distinct_officers
+         FROM applications WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`);
+    const mi = await db.query(`SELECT match_status, count(*)::int n FROM clickup_task_index WHERE match_status IS NOT NULL GROUP BY match_status ORDER BY n DESC`);
+    const st = await db.query(`SELECT status, count(*)::int n FROM applications WHERE deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL GROUP BY status ORDER BY n DESC`);
+    console.log('[backfill] linked apps:', JSON.stringify(s.rows[0]));
+    console.log('[backfill] match_status:', JSON.stringify(mi.rows));
+    console.log('[backfill] borrower-status spread:', JSON.stringify(st.rows));
+  } catch (e) { console.error('[backfill] summary failed', e.message); }
   return total;
 }
 
