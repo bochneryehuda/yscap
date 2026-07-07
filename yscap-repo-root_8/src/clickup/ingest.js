@@ -437,6 +437,14 @@ async function ingestTask(task, options = {}, opts = {}) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
       { allowCreate: opts.createFile === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId, coBorrowerTaskId });
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
+    // Co-borrower government-ID condition follows the file's ACTUAL linked
+    // co-borrower (a manual link is preserved by fill-only-if-null above).
+    if (applicationId) {
+      try {
+        const cur = (await db.query(`SELECT co_borrower_id FROM applications WHERE id=$1`, [applicationId])).rows[0];
+        await require('../lib/co-borrower').ensureCoBorrowerIdCondition(applicationId, cur && cur.co_borrower_id);
+      } catch (_) { /* best-effort */ }
+    }
   } else {
     // Unsupported program (DSCR / long-term / anything outside RTL_PROGRAMS): pull
     // the task for DATA ONLY (masked snapshot below) — never materialize a loan
