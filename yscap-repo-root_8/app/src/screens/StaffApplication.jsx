@@ -842,6 +842,8 @@ export default function StaffApplication() {
   const [newCond, setNewCond] = useState('');
   const [conds, setConds] = useState([]);
   const [gating, setGating] = useState(null);
+  // Known internal (ClickUp) statuses for the picker — file-independent, loaded once.
+  const [internalStatuses, setInternalStatuses] = useState([]);
   const [condFilter, setCondFilter] = useState('all');
   const [cForm, setCForm] = useState({ title: '', audience: 'staff', severity: 'standard' });
   const [ssnFull, setSsnFull] = useState('');
@@ -902,6 +904,9 @@ export default function StaffApplication() {
     load();
     /* eslint-disable-next-line */
   }, [id]);
+
+  // The internal (ClickUp) status list is the same for every file — load once.
+  useEffect(() => { api.staffInternalStatuses().then(setInternalStatuses).catch(() => {}); }, []);
 
   // Arriving from the Chat hub (?focus=chat): land on the conversation panel
   // instead of the top of a very long page. Runs once per file, after render.
@@ -1042,6 +1047,17 @@ export default function StaffApplication() {
       setErr(e.message || 'Could not update status');
     }
   }
+  // Set the EXACT ClickUp task status. Re-derives the borrower-facing status and
+  // pushes both to ClickUp via the scoped status push.
+  async function changeInternalStatus(internalStatus) {
+    setErr('');
+    if (!internalStatus || internalStatus === (app.internal_status || '')) return;
+    try {
+      await api.staffSetInternalStatus(id, internalStatus);
+      flash(`Internal status → ${internalStatus}. Pushed to ClickUp; borrower status re-derived.`);
+      await load();
+    } catch (e) { setErr(e.message || 'Could not update internal status'); }
+  }
   async function nudge() {
     if (busyAct) return;   // a double-click emailed the borrower twice
     setBusyAct('nudge'); setErr('');
@@ -1181,6 +1197,28 @@ export default function StaffApplication() {
           title="Email the borrower an invite to join this file in the portal">
           {inviteBusy ? 'Sending…' : 'Invite borrower'}
         </button>
+      </div>
+      <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
+        <span className="muted small">Internal (ClickUp) status</span>
+        <select className="input" style={{ maxWidth: 280 }} value={app.internal_status || ''}
+          onChange={e => changeInternalStatus(e.target.value)}
+          title="The exact ClickUp task status (38-status workflow). Setting it re-derives the borrower-facing status and pushes to ClickUp.">
+          {/* Keep the current value selectable even if it isn't a normalized known key
+              (live ClickUp statuses carry irregular casing / trailing spaces). */}
+          {!app.internal_status && <option value="">— not set —</option>}
+          {app.internal_status && !internalStatuses.some(s => s.value === app.internal_status) &&
+            <option value={app.internal_status}>{app.internal_status} (current)</option>}
+          {(() => {
+            const groups = {};
+            for (const s of internalStatuses) (groups[s.external] || (groups[s.external] = [])).push(s);
+            return Object.keys(groups).map(ext => (
+              <optgroup key={ext} label={ext}>
+                {groups[ext].map(s => <option key={s.value} value={s.value}>{s.value}</option>)}
+              </optgroup>
+            ));
+          })()}
+        </select>
+        <span className="muted small">Pushes the exact status to ClickUp; borrower status is re-derived.</span>
       </div>
       <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
         <span className="muted small">Expected closing</span>

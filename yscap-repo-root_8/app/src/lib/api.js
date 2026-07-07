@@ -264,6 +264,10 @@ export const api = {
   staffWaiveCondition:   (cid, reason) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason }),
   staffAssign:      (appId, b) => req('POST', `/api/staff/applications/${appId}/assign`, b),
   staffSetStatus:   (appId, status, force) => req('PATCH', `/api/staff/applications/${appId}`, force ? { status, force: true } : { status }),
+  // Internal (ClickUp) status — the exact 38-status task workflow. The list feeds
+  // the picker; setting it re-derives the borrower-facing status and pushes to ClickUp.
+  staffInternalStatuses: () => req('GET', '/api/staff/clickup/internal-statuses'),
+  staffSetInternalStatus: (id, internalStatus) => req('POST', '/api/staff/applications/' + id + '/internal-status', { internalStatus }),
   staffGating:      (appId) => req('GET', `/api/staff/applications/${appId}/gating`),
   staffStatusHistory: (appId) => req('GET', `/api/staff/applications/${appId}/status-history`),
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
