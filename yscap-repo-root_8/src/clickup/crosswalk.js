@@ -55,7 +55,7 @@ const FIELDS = {
     to: { 'Individual': 'Individual', 'LLC / Corp': 'LLC / Corp', 'Trust': 'Trust' },
   },
   rehab_type: {
-    id: null,                                        // NEW ClickUp "Rehab Type" field (owner adding)
+    id: 'fb8814d4-c457-4b8f-af42-671e1e1ad752',      // ClickUp "Rehab Type" field
     to: {
       'Cosmetic': 'Cosmetic', 'Moderate': 'Moderate', 'Heavy / gut rehab': 'Heavy',
       'Adding square footage': 'Adding SF', 'Ground-up construction': 'Ground-up',
@@ -85,6 +85,15 @@ const FIELDS = {
     to: {
       'Rent': 'Rent', 'Own with mortgage': 'Mortgage', 'Own free and clear': 'own free and clear',
       'Live with family': 'Rent Free', 'Other': null,
+    },
+  },
+  // Borrower-facing status mirror ON the ClickUp task (option labels == our values).
+  borrower_portal_status: {
+    id: 'a47ce5e3-eea7-4f70-93ca-8062dee4d1b7',
+    to: {
+      new: 'new', in_review: 'in_review', processing: 'processing', underwriting: 'underwriting',
+      approved: 'approved', clear_to_close: 'clear_to_close', funded: 'funded',
+      on_hold: 'on_hold', declined: 'declined', withdrawn: 'withdrawn',
     },
   },
 };

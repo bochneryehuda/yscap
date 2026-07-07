@@ -117,4 +117,39 @@ const CHECKLIST = {
   },
 };
 
-module.exports = { SPACES, SHARED, CRM, PIPELINE, CHECKLIST };
+// ---- Sync-integration fields (created in the ClickUp UI for this build) ----
+const SYNC = {
+  sendToPortal:         'b5fca1d2-2d8b-436c-a3ea-67f7a159e036', // checkbox — emergency/force-resync trigger
+  portalFileId:         '6bca11f0-47d5-460f-b915-30fc78c6e4c8', // short_text — binding stamp (our app UUID)
+  portalFileLink:       '7b369ef5-452b-4448-8329-0683491e8917', // url
+  syncStatus:           'c5bc086e-7f7f-446f-9571-b2e5089c9ff8', // short_text — sync health / last error
+  borrowerPortalStatus: 'a47ce5e3-eea7-4f70-93ca-8062dee4d1b7', // drop_down — mirrors borrower-facing status
+  rtlAsIsValue:         'b70b4451-c971-40ba-a4a6-48d919c6416d', // currency — portal as_is_value
+  rehabType:            'fb8814d4-c457-4b8f-af42-671e1e1ad752', // drop_down — portal rehab_type
+  // read-only appraised-value pulls
+  approxAppraisedValue: '834d0ffb-38ac-4358-b1ea-13f5d345dd91', // currency
+  actualAppraisedValue: '9356ceea-f3b2-4373-9271-d1354214db47', // currency
+};
+
+// Borrower Portal Status option ids (labels == our external status values).
+const BORROWER_PORTAL_STATUS_OPT = {
+  new:            'cb960fa4-550e-4a65-a476-2c792f120322',
+  in_review:      '4e84f586-1953-443d-a5fd-9b7e8368639b',
+  processing:     '0544e93c-e2cd-415c-9d69-1fc55355c3e2',
+  underwriting:   'd4703d43-a247-48e2-a377-da4fa16c8a7a',
+  approved:       '751a513c-40c1-48ca-87f6-477a79252c96',
+  clear_to_close: 'cfbc4acd-a5e3-42ad-bb6e-cbdb96785714',
+  funded:         '22e8563b-d705-4a20-97b7-30205ebc65f5',
+  on_hold:        'e1247b8b-0092-48a9-b509-64a9b368e294',
+  declined:       '0d5a9326-9d76-4153-ba4f-4cf64711385f',
+  withdrawn:      'cbd1ad43-4491-4a40-b62c-9de7e8212ad2',
+};
+
+// New dropdown OPTION ids added to existing fields for this build.
+const NEW_OPTIONS = {
+  programGroundUp:      '137b2bb7-b81b-48cb-a03e-4df92945b106', // *Program
+  propertyCondo:        '37837896-111e-42de-a208-00ce4ed678f4', // *Property Type
+  propertyTownhouse:    '5a07ddd9-7d9d-4959-91b6-8392807be24f', // *Property Type
+};
+
+module.exports = { SPACES, SHARED, CRM, PIPELINE, CHECKLIST, SYNC, BORROWER_PORTAL_STATUS_OPT, NEW_OPTIONS };
