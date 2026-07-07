@@ -31,7 +31,9 @@ function ssnHash(ssn, key) {
 const lower  = (v) => String(v == null ? '' : v).trim().toLowerCase();
 
 function normAddress(v) {
-  return lower(v).replace(/[.,#]/g, ' ').replace(/\bunit\b|\bapt\b|\bste\b/g, ' ')
+  return lower(v).replace(/[.,#]/g, ' ')
+    .replace(/\b(unit|apt|ste|suite)\b/g, ' ')
+    .replace(/\b(usa|united states)\b/g, ' ')   // ClickUp formatted_address appends ", USA"
     .replace(/\s+/g, ' ').trim() || null;
 }
 function normName(v) { return lower(v).replace(/\s+/g, ' ') || null; }

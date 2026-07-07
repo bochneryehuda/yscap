@@ -170,7 +170,21 @@ async function findExistingApp(task, read, borrowerId) {
       if (!linked || linked === task.id) return { id: s.rows[0].id, how: 'linked_stamp', detail: { stamp: read.portalFileId } };
       return { ambiguous: true, detail: { stamp: read.portalFileId, boundToTask: linked } };
     }
-    // stale stamp (app deleted) -> fall through to identity
+    // stale stamp (app deleted) -> fall through
+  }
+  // ys_loan_number is a GLOBAL unique key — same number == same loan. Match it
+  // across ALL borrowers (not just the resolved one) so a re-linked/re-keyed file
+  // links instead of colliding on the unique index (which would otherwise throw).
+  if (read.app.ys_loan_number) {
+    const ln = await db.query(
+      `SELECT id, clickup_pipeline_task_id FROM applications WHERE ys_loan_number=$1 AND deleted_at IS NULL LIMIT 1`,
+      [read.app.ys_loan_number]
+    ).catch(() => ({ rows: [] }));
+    if (ln.rows[0]) {
+      const linked = ln.rows[0].clickup_pipeline_task_id;
+      if (!linked || linked === task.id) return { id: ln.rows[0].id, how: 'linked_loannum', detail: { ysLoanNumber: read.app.ys_loan_number } };
+      return { ambiguous: true, detail: { ysLoanNumber: read.app.ys_loan_number, boundToTask: linked } };
+    }
   }
   const cand = await db.query(
     `SELECT id, property_address, ys_loan_number, purchase_price FROM applications
