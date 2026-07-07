@@ -356,6 +356,9 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   const [ef, setEf] = useState(null);           // {llcName, ein, formationState, formationDate, ownershipPct}
   const [em, setEm] = useState(null);           // members [{fullName, ownershipPct, email}]
   const [showCreate, setShowCreate] = useState(false);
+  // #57 — the file's vesting entity is the focus; other borrower entities stay
+  // collapsed behind this toggle so staff verify just the LLC on this property.
+  const [showOthers, setShowOthers] = useState(false);
   const blankCreate = { llcName: '', ein: '', formationState: '', formationDate: '', ownershipPct: '' };
   const [cf, setCf] = useState(blankCreate);
   function beginEdit(l) {
@@ -447,15 +450,16 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     <div className="panel" style={{ marginTop: 18 }}>
       <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={onFile} />
       <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
-        <h3>Borrower LLCs</h3>
+        <h3>Vesting entity (LLC)</h3>
         <div className="spacer" />
         <span className="muted small">{llcs ? `${llcs.length} entit${llcs.length === 1 ? 'y' : 'ies'}` : ''}</span>
         <button className="btn ghost small" onClick={() => { setShowCreate(v => !v); setErr(''); }}>{showCreate ? 'Cancel' : '+ Add entity'}</button>
       </div>
       <p className="muted small" style={{ marginBottom: 10 }}>
-        The borrower's reusable entities. Enter or correct the entity's details, upload its documents, and
-        review each one — then mark the whole LLC verified. It auto-fulfills the LLC condition on this and
-        every future file it vests. Everything here mirrors what the borrower sees on their profile.
+        The LLC taking title on this property. Confirm its details, ownership (to 100%) and the three
+        documents, then mark it verified — that satisfies the internal LLC condition on this and every
+        future file it vests. This is the borrower's reusable entity, so anything you enter mirrors their
+        profile. Other entities on the borrower are tucked below.
       </p>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
@@ -481,7 +485,11 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
       )}
       {llcs == null ? <p className="muted small">Loading…</p>
         : llcs.length === 0 ? <p className="muted small">No LLCs on this borrower's profile yet.</p>
-        : llcs.map(l => {
+        : (() => {
+          // #57 — render JUST the vesting entity for THIS file up top; other
+          // borrower entities collapse behind a toggle so staff verify the one
+          // that matters without wading through a full LLC list.
+          const renderLlc = (l) => {
           const linked = l.id === app.llc_id;
           const open = openId === l.id;
           const c = l.completeness || {};
@@ -654,7 +662,27 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
               )}
             </div>
           );
-        })}
+          };
+          const vesting = app.llc_id ? llcs.filter(l => l.id === app.llc_id) : [];
+          const others = app.llc_id ? llcs.filter(l => l.id !== app.llc_id) : llcs;
+          return (
+            <>
+              {vesting.map(renderLlc)}
+              {app.llc_id && vesting.length === 0 &&
+                <p className="muted small">The entity linked to this file isn't loading — refresh the page.</p>}
+              {others.length > 0 && (app.llc_id
+                ? (<>
+                    <div className="row" style={{ marginTop: 8 }}>
+                      <button className="btn link small" onClick={() => setShowOthers(v => !v)}>
+                        {showOthers ? 'Hide other entities' : `Show ${others.length} other entit${others.length === 1 ? 'y' : 'ies'} on this borrower`}
+                      </button>
+                    </div>
+                    {showOthers && others.map(renderLlc)}
+                  </>)
+                : others.map(renderLlc))}
+            </>
+          );
+        })()}
     </div>
   );
 }
@@ -801,6 +829,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         // every track-record change — no need to open the panel
                         const p = it.tool_payload || {};
                         const c = p.counts, r = p.required;
+                        // No experience priced/claimed on this file → nothing to
+                        // verify. It reactivates the moment experience is entered
+                        // on the application or in Products & Pricing.
+                        if (p.notApplicable) return 'No experience required on this file — reactivates if experience is entered on the application or in Products & Pricing';
                         if (!c) return 'Verified from the borrower\'s general track record (panel below)';
                         const have = `On record: ${c.flips || 0} flip${c.flips === 1 ? '' : 's'} · ${c.holds || 0} hold${c.holds === 1 ? '' : 's'}${c.ground ? ` · ${c.ground} ground-up` : ''}`;
                         const needsAny = r && (r.flips + r.holds + r.ground > 0);
@@ -1502,8 +1534,8 @@ export default function StaffApplication() {
       </div>
       </Section>
 
-      <Section id="sec-entity" title="Entity (LLC) review"
-        info="The vesting entity's details, ownership structure and formation documents. Verifying the LLC auto-satisfies its condition on every open file it vests.">
+      <Section id="sec-entity" title="Vesting entity (LLC) — verification"
+        info="Verify the LLC taking title on this property inline: entity details, ownership structure and the three formation documents. Marking it verified auto-satisfies the internal LLC condition on every open file it vests.">
       <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
       </Section>
