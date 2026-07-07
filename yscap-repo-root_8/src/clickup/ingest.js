@@ -147,9 +147,14 @@ async function ingestTask(task, options = {}, opts = {}) {
   const llcId = await upsertLlc(borrowerId, read.llc.llc_name, read.llc.ein, task.id);
   if (CLOSED_STATUSES(read.internalStatus)) { try { await upsertTrackRecord(borrowerId, read, task.id); } catch (_) {} }
 
+  // Always link/UPDATE an already-linked RTL file; only CREATE a new portal loan
+  // file when allowed (opts.createFile !== false). This lets inbound stay safe
+  // by default — the identity graph is maintained and linked files stay fresh,
+  // without materializing new files that could duplicate an existing unlinked
+  // portal application for the same loan.
   let applicationId = null;
-  if (isRtl && opts.createFile !== false) {
-    applicationId = await linkOrCreateApplication(task, read, borrowerId, llcId);
+  if (isRtl) {
+    applicationId = await linkOrCreateApplication(task, read, borrowerId, llcId, { allowCreate: opts.createFile !== false });
   }
 
   await db.query(
@@ -163,8 +168,9 @@ async function ingestTask(task, options = {}, opts = {}) {
   return { borrowerId, llcId, applicationId, isRtl };
 }
 
-/** Create or update the RTL loan file from a task (pull side). */
-async function linkOrCreateApplication(task, read, borrowerId, llcId) {
+/** Create or update the RTL loan file from a task (pull side).
+ *  allowCreate=false updates an already-linked file but never inserts a new one. */
+async function linkOrCreateApplication(task, read, borrowerId, llcId, { allowCreate = true } = {}) {
   const a = read.app || {};
   const found = await db.query(`SELECT id FROM applications WHERE clickup_pipeline_task_id=$1 LIMIT 1`, [task.id]);
   const internal = read.internalStatus;
@@ -186,6 +192,7 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId) {
       [found.rows[0].id, ...Object.values(cols)]);
     return found.rows[0].id;
   }
+  if (!allowCreate) return null;   // inbound file materialization gated off — don't create a new portal file
   const keys = ['borrower_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', ...Object.keys(cols)];
   const vals = [borrowerId, llcId, task.id, 'clickup_backfill', 'linked', ...Object.values(cols)];
   const ph = vals.map((_, i) => `$${i + 1}`).join(',');
