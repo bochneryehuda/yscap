@@ -1181,7 +1181,12 @@ export default function StaffApplication() {
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
   // so they must not be listed twice.
-  const internalItems = useMemo(() => items.filter(it => it.audience === 'staff'), [items]);
+  // Internal DOCUMENT conditions (audience=staff, item_kind=document — e.g.
+  // Insurance binder+invoice, Title) live in their OWN "Internal conditions"
+  // section in the conditions area, NOT in the phase-by-phase internal checklist
+  // (which is staff work-items/tasks only).
+  const internalConds = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind === 'document'), [items]);
+  const internalItems = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind !== 'document'), [items]);
   const phases = useMemo(() => {
     const groups = {};
     const src = itemFilter === 'all' ? internalItems : internalItems.filter(it => bucketOf(it.status) === itemFilter);
@@ -1208,6 +1213,7 @@ export default function StaffApplication() {
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
+    { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
     { id: 'sec-entity', label: 'Entity (LLC) review' },
     { id: 'sec-track', label: 'Track record' },
     { id: 'sec-checklist', label: 'Internal checklist', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
@@ -1401,6 +1407,18 @@ export default function StaffApplication() {
         <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}
           cForm={cForm} setCForm={setCForm} addLoanCondition={addLoanCondition}
           clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} />
+      </div>
+      </Section>
+
+      <Section id="sec-internal-conds" title="Internal conditions"
+        info="Staff-only document conditions (e.g. Insurance binder + invoice, Title). They sync with ClickUp and appear in the TPR export like any condition, but are NEVER shared with the borrower — separate from the phase-by-phase internal checklist below.">
+      <div className="panel" style={{ marginTop: 0 }}>
+        {internalConds.length === 0
+          ? <p className="muted small">No internal conditions on this file.</p>
+          : [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map(it => (
+            <Item key={it.id} it={it} team={team} onPatch={patch} role={role}
+              docs={docs} onUploadTo={pickUpload} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+              dlBusy={dlBusy} onPreview={openPreview} />))}
       </div>
       </Section>
 
