@@ -386,10 +386,37 @@ async function ingestTask(task, options = {}, opts = {}) {
   const folderId = (task && task.folder && task.folder.id) || opts.folderId || null;
 
   const { borrowerId } = await resolveBorrower(read, task.id);
-  // #65 — a co-borrower named on the parent task (flag YES + a second-borrower
-  // name/email) is resolved into its OWN encrypted, identity-matched borrower
-  // record (reusing resolveBorrower) so the second borrower auto-surfaces on the
-  // file. Best-effort; never blocks the primary ingest.
+  // #72 — enrich the co-borrower from its ClickUp SUBTASK (the full profile:
+  // DOB, SSN, address) when the parent flags a co-borrower. Guarded/best-effort:
+  // any failure (no subtask, API error, unexpected shape) silently falls back to
+  // the parent-field co-borrower (name/email/cell), so it can NEVER break sync.
+  let coBorrowerTaskId = null;
+  if (read.coBorrowerFlagYes || (read.coBorrower && (read.coBorrower.first_name || read.coBorrower.email))) {
+    try {
+      const client = require('./client');
+      const withSubs = (task.subtasks && task.subtasks.length) ? task : await client.getTask(task.id, { includeSubtasks: true });
+      const subs = (withSubs && withSubs.subtasks) || [];
+      if (subs.length) {
+        const coName = read.coBorrower ? `${read.coBorrower.first_name || ''} ${read.coBorrower.last_name || ''}`.trim().toLowerCase() : '';
+        const pick = (coName && subs.find((s) => String(s.name || '').toLowerCase().includes(coName)))
+          || subs.find((s) => /co.?borrow|borrower\s*2|second\s*borrow|guarantor/i.test(String(s.name || '')))
+          || (subs.length === 1 ? subs[0] : null);
+        if (pick && pick.id) {
+          const full = await client.getTask(pick.id);
+          const subRead = mapper.readTaskFields(full, options);
+          const sb = subRead.borrower || {};
+          if (sb.first_name || sb.email || sb.ssn) {
+            read.coBorrower = { ...(read.coBorrower || {}), ...sb };  // subtask wins (richer)
+            coBorrowerTaskId = pick.id;
+          }
+        }
+      }
+    } catch (_) { /* best-effort; keep the parent-field co-borrower */ }
+  }
+  // #65 — resolve the co-borrower (from the subtask if enriched above, else the
+  // parent fields) into its OWN encrypted, identity-matched borrower record
+  // (reusing resolveBorrower) so the second borrower auto-surfaces on the file.
+  // Best-effort; never blocks the primary ingest.
   let coBorrowerId = null;
   if (read.coBorrower && (read.coBorrower.first_name || read.coBorrower.email)) {
     try {
@@ -408,7 +435,7 @@ async function ingestTask(task, options = {}, opts = {}) {
   let applicationId = null, matchStatus = isRtl ? null : 'data_only', matchDetail = null;
   if (isRtl) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
-      { allowCreate: opts.createFile === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId });
+      { allowCreate: opts.createFile === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId, coBorrowerTaskId });
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
   } else {
     // Unsupported program (DSCR / long-term / anything outside RTL_PROGRAMS): pull
@@ -466,7 +493,7 @@ async function ingestTask(task, options = {}, opts = {}) {
  * Returns { applicationId, matchStatus, detail }.
  */
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
-  const { allowCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null } = ctx;
+  const { allowCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
   const a = read.app || {};
   const lo = await resolveStaffByEmail(loanOfficerEmail);
   const pr = await resolveStaffByEmail(processorEmail);
@@ -532,9 +559,13 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
               clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
       [targetId, ...vals, task.id]);
     // Co-borrower: fill ONLY when the file has none yet — never clobber an
-    // existing link (a staff-set/corrected co-borrower stays put).
+    // existing link (a staff-set/corrected co-borrower stays put). The subtask id
+    // is recorded alongside (also fill-only) for the future outbound sync.
     if (coBorrowerId) {
       try { await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1 AND co_borrower_id IS NULL`, [targetId, coBorrowerId]); } catch (_) {}
+    }
+    if (coBorrowerTaskId) {
+      try { await db.query(`UPDATE applications SET co_borrower_task_id=COALESCE(co_borrower_task_id,$2), updated_at=now() WHERE id=$1`, [targetId, coBorrowerTaskId]); } catch (_) {}
     }
     return { applicationId: targetId, matchStatus, detail };
   }
@@ -546,8 +577,8 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // it a freshly-pulled file has clickup_last_synced_at=NULL, which the outbound
   // dirty-sweep reads as "dirty" and immediately echoes back to ClickUp — a pull→
   // push loopback for every inbound-created file.
-  const keys = ['borrower_id', 'co_borrower_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', 'clickup_last_synced_at', ...Object.keys(cols)];
-  const insVals = [borrowerId, coBorrowerId, llcId, task.id, 'clickup_backfill', 'linked', new Date(), ...vals];
+  const keys = ['borrower_id', 'co_borrower_id', 'co_borrower_task_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', 'clickup_last_synced_at', ...Object.keys(cols)];
+  const insVals = [borrowerId, coBorrowerId, coBorrowerTaskId, llcId, task.id, 'clickup_backfill', 'linked', new Date(), ...vals];
   const ph = insVals.map((_, i) => `$${i + 1}`).join(',');
   const r = await db.query(
     `INSERT INTO applications (${keys.join(',')}) VALUES (${ph})
