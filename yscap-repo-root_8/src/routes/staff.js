@@ -1211,6 +1211,39 @@ async function signOffGate(itemId) {
   const isProduct = code === 'rtl_p1_product' || item.tool_key === 'product_pricing';
   const isBudget = code === 'rtl_p1_budget' || item.tool_key === 'rehab_budget';
   const isExp = code === 'rtl_p3_reo' || item.tool_key === 'track_record';
+  const isInsurance = code === 'rtl_cond_insurance';
+  const isTitle = code === 'rtl_cond_title';
+  const isFraud = code === 'rtl_cond_fraud';
+
+  // Document-gated conditions: cannot be signed off until the required upload(s)
+  // are present on the item (current, non-rejected versions). slot_label carries
+  // the slot key/label, so a case-insensitive substring identifies each slot.
+  if (isInsurance || isTitle || isFraud) {
+    const docs = await db.query(
+      `SELECT lower(coalesce(slot_label,'')) AS slot FROM documents
+        WHERE checklist_item_id=$1 AND is_current AND COALESCE(review_status,'') <> 'rejected'`, [itemId]);
+    const slots = docs.rows.map((r) => r.slot);
+    const hasSlot = (needle) => slots.some((s) => s.includes(needle));
+    if (isInsurance) {
+      if (!hasSlot('binder') || !hasSlot('invoice'))
+        return 'Upload BOTH the insurance binder and the insurance invoice before signing off — this condition cannot be completed without both documents.';
+      return null;
+    }
+    if (isTitle) {
+      if (!slots.length)
+        return 'Upload the title document before signing off — this condition cannot be completed without it.';
+      return null;
+    }
+    if (isFraud) {
+      if (!hasSlot('background'))
+        return 'Upload the background report before signing off — it is required on this condition.';
+      const gp = (await db.query(`SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [item.application_id])).rows[0];
+      if (gp && /gold/i.test(String(gp.program || '')) && !hasSlot('criminal'))
+        return 'This is a Gold Standard file — the criminal report is required. Upload it before signing off.';
+      return null;
+    }
+  }
+
   if (!isProduct && !isBudget && !isExp) return null;
 
   const ar = await db.query(`SELECT rehab_budget, borrower_id FROM applications WHERE id=$1`, [item.application_id]);
