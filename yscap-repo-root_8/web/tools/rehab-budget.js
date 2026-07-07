@@ -706,9 +706,43 @@ const RB = (function(){
     const tc=document.getElementById("sb-target"); if(tc){ const t=num(S.target),g=grand(),d=t-g; tc.innerHTML= t>0?(d>=0?'<div class="rb-tot"><span class="k">Left to allocate</span><span class="v teal">'+money(d)+'</span></div>':'<div class="rb-tot"><span class="k">Over target</span><span class="v over">'+money(-d)+'</span></div>'):""; }
   }
 
-  /* ---------- optional Google Places autocomplete (silent) ---------- */
+  /* ---------- property-address autocomplete ---------- */
+  // Prefer Google Places when the Maps JS API happens to be loaded; otherwise
+  // fall back to the app's OWN address API (/api/address/suggest — the same
+  // nominatim/smarty/google proxy every other address field on the site uses),
+  // so the rehab budget always autocompletes + verifies addresses.
   function maybeAutocomplete(){ const inp=document.getElementById("f-address"); if(!inp) return;
-    if(window.google&&google.maps&&google.maps.places){ try{ const ac=new google.maps.places.Autocomplete(inp,{types:["address"]}); ac.addListener("place_changed",()=>{ const p=ac.getPlace(); S.address=(p&&p.formatted_address)||inp.value; commit(); }); }catch(e){} } }
+    if(window.google&&google.maps&&google.maps.places){ try{ const ac=new google.maps.places.Autocomplete(inp,{types:["address"]}); ac.addListener("place_changed",()=>{ const p=ac.getPlace(); S.address=(p&&p.formatted_address)||inp.value; commit(); }); return; }catch(e){} }
+    if(inp.dataset.acWired) return; inp.dataset.acWired="1";
+    const wrap=inp.parentNode; if(wrap) wrap.style.position="relative";
+    const box=document.createElement("div"); box.className="rb-ac";
+    box.style.cssText="position:absolute;left:0;right:0;top:100%;z-index:60;background:#0e141a;border:1px solid rgba(127,169,176,.4);border-radius:8px;margin-top:2px;max-height:220px;overflow:auto;display:none";
+    if(wrap) wrap.appendChild(box);
+    let t=null, seq=0;
+    const hide=()=>{ box.style.display="none"; box.innerHTML=""; };
+    const pick=(label)=>{ inp.value=label; S.address=label; commit(); hide(); };
+    inp.addEventListener("input",()=>{ const q=inp.value.trim(); clearTimeout(t);
+      if(q.length<3){ hide(); return; }
+      const mine=++seq;
+      t=setTimeout(()=>{
+        fetch("/api/address/suggest?q="+encodeURIComponent(q)).then(r=>r.ok?r.json():null).then(d=>{
+          if(mine!==seq) return;                       // drop stale responses
+          const list=(d&&d.suggestions)||[];
+          if(!list.length){ hide(); return; }
+          box.innerHTML="";
+          list.slice(0,6).forEach(s=>{ const label=s.label||s.address||""; if(!label) return;
+            const row=document.createElement("div"); row.textContent=label;
+            row.style.cssText="padding:.5rem .6rem;cursor:pointer;font-size:.92rem;border-bottom:1px solid rgba(127,169,176,.12)";
+            row.onmouseenter=()=>{row.style.background="rgba(127,169,176,.15)";}; row.onmouseleave=()=>{row.style.background="";};
+            row.onmousedown=(e)=>{ e.preventDefault(); pick(label); };   // fire before blur
+            box.appendChild(row);
+          });
+          box.style.display="block";
+        }).catch(()=>{ /* one failure never disables the field */ });
+      },250);
+    });
+    inp.addEventListener("blur",()=> setTimeout(hide,150));
+  }
 
   /* ===================== EXCEL (xlsx-js-style — same engine as the other YS tools) ===================== */
   function loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement("script"); s.src=src; s.onload=res; s.onerror=rej; document.head.appendChild(s); }); }
