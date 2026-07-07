@@ -23,6 +23,10 @@ const transforms = require('./transforms');
 const checklist = require('./checklist');
 
 const RTL_PROGRAMS = new Set(['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction']);
+// Raw ClickUp *Program labels that mean "not chosen yet" (the officer will set
+// it) — these must be treated like a blank program, NEVER as an unsupported
+// program to descope. Matched case-insensitively against read.rawProgram.
+const UNSET_PROGRAM_LABELS = new Set(['not sure yet']);
 const CLOSED_STATUSES = (s) => statusMap.externalFor(s) === 'funded';
 
 function identityFrom(read) {
@@ -331,10 +335,14 @@ async function applyChecklistStatuses(appId, task, options = {}) {
  */
 async function descopeFlipped(taskId) {
   try {
+    // Guard `deleted_at IS NULL`: only descope a file that is currently LIVE. An
+    // admin-archived file (deleted_at set, sync_state still 'linked') is left
+    // exactly as-is — converting it to 'descoped' would erase the marker the
+    // restore-on-reflip logic uses to keep admin archives from being resurrected.
     const r = await db.query(
       `UPDATE applications
-          SET sync_state='descoped', deleted_at=COALESCE(deleted_at, now()), updated_at=now()
-        WHERE clickup_pipeline_task_id=$1 AND sync_state <> 'descoped'
+          SET sync_state='descoped', deleted_at=now(), updated_at=now()
+        WHERE clickup_pipeline_task_id=$1 AND sync_state <> 'descoped' AND deleted_at IS NULL
         RETURNING id, program`, [taskId]);
     if (!r.rows[0]) return null;
     await db.query(
@@ -377,8 +385,18 @@ async function ingestTask(task, options = {}, opts = {}) {
     // file, never flag it as an error/mismatch. If a file was PREVIOUSLY built as
     // RTL and the program was later corrected in ClickUp (e.g. Short-Term Rehab →
     // DSCR), descope it: remove it from the portal WITHOUT touching ClickUp.
-    const desc = await descopeFlipped(task.id);
-    if (desc) { applicationId = desc.id; matchStatus = 'descoped'; matchDetail = { from: desc.program, to: program }; }
+    //
+    // SAFETY: only descope on a POSITIVELY-identified non-RTL program — a real,
+    // resolved *Program label that is neither RTL nor an "unset" sentinel. A
+    // blank/unresolved program (rawProgram empty — e.g. a cold/stale option cache
+    // or a field a staffer cleared) leaves the linked file untouched, so a
+    // transient read failure can NEVER soft-delete a live loan file.
+    const rawProg = (read.rawProgram || '').trim();
+    const positivelyNonRtl = rawProg !== '' && !UNSET_PROGRAM_LABELS.has(rawProg.toLowerCase());
+    if (positivelyNonRtl) {
+      const desc = await descopeFlipped(task.id);
+      if (desc) { applicationId = desc.id; matchStatus = 'descoped'; matchDetail = { from: desc.program, to: rawProg }; }
+    }
   }
 
   // PULL-ONLY checklist status mirror — ClickUp dropdown → portal condition — for

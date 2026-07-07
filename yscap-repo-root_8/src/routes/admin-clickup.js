@@ -109,11 +109,12 @@ router.post('/file/:appId/repull', async (req, res) => {
 // Returns {checked, descoped}. Safe to run any time (idempotent).
 router.post('/reconcile-programs', async (req, res) => {
   if (!cfg.clickupToken) return res.status(400).json({ error: 'CLICKUP_API_TOKEN not set' });
-  try {
-    const out = await sync.reconcileLinkedProgramsOnce();
-    await audit(req, 'clickup_reconcile_programs', null, JSON.stringify(out));
-    res.json({ ok: true, ...out });
-  } catch (e) { res.status(502).json({ error: String(e.message) }); }
+  // Fire-and-forget (one serial ClickUp getTask per linked file — can take minutes
+  // on a large portfolio, so never block the HTTP response). Watch /activity.
+  sync.reconcileLinkedProgramsOnce()
+    .then((out) => { console.log('[reconcile-programs]', JSON.stringify(out)); return audit(req, 'clickup_reconcile_programs', null, JSON.stringify(out)); })
+    .catch((e) => console.error('[reconcile-programs]', e.message));
+  res.json({ ok: true, started: true, note: 'running in background; watch /activity + /health' });
 });
 
 // ---- Manual Review queue -------------------------------------------------
@@ -130,7 +131,17 @@ router.get('/manual-review', async (req, res) => {
          LEFT JOIN clickup_task_index ti ON ti.task_id = a.clickup_pipeline_task_id
         WHERE a.sync_state='manual_review' AND a.deleted_at IS NULL
         ORDER BY a.created_at DESC, a.id`);
-    res.json({ rows: r.rows });
+    // Ambiguous inbound matches never materialize an application row (we refuse to
+    // guess which existing file a task belongs to), so they can't sit in the
+    // sync_state queue above — the only durable record is clickup_task_index.
+    // Surface them here (read-only, with the task to open in ClickUp) so the
+    // mis-link safety net is visible instead of silently swallowed.
+    const amb = await db.query(
+      `SELECT task_id, task_name, match_detail, last_seen
+         FROM clickup_task_index
+        WHERE match_status='ambiguous'
+        ORDER BY last_seen DESC NULLS LAST LIMIT 100`);
+    res.json({ rows: r.rows, ambiguousTasks: amb.rows });
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
 

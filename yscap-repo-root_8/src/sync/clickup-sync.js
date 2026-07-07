@@ -76,31 +76,16 @@ async function pushOutboxOnce() {
   return true;
 }
 
-// ---- dirty sweep (portal edits → ClickUp, no write-path wiring needed) -----
-// Pushes any RTL / already-linked application whose updated_at is newer than its
-// last sync (10s debounce lets rapid edits settle). Because ingest sets
-// updated_at and clickup_last_synced_at together, pulled changes never look
-// dirty — so this cannot loop.
+// ---- dirty sweep (RETIRED — do not reintroduce) ---------------------------
+// The old dirty-sweep did a FULL, unscoped push of every "dirty" file. That is
+// exactly the behavior that caused the ClickUp-overwrite incident (it pushed
+// mapped/synthetic values over real ClickUp data and echo-looped). Outbound is
+// now enqueue-on-write + scoped push ONLY (pushOutboxOnce). This function is
+// permanently retired to a no-op so it can never be re-wired into a full
+// overwrite path; it stays exported only so any stale caller/test is a safe
+// no-op rather than a crash. Returns false so a `while (await fn())` drains once.
 async function sweepDirtyOnce() {
-  // Go-live guard: when CLICKUP_OUTBOUND_SINCE is set, only push apps that are
-  // already linked to a ClickUp task OR were created at/after the cutoff. This
-  // stops the sweep from bulk-pushing the pre-existing portal backlog (which
-  // would create duplicate ClickUp tasks). Empty cutoff = push everything dirty.
-  const since = cfg.clickupOutboundSince || null;
-  const r = await db.query(
-    `SELECT a.id FROM applications a
-      WHERE a.deleted_at IS NULL
-        AND a.sync_state NOT IN ('manual_review','descoped')
-        AND (a.clickup_pipeline_task_id IS NOT NULL OR a.program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction'))
-        AND ($1::timestamptz IS NULL OR a.clickup_pipeline_task_id IS NOT NULL OR a.created_at >= $1::timestamptz)
-        AND (a.clickup_last_synced_at IS NULL OR a.updated_at > a.clickup_last_synced_at + interval '3 seconds')
-      ORDER BY a.updated_at LIMIT 12`, [since]);
-  let n = 0;
-  for (const row of r.rows) {
-    try { await orchestrator.pushApplication(row.id, { force: true }); n++; }
-    catch (e) { console.error('[clickup-sync] push dirty', row.id, e.message); }
-  }
-  return n > 0;
+  return false;
 }
 
 // ---- inbound (ClickUp → portal) ------------------------------------------
