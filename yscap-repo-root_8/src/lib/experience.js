@@ -61,12 +61,16 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   const required = requestedFromApp(app);
   const counts = await countBorrowerExperience(app.borrower_id, client);
   const requiredAny = hasRequirement(required);
-  const satisfied = requiredAny ? requirementMet(counts, required) : counts.total > 0;
+  // NO experience claimed on the file → there is nothing to verify, so the
+  // track-record condition is NOT APPLICABLE. We auto-satisfy it (stamped
+  // notApplicable) so it drops out of the open conditions list — it "disappears"
+  // until experience is added (either on the application or written back from
+  // Products & Pricing), at which point it reopens for real verification.
+  const notApplicable = !requiredAny;
+  const met = requiredAny && requirementMet(counts, required);
+  const satisfied = notApplicable || met;
   const payload = {
-    autoExperienceTask: true,
-    required,
-    counts,
-    satisfied,
+    autoExperienceTask: true, notApplicable, required, counts, satisfied,
     checkedAt: new Date().toISOString(),
   };
 
@@ -79,36 +83,33 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   const item = ir.rows[0];
   if (!item) return { required, counts, satisfied, itemId: null };
 
-  if (satisfied) {
-    await client.query(
-      `UPDATE checklist_items
-          SET status='received',
-              tool_payload=$2,
-              updated_at=now()
-        WHERE id=$1 AND status <> 'satisfied'`,
-      [item.id, JSON.stringify(payload)]);
-  } else {
-    let wasAuto = false;
-    if (item.tool_payload && typeof item.tool_payload === 'object') {
-      wasAuto = !!item.tool_payload.autoExperienceTask;
-    }
-    if (wasAuto && item.status === 'received' && !item.signed_off_at) {
+  // A truthy signed_off_at is always a GENUINE human sign-off — the not-
+  // applicable auto-satisfy below uses status='satisfied' with a NULL stamp, so
+  // it never impersonates one.
+  if (item.signed_off_at) {
+    // Keep the sign-off in place UNLESS the requirement has since grown beyond
+    // what's verified — e.g. Products & Pricing re-priced off MORE experience
+    // than was signed off for. Then reopen for re-verification (mirrors the
+    // liquidity condition's reopen-on-increase); otherwise just refresh counts.
+    if (requiredAny && !met) {
       await client.query(
         `UPDATE checklist_items
-            SET status='outstanding',
-                tool_payload=$2,
-                updated_at=now()
+            SET status='outstanding', tool_payload=$2, signed_off_at=NULL, signed_off_by=NULL, updated_at=now()
           WHERE id=$1`,
         [item.id, JSON.stringify(payload)]);
-    } else if (wasAuto || !item.tool_payload) {
-      // Keep the live counts on the condition even when nothing changes
-      // status-wise, so every conditions list (borrower AND staff) shows
-      // "entered vs required" without the tool ever being opened.
-      await client.query(
-        `UPDATE checklist_items SET tool_payload=$2, updated_at=now() WHERE id=$1`,
-        [item.id, JSON.stringify(payload)]);
+      return { required, counts, satisfied: false, itemId: item.id, reopened: true };
     }
+    await client.query(`UPDATE checklist_items SET tool_payload=$2, updated_at=now() WHERE id=$1`, [item.id, JSON.stringify(payload)]);
+    return { required, counts, satisfied: true, itemId: item.id };
   }
+
+  // Auto-managed (no human sign-off): n/a → satisfied (drops out of the open
+  // conditions list); requirement met → received (awaiting sign-off); requested
+  // but unmet → outstanding.
+  const status = notApplicable ? 'satisfied' : met ? 'received' : 'outstanding';
+  await client.query(
+    `UPDATE checklist_items SET status=$3, tool_payload=$2, updated_at=now() WHERE id=$1`,
+    [item.id, JSON.stringify(payload), status]);
   return { required, counts, satisfied, itemId: item.id };
 }
 

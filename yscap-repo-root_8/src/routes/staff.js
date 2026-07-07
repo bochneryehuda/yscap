@@ -753,6 +753,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // Dynamic liquidity: the registered quote knows the exact cash-to-close +
     // reserve requirement, so write that into the bank-statement condition (and
     // reopen it if the required liquidity went UP since it was last signed off).
+    // (#59 — writing the priced experience back onto the application and
+    // repopulating the track-record condition is handled inside
+    // persistProductRegistration above.)
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
 
     // Notify the assigned team (LO + processor), not the borrower.

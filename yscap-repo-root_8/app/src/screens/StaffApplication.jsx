@@ -801,6 +801,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         // every track-record change — no need to open the panel
                         const p = it.tool_payload || {};
                         const c = p.counts, r = p.required;
+                        // No experience priced/claimed on this file → nothing to
+                        // verify. It reactivates the moment experience is entered
+                        // on the application or in Products & Pricing.
+                        if (p.notApplicable) return 'No experience required on this file — reactivates if experience is entered on the application or in Products & Pricing';
                         if (!c) return 'Verified from the borrower\'s general track record (panel below)';
                         const have = `On record: ${c.flips || 0} flip${c.flips === 1 ? '' : 's'} · ${c.holds || 0} hold${c.holds === 1 ? '' : 's'}${c.ground ? ` · ${c.ground} ground-up` : ''}`;
                         const needsAny = r && (r.flips + r.holds + r.ground > 0);
