@@ -38,6 +38,7 @@ const EXTERNAL_FOR = {
   'delegated initial': 'underwriting',
   'delegated conditional': 'underwriting',
   'non del imported ba(2-em)': 'underwriting',
+  'imported to bank (2-em)': 'underwriting',   // delegated twin of "non del imported ba" — file is at the bank
   'in underwriting': 'underwriting',
   'approval processing (3-em)': 'underwriting',
   'resubmitted (4-em)': 'underwriting',
@@ -76,7 +77,7 @@ function fallbackExternal(n) {
   if (/cancel|trash|recall|withdraw/.test(n)) return 'withdrawn';
   if (/fund|reconcil|post.?closing|purchase review|purchase conditions|refinanc/.test(n)) return 'funded';
   if (/ctc|closing/.test(n)) return 'clear_to_close';
-  if (/underwrit|delegated|approval|resubmit/.test(n)) return 'underwriting';
+  if (/underwrit|delegated|approval|resubmit|imported to ?ba|import.*bank/.test(n)) return 'underwriting';
   if (/pricing|prospect|starting|structuring|rolled back/.test(n)) return 'in_review';
   return 'processing';
 }
