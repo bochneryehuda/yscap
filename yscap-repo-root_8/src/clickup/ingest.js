@@ -70,6 +70,7 @@ async function recordContacts(borrowerId, borrower, taskId) {
 async function resolveBorrower(read, taskId) {
   const b = read.borrower || {};
   const ssnHash = identity.ssnHash(b.ssn, cfg.ssnMatchKey);
+  let ssnConflict = false; // set if an email match has a DIFFERENT SSN (two people)
 
   // 1) strong: exact SSN-hash
   if (ssnHash) {
@@ -83,7 +84,7 @@ async function resolveBorrower(read, taskId) {
   if (b.email) {
     const r = await db.query(`SELECT id, ssn_hash FROM borrowers WHERE email=$1 LIMIT 1`, [String(b.email).toLowerCase().trim()]);
     if (r.rows[0]) {
-      const ssnConflict = ssnHash && r.rows[0].ssn_hash && ssnHash !== r.rows[0].ssn_hash;
+      ssnConflict = ssnHash && r.rows[0].ssn_hash && ssnHash !== r.rows[0].ssn_hash;
       if (!ssnConflict) {
         if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, r.rows[0].id]);
         await recordContacts(r.rows[0].id, b, taskId);
@@ -95,7 +96,11 @@ async function resolveBorrower(read, taskId) {
   //    (kept cheap: candidate pool by last name / phone digits)
   // 4) none -> create a shadow profile
   const first = b.first_name || 'Unknown', last = b.last_name || 'Unknown';
-  const email = b.email ? String(b.email).toLowerCase().trim() : `noemail+${taskId}@clickup.local`;
+  // CRITICAL: if the email belongs to a DIFFERENT person (SSN conflict above), do
+  // NOT reuse it here — the INSERT's ON CONFLICT (email) DO UPDATE would resolve to
+  // that other person's row and re-merge the two we just refused to merge (wrong
+  // loan/PII attachment). Use a synthetic unique email so a distinct profile is created.
+  const email = (b.email && !ssnConflict) ? String(b.email).toLowerCase().trim() : `noemail+${taskId}@clickup.local`;
   const ins = await db.query(
     `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,citizenship,fico,current_address,
                             marital_status,employment_type,employer,ssn_hash,origin)
@@ -342,8 +347,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
 
   // Create (race-safe: the partial unique index on clickup_pipeline_task_id makes
   // a concurrent duplicate INSERT resolve to the existing row instead of a dup).
-  const keys = ['borrower_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', ...Object.keys(cols)];
-  const insVals = [borrowerId, llcId, task.id, 'clickup_backfill', 'linked', ...vals];
+  // Stamp clickup_last_synced_at on CREATE (mirroring the UPDATE branch). Without
+  // it a freshly-pulled file has clickup_last_synced_at=NULL, which the outbound
+  // dirty-sweep reads as "dirty" and immediately echoes back to ClickUp — a pull→
+  // push loopback for every inbound-created file.
+  const keys = ['borrower_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', 'clickup_last_synced_at', ...Object.keys(cols)];
+  const insVals = [borrowerId, llcId, task.id, 'clickup_backfill', 'linked', new Date(), ...vals];
   const ph = insVals.map((_, i) => `$${i + 1}`).join(',');
   const r = await db.query(
     `INSERT INTO applications (${keys.join(',')}) VALUES (${ph})

@@ -993,6 +993,12 @@ router.post('/loan-conditions/:cid/waive', async (req, res) => {
   const reason = String((req.body || {}).reason || '').trim();
   if (!reason) return res.status(400).json({ error: 'a waive reason is required' });
   try {
+    // Per-file authorization — mirror the sibling /clear endpoint. Having the
+    // waive_conditions capability must not let a scoped staffer waive a condition
+    // on a file they aren't assigned to.
+    const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
+    if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
     const r = await db.query(`UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(), updated_at=now() WHERE id=$1 RETURNING id`, [req.params.cid, reason.slice(0, 500), req.actor.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     await audit(req, 'waive_condition', 'condition', req.params.cid, { reason });
@@ -2301,7 +2307,7 @@ async function canSeeDocument(req, doc) {
     // application — never fall through to the borrower's other files, or an
     // officer on App1 could reach App2 of the same borrower.
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`,
+      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL AND (loan_officer_id=$2 OR processor_id=$2)`,
       [doc.application_id, req.actor.id]);
     return !!r.rows[0];
   }
@@ -2309,7 +2315,7 @@ async function canSeeDocument(req, doc) {
     // Only borrower/llc-scoped documents (no application_id) use the
     // borrower-wide fallback.
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE borrower_id=$1 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+      `SELECT 1 FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
       [doc.borrower_id, req.actor.id]);
     if (r.rows[0]) return true;
   }
