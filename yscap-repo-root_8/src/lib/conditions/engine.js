@@ -214,7 +214,9 @@ async function evaluateApplication(appId, opts = {}) {
         originKind: 'auto',
         originDetail: { templateVersion: tpl.version, rule: summary, reason: opts.reason || null },
       });
-      out.added.push({ id, label: tpl.label, borrowerLabel: tpl.borrower_label || tpl.label, audience: tpl.audience });
+      // borrowerLabel must NEVER fall back to the internal tpl.label (note-buyer
+      // context) — it is interpolated into the borrower notification below.
+      out.added.push({ id, label: tpl.label, borrowerLabel: tpl.borrower_label || null, audience: tpl.audience });
     } else if (!matches && tpl.auto_apply === 'rules' && instances.length) {
       for (const inst of instances) {
         const untouched = inst.origin_kind === 'auto' && inst.status === 'outstanding'
@@ -239,7 +241,7 @@ async function evaluateApplication(appId, opts = {}) {
   if (visible.length && opts.notify !== false) {
     try {
       const notify = require('../notify');
-      const names = visible.map((x) => `"${x.borrowerLabel}"`).join(', ');
+      const names = visible.map((x) => x.borrowerLabel ? `"${x.borrowerLabel}"` : 'a new item').join(', ');
       await notify.notifyAppBorrowers(appId, {
         type: 'condition_added',
         title: visible.length === 1 ? 'A new item was added to your file' : `${visible.length} new items were added to your file`,

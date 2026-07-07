@@ -202,7 +202,7 @@ router.post('/applications/:id/request-draw', async (req, res) => {
   const a = own.rows[0];
   if (!a) return res.status(404).json({ error: 'not found' });
   if (a.status !== 'funded') return res.status(400).json({ error: 'Draws can be requested once your loan is funded.' });
-  const addr = (a.property_address && (a.property_address.oneLine || a.property_address.street)) || 'your property';
+  const addr = (a.property_address && (a.property_address.oneLine || a.property_address.line1 || a.property_address.street)) || 'your property';
   const borrowerName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
   const team = [...new Set([a.loan_officer_id, a.processor_id].filter(Boolean))];
   try {
@@ -549,7 +549,8 @@ router.get('/applications/:id/checklist', async (req, res) => {
       if (!f) continue;
       it.field_def = {
         key: f.key, type: f.type, options: f.options || undefined,
-        label: f.borrowerLabel || f.label, hint: f.borrowerHint || undefined,
+        // Borrower-facing field label only — never the internal f.label.
+        label: f.borrowerLabel || 'Additional information', hint: f.borrowerHint || undefined,
       };
       it.field_value = ctx ? (ctx[it.field_key] ?? null) : null;
     }
