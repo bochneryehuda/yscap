@@ -2,6 +2,7 @@
  * Run: node scripts/test-clickup-transforms.js   (no DB / network needed) */
 const t = require('../src/clickup/transforms');
 const status = require('../src/clickup/status');
+const x = require('../src/clickup/crosswalk');
 
 let pass = 0, fail = 0;
 const eq = (name, got, exp) => {
@@ -63,6 +64,31 @@ eq('maskCard', t.maskCard('4266843539945489'), '✱✱✱✱ ✱✱✱✱ ✱✱
 eq('status funded', status.externalFor('closed (6-email funded)'), 'funded');
 eq('status on_hold', status.externalFor('inactive / on hold'), 'on_hold');
 eq('status processing', status.externalFor('self procesing'), 'processing');
+
+// crosswalk (portal value <-> ClickUp option label)
+eq('cw program flip', x.toClickUpLabel('program', 'Fix & Flip w/ Construction'), 'Fix & Flip With Construction');
+eq('cw program bridge', x.toClickUpLabel('program', 'Bridge'), 'bridge Without Construction');
+eq('cw program groundup', x.toClickUpLabel('program', 'Ground-Up Construction'), 'Ground-Up');
+eq('cw program notsure->blank', x.toClickUpLabel('program', 'Not sure yet'), null);
+eq('cw program <- bridge', x.fromClickUpLabel('program', 'bridge Without Construction'), 'Bridge');
+eq('cw program <- privatehm', x.fromClickUpLabel('program', 'Private hard money'), 'Bridge');
+eq('cw proptype sfr', x.toClickUpLabel('property_type', 'SFR (1 unit)'), 'SFR');
+eq('cw proptype multi24', x.toClickUpLabel('property_type', 'Multi 2–4'), 'Multi 2-4');
+eq('cw proptype <- warrantable', x.fromClickUpLabel('property_type', 'Warrantable condo'), 'Condo');
+eq('cw loantype cashout', x.toClickUpLabel('loan_type', 'Refinance — Cash-Out'), 'Refi Cash-Out');
+eq('cw rehab heavy', x.toClickUpLabel('rehab_type', 'Heavy / gut rehab'), 'Heavy');
+eq('cw housing family', x.toClickUpLabel('housing_status', 'Live with family'), 'Rent Free');
+eq('cw housing other->blank', x.toClickUpLabel('housing_status', 'Other'), null);
+eq('cw term default', x.toClickUpLabel('term', ''), '12 Months');
+
+// resolveWriteId / resolveReadValue against a live option list
+const PROG_LIST = [
+  { id: '31e3b89d-34a4-40a9-9bb9-cbcbd1130060', orderindex: 0, name: 'Fix & Flip With Construction' },
+  { id: 'e8ff7301-6a64-4d5c-b4d4-48c8dd707eaa', orderindex: 1, name: 'bridge Without Construction' },
+  { id: 'be62fcc8-df9f-4a4f-b2b5-b22b87570e0e', orderindex: 2, name: 'Non-QM - DSCR Ratio' },
+];
+eq('cw resolveWriteId Bridge', x.resolveWriteId('program', 'Bridge', PROG_LIST), 'e8ff7301-6a64-4d5c-b4d4-48c8dd707eaa');
+eq('cw resolveReadValue idx1', x.resolveReadValue('program', 1, PROG_LIST), 'Bridge');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
