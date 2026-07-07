@@ -750,6 +750,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           WHERE application_id=$1 AND tool_key='product_pricing' AND status <> 'satisfied'`, [appId]);
     } catch (_) { /* condition may not exist on older files */ }
 
+    // Dynamic liquidity: the registered quote knows the exact cash-to-close +
+    // reserve requirement, so write that into the bank-statement condition (and
+    // reopen it if the required liquidity went UP since it was last signed off).
+    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
+
     // Notify the assigned team (LO + processor), not the borrower.
     try {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
