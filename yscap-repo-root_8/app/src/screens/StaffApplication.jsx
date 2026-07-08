@@ -15,6 +15,7 @@ import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+import ReminderModal from '../components/ReminderModal.jsx';
 import { US_STATES } from '../components/LlcManager.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
@@ -1038,7 +1039,7 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
 function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
-  const [trOpen, setTrOpen] = useState(false);    // borrower track record open full-screen (staff)
+  const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
   const [cardBusy, setCardBusy] = useState(false);
   // #66 — role-aware visibility: default hides what's already off THIS viewer's
@@ -1163,6 +1164,21 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     {it.hint}
                   </div>
                 )}
+                {it.tool_key === 'track_record' && it.tool_payload && it.tool_payload.perBorrower && it.tool_payload.perBorrower.length > 1 && (
+                  // #103 — per-borrower breakdown: each borrower's own 3-year-window
+                  // deals, so it's clear who contributes what. The requirement is the
+                  // combined total shown in the summary line above.
+                  <div className="small" style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {it.tool_payload.perBorrower.map(p => {
+                      const c = p.counts || {};
+                      return (
+                        <div key={p.borrowerId} className="muted">
+                          <b style={{ color: 'var(--ink-9,inherit)' }}>{p.name}</b>{p.isPrimary ? ' (borrower)' : ' (co-borrower)'} — {c.flips || 0} flip{c.flips === 1 ? '' : 's'} · {c.holds || 0} hold{c.holds === 1 ? '' : 's'}{c.ground ? ` · ${c.ground} ground-up` : ''}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 {it.tool_key === 'appraisal_card' && card && (
                   <div className="small" style={{ marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
                     {card.brand} <strong>{card.number.replace(/(\d{4})(?=\d)/g, '$1 ')}</strong> · exp {String(card.expMonth).padStart(2, '0')}/{card.expYear} · CVC {card.cvc} · ZIP {card.zip}
@@ -1178,9 +1194,24 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                   {app.registered_program ? 'Reprice / re-register' : 'Open Products & Pricing'}
                 </button>
               )}
-              {it.tool_key === 'track_record' && app.borrower_id && (
-                <button className="btn ghost small" onClick={() => setTrOpen(true)}>Open track record</button>
-              )}
+              {it.tool_key === 'track_record' && app.borrower_id && (() => {
+                // #103 — on a co-borrower file the experience condition opens EACH
+                // borrower's own track record: one button per borrower, named.
+                const pb = (it.tool_payload && it.tool_payload.perBorrower) || null;
+                if (pb && pb.length > 1) {
+                  return (
+                    <div className="row" style={{ gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      {pb.map(p => (
+                        <button key={p.borrowerId} className="btn ghost small" onClick={() => setTrOpen(p.borrowerId)}
+                          title={`Open ${p.name}'s track record${p.isPrimary ? ' (primary borrower)' : ' (co-borrower)'}`}>
+                          Open {p.name.split(' ')[0] || 'track record'}'s track record
+                        </button>
+                      ))}
+                    </div>
+                  );
+                }
+                return <button className="btn ghost small" onClick={() => setTrOpen(app.borrower_id)}>Open track record</button>;
+              })()}
               {it.tool_key === 'appraisal_card' && (
                 <button className="btn ghost small" disabled={cardBusy} onClick={revealCard}>
                   {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
@@ -1236,11 +1267,11 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           url={sowUrl(appId, sowOpen, app)}
           onClose={() => setSowOpen(null)} />
       )}
-      {trOpen && app.borrower_id && (
+      {trOpen && (
         <ToolModal
           title="Borrower track record (internal)"
-          url={`/tools/track-record.html?internal=1&borrower=${app.borrower_id}&embed=1`}
-          onClose={() => { setTrOpen(false); onChanged && onChanged(); }} />
+          url={`/tools/track-record.html?internal=1&borrower=${trOpen}&embed=1`}
+          onClose={() => { setTrOpen(null); onChanged && onChanged(); }} />
       )}
     </div>
   );
@@ -1397,6 +1428,7 @@ export default function StaffApplication() {
   // without downloading. Uses the same authenticated loader as the download.
   const [previewDoc, setPreviewDoc] = useState(null);
   const [chatOpen, setChatOpen] = useState(false);   // #94 — Message opens a popup, not a scroll
+  const [remindOpen, setRemindOpen] = useState(false);   // #93 — Remind opens the reminder/task manager
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   async function revealSsn() {
@@ -1688,7 +1720,7 @@ export default function StaffApplication() {
         })()}
         <div className="spacer" />
         <button className="btn ghost" onClick={() => setChatOpen(true)}>💬 Message</button>
-        <button className="btn ghost" onClick={nudge} disabled={busyAct === 'nudge'} title="Email the borrower a reminder of their outstanding items">🔔 Remind</button>
+        <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says">🔔 Remind</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
           title="Email the borrower an invite to join this file in the portal">
           {inviteBusy ? 'Sending…' : 'Invite borrower'}
@@ -2014,6 +2046,11 @@ export default function StaffApplication() {
             </div>
           </div>
         </div>
+      )}
+      {remindOpen && (
+        // #93 — Remind opens the reminder/task manager: schedule a reminder or
+        // task with a due date/time, recipients, and message; manage what's live.
+        <ReminderModal appId={id} team={team} onClose={() => setRemindOpen(false)} onChanged={() => {}} />
       )}
     </>
   );

@@ -282,6 +282,12 @@ export const api = {
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffEditApplication: (appId, b) => req('PATCH', `/api/staff/applications/${appId}/details`, b),
   staffNudge:          (appId) => req('POST', `/api/staff/applications/${appId}/nudge`),
+  // Reminders + task management (#93). staffReminders returns { reminders,
+  // contacts, outstanding } so the composer is populated in one round-trip.
+  staffReminders:      (appId) => req('GET', `/api/staff/applications/${appId}/reminders`),
+  staffCreateReminder: (appId, b) => req('POST', `/api/staff/applications/${appId}/reminders`, b),
+  staffUpdateReminder: (appId, rid, b) => req('PATCH', `/api/staff/applications/${appId}/reminders/${rid}`, b),
+  staffDeleteReminder: (appId, rid) => req('DELETE', `/api/staff/applications/${appId}/reminders/${rid}`),
   // Archive = reversible soft-remove (leaves the Archived folder); Purge =
   // permanent hard delete (row + children + stored bytes, gone from all figures).
   staffArchiveApp:  (appId, reason) => req('POST', `/api/staff/applications/${appId}/archive`, { reason }),

@@ -213,6 +213,12 @@ if (require.main === module) {
         require('./lib/liquidity').backfillLiquidityConditions()
           .then((n) => n && console.log('[boot] liquidity condition backfill:', n))
           .catch((e) => console.error('[boot] liquidity backfill failed:', e.message));
+        // One-shot: recompute the experience condition on co-borrower files so it
+        // carries the per-borrower breakdown + each borrower's track-record link
+        // (#103). Idempotent, preserves sign-offs; fire-and-forget.
+        require('./lib/experience').backfillCoBorrowerExperience()
+          .then((n) => n && console.log('[boot] co-borrower experience backfill:', n))
+          .catch((e) => console.error('[boot] experience backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }
@@ -226,6 +232,9 @@ if (require.main === module) {
     // Chat's deferred-notification sweeper (email-if-still-unread + urgent
     // re-pings). Cheap interval; safe to run alongside everything else.
     try { require('./lib/chat').startSweeper(); } catch (e) { console.warn('chat sweeper not started:', e.message); }
+    // Reminder/task dispatcher (#93): fires scheduled reminders at their due
+    // moment via the notify fan-out. Minute cadence; self-gated + idempotent.
+    try { require('./lib/reminders').startDispatcher(); } catch (e) { console.warn('reminder dispatcher not started:', e.message); }
   });
 }
 module.exports = app;

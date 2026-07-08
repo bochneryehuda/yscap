@@ -30,6 +30,93 @@ function readNewFileDraft() {
   catch (_) { return null; }
 }
 
+/* Optional co-borrower at file creation (#98). Internal-only borrower-name
+   typeahead (same guarded endpoint as elsewhere) so a co-borrower on record
+   links to the existing person instead of duplicating. Reports the resolved
+   payload up via onChange; renders nothing that reaches a borrower surface. */
+function CoBorrowerPicker({ value, onChange }) {
+  const [co, setCo] = useState(value || { firstName: '', lastName: '', email: '', phone: '', borrowerId: null });
+  const [matches, setMatches] = useState([]);
+  const [show, setShow] = useState(false);
+  const seq = useRef(0);
+  const box = useRef(null);
+
+  const push = (next) => { setCo(next); onChange(next); };
+  const setField = (k, v) => push({ ...co, [k]: v, ...(co.borrowerId ? { borrowerId: null } : {}) });
+
+  useEffect(() => {
+    if (co.borrowerId) { setMatches([]); return; }
+    const q = `${co.firstName} ${co.lastName}`.trim();
+    if (q.length < 2) { setMatches([]); setShow(false); return; }
+    const mine = ++seq.current;
+    const t = setTimeout(() => {
+      api.staffBorrowerSearch(q)
+        .then(rows => { if (mine === seq.current) { setMatches(rows || []); setShow(true); } })
+        .catch(() => { if (mine === seq.current) setMatches([]); });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [co.firstName, co.lastName, co.borrowerId]);
+
+  useEffect(() => {
+    function onDoc(e) { if (box.current && !box.current.contains(e.target)) setShow(false); }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  function pick(bo) {
+    push({ firstName: bo.first_name || co.firstName, lastName: bo.last_name || co.lastName,
+      email: bo.email || co.email, phone: bo.cell_phone || co.phone, borrowerId: bo.id });
+    setShow(false); setMatches([]);
+  }
+
+  return (
+    <>
+      <div className="grid cols-2">
+        <div className="field" ref={box} style={{ position: 'relative' }}>
+          <label>Co-borrower first name</label>
+          <input className="input" value={co.firstName} autoComplete="off"
+            onChange={e => setField('firstName', e.target.value)}
+            onFocus={() => { if (matches.length) setShow(true); }} />
+          {show && matches.length > 0 && (
+            <div className="addr-menu" role="listbox">
+              {matches.map(bo => {
+                const n = bo.prior_files || 0;
+                return (
+                  <div key={bo.id} role="option" className="addr-item"
+                    onMouseDown={e => { e.preventDefault(); pick(bo); }}>
+                    <span className="addr-pin">●</span>
+                    <span>
+                      <strong>{[bo.first_name, bo.last_name].filter(Boolean).join(' ') || '—'}</strong>
+                      {bo.email ? ' · ' + bo.email : ''}
+                      {' · ' + n + ' prior file' + (n === 1 ? '' : 's')}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <div className="field"><label>Co-borrower last name</label>
+          <input className="input" value={co.lastName} autoComplete="off" onChange={e => setField('lastName', e.target.value)} /></div>
+        <div className="field"><label>Co-borrower email</label>
+          <input className="input" type="email" value={co.email} onChange={e => setField('email', e.target.value)} placeholder="coborrower@email.com" /></div>
+        <div className="field"><label>Co-borrower cell phone</label>
+          <input className="input" value={co.phone} onChange={e => setField('phone', e.target.value)} placeholder="Optional" /></div>
+      </div>
+      {co.borrowerId && (
+        <p className="muted small" style={{ marginTop: 6 }}>
+          Linking to an existing borrower on record — no duplicate will be created.{' '}
+          <button type="button" className="btn link" style={{ padding: 0 }}
+            onClick={() => push({ ...co, borrowerId: null })}>Add as new instead</button>
+        </p>
+      )}
+      <p className="muted small" style={{ marginTop: 6 }}>
+        Both borrowers' experience counts toward the file; each keeps their own track record and government-ID condition.
+      </p>
+    </>
+  );
+}
+
 export default function StaffNewFile() {
   const nav = useNavigate();
   const { role } = useAuth();
@@ -57,14 +144,17 @@ export default function StaffNewFile() {
   const [borrowerId, setBorrowerId] = useState(_d && _d.borrowerId ? _d.borrowerId : null);
   const searchSeq = useRef(0);
   const nameBox = useRef(null);
+  // Optional co-borrower added right at creation (#98).
+  const [addCo, setAddCo] = useState(_d && _d.addCo ? true : false);
+  const [co, setCo] = useState(_d && _d.co ? _d.co : { firstName: '', lastName: '', email: '', phone: '', borrowerId: null });
 
   useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
 
   // Auto-save the in-progress form to localStorage on every change (no Save
   // button). Restored on mount via the lazy initializers above.
   useEffect(() => {
-    try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ f, addr, borrowerId })); setSavedAt(true); } catch (_) {}
-  }, [f, addr, borrowerId]);
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ f, addr, borrowerId, addCo, co })); setSavedAt(true); } catch (_) {}
+  }, [f, addr, borrowerId, addCo, co]);
 
   // Debounced search on the borrower's name (first + last combined). Once a
   // borrower is linked we stop searching until the staffer edits the name again.
@@ -156,7 +246,19 @@ export default function StaffNewFile() {
         processorId: f.processorId || undefined,
         inviteBorrower: !!f.inviteBorrower,
       };
+      // Co-borrower at creation (#98): send only when the section is open and has
+      // an existing link or at least a name/email. The backend match-or-creates.
+      if (addCo && (co.borrowerId || co.firstName.trim() || co.email.trim())) {
+        body.coBorrower = {
+          borrowerId: co.borrowerId || undefined,
+          firstName: co.firstName.trim() || undefined,
+          lastName: co.lastName.trim() || undefined,
+          email: co.email.trim() || undefined,
+          phone: co.phone.trim() || undefined,
+        };
+      }
       const r = await api.staffCreateFile(body);
+      if (r && r.coBorrowerWarning) console.warn('[new-file] co-borrower:', r.coBorrowerWarning);
       try { localStorage.removeItem(DRAFT_KEY); } catch (_) {}   // draft consumed — file created
       nav(`/internal/app/${r.applicationId}`);
     } catch (e2) {
@@ -230,6 +332,24 @@ export default function StaffNewFile() {
           <p className="muted small" style={{ marginTop: 6 }}>
             If unchecked, you can invite them later from the file. Nothing is sent to them until you do.
           </p>
+
+          {!addCo ? (
+            <button type="button" className="btn ghost small" style={{ marginTop: 10 }} onClick={() => setAddCo(true)}>
+              + Add a co-borrower
+            </button>
+          ) : (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+              <div className="row" style={{ alignItems: 'center', marginBottom: 8 }}>
+                <h4 style={{ margin: 0 }}>Co-borrower</h4>
+                <div className="spacer" />
+                <button type="button" className="btn link small"
+                  onClick={() => { setAddCo(false); setCo({ firstName: '', lastName: '', email: '', phone: '', borrowerId: null }); }}>
+                  Remove
+                </button>
+              </div>
+              <CoBorrowerPicker value={co} onChange={setCo} />
+            </div>
+          )}
         </div>
 
         <div className="panel" style={{ marginBottom: 16 }}>

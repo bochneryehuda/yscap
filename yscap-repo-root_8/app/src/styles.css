@@ -89,6 +89,13 @@ textarea{min-height:90px;resize:vertical}
 .pill.new{color:var(--teal-br);border-color:var(--teal-dp)}
 .pill.approved,.pill.clear_to_close,.pill.funded{color:var(--ok);border-color:rgba(143,199,160,.4)}
 .pill.declined,.pill.withdrawn{color:var(--danger);border-color:rgba(224,115,107,.4)}
+.pill.ok{color:var(--ok);border-color:rgba(143,199,160,.4)}
+.pill.muted{color:var(--muted)}
+/* Reminders & tasks modal (#93) */
+.fld{display:flex;flex-direction:column;gap:4px}
+.fld>.k{color:var(--muted);font-size:13px;font-weight:600}
+.fld .muted{font-weight:400}
+@media (max-width:720px){.rem-grid{grid-template-columns:1fr !important}}
 .metrow{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}
 .metrow:first-child{border-top:none}
 .metrow .k{color:var(--muted);font-size:13px} .metrow .v{font-weight:600}

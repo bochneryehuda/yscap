@@ -528,6 +528,14 @@ router.post('/applications', async (req, res) => {
 
     try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType, { isAssignment }); }
     catch (e) { console.error('[staff-origination] checklist failed:', db.describeError(e)); }
+    // Optionally add a CO-BORROWER right at creation (#98) — same identity-graph
+    // linking as adding one later. A bad co-borrower payload must not fail the
+    // whole file (it's already created); surface it as a soft warning instead.
+    let coBorrowerId = null, coBorrowerWarning = null;
+    if (b.coBorrower && (b.coBorrower.borrowerId || b.coBorrower.firstName || b.coBorrower.email)) {
+      try { coBorrowerId = await attachCoBorrowerToApp(appId, borrowerId, b.coBorrower); }
+      catch (e) { coBorrowerWarning = e.message || 'could not add the co-borrower'; console.error('[staff-origination] co-borrower failed:', e.message); }
+    }
     // Oversight flag: a scoped staffer opening a file for a PRE-EXISTING borrower
     // they had no prior relationship with now gains that borrower's PII (SSN) +
     // shared profile docs. This is allowed (owner-directed multi-file), but we
@@ -539,7 +547,7 @@ router.post('/applications', async (req, res) => {
         [borrowerId, req.actor.id, appId]);
       crossBorrower = !rel.rows[0];
     }
-    await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId, crossBorrower: crossBorrower || undefined });
+    await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId, coBorrowerId: coBorrowerId || undefined, crossBorrower: crossBorrower || undefined });
     // Create + link the ClickUp task in the correct folder (officer's pipeline, or
     // Lead Capture if none) the moment the file is started (#92). Best-effort and
     // non-blocking — the file is created regardless of ClickUp availability.
@@ -553,7 +561,8 @@ router.post('/applications', async (req, res) => {
     }
     res.status(201).json({
       ok: true, applicationId: appId, ysLoanNumber: ins.rows[0].ys_loan_number,
-      borrowerId, borrowerCreated: br.rows[0].created, invited });
+      borrowerId, borrowerCreated: br.rows[0].created, invited,
+      coBorrowerId, coBorrowerWarning: coBorrowerWarning || undefined });
   } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
 });
 
@@ -633,6 +642,60 @@ router.get('/applications/:id', async (req, res) => {
   res.json(r.rows[0]);
 });
 
+// Resolve-or-create a co-borrower from an identity payload and bind it to a
+// file. Shared by the standalone /co-borrower endpoint AND file creation (#98),
+// so "add a co-borrower while creating the application" runs the exact same
+// linking (identity-graph match, encrypted SSN, gov-ID condition, LLC owners).
+// Throws an Error with `.status` on a validation problem. `primaryBorrowerId`
+// guards against linking the primary borrower to themselves.
+async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
+  let coId = b.borrowerId || null;
+  if (!coId) {
+    const first = String(b.firstName || '').trim();
+    const last = String(b.lastName || '').trim();
+    const email = String(b.email || '').trim().toLowerCase();
+    if (!first || !last) { const e = new Error('co-borrower first and last name are required'); e.status = 400; throw e; }
+    if (!email) { const e = new Error('co-borrower email is required'); e.status = 400; throw e; }
+    const ssn = b.ssn ? String(b.ssn) : null;
+    const identity = require('../clickup/identity');
+    const ssnHash = ssn ? identity.ssnHash(ssn, cfg.ssnMatchKey) : null;
+    const ssnEnc = ssn ? C.encryptSSN(ssn) : null;
+    const ssnLast4 = ssn ? ssn.replace(/\D/g, '').slice(-4) : null;
+    // Identity graph: match an existing borrower by SSN-hash first (so the same
+    // person across files stays one record), else create/update by email.
+    if (ssnHash) {
+      const m = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 LIMIT 1`, [ssnHash]);
+      if (m.rows[0]) coId = m.rows[0].id;
+    }
+    if (!coId) {
+      const ins = await db.query(
+        `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
+         ON CONFLICT (email) DO UPDATE SET
+           first_name=COALESCE(NULLIF(borrowers.first_name,''),EXCLUDED.first_name),
+           last_name=COALESCE(NULLIF(borrowers.last_name,''),EXCLUDED.last_name),
+           cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
+           date_of_birth=COALESCE(borrowers.date_of_birth,EXCLUDED.date_of_birth),
+           ssn_encrypted=COALESCE(borrowers.ssn_encrypted,EXCLUDED.ssn_encrypted),
+           ssn_last4=COALESCE(borrowers.ssn_last4,EXCLUDED.ssn_last4),
+           ssn_hash=COALESCE(borrowers.ssn_hash,EXCLUDED.ssn_hash),
+           updated_at=now()
+         RETURNING id`,
+        [first, last, email, b.phone || null, b.dob || null, ssnEnc, ssnLast4, ssnHash]);
+      coId = ins.rows[0].id;
+    }
+  }
+  if (coId === primaryBorrowerId) { const e = new Error('the co-borrower must be a different person than the primary borrower'); e.status = 400; throw e; }
+  await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1`, [appId, coId]);
+  // The co-borrower's government-ID condition (named with their name) appears
+  // on the file the moment they're linked.
+  try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, coId); } catch (_) {}
+  // Link both borrowers to the file's vesting LLC so the entity is owned by
+  // both — each borrower's ownership % is filled in on the file (#81).
+  try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(appId); } catch (_) {}
+  return coId;
+}
+
 // Set / link / unlink the CO-BORROWER on a file. Staff enter the second
 // borrower's identity (or link an existing borrower id); it creates/updates an
 // ENCRYPTED borrower record (SSN encrypted at rest + hashed for the identity
@@ -656,53 +719,13 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
       return res.json({ ok: true, unlinked: true });
     }
 
-    let coId = b.borrowerId || null;
-    if (!coId) {
-      const first = String(b.firstName || '').trim();
-      const last = String(b.lastName || '').trim();
-      const email = String(b.email || '').trim().toLowerCase();
-      if (!first || !last) return res.status(400).json({ error: 'co-borrower first and last name are required' });
-      if (!email) return res.status(400).json({ error: 'co-borrower email is required' });
-      const ssn = b.ssn ? String(b.ssn) : null;
-      const identity = require('../clickup/identity');
-      const ssnHash = ssn ? identity.ssnHash(ssn, cfg.ssnMatchKey) : null;
-      const ssnEnc = ssn ? C.encryptSSN(ssn) : null;
-      const ssnLast4 = ssn ? ssn.replace(/\D/g, '').slice(-4) : null;
-      // Identity graph: match an existing borrower by SSN-hash first (so the same
-      // person across files stays one record), else create/update by email.
-      if (ssnHash) {
-        const m = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 LIMIT 1`, [ssnHash]);
-        if (m.rows[0]) coId = m.rows[0].id;
-      }
-      if (!coId) {
-        const ins = await db.query(
-          `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
-           ON CONFLICT (email) DO UPDATE SET
-             first_name=COALESCE(NULLIF(borrowers.first_name,''),EXCLUDED.first_name),
-             last_name=COALESCE(NULLIF(borrowers.last_name,''),EXCLUDED.last_name),
-             cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
-             date_of_birth=COALESCE(borrowers.date_of_birth,EXCLUDED.date_of_birth),
-             ssn_encrypted=COALESCE(borrowers.ssn_encrypted,EXCLUDED.ssn_encrypted),
-             ssn_last4=COALESCE(borrowers.ssn_last4,EXCLUDED.ssn_last4),
-             ssn_hash=COALESCE(borrowers.ssn_hash,EXCLUDED.ssn_hash),
-             updated_at=now()
-           RETURNING id`,
-          [first, last, email, b.phone || null, b.dob || null, ssnEnc, ssnLast4, ssnHash]);
-        coId = ins.rows[0].id;
-      }
-    }
-    if (coId === app.borrower_id) return res.status(400).json({ error: 'the co-borrower must be a different person than the primary borrower' });
-    await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1`, [appId, coId]);
-    // The co-borrower's government-ID condition (named with their name) appears
-    // on the file the moment they're linked.
-    try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, coId); } catch (_) {}
-    // Link both borrowers to the file's vesting LLC so the entity is owned by
-    // both — each borrower's ownership % is filled in on the file (#81).
-    try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(appId); } catch (_) {}
+    const coId = await attachCoBorrowerToApp(appId, app.borrower_id, b);
     await audit(req, 'set_co_borrower', 'application', appId, { coBorrowerId: coId });
     res.json({ ok: true, coBorrowerId: coId });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error', detail: e.message });
+  }
 });
 
 // #81 — the subject vesting LLC's borrower-owners and each one's ownership %.
@@ -2242,6 +2265,64 @@ router.post('/applications/:id/nudge', async (req, res) => {
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items' });
     await audit(req, 'nudge_borrower', 'application', req.params.id, { count: list.length });
     res.json({ ok: true, count: list.length });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ── Reminders + task management (#93) ────────────────────────────────────────
+// The "Remind" button on a file. A reminder/task has a due date+time, a set of
+// recipients (any mix of the loan team, the borrower/co-borrower, or an ad-hoc
+// email) and a message; a task also carries an assignee. The boot dispatcher
+// fires the notification at the due moment via the normal notify fan-out.
+const reminders = require('../lib/reminders');
+
+// Everything the composer needs in one call: existing reminders on the file,
+// the selectable contacts, and the borrower-facing outstanding items (for the
+// "prefill outstanding conditions" helper). Access is already gated by the
+// /applications/:id scope middleware above.
+router.get('/applications/:id/reminders', async (req, res) => {
+  try {
+    const [list, contacts, outstanding] = await Promise.all([
+      reminders.listForApplication(req.params.id),
+      reminders.contactsForApplication(req.params.id, req.actor),
+      reminders.outstandingItems(req.params.id),
+    ]);
+    res.json({ reminders: list, contacts, outstanding });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/reminders', async (req, res) => {
+  try {
+    const id = await reminders.create(req.params.id, req.body || {}, req.actor);
+    await audit(req, 'create_reminder', 'application', req.params.id,
+      { reminderId: id, kind: (req.body || {}).kind || 'reminder' });
+    res.json({ ok: true, id });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.patch('/applications/:id/reminders/:rid', async (req, res) => {
+  try {
+    // Defense in depth: the reminder must belong to this (already-scoped) file.
+    const own = await db.query(`SELECT 1 FROM reminders WHERE id=$1 AND application_id=$2`, [req.params.rid, req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    const row = await reminders.update(req.params.rid, req.body || {}, req.actor);
+    await audit(req, 'update_reminder', 'application', req.params.id, { reminderId: req.params.rid, status: (req.body || {}).status });
+    res.json({ ok: true, reminder: row });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.delete('/applications/:id/reminders/:rid', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT 1 FROM reminders WHERE id=$1 AND application_id=$2`, [req.params.rid, req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    await reminders.remove(req.params.rid);
+    await audit(req, 'delete_reminder', 'application', req.params.id, { reminderId: req.params.rid });
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
