@@ -449,7 +449,7 @@ export default function StaffQueue() {
               working pipeline never shows funded or withdrawn files unless asked. */}
           <div className="row" style={{ gap: 4 }}>
             {['active', 'closed', 'cancelled', 'all'].map(g => (
-              <button key={g} className={`btn ${groupF === g ? 'primary' : 'ghost'} small`}
+              <button key={g} className={`btn ${(groupF === g || (groupF === '' && g === 'all')) ? 'primary' : 'ghost'} small`}
                 onClick={() => setParam({ group: g, status: '' })}
                 title={g === 'active' ? 'In-progress files (default)' : g === 'closed' ? 'Funded files' : g === 'cancelled' ? 'Withdrawn / declined' : 'Every file'}>
                 {GROUP_LABEL[g]}{allFiles ? ` (${groupCount(g)})` : ''}
@@ -460,10 +460,10 @@ export default function StaffQueue() {
             placeholder="Search name, loan #, address"
             onChange={e => setSearchInput(e.target.value)}
             title="Search by borrower name, YS loan number, or property address" />
-          <select className="input" style={{ maxWidth: 180 }} value={statusF} onChange={e => setParam({ status: e.target.value })}
-            title="Refine by exact status within the selected group">
+          <select className="input" style={{ maxWidth: 180 }} value={statusF} onChange={e => setParam({ status: e.target.value, group: '' })}
+            title="Jump straight to any exact status (takes precedence over the group)">
             <option value="">All statuses</option>
-            {STATUS_ORDER.filter(s => !groupF || groupF === 'all' || inGroup(groupF, s)).map(s => <option key={s} value={s}>{LABEL[s] || s}</option>)}
+            {STATUS_ORDER.map(s => <option key={s} value={s}>{LABEL[s] || s}</option>)}
           </select>
           {seesAllFiles && officerOpts.length > 1 && (
             <select className="input" style={{ maxWidth: 220 }} value={officerF} onChange={e => setParam({ officerId: e.target.value })}
