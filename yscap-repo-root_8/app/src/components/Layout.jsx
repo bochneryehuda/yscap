@@ -9,8 +9,11 @@ export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashb
   return (
     <Link to={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>
       {/* OWNER DECISION (2026-07-07): header uses the real full logo image too
-          (matching the redesigned login), not the small mark + typed wordmark. */}
-      <img className="brand-logo" src={BRAND + 'lockup-dark.png'} alt="YS Capital Group" />
+          (matching the redesigned login), not the small mark + typed wordmark.
+          WHITE-FIRST REDESIGN (2026-07-08): the header is now white, so use the
+          light-background lockup (dark mark) — lockup-dark (light mark) would be
+          invisible on white. */}
+      <img className="brand-logo" src={BRAND + 'lockup-light.png'} alt="YS Capital Group" />
       {consoleLabel && <span className="sub">{consoleLabel}</span>}
     </Link>
   );
@@ -18,13 +21,14 @@ export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashb
 
 /* Centered lockup for the public auth cards (login / register / verify …).
    OWNER DECISION (2026-07-07): use the real full logo image here instead of a
-   typed wordmark — the small mark + typed name read as unprofessional. The
-   dark-optimised lockup (light mark on transparent) sits on the dark auth card.
-   The header (Brand, above) keeps its uniform text wordmark. */
+   typed wordmark — the small mark + typed name read as unprofessional.
+   WHITE-FIRST REDESIGN (2026-07-08): the auth card is now white, so use the
+   light-background lockup (dark mark + tagline). The dark-optimised lockup
+   (light mark on transparent) would nearly disappear on the white card. */
 export function BrandLockup() {
   return (
     <div className="brand-lockup" aria-label="YS Capital Group">
-      <img className="brand-lockup-img" src={BRAND + 'lockup-dark.png'} alt="YS Capital Group" />
+      <img className="brand-lockup-img" src={BRAND + 'lockup-light.png'} alt="YS Capital Group" />
     </div>
   );
 }

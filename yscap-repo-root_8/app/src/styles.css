@@ -1108,5 +1108,14 @@ select option{background:var(--surface);color:var(--text)}
 .checkitem:hover,a.checkitem:hover{background:var(--primary-soft)}
 a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 
+/* — Chat internals: keep text readable on the new light bubbles / white boxes — */
+.msg-att-file{color:var(--text)}
+.msg-rx{background:var(--surface-soft);border-color:var(--border);color:var(--text)}
+.msg-rx.mine{background:var(--primary-soft);border-color:var(--primary-border)}
+.msg-bubble.me .mention,.msg-bubble.me .entity-chip{
+  color:#fff;background:rgba(255,255,255,.20);border-color:rgba(255,255,255,.45)}
+.cv-bubble.me .cv-quote{background:rgba(255,255,255,.16)}
+.cv-bubble.me .cv-quote strong,.cv-bubble.me .cv-quote span{color:rgba(255,255,255,.9)}
+
 /* — Keyboard focus uses the brand focus colour — */
 :focus-visible{outline-color:var(--focus)}
