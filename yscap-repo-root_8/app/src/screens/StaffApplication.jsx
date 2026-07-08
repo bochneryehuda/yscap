@@ -1093,10 +1093,23 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
                     : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? 'Contact information form'
+                    : it.template_code === 'rtl_p3_assets' ? (() => {
+                        // Assets & liquidity: show the registered requirement summary
+                        // on the internal login too (#85), not just a bare "document".
+                        const liq = it.tool_payload && it.tool_payload.liquidity;
+                        return liq && liq.required != null
+                          ? `Required liquidity ${money(liq.required)}${liq.cashToClose ? ` · cash to close ${money(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money(liq.reserveRequirement)}` : ''}`
+                          : 'Assets & bank statements — the required liquidity is set the moment a product is registered';
+                      })()
                     : it.item_kind}
                   {` · ${it.status}`}
                   {signed && ` · signed off by ${it.signed_off_name || 'the internal team'}`}
                 </div>
+                {it.template_code === 'rtl_p3_assets' && it.hint && (
+                  <div className="muted small" style={{ whiteSpace: 'pre-line', marginTop: 6, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
+                    {it.hint}
+                  </div>
+                )}
                 {it.tool_key === 'appraisal_card' && card && (
                   <div className="small" style={{ marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
                     {card.brand} <strong>{card.number.replace(/(\d{4})(?=\d)/g, '$1 ')}</strong> · exp {String(card.expMonth).padStart(2, '0')}/{card.expYear} · CVC {card.cvc} · ZIP {card.zip}
