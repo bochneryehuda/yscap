@@ -33,15 +33,26 @@ function requirementMet(counts, required) {
 }
 
 async function countBorrowerExperience(borrowerId, client = db, opts = {}) {
+  return countBorrowersExperience([borrowerId], client, opts);
+}
+
+// Experience across one or more borrowers, summed. A loan file with a
+// co-borrower counts BOTH borrowers' completed deals toward the file's
+// experience (#80): if borrower A has 2 flips and co-borrower B has 2 flips,
+// the file has 4 flips. Each track_records row already belongs to exactly one
+// borrower, so summing the per-borrower counts never double-counts a deal.
+async function countBorrowersExperience(borrowerIds, client = db, opts = {}) {
+  const ids = (borrowerIds || []).filter(Boolean);
+  const counts = { flips: 0, holds: 0, ground: 0, total: 0 };
+  if (!ids.length) return counts;
   const verifiedOnly = !!opts.verifiedOnly;
   const r = await client.query(
     `SELECT lower(coalesce(deal_type,'')) AS deal_type, count(*)::int AS n
        FROM track_records
-      WHERE borrower_id=$1
+      WHERE borrower_id = ANY($1::uuid[])
         AND ($2::boolean=false OR is_verified=true)
       GROUP BY 1`,
-    [borrowerId, verifiedOnly]);
-  const counts = { flips: 0, holds: 0, ground: 0, total: 0 };
+    [ids, verifiedOnly]);
   for (const row of r.rows) {
     const n = int(row.n);
     counts[bucketOf(row.deal_type)] += n;
@@ -50,16 +61,24 @@ async function countBorrowerExperience(borrowerId, client = db, opts = {}) {
   return counts;
 }
 
+// The set of borrower ids whose experience counts for a file: the primary
+// borrower plus the co-borrower when present.
+function fileBorrowerIds(app) {
+  return [app && app.borrower_id, app && app.co_borrower_id].filter(Boolean);
+}
+
 async function syncExperienceChecklistForApplication(appId, client = db) {
   const ar = await client.query(
-    `SELECT id, borrower_id, requested_exp_flips, requested_exp_holds, requested_exp_ground
+    `SELECT id, borrower_id, co_borrower_id, requested_exp_flips, requested_exp_holds, requested_exp_ground
        FROM applications WHERE id=$1`,
     [appId]);
   const app = ar.rows[0];
   if (!app) return null;
 
   const required = requestedFromApp(app);
-  const counts = await countBorrowerExperience(app.borrower_id, client);
+  // Experience for the FILE = the primary borrower + the co-borrower, summed
+  // (#80): both borrowers' completed deals count toward the requirement.
+  const counts = await countBorrowersExperience(fileBorrowerIds(app), client);
   const requiredAny = hasRequirement(required);
   // NO experience claimed on the file → there is nothing to verify, so the
   // track-record condition is NOT APPLICABLE. We auto-satisfy it (stamped
@@ -126,6 +145,8 @@ async function syncExperienceChecklistForBorrower(borrowerId, client = db) {
 module.exports = {
   bucketOf,
   countBorrowerExperience,
+  countBorrowersExperience,
+  fileBorrowerIds,
   requestedFromApp,
   syncExperienceChecklistForApplication,
   syncExperienceChecklistForBorrower,

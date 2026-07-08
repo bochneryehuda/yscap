@@ -104,6 +104,16 @@ function normalizeDefinition(b, existing, fields) {
   }
 
   out.borrower_label = b.borrowerLabel !== undefined ? (String(b.borrowerLabel || '').trim().slice(0, 300) || null) : (existing ? existing.borrower_label : null);
+  // A borrower-visible condition MUST carry borrower wording, or the portal shows
+  // the generic "An item your loan team needs" placeholder (#78). For plain
+  // label-rendered kinds (document / generic condition) that were authored for
+  // the borrower without a separate borrower label, use the main label — the
+  // author already chose to show this to the borrower, so the label they typed
+  // is the borrower wording. (Tool / e-sign / info-field render their own copy.)
+  if (!out.borrower_label && (audience === 'borrower' || audience === 'both')
+      && !out.tool_key && !out.esign_doc && out.field_key == null) {
+    out.borrower_label = out.label;
+  }
   out.hint = b.hint !== undefined ? (String(b.hint || '').trim().slice(0, 2000) || null) : (existing ? existing.hint : null);
   out.borrower_hint = b.borrowerHint !== undefined ? (String(b.borrowerHint || '').trim().slice(0, 2000) || null) : (existing ? existing.borrower_hint : null);
   out.esign_doc = b.esignDoc !== undefined ? (String(b.esignDoc || '').trim().slice(0, 300) || null) : (existing ? existing.esign_doc : null);

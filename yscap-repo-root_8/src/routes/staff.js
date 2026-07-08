@@ -13,7 +13,7 @@ const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
 const cfg = require('../config');
 const storage = require('../lib/storage');
-const { requireAuth, requireRole } = require('../auth');
+const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication } = require('../lib/experience');
@@ -623,13 +623,15 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
   try {
     const b = req.body || {};
     const appId = req.params.id;
-    const ar = await db.query(`SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1`, [appId]);
+    const ar = await db.query(`SELECT borrower_id, co_borrower_id, llc_id FROM applications WHERE id=$1`, [appId]);
     const app = ar.rows[0];
     if (!app) return res.status(404).json({ error: 'not found' });
 
     if (b.unlink === true) {
       await db.query(`UPDATE applications SET co_borrower_id=NULL, updated_at=now() WHERE id=$1`, [appId]);
       try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, null); } catch (_) {}
+      // Also drop the co-borrower's ownership link on the file's vesting LLC (#81).
+      try { if (app.llc_id && app.co_borrower_id) await require('../lib/llc-borrowers').unlinkBorrower(app.llc_id, app.co_borrower_id); } catch (_) {}
       await audit(req, 'unlink_co_borrower', 'application', appId, {});
       return res.json({ ok: true, unlinked: true });
     }
@@ -675,8 +677,46 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     // The co-borrower's government-ID condition (named with their name) appears
     // on the file the moment they're linked.
     try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, coId); } catch (_) {}
+    // Link both borrowers to the file's vesting LLC so the entity is owned by
+    // both — each borrower's ownership % is filled in on the file (#81).
+    try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(appId); } catch (_) {}
     await audit(req, 'set_co_borrower', 'application', appId, { coBorrowerId: coId });
     res.json({ ok: true, coBorrowerId: coId });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// #81 — the subject vesting LLC's borrower-owners and each one's ownership %.
+// On a co-borrower file both borrowers own the entity; this reads / sets their
+// stakes and keeps the entity linked to both.
+router.get('/applications/:id/vesting-llc-owners', async (req, res) => {
+  try {
+    const a = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    if (!a.llc_id) return res.json({ llcId: null, owners: [] });
+    const llc = (await db.query(`SELECT llc_name FROM llcs WHERE id=$1`, [a.llc_id])).rows[0];
+    const owners = await require('../lib/llc-borrowers').getOwners(a.llc_id);
+    res.json({ llcId: a.llc_id, llcName: llc && llc.llc_name, owners });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/applications/:id/vesting-llc-owners', async (req, res) => {
+  try {
+    const a = (await db.query(`SELECT llc_id, borrower_id FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    if (!a.llc_id) return res.status(400).json({ error: 'link a vesting LLC to this file first' });
+    const lb = require('../lib/llc-borrowers');
+    const owners = Array.isArray((req.body || {}).owners) ? req.body.owners : [];
+    for (const o of owners) {
+      const p = lb.pct(o.ownershipPct);
+      if (p && typeof p === 'object' && p.error) return res.status(400).json({ error: p.error });
+      await lb.linkBorrower(a.llc_id, o.borrowerId, p == null ? null : p);
+      // Keep llcs.ownership_pct in step with the PRIMARY owner's stake so the
+      // existing LLC verification math stays consistent.
+      if (o.borrowerId === a.borrower_id && p != null) {
+        await db.query(`UPDATE llcs SET ownership_pct=$2, updated_at=now() WHERE id=$1`, [a.llc_id, p]);
+      }
+    }
+    await audit(req, 'set_vesting_llc_owners', 'application', req.params.id, { count: owners.length });
+    res.json({ ok: true, owners: await lb.getOwners(a.llc_id) });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
@@ -695,9 +735,13 @@ async function loadFileForPricing(appId) {
   // borrowers.tier recompute uses. Unverified, borrower-claimed deals must not
   // inflate the authoritative pricing tier. Staff can still override the exp*
   // inputs in the panel for a what-if.
+  // On a co-borrower file the experience is the SUM of BOTH borrowers (#80):
+  // e.g. 2 flips each → 4 flips feed the pricing engine. This only changes the
+  // COUNT fed in, never the frozen pricing math.
+  const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
-       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true GROUP BY 1`, [expBorrowerIds]);
   const exp = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
@@ -876,13 +920,19 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
     let itemId = it.rows[0] && it.rows[0].id;
     if (!itemId) {
       const ins = await db.query(
-        `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,tool_key,created_by_kind,created_by_id)
-         VALUES ('application',$1,'Rehab budget','borrower','task','rehab_budget','staff',$2) RETURNING id`, [appId, req.actor.id]);
+        `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,tool_key,created_by_kind,created_by_id)
+         VALUES ('application',$1,'Rehab budget','Rehab budget','borrower','task','rehab_budget','staff',$2) RETURNING id`, [appId, req.actor.id]);
       itemId = ins.rows[0].id;
     }
-    await db.query(`UPDATE checklist_items SET tool_payload=$2, status='received', updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload)]);
+    // FATAL rehab-budget gate (#75): the Scope of Work total must match the
+    // file's required rehab budget EXACTLY and can never override it. Checked
+    // before the condition is marked received, so a mismatch leaves it open.
     const total = Number(payload.total);
-    if (isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
+    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, total);
+    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total });
+    await db.query(`UPDATE checklist_items SET tool_payload=$2, status='received', updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload)]);
+    // Seed the file budget from the SOW ONLY when none is set yet (never override).
+    if (chk.seed && isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
     res.json({ ok: true, itemId });
@@ -931,16 +981,24 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const payload = { ...rawPayload };
   delete payload.attachments;
   if (attachments.length) payload.export_files = attachments.map((a) => ({ filename: a.filename, contentType: a.contentType }));
+  // FATAL rehab-budget gate (#75) — SOW total must match the file budget exactly
+  // and never override it; refused before the condition is marked received.
+  let sowSeed = false;
+  if (toolKey === 'rehab_budget') {
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
+    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
+    sowSeed = chk.seed;
+  }
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status='received', updated_at=now() WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload),
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
   if (toolKey === 'rehab_budget') {
     const total = Number(payload && payload.total);
-    if (isFinite(total) && total >= 0) {
+    if (sowSeed && isFinite(total) && total >= 0) {
       await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
-      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
     }
+    try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
   // A resubmission outdates the previous exports: the old PDF/Excel are
   // superseded and the fresh ones become the current versions on the condition.
@@ -992,10 +1050,16 @@ router.get('/applications/:id/checklist', async (req, res) => {
 router.post('/applications/:id/checklist', async (req, res) => {
   const b = req.body || {};
   if (!b.label) return res.status(400).json({ error: 'label required' });
+  // This IS a borrower-facing request — the typed label is what the borrower
+  // should see, so it doubles as the borrower_label. Without it the borrower
+  // portal would show the generic "An item your loan team needs" (#78).
+  const audience = b.audience || 'borrower';
+  const borrowerLabel = (audience === 'borrower' || audience === 'both')
+    ? String(b.borrowerLabel || b.label).trim().slice(0, 300) : null;
   const r = await db.query(
-    `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
-     VALUES ('application',$1,$2,$3,'document',$4,$5,'staff',$6) RETURNING id`,
-    [req.params.id, b.label, b.audience || 'borrower', b.isRequired !== false, b.dueDate || null, req.actor.id]);
+    `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
+     VALUES ('application',$1,$2,$3,$4,'document',$5,$6,'staff',$7) RETURNING id`,
+    [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, b.dueDate || null, req.actor.id]);
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
   if (app.rows[0]) {
     const ctx = await notify.fileContext(req.params.id);
@@ -1351,9 +1415,11 @@ async function signOffGate(itemId, actor) {
 
   if (!isProduct && !isBudget && !isExp) return null;
 
-  const ar = await db.query(`SELECT rehab_budget, borrower_id FROM applications WHERE id=$1`, [item.application_id]);
+  const ar = await db.query(`SELECT rehab_budget, borrower_id, co_borrower_id FROM applications WHERE id=$1`, [item.application_id]);
   const app = ar.rows[0];
   if (!app) return null;
+  // Experience for the FILE counts BOTH borrowers on it (#80).
+  const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const reg = (await db.query(
     `SELECT inputs, quote FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [item.application_id])).rows[0] || null;
@@ -1381,7 +1447,7 @@ async function signOffGate(itemId, actor) {
   if (!reg) return 'Register a product first — experience is checked against the registered product before this can be signed off.';
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n
-       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true GROUP BY 1`, [expBorrowerIds]);
   const v = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (/ground|construction/.test(row.dt)) v.ground += row.n;
@@ -1585,6 +1651,96 @@ router.get('/borrowers/search', async (req, res) => {
         LIMIT 10`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- Loan-officer borrower management (#83) ----------------
+// The LO's book of borrowers: everyone on a file they run (seesAll staff get
+// everyone), with portal-account state and last activity, plus the actions an LO
+// needs — invite to the portal, email a reset link, or set a password directly.
+// Scoped exactly like every other staff borrower read. Registered before
+// /borrowers/:id so "borrowers" is never captured as an :id.
+router.get('/borrowers', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      scope = `WHERE EXISTS (SELECT 1 FROM applications a
+                              WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
+                                AND (a.loan_officer_id=$1 OR a.processor_id=$1))`;
+    }
+    const r = await db.query(
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
+              (ba.borrower_id IS NOT NULL) AS has_account,
+              ba.last_login_at, b.last_seen_at,
+              (SELECT count(*)::int FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL) AS files,
+              (SELECT id FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL
+                 ORDER BY created_at DESC LIMIT 1) AS latest_file_id
+         FROM borrowers b
+         LEFT JOIN borrower_auth ba ON ba.borrower_id=b.id
+        ${scope}
+        ORDER BY COALESCE(ba.last_login_at, b.last_seen_at) DESC NULLS LAST, b.last_name, b.first_name
+        LIMIT 500`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Invite a borrower to the portal — binds to their most recent file and emails
+// the set-password link. Re-inviting just issues a fresh link.
+router.post('/borrowers/:id/portal-invite', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(404).json({ error: 'not found' });
+    if (!b.email) return res.status(400).json({ error: 'this borrower has no email on file' });
+    const app = (await db.query(
+      `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+      [req.params.id])).rows[0];
+    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
+    const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+});
+
+// Email the borrower a password-reset link (staff never see the password).
+router.post('/borrowers/:id/reset-password', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = (await db.query(
+      `SELECT b.id, b.email, b.first_name FROM borrowers b
+         JOIN borrower_auth ba ON ba.borrower_id=b.id WHERE b.id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(400).json({ error: 'this borrower has no portal account yet — invite them first' });
+    if (!b.email) return res.status(400).json({ error: 'this borrower has no email on file' });
+    const { token } = await issueEmailToken({ borrowerId: b.id, email: b.email, kind: 'reset', ttlMin: 60, withToken: true });
+    await mail.send('passwordReset', b.email, { firstName: b.first_name, resetUrl: mail.link('/reset?token=' + token), minutes: 60 });
+    await audit(req, 'borrower_reset_password_email', 'borrower', b.id, {});
+    res.json({ ok: true, emailed: true });
+  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+});
+
+// Set a borrower's password directly (LO-assisted). Creates the login row if the
+// borrower had none, bumps token_version to revoke any live sessions, audits it,
+// and notifies the borrower their password changed.
+router.post('/borrowers/:id/set-password', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const pw = String((req.body || {}).password || '');
+    if (pw.length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
+    const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(404).json({ error: 'not found' });
+    const hash = await C.hashPassword(pw);
+    const existing = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [req.params.id]);
+    if (existing.rows[0]) {
+      await db.query(
+        `UPDATE borrower_auth SET password_hash=$2, token_version=token_version+1,
+             failed_attempts=0, locked_until=NULL WHERE borrower_id=$1`, [req.params.id, hash]);
+    } else {
+      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,$2,0)`, [req.params.id, hash]);
+    }
+    await audit(req, 'borrower_set_password', 'borrower', b.id, {});
+    try { if (b.email) await mail.send('passwordChanged', b.email, { firstName: b.first_name }); } catch (_) {}
+    res.json({ ok: true, set: true, hadAccount: !!existing.rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
 });
 // (A borrower's entities live at GET /borrowers/:id/llcs below — the full
 // review bundle; its rows carry id/llc_name/is_verified for the track-record
