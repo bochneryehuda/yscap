@@ -844,6 +844,68 @@ function StaffTrackRecordPanel({ app }) {
    borrower works through (Scope of Work, track record, contacts, ID, document
    slots), with every uploaded PDF inline and full sign-off capability — a
    separate section from the internal phase-by-phase checklist. */
+// #81 — the subject vesting LLC is owned by BOTH borrowers on a co-borrower file.
+// Each borrower's ownership % is captured here and the entity stays linked to
+// both (so a future solo file of either borrower already knows the LLC). Only
+// shown on a co-borrower file — a single borrower owns their entity outright.
+function VestingLlcOwners({ appId, app }) {
+  const [data, setData] = useState(null);   // { llcId, llcName, owners:[{borrower_id, first_name, last_name, ownership_pct, is_primary}] }
+  const [pcts, setPcts] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const load = () => api.staffVestingLlcOwners(appId).then(d => {
+    setData(d);
+    setPcts(Object.fromEntries((d.owners || []).map(o => [o.borrower_id, o.ownership_pct ?? ''])));
+  }).catch(() => {});
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [appId, app.llc_id, app.co_borrower_id]);
+  if (!app.co_borrower_id) return null;   // #81 is about multi-borrower entities
+
+  const total = Object.values(pcts).reduce((s, v) => s + (Number(v) || 0), 0);
+  async function save() {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const owners = (data.owners || []).map(o => ({ borrowerId: o.borrower_id, ownershipPct: pcts[o.borrower_id] === '' ? null : Number(pcts[o.borrower_id]) }));
+      await api.staffSetVestingLlcOwners(appId, owners);
+      setMsg('Saved ✓'); setTimeout(() => setMsg(''), 2500);
+      await load();
+    } catch (e) { setErr(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 14, borderColor: 'var(--gold)' }}>
+      <h3 style={{ marginTop: 0 }}>Vesting entity ownership</h3>
+      {!data ? <p className="muted small">Loading…</p>
+        : !data.llcId ? <p className="muted small">Link a vesting LLC to this file first — then set each borrower's ownership %.</p>
+        : (
+        <>
+          <p className="muted small" style={{ marginTop: 0 }}>
+            {data.llcName ? <><strong>{data.llcName}</strong> is </> : 'The vesting entity is '}
+            owned by both borrowers. Enter each borrower's ownership stake — the entity stays linked to both.
+          </p>
+          {(data.owners || []).map(o => (
+            <div className="row" key={o.borrower_id} style={{ gap: 8, alignItems: 'center', margin: '6px 0' }}>
+              <span style={{ minWidth: 200 }}>{`${o.first_name || ''} ${o.last_name || ''}`.trim() || '(borrower)'}
+                {o.is_primary ? <span className="muted small"> · primary</span> : <span className="muted small"> · co-borrower</span>}</span>
+              <input className="input" type="number" min="0" max="100" step="0.01" style={{ maxWidth: 110 }}
+                value={pcts[o.borrower_id] ?? ''} onChange={e => setPcts(p => ({ ...p, [o.borrower_id]: e.target.value }))} />
+              <span className="muted small">% ownership</span>
+            </div>
+          ))}
+          <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 8 }}>
+            <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save ownership'}</button>
+            <span className="muted small" style={{ color: Math.abs(total - 100) < 0.01 ? 'var(--ok)' : undefined }}>
+              Borrowers total: {total.toFixed(2)}%{Math.abs(total - 100) >= 0.01 ? ' (plus any non-borrower members should reach 100%)' : ' ✓'}
+            </span>
+            {msg && <span className="small" style={{ color: 'var(--ok)' }}>{msg}</span>}
+            {err && <span className="small" style={{ color: 'var(--danger)' }}>{err}</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // #65 — the second borrower on a file. Shows the linked co-borrower (name,
 // contact, DOB, SSN reveal) and lets staff add/link or remove one. The record is
 // created encrypted + identity-matched server-side; removing only unlinks it.
@@ -1757,6 +1819,7 @@ export default function StaffApplication() {
         info="This IS the LLC condition for the file — set up and verify the LLC taking title inline (entity details, ownership, the three documents). It's the same entity the borrower fills in on their side, so completing it here clears their condition and vice-versa; marking it verified satisfies the LLC condition on every open file it vests. No separate LLC condition row is shown — this is it.">
       <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
+      <VestingLlcOwners appId={id} app={app} />
       </Section>
 
       <Section id="sec-documents" title="Documents & exports"

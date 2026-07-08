@@ -879,6 +879,9 @@ router.post('/applications/:id/link-llc', async (req, res) => {
   if (!own.rows[0]) return res.status(404).json({ error: 'llc not found' });
   const previous = app.rows[0].llc_id;
   await db.query(`UPDATE applications SET llc_id=$2, updated_at=now() WHERE id=$1`, [req.params.id, b.llcId]);
+  // Link both of the file's borrowers to the newly-vesting LLC (#81) — the entity
+  // is owned by both; each borrower's ownership % is set on the file.
+  try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(req.params.id); } catch (_) { /* best-effort */ }
   try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ }
   // reopen + appId: the previous entity's state no longer drives this file's
   // LLC condition — recompute it from the NEWLY linked entity, even downgrading

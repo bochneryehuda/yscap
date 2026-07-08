@@ -623,13 +623,15 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
   try {
     const b = req.body || {};
     const appId = req.params.id;
-    const ar = await db.query(`SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1`, [appId]);
+    const ar = await db.query(`SELECT borrower_id, co_borrower_id, llc_id FROM applications WHERE id=$1`, [appId]);
     const app = ar.rows[0];
     if (!app) return res.status(404).json({ error: 'not found' });
 
     if (b.unlink === true) {
       await db.query(`UPDATE applications SET co_borrower_id=NULL, updated_at=now() WHERE id=$1`, [appId]);
       try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, null); } catch (_) {}
+      // Also drop the co-borrower's ownership link on the file's vesting LLC (#81).
+      try { if (app.llc_id && app.co_borrower_id) await require('../lib/llc-borrowers').unlinkBorrower(app.llc_id, app.co_borrower_id); } catch (_) {}
       await audit(req, 'unlink_co_borrower', 'application', appId, {});
       return res.json({ ok: true, unlinked: true });
     }
@@ -675,8 +677,46 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     // The co-borrower's government-ID condition (named with their name) appears
     // on the file the moment they're linked.
     try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, coId); } catch (_) {}
+    // Link both borrowers to the file's vesting LLC so the entity is owned by
+    // both — each borrower's ownership % is filled in on the file (#81).
+    try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(appId); } catch (_) {}
     await audit(req, 'set_co_borrower', 'application', appId, { coBorrowerId: coId });
     res.json({ ok: true, coBorrowerId: coId });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// #81 — the subject vesting LLC's borrower-owners and each one's ownership %.
+// On a co-borrower file both borrowers own the entity; this reads / sets their
+// stakes and keeps the entity linked to both.
+router.get('/applications/:id/vesting-llc-owners', async (req, res) => {
+  try {
+    const a = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    if (!a.llc_id) return res.json({ llcId: null, owners: [] });
+    const llc = (await db.query(`SELECT llc_name FROM llcs WHERE id=$1`, [a.llc_id])).rows[0];
+    const owners = await require('../lib/llc-borrowers').getOwners(a.llc_id);
+    res.json({ llcId: a.llc_id, llcName: llc && llc.llc_name, owners });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/applications/:id/vesting-llc-owners', async (req, res) => {
+  try {
+    const a = (await db.query(`SELECT llc_id, borrower_id FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    if (!a.llc_id) return res.status(400).json({ error: 'link a vesting LLC to this file first' });
+    const lb = require('../lib/llc-borrowers');
+    const owners = Array.isArray((req.body || {}).owners) ? req.body.owners : [];
+    for (const o of owners) {
+      const p = lb.pct(o.ownershipPct);
+      if (p && typeof p === 'object' && p.error) return res.status(400).json({ error: p.error });
+      await lb.linkBorrower(a.llc_id, o.borrowerId, p == null ? null : p);
+      // Keep llcs.ownership_pct in step with the PRIMARY owner's stake so the
+      // existing LLC verification math stays consistent.
+      if (o.borrowerId === a.borrower_id && p != null) {
+        await db.query(`UPDATE llcs SET ownership_pct=$2, updated_at=now() WHERE id=$1`, [a.llc_id, p]);
+      }
+    }
+    await audit(req, 'set_vesting_llc_owners', 'application', req.params.id, { count: owners.length });
+    res.json({ ok: true, owners: await lb.getOwners(a.llc_id) });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
