@@ -17,7 +17,7 @@ const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
-const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower } = require('../lib/experience');
+const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
 const llcLib = require('../lib/llc');
 const apprCard = require('../lib/appraisal-card');
 const conditionEngine = require('../lib/conditions/engine');
@@ -328,7 +328,7 @@ async function loadFileForPricing(appId, borrowerId) {
   const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
-       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true GROUP BY 1`, [expBorrowerIds]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
   const exp = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
@@ -420,6 +420,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   const appId = req.params.id;
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+    if (locked) return res.status(409).json({ error: locked });
     const f = await loadFileForPricing(appId, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const b = req.body || {};
@@ -459,6 +461,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     finally { client.release(); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { reason: 'product_registered' }); } catch (_) {}
+    // Replace the generic bank-statement condition with the detailed liquidity
+    // requirement from the freshly-registered quote — same as the staff register
+    // path (#85). Without this a borrower-registered product left no breakdown and
+    // never reopened on a later increase.
+    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
 
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
@@ -682,6 +689,9 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // the Scope of Work can never silently change the loan's budget.
   let sowSeed = false;
   if (it.rows[0].tool_key === 'rehab_budget') {
+    // The rehab budget is loan structure — frozen at Clear-to-Close (#84).
+    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
+    if (locked) return res.status(409).json({ error: locked, fatal: true });
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
     if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
     sowSeed = chk.seed;
@@ -873,8 +883,10 @@ router.post('/applications/:id/link-llc', async (req, res) => {
       WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
     [req.params.id, me(req)]);
   if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
-  if (['funded', 'declined', 'withdrawn'].includes(app.rows[0].status))
-    return res.status(409).json({ error: 'this file is closed — the vesting entity can no longer be changed' });
+  // The vesting entity is part of the loan structure — frozen at Clear-to-Close
+  // and beyond (#84). Move the file back to an earlier status to change it.
+  if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.rows[0].status))
+    return res.status(409).json({ error: 'This file is Clear to Close — the vesting entity is locked. Move it back to an earlier status to change it.' });
   const own = await db.query(`SELECT id FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'llc not found' });
   const previous = app.rows[0].llc_id;

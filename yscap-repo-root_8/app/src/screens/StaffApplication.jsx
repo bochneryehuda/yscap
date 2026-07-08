@@ -1343,7 +1343,17 @@ export default function StaffApplication() {
 
   async function patch(itemId, body) {
     try { await api.staffPatchItem(itemId, body); flash('Saved ✓'); await load(); }
-    catch (e) { setErr(e.message || 'Update failed'); }
+    catch (e) {
+      const msg = e.message || 'Update failed';
+      setErr(msg);
+      // A BLOCKED sign-off / verification (#88) needs an unmissable explanation of
+      // WHY it can't be signed off (e.g. experience still needs verifying, budgets
+      // don't match, a required document is missing). The page-top banner is easy
+      // to miss on a long file, so surface the exact reason right here too.
+      if (body && (body.signedOff === true || body.status === 'satisfied')) {
+        try { window.alert('Can’t sign off yet:\n\n' + msg); } catch (_) { /* no window */ }
+      }
+    }
   }
   async function downloadDoc(doc) {
     setDlBusy(doc.id);

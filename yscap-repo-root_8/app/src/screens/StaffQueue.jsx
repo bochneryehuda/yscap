@@ -14,7 +14,9 @@ const STATUS_GROUPS = {
   closed: ['funded'],
   cancelled: ['declined', 'withdrawn'],
 };
-const GROUP_LABEL = { active: 'Active', closed: 'Closed', cancelled: 'Cancelled', all: 'All' };
+// The 'closed' group is funded-only, so it's labelled "Funded" — that's the view
+// owners look for. ('Cancelled' covers withdrawn/declined.)
+const GROUP_LABEL = { active: 'Active', closed: 'Funded', cancelled: 'Cancelled', all: 'All' };
 const inGroup = (g, status) => g === 'all' || (STATUS_GROUPS[g] || []).includes(status);
 const bigMoney = (n) => n == null ? '$0' : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? '$' + Math.round(n / 1e3) + 'K' : '$' + n;
 
@@ -344,12 +346,12 @@ export default function StaffQueue() {
   }
 
   // ---- filter helpers: the URL is the single source of truth ----
-  const setParam = (patch) => {
+  const setParam = (patch, replace = false) => {
     const next = new URLSearchParams(searchParams);
     Object.entries(patch).forEach(([k, v]) => {
       if (v == null || v === '') next.delete(k); else next.set(k, v);
     });
-    setSearchParams(next);
+    setSearchParams(next, replace ? { replace: true } : undefined);
   };
   const clearFilters = () => setSearchParams({});
 
@@ -373,6 +375,19 @@ export default function StaffQueue() {
   const setDateBasis = (basis) => setParam(basis === 'funded'
     ? { fundedFrom: searchParams.get('createdFrom') || '', fundedTo: searchParams.get('createdTo') || '', createdFrom: '', createdTo: '' }
     : { createdFrom: searchParams.get('fundedFrom') || '', createdTo: searchParams.get('fundedTo') || '', fundedFrom: '', fundedTo: '' });
+
+  // The pipeline search is debounced (300ms) so it doesn't refetch + flash the
+  // list on every keystroke, and it REPLACES history so the Back button isn't
+  // polluted by every character typed. The box stays in sync with the URL (so
+  // "Clear filters" empties it).
+  const [searchInput, setSearchInput] = useState(searchF);
+  useEffect(() => { setSearchInput(searchF); }, [searchF]);
+  useEffect(() => {
+    if (searchInput === searchF) return undefined;
+    const t = setTimeout(() => setParam({ q: searchInput }, true), 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput]);
 
   // Facets + counts derive from the full scoped list (stable, not the filtered view).
   const officerOpts = useMemo(() => {
@@ -441,9 +456,9 @@ export default function StaffQueue() {
               </button>
             ))}
           </div>
-          <input className="input" style={{ maxWidth: 240 }} type="search" value={searchF}
+          <input className="input" style={{ maxWidth: 240 }} type="search" value={searchInput}
             placeholder="Search name, loan #, address"
-            onChange={e => setParam({ q: e.target.value })}
+            onChange={e => setSearchInput(e.target.value)}
             title="Search by borrower name, YS loan number, or property address" />
           <select className="input" style={{ maxWidth: 180 }} value={statusF} onChange={e => setParam({ status: e.target.value })}
             title="Refine by exact status within the selected group">
@@ -487,6 +502,9 @@ export default function StaffQueue() {
             <option value="amount_desc">Loan amount ↓</option>
             <option value="amount_asc">Loan amount ↑</option>
             <option value="closing_desc">Closing date ↓</option>
+            <option value="closing_asc">Closing date ↑</option>
+            <option value="name_asc">Borrower A–Z</option>
+            <option value="name_desc">Borrower Z–A</option>
           </select>
           {seesAllFiles && (
             <label className="row small" style={{ gap: 6, alignItems: 'center', cursor: 'pointer' }}

@@ -51,17 +51,30 @@ async function syncLiquidityCondition(appId, quote, client = db) {
     const prevRequired = (item.tool_payload && item.tool_payload.liquidity && item.tool_payload.liquidity.required != null)
       ? Number(item.tool_payload.liquidity.required) : null;
     const payload = { ...(item.tool_payload || {}), liquidity: breakdown };
-    // Reopen a signed-off condition only when the requirement went UP (a >$0.50
-    // increase avoids float noise). A same/lower requirement just refreshes text.
-    const increased = prevRequired != null && required > prevRequired + 0.5;
 
-    if (increased && item.signed_off_at) {
+    // The generic "bank statements" condition is REPLACED by this detailed
+    // liquidity requirement the moment a product is registered, and must be
+    // (re)verified against the concrete number. So REOPEN a condition that was
+    // already cleared when EITHER:
+    //   · this is the FIRST time a concrete requirement is written (the standard
+    //     condition becomes the detailed one — it should actively resurface), OR
+    //   · the required liquidity went UP versus last time (a >$0.50 change avoids
+    //     float noise) — the borrower must show more, so re-verify.
+    // "Cleared" covers a real sign-off AND the common case of staff simply
+    // ACCEPTING the uploaded statement (status='satisfied', no sign-off stamp) —
+    // and a borrower submission awaiting review ('received'). A same/lower
+    // requirement on re-register just refreshes the text.
+    const firstConcrete = prevRequired == null;
+    const increased = prevRequired != null && required > prevRequired + 0.5;
+    const wasCleared = !!item.signed_off_at || item.status === 'satisfied' || item.status === 'received';
+
+    if ((firstConcrete || increased) && wasCleared) {
       await client.query(
         `UPDATE checklist_items
-            SET tool_payload=$2, hint=$3, borrower_hint=$3, status='received',
-                signed_off_at=NULL, signed_off_by=NULL, updated_at=now()
+            SET tool_payload=$2, hint=$3, borrower_hint=$3, status='outstanding',
+                signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
           WHERE id=$1`, [item.id, JSON.stringify(payload), hint]);
-      return { reopened: true, required, prevRequired };
+      return { reopened: true, reason: increased ? 'increase' : 'first', required, prevRequired };
     }
     await client.query(
       `UPDATE checklist_items SET tool_payload=$2, hint=$3, borrower_hint=$3, updated_at=now() WHERE id=$1`,
