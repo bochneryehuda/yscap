@@ -599,6 +599,19 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                           ))}
                           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
                             <button className="btn ghost small" onClick={() => setEm(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '' }])}>+ Add a member</button>
+                            {/* #102 — one click adds the file's co-borrower to the ownership
+                                structure with their details pre-filled; just enter their %. */}
+                            {app.co_borrower_id && (() => {
+                              const coName = `${app.co_first_name || ''} ${app.co_last_name || ''}`.trim();
+                              const already = coName && (em || []).some(m => (m.fullName || '').trim().toLowerCase() === coName.toLowerCase());
+                              return coName && !already ? (
+                                <button className="btn ghost small"
+                                  title="Add the file's co-borrower as an additional owner — their info is filled automatically; enter their ownership %"
+                                  onClick={() => setEm(ms => [...(ms || []), { fullName: coName, ownershipPct: '', email: app.co_email || '' }])}>
+                                  + Add co-borrower ({coName}) as owner
+                                </button>
+                              ) : null;
+                            })()}
                             <span className={`ts-badge ${Math.abs(eTotal - 100) <= 0.01 ? 'ok' : 'warn'}`}>
                               {Math.abs(eTotal - 100) <= 0.01 ? 'Ownership 100% ✓' : `Ownership ${Math.round(eTotal * 100) / 100 || 0}%`}
                             </span>
