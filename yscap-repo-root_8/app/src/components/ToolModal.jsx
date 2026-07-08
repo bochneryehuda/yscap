@@ -14,24 +14,41 @@ export default function ToolModal({ url, title, onClose }) {
   const frameRef = useRef(null);
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [saveError, setSaveError] = useState(null);
 
   const saveAndClose = useCallback(() => {
     if (saving) return;
+    setSaveError(null);
     const win = frameRef.current && frameRef.current.contentWindow;
     if (!win) { onClose(); return; }
     setSaving(true);
     let finished = false;
+    let timer = null;
     const finish = () => {
       if (finished) return;
       finished = true;
+      clearTimeout(timer);
       window.removeEventListener('message', onMsg);
       onClose();
     };
-    const onMsg = (e) => { if (e.data && e.data.type === 'ys-tool-saved') finish(); };
+    // The tool saves before it closes. If the save is REFUSED (e.g. the Scope of
+    // Work total doesn't match the file's required rehab budget — a fatal, #75),
+    // we do NOT close: the tool shows the reason inline and the user stays put to
+    // fix it. Only a clean save (or a hard timeout) closes the sheet.
+    const onMsg = (e) => {
+      if (!e.data) return;
+      if (e.data.type === 'ys-tool-saved') finish();
+      else if (e.data.type === 'ys-tool-save-error') {
+        clearTimeout(timer);
+        window.removeEventListener('message', onMsg);
+        setSaving(false);
+        setSaveError(e.data.message || 'This couldn’t be saved — please review and try again.');
+      }
+    };
     window.addEventListener('message', onMsg);
     try { win.postMessage({ type: 'ys-tool-save-close' }, window.location.origin); }
     catch { finish(); return; }
-    setTimeout(finish, 30000);   // export generation can take a few seconds; never trap the user
+    timer = setTimeout(finish, 30000);   // export generation can take a few seconds; never trap the user
   }, [saving, onClose]);
 
   useEffect(() => {
@@ -78,6 +95,16 @@ export default function ToolModal({ url, title, onClose }) {
           {saving ? 'Saving to your file…' : 'Done'}
         </button>
       </header>
+      {saveError && (
+        <div role="alert" style={{
+          margin: '10px 16px 0', padding: '12px 14px', borderRadius: 10,
+          border: '1px solid #e06666', background: '#3a1414', color: '#ffd9d9',
+          fontWeight: 600, lineHeight: 1.45,
+        }}>
+          <span style={{ marginRight: 8 }}>⛔</span>
+          Not saved — {saveError}
+        </div>
+      )}
       <div className="toolsheet-body">
         {!loaded && (
           <div className="toolframe-loading" aria-live="polite">

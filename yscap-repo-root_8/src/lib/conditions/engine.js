@@ -210,13 +210,28 @@ async function evaluateApplication(appId, opts = {}) {
     const instances = allByTemplate.get(tpl.id) || [];
     if (matches && !instances.length) {
       const summary = tpl.auto_apply === 'rules' ? rules.summarizeRule(tpl.rule_logic, { fields }) : 'applies to every file';
-      const id = await instantiateTemplate(tpl, { application_id: appId }, {
+      // #78 guard: a borrower-visible template with NO borrower wording would show
+      // the borrower a meaningless "An item your loan team needs" — a phantom the
+      // team never knowingly added. Never do that: such a template is applied
+      // STAFF-ONLY (the condition still exists for staff, and the internal label
+      // is never leaked to the borrower). Tool / e-sign items render their own
+      // borrower copy, so they're exempt. An admin who wants it borrower-facing
+      // adds a borrower label in the Condition Studio and it applies normally.
+      const borrowerVisible = tpl.audience === 'borrower' || tpl.audience === 'both';
+      const hasBorrowerWording = !!(tpl.borrower_label && String(tpl.borrower_label).trim());
+      const rendersOwnLabel = !!tpl.tool_key || !!tpl.esign_doc;
+      const effTpl = (borrowerVisible && !hasBorrowerWording && !rendersOwnLabel)
+        ? Object.assign({}, tpl, { audience: 'staff' }) : tpl;
+      if (effTpl !== tpl) {
+        try { console.warn('[conditions] template', tpl.code || tpl.id, '(', tpl.label, ') is borrower-visible but has no borrower_label — applied staff-only to avoid a phantom borrower condition (#78).'); } catch (_) {}
+      }
+      const id = await instantiateTemplate(effTpl, { application_id: appId }, {
         originKind: 'auto',
         originDetail: { templateVersion: tpl.version, rule: summary, reason: opts.reason || null },
       });
       // borrowerLabel must NEVER fall back to the internal tpl.label (note-buyer
       // context) — it is interpolated into the borrower notification below.
-      out.added.push({ id, label: tpl.label, borrowerLabel: tpl.borrower_label || null, audience: tpl.audience });
+      out.added.push({ id, label: effTpl.label, borrowerLabel: effTpl.borrower_label || null, audience: effTpl.audience });
     } else if (!matches && tpl.auto_apply === 'rules' && instances.length) {
       for (const inst of instances) {
         const untouched = inst.origin_kind === 'auto' && inst.status === 'outstanding'

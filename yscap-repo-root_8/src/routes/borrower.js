@@ -651,19 +651,31 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const stripped = stripToolAttachments(rawPayload);
   const payload = stripped.payload;
   const notes = (req.body && req.body.notes) ? String(req.body.notes).slice(0, 2000) : null;
+  // FATAL rehab-budget gate (#75): the Scope of Work total must match the file's
+  // required rehab budget EXACTLY. A mismatch is refused BEFORE the condition is
+  // touched, so the condition stays outstanding (a real fail the borrower sees) —
+  // the Scope of Work can never silently change the loan's budget.
+  let sowSeed = false;
+  if (it.rows[0].tool_key === 'rehab_budget') {
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
+    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
+    sowSeed = chk.seed;
+  }
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($4,tool_state), status='received', notes=COALESCE($3,notes), updated_at=now()
       WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload), notes,
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
-  // The rehab-budget tool's grand total IS the file's rehab budget, which feeds
-  // the pricing engine — sync it onto the application so terms reflect the SOW.
+  // ONLY when the file has no rehab budget yet does the Scope of Work seed it —
+  // it never overrides a budget already set by the application / registered
+  // product (that would silently reprice the loan). The gate above guarantees a
+  // match in every other case.
   if (it.rows[0].tool_key === 'rehab_budget') {
     const total = Number(payload && payload.total);
-    if (isFinite(total) && total >= 0) {
+    if (sowSeed && isFinite(total) && total >= 0) {
       await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
-      try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'rehab_budget_saved' }); } catch (_) {}
     }
+    try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'rehab_budget_saved' }); } catch (_) {}
   }
   const storedExports = await storeToolAttachments({
     req, appId: req.params.id, borrowerId: own.rows[0].borrower_id,

@@ -876,13 +876,19 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
     let itemId = it.rows[0] && it.rows[0].id;
     if (!itemId) {
       const ins = await db.query(
-        `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,tool_key,created_by_kind,created_by_id)
-         VALUES ('application',$1,'Rehab budget','borrower','task','rehab_budget','staff',$2) RETURNING id`, [appId, req.actor.id]);
+        `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,tool_key,created_by_kind,created_by_id)
+         VALUES ('application',$1,'Rehab budget','Rehab budget','borrower','task','rehab_budget','staff',$2) RETURNING id`, [appId, req.actor.id]);
       itemId = ins.rows[0].id;
     }
-    await db.query(`UPDATE checklist_items SET tool_payload=$2, status='received', updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload)]);
+    // FATAL rehab-budget gate (#75): the Scope of Work total must match the
+    // file's required rehab budget EXACTLY and can never override it. Checked
+    // before the condition is marked received, so a mismatch leaves it open.
     const total = Number(payload.total);
-    if (isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
+    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, total);
+    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total });
+    await db.query(`UPDATE checklist_items SET tool_payload=$2, status='received', updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload)]);
+    // Seed the file budget from the SOW ONLY when none is set yet (never override).
+    if (chk.seed && isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
     res.json({ ok: true, itemId });
@@ -931,16 +937,24 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const payload = { ...rawPayload };
   delete payload.attachments;
   if (attachments.length) payload.export_files = attachments.map((a) => ({ filename: a.filename, contentType: a.contentType }));
+  // FATAL rehab-budget gate (#75) — SOW total must match the file budget exactly
+  // and never override it; refused before the condition is marked received.
+  let sowSeed = false;
+  if (toolKey === 'rehab_budget') {
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
+    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
+    sowSeed = chk.seed;
+  }
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status='received', updated_at=now() WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload),
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
   if (toolKey === 'rehab_budget') {
     const total = Number(payload && payload.total);
-    if (isFinite(total) && total >= 0) {
+    if (sowSeed && isFinite(total) && total >= 0) {
       await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
-      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
     }
+    try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
   // A resubmission outdates the previous exports: the old PDF/Excel are
   // superseded and the fresh ones become the current versions on the condition.
@@ -992,10 +1006,16 @@ router.get('/applications/:id/checklist', async (req, res) => {
 router.post('/applications/:id/checklist', async (req, res) => {
   const b = req.body || {};
   if (!b.label) return res.status(400).json({ error: 'label required' });
+  // This IS a borrower-facing request — the typed label is what the borrower
+  // should see, so it doubles as the borrower_label. Without it the borrower
+  // portal would show the generic "An item your loan team needs" (#78).
+  const audience = b.audience || 'borrower';
+  const borrowerLabel = (audience === 'borrower' || audience === 'both')
+    ? String(b.borrowerLabel || b.label).trim().slice(0, 300) : null;
   const r = await db.query(
-    `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
-     VALUES ('application',$1,$2,$3,'document',$4,$5,'staff',$6) RETURNING id`,
-    [req.params.id, b.label, b.audience || 'borrower', b.isRequired !== false, b.dueDate || null, req.actor.id]);
+    `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
+     VALUES ('application',$1,$2,$3,$4,'document',$5,$6,'staff',$7) RETURNING id`,
+    [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, b.dueDate || null, req.actor.id]);
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
   if (app.rows[0]) {
     const ctx = await notify.fileContext(req.params.id);

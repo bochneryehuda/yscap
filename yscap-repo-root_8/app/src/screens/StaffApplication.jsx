@@ -892,7 +892,7 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [trOpen, setTrOpen] = useState(false);    // borrower track record open full-screen (staff)
@@ -1015,6 +1015,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               </div>
               {it.tool_key === 'rehab_budget' && (
                 <button className="btn ghost small" onClick={() => setSowOpen(it.id)}>Open Scope of Work</button>
+              )}
+              {it.tool_key === 'product_pricing' && onOpenStudio && (
+                <button className="btn ghost small" onClick={onOpenStudio}
+                  title="Open the Term Sheet Studio to price / register the product on this file — the same tool the borrower opens from this condition">
+                  {app.registered_program ? 'Reprice / re-register' : 'Open Products & Pricing'}
+                </button>
               )}
               {it.tool_key === 'track_record' && app.borrower_id && (
                 <button className="btn ghost small" onClick={() => setTrOpen(true)}>Open track record</button>
@@ -1282,6 +1288,9 @@ export default function StaffApplication() {
   // shared list the borrower sees. Multi-select aware: several PDFs at once
   // land in successive slots (Document N, N+1, …); replacements stay single.
   const staffFileRef = useRef(null);
+  // Lets the Products & Pricing CONDITION open the Term Sheet Studio directly —
+  // the same one-click the borrower has (#79), from inside the conditions list.
+  const studioRef = useRef(null);
   const [uploadTarget, setUploadTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId}
   const pickUpload = (t) => { setUploadTarget(t || {}); staffFileRef.current && staffFileRef.current.click(); };
   // Shared by the file picker AND drag-and-drop — target passed explicitly.
@@ -1635,7 +1644,7 @@ export default function StaffApplication() {
       <Section id="sec-pricing" title="Loan structure & pricing"
         info="The registered product with its full economics, and the live Term Sheet Studio to reprice or re-register — every registration attaches the exact term sheet PDF."
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
-      <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="staff"
+      <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff"
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       </Section>
 
@@ -1645,7 +1654,8 @@ export default function StaffApplication() {
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
-        onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview} />
+        onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
+        onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
       <div className="grid cols-2" style={{ marginTop: 14 }}>
         <AddConditionPanel appId={id} items={items} onChanged={load}
           onError={(t) => setErr(t)} onFlash={flash} />

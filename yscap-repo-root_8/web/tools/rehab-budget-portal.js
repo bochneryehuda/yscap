@@ -34,6 +34,45 @@
   }
   var SAVE_LABEL = "Save Rehab Budget ✓";
   var SAVE_TITLE = "Saves this Scope of Work onto the loan-file condition: the editable HTML version plus a fresh Excel and PDF export (previous versions are marked old).";
+
+  // ---- FATAL banner ----------------------------------------------------------
+  // A big, unmissable red banner pinned to the top of the builder. Raised when
+  // the Scope of Work total does NOT match the file's required rehab budget
+  // (#75): the save is refused server-side, the condition stays open, and the
+  // borrower/officer sees exactly why. Cleared on the next successful save.
+  var fatalBar = null;
+  function showFatal(msg) {
+    if (!fatalBar) {
+      fatalBar = document.createElement("div");
+      fatalBar.className = "rb-portal-fatal";
+      fatalBar.setAttribute("role", "alert");
+      fatalBar.style.cssText =
+        "position:sticky;top:0;z-index:120;margin:0 0 .9rem;padding:.85rem 1rem;border-radius:12px;" +
+        "border:1px solid #e06666;background:#3a1414;color:#ffd9d9;font-weight:600;line-height:1.45;" +
+        "box-shadow:0 6px 24px rgba(0,0,0,.35)";
+      var wrap = document.querySelector(".rb-wrap");
+      if (wrap) wrap.insertBefore(fatalBar, wrap.firstChild);
+    }
+    fatalBar.innerHTML =
+      '<div style="display:flex;gap:.6rem;align-items:flex-start">' +
+      '<span style="font-size:1.15rem;line-height:1">⛔</span>' +
+      '<div><strong style="display:block;margin-bottom:.15rem">Budget mismatch — this Scope of Work was NOT saved</strong>' +
+      '<span style="font-weight:500">' + esc(msg) + '</span></div></div>';
+    fatalBar.style.display = "";
+    try { fatalBar.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) {}
+  }
+  function clearFatal() { if (fatalBar) fatalBar.style.display = "none"; }
+
+  // A cheap signature of the current builder state + grand total. When the file
+  // is closed ("Done") and nothing changed since the last successful save, we
+  // skip re-exporting — that redundant second save is what left the borrower
+  // "stuck" watching the spinner (#76).
+  var lastSavedSig = null;
+  function curSig() {
+    try { return JSON.stringify(RB.getState()) + "|" + RB.grandTotal(); }
+    catch (e) { return null; }
+  }
+
   function injectUI() {
     // Inside the portal iframe (?embed=1) only the tool itself shows: the
     // marketing header, hero copy and footer disappear; the step strip stays.
@@ -138,6 +177,9 @@
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
         if (d && d.state && window.RB && RB.setState) RB.setState(d.state);
+        // Treat an already-submitted scope as "saved" so closing without edits
+        // confirms instantly instead of re-exporting the same thing (#76).
+        if (d && d.submitted) lastSavedSig = curSig();
         setChip(d && d.submitted ? "Previously submitted — changes re-submit new exports" : "Connected to your loan file ✓");
       })
       .catch(function () { setChip("Couldn't load the saved scope — working from this device", "err"); });
@@ -160,7 +202,9 @@
   }
   function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
   function htmlSnapshot(state) {
-    var url = location.origin + location.pathname + "#d=" + encState(state);
+    // embed=1 so a later preview of this saved copy renders in the clean, dark
+    // embedded layout instead of flashing the light marketing shell (#76).
+    var url = location.origin + location.pathname + "?embed=1#d=" + encState(state);
     var addr = state.address || "your property";
     var html = "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">" +
       "<title>Scope of Work — " + esc(addr) + "</title></head><body style=\"font-family:sans-serif;background:#0b1014;color:#f3efe6;padding:2rem\">" +
@@ -178,13 +222,16 @@
   }
 
   // ---- submit: state snapshot + fresh PDF & Excel exports onto the condition ----
+  // Returns a result object so callers (the "Done"/close handshake) can react:
+  //   { ok:true }                         → saved
+  //   { ok:false, fatal:true, message }   → budget mismatch, refused (#75)
+  //   { ok:false, message }               → other failure (retry)
   var busy = false;
   async function submit() {
-    if (busy) return;
+    if (busy) return { ok: false, message: "a save is already in progress" };
     busy = true;
-    var orig = submitBtn.textContent;
-    submitBtn.textContent = "Preparing exports…";
-    submitBtn.disabled = true;
+    var orig = submitBtn ? submitBtn.textContent : SAVE_LABEL;
+    if (submitBtn) { submitBtn.textContent = "Preparing exports…"; submitBtn.disabled = true; }
     try {
       if (RB.commit) RB.commit();                      // flush in-flight inputs
       var pdf = null, xls = null;
@@ -200,7 +247,7 @@
       var state = RB.getState();
       // Always include the living static HTML version of this scope of work.
       attachments.push({ filename: snapName(state, ".html"), contentType: "text/html", dataBase64: htmlSnapshot(state) });
-      submitBtn.textContent = "Saving to your loan file…";
+      if (submitBtn) submitBtn.textContent = "Saving to your loan file…";
       var res = await fetch(submitUrl, {
         method: "POST", headers: hdrs(),
         body: JSON.stringify({ payload: {
@@ -211,35 +258,71 @@
           attachments: attachments,
         } }),
       });
-      if (!res.ok) { var d = null; try { d = await res.json(); } catch (e) {} throw new Error((d && d.error) || ("HTTP " + res.status)); }
-      submitBtn.textContent = "Saved ✓";
+      var d = null; try { d = await res.json(); } catch (e) {}
+      if (!res.ok) {
+        // 422 = the FATAL budget-mismatch gate (#75). The Scope of Work total
+        // must match the file's required rehab budget EXACTLY; the server refused
+        // and the condition stays open. Surface it loudly and DON'T report saved.
+        var fatal = res.status === 422 || (d && d.fatal);
+        var message = (d && d.error) || ("HTTP " + res.status);
+        if (submitBtn) { submitBtn.textContent = orig; submitBtn.disabled = false; }
+        busy = false;
+        if (fatal) { showFatal(message); setChip("Not saved — budget mismatch", "err"); }
+        else setChip("Save failed: " + message, "err");
+        return { ok: false, fatal: !!fatal, message: message };
+      }
+      clearFatal();
+      lastSavedSig = curSig();
+      if (submitBtn) submitBtn.textContent = "Saved ✓";
       setChip("Rehab budget saved — HTML, Excel & PDF are on the condition ✓");
-      setTimeout(function () { submitBtn.textContent = orig; submitBtn.disabled = false; busy = false; }, 2500);
+      setTimeout(function () { if (submitBtn) { submitBtn.textContent = orig; submitBtn.disabled = false; } busy = false; }, 2500);
       var fl = document.getElementById("rb-flash");
       if (fl) { fl.textContent = "Saved — the condition now carries this Scope of Work (editable HTML" + (attachments.length > 1 ? " + fresh Excel & PDF" : "") + "). Old versions were marked outdated."; fl.classList.add("show"); setTimeout(function () { fl.classList.remove("show"); }, 3500); }
+      return { ok: true };
     } catch (err) {
-      submitBtn.textContent = orig;
-      submitBtn.disabled = false;
+      if (submitBtn) { submitBtn.textContent = orig; submitBtn.disabled = false; }
       busy = false;
-      setChip("Submit failed: " + (err && err.message ? err.message : "please try again"), "err");
+      var em = (err && err.message) ? err.message : "please try again";
+      setChip("Save failed: " + em, "err");
+      return { ok: false, message: em };
     }
   }
 
-  // Closing the portal overlay SAVES first: the host page asks for a full
-  // save (HTML + Excel + PDF onto the condition) and waits for confirmation.
+  // Closing the portal overlay ("Done" / back / Esc) SAVES first: the host asks
+  // for a full save and waits for confirmation before the sheet closes. Three
+  // outcomes are reported back to the host:
+  //   ys-tool-saved        → saved (or already saved, nothing changed) → close
+  //   ys-tool-save-error   → FATAL budget mismatch (#75) → stay open, show it
+  // "Done" therefore does exactly what "Save Rehab Budget" does — on BOTH the
+  // borrower and the internal login (#77) — and never re-exports redundantly
+  // when nothing changed since the last save (#76: no more stuck spinner).
   window.addEventListener("message", function (e) {
     if (!e.data || e.data.type !== "ys-tool-save-close") return;
-    var reply = function () { try { window.parent.postMessage({ type: "ys-tool-saved" }, "*"); } catch (err) {} };
+    var saved = function () { try { window.parent.postMessage({ type: "ys-tool-saved" }, "*"); } catch (err) {} };
+    var failed = function (msg, fatal) { try { window.parent.postMessage({ type: "ys-tool-save-error", message: msg || "", fatal: !!fatal }, "*"); } catch (err) {} };
+
+    var finishFrom = function (r) {
+      if (!r || r.ok) { saved(); return; }
+      failed(r.message, r.fatal);        // fatal mismatch (or hard failure): keep the user in the tool
+    };
+
+    // Nothing changed since the last successful save → confirm instantly, no
+    // second export. (curSig()===null means state is unreadable; save to be safe.)
+    var sig = curSig();
+    if (sig != null && lastSavedSig != null && sig === lastSavedSig) { saved(); return; }
+
     var started = false;
     var run = function () {
-      if (busy) {
-        // A save is already in flight — just wait for it to land, then confirm.
+      if (busy) {                        // a save is already in flight — wait for it
         started = true;
         setTimeout(run, 400);
         return;
       }
-      if (started) { reply(); return; }                  // the in-flight save finished
-      Promise.resolve(submit()).then(reply, reply);
+      if (started) {                     // the in-flight save finished — reflect its result
+        finishFrom(lastSavedSig != null && curSig() === lastSavedSig ? { ok: true } : { ok: false, message: "the save didn't complete — please try again" });
+        return;
+      }
+      Promise.resolve(submit()).then(finishFrom, function () { saved(); });
     };
     run();
   });
