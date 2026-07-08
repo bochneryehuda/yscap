@@ -98,7 +98,7 @@ this folder. Rough order (we can reorder as we learn):
 |---|---------|----------------|--------|
 | **1** | **The Front Door — Accounts & Access** | Login, register, MFA, password reset, staff invites, roles/permissions, who-can-see-which-file, borrower-vs-staff boundary | ✅ **Done** → [read it](./01-accounts-and-access.md) |
 | 2 | The Borrower's File — What the Borrower Sees | Borrower dashboard + their loan file: what data shows, what leaks, capital-partner names, status timeline | ✅ **Done** → [read it](./02-borrower-file.md) |
-| 3 | The Loan Officer's Desk — Pipeline & Staff File | Staff pipeline + the staff file view, file scoping in depth, SSN/PII reveal, edit/assign/verify | ⬜ Planned |
+| 3 | The Loan Officer's Desk — Pipeline & Staff File | Staff pipeline + the staff file view, file scoping in depth, SSN/PII reveal, edit/assign/verify | ✅ **Done** → [read it](./03-loan-officer-desk.md) |
 | 4 | Documents & Uploads | Uploading, downloading, who's allowed to open which document, appraisal-card reuse, OCR | ⬜ Planned |
 | 5 | Conditions & Checklist Engine | Condition Studio, rules, borrower-label vs internal-label, sign-off integrity, waive, internal conditions | ⬜ Planned |
 | 6 | Messaging & Chat | Borrower↔staff chat, internal staff chat, mentions, PII guard, attachments, the live stream | ⬜ Planned |
@@ -120,7 +120,8 @@ picture growing:
 |---------|:-:|:-:|:-:|:-:|:-:|
 | 1 — Accounts & Access | 1 | 4 | 6 | 5 | **16** |
 | 2 — The Borrower's File | 0 | 3 | 6 | 4 | **13** |
-| **Running total** | **1** | **7** | **12** | **9** | **29** |
+| 3 — The Loan Officer's Desk | 1 | 3 | 6 | 2 | **12** |
+| **Running total** | **2** | **10** | **18** | **11** | **41** |
 
 _(Filled in at the end of each section's write-up.)_
 
