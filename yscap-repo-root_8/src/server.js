@@ -226,6 +226,9 @@ if (require.main === module) {
     // Chat's deferred-notification sweeper (email-if-still-unread + urgent
     // re-pings). Cheap interval; safe to run alongside everything else.
     try { require('./lib/chat').startSweeper(); } catch (e) { console.warn('chat sweeper not started:', e.message); }
+    // Reminder/task dispatcher (#93): fires scheduled reminders at their due
+    // moment via the notify fan-out. Minute cadence; self-gated + idempotent.
+    try { require('./lib/reminders').startDispatcher(); } catch (e) { console.warn('reminder dispatcher not started:', e.message); }
   });
 }
 module.exports = app;

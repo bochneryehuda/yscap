@@ -2245,6 +2245,64 @@ router.post('/applications/:id/nudge', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// ── Reminders + task management (#93) ────────────────────────────────────────
+// The "Remind" button on a file. A reminder/task has a due date+time, a set of
+// recipients (any mix of the loan team, the borrower/co-borrower, or an ad-hoc
+// email) and a message; a task also carries an assignee. The boot dispatcher
+// fires the notification at the due moment via the normal notify fan-out.
+const reminders = require('../lib/reminders');
+
+// Everything the composer needs in one call: existing reminders on the file,
+// the selectable contacts, and the borrower-facing outstanding items (for the
+// "prefill outstanding conditions" helper). Access is already gated by the
+// /applications/:id scope middleware above.
+router.get('/applications/:id/reminders', async (req, res) => {
+  try {
+    const [list, contacts, outstanding] = await Promise.all([
+      reminders.listForApplication(req.params.id),
+      reminders.contactsForApplication(req.params.id, req.actor),
+      reminders.outstandingItems(req.params.id),
+    ]);
+    res.json({ reminders: list, contacts, outstanding });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/reminders', async (req, res) => {
+  try {
+    const id = await reminders.create(req.params.id, req.body || {}, req.actor);
+    await audit(req, 'create_reminder', 'application', req.params.id,
+      { reminderId: id, kind: (req.body || {}).kind || 'reminder' });
+    res.json({ ok: true, id });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.patch('/applications/:id/reminders/:rid', async (req, res) => {
+  try {
+    // Defense in depth: the reminder must belong to this (already-scoped) file.
+    const own = await db.query(`SELECT 1 FROM reminders WHERE id=$1 AND application_id=$2`, [req.params.rid, req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    const row = await reminders.update(req.params.rid, req.body || {}, req.actor);
+    await audit(req, 'update_reminder', 'application', req.params.id, { reminderId: req.params.rid, status: (req.body || {}).status });
+    res.json({ ok: true, reminder: row });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.delete('/applications/:id/reminders/:rid', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT 1 FROM reminders WHERE id=$1 AND application_id=$2`, [req.params.rid, req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    await reminders.remove(req.params.rid);
+    await audit(req, 'delete_reminder', 'application', req.params.id, { reminderId: req.params.rid });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Set the file's expected / actual closing date. Setting an estimated closing
 // notifies the borrower so they can plan.
 router.post('/applications/:id/closing-date', async (req, res) => {

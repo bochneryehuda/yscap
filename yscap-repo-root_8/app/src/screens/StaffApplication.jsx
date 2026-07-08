@@ -15,6 +15,7 @@ import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+import ReminderModal from '../components/ReminderModal.jsx';
 import { US_STATES } from '../components/LlcManager.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
@@ -1397,6 +1398,7 @@ export default function StaffApplication() {
   // without downloading. Uses the same authenticated loader as the download.
   const [previewDoc, setPreviewDoc] = useState(null);
   const [chatOpen, setChatOpen] = useState(false);   // #94 — Message opens a popup, not a scroll
+  const [remindOpen, setRemindOpen] = useState(false);   // #93 — Remind opens the reminder/task manager
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   async function revealSsn() {
@@ -1688,7 +1690,7 @@ export default function StaffApplication() {
         })()}
         <div className="spacer" />
         <button className="btn ghost" onClick={() => setChatOpen(true)}>💬 Message</button>
-        <button className="btn ghost" onClick={nudge} disabled={busyAct === 'nudge'} title="Email the borrower a reminder of their outstanding items">🔔 Remind</button>
+        <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says">🔔 Remind</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
           title="Email the borrower an invite to join this file in the portal">
           {inviteBusy ? 'Sending…' : 'Invite borrower'}
@@ -2014,6 +2016,11 @@ export default function StaffApplication() {
             </div>
           </div>
         </div>
+      )}
+      {remindOpen && (
+        // #93 — Remind opens the reminder/task manager: schedule a reminder or
+        // task with a due date/time, recipients, and message; manage what's live.
+        <ReminderModal appId={id} team={team} onClose={() => setRemindOpen(false)} onChanged={() => {}} />
       )}
     </>
   );
