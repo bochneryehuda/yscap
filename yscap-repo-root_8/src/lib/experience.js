@@ -94,7 +94,28 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   const required = requestedFromApp(app);
   // Experience for the FILE = the primary borrower + the co-borrower, summed
   // (#80): both borrowers' completed deals count toward the requirement.
-  const counts = await countBorrowersExperience(fileBorrowerIds(app), client);
+  const ids = fileBorrowerIds(app);
+  const counts = await countBorrowersExperience(ids, client);
+  // Per-borrower breakdown (#103) — on a co-borrower file the experience
+  // condition shows BOTH borrowers, each named, with their OWN 3-year-window
+  // counts and a link to their OWN track record. The requirement is still the
+  // SUM (above); this is display detail only, so it never changes met/required.
+  let perBorrower = null;
+  if (ids.length > 1) {
+    const nm = await client.query(
+      `SELECT id, first_name, last_name FROM borrowers WHERE id = ANY($1::uuid[])`, [ids]);
+    const nameById = {};
+    for (const row of nm.rows) nameById[row.id] = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Borrower';
+    perBorrower = [];
+    for (const bid of ids) {
+      perBorrower.push({
+        borrowerId: bid,
+        name: nameById[bid] || 'Borrower',
+        isPrimary: bid === app.borrower_id,
+        counts: await countBorrowersExperience([bid], client),
+      });
+    }
+  }
   const requiredAny = hasRequirement(required);
   // NO experience claimed on the file → there is nothing to verify, so the
   // track-record condition is NOT APPLICABLE. We auto-satisfy it (stamped
@@ -106,6 +127,7 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   const satisfied = notApplicable || met;
   const payload = {
     autoExperienceTask: true, notApplicable, required, counts, satisfied,
+    perBorrower,
     checkedAt: new Date().toISOString(),
   };
 
@@ -152,6 +174,21 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   return { required, counts, satisfied, itemId: item.id };
 }
 
+// #103 — one-shot boot backfill: recompute the experience condition for every
+// co-borrower file so its payload carries the per-borrower breakdown (and each
+// borrower's own track-record link) without waiting for the next experience-
+// affecting action. Safe to re-run — the sync preserves genuine sign-offs and a
+// pure recompute never changes the summed requirement, so nothing reopens.
+async function backfillCoBorrowerExperience(client = db) {
+  const r = await client.query(
+    `SELECT id FROM applications WHERE co_borrower_id IS NOT NULL AND deleted_at IS NULL`);
+  let n = 0;
+  for (const row of r.rows) {
+    try { await syncExperienceChecklistForApplication(row.id, client); n++; } catch (_) { /* best-effort */ }
+  }
+  return n;
+}
+
 async function syncExperienceChecklistForBorrower(borrowerId, client = db) {
   const apps = await client.query(
     `SELECT id FROM applications
@@ -166,6 +203,7 @@ module.exports = {
   bucketOf,
   countBorrowerExperience,
   countBorrowersExperience,
+  backfillCoBorrowerExperience,
   fileBorrowerIds,
   requestedFromApp,
   syncExperienceChecklistForApplication,
