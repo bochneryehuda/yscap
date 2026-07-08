@@ -28,7 +28,7 @@
 const db = require('../../db');
 const registry = require('./field-registry');
 const rules = require('./rules');
-const { countBorrowerExperience } = require('../experience');
+const { countBorrowersExperience, fileBorrowerIds } = require('../experience');
 
 const OPEN_STATUSES = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close'];
 
@@ -61,8 +61,10 @@ async function loadRuleContext(appId) {
   const a = r.rows[0];
   if (!a) return null;
 
+  // Verified experience for the FILE = primary borrower + co-borrower, summed
+  // (#80) — the same rule the pricing/experience condition uses.
   let verified = { flips: 0, holds: 0, ground: 0, total: 0 };
-  try { verified = await countBorrowerExperience(a.borrower_id, db, { verifiedOnly: true }); } catch (_) {}
+  try { verified = await countBorrowersExperience(fileBorrowerIds(a), db, { verifiedOnly: true }); } catch (_) {}
 
   const addr = a.property_address || {};
   const bAddr = a.b_address || {};

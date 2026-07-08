@@ -13,7 +13,7 @@ const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
 const cfg = require('../config');
 const storage = require('../lib/storage');
-const { requireAuth, requireRole } = require('../auth');
+const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication } = require('../lib/experience');
@@ -695,9 +695,13 @@ async function loadFileForPricing(appId) {
   // borrowers.tier recompute uses. Unverified, borrower-claimed deals must not
   // inflate the authoritative pricing tier. Staff can still override the exp*
   // inputs in the panel for a what-if.
+  // On a co-borrower file the experience is the SUM of BOTH borrowers (#80):
+  // e.g. 2 flips each → 4 flips feed the pricing engine. This only changes the
+  // COUNT fed in, never the frozen pricing math.
+  const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
-       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true GROUP BY 1`, [expBorrowerIds]);
   const exp = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
@@ -1371,9 +1375,11 @@ async function signOffGate(itemId, actor) {
 
   if (!isProduct && !isBudget && !isExp) return null;
 
-  const ar = await db.query(`SELECT rehab_budget, borrower_id FROM applications WHERE id=$1`, [item.application_id]);
+  const ar = await db.query(`SELECT rehab_budget, borrower_id, co_borrower_id FROM applications WHERE id=$1`, [item.application_id]);
   const app = ar.rows[0];
   if (!app) return null;
+  // Experience for the FILE counts BOTH borrowers on it (#80).
+  const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const reg = (await db.query(
     `SELECT inputs, quote FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [item.application_id])).rows[0] || null;
@@ -1401,7 +1407,7 @@ async function signOffGate(itemId, actor) {
   if (!reg) return 'Register a product first — experience is checked against the registered product before this can be signed off.';
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n
-       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true GROUP BY 1`, [expBorrowerIds]);
   const v = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (/ground|construction/.test(row.dt)) v.ground += row.n;
@@ -1605,6 +1611,96 @@ router.get('/borrowers/search', async (req, res) => {
         LIMIT 10`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- Loan-officer borrower management (#83) ----------------
+// The LO's book of borrowers: everyone on a file they run (seesAll staff get
+// everyone), with portal-account state and last activity, plus the actions an LO
+// needs — invite to the portal, email a reset link, or set a password directly.
+// Scoped exactly like every other staff borrower read. Registered before
+// /borrowers/:id so "borrowers" is never captured as an :id.
+router.get('/borrowers', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      scope = `WHERE EXISTS (SELECT 1 FROM applications a
+                              WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
+                                AND (a.loan_officer_id=$1 OR a.processor_id=$1))`;
+    }
+    const r = await db.query(
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
+              (ba.borrower_id IS NOT NULL) AS has_account,
+              ba.last_login_at, b.last_seen_at,
+              (SELECT count(*)::int FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL) AS files,
+              (SELECT id FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL
+                 ORDER BY created_at DESC LIMIT 1) AS latest_file_id
+         FROM borrowers b
+         LEFT JOIN borrower_auth ba ON ba.borrower_id=b.id
+        ${scope}
+        ORDER BY COALESCE(ba.last_login_at, b.last_seen_at) DESC NULLS LAST, b.last_name, b.first_name
+        LIMIT 500`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Invite a borrower to the portal — binds to their most recent file and emails
+// the set-password link. Re-inviting just issues a fresh link.
+router.post('/borrowers/:id/portal-invite', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(404).json({ error: 'not found' });
+    if (!b.email) return res.status(400).json({ error: 'this borrower has no email on file' });
+    const app = (await db.query(
+      `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+      [req.params.id])).rows[0];
+    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
+    const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+});
+
+// Email the borrower a password-reset link (staff never see the password).
+router.post('/borrowers/:id/reset-password', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = (await db.query(
+      `SELECT b.id, b.email, b.first_name FROM borrowers b
+         JOIN borrower_auth ba ON ba.borrower_id=b.id WHERE b.id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(400).json({ error: 'this borrower has no portal account yet — invite them first' });
+    if (!b.email) return res.status(400).json({ error: 'this borrower has no email on file' });
+    const { token } = await issueEmailToken({ borrowerId: b.id, email: b.email, kind: 'reset', ttlMin: 60, withToken: true });
+    await mail.send('passwordReset', b.email, { firstName: b.first_name, resetUrl: mail.link('/reset?token=' + token), minutes: 60 });
+    await audit(req, 'borrower_reset_password_email', 'borrower', b.id, {});
+    res.json({ ok: true, emailed: true });
+  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+});
+
+// Set a borrower's password directly (LO-assisted). Creates the login row if the
+// borrower had none, bumps token_version to revoke any live sessions, audits it,
+// and notifies the borrower their password changed.
+router.post('/borrowers/:id/set-password', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const pw = String((req.body || {}).password || '');
+    if (pw.length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
+    const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(404).json({ error: 'not found' });
+    const hash = await C.hashPassword(pw);
+    const existing = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [req.params.id]);
+    if (existing.rows[0]) {
+      await db.query(
+        `UPDATE borrower_auth SET password_hash=$2, token_version=token_version+1,
+             failed_attempts=0, locked_until=NULL WHERE borrower_id=$1`, [req.params.id, hash]);
+    } else {
+      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,$2,0)`, [req.params.id, hash]);
+    }
+    await audit(req, 'borrower_set_password', 'borrower', b.id, {});
+    try { if (b.email) await mail.send('passwordChanged', b.email, { firstName: b.first_name }); } catch (_) {}
+    res.json({ ok: true, set: true, hadAccount: !!existing.rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
 });
 // (A borrower's entities live at GET /borrowers/:id/llcs below — the full
 // review bundle; its rows carry id/llc_name/is_verified for the track-record

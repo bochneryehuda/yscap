@@ -27,6 +27,7 @@ import StaffTeam from './screens/StaffTeam.jsx';
 import StaffConditionStudio from './screens/StaffConditionStudio.jsx';
 import StaffArchived from './screens/StaffArchived.jsx';
 import StaffLeads from './screens/StaffLeads.jsx';
+import StaffBorrowers from './screens/StaffBorrowers.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
@@ -99,6 +100,7 @@ export default function App() {
           <Route path="/internal/conditions" element={<StaffPrivate><StaffConditionStudio /></StaffPrivate>} />
           <Route path="/internal/archived" element={<StaffPrivate><StaffArchived /></StaffPrivate>} />
           <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
+          <Route path="/internal/borrowers" element={<StaffPrivate><StaffBorrowers /></StaffPrivate>} />
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />

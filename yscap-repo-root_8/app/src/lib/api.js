@@ -235,6 +235,11 @@ export const api = {
   staffReviewDoc:   (id, action, reason, opts) => req('POST', `/api/staff/documents/${id}/review`, { action, reason, ...(opts || {}) }),
   staffDownloadDoc: (id) => download(`/api/staff/documents/${id}/download`),
   staffBorrowerSearch: (q) => req('GET', '/api/staff/borrowers/search?q=' + encodeURIComponent(q)),
+  // #83 — loan-officer borrower management
+  staffBorrowers:   () => req('GET', '/api/staff/borrowers'),
+  staffBorrowerInvite: (id) => req('POST', `/api/staff/borrowers/${id}/portal-invite`),
+  staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
+  staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),

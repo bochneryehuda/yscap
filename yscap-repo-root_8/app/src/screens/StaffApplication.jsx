@@ -746,7 +746,18 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
    scrollbar): the SAME static builder the marketing site serves, bridged to
    this borrower's live record. Every staff edit saves to the server and
    refreshes the saved static HTML copy, which downloads right here. */
-function StaffTrackRecordPanel({ borrowerId }) {
+function StaffTrackRecordPanel({ app }) {
+  // On a co-borrower file each borrower has their OWN track record (#80): pick
+  // whose you're editing. Every deal you add saves to THAT borrower's profile
+  // (so a future solo file of theirs pre-populates it), and the file's pricing
+  // experience is the SUM of both. Track_records are keyed per borrower_id, so
+  // switching the selector just re-points the tool at that borrower.
+  const people = [
+    { id: app.borrower_id, label: `${app.first_name || 'Primary'} ${app.last_name || ''}`.trim(), role: 'Primary borrower' },
+    ...(app.co_borrower_id ? [{ id: app.co_borrower_id, label: `${app.co_first_name || 'Co-borrower'} ${app.co_last_name || ''}`.trim(), role: 'Co-borrower' }] : []),
+  ];
+  const [selected, setSelected] = useState(app.borrower_id);
+  const borrowerId = people.some(p => p.id === selected) ? selected : app.borrower_id;
   const [snap, setSnap] = useState(null);
   const [dl, setDl] = useState(false);
   const [preview, setPreview] = useState(false);
@@ -792,12 +803,29 @@ function StaffTrackRecordPanel({ borrowerId }) {
         )}
         <span className="muted small">The borrower's live record — add, edit, verify, and attach docs. Changes save automatically.</span>
       </div>
+      {people.length > 1 && (
+        <div className="row" style={{ gap: 6, margin: '2px 0 12px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <span className="muted small" style={{ marginRight: 2 }}>Whose track record:</span>
+          {people.map(p => (
+            <button key={p.id} type="button"
+              className={`btn small ${p.id === borrowerId ? 'primary' : 'ghost'}`}
+              onClick={() => { setFull(false); setSelected(p.id); }}
+              title={`${p.role} — deals you add here save to ${p.label}'s profile`}>
+              {p.label} <span className="muted" style={{ fontWeight: 400 }}>· {p.role}</span>
+            </button>
+          ))}
+          <span className="muted small" style={{ marginLeft: 'auto' }}>
+            Pricing experience for this file = both borrowers, summed.
+          </span>
+        </div>
+      )}
       {preview && snap && (
         <DocPreview title="Track record — saved copy" filename={snap.filename} contentType="text/html"
           load={() => api.staffDownloadDoc(snap.documentId)}
           onDownload={download} onClose={() => setPreview(false)} />
       )}
       <StaticToolFrame
+        key={borrowerId}
         title="Borrower track record"
         src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
         minHeight={520}
@@ -1806,7 +1834,7 @@ export default function StaffApplication() {
       <Section id="sec-track" title="Track record"
         info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
       {app.borrower_id
-        ? <StaffTrackRecordPanel borrowerId={app.borrower_id} />
+        ? <StaffTrackRecordPanel app={app} />
         : <p className="muted small">No borrower linked yet.</p>}
       </Section>
 

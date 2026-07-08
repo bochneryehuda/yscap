@@ -322,9 +322,13 @@ async function loadFileForPricing(appId, borrowerId) {
     [appId, borrowerId]);
   const app = a.rows[0];
   if (!app) return null;
+  // The file's experience for pricing = BOTH borrowers on it, summed (#80).
+  // This is an aggregate count feeding the frozen pricing engine — it exposes
+  // no individual deal detail of the other borrower.
+  const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
-       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true GROUP BY 1`, [expBorrowerIds]);
   const exp = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
@@ -384,7 +388,10 @@ router.get('/applications/:id/pricing', async (req, res) => {
     const stripInternal = (q) => { if (q && typeof q === 'object') { const { adminPricing, ...rest } = q; return rest; } return q; };
     const stripInternalInputs = (inp) => {
       if (!inp || typeof inp !== 'object') return inp;
-      const { markupStdPct, markupGoldPct, ...rest } = inp;
+      // Co-borrower privacy (#82): the stored inputs carry the PRIMARY borrower's
+      // FICO, which the co-borrower must never read. Strip it from the borrower
+      // channel entirely (staff pricing is a separate endpoint, unaffected).
+      const { markupStdPct, markupGoldPct, fico, ...rest } = inp;
       return rest;
     };
     const redactRow = (row) => row ? { ...row, quote: stripInternal(row.quote), inputs: stripInternalInputs(row.inputs) } : row;
@@ -548,6 +555,18 @@ router.get('/applications/:id/checklist', async (req, res) => {
     let ctx = null;
     try { const loaded = await conditionEngine.loadRuleContext(req.params.id); ctx = loaded && loaded.ctx; } catch (_) {}
     const fieldsByKey = await conditionRegistry.fieldMap(db);
+    // Co-borrower privacy (#82): personal fields (FICO / citizenship / home state)
+    // are per-borrower. loadRuleContext builds them from the PRIMARY borrower, so
+    // pre-fill those from the VIEWER's OWN record instead — a co-borrower must
+    // never see the primary's FICO, and vice-versa. App/deal fields stay from ctx.
+    const BORROWER_SCOPED = new Set(['fico', 'citizenship', 'borrower_state']);
+    let selfVals = null;
+    if (rows.some((it) => it.tool_key === 'info_field' && BORROWER_SCOPED.has(it.field_key))) {
+      try {
+        const sb = (await db.query(`SELECT fico, citizenship, current_address FROM borrowers WHERE id=$1`, [me(req)])).rows[0];
+        if (sb) selfVals = { fico: sb.fico ?? null, citizenship: sb.citizenship ?? null, borrower_state: (sb.current_address && sb.current_address.state) || null };
+      } catch (_) { selfVals = {}; }
+    }
     for (const it of rows) {
       if (it.tool_key !== 'info_field' || !it.field_key) continue;
       const f = fieldsByKey[it.field_key];
@@ -557,7 +576,9 @@ router.get('/applications/:id/checklist', async (req, res) => {
         // Borrower-facing field label only — never the internal f.label.
         label: f.borrowerLabel || 'Additional information', hint: f.borrowerHint || undefined,
       };
-      it.field_value = ctx ? (ctx[it.field_key] ?? null) : null;
+      it.field_value = BORROWER_SCOPED.has(it.field_key)
+        ? (selfVals ? (selfVals[it.field_key] ?? null) : null)
+        : (ctx ? (ctx[it.field_key] ?? null) : null);
     }
   }
   res.json(rows);
@@ -580,7 +601,11 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
     return res.status(400).json({ error: 'a value is required' });
   let saved;
   try {
-    saved = await conditionEngine.writeFieldValue(req.params.id, own.rows[0].borrower_id, item.field_key, req.body.value,
+    // Co-borrower privacy (#82): a borrower-scoped field (e.g. FICO) is written to
+    // the borrower who is ANSWERING — me(req) — never to the primary. Otherwise a
+    // co-borrower answering a FICO condition would overwrite the primary's credit
+    // score. App/deal fields ignore this id (they write to the application).
+    saved = await conditionEngine.writeFieldValue(req.params.id, me(req), item.field_key, req.body.value,
       { kind: 'borrower', id: me(req) });
   } catch (e) {
     return res.status(e.status || 400).json({ error: e.message });
@@ -1479,7 +1504,14 @@ router.get('/documents/:id/download', async (req, res) => {
       WHERE id=$1 AND visibility='borrower' AND (borrower_id=$2 OR application_id IN
         (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)
         OR (llc_id IS NOT NULL AND llc_id IN
-          (SELECT llc_id FROM applications WHERE (borrower_id=$2 OR co_borrower_id=$2) AND llc_id IS NOT NULL)))`,
+          (SELECT llc_id FROM applications WHERE (borrower_id=$2 OR co_borrower_id=$2) AND llc_id IS NOT NULL)))
+      -- Co-borrower privacy (#82): having access to the shared FILE does not grant
+      -- access to the OTHER borrower's PERSONAL uploads (their government ID, bank
+      -- statements, etc.). Only serve a document that is the caller's own, is not
+      -- tied to a person (file-level), is a shared vesting-entity doc, or is a
+      -- staff/tool-produced file artifact.
+      AND (borrower_id=$2 OR borrower_id IS NULL OR llc_id IS NOT NULL
+           OR uploaded_by_kind='staff' OR source_type='system')`,
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'download_document', 'document', r.rows[0].id);
@@ -1695,9 +1727,13 @@ router.get('/applications/:id/mentionables', async (req, res) => {
                WHERE a.id=$1 AND s.is_active=true`, [req.params.id]),
     db.query(`SELECT id, label, status FROM checklist_items
                WHERE application_id=$1 AND audience IN ('borrower','both') ORDER BY sort_order LIMIT 200`, [req.params.id]),
+    // Co-borrower privacy (#82): don't surface the OTHER borrower's personal
+    // uploads in the mention list — same rule as the download endpoint.
     db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1
                 AND visibility='borrower' AND source_type <> 'chat_attachment'
-              ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
+                AND (borrower_id=$2 OR borrower_id IS NULL OR llc_id IS NOT NULL
+                     OR uploaded_by_kind='staff' OR source_type='system')
+              ORDER BY created_at DESC LIMIT 100`, [req.params.id, me(req)]),
     db.query(`SELECT id, COALESCE(property_address->>'oneLine', property_address->>'street', 'Application') AS label
                 FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1`, [me(req)]),
   ]);

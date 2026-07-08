@@ -62,6 +62,7 @@ export default function StaffLayout({ children }) {
               Chat{unread > 0 && <span className="chat-badge nav">{unread > 99 ? '99+' : unread}</span>}
             </NavLink>
             <NavLink to="/internal/leads">Leads</NavLink>
+            <NavLink to="/internal/borrowers" title="Your borrowers — invite to the portal, reset or set a password, see last login">Borrowers</NavLink>
             {canManageConditions && <NavLink to="/internal/conditions" title="Condition Center — the global condition library & rules">Conditions</NavLink>}
             {canManageTeam && <NavLink to="/internal/team">Team</NavLink>}
             {canManageVendors && <NavLink to="/internal/vendors" title="Title & insurance vendor directory">Vendors</NavLink>}
