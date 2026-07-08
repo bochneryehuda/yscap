@@ -79,6 +79,10 @@ router.post('/', async (req, res) => {
     res.status(201).json({ ok: true, borrowerId, applicationId: appId, assigned: !!officerId });
     try {
       await generateChecklist(appId, borrowerId, p.program || p.dealType, p.loanType || p.purpose);
+      // Create + link the ClickUp task in the correct folder the moment a file is
+      // started from the public website form too (#92) — the same create-on-start
+      // wired into the staff + borrower origination paths. Best-effort.
+      require('../clickup/orchestrator').createForNewFile(appId).catch((e) => console.error('[clickup] create-on-start (intake)', appId, e && e.message));
       const addr = p.pStreet || p.propertyAddress?.line1 || 'new property';
       if (officerId) {
         await notify.notifyStaff(officerId, {
