@@ -16,7 +16,7 @@ const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
-const { syncExperienceChecklistForApplication } = require('../lib/experience');
+const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
@@ -251,13 +251,22 @@ router.get('/applications', async (req, res) => {
     const where = ['a.deleted_at IS NULL'];
     if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
 
-    // status GROUP — same predicates the dashboard uses.
-    if (q.group === 'active') where.push(`a.status NOT IN ('funded','declined','withdrawn')`);
-    else if (q.group === 'cancelled') where.push(`a.status IN ('declined','withdrawn')`);
-    else if (q.group === 'closed') where.push(`a.status = 'funded'`);
-    // 'all'/absent → no status-group predicate.
+    // status GROUP — same predicates the dashboard uses. An EXACT status filter
+    // takes precedence over the group bucket: applying both (e.g. group=active
+    // AND status=funded from a stale URL/deep-link) would contradict and return
+    // ZERO rows — the classic "switch to Funded shows nothing" bug. So when an
+    // exact status is set, skip the group predicate entirely.
+    if (q.status) {
+      where.push(`a.status = ${add(String(q.status))}`);
+    } else if (q.group === 'active') {
+      where.push(`a.status NOT IN ('funded','declined','withdrawn')`);
+    } else if (q.group === 'cancelled') {
+      where.push(`a.status IN ('declined','withdrawn')`);
+    } else if (q.group === 'closed') {
+      where.push(`a.status = 'funded'`);
+    }
+    // 'all'/absent group with no status → no status predicate.
 
-    if (q.status) where.push(`a.status = ${add(String(q.status))}`);
     if (q.program) where.push(`a.program = ${add(String(q.program))}`);
     if (q.loanType) where.push(`a.loan_type = ${add(String(q.loanType))}`);
     // Free-text search across borrower name, YS loan number, and property address.
@@ -328,8 +337,15 @@ router.get('/applications', async (req, res) => {
       amount_desc: 'a.loan_amount DESC NULLS LAST',
       amount_asc: 'a.loan_amount ASC NULLS LAST',
       closing_desc: 'a.actual_closing DESC NULLS LAST',
+      closing_asc: 'a.actual_closing ASC NULLS LAST',
+      name_asc: 'b.last_name ASC, b.first_name ASC',
+      name_desc: 'b.last_name DESC, b.first_name DESC',
     };
-    const orderBy = SORTS[String(q.sort || '')] || SORTS.created_desc;
+    // A UNIQUE tiebreaker (a.id) after the chosen sort — imported ClickUp files
+    // often share the same created timestamp, and without a stable tiebreaker
+    // those equal-key rows reshuffle between fetches, which reads as "the sort is
+    // random / broken."
+    const orderBy = (SORTS[String(q.sort || '')] || SORTS.created_desc) + ', a.id DESC';
 
     const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
@@ -741,7 +757,7 @@ async function loadFileForPricing(appId) {
   const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
-       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true GROUP BY 1`, [expBorrowerIds]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
   const exp = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
@@ -815,6 +831,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   const appId = req.params.id;
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+    if (locked) return res.status(409).json({ error: locked });
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
     const f = await loadFileForPricing(appId);
@@ -915,6 +933,8 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
   const appId = req.params.id;
   const payload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : null;
   if (!payload) return res.status(400).json({ error: 'payload required' });
+  const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+  if (locked) return res.status(409).json({ error: locked });
   try {
     let it = await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [appId]);
     let itemId = it.rows[0] && it.rows[0].id;
@@ -971,6 +991,10 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     [req.params.itemId, req.params.id]);
   if (!it.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   const toolKey = it.rows[0].tool_key;
+  if (toolKey === 'rehab_budget') {   // #84 — rehab budget is loan structure, frozen at CTC
+    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
+    if (locked) return res.status(409).json({ error: locked, fatal: true });
+  }
   const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
   const attachments = (Array.isArray(rawPayload.attachments) ? rawPayload.attachments : []).slice(0, 4)
     .map((a) => ({
@@ -1447,7 +1471,7 @@ async function signOffGate(itemId, actor) {
   if (!reg) return 'Register a product first — experience is checked against the registered product before this can be signed off.';
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n
-       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true GROUP BY 1`, [expBorrowerIds]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
   const v = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (/ground|construction/.test(row.dt)) v.ground += row.n;
@@ -1826,7 +1850,7 @@ router.delete('/track-records/:id', async (req, res) => {
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   await db.query(`DELETE FROM track_records WHERE id=$1`, [req.params.id]);
   await db.query(
-    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
+    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
     [tr.rows[0].borrower_id]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   await audit(req, 'staff_delete_track_record', 'track_record', req.params.id);
@@ -2035,7 +2059,7 @@ router.post('/track-records/:id/verify', async (req, res) => {
       WHERE id=$1`, [req.params.id, req.actor.id, status, counts]);
   // recompute borrower tier = count of verified track records
   await db.query(
-    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
+    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
     [tr.rows[0].borrower_id]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   // Tier / verified-experience counts are rule-engine fields.

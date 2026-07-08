@@ -2,6 +2,21 @@
 
 const db = require('../db');
 
+// FROZEN baseline (#89) — experience window. A completed deal counts toward the
+// borrower's tier / experience ONLY if its exit is within the last 3 years:
+//   · a FLIP exits on its SALE date
+//   · a hold / rental / ground-up-and-held exits on its LEASE (rent) or REFI date
+// An exit more than 36 months ago, or a future-dated exit, counts toward
+// nothing. This mirrors the frozen track-record tool's qualifies() exactly and
+// must be applied at EVERY server-side experience/tier count so the tier can
+// never be inflated by stale deals. Reuse RECENT_EXIT_SQL — don't re-derive it.
+const EXIT_DATE_SQL =
+  "(CASE WHEN lower(coalesce(deal_type,'')) LIKE '%flip%' THEN sale_date ELSE COALESCE(rent_date, refi_date) END)";
+const RECENT_EXIT_SQL =
+  `${EXIT_DATE_SQL} IS NOT NULL`
+  + ` AND ${EXIT_DATE_SQL} <= CURRENT_DATE`
+  + ` AND ${EXIT_DATE_SQL} >= (CURRENT_DATE - INTERVAL '36 months')`;
+
 function int(v) {
   const n = parseInt(v, 10);
   return isFinite(n) && n > 0 ? n : 0;
@@ -51,6 +66,7 @@ async function countBorrowersExperience(borrowerIds, client = db, opts = {}) {
        FROM track_records
       WHERE borrower_id = ANY($1::uuid[])
         AND ($2::boolean=false OR is_verified=true)
+        AND (${RECENT_EXIT_SQL})
       GROUP BY 1`,
     [ids, verifiedOnly]);
   for (const row of r.rows) {
@@ -150,4 +166,6 @@ module.exports = {
   requestedFromApp,
   syncExperienceChecklistForApplication,
   syncExperienceChecklistForBorrower,
+  RECENT_EXIT_SQL,
+  EXIT_DATE_SQL,
 };
