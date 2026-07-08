@@ -96,7 +96,7 @@ this folder. Rough order (we can reorder as we learn):
 
 | # | Section | What it covers | Status |
 |---|---------|----------------|--------|
-| **1** | **The Front Door — Accounts & Access** | Login, register, MFA, password reset, staff invites, roles/permissions, who-can-see-which-file, borrower-vs-staff boundary | ✅ This week |
+| **1** | **The Front Door — Accounts & Access** | Login, register, MFA, password reset, staff invites, roles/permissions, who-can-see-which-file, borrower-vs-staff boundary | ✅ **Done** → [read it](./01-accounts-and-access.md) |
 | 2 | The Borrower's File — What the Borrower Sees | Borrower dashboard + their loan file: what data shows, what leaks, capital-partner names, status timeline | ⬜ Planned |
 | 3 | The Loan Officer's Desk — Pipeline & Staff File | Staff pipeline + the staff file view, file scoping in depth, SSN/PII reveal, edit/assign/verify | ⬜ Planned |
 | 4 | Documents & Uploads | Uploading, downloading, who's allowed to open which document, appraisal-card reuse, OCR | ⬜ Planned |
@@ -118,8 +118,8 @@ picture growing:
 
 | Section | 🔴 Critical | 🟠 High | 🟡 Medium | ⚪ Low | Total |
 |---------|:-:|:-:|:-:|:-:|:-:|
-| 1 — Accounts & Access | _tbd_ | _tbd_ | _tbd_ | _tbd_ | _tbd_ |
-| **Running total** | | | | | |
+| 1 — Accounts & Access | 1 | 4 | 6 | 5 | **16** |
+| **Running total** | **1** | **4** | **6** | **5** | **16** |
 
 _(Filled in at the end of each section's write-up.)_
 
