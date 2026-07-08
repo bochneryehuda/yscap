@@ -917,11 +917,31 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   const [err, setErr] = useState('');
   const [coSsn, setCoSsn] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
+  // #98 — internal-only autocomplete: type a name to find someone already in the
+  // database and link them without re-entering their details. staffBorrowerSearch
+  // is a staff-scoped, guarded endpoint (never exposed on the borrower side).
+  const [q, setQ] = useState('');
+  const [matches, setMatches] = useState(null);
+  const [searchBusy, setSearchBusy] = useState(false);
+  async function runSearch(text) {
+    setQ(text);
+    if (text.trim().length < 2) { setMatches(null); return; }
+    setSearchBusy(true);
+    try { setMatches(await api.staffBorrowerSearch(text.trim())); }
+    catch (_) { setMatches([]); }
+    finally { setSearchBusy(false); }
+  }
+  async function linkExisting(m) {
+    setBusy(true); setErr('');
+    try { await api.staffSetCoBorrower(appId, { borrowerId: m.id }); setAdding(false); setQ(''); setMatches(null); await onChanged(); }
+    catch (e) { setErr(e.message || 'Could not link the co-borrower'); }
+    finally { setBusy(false); }
+  }
   async function save() {
     setBusy(true); setErr('');
     try {
       await api.staffSetCoBorrower(appId, { firstName: f.firstName, lastName: f.lastName, email: f.email, phone: f.phone || undefined, dob: f.dob || undefined, ssn: f.ssn || undefined });
-      setAdding(false); setF({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' }); await onChanged();
+      setAdding(false); setF({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' }); setQ(''); setMatches(null); await onChanged();
     } catch (e) { setErr(e.message || 'Could not save the co-borrower'); } finally { setBusy(false); }
   }
   async function remove() {
@@ -963,6 +983,26 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
         </div>
       </>}
       {adding && <>
+        <div style={{ marginTop: 6, marginBottom: 8 }}>
+          <label><span>Find an existing borrower</span>
+            <input className="input" value={q} onChange={e => runSearch(e.target.value)}
+              placeholder="Type a name — link someone already in the system without re-entering their info" /></label>
+          {searchBusy && <div className="muted small" style={{ marginTop: 4 }}>Searching…</div>}
+          {matches && matches.length > 0 && (
+            <div className="panel" style={{ padding: 4, marginTop: 4, maxHeight: 200, overflowY: 'auto' }}>
+              {matches.filter(m => m.id !== app.borrower_id).map(m => (
+                <button key={m.id} type="button" className="btn ghost small" disabled={busy}
+                  style={{ display: 'block', width: '100%', textAlign: 'left' }} onClick={() => linkExisting(m)}>
+                  {m.first_name} {m.last_name} <span className="muted small">· {m.email || 'no email'}{m.prior_files ? ` · ${m.prior_files} file(s)` : ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {matches && matches.filter(m => m.id !== app.borrower_id).length === 0 && q.trim().length >= 2 && !searchBusy && (
+            <div className="muted small" style={{ marginTop: 4 }}>No existing borrower matches — enter their details below to add a new one.</div>
+          )}
+          <div className="muted small" style={{ marginTop: 8 }}>…or enter a new person's details:</div>
+        </div>
         <div className="ts-inputs" style={{ marginTop: 6 }}>
           <label><span>First name</span><input className="input" value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
