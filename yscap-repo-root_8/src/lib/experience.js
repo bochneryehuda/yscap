@@ -138,13 +138,17 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
     return { required, counts, satisfied: true, itemId: item.id };
   }
 
-  // Auto-managed (no human sign-off): n/a → satisfied (drops out of the open
-  // conditions list); requirement met → received (awaiting sign-off); requested
-  // but unmet → outstanding.
-  const status = notApplicable ? 'satisfied' : met ? 'received' : 'outstanding';
+  // The experience condition is ALWAYS a visible slot (#97) — a reminder that
+  // never silently disappears. When NO experience is claimed on the file it stays
+  // 'outstanding' but is NOT required: the team can sign it off freely (nothing
+  // to verify for the current structure) or leave it open. When experience IS
+  // claimed it's required — 'received' once met (awaiting sign-off), else
+  // 'outstanding' — and the sign-off gate enforces verification.
+  const status = met ? 'received' : 'outstanding';
+  const isRequired = !notApplicable;
   await client.query(
-    `UPDATE checklist_items SET status=$3, tool_payload=$2, updated_at=now() WHERE id=$1`,
-    [item.id, JSON.stringify(payload), status]);
+    `UPDATE checklist_items SET status=$3, is_required=$4, tool_payload=$2, updated_at=now() WHERE id=$1`,
+    [item.id, JSON.stringify(payload), status, isRequired]);
   return { required, counts, satisfied, itemId: item.id };
 }
 

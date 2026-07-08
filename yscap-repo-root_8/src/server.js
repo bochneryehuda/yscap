@@ -206,6 +206,13 @@ if (require.main === module) {
         require('./routes/borrower').backfillRtlChecklists('v3')
           .then((r) => r && !r.skipped && console.log('[boot] RTL checklist backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] RTL checklist backfill failed:', e.message));
+        // One-shot: write the detailed liquidity breakdown onto files whose product
+        // was registered BEFORE that logic existed (#96), so the assets condition
+        // shows the required-liquidity detail without needing a re-register. Never
+        // reopens an already-cleared condition. Idempotent; fire-and-forget.
+        require('./lib/liquidity').backfillLiquidityConditions()
+          .then((n) => n && console.log('[boot] liquidity condition backfill:', n))
+          .catch((e) => console.error('[boot] liquidity backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }

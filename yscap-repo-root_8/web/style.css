@@ -148,7 +148,13 @@ main, .footer{ position:relative; z-index:2; }
         max-height:0; overflow:hidden; transition:max-height .4s var(--ease), padding .4s;
         background:rgba(11,16,20,.96); backdrop-filter:blur(16px);
     }
-    .nav.open .nav-mobile{ max-height:420px; padding:1rem 1.5rem 1.5rem; }
+    /* Open menu is scrollable up to the viewport (minus the bar) so every item —
+       including Client Login / Apply at the bottom — is reachable on short phones;
+       the menu itself scrolls, not the page behind it. */
+    .nav.open .nav-mobile{
+        max-height:calc(100vh - 64px); overflow-y:auto; -webkit-overflow-scrolling:touch;
+        overscroll-behavior:contain; padding:1rem 1.5rem 1.5rem;
+    }
     .nav-mobile a{ padding:.7rem 0; color:var(--ivory-soft); border-bottom:1px solid var(--line-2); }
     .nav-mobile .btn{ margin-top:.8rem; }
 }

@@ -95,7 +95,8 @@ export default function EditFileDetails({ app, onSaved }) {
             <label><span>Apt / Unit</span><input className="input" value={f.addrUnit} onChange={(e) => set('addrUnit', e.target.value)} /></label>
             <label><span>Property type</span><input className="input" value={f.propertyType} onChange={(e) => set('propertyType', e.target.value)} /></label>
             <label><span>Units</span><input className="input" type="number" min="0" value={f.units} onChange={(e) => set('units', e.target.value)} /></label>
-            <label><span>Occupancy</span><input className="input" value={f.occupancy} onChange={(e) => set('occupancy', e.target.value)} /></label>
+            {/* Occupancy is intentionally NOT shown (owner-directed) — kept in the
+                data model and round-tripped unchanged, never surfaced in the UI. */}
           </div>
           <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Loan &amp; economics</p>
           <div className="edit-grid">

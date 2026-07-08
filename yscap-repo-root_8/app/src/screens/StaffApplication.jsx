@@ -1683,6 +1683,8 @@ export default function StaffApplication() {
             <div className="metrow"><span className="k">Name</span><span className="v">{borrower.first_name} {borrower.last_name}</span></div>
             <div className="metrow"><span className="k">Email</span><span className="v">{borrower.email || '—'}</span></div>
             <div className="metrow"><span className="k">Phone</span><span className="v">{borrower.cell_phone || '—'}</span></div>
+            {/* DOB shown for the primary borrower too, to match the co-borrower panel (#99). */}
+            {borrower.date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{new Date(borrower.date_of_birth).toLocaleDateString()}</span></div>}
             <div className="metrow"><span className="k">FICO</span><span className="v">{borrower.fico || '—'}</span></div>
             <div className="metrow"><span className="k">Citizenship</span><span className="v">{borrower.citizenship || '—'}</span></div>
             <div className="metrow"><span className="k">Tier</span><span className="v">{borrower.tier || '—'}</span></div>
