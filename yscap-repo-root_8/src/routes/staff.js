@@ -540,6 +540,10 @@ router.post('/applications', async (req, res) => {
       crossBorrower = !rel.rows[0];
     }
     await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId, crossBorrower: crossBorrower || undefined });
+    // Create + link the ClickUp task in the correct folder (officer's pipeline, or
+    // Lead Capture if none) the moment the file is started (#92). Best-effort and
+    // non-blocking — the file is created regardless of ClickUp availability.
+    require('../clickup/orchestrator').createForNewFile(appId).catch((e) => console.error('[clickup] create-on-start (staff)', appId, e && e.message));
 
     // Optionally invite the borrower to the portal for this file right away.
     let invited = null;
@@ -744,7 +748,12 @@ router.post('/applications/:id/vesting-llc-owners', async (req, res) => {
 // experience buckets the engines expect (flips / holds / ground-up).
 async function loadFileForPricing(appId) {
   const a = await db.query(
-    `SELECT a.*, b.fico FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+    // Pricing FICO = the HIGHEST score across the file's borrowers (#99): with a
+    // co-borrower, the stronger credit prices the deal. NULL when neither has one.
+    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+       FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+      WHERE a.id=$1`, [appId]);
   const app = a.rows[0];
   if (!app) return null;
   // Only VERIFIED deals count toward experience/tier — the same basis the
@@ -1439,7 +1448,10 @@ async function signOffGate(itemId, actor) {
 
   if (!isProduct && !isBudget && !isExp) return null;
 
-  const ar = await db.query(`SELECT rehab_budget, borrower_id, co_borrower_id FROM applications WHERE id=$1`, [item.application_id]);
+  const ar = await db.query(
+    `SELECT rehab_budget, borrower_id, co_borrower_id,
+            requested_exp_flips, requested_exp_holds, requested_exp_ground
+       FROM applications WHERE id=$1`, [item.application_id]);
   const app = ar.rows[0];
   if (!app) return null;
   // Experience for the FILE counts BOTH borrowers on it (#80).
@@ -1467,7 +1479,12 @@ async function signOffGate(itemId, actor) {
     }
     return null;
   }
-  // isExp
+  // isExp — the experience REMINDER slot (#97). When NO experience is claimed on
+  // the file (nothing to verify for the chosen structure), it may be signed off
+  // freely; it only becomes gated once experience is claimed on the application /
+  // term sheet / product.
+  const claimed = (Number(app.requested_exp_flips) || 0) + (Number(app.requested_exp_holds) || 0) + (Number(app.requested_exp_ground) || 0);
+  if (claimed === 0) return null;
   if (!reg) return 'Register a product first — experience is checked against the registered product before this can be signed off.';
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n

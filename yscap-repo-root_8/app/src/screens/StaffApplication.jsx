@@ -599,6 +599,19 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                           ))}
                           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
                             <button className="btn ghost small" onClick={() => setEm(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '' }])}>+ Add a member</button>
+                            {/* #102 — one click adds the file's co-borrower to the ownership
+                                structure with their details pre-filled; just enter their %. */}
+                            {app.co_borrower_id && (() => {
+                              const coName = `${app.co_first_name || ''} ${app.co_last_name || ''}`.trim();
+                              const already = coName && (em || []).some(m => (m.fullName || '').trim().toLowerCase() === coName.toLowerCase());
+                              return coName && !already ? (
+                                <button className="btn ghost small"
+                                  title="Add the file's co-borrower as an additional owner — their info is filled automatically; enter their ownership %"
+                                  onClick={() => setEm(ms => [...(ms || []), { fullName: coName, ownershipPct: '', email: app.co_email || '' }])}>
+                                  + Add co-borrower ({coName}) as owner
+                                </button>
+                              ) : null;
+                            })()}
                             <span className={`ts-badge ${Math.abs(eTotal - 100) <= 0.01 ? 'ok' : 'warn'}`}>
                               {Math.abs(eTotal - 100) <= 0.01 ? 'Ownership 100% ✓' : `Ownership ${Math.round(eTotal * 100) / 100 || 0}%`}
                             </span>
@@ -917,11 +930,31 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   const [err, setErr] = useState('');
   const [coSsn, setCoSsn] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
+  // #98 — internal-only autocomplete: type a name to find someone already in the
+  // database and link them without re-entering their details. staffBorrowerSearch
+  // is a staff-scoped, guarded endpoint (never exposed on the borrower side).
+  const [q, setQ] = useState('');
+  const [matches, setMatches] = useState(null);
+  const [searchBusy, setSearchBusy] = useState(false);
+  async function runSearch(text) {
+    setQ(text);
+    if (text.trim().length < 2) { setMatches(null); return; }
+    setSearchBusy(true);
+    try { setMatches(await api.staffBorrowerSearch(text.trim())); }
+    catch (_) { setMatches([]); }
+    finally { setSearchBusy(false); }
+  }
+  async function linkExisting(m) {
+    setBusy(true); setErr('');
+    try { await api.staffSetCoBorrower(appId, { borrowerId: m.id }); setAdding(false); setQ(''); setMatches(null); await onChanged(); }
+    catch (e) { setErr(e.message || 'Could not link the co-borrower'); }
+    finally { setBusy(false); }
+  }
   async function save() {
     setBusy(true); setErr('');
     try {
       await api.staffSetCoBorrower(appId, { firstName: f.firstName, lastName: f.lastName, email: f.email, phone: f.phone || undefined, dob: f.dob || undefined, ssn: f.ssn || undefined });
-      setAdding(false); setF({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' }); await onChanged();
+      setAdding(false); setF({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' }); setQ(''); setMatches(null); await onChanged();
     } catch (e) { setErr(e.message || 'Could not save the co-borrower'); } finally { setBusy(false); }
   }
   async function remove() {
@@ -963,6 +996,26 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
         </div>
       </>}
       {adding && <>
+        <div style={{ marginTop: 6, marginBottom: 8 }}>
+          <label><span>Find an existing borrower</span>
+            <input className="input" value={q} onChange={e => runSearch(e.target.value)}
+              placeholder="Type a name — link someone already in the system without re-entering their info" /></label>
+          {searchBusy && <div className="muted small" style={{ marginTop: 4 }}>Searching…</div>}
+          {matches && matches.length > 0 && (
+            <div className="panel" style={{ padding: 4, marginTop: 4, maxHeight: 200, overflowY: 'auto' }}>
+              {matches.filter(m => m.id !== app.borrower_id).map(m => (
+                <button key={m.id} type="button" className="btn ghost small" disabled={busy}
+                  style={{ display: 'block', width: '100%', textAlign: 'left' }} onClick={() => linkExisting(m)}>
+                  {m.first_name} {m.last_name} <span className="muted small">· {m.email || 'no email'}{m.prior_files ? ` · ${m.prior_files} file(s)` : ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {matches && matches.filter(m => m.id !== app.borrower_id).length === 0 && q.trim().length >= 2 && !searchBusy && (
+            <div className="muted small" style={{ marginTop: 4 }}>No existing borrower matches — enter their details below to add a new one.</div>
+          )}
+          <div className="muted small" style={{ marginTop: 8 }}>…or enter a new person's details:</div>
+        </div>
         <div className="ts-inputs" style={{ marginTop: 6 }}>
           <label><span>First name</span><input className="input" value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
@@ -1343,6 +1396,7 @@ export default function StaffApplication() {
   // In-place document preview (any PDF/image/text) — see it before signing off,
   // without downloading. Uses the same authenticated loader as the download.
   const [previewDoc, setPreviewDoc] = useState(null);
+  const [chatOpen, setChatOpen] = useState(false);   // #94 — Message opens a popup, not a scroll
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   async function revealSsn() {
@@ -1633,7 +1687,7 @@ export default function StaffApplication() {
             : <span className="ts-badge warn" title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.label)].join(' · ')}>{n} to clear before CTC</span>;
         })()}
         <div className="spacer" />
-        <button className="btn ghost" onClick={jumpToChat}>💬 Message</button>
+        <button className="btn ghost" onClick={() => setChatOpen(true)}>💬 Message</button>
         <button className="btn ghost" onClick={nudge} disabled={busyAct === 'nudge'} title="Email the borrower a reminder of their outstanding items">🔔 Remind</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
           title="Email the borrower an invite to join this file in the portal">
@@ -1683,6 +1737,8 @@ export default function StaffApplication() {
             <div className="metrow"><span className="k">Name</span><span className="v">{borrower.first_name} {borrower.last_name}</span></div>
             <div className="metrow"><span className="k">Email</span><span className="v">{borrower.email || '—'}</span></div>
             <div className="metrow"><span className="k">Phone</span><span className="v">{borrower.cell_phone || '—'}</span></div>
+            {/* DOB shown for the primary borrower too, to match the co-borrower panel (#99). */}
+            {borrower.date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{new Date(borrower.date_of_birth).toLocaleDateString()}</span></div>}
             <div className="metrow"><span className="k">FICO</span><span className="v">{borrower.fico || '—'}</span></div>
             <div className="metrow"><span className="k">Citizenship</span><span className="v">{borrower.citizenship || '—'}</span></div>
             <div className="metrow"><span className="k">Tier</span><span className="v">{borrower.tier || '—'}</span></div>
@@ -1942,6 +1998,22 @@ export default function StaffApplication() {
           load={() => api.staffDownloadDoc(previewDoc.id)}
           onDownload={() => downloadDoc(previewDoc)}
           onClose={() => setPreviewDoc(null)} />
+      )}
+      {chatOpen && (
+        // #94 — Message opens a designed popup with the full conversation, instead
+        // of scrolling the page to the bottom. Click the backdrop or ✕ to close.
+        <div className="cv-modal-back" onClick={() => setChatOpen(false)}>
+          <div className="cv-modal" style={{ maxWidth: 760, width: '96%', height: '88vh', display: 'flex', flexDirection: 'column' }}
+            onClick={(e) => e.stopPropagation()}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '2px 2px 10px' }}>
+              <h3 style={{ margin: 0 }}>💬 Conversation{addrLine(app.property_address) !== '—' ? ` — ${addrLine(app.property_address)}` : ''}</h3>
+              <button className="btn ghost small" onClick={() => setChatOpen(false)}>Close ✕</button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              <ChatPanel appId={id} onTaskCreated={load} />
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

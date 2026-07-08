@@ -19,7 +19,7 @@ const db = require('../db');
 
 const money = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US');
 
-async function syncLiquidityCondition(appId, quote, client = db) {
+async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
   try {
     const required = Number(quote && (quote.liquidityRequired != null ? quote.liquidityRequired : quote.liquidity));
     if (!Number.isFinite(required) || required <= 0) return;
@@ -68,7 +68,10 @@ async function syncLiquidityCondition(appId, quote, client = db) {
     const increased = prevRequired != null && required > prevRequired + 0.5;
     const wasCleared = !!item.signed_off_at || item.status === 'satisfied' || item.status === 'received';
 
-    if ((firstConcrete || increased) && wasCleared) {
+    // A one-time backfill over ALREADY-registered files writes the breakdown
+    // without disturbing conditions staff already cleared (opts.noReopen) — it
+    // just makes the detail appear and seeds prevRequired for future increases.
+    if ((firstConcrete || increased) && wasCleared && !opts.noReopen) {
       await client.query(
         `UPDATE checklist_items
             SET tool_payload=$2, hint=$3, borrower_hint=$3, status='outstanding',
@@ -83,4 +86,24 @@ async function syncLiquidityCondition(appId, quote, client = db) {
   } catch (e) { console.error('[liquidity] syncLiquidityCondition failed', appId, e.message); return null; }
 }
 
-module.exports = { syncLiquidityCondition };
+// One-shot backfill (#96): write the detailed liquidity breakdown onto EVERY
+// file that already has a registered product, so the "Assets & bank statements"
+// condition shows the required-liquidity detail even though it was registered
+// before this logic existed — WITHOUT reopening anything staff already cleared.
+// Reads the quote straight off the stored registration. Idempotent.
+async function backfillLiquidityConditions(client = db) {
+  let updated = 0;
+  try {
+    const regs = await client.query(
+      `SELECT application_id, quote FROM product_registrations WHERE is_current=true AND quote IS NOT NULL`);
+    for (const r of regs.rows) {
+      try {
+        const res = await syncLiquidityCondition(r.application_id, r.quote, client, { noReopen: true });
+        if (res) updated++;
+      } catch (_) { /* per-file best-effort */ }
+    }
+  } catch (e) { console.error('[liquidity] backfill failed', e.message); }
+  return updated;
+}
+
+module.exports = { syncLiquidityCondition, backfillLiquidityConditions };

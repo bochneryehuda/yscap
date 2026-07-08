@@ -266,6 +266,8 @@ router.post('/applications', async (req, res) => {
   // borrower previously chose "save to next file". Best-effort; never blocks.
   try { await apprCard.autoApplySavedCardIfOptedIn(appId, me(req)); } catch (_) {}
   await audit(req, 'create_application', 'application', appId);
+  // Create + link the ClickUp task in the correct folder on file-start (#92).
+  require('../clickup/orchestrator').createForNewFile(appId).catch((e) => console.error('[clickup] create-on-start (apply)', appId, e && e.message));
   res.status(201).json({ ok: true, applicationId: appId });
 });
 
@@ -316,8 +318,11 @@ function stripInternalAppFields(row) {
 
 async function loadFileForPricing(appId, borrowerId) {
   const a = await db.query(
-    `SELECT a.*, b.fico
+    // Pricing FICO = the HIGHEST score across the file's borrowers (#99): with a
+    // co-borrower, the stronger credit prices the deal. NULL when neither has one.
+    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
       WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND a.deleted_at IS NULL`,
     [appId, borrowerId]);
   const app = a.rows[0];
@@ -2030,6 +2035,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
     }
   } catch (e) { /* notification failure never blocks submission */ }
 
+  // Create + link the ClickUp task in the correct folder on file-start (#92).
+  require('../clickup/orchestrator').createForNewFile(appId).catch((e) => console.error('[clickup] create-on-start (draft submit)', appId, e && e.message));
   res.status(201).json({ ok: true, applicationId: appId, ysLoanNumber: ins.rows[0].ys_loan_number });
 });
 

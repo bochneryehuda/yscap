@@ -39,13 +39,20 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
         const isImg = type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name);
         const isHtml = type.includes('html') || /\.html?$/.test(name);
         const isText = !isHtml && (type.startsWith('text/') || /\.(txt|csv|json|md|log)$/.test(name));
-        let kind = 'other', data = null;
-        if (isPdf) { kind = 'pdf'; data = await blob.arrayBuffer(); }
+        let kind = 'other', data = null, pdfUrl = null;
+        if (isPdf) {
+          kind = 'pdf';
+          data = await blob.arrayBuffer();
+          // Also keep a blob: URL so that if PDF.js can't parse the file we can
+          // fall back to the BROWSER's own PDF viewer (a non-sandboxed iframe on a
+          // same-origin blob renders PDFs natively) instead of the download card.
+          pdfUrl = URL.createObjectURL(blob); urlRef.current = pdfUrl;
+        }
         else if (isImg) { kind = 'image'; data = URL.createObjectURL(blob); urlRef.current = data; }
         else if (isHtml) { kind = 'html'; data = await blob.text(); }
         else if (isText) { kind = 'text'; data = await blob.text(); }
         if (!alive) { if (urlRef.current) URL.revokeObjectURL(urlRef.current); return; }
-        setState({ status: 'ready', kind, data, filename: fn || filename });
+        setState({ status: 'ready', kind, data, pdfUrl, filename: fn || filename });
       })
       .catch((e) => { if (alive) setState({ status: 'error', error: e.message || 'Could not load the document.' }); });
     return () => {
@@ -61,8 +68,9 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // A PDF that pdfjs can't parse degrades to the download card.
-  const pdfFailed = () => setState(s => ({ ...s, kind: 'other' }));
+  // A PDF that PDF.js can't parse falls back to the browser's native PDF viewer
+  // (if we have a blob URL), and only then to the download card.
+  const pdfFailed = () => setState(s => (s.pdfUrl ? { ...s, kind: 'pdf-native' } : { ...s, kind: 'other' }));
   const previewable = state.kind && state.kind !== 'other';
 
   return (
@@ -83,6 +91,10 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
           {state.status === 'loading' && <span className="muted">Loading preview…</span>}
           {state.status === 'error' && <span className="notice err" style={{ margin: 16 }}>{state.error}</span>}
           {state.status === 'ready' && state.kind === 'pdf' && <PdfViewer data={state.data} onError={pdfFailed} />}
+          {state.status === 'ready' && state.kind === 'pdf-native' && (
+            <iframe title={state.filename || 'document'} src={state.pdfUrl}
+              style={{ width: '100%', height: '100%', border: 0, background: '#fff' }} />
+          )}
           {state.status === 'ready' && state.kind === 'image' && (
             <img src={state.data} alt={state.filename || 'document'} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
           )}
