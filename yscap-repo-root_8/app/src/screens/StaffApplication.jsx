@@ -1383,6 +1383,7 @@ export default function StaffApplication() {
   // In-place document preview (any PDF/image/text) — see it before signing off,
   // without downloading. Uses the same authenticated loader as the download.
   const [previewDoc, setPreviewDoc] = useState(null);
+  const [chatOpen, setChatOpen] = useState(false);   // #94 — Message opens a popup, not a scroll
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   async function revealSsn() {
@@ -1673,7 +1674,7 @@ export default function StaffApplication() {
             : <span className="ts-badge warn" title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.label)].join(' · ')}>{n} to clear before CTC</span>;
         })()}
         <div className="spacer" />
-        <button className="btn ghost" onClick={jumpToChat}>💬 Message</button>
+        <button className="btn ghost" onClick={() => setChatOpen(true)}>💬 Message</button>
         <button className="btn ghost" onClick={nudge} disabled={busyAct === 'nudge'} title="Email the borrower a reminder of their outstanding items">🔔 Remind</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
           title="Email the borrower an invite to join this file in the portal">
@@ -1984,6 +1985,22 @@ export default function StaffApplication() {
           load={() => api.staffDownloadDoc(previewDoc.id)}
           onDownload={() => downloadDoc(previewDoc)}
           onClose={() => setPreviewDoc(null)} />
+      )}
+      {chatOpen && (
+        // #94 — Message opens a designed popup with the full conversation, instead
+        // of scrolling the page to the bottom. Click the backdrop or ✕ to close.
+        <div className="cv-modal-back" onClick={() => setChatOpen(false)}>
+          <div className="cv-modal" style={{ maxWidth: 760, width: '96%', height: '88vh', display: 'flex', flexDirection: 'column' }}
+            onClick={(e) => e.stopPropagation()}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '2px 2px 10px' }}>
+              <h3 style={{ margin: 0 }}>💬 Conversation{addrLine(app.property_address) !== '—' ? ` — ${addrLine(app.property_address)}` : ''}</h3>
+              <button className="btn ghost small" onClick={() => setChatOpen(false)}>Close ✕</button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              <ChatPanel appId={id} onTaskCreated={load} />
+            </div>
+          </div>
+        </div>
       )}
     </>
   );
