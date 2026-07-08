@@ -1,0 +1,382 @@
+<!-- @dsCard group="Overview" name="YS Capital — Design System" -->
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YS Capital Group — Design System</title>
+<meta name="description" content="The living design-system baseline for YS Capital Group: tokens, type, and core components extracted from the production site. The specialists refine here; design-sync brings it back to code.">
+<!-- Design-system metadata for Claude Design import / design-sync -->
+<meta name="hz:slide-selector" content=".ds-canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ===========================================================
+   YS CAPITAL GROUP — DESIGN SYSTEM BASELINE
+   Tokens + components extracted verbatim from web/style.css so
+   this reference reads identically to production. The specialists
+   refine THIS; design-sync carries the refinements back to code.
+   =========================================================== */
+
+/* ---- TOKENS (dark, default) ---- */
+:root{
+    --on-accent:  #08232b;
+    --ink:        #141B22;
+    --ink-1:      #1B242D;
+    --ink-2:      #232F3A;
+    --ink-3:      #2B3945;
+    --line:       rgba(255,255,255,.10);
+    --line-2:     rgba(255,255,255,.055);
+
+    --teal:       #7FA9B0;   /* brand muted teal */
+    --teal-br:    #AAD4D9;   /* brighter */
+    --teal-dp:    #4E777F;
+    --teal-glow:  rgba(127,169,176,.22);
+
+    --gold:       #C9A86A;   /* champagne hairline accent */
+    --ivory:      #F4F0E7;
+    --ivory-soft: #E4DFD3;
+    --muted:      #A6B3BA;
+    --muted-2:    #808E97;
+
+    --maxw: 1200px;
+    --r: 16px;
+    --ease: cubic-bezier(.22,.61,.36,1);
+    --font-d: "Fraunces", Georgia, serif;
+    --font-b: "Hanken Grotesk", system-ui, sans-serif;
+}
+/* ---- TOKENS (light) ---- */
+:root[data-theme="light"]{
+  --ink:#F3EEE3; --ink-1:#FFFFFF; --ink-2:#FBF7EF; --ink-3:#EBE5D8;
+  --line:rgba(22,32,29,.13); --line-2:rgba(22,32,29,.06);
+  --teal:#3F7B84; --teal-br:#245A64; --teal-dp:#1C444C; --teal-glow:rgba(46,98,109,.15);
+  --gold:#8A6717; --ivory:#16221D; --ivory-soft:#2C3832; --muted:#485760; --muted-2:#5B6770;
+  --on-accent:#062018;
+}
+
+*{ box-sizing:border-box; }
+body{
+    margin:0; font-family:var(--font-b);
+    background:var(--ink); color:var(--ivory);
+    line-height:1.6; -webkit-font-smoothing:antialiased;
+    transition:background .3s, color .3s;
+}
+h1,h2,h3,h4,h5{ margin:0; font-weight:600; }
+a{ color:inherit; text-decoration:none; }
+
+/* ---- doc chrome ---- */
+.ds-head{
+    position:sticky; top:0; z-index:20;
+    display:flex; align-items:center; gap:1.2rem;
+    padding:1rem 1.5rem; border-bottom:1px solid var(--line);
+    background:color-mix(in srgb, var(--ink) 82%, transparent);
+    backdrop-filter:blur(16px) saturate(140%);
+}
+.ds-head .mark{ font-family:var(--font-d); font-weight:600; font-size:1.15rem; letter-spacing:-.01em; }
+.ds-head .mark em{ font-style:italic; color:var(--teal); }
+.ds-head .tag{ color:var(--muted-2); font-size:.8rem; letter-spacing:.02em; }
+.ds-toggle{
+    margin-left:auto; display:inline-flex; align-items:center; gap:.4rem;
+    background:transparent; border:1px solid var(--line); color:var(--ivory);
+    border-radius:100px; padding:.45rem .85rem; font:inherit; font-size:.82rem; font-weight:600;
+    cursor:pointer; transition:border-color .2s,color .2s;
+}
+.ds-toggle:hover{ border-color:var(--teal); color:var(--teal-br); }
+
+.ds-canvas{ max-width:var(--maxw); margin:0 auto; padding:3.5rem 1.5rem 6rem; }
+.ds-sec{ margin:0 0 4.5rem; }
+.ds-eyebrow{ font-size:.72rem; letter-spacing:.2em; text-transform:uppercase; color:var(--gold); font-weight:600; }
+.ds-sec > h2{ font-family:var(--font-d); font-weight:500; font-size:clamp(1.6rem,3vw,2.4rem); letter-spacing:-.01em; margin:.5rem 0 .4rem; }
+.ds-sec > p.lede{ color:var(--muted); max-width:60ch; margin:0 0 2rem; }
+.ds-panel{
+    border:1px solid var(--line); border-radius:var(--r); padding:2rem;
+    background:linear-gradient(180deg,var(--ink-1),var(--ink)); margin-bottom:1.1rem;
+}
+.ds-label{ font-size:.7rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted-2); font-weight:600; margin-bottom:1rem; }
+
+/* ---- palette ---- */
+.swatches{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:.9rem; }
+.sw{ border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--ink-1); }
+.sw .chip{ height:74px; }
+.sw .meta{ padding:.6rem .75rem; }
+.sw .nm{ font-size:.82rem; font-weight:600; color:var(--ivory); }
+.sw .hx{ font-size:.72rem; color:var(--muted-2); font-family:ui-monospace,monospace; margin-top:.15rem; }
+
+/* ---- type scale ---- */
+.type-row{ display:flex; align-items:baseline; gap:1.4rem; padding:.9rem 0; border-bottom:1px solid var(--line-2); flex-wrap:wrap; }
+.type-row:last-child{ border-bottom:0; }
+.type-row .spec{ flex:0 0 150px; font-size:.74rem; color:var(--muted-2); font-family:ui-monospace,monospace; }
+.d1{ font-family:var(--font-d); font-weight:500; font-size:clamp(2.4rem,5vw,3.4rem); line-height:1.02; letter-spacing:-.01em; }
+.d1 em{ font-style:italic; color:var(--teal); }
+.d2{ font-family:var(--font-d); font-weight:500; font-size:1.9rem; }
+.d3{ font-family:var(--font-d); font-weight:500; font-size:1.4rem; }
+.b1{ font-family:var(--font-b); font-size:1.05rem; color:var(--muted); }
+.b2{ font-family:var(--font-b); font-size:.9rem; color:var(--muted); }
+.eyebrow-demo{ font-size:.76rem; letter-spacing:.2em; text-transform:uppercase; color:var(--teal); font-weight:600; }
+
+/* ---- BUTTONS (verbatim from style.css) ---- */
+.btn{
+    display:inline-flex; align-items:center; justify-content:center;
+    font-family:var(--font-b); font-weight:600; font-size:.92rem;
+    letter-spacing:.02em; padding:.72rem 1.35rem; border-radius:100px;
+    cursor:pointer; transition:transform .3s var(--ease), background .3s, color .3s, box-shadow .3s, border-color .3s;
+    border:1px solid transparent; white-space:nowrap;
+}
+.btn-lg{ padding:1rem 1.9rem; font-size:1rem; }
+.btn-solid{ background:var(--teal); color:var(--on-accent); box-shadow:0 8px 30px -10px var(--teal-glow); }
+.btn-solid:hover{ background:var(--teal-br); transform:translateY(-2px); box-shadow:0 14px 40px -10px var(--teal-glow); }
+.btn-line{ border-color:var(--line); color:var(--ivory); background:rgba(255,255,255,.02); }
+.btn-line:hover{ border-color:var(--teal); color:var(--teal-br); transform:translateY(-2px); }
+.btn-ghost{ color:var(--ivory-soft); padding:.72rem 1rem; }
+.btn-ghost:hover{ color:var(--teal-br); }
+.btn-gold{ background:linear-gradient(135deg,#D9BC82 0%,var(--gold) 52%,#B8965A 100%); color:#1c1408; font-weight:700; box-shadow:0 8px 30px -10px rgba(201,168,106,.5); }
+.btn-gold:hover{ transform:translateY(-2px); box-shadow:0 16px 44px -10px rgba(201,168,106,.62); filter:brightness(1.05); }
+:root[data-theme="light"] .btn-solid{ background:linear-gradient(135deg,#2E6B74,#22505A); color:#F6F2E9; box-shadow:0 10px 24px -12px rgba(30,68,76,.5), inset 0 1px 0 rgba(255,255,255,.14); }
+:root[data-theme="light"] .btn-gold{ background:linear-gradient(135deg,#CDA95C 0%,#B68C33 100%); color:#221701; box-shadow:0 10px 24px -12px rgba(138,103,23,.5), inset 0 1px 0 rgba(255,255,255,.4); }
+:root[data-theme="light"] .btn-line{ background:#FFFFFF; border-color:rgba(36,90,100,.34); color:var(--teal-br); box-shadow:0 6px 16px -13px rgba(30,68,76,.45); }
+.btn-rail{ display:flex; gap:.8rem; flex-wrap:wrap; align-items:center; }
+
+/* ---- hero eyebrow / stats ---- */
+.hero-eyebrow{
+    display:inline-block; font-size:.78rem; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--teal); font-weight:600; padding:.4rem 1rem; border:1px solid var(--line);
+    border-radius:100px; background:rgba(127,169,176,.05);
+}
+.hero-title{ font-family:var(--font-d); font-weight:500; line-height:1.02; font-size:clamp(2.2rem,5vw,3.8rem); letter-spacing:-.01em; margin:1.2rem 0 0; max-width:16ch; }
+.hero-title em{ font-style:italic; color:var(--teal); }
+.hero-sub{ max-width:52ch; margin:1.3rem 0 0; color:var(--muted); font-size:1.1rem; line-height:1.7; }
+.hero-stats{ display:grid; grid-template-columns:repeat(4,1fr); gap:1px; margin:2.4rem 0 0; border:1px solid var(--line); border-radius:var(--r); overflow:hidden; background:var(--line); }
+.stat{ background:var(--ink-1); padding:1.4rem 1.05rem; text-align:center; }
+.stat-tag{ font-size:.62rem; font-weight:700; text-transform:uppercase; letter-spacing:.16em; color:var(--teal); margin-bottom:.55rem; }
+.stat-num{ display:block; font-family:var(--font-d); font-size:1.7rem; font-weight:600; color:var(--ivory); line-height:1; }
+.stat-label{ display:block; font-size:.78rem; color:var(--muted-2); margin-top:.5rem; }
+@media (max-width:640px){ .hero-stats{ grid-template-columns:repeat(2,1fr); } }
+
+/* ---- cards ---- */
+.card-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:1.1rem; }
+@media (max-width:820px){ .card-grid{ grid-template-columns:1fr; } }
+.prog-card{
+    border:1px solid var(--line); border-radius:var(--r); padding:1.9rem 1.7rem;
+    background:linear-gradient(180deg,var(--ink-2),var(--ink-1));
+    transition:transform .4s var(--ease), border-color .4s, box-shadow .4s;
+}
+.prog-card:hover{ transform:translateY(-6px); border-color:var(--teal-dp); box-shadow:0 24px 50px -28px #000; }
+.prog-card.feature{ border-color:var(--teal-dp); background:linear-gradient(180deg,var(--ink-3),var(--ink-1)); }
+.prog-chip{ display:inline-block; font-size:.7rem; letter-spacing:.08em; text-transform:uppercase; color:var(--teal-br); border:1px solid var(--teal-dp); border-radius:100px; padding:.25rem .7rem; margin-bottom:1.1rem; font-weight:600; }
+.prog-card h3{ font-family:var(--font-d); font-weight:500; font-size:1.55rem; margin-bottom:.6rem; }
+.prog-card p{ color:var(--muted); font-size:.96rem; margin:0 0 1rem; }
+.prog-note{ font-size:.83rem; color:var(--muted-2); display:block; padding-top:.9rem; border-top:1px solid var(--line-2); }
+:root[data-theme="light"] .prog-card{ box-shadow:0 1px 2px rgba(22,32,29,.035), 0 14px 32px -24px rgba(22,32,29,.34); }
+:root[data-theme="light"] .prog-card.feature{ background:linear-gradient(180deg,#F1F7F6,#FFFFFF); border-color:var(--teal); }
+
+.hl-card{ border:1px solid var(--line); border-radius:var(--r); padding:1.9rem 1.6rem; background:var(--ink-1); }
+.hl-big{ font-family:var(--font-d); font-weight:600; font-size:3.1rem; line-height:1; color:var(--teal-br); }
+.hl-big small{ font-size:1.1rem; color:var(--teal); font-weight:500; }
+.hl-sub{ font-size:.82rem; color:var(--muted-2); letter-spacing:.04em; text-transform:uppercase; margin-top:.4rem; }
+.hl-card h4{ font-family:var(--font-d); font-weight:500; font-size:1.2rem; margin:1.3rem 0 .5rem; }
+.hl-card p{ color:var(--muted); font-size:.92rem; margin:0; }
+
+/* ---- form (calculator panel) ---- */
+.calc-panel{ border:1px solid var(--line); border-radius:20px; padding:2.2rem; background:linear-gradient(180deg,var(--ink-2),var(--ink-1)); box-shadow:0 30px 70px -40px #000; max-width:440px; }
+.calc-field{ margin-bottom:1.4rem; }
+.calc-field label{ display:block; font-size:.88rem; color:var(--ivory-soft); margin-bottom:.55rem; font-weight:500; }
+.calc-input{ display:flex; align-items:center; border:1px solid var(--line); border-radius:12px; background:var(--ink); padding:0 1rem; transition:border-color .3s; }
+.calc-input:focus-within{ border-color:var(--teal); }
+.calc-input span{ color:var(--muted-2); font-size:1.1rem; }
+.calc-input input{ flex:1; background:none; border:0; outline:none; color:var(--ivory); font-family:var(--font-b); font-size:1.25rem; font-weight:500; padding:.9rem .6rem; }
+.calc-meter{ height:8px; border-radius:100px; background:var(--ink-3); overflow:hidden; margin:.4rem 0 1.4rem; }
+.calc-meter-fill{ height:100%; width:62%; border-radius:100px; background:linear-gradient(90deg,var(--teal-dp),var(--teal-br)); }
+
+/* ---- footer ---- */
+.ds-footer{ border-top:1px solid var(--line); background:var(--ink-1); border-radius:var(--r); padding:2.5rem 2rem; display:grid; grid-template-columns:1.6fr 1fr 1fr; gap:2rem; }
+@media (max-width:820px){ .ds-footer{ grid-template-columns:1fr; } }
+.footer-tag{ font-family:var(--font-d); font-style:italic; color:var(--teal); margin:.4rem 0 0; }
+.footer-nav h5{ font-size:.74rem; letter-spacing:.16em; text-transform:uppercase; color:var(--muted-2); margin-bottom:1rem; font-weight:600; }
+.footer-nav a{ display:block; color:var(--muted); font-size:.9rem; padding:.28rem 0; }
+.footer-nav a:hover{ color:var(--teal-br); }
+</style>
+</head>
+<body>
+
+<header class="ds-head">
+    <span class="mark">YS Capital <em>Design System</em></span>
+    <span class="tag">baseline · extracted from production</span>
+    <button class="ds-toggle" id="themeBtn" aria-label="Toggle theme">☾ Dark</button>
+</header>
+
+<main class="ds-canvas">
+
+    <!-- FOUNDATIONS: COLOR -->
+    <section class="ds-sec">
+        <span class="ds-eyebrow">Foundations</span>
+        <h2>Color</h2>
+        <p class="lede">Deep ink canvas, muted brand teal, champagne-gold hairline accent, warm ivory type. Every token flips cleanly to the light theme via <code>[data-theme="light"]</code> — try the toggle.</p>
+        <div class="ds-panel">
+            <div class="ds-label">Surfaces</div>
+            <div class="swatches">
+                <div class="sw"><div class="chip" style="background:var(--ink)"></div><div class="meta"><div class="nm">--ink</div><div class="hx">page canvas</div></div></div>
+                <div class="sw"><div class="chip" style="background:var(--ink-1)"></div><div class="meta"><div class="nm">--ink-1</div><div class="hx">card base</div></div></div>
+                <div class="sw"><div class="chip" style="background:var(--ink-2)"></div><div class="meta"><div class="nm">--ink-2</div><div class="hx">raised</div></div></div>
+                <div class="sw"><div class="chip" style="background:var(--ink-3)"></div><div class="meta"><div class="nm">--ink-3</div><div class="hx">highest</div></div></div>
+            </div>
+        </div>
+        <div class="ds-panel">
+            <div class="ds-label">Brand accents</div>
+            <div class="swatches">
+                <div class="sw"><div class="chip" style="background:var(--teal)"></div><div class="meta"><div class="nm">--teal</div><div class="hx">primary</div></div></div>
+                <div class="sw"><div class="chip" style="background:var(--teal-br)"></div><div class="meta"><div class="nm">--teal-br</div><div class="hx">bright</div></div></div>
+                <div class="sw"><div class="chip" style="background:var(--teal-dp)"></div><div class="meta"><div class="nm">--teal-dp</div><div class="hx">deep</div></div></div>
+                <div class="sw"><div class="chip" style="background:var(--gold)"></div><div class="meta"><div class="nm">--gold</div><div class="hx">champagne</div></div></div>
+                <div class="sw"><div class="chip" style="background:var(--ivory)"></div><div class="meta"><div class="nm">--ivory</div><div class="hx">primary text</div></div></div>
+                <div class="sw"><div class="chip" style="background:var(--muted)"></div><div class="meta"><div class="nm">--muted</div><div class="hx">body text</div></div></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FOUNDATIONS: TYPE -->
+    <section class="ds-sec">
+        <span class="ds-eyebrow">Foundations</span>
+        <h2>Typography</h2>
+        <p class="lede"><strong>Fraunces</strong> (optical serif) for display &amp; headings, <strong>Hanken Grotesk</strong> for body &amp; UI. The italic teal accent on display type is a signature move.</p>
+        <div class="ds-panel">
+            <div class="type-row"><div class="spec">Fraunces · display</div><div class="d1">The Answer <em>Is Yes</em></div></div>
+            <div class="type-row"><div class="spec">Fraunces · 500 · section</div><div class="d2">Financing built for investors</div></div>
+            <div class="type-row"><div class="spec">Fraunces · 500 · card</div><div class="d3">DSCR Rental</div></div>
+            <div class="type-row"><div class="spec">Hanken · eyebrow</div><div class="eyebrow-demo">Private Lending Platform</div></div>
+            <div class="type-row"><div class="spec">Hanken · 1.05rem · lede</div><div class="b1">Qualified on the property, not your tax returns — structured to close fast.</div></div>
+            <div class="type-row"><div class="spec">Hanken · .9rem · UI</div><div class="b2">DSCR rental · Fix &amp; flip · Bridge · Construction · Non-QM</div></div>
+        </div>
+    </section>
+
+    <!-- COMPONENTS: BUTTONS -->
+    <section class="ds-sec">
+        <span class="ds-eyebrow">Components</span>
+        <h2>Buttons</h2>
+        <p class="lede">Pill geometry, tactile lift on hover, a sheen sweep on the filled variants. Solid = primary teal, Gold = premium CTA, Line = secondary, Ghost = tertiary.</p>
+        <div class="ds-panel">
+            <div class="ds-label">Variants</div>
+            <div class="btn-rail">
+                <a class="btn btn-solid">Apply Now</a>
+                <a class="btn btn-gold">✦ Get a Quote</a>
+                <a class="btn btn-line">Investor Suite</a>
+                <a class="btn btn-ghost">Client Login</a>
+            </div>
+            <div class="ds-label" style="margin-top:1.8rem">Large</div>
+            <div class="btn-rail">
+                <a class="btn btn-solid btn-lg">Start an Application</a>
+                <a class="btn btn-line btn-lg">Talk to a specialist</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- COMPONENTS: HERO -->
+    <section class="ds-sec">
+        <span class="ds-eyebrow">Components</span>
+        <h2>Hero</h2>
+        <div class="ds-panel">
+            <span class="hero-eyebrow">Private Lending for Real Estate Investors</span>
+            <h1 class="hero-title">One partner from <em>purchase to permanent.</em></h1>
+            <p class="hero-sub">DSCR rental, fix &amp; flip, bridge, construction and Non-QM financing — qualified on the deal, not your tax returns, and structured to close fast.</p>
+            <div class="btn-rail" style="margin-top:1.6rem">
+                <a class="btn btn-solid btn-lg">Apply Now</a>
+                <a class="btn btn-line btn-lg">See Programs</a>
+            </div>
+            <div class="hero-stats">
+                <div class="stat"><div class="stat-tag">Max Leverage</div><span class="stat-num">90%</span><span class="stat-label">LTC on fix &amp; flip</span></div>
+                <div class="stat"><div class="stat-tag">DSCR From</div><span class="stat-num">0.75×</span><span class="stat-label">rental coverage</span></div>
+                <div class="stat"><div class="stat-tag">Close In</div><span class="stat-num">10 days</span><span class="stat-label">purchase to fund</span></div>
+                <div class="stat"><div class="stat-tag">Loan Size</div><span class="stat-num">$5M</span><span class="stat-label">up to, per deal</span></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- COMPONENTS: CARDS -->
+    <section class="ds-sec">
+        <span class="ds-eyebrow">Components</span>
+        <h2>Program &amp; highlight cards</h2>
+        <p class="lede">Gradient-filled cards that lift and accent on hover; the flagship program carries a <code>.feature</code> treatment (deeper fill, teal edge — the animated ring lives in production).</p>
+        <div class="ds-panel">
+            <div class="ds-label">Program cards</div>
+            <div class="card-grid">
+                <div class="prog-card feature">
+                    <span class="prog-chip">Flagship</span>
+                    <h3>DSCR Rental</h3>
+                    <p>Long-term rental financing qualified on property cash flow. 30-year terms, no tax returns.</p>
+                    <span class="prog-note">Down to 0.75× DSCR · up to 80% LTV</span>
+                </div>
+                <div class="prog-card">
+                    <span class="prog-chip">Bridge</span>
+                    <h3>Fix &amp; Flip</h3>
+                    <p>Purchase + rehab in one line, up to 90% of cost and 100% of construction.</p>
+                    <span class="prog-note">Interest-only · 12–18 mo</span>
+                </div>
+                <div class="prog-card">
+                    <span class="prog-chip">Build</span>
+                    <h3>Ground-Up</h3>
+                    <p>Construction financing for infill and small-balance developers, drawn by milestone.</p>
+                    <span class="prog-note">Up to 85% LTC</span>
+                </div>
+            </div>
+            <div class="ds-label" style="margin-top:2rem">Highlight tiles</div>
+            <div class="card-grid">
+                <div class="hl-card"><div class="hl-big">90<small>% LTC</small></div><div class="hl-sub">Leverage</div><h4>More of your capital stays deployed</h4><p>Finance up to 90% of cost so you can run more deals at once.</p></div>
+                <div class="hl-card"><div class="hl-big">10<small> days</small></div><div class="hl-sub">Speed</div><h4>Close on the timeline the deal needs</h4><p>In-house underwriting keeps purchase-to-fund fast.</p></div>
+                <div class="hl-card"><div class="hl-big">$5<small>M</small></div><div class="hl-sub">Capacity</div><h4>Scale from first flip to full portfolio</h4><p>One relationship across every program.</p></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- COMPONENTS: FORM -->
+    <section class="ds-sec">
+        <span class="ds-eyebrow">Components</span>
+        <h2>Form &amp; inputs</h2>
+        <p class="lede">The calculator/input pattern used across the investor toolkit — framed field, focus-within teal edge, and a progress meter for ratio readouts.</p>
+        <div class="ds-panel">
+            <div class="calc-panel">
+                <div class="calc-field">
+                    <label>Purchase price</label>
+                    <div class="calc-input"><span>$</span><input value="450,000" inputmode="numeric"></div>
+                </div>
+                <div class="calc-field">
+                    <label>Monthly rent</label>
+                    <div class="calc-input"><span>$</span><input value="3,600" inputmode="numeric"></div>
+                </div>
+                <div class="ds-label" style="margin-bottom:.4rem">DSCR · 1.24×</div>
+                <div class="calc-meter"><div class="calc-meter-fill"></div></div>
+                <a class="btn btn-solid" style="width:100%">See my rate</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- COMPONENTS: FOOTER -->
+    <section class="ds-sec">
+        <span class="ds-eyebrow">Components</span>
+        <h2>Footer</h2>
+        <div class="ds-panel" style="padding:1.1rem">
+            <div class="ds-footer">
+                <div>
+                    <span class="mark">YS Capital <em>Group</em></span>
+                    <p class="footer-tag">The Answer Is Yes.</p>
+                    <p class="b2" style="margin-top:1rem">Private mortgage banking for real estate investors.</p>
+                </div>
+                <div class="footer-nav"><h5>Programs</h5><a>DSCR Rental</a><a>Fix &amp; Flip</a><a>Bridge</a><a>Ground-Up</a></div>
+                <div class="footer-nav"><h5>Company</h5><a>Investor Suite</a><a>Team</a><a>Contact</a><a>Client Login</a></div>
+            </div>
+        </div>
+    </section>
+
+</main>
+
+<script>
+    // dark <-> light preview toggle (mirrors the production theme.js behavior)
+    const btn = document.getElementById('themeBtn');
+    const root = document.documentElement;
+    btn.addEventListener('click', () => {
+        const light = root.getAttribute('data-theme') === 'light';
+        root.setAttribute('data-theme', light ? 'dark' : 'light');
+        btn.textContent = light ? '☾ Dark' : '☀ Light';
+    });
+</script>
+</body>
+</html>
