@@ -166,6 +166,8 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
       <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 8 }}>
         {!compactHeader && <div className="ent-name" style={{ fontSize: 17 }}>{llc.llc_name}</div>}
         <span className={`ts-badge ${badge.cls}`}>{badge.text}</span>
+        {(llc.completeness || {}).gs_expired &&
+          <span className="ts-badge warn" title="The Certificate of Good Standing on file is more than 30 days old — upload a current one. The entity stays verified.">Good standing expired</span>}
         <div className="spacer" />
         {msg && <span className="muted small">{msg}</span>}
       </div>
