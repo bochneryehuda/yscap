@@ -430,9 +430,17 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     if (!cf.llcName.trim()) { setErr('Entity name is required'); return; }
     setBusy('create'); setErr('');
     try {
-      await api.staffCreateLlc(app.borrower_id, {
+      const created = await api.staffCreateLlc(app.borrower_id, {
         llcName: cf.llcName.trim(), ein: cf.ein || undefined, formationState: cf.formationState || undefined,
         formationDate: cf.formationDate || undefined, ownershipPct: cf.ownershipPct === '' ? undefined : Number(cf.ownershipPct) });
+      // The verify list is now scoped to the vesting + track-record entities, so a
+      // brand-new entity would not appear unless it's linked. When the file has no
+      // vesting entity yet, the one just created here IS the file's vesting entity —
+      // link it so it shows (and drives the LLC condition). If one already exists,
+      // leave it: this was a plain library add and will surface once tied to a deal.
+      if (!app.llc_id && created && created.llcId) {
+        try { await api.staffSetVestingLlc(appId, created.llcId); } catch (_) { /* best-effort */ }
+      }
       flash('Entity created ✓ — its document slots are ready for upload.');
       setShowCreate(false); setCf(blankCreate); await load(); onChanged && await onChanged();
     } catch (e) { setErr(e.message || 'Could not create the entity'); }
@@ -463,10 +471,13 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
   }
   const onFile = (e) => uploadLlcFiles(e.target && e.target.files, upTarget);
 
-  const load = () => app.borrower_id
-    ? api.staffBorrowerLlcs(app.borrower_id).then(setLlcs).catch(e => { setErr(e.message || 'Could not load LLCs'); setLlcs([]); })
+  // Scope to the entities that matter for THIS file: the vesting entity + the
+  // borrower's (and co-borrower's) track-record entities — NOT the borrower's
+  // whole LLC library. The endpoint marks the vesting one with `vesting:true`.
+  const load = () => appId
+    ? api.staffAppVerifyLlcs(appId).then(r => setLlcs(r.llcs || [])).catch(e => { setErr(e.message || 'Could not load entities'); setLlcs([]); })
     : Promise.resolve();
-  useEffect(() => { setOpenId(app.llc_id || null); load(); /* eslint-disable-next-line */ }, [app.borrower_id, app.llc_id]);
+  useEffect(() => { setOpenId(app.llc_id || null); load(); /* eslint-disable-next-line */ }, [appId, app.llc_id]);
 
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 4000); };
 
@@ -507,7 +518,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
         The LLC taking title on this property. Confirm its details, ownership (to 100%) and the three
         documents, then mark it verified — that satisfies the internal LLC condition on this and every
         future file it vests. This is the borrower's reusable entity, so anything you enter mirrors their
-        profile. Other entities on the borrower are tucked below.
+        profile. Only this file's entities are shown — the vesting entity plus any entities from the
+        borrower's track record; unrelated entities on the borrower are not listed here.
       </p>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
@@ -532,13 +544,15 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
         </div>
       )}
       {llcs == null ? <p className="muted small">Loading…</p>
-        : llcs.length === 0 ? <p className="muted small">No LLCs on this borrower's profile yet.</p>
+        : llcs.length === 0 ? <p className="muted small">{app.llc_id
+            ? "The vesting entity linked to this file isn't loading — refresh the page."
+            : 'No vesting entity or track-record entities to verify yet. Use “+ Add entity” to create and link this file’s vesting entity.'}</p>
         : (() => {
-          // #57 — render JUST the vesting entity for THIS file up top; other
-          // borrower entities collapse behind a toggle so staff verify the one
-          // that matters without wading through a full LLC list.
+          // #57 — render JUST the vesting entity for THIS file up top; the file's
+          // track-record entities collapse behind a toggle so staff verify the one
+          // that matters without wading through unrelated entities.
           const renderLlc = (l) => {
-          const linked = l.id === app.llc_id;
+          const linked = l.vesting || l.id === app.llc_id;
           const open = openId === l.id;
           const c = l.completeness || {};
           const total = (Number(l.ownership_pct) || 0) + (Number(c.member_total_pct) || 0);
@@ -732,18 +746,21 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
             </div>
           );
           };
-          const vesting = app.llc_id ? llcs.filter(l => l.id === app.llc_id) : [];
-          const others = app.llc_id ? llcs.filter(l => l.id !== app.llc_id) : llcs;
+          // Vesting entity first; the rest are the file's track-record entities.
+          const vesting = llcs.filter(l => l.vesting || l.id === app.llc_id);
+          const others = llcs.filter(l => !(l.vesting || l.id === app.llc_id));
           return (
             <>
               {vesting.map(renderLlc)}
               {app.llc_id && vesting.length === 0 &&
                 <p className="muted small">The entity linked to this file isn't loading — refresh the page.</p>}
-              {others.length > 0 && (app.llc_id
+              {!app.llc_id && others.length > 0 &&
+                <p className="muted small" style={{ marginBottom: 8 }}>No vesting entity is linked to this file yet — the entities below are from the borrower's track record. Link one as the vesting entity with “+ Add entity”, or in the file details.</p>}
+              {others.length > 0 && (vesting.length > 0
                 ? (<>
                     <div className="row" style={{ marginTop: 8 }}>
                       <button className="btn link small" onClick={() => setShowOthers(v => !v)}>
-                        {showOthers ? 'Hide other entities' : `Show ${others.length} other entit${others.length === 1 ? 'y' : 'ies'} on this borrower`}
+                        {showOthers ? 'Hide track-record entities' : `Show ${others.length} track-record entit${others.length === 1 ? 'y' : 'ies'}`}
                       </button>
                     </div>
                     {showOthers && others.map(renderLlc)}
