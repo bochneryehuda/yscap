@@ -147,8 +147,10 @@ router.post('/file/:appId/repull', async (req, res) => {
 });
 
 // Re-check every linked file's ClickUp program and descope any that were flipped
-// to a non-RTL type (e.g. Short-Term Rehab → DSCR). Portal-only; ClickUp untouched.
-// Returns {checked, descoped}. Safe to run any time (idempotent).
+// to a non-RTL type (e.g. Short-Term Rehab → DSCR); AND resolve orphaned files
+// whose ClickUp task was deleted (a task deleted+recreated leaves a stale duplicate)
+// — soft-archiving an empty stale duplicate that has a live sibling, or flagging it
+// for Manual Review otherwise. Portal-only; ClickUp untouched. Idempotent.
 router.post('/reconcile-programs', async (req, res) => {
   if (!cfg.clickupToken) return res.status(400).json({ error: 'CLICKUP_API_TOKEN not set' });
   // Fire-and-forget (one serial ClickUp getTask per linked file — can take minutes
