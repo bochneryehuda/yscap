@@ -899,17 +899,11 @@ router.post('/applications/:id/link-llc', async (req, res) => {
   const own = await db.query(`SELECT id FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'llc not found' });
   const previous = app.rows[0].llc_id;
-  await db.query(`UPDATE applications SET llc_id=$2, updated_at=now() WHERE id=$1`, [req.params.id, b.llcId]);
-  // Link both of the file's borrowers to the newly-vesting LLC (#81) — the entity
-  // is owned by both; each borrower's ownership % is set on the file.
-  try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(req.params.id); } catch (_) { /* best-effort */ }
-  try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ }
-  // reopen + appId: the previous entity's state no longer drives this file's
-  // LLC condition — recompute it from the NEWLY linked entity, even downgrading
-  // an auto-satisfied item left behind by the old link.
-  try { await llcLib.syncLlcConditions(b.llcId, { appId: req.params.id, reopen: true }); } catch (_) { /* best-effort */ }
-  // has_llc / llc_verified / llc_state are rule-engine fields.
-  try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'llc_linked' }); } catch (_) {}
+  // Single authority (src/lib/vesting.js): set llc_id + full wiring (owner links,
+  // LLC doc checklist, LLC condition recompute, rule re-eval) AND enqueue the
+  // outbound ClickUp push so a borrower-set vesting entity propagates back to the
+  // task — previously the vesting change was never pushed to ClickUp.
+  try { await require('../lib/vesting').setVestingLlc(req.params.id, b.llcId, { source: 'borrower', force: true }); } catch (_) { /* best-effort */ }
   await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
   res.json({ ok: true });
 });
