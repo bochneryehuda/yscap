@@ -16,7 +16,7 @@ import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
-import { US_STATES } from '../components/LlcManager.jsx';
+import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -1065,10 +1065,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // plate (LO clears on review/"complete"; processor·underwriter on sign-off;
   // anyone on satisfied). The picker re-shows cleared items or everything.
   const [condFilter, setCondFilter] = useState('todo');
-  // #64 — the LLC condition is NOT a plain row here: it IS the vesting-entity
-  // setup, rendered in full in the "LLC condition" section (LlcReview). Excluded
-  // from this list so it isn't duplicated as a bare condition row.
+  // The LLC condition stays its OWN dedicated section (LlcReview) AND is also
+  // surfaced here as a condition to close, rendered with the full entity template
+  // (owner-directed). It's excluded from the generic list below (so it isn't a bare
+  // duplicate row) and rendered explicitly as `llcCondItem`.
   const borrowerItems = items.filter(it => (it.audience === 'borrower' || it.audience === 'both') && it.template_code !== 'rtl_p1_llc');
+  const llcCondItem = items.find(it => it.template_code === 'rtl_p1_llc');
   const ppItem = borrowerItems.find(it => it.tool_key === 'product_pricing');
   const sowItem = borrowerItems.find(it => it.tool_key === 'rehab_budget');
   const trItem = borrowerItems.find(it => it.tool_key === 'track_record');
@@ -1094,7 +1096,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   const offMyPlate = (it) => it.status === 'satisfied' || !!it.signed_off_at || (isLO && !!it.reviewed_at);
   const visible = ordered.filter(it => condFilter === 'all' ? true : condFilter === 'cleared' ? offMyPlate(it) : !offMyPlate(it));
 
-  if (ordered.length === 0) return null;
+  if (ordered.length === 0 && !llcCondItem) return null;
   return (
     <div className="panel" style={{ marginTop: 18, borderColor: 'var(--gold)' }}>
       <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
@@ -1111,6 +1113,26 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       <p className="muted small" style={{ marginBottom: 12 }}>
         The conditions list exactly as the borrower sees it — with each condition's uploaded documents and sign-off.
       </p>
+      {/* The LLC condition to close — the FULL entity template (details, ownership,
+          the three documents, verification state), rendered here as a condition in
+          addition to its dedicated Vesting entity section above. Gate. */}
+      {llcCondItem && (condFilter === 'all' || (condFilter === 'cleared') === !!app.entity_verified) && (
+        <div className="checkitem" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8, borderColor: 'var(--gold)' }}>
+          <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+            <span className={`dot ${app.entity_verified ? 'done' : 'outstanding'}`} />
+            <strong>{llcCondItem.label || 'LLC (vesting entity)'}</strong>
+            <Badge tone="gold">gate</Badge>
+            <Badge>{llcCondItem.audience}</Badge>
+            {app.entity_verified
+              ? <span className="pill ok">Verified ✓</span>
+              : <span className="pill">{app.llc_id ? 'In progress' : 'No entity linked'}</span>}
+          </div>
+          <div className="muted small">Condition to close — the borrower fills this too. Verifying the entity (below or here) satisfies and signs it off.</div>
+          {app.llc_id
+            ? <LlcManager llcId={app.llc_id} staff compactHeader />
+            : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
+        </div>
+      )}
       {visible.length === 0 && (
         <p className="muted small">Nothing {isLO ? 'left to review' : 'left to sign off'} — switch to “Cleared” or “Show all” to see the rest.</p>
       )}
