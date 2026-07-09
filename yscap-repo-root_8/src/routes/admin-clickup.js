@@ -27,6 +27,48 @@ async function audit(req, action, appId, detail) {
   } catch (_) { /* audit best-effort */ }
 }
 
+// Read-only diagnostics for the ClickUp↔portal join: why a file isn't linked or
+// its LLC/conditions aren't populating. Super-admin gated (platform_setup).
+// Returns names, addresses, and linking IDs only — NO SSN or sensitive PII.
+//   GET /api/admin/clickup/diag?q=<borrower name or property address>
+router.get('/diag', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const out = {};
+    out.buckets = (await db.query(
+      `SELECT match_status, count(*)::int n FROM clickup_task_index WHERE match_status IS NOT NULL GROUP BY match_status ORDER BY n DESC`)).rows;
+    out.unlinkedSample = (await db.query(
+      `SELECT task_id, task_name, kind, match_status, borrower_id, application_id, llc_id
+         FROM clickup_task_index WHERE match_status IN ('skipped','ambiguous')
+        ORDER BY snapshot_at DESC NULLS LAST LIMIT 40`)).rows;
+    if (q) {
+      const like = '%' + q + '%';
+      out.apps = (await db.query(
+        `SELECT a.id, a.ys_loan_number, a.program, a.status, a.internal_status,
+                a.clickup_pipeline_task_id, a.sync_state, a.deleted_at,
+                a.property_address->>'oneLine' AS address, a.borrower_id, a.co_borrower_id,
+                a.llc_id, l.llc_name AS vesting_llc_name,
+                b.first_name, b.last_name,
+                (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS checklist_items,
+                EXISTS (SELECT 1 FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+                         WHERE ci.application_id=a.id AND t.code='rtl_cond_fraud') AS has_fraud_condition
+           FROM applications a
+           JOIN borrowers b ON b.id=a.borrower_id
+           LEFT JOIN llcs l ON l.id=a.llc_id
+          WHERE (b.first_name||' '||b.last_name ILIKE $1 OR a.property_address->>'oneLine' ILIKE $1)
+          ORDER BY a.created_at DESC LIMIT 25`, [like])).rows;
+      const bids = [...new Set(out.apps.map((a) => a.borrower_id).filter(Boolean))];
+      if (bids.length) {
+        out.llcs = (await db.query(
+          `SELECT id, borrower_id, llc_name, ein, source_task_id, is_verified FROM llcs WHERE borrower_id = ANY($1::uuid[]) ORDER BY created_at`, [bids])).rows;
+        out.taskIndex = (await db.query(
+          `SELECT task_id, task_name, kind, match_status, borrower_id, application_id, llc_id FROM clickup_task_index WHERE borrower_id = ANY($1::uuid[])`, [bids])).rows;
+      }
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
 router.get('/health', async (req, res) => {
   const out = {
     enabled: cfg.clickupSyncEnabled, tokenSet: !!cfg.clickupToken, webhookSecretSet: !!cfg.clickupWebhookSecret,
