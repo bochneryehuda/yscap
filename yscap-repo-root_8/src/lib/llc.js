@@ -18,6 +18,15 @@ const db = require('../db');
 // The three document slots, in display order. Slot identity is the template
 // code — stable across renames.
 const LLC_SLOT_CODES = ['rtl_llc_formation', 'rtl_llc_ein', 'rtl_llc_opagmt'];
+// The Certificate of Good Standing is OPTIONAL — it never gates verification
+// (a file must be sign-off-able without it), regardless of any is_required flag.
+const OPTIONAL_SLOT_CODES = ['rtl_llc_goodstanding'];
+// A Certificate of Good Standing goes stale fast. 30 days after it is uploaded
+// it EXPIRES: the slot reopens (reads as empty so staff can re-upload) and it
+// stops populating onto files — but the LLC stays verified (good standing was
+// never required) and no OTHER document is touched. A note surfaces the expiry.
+const GS_SLOT_CODE = 'rtl_llc_goodstanding';
+const GS_EXPIRY_DAYS = 30;
 
 // Application statuses on which the LLC condition is still live. Terminal
 // files keep whatever state they closed with.
@@ -56,12 +65,35 @@ async function getSlots(llcId) {
        LEFT JOIN staff_users s ON s.id = d.reviewed_by
       WHERE ci.llc_id = $1
       ORDER BY t.sort_order`, [llcId]);
-  return r.rows;
+  const rows = r.rows;
+  // Certificate of Good Standing EXPIRY (30 days). An expired cert reopens its
+  // slot: we present it as EMPTY so staff re-upload and it stops populating the
+  // file — the LLC stays verified (good standing never gated), and NO other
+  // document is affected. The underlying document row is left intact; this is a
+  // computed view only (expired_document_id keeps a handle for the UI/note).
+  for (const s of rows) {
+    if (s.code === GS_SLOT_CODE && s.document_id && s.uploaded_at) {
+      const ageDays = (Date.now() - new Date(s.uploaded_at).getTime()) / 86400000;
+      if (ageDays > GS_EXPIRY_DAYS) {
+        s.gs_expired = true;
+        s.gs_expired_days = Math.round(ageDays);
+        s.expired_document_id = s.document_id;
+        s.expired_filename = s.filename;
+        s.document_id = null; s.filename = null; s.content_type = null; s.size_bytes = null;
+        s.review_status = null; s.rejection_reason = null; s.uploaded_at = null;
+        s.reviewed_at = null; s.reviewed_by_name = null;
+      }
+    }
+  }
+  return rows;
 }
 
 // Loose-but-real EIN shape: 9 digits, optionally XX-XXXXXXX.
 const EIN_RE = /^\d{2}-?\d{7}$/;
-const isRequiredSlot = (s) => s.is_required !== false;
+// A slot gates verification only when it is required AND not an explicitly
+// optional slot (the Certificate of Good Standing is optional no matter what
+// its is_required flag says — this guarantees you can always verify without it).
+const isRequiredSlot = (s) => s.is_required !== false && !OPTIONAL_SLOT_CODES.includes(s.code);
 
 /* What still stands between this LLC and "verified". Empty array = ready.
    Optional slots (e.g. Certificate of Good Standing) never block for being
@@ -81,6 +113,9 @@ function missingForVerification(llc, members, slots) {
     if (Math.abs(total - 100) > EPS) missing.push(`ownership must total 100% (currently ${total.toFixed(2)}%)`);
   }
   for (const s of slots) {
+    // Optional slots (Certificate of Good Standing) NEVER gate — not for being
+    // absent, not even for a rejected document. You can always sign off without one.
+    if (OPTIONAL_SLOT_CODES.includes(s.code)) continue;
     if (s.document_id && s.review_status === 'rejected') { missing.push(`${s.label} was rejected`); continue; }
     if (!isRequiredSlot(s)) continue;
     if (!s.document_id) missing.push(`${s.label} not uploaded`);
@@ -96,14 +131,20 @@ function missingForVerification(llc, members, slots) {
    old, and must be dated within ~90 days of closing. */
 function advisories(llc, slots) {
   const out = [];
-  const gs = slots.find((s) => s.code === 'rtl_llc_goodstanding');
+  const gs = slots.find((s) => s.code === GS_SLOT_CODE);
   const ageDays = llc.formation_date ? (Date.now() - new Date(llc.formation_date).getTime()) / 86400000 : null;
   if (gs) {
-    const gsAge = gs.document_id && gs.uploaded_at ? (Date.now() - new Date(gs.uploaded_at).getTime()) / 86400000 : null;
-    if (ageDays != null && ageDays > 365 && !gs.document_id)
-      out.push('Entity is over a year old — most programs need a Certificate of Good Standing');
-    if (gsAge != null && gsAge > 90)
-      out.push(`Certificate of Good Standing is ${Math.round(gsAge)} days old — programs typically want one dated within 90 days of closing`);
+    if (gs.gs_expired) {
+      // getSlots reopened the slot (>30 days). The LLC stays verified; surface
+      // the expiry so staff know to re-upload a current certificate.
+      out.push(`Certificate of Good Standing expired — the one on file was uploaded ${gs.gs_expired_days} days ago (certificates are only good for ${GS_EXPIRY_DAYS} days). Upload a current one.`);
+    } else {
+      const gsAge = gs.document_id && gs.uploaded_at ? (Date.now() - new Date(gs.uploaded_at).getTime()) / 86400000 : null;
+      if (ageDays != null && ageDays > 365 && !gs.document_id)
+        out.push('Entity is over a year old — most programs need a Certificate of Good Standing');
+      if (gsAge != null && gsAge > 90)
+        out.push(`Certificate of Good Standing is ${Math.round(gsAge)} days old — programs typically want one dated within 90 days of closing`);
+    }
   }
   return out;
 }
@@ -129,6 +170,7 @@ function completeness(llc, members, slots) {
     docs_accepted: accepted,
     docs_rejected: rejected,
     ready_to_verify: missingForVerification(llc, members, slots).length === 0,
+    gs_expired: slots.some((s) => s.gs_expired),
     advisories: advisories(llc, slots),
   };
 }
