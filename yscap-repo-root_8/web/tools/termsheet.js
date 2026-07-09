@@ -199,10 +199,19 @@
     var s = R.sizing || {};
     var asg = R.assignment;
     var rate = (R.noteRate || 0) * 100;                    // borrower note rate only
-    var totalLoan = s.totalLoan || 0;
+    // Rounding policy (owner-directed 2026-07-09): report the financed loan in
+    // WHOLE DOLLARS floored down, and reconcile the breakdown EXACTLY — floor the
+    // initial advance + holdback and let the financed reserve absorb the residual
+    // (or the initial, when there is no reserve). Mirrors the LOS and the server
+    // (pricing.js). The engine's sizing math is unchanged.
+    var totalLoan = Math.floor(s.totalLoan || 0);
+    var rehabHoldbackR = Math.floor(s.rehabLoan || 0);
+    var initialAdvance = Math.floor(s.acquisition || 0);
+    var financedIRr = 0;
+    if ((s.financedIR || 0) > 0.5) financedIRr = Math.max(0, totalLoan - initialAdvance - rehabHoldbackR);
+    else initialAdvance = Math.max(0, totalLoan - rehabHoldbackR);
     var origPct = adminOrigPct("standard");
     var origFee = (totalLoan) * origPct;                  // origination % (admin-overridable; default 1%)
-    var initialAdvance = s.acquisition || 0;
     // interest-only payment logic (industry standard): during construction the borrower pays
     // interest only on funds DRAWN — starts on the initial advance, grows to the full loan.
     var rFrac = (R.noteRate || 0) / 12;
@@ -219,14 +228,14 @@
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
     var liquidity = cashToClose + reserves;
     var basisPrice = (asg ? asg.recognizedPrice : (inp.loanType === "Purchase" ? effPurchase() : num("asIs")));
-    var displayCost = basisPrice + num("construction") + (s.financedIR || 0);
+    var displayCost = basisPrice + num("construction") + financedIRr;
 
     return {
       R: R, inp: inp, eff: (inp.loanType === "Purchase" ? effPurchase() : num("asIs")), basisPrice: basisPrice,
       constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
       asIs: num("asIs"), arv: num("arv"), rate: rate, term: inp.term, irMonths: inp.irMonths,
-      totalLoan: totalLoan, initialAdvance: initialAdvance, rehabHoldback: s.rehabLoan || 0,
-      financedIR: s.financedIR || 0, unfinancedIR: 0,
+      totalLoan: totalLoan, initialAdvance: initialAdvance, rehabHoldback: rehabHoldbackR,
+      financedIR: financedIRr, unfinancedIR: 0,
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
       initialPayment: initialPayment, fullPayment: fullPayment, monthlyInterest: monthlyInterest,
@@ -256,10 +265,16 @@
     if (manualOn()) { if (R.status === "INELIGIBLE") R.status = "MANUAL"; R.exitShortfall = 0; }   // admin-priced basis
     var s = R.sizing || {};
     var rate = (R.noteRate || 0) * 100;
-    var totalLoan = s.totalLoan || 0;
+    // Rounding policy (owner-directed 2026-07-09) — see calc(); same floor +
+    // reconcile so the Gold breakdown sums exactly to the (floored) total loan.
+    var totalLoan = Math.floor(s.totalLoan || 0);
+    var rehabHoldbackR = Math.floor(s.rehabLoan || 0);
+    var initialAdvance = Math.floor(s.acquisition || 0);
+    var financedIRr = 0;
+    if ((s.financedIR || 0) > 0.5) financedIRr = Math.max(0, totalLoan - initialAdvance - rehabHoldbackR);
+    else initialAdvance = Math.max(0, totalLoan - rehabHoldbackR);
     var origPct = adminOrigPct("gold");
     var origFee = totalLoan * origPct;                    // origination % (admin-overridable; default 1%)
-    var initialAdvance = s.acquisition || 0;
     var rFrac = (R.noteRate || 0) / 12;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
     var titleOvr = adminTitle();
@@ -277,12 +292,12 @@
       constr: num("construction"), asg: asg, pricingReady: !!R.pricingReady,
       escalations: R.escalations || [],
       asIs: num("asIs"), arv: num("arv"), rate: rate, term: inp.term, irMonths: inp.irMonths,
-      totalLoan: totalLoan, initialAdvance: initialAdvance, rehabHoldback: s.rehabLoan || 0,
-      financedIR: s.financedIR || 0, unfinancedIR: 0,
+      totalLoan: totalLoan, initialAdvance: initialAdvance, rehabHoldback: rehabHoldbackR,
+      financedIR: financedIRr, unfinancedIR: 0,
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
       initialPayment: initialAdvance * rFrac, fullPayment: totalLoan * rFrac, monthlyInterest: totalLoan * rFrac,
-      totalCost: basisPrice + num("construction") + (s.financedIR || 0),
+      totalCost: basisPrice + num("construction") + financedIRr,
       downPayment: s.downPayment || 0, excessOOP: excessOOP,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
       closing: closing, cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,

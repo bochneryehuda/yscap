@@ -95,7 +95,7 @@ const FIELD_MAP = [
   // Richer file data the team keeps in ClickUp — rates, carrying costs, valuation,
   // title/insurance, liens, pipeline status. Never pushed back (no echo/clobber).
   { cu: F.EXTRA.actualRate, t: 'a', col: 'actual_rate', type: 'text', dir: 'pull' },
-  { cu: F.EXTRA.desiredRate, t: 'a', col: 'desired_rate', type: 'text', dir: 'pull' },
+  { cu: F.EXTRA.desiredRate, t: 'a', col: 'desired_rate', type: 'text', dir: 'push' }, // portal owns: register mirrors the exact registered rate into the Desired Rate
   { cu: F.EXTRA.propertyTaxes, t: 'a', col: 'property_taxes', type: 'currency', dir: 'pull' },
   { cu: F.EXTRA.propertyInsurance, t: 'a', col: 'property_insurance', type: 'currency', dir: 'pull' },
   { cu: F.EXTRA.propertyHoa, t: 'a', col: 'property_hoa', type: 'currency', dir: 'pull' },

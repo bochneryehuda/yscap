@@ -162,7 +162,21 @@ function normalize(program, input, ev, ladder) {
   const s = ev.sizing || {};
   const defaultOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT) : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
   const origPct = percentOverride(input, program === 'gold' ? 'origGoldPct' : 'origStdPct', defaultOrigPct);
-  const totalLoan = num(s.totalLoan);
+  // Rounding policy (owner-directed 2026-07-09): the financed loan is reported in
+  // WHOLE DOLLARS, floored DOWN — never lend more than the engine sized. The
+  // reported breakdown must reconcile EXACTLY (initial advance + holdback +
+  // financed reserve === total loan), so the initial and holdback are floored too
+  // and the financed reserve absorbs the reconciling residual (when a reserve is
+  // present; otherwise the initial advance absorbs it, so no phantom reserve
+  // appears on a no-reserve deal). This mirrors the LOS, which floors both the
+  // loan amount AND the initial. The engine's sizing math itself is unchanged —
+  // this only floors/reconciles the reported figures.
+  const totalLoan = Math.floor(num(s.totalLoan));
+  const rehabHoldback = Math.floor(num(s.rehabLoan));
+  let initialAdvance = Math.floor(num(s.acquisition));
+  let financedReserve = 0;
+  if (num(s.financedIR) > 0.5) financedReserve = Math.max(0, totalLoan - initialAdvance - rehabHoldback);
+  else initialAdvance = Math.max(0, totalLoan - rehabHoldback);
   const state = clean(input.state).toUpperCase();
   const title = YSTitle.estimate(state, totalLoan, input.loanType);
   const titleAutoTotal = num(title.total);
@@ -215,9 +229,9 @@ function normalize(program, input, ev, ladder) {
     origination,
     sizing: {
       totalLoan,
-      initialAdvance: num(s.acquisition),
-      rehabHoldback: num(s.rehabLoan),
-      financedReserve: num(s.financedIR),
+      initialAdvance,
+      rehabHoldback,
+      financedReserve,
       downPayment: num(s.downPayment),
       assignmentExcessOOP: assignmentExcess,
       initialPayment: num(s.initialPayment),

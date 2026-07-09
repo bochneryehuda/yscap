@@ -472,6 +472,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // never reopened on a later increase.
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
 
+    // Push the freshly-committed scenario (loan amount, rate, rehab, term, IR,
+    // ARV / as-is / purchase, assignment, desired rate) to ClickUp immediately.
+    require('../clickup/orchestrator').pushApplication(appId).catch((e) => console.error('[clickup] push after register (borrower)', appId, e && e.message));
+
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
         origination: quote.origination != null ? quote.origination : undefined,
