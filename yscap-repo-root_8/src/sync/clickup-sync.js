@@ -165,45 +165,55 @@ async function auditSystem(action, appId, detail) {
 // a stale orphan (old task, now 404) AND a fresh file for the new task — a
 // duplicate whose LLC/conditions live on the NEW file, so the orphan looks "empty"
 // and reads as "the sync is broken."
-//   • Orphan with a HEALTHY sibling (same borrower + same property, task confirmed
-//     live THIS run) AND no borrower documents  → soft-archive it
-//     (deleted_at + sync_state='dead'): drops out of every list + sync loop,
-//     ClickUp untouched, fully reversible.
-//   • Otherwise (has documents, or no live sibling) → flag 'manual_review' so a
-//     human decides — never silently drop a file with work in it, or a borrower's
-//     only file for a property.
-// `liveTaskIds` are the task ids confirmed present in the same run — the archive
-// path REQUIRES one, so a global API/token outage (no live tasks) can never
-// auto-archive anything.
+//   • Orphan with a HEALTHY sibling (same borrower + same property by the SAME
+//     normalizer the dedup uses, task confirmed live THIS run) → MERGE: re-point
+//     the orphan's documents onto the sibling (nothing the borrower uploaded is
+//     lost), then soft-archive the orphan (deleted_at + sync_state='dead'). It
+//     drops out of every list + sync loop, ClickUp is untouched, fully reversible.
+//   • No live sibling → flag 'manual_review' so a human decides — never silently
+//     drop a borrower's only file for a property.
+// `liveTaskIds` are the task ids confirmed present in the same run — the merge path
+// REQUIRES one, so a global API/token outage (no live tasks) can never auto-archive
+// anything.
 async function resolveOrphans(orphans, liveTaskIds) {
+  const identity = require('../clickup/identity');
   const q = (sql, p = []) => db.query(sql, p).then((r) => r.rows);
-  let archived = 0, flagged = 0;
+  const norm = (a) => { try { return identity.normalizeIdentity({ address: a || null }).address || null; } catch { return null; } };
+  let archived = 0, merged = 0, flagged = 0;
   for (const o of orphans) {
-    const docs = (await q(`SELECT count(*)::int n FROM documents WHERE application_id=$1`, [o.id]))[0].n;
+    const oAddr = norm(o.one_line);
     let sibling = null;
-    if (o.addr) {
+    if (oAddr) {
       const sibs = await q(
-        `SELECT id, clickup_pipeline_task_id AS task_id
+        `SELECT id, property_address->>'oneLine' AS one_line, clickup_pipeline_task_id AS task_id
            FROM applications
           WHERE deleted_at IS NULL AND id <> $1 AND borrower_id = $2
-            AND clickup_pipeline_task_id IS NOT NULL AND clickup_pipeline_task_id <> $3
-            AND lower(btrim(coalesce(property_address->>'oneLine',''))) = $4`,
-        [o.id, o.borrower_id, o.task_id, o.addr]);
-      sibling = sibs.find((s) => liveTaskIds.has(String(s.task_id))) || null;
+            AND clickup_pipeline_task_id IS NOT NULL AND clickup_pipeline_task_id <> $3`,
+        [o.id, o.borrower_id, o.task_id]);
+      for (const s of sibs) {
+        if (!liveTaskIds.has(String(s.task_id))) continue;   // sibling's own task must be live
+        if (norm(s.one_line) === oAddr) { sibling = s; break; }
+      }
     }
-    if (sibling && docs === 0) {
+    const docs = (await q(`SELECT count(*)::int n FROM documents WHERE application_id=$1`, [o.id]))[0].n;
+    if (sibling) {
+      // Merge: re-point the orphan's documents onto the live sibling so nothing the
+      // borrower uploaded is lost, detaching them from the orphan's now-archived
+      // checklist items so they surface in the sibling's document vault. Then
+      // soft-archive the orphan (reversible; ClickUp untouched).
+      if (docs > 0) { await q(`UPDATE documents SET application_id=$2, checklist_item_id=NULL WHERE application_id=$1`, [sibling.id, o.id]); merged++; }
       const u = await q(
         `UPDATE applications SET deleted_at=now(), sync_state='dead', updated_at=now()
           WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [o.id]);
-      if (u.length) { archived++; await auditSystem('clickup_orphan_archived', o.id, { task: o.task_id, superseded_by: sibling.id, addr: o.addr }); }
+      if (u.length) { archived++; await auditSystem('clickup_orphan_merged', o.id, { task: o.task_id, superseded_by: sibling.id, movedDocs: docs }); }
     } else {
       const u = await q(
         `UPDATE applications SET sync_state='manual_review', updated_at=now()
           WHERE id=$1 AND deleted_at IS NULL AND sync_state <> 'manual_review' RETURNING id`, [o.id]);
-      if (u.length) { flagged++; await auditSystem('clickup_orphan_flagged', o.id, { task: o.task_id, docs, reason: sibling ? 'has_documents' : 'no_live_sibling' }); }
+      if (u.length) { flagged++; await auditSystem('clickup_orphan_flagged', o.id, { task: o.task_id, docs, reason: 'no_live_sibling' }); }
     }
   }
-  return { archived, flagged };
+  return { archived, merged, flagged };
 }
 
 // ---- program reconcile + orphan sweep (one-shot) --------------------------
@@ -219,7 +229,7 @@ async function resolveOrphans(orphans, liveTaskIds) {
 async function reconcileLinkedProgramsOnce() {
   const r = await db.query(
     `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
-            lower(btrim(coalesce(a.property_address->>'oneLine',''))) AS addr
+            a.property_address->>'oneLine' AS one_line
        FROM applications a
       WHERE a.clickup_pipeline_task_id IS NOT NULL AND a.deleted_at IS NULL
         AND a.sync_state NOT IN ('descoped','manual_review','dead')
@@ -240,14 +250,14 @@ async function reconcileLinkedProgramsOnce() {
   }
   // Circuit-breaker: a large 404 fraction (or NO task resolving at all) is almost
   // certainly an API/token outage, not mass task deletion — do nothing this run.
-  let orphan = { archived: 0, flagged: 0, skipped: 0 };
+  let orphan = { archived: 0, merged: 0, flagged: 0, skipped: 0 };
   if (orphans.length && (liveTaskIds.size === 0 || orphans.length > Math.max(5, checked * 0.5))) {
     orphan.skipped = orphans.length;
     console.warn(`[clickup-sync] reconcile-programs: ${orphans.length}/${orphans.length + checked} tasks 404'd — treating as an API outage, skipping orphan resolution`);
   } else if (orphans.length) {
     orphan = { ...orphan, ...(await resolveOrphans(orphans, liveTaskIds)) };
   }
-  console.log(`[clickup-sync] reconcile-programs: checked ${checked} linked files, descoped ${descoped}, orphans ${orphans.length} (archived ${orphan.archived}, flagged ${orphan.flagged}, skipped ${orphan.skipped})`);
+  console.log(`[clickup-sync] reconcile-programs: checked ${checked} linked files, descoped ${descoped}, orphans ${orphans.length} (archived ${orphan.archived}, merged-docs ${orphan.merged}, flagged ${orphan.flagged}, skipped ${orphan.skipped})`);
   return { checked, descoped, orphans: orphans.length, ...orphan };
 }
 

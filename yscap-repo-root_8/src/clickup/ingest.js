@@ -263,6 +263,32 @@ async function findExistingApp(task, read, borrowerId) {
   }
   if (strong.length === 1) return { id: strong[0].id, how: 'linked_identity', detail: strong[0] };
   if (strong.length > 1)  return { ambiguous: true, detail: { candidates: strong.map((s) => s.id) } };
+
+  // Delete+recreate heal (prevents the #1 duplication path). A ClickUp task can be
+  // deleted and a NEW task created for the same deal. The old portal file is still
+  // linked to the (now-deleted) task, so the unlinked-candidate scan above skips it
+  // (clickup_pipeline_task_id IS NULL) and we would CREATE a duplicate. Look for a
+  // file for THIS borrower at the same normalized address that is linked to a
+  // DIFFERENT task, and relink it here IFF that other task is confirmed deleted
+  // (getTask -> 404). A still-live other task is a genuinely separate deal — we
+  // never steal a file from a live task, and any non-404 error is treated as
+  // "can't confirm dead" so we fall through rather than mis-relink.
+  if (tn.address) {
+    const other = await db.query(
+      `SELECT id, property_address, clickup_pipeline_task_id FROM applications
+        WHERE borrower_id=$1 AND deleted_at IS NULL
+          AND clickup_pipeline_task_id IS NOT NULL AND clickup_pipeline_task_id <> $2
+          AND program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction')`,
+      [borrowerId, task.id]).catch(() => ({ rows: [] }));
+    for (const o of other.rows) {
+      const on = identity.normalizeIdentity({ address: _addrOf(o.property_address) });
+      if (!on.address || on.address !== tn.address) continue;
+      let dead = false;
+      try { await require('./client').getTask(o.clickup_pipeline_task_id); }
+      catch (e) { if (e && e.status === 404) dead = true; else continue; }
+      if (dead) return { id: o.id, how: 'relinked_dead_task', detail: { fromTask: o.clickup_pipeline_task_id } };
+    }
+  }
   return null;
 }
 
@@ -575,14 +601,15 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     if (coBorrowerTaskId) {
       try { await db.query(`UPDATE applications SET co_borrower_task_id=COALESCE(co_borrower_task_id,$2), updated_at=now() WHERE id=$1`, [targetId, coBorrowerTaskId]); } catch (_) {}
     }
-    // Vesting LLC: link the ClickUp entity as the file's vesting LLC when the file
-    // has none yet. `llc_id` is NOT in `cols` (so the COALESCE update above never
-    // touches it), which meant an LLC added to a task after the file existed only
-    // landed in the borrower's LLC library, never on the file. Fill-only (WHERE
-    // llc_id IS NULL) so a staff-set / corrected vesting entity is never clobbered
-    // — same semantics as the co-borrower link above.
+    // Vesting LLC: link the ClickUp entity as the file's vesting entity AND run the
+    // full wiring (owner links, LLC doc checklist, LLC condition, rule re-eval) via
+    // the single authority in src/lib/vesting.js — the same path the HTTP link
+    // routes use. ClickUp is authoritative for an UNVERIFIED, clickup-origin entity
+    // (so a corrected *LLC Name flows in), but never overwrites a human-linked or
+    // verified entity, and never touches a Clear-to-Close-locked file (guards live
+    // in setVestingLlc). push:false — never echo a pulled value back to ClickUp.
     if (llcId) {
-      try { await db.query(`UPDATE applications SET llc_id=$2, updated_at=now() WHERE id=$1 AND llc_id IS NULL`, [targetId, llcId]); } catch (_) {}
+      try { await require('../lib/vesting').setVestingLlc(targetId, llcId, { source: 'clickup', push: false }); } catch (_) { /* best-effort */ }
     }
     return { applicationId: targetId, matchStatus, detail };
   }
@@ -601,7 +628,14 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     `INSERT INTO applications (${keys.join(',')}) VALUES (${ph})
      ON CONFLICT (clickup_pipeline_task_id) WHERE clickup_pipeline_task_id IS NOT NULL
      DO UPDATE SET clickup_last_synced_at=now(), updated_at=now() RETURNING id`, insVals);
-  return { applicationId: r.rows[0].id, matchStatus: 'created' };
+  const newId = r.rows[0].id;
+  // A freshly-created file already carries llc_id (in the INSERT above), but its LLC
+  // document slots + condition are not built until we run the wiring — do it now so
+  // the vesting entity is fully materialized from the first sync (force:true).
+  if (llcId) {
+    try { await require('../lib/vesting').setVestingLlc(newId, llcId, { source: 'clickup', push: false, force: true }); } catch (_) { /* best-effort */ }
+  }
+  return { applicationId: newId, matchStatus: 'created' };
 }
 
 module.exports = {

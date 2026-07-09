@@ -840,11 +840,11 @@ router.post('/applications/:id/vesting-llc', async (req, res) => {
       [b.llcId, [app.borrower_id, app.co_borrower_id].filter(Boolean)])).rows[0];
     if (!own) return res.status(404).json({ error: 'entity not found for this borrower' });
     const previous = app.llc_id;
-    await db.query(`UPDATE applications SET llc_id=$2, updated_at=now() WHERE id=$1`, [req.params.id, b.llcId]);
-    try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(req.params.id); } catch (_) {}
-    try { await require('./borrower').generateLlcChecklist(b.llcId); } catch (_) {}
-    try { await llcLib.syncLlcConditions(b.llcId, { appId: req.params.id, reopen: true }); } catch (_) {}
-    try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'llc_linked' }); } catch (_) {}
+    // Single authority (src/lib/vesting.js): set llc_id + the full wiring (owner
+    // links, LLC doc checklist, LLC condition, rule re-eval) AND enqueue the
+    // outbound ClickUp push so the portal-set vesting entity propagates back to the
+    // task — previously the vesting change was never pushed to ClickUp.
+    try { await require('../lib/vesting').setVestingLlc(req.params.id, b.llcId, { source: 'staff', actor: req.actor, force: true }); } catch (_) {}
     await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
