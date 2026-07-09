@@ -92,6 +92,24 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       registeredByStaffId || null,
     ]);
   const registrationId = ins.rows[0].id;
+  // Registration COMMITS the priced scenario onto the file. Beyond loan amount /
+  // rate / experience, write back the economic structure the studio priced —
+  // rehab budget, term, interest-reserve months, ARV, and the assignment split —
+  // so the Application details (and therefore ClickUp, which mirrors these
+  // columns outbound) reflect exactly what was registered. `inputs` mirrors the
+  // file (buildInputs) plus the studio's overrides, so unchanged fields are
+  // written back identically (idempotent) and only what the studio actually
+  // changed moves. The register routes trigger the ClickUp push.
+  //
+  // Deliberately NOT written back: purchase_price and as_is_value. Those are
+  // owner-entered application fields, but buildInputs derives them for pricing
+  // (purchasePrice = underlying+fee on an assignment; asIsValue defaults to the
+  // purchase price when the file leaves it blank so it auto-tracks). Writing the
+  // derived values back would clobber the entered purchase price on an assignment
+  // and freeze the "as-is = purchase" auto-tracking — so they stay owned by the
+  // application form. The assignment split still flows via underlying/fee below.
+  const ratePct = quote.noteRate != null ? (quote.noteRate * 100) : null;
+  const isAssign = !!inputs.isAssignment;
   await client.query(
     `UPDATE applications
         SET loan_amount=$2,
@@ -100,16 +118,32 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             requested_exp_flips=$5,
             requested_exp_holds=$6,
             requested_exp_ground=$7,
+            rehab_budget=$8,
+            term=$9,
+            requested_ir_months=$10,
+            arv=$11,
+            is_assignment=$12,
+            underlying_contract_price = CASE WHEN $12 THEN $13 ELSE underlying_contract_price END,
+            assignment_fee            = CASE WHEN $12 THEN $14 ELSE assignment_fee END,
+            desired_rate=$15,
             updated_at=now()
       WHERE id=$1`,
     [
       appId,
       total,
-      quote.noteRate != null ? (quote.noteRate * 100) : null,
+      ratePct,
       s.acqLtvPct > 0 ? (s.acqLtvPct * 100) : null,
       num(inputs.expFlips),
       num(inputs.expHolds),
       num(inputs.expGround),
+      num(inputs.rehabBudget),
+      inputs.term ? String(inputs.term) : null,
+      num(inputs.irMonths),
+      num(inputs.arv) || null,
+      isAssign,
+      isAssign ? (num(inputs.sellerPrice) || null) : null,
+      isAssign ? Math.max(0, num(inputs.purchasePrice) - num(inputs.sellerPrice)) : null,
+      ratePct != null ? ratePct.toFixed(3) : null,   // desired_rate is TEXT; mirror the registered rate
     ]);
   await replaceProductConditions(client, { appId, registrationId, quote, registeredByStaffId });
   await syncExperienceChecklistForApplication(appId, client);

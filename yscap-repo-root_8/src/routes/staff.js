@@ -930,6 +930,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // persistProductRegistration above.)
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
 
+    // Register committed the priced scenario onto the file (loan amount, rate,
+    // rehab budget, term, IR months, ARV / as-is / purchase, assignment split,
+    // desired rate). Push those changed fields to ClickUp immediately so the task
+    // mirrors the registration instead of waiting for the next reconcile.
+    require('../clickup/orchestrator').pushApplication(appId).catch((e) => console.error('[clickup] push after register (staff)', appId, e && e.message));
+
     // Notify the assigned team (LO + processor), not the borrower.
     try {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
