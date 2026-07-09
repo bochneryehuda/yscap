@@ -32,6 +32,12 @@ router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'under
 // Who sees every file vs. only their assigned ones — now a capability, so an
 // admin can grant "see all files" to a coordinator without a code change.
 const seesAll = (req) => can(req.actor, 'see_all_files');
+// The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
+// (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
+// processors may open ANY borrower's full profile; loan_officers stay limited to
+// borrowers they've done a loan for. File-level access (/applications/:id) is
+// unchanged — a processor still opens individual files only where assigned.
+const seesAllBorrowers = (req) => seesAll(req) || (req.actor && req.actor.role === 'processor');
 // The standard post-closing trailing-doc set, seeded when a file funds.
 const POST_CLOSING_SET = [
   ['note', 'Final executed note'],
@@ -1739,7 +1745,7 @@ router.post('/applications/:id/assign', async (req, res) => {
 // May the actor see a specific borrower? seesAll (admin/super_admin/underwriter)
 // always; otherwise only if assigned to one of that borrower's files.
 async function canSeeBorrowerId(req, borrowerId) {
-  if (seesAll(req)) return true;
+  if (seesAllBorrowers(req)) return true;
   if (!borrowerId) return false;
   const r = await db.query(
     `SELECT 1 FROM applications
@@ -1814,21 +1820,27 @@ router.get('/borrowers', async (req, res) => {
   try {
     const params = [];
     let scope = '';
-    if (!seesAll(req)) {
+    if (!seesAllBorrowers(req)) {
       params.push(req.actor.id);
       scope = `WHERE EXISTS (SELECT 1 FROM applications a
                               WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
                                 AND (a.loan_officer_id=$1 OR a.processor_id=$1))`;
     }
     const r = await db.query(
-      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.tier, b.created_at,
               (ba.borrower_id IS NOT NULL) AS has_account,
               ba.last_login_at, b.last_seen_at,
               (SELECT count(*)::int FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL) AS files,
-              (SELECT id FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL
-                 ORDER BY created_at DESC LIMIT 1) AS latest_file_id
+              lf.id AS latest_file_id,
+              off.full_name AS loan_officer_name
          FROM borrowers b
          LEFT JOIN borrower_auth ba ON ba.borrower_id=b.id
+         LEFT JOIN LATERAL (
+           SELECT id, loan_officer_id FROM applications
+            WHERE borrower_id=b.id AND deleted_at IS NULL
+            ORDER BY created_at DESC LIMIT 1
+         ) lf ON true
+         LEFT JOIN staff_users off ON off.id = lf.loan_officer_id
         ${scope}
         ORDER BY COALESCE(ba.last_login_at, b.last_seen_at) DESC NULLS LAST, b.last_name, b.first_name
         LIMIT 500`, params);
@@ -1900,10 +1912,203 @@ router.get('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const r = await db.query(
-      `SELECT id,first_name,last_name,email,cell_phone,date_of_birth,ssn_last4,fico,citizenship,tier FROM borrowers WHERE id=$1`,
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.date_of_birth,
+              b.ssn_last4, b.fico, b.citizenship, b.marital_status, b.dependents_count, b.tier,
+              b.current_address, b.mailing_address, b.years_at_residence, b.months_at_residence,
+              b.housing_status, b.housing_payment, b.contact_type, b.primary_officer_id,
+              b.photo_id_document_id, b.created_at, b.last_seen_at,
+              (SELECT last_login_at FROM borrower_auth WHERE borrower_id=b.id) AS last_login_at,
+              (b.ssn_encrypted IS NOT NULL) AS has_ssn,
+              off.full_name AS primary_officer_name
+         FROM borrowers b
+         LEFT JOIN staff_users off ON off.id = b.primary_officer_id
+        WHERE b.id=$1`,
       [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Edit a borrower's CRM / contact fields (staff, audited). Identity fields that
+// belong to underwriting (SSN, FICO, DOB, legal name) are intentionally NOT
+// editable here — those are corrected on the file. This is contact + CRM metadata.
+router.patch('/borrowers/:id', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const sets = [], vals = [req.params.id];
+    const put = (col, val) => { vals.push(val); sets.push(`${col}=$${vals.length}`); };
+    if (b.email != null) put('email', String(b.email).trim().toLowerCase() || null);
+    if (b.cellPhone != null) put('cell_phone', String(b.cellPhone).trim() || null);
+    if (b.contactType != null) put('contact_type', String(b.contactType).trim() || null);
+    if (b.maritalStatus != null) put('marital_status', String(b.maritalStatus).trim() || null);
+    if (b.citizenship != null) put('citizenship', String(b.citizenship).trim() || null);
+    if (b.currentAddress !== undefined) put('current_address', b.currentAddress ? JSON.stringify(b.currentAddress) : null);
+    if (b.mailingAddress !== undefined) put('mailing_address', b.mailingAddress ? JSON.stringify(b.mailingAddress) : null);
+    if (b.primaryOfficerId !== undefined) put('primary_officer_id', b.primaryOfficerId || null);
+    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+    sets.push('updated_at=now()');
+    try {
+      await db.query(`UPDATE borrowers SET ${sets.join(', ')} WHERE id=$1`, vals);
+    } catch (e) {
+      if (e.code === '23505') return res.status(409).json({ error: 'that email is already in use by another borrower' });
+      throw e;
+    }
+    await audit(req, 'update_borrower', 'borrower', req.params.id, { fields: sets.slice(0, -1).map((s) => s.split('=')[0]) });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// The borrower's loan files (one per property) — their "mortgages with us". Scoped
+// by canSeeBorrower; the list is view context (opening an individual file still
+// goes through the /applications/:id scope). Includes the borrower as primary or
+// co-borrower so a co-borrowed file shows up on both profiles.
+router.get('/borrowers/:id/applications', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.status, a.internal_status,
+              a.property_address, a.loan_amount, a.created_at, a.closing_date, a.funded_date,
+              a.borrower_id=$1 AS is_primary, a.co_borrower_id=$1 AS is_co_borrower,
+              off.full_name AS loan_officer_name, l.llc_name AS entity_name, l.is_verified AS entity_verified
+         FROM applications a
+         LEFT JOIN staff_users off ON off.id = a.loan_officer_id
+         LEFT JOIN llcs l ON l.id = a.llc_id
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
+        ORDER BY a.created_at DESC`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Open conditions/tasks-to-clear rolled up across ALL of the borrower's files —
+// so staff see everything outstanding for the person in one place.
+router.get('/borrowers/:id/conditions', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT c.id, c.application_id, c.title, c.status, c.audience, c.severity, c.created_at,
+              a.ys_loan_number, a.property_address
+         FROM conditions c
+         JOIN applications a ON a.id = c.application_id
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
+          AND c.status IN ('open','borrower_responded')
+        ORDER BY c.created_at DESC`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Reminders + tasks across the borrower's files (the #93 system, rolled up per
+// borrower). Creating a task attaches it to the chosen file (or the latest file)
+// so it flows through the existing, tested reminder dispatcher unchanged.
+router.get('/borrowers/:id/reminders', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT r.id, r.application_id, r.kind, r.title, r.body, r.due_at, r.status,
+              r.assignee_staff_id, r.completed_at, r.created_at,
+              a.ys_loan_number, a.property_address,
+              asg.full_name AS assignee_name
+         FROM reminders r
+         JOIN applications a ON a.id = r.application_id
+         LEFT JOIN staff_users asg ON asg.id = r.assignee_staff_id
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
+        ORDER BY (r.status='scheduled') DESC, r.due_at ASC`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/borrowers/:id/reminders', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const body = req.body || {};
+    // Attach to the given file if it belongs to this borrower, else the latest file.
+    let appId = body.applicationId || null;
+    const owns = await db.query(
+      `SELECT id FROM applications
+        WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL
+          ${appId ? 'AND id=$2' : ''}
+        ORDER BY created_at DESC LIMIT 1`, appId ? [req.params.id, appId] : [req.params.id]);
+    if (!owns.rows[0]) return res.status(400).json({ error: 'this borrower has no file to attach a task to' });
+    appId = owns.rows[0].id;
+    const id = await reminders.create(appId, body, req.actor);
+    await audit(req, 'create_reminder', 'application', appId, { reminderId: id, viaBorrower: req.params.id });
+    res.json({ ok: true, id, applicationId: appId });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// The borrower's document vault — every document on file for the person, across
+// their files + entity + track record. Download goes through /documents/:id/download.
+router.get('/borrowers/:id/documents', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT d.id, d.filename, d.content_type, d.size_bytes, d.doc_kind, d.created_at,
+              d.application_id, d.llc_id, d.track_record_id,
+              a.ys_loan_number
+         FROM documents d
+         LEFT JOIN applications a ON a.id = d.application_id
+        WHERE d.borrower_id=$1
+           OR d.application_id IN (SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL)
+           OR d.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$1)
+           OR d.track_record_id IN (SELECT id FROM track_records WHERE borrower_id=$1)
+        ORDER BY d.created_at DESC LIMIT 500`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Activity timeline for the borrower — staff actions on the person and on their
+// files (audit trail: SSN reveals, edits, password sets, doc downloads, etc.).
+router.get('/borrowers/:id/activity', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT g.id, g.action, g.entity_type, g.entity_id, g.detail, g.created_at,
+              g.actor_kind, su.full_name AS actor_name
+         FROM audit_log g
+         LEFT JOIN staff_users su ON su.id = g.actor_id AND g.actor_kind='staff'
+        WHERE (g.entity_type='borrower' AND g.entity_id=$1)
+           OR (g.entity_type IN ('application','document','track_record','llc')
+               AND g.entity_id IN (
+                 SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1)
+                 UNION SELECT id FROM llcs WHERE borrower_id=$1
+                 UNION SELECT id FROM track_records WHERE borrower_id=$1))
+        ORDER BY g.created_at DESC LIMIT 200`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Internal notes timeline on the borrower (staff-only, free text). A core CRM
+// feature: log a call, a preference, a heads-up. Author + timestamp captured.
+router.get('/borrowers/:id/notes', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT n.id, n.body, n.created_at, n.updated_at, n.author_staff_id, su.full_name AS author_name
+         FROM borrower_notes n LEFT JOIN staff_users su ON su.id = n.author_staff_id
+        WHERE n.borrower_id=$1 ORDER BY n.created_at DESC`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/borrowers/:id/notes', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const body = String((req.body || {}).body || '').trim();
+    if (!body) return res.status(400).json({ error: 'note body required' });
+    const r = await db.query(
+      `INSERT INTO borrower_notes (borrower_id, author_staff_id, body) VALUES ($1,$2,$3) RETURNING id`,
+      [req.params.id, req.actor.id, body]);
+    await audit(req, 'add_borrower_note', 'borrower', req.params.id, { noteId: r.rows[0].id });
+    res.json({ ok: true, id: r.rows[0].id });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.delete('/borrowers/:id/notes/:nid', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    await db.query(`DELETE FROM borrower_notes WHERE id=$1 AND borrower_id=$2`, [req.params.nid, req.params.id]);
+    await audit(req, 'delete_borrower_note', 'borrower', req.params.id, { noteId: req.params.nid });
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 // A borrower's investment track record (experience) — drives the pricing tier.
