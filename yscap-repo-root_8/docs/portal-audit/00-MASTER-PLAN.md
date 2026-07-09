@@ -100,7 +100,7 @@ this folder. Rough order (we can reorder as we learn):
 | 2 | The Borrower's File — What the Borrower Sees | Borrower dashboard + their loan file: what data shows, what leaks, capital-partner names, status timeline | ✅ **Done** → [read it](./02-borrower-file.md) |
 | 3 | The Loan Officer's Desk — Pipeline & Staff File | Staff pipeline + the staff file view, file scoping in depth, SSN/PII reveal, edit/assign/verify | ✅ **Done** → [read it](./03-loan-officer-desk.md) |
 | 4 | Documents & Uploads | Uploading, downloading, who's allowed to open which document, appraisal-card reuse, OCR | ✅ **Done** → [read it](./04-documents-and-uploads.md) |
-| 5 | Conditions & Checklist Engine | Condition Studio, rules, borrower-label vs internal-label, sign-off integrity, waive, internal conditions | ⬜ Planned |
+| 5 | Conditions & Checklist Engine | Condition Studio, rules, borrower-label vs internal-label, sign-off integrity, waive, internal conditions | ✅ **Done** → [read it](./05-conditions-engine.md) |
 | 6 | Messaging & Chat | Borrower↔staff chat, internal staff chat, mentions, PII guard, attachments, the live stream | ⬜ Planned |
 | 7 | Notifications & Email | In-app + email, wrong-recipient risk, capital-partner names in emails, link correctness | ⬜ Planned |
 | 8 | Entities, Track Record & Profile | LLCs, 3-year track-record window, co-borrower, experience/liquidity math, profile edits | ⬜ Planned |
@@ -122,7 +122,8 @@ picture growing:
 | 2 — The Borrower's File | 0 | 3 | 6 | 4 | **13** |
 | 3 — The Loan Officer's Desk | 1 | 3 | 6 | 2 | **12** |
 | 4 — Documents & Uploads | 1 | 1 | 6 | 3 | **11** |
-| **Running total** | **3** | **11** | **24** | **14** | **52** |
+| 5 — Conditions & Checklist Engine | 0 | 3 | 5 | 2 | **10** |
+| **Running total** | **3** | **14** | **29** | **16** | **62** |
 
 _(Filled in at the end of each section's write-up.)_
 
