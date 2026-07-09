@@ -8,7 +8,7 @@
   --good:#7FB08A; --warn:#C9A86A; --bad:#E0A085;
   --r:16px; --font-d:"Fraunces",Georgia,serif; --font-b:"Hanken Grotesk",system-ui,-apple-system,sans-serif;
 }
-html{ background:#0B1014; }
+html{ background:var(--ink); }
 /* the shared site uses large blurred orbs + a noise overlay; on this long, input-heavy
    tool they cause GPU repaint flicker ("blinking") while scrolling/typing over the
    sticky totals bar. Neutralise them here — the solid dark background stays clean. */
@@ -28,7 +28,7 @@ body{ line-height:1.6; }
 .rb-steps{ display:flex; gap:.5rem; max-width:780px; margin:1.6rem auto 0; flex-wrap:wrap; justify-content:center; }
 .rb-step{ display:flex; align-items:center; gap:.5rem; font-size:.82rem; color:var(--muted-2); cursor:pointer; padding:.35rem .2rem; }
 .rb-step .dot{ width:26px; height:26px; border-radius:50%; border:1px solid var(--line); display:grid; place-items:center; font-size:.78rem; font-weight:700; color:var(--muted-2); background:var(--ink-1); transition:.25s; }
-.rb-step.active .dot{ background:var(--teal); border-color:var(--teal); color:#06222a; }
+.rb-step.active .dot{ background:var(--teal); border-color:var(--teal); color:var(--on-accent); }
 .rb-step.done .dot{ background:rgba(127,169,176,.16); border-color:var(--teal); color:var(--teal-br); }
 .rb-step.active{ color:var(--ivory); }
 .rb-step .lbl{ white-space:nowrap; }
@@ -67,13 +67,13 @@ body{ line-height:1.6; }
 /* yes/no pill */
 .rb-yn{ display:inline-flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
 .rb-yn button{ background:var(--ink); color:var(--muted); border:0; padding:.5rem 1.1rem; cursor:pointer; font:inherit; font-weight:600; font-size:.85rem; }
-.rb-yn button.on{ background:var(--teal); color:#06222a; }
+.rb-yn button.on{ background:var(--teal); color:var(--on-accent); }
 
 /* category checklist */
 .rb-cats{ display:grid; grid-template-columns:repeat(2,1fr); gap:.9rem; align-items:start; }
 .rb-cat{ border:1px solid var(--line); border-radius:12px; background:var(--ink); overflow:hidden; }
 .rb-cat-head{ display:flex; align-items:center; gap:.7rem; padding:.85rem 1rem; cursor:pointer; }
-.rb-cat-head .chk{ width:20px; height:20px; border-radius:6px; border:1.5px solid var(--line); display:grid; place-items:center; flex:none; color:#06222a; font-size:.8rem; transition:.18s; }
+.rb-cat-head .chk{ width:20px; height:20px; border-radius:6px; border:1.5px solid var(--line); display:grid; place-items:center; flex:none; color:var(--on-accent); font-size:.8rem; transition:.18s; }
 .rb-cat.on .rb-cat-head .chk{ background:var(--teal); border-color:var(--teal); }
 .rb-cat-head .nm{ font-weight:600; color:var(--ivory); font-size:.95rem; }
 .rb-cat-head .ct{ margin-left:auto; font-size:.68rem; text-transform:uppercase; letter-spacing:.1em; color:var(--muted-2); }
@@ -82,7 +82,7 @@ body{ line-height:1.6; }
 .rb-cat.open .rb-cat-items{ display:block; }
 .rb-itemchk{ display:flex; align-items:center; gap:.55rem; padding:.4rem .2rem; cursor:pointer; font-size:.88rem; color:var(--muted); }
 .rb-itemchk:hover{ color:var(--ivory); }
-.rb-itemchk .chk{ width:17px; height:17px; border-radius:5px; border:1.5px solid var(--line); display:grid; place-items:center; flex:none; color:#06222a; font-size:.7rem; }
+.rb-itemchk .chk{ width:17px; height:17px; border-radius:5px; border:1.5px solid var(--line); display:grid; place-items:center; flex:none; color:var(--on-accent); font-size:.7rem; }
 .rb-itemchk.on .chk{ background:var(--teal-br); border-color:var(--teal-br); }
 .rb-itemchk.on{ color:var(--ivory); }
 .rb-catbar{ display:flex; gap:.6rem; margin-top:1rem; flex-wrap:wrap; }
@@ -126,7 +126,7 @@ body{ line-height:1.6; }
 .rb-nav{ display:flex; justify-content:space-between; gap:1rem; margin-top:1.6rem; }
 .rb-btn{ border-radius:12px; padding:.85rem 1.6rem; font:inherit; font-weight:700; cursor:pointer; border:1px solid var(--line); background:var(--ink); color:var(--muted); transition:.2s; }
 .rb-btn:hover{ color:var(--ivory); border-color:var(--teal); }
-.rb-btn.primary{ background:var(--teal); border-color:var(--teal); color:#06222a; }
+.rb-btn.primary{ background:var(--teal); border-color:var(--teal); color:var(--on-accent); }
 .rb-btn.primary:hover{ background:var(--teal-br); }
 .rb-btn:disabled{ opacity:.4; cursor:not-allowed; }
 
@@ -157,7 +157,7 @@ body{ line-height:1.6; }
 .rb-addline{ display:flex; gap:.6rem; align-items:center; padding:.7rem 1rem; border-top:1px dashed var(--line); }
 .rb-addline input{ flex:1; background:var(--ink); border:1px solid var(--line); border-radius:8px; color:var(--ivory); font:inherit; font-size:.85rem; padding:.5rem .6rem; }
 .rb-addline button{ background:rgba(127,169,176,.12); border:1px solid var(--teal); color:var(--teal-br); border-radius:8px; padding:.5rem .9rem; font:inherit; font-weight:600; font-size:.82rem; cursor:pointer; white-space:nowrap; }
-.rb-addline button:hover{ background:var(--teal); color:#06222a; }
+.rb-addline button:hover{ background:var(--teal); color:var(--on-accent); }
 .rb-line .rb-del{ background:none; border:0; color:var(--muted-2); cursor:pointer; font-size:1.05rem; line-height:1; padding:.2rem .3rem; border-radius:6px; }
 .rb-line .rb-del:hover{ color:#E8B4A0; background:rgba(232,180,160,.1); }
 .rb-tag-custom{ font-size:.62rem; text-transform:uppercase; letter-spacing:.1em; color:var(--gold); border:1px solid var(--gold); border-radius:5px; padding:.05rem .3rem; margin-left:.4rem; vertical-align:middle; }
@@ -169,7 +169,7 @@ body{ line-height:1.6; }
 .rb-units-scroll{ }
 .rb-pud{ display:inline-flex; align-items:center; gap:.45rem; font-size:.8rem; color:var(--muted); cursor:pointer; user-select:none; padding:.35rem 0; white-space:nowrap; }
 .rb-pud:hover{ color:var(--ivory); }
-.rb-pud .rb-pud-box{ width:16px; height:16px; border-radius:5px; border:1.5px solid var(--line); display:grid; place-items:center; color:#06222a; font-size:.7rem; }
+.rb-pud .rb-pud-box{ width:16px; height:16px; border-radius:5px; border:1.5px solid var(--line); display:grid; place-items:center; color:var(--on-accent); font-size:.7rem; }
 .rb-pud.on .rb-pud-box{ background:var(--teal-br); border-color:var(--teal-br); }
 .rb-udrow{ display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.3rem; padding:.6rem .7rem; background:rgba(127,169,176,.05); border:1px dashed var(--line); border-radius:10px; }
 .rb-udcell{ flex:1 1 200px; }
@@ -180,7 +180,7 @@ body{ line-height:1.6; }
 /* info tooltips */
 .rb-itip{ position:relative; display:inline-block; margin-left:.4rem; vertical-align:middle; }
 .rb-i{ width:17px; height:17px; border-radius:50%; border:1px solid var(--teal); background:transparent; color:var(--teal-br); font-size:.74rem; font-weight:700; line-height:1; cursor:pointer; font-style:italic; font-family:Georgia,'Times New Roman',serif; padding:0; display:inline-grid; place-items:center; }
-.rb-i:hover{ background:var(--teal); color:#06222a; }
+.rb-i:hover{ background:var(--teal); color:var(--on-accent); }
 .rb-tip{ display:none; position:absolute; left:0; top:150%; z-index:60; width:min(280px,80vw); background:var(--ink); border:1px solid var(--teal); border-radius:10px; padding:.65rem .8rem; font-size:.78rem; line-height:1.5; color:var(--muted); font-weight:400; box-shadow:0 14px 34px rgba(0,0,0,.55); text-transform:none; letter-spacing:0; white-space:normal; }
 .rb-tip::before{ content:""; position:absolute; left:6px; top:-6px; width:10px; height:10px; background:var(--ink); border-left:1px solid var(--teal); border-top:1px solid var(--teal); transform:rotate(45deg); }
 .rb-tip.show{ display:block; }
@@ -212,7 +212,7 @@ body{ line-height:1.6; }
 .rb-vcard.on{ border-color:var(--teal); background:rgba(127,169,176,.07); }
 .rb-vcard-head{ display:flex; align-items:center; gap:.6rem; padding:.85rem 1rem; cursor:pointer; }
 .rb-vcard-chk{ width:22px; height:22px; border-radius:50%; border:1.5px solid var(--line); display:grid; place-items:center; flex:none; color:var(--muted-2); font-weight:700; font-size:.9rem; transition:.18s; }
-.rb-vcard.on .rb-vcard-chk{ background:var(--teal); border-color:var(--teal); color:#06222a; }
+.rb-vcard.on .rb-vcard-chk{ background:var(--teal); border-color:var(--teal); color:var(--on-accent); }
 .rb-vcard-ic{ font-size:1.05rem; filter:grayscale(.2); }
 .rb-vcard-title{ font-weight:600; color:var(--ivory); font-size:.95rem; }
 .rb-vcard-body{ padding:0 1rem 1rem; }
@@ -305,12 +305,12 @@ body{ line-height:1.6; }
    so these win whenever the light theme is on, regardless of order.
    ============================================================ */
 :root[data-theme="light"]{
-  /* warm paper (not white) so white cards + brand accents pop */
-  --ink:#E8E2D5; --ink-1:#FFFFFF; --ink-2:#F1ECE0; --ink-3:#E1DACB;
-  --line:rgba(16,24,28,.22); --line-2:rgba(16,24,28,.10);
-  --teal:#4E8A93; --teal-br:#27545E; --teal-dp:#1E444C; --teal-glow:rgba(46,98,109,.22);
-  --gold:#9A7518; --ivory:#13201C; --ivory-soft:#27332E; --muted:#46535B; --muted-2:#697680;
-  --good:#2C6E46; --warn:#8E6816; --bad:#A6442A; --on-accent:#06201f;
+  /* White-first — matches the portal palette 1:1 (this tool embeds into the portal). */
+  --ink:#F7FAF9; --ink-1:#FFFFFF; --ink-2:#F1F6F5; --ink-3:#E7EFEE;
+  --line:#DCE7E5; --line-2:rgba(23,35,38,.05);
+  --teal:#2F7F86; --teal-br:#286D73; --teal-dp:#1F5B60; --teal-glow:rgba(47,127,134,.14);
+  --gold:#B9944A; --ivory:#172326; --ivory-soft:#2C3832; --muted:#5D6B70; --muted-2:#819096;
+  --good:#178560; --warn:#B7791F; --bad:#B42318; --on-accent:#FFFFFF;
 }
 /* light theme: sharper + bolder so it reads as crisp, not washed out */
 :root[data-theme="light"] body{ font-weight:430; -webkit-font-smoothing:antialiased; }

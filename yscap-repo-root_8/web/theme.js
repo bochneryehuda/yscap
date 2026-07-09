@@ -6,13 +6,11 @@
   var KEY="ys-theme";
   function get(){
     try{ var s=localStorage.getItem(KEY); if(s==="light"||s==="dark") return s; }catch(e){}
-    try{
-      if(window.matchMedia){
-        if(window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
-        if(window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
-      }
-    }catch(e){}
-    return "light";   // no saved choice and no system signal -> approachable light default
+    // White-first is the standard (matches the portal). We intentionally do NOT
+    // auto-follow the OS to dark anymore — a dark-mode device was rendering the
+    // OLD dark marketing/tools theme, which looked un-redesigned. Dark stays
+    // available on demand via the manual toggle (saved per browser).
+    return "light";
   }
   function save(t){ try{ localStorage.setItem(KEY,t); }catch(e){} }
   function apply(t){ document.documentElement.setAttribute("data-theme", t); }

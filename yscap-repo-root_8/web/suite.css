@@ -298,12 +298,13 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
    so these win whenever the light theme is on, regardless of order.
    ============================================================ */
 :root[data-theme="light"]{
-  /* Quiet-luxury light mode: warm ivory page, clean white cards, jewelry-gold accents. */
-  --ink:#F3EEE3; --ink-1:#FFFFFF; --ink-2:#FBF7EF; --ink-3:#EBE5D8;
-  --line:rgba(22,32,29,.13); --line-2:rgba(22,32,29,.06);
-  --teal:#3F7B84; --teal-br:#245A64; --teal-dp:#1C444C; --teal-glow:rgba(46,98,109,.15);
-  --gold:#8A6717; --ivory:#16221D; --ivory-soft:#2C3832; --muted:#485760; --muted-2:#5B6770;
-  --good:#2C6E46; --warn:#8A6414; --bad:#A6442A; --on-accent:#062018;
+  /* White-first — matches the portal palette 1:1: cool white page, white cards,
+     teal primary (#2F7F86), champagne gold, deep ink-teal text. */
+  --ink:#F7FAF9; --ink-1:#FFFFFF; --ink-2:#F1F6F5; --ink-3:#E7EFEE;
+  --line:#DCE7E5; --line-2:rgba(23,35,38,.05);
+  --teal:#2F7F86; --teal-br:#286D73; --teal-dp:#1F5B60; --teal-glow:rgba(47,127,134,.14);
+  --gold:#B9944A; --ivory:#172326; --ivory-soft:#2C3832; --muted:#5D6B70; --muted-2:#819096;
+  --good:#178560; --warn:#B7791F; --bad:#B42318; --on-accent:#FFFFFF;
 }
 /* light theme: sharper + bolder so it reads as crisp, not washed out */
 :root[data-theme="light"] body{ font-weight:430; -webkit-font-smoothing:antialiased; }
@@ -313,18 +314,18 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
 :root[data-theme="light"] .bg-field{ opacity:.4; }
 :root[data-theme="light"] .grain{ opacity:.5; }
 :root[data-theme="light"] .btn-solid{
-  background:linear-gradient(135deg,#2E6B74,#22505A); color:#F6F2E9;
-  box-shadow:0 10px 24px -12px rgba(30,68,76,.5), inset 0 1px 0 rgba(255,255,255,.14);
+  background:linear-gradient(135deg,#2F7F86,#286D73); color:#FFFFFF;
+  box-shadow:0 10px 24px -12px rgba(47,127,134,.5), inset 0 1px 0 rgba(255,255,255,.14);
 }
-:root[data-theme="light"] .btn-solid:hover{ background:linear-gradient(135deg,#347A85,#265E68); box-shadow:0 16px 34px -12px rgba(30,68,76,.55); }
-:root[data-theme="light"] .btn-line{ background:#FFFFFF; border-color:rgba(36,90,100,.34); color:var(--teal-br); box-shadow:0 6px 16px -13px rgba(30,68,76,.45); }
-:root[data-theme="light"] .btn-line:hover{ border-color:var(--teal-br); background:rgba(36,90,100,.05); color:var(--teal-dp); }
-:root[data-theme="light"] .btn-gold{ background:linear-gradient(135deg,#CDA95C 0%,#B68C33 100%); color:#221701; box-shadow:0 10px 24px -12px rgba(138,103,23,.5), inset 0 1px 0 rgba(255,255,255,.4); }
+:root[data-theme="light"] .btn-solid:hover{ background:linear-gradient(135deg,#348A91,#2F7F86); box-shadow:0 16px 34px -12px rgba(47,127,134,.55); }
+:root[data-theme="light"] .btn-line{ background:#FFFFFF; border-color:rgba(47,127,134,.34); color:var(--teal-br); box-shadow:0 6px 16px -13px rgba(47,127,134,.45); }
+:root[data-theme="light"] .btn-line:hover{ border-color:var(--teal-br); background:rgba(47,127,134,.06); color:var(--teal-dp); }
+:root[data-theme="light"] .btn-gold{ background:linear-gradient(135deg,#C9A860 0%,#B9944A 100%); color:#3A2E10; box-shadow:0 10px 24px -12px rgba(185,148,74,.5), inset 0 1px 0 rgba(255,255,255,.4); }
 :root[data-theme="light"] .ys-theme-toggle:hover{ color:var(--teal-dp); border-color:var(--teal); }
 :root[data-theme="light"] .tool-card,
 :root[data-theme="light"] .panel{ box-shadow:0 1px 2px rgba(22,32,29,.035), 0 14px 32px -24px rgba(22,32,29,.34); }
 :root[data-theme="light"] .tool-card:hover{ box-shadow:0 8px 18px rgba(22,32,29,.06), 0 28px 54px -26px rgba(22,32,29,.42); border-color:var(--teal); }
-:root[data-theme="light"] .input:focus-within{ box-shadow:0 0 0 3px rgba(36,90,100,.14); }
+:root[data-theme="light"] .input:focus-within{ box-shadow:0 0 0 3px rgba(47,127,134,.14); }
 
 /* theme toggle button (injected by theme.js) */
 .ys-theme-toggle{ display:inline-flex; align-items:center; gap:.4rem; background:transparent; border:1px solid var(--line); color:var(--ivory); border-radius:100px; padding:.45rem .8rem; font:inherit; font-size:.82rem; font-weight:600; cursor:pointer; line-height:1; transition:border-color .2s,color .2s,background .2s; }
@@ -340,7 +341,7 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
 
 /* ============ Light theme: recolor the sticky header (was dark-on-dark) ============ */
 :root[data-theme="light"] .topbar{
-  background:rgba(247,243,235,.92) !important;
+  background:rgba(247,250,249,.92) !important;
   border-bottom:1px solid var(--line) !important;
   box-shadow:0 1px 0 rgba(22,32,29,.05), 0 10px 30px -18px rgba(22,32,29,.28);
 }
