@@ -2,6 +2,21 @@
 
 const db = require('../db');
 
+// FROZEN baseline (#89) — experience window. A completed deal counts toward the
+// borrower's tier / experience ONLY if its exit is within the last 3 years:
+//   · a FLIP exits on its SALE date
+//   · a hold / rental / ground-up-and-held exits on its LEASE (rent) or REFI date
+// An exit more than 36 months ago, or a future-dated exit, counts toward
+// nothing. This mirrors the frozen track-record tool's qualifies() exactly and
+// must be applied at EVERY server-side experience/tier count so the tier can
+// never be inflated by stale deals. Reuse RECENT_EXIT_SQL — don't re-derive it.
+const EXIT_DATE_SQL =
+  "(CASE WHEN lower(coalesce(deal_type,'')) LIKE '%flip%' THEN sale_date ELSE COALESCE(rent_date, refi_date) END)";
+const RECENT_EXIT_SQL =
+  `${EXIT_DATE_SQL} IS NOT NULL`
+  + ` AND ${EXIT_DATE_SQL} <= CURRENT_DATE`
+  + ` AND ${EXIT_DATE_SQL} >= (CURRENT_DATE - INTERVAL '36 months')`;
+
 function int(v) {
   const n = parseInt(v, 10);
   return isFinite(n) && n > 0 ? n : 0;
@@ -33,15 +48,27 @@ function requirementMet(counts, required) {
 }
 
 async function countBorrowerExperience(borrowerId, client = db, opts = {}) {
+  return countBorrowersExperience([borrowerId], client, opts);
+}
+
+// Experience across one or more borrowers, summed. A loan file with a
+// co-borrower counts BOTH borrowers' completed deals toward the file's
+// experience (#80): if borrower A has 2 flips and co-borrower B has 2 flips,
+// the file has 4 flips. Each track_records row already belongs to exactly one
+// borrower, so summing the per-borrower counts never double-counts a deal.
+async function countBorrowersExperience(borrowerIds, client = db, opts = {}) {
+  const ids = (borrowerIds || []).filter(Boolean);
+  const counts = { flips: 0, holds: 0, ground: 0, total: 0 };
+  if (!ids.length) return counts;
   const verifiedOnly = !!opts.verifiedOnly;
   const r = await client.query(
     `SELECT lower(coalesce(deal_type,'')) AS deal_type, count(*)::int AS n
        FROM track_records
-      WHERE borrower_id=$1
+      WHERE borrower_id = ANY($1::uuid[])
         AND ($2::boolean=false OR is_verified=true)
+        AND (${RECENT_EXIT_SQL})
       GROUP BY 1`,
-    [borrowerId, verifiedOnly]);
-  const counts = { flips: 0, holds: 0, ground: 0, total: 0 };
+    [ids, verifiedOnly]);
   for (const row of r.rows) {
     const n = int(row.n);
     counts[bucketOf(row.deal_type)] += n;
@@ -50,16 +77,45 @@ async function countBorrowerExperience(borrowerId, client = db, opts = {}) {
   return counts;
 }
 
+// The set of borrower ids whose experience counts for a file: the primary
+// borrower plus the co-borrower when present.
+function fileBorrowerIds(app) {
+  return [app && app.borrower_id, app && app.co_borrower_id].filter(Boolean);
+}
+
 async function syncExperienceChecklistForApplication(appId, client = db) {
   const ar = await client.query(
-    `SELECT id, borrower_id, requested_exp_flips, requested_exp_holds, requested_exp_ground
+    `SELECT id, borrower_id, co_borrower_id, requested_exp_flips, requested_exp_holds, requested_exp_ground
        FROM applications WHERE id=$1`,
     [appId]);
   const app = ar.rows[0];
   if (!app) return null;
 
   const required = requestedFromApp(app);
-  const counts = await countBorrowerExperience(app.borrower_id, client);
+  // Experience for the FILE = the primary borrower + the co-borrower, summed
+  // (#80): both borrowers' completed deals count toward the requirement.
+  const ids = fileBorrowerIds(app);
+  const counts = await countBorrowersExperience(ids, client);
+  // Per-borrower breakdown (#103) — on a co-borrower file the experience
+  // condition shows BOTH borrowers, each named, with their OWN 3-year-window
+  // counts and a link to their OWN track record. The requirement is still the
+  // SUM (above); this is display detail only, so it never changes met/required.
+  let perBorrower = null;
+  if (ids.length > 1) {
+    const nm = await client.query(
+      `SELECT id, first_name, last_name FROM borrowers WHERE id = ANY($1::uuid[])`, [ids]);
+    const nameById = {};
+    for (const row of nm.rows) nameById[row.id] = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Borrower';
+    perBorrower = [];
+    for (const bid of ids) {
+      perBorrower.push({
+        borrowerId: bid,
+        name: nameById[bid] || 'Borrower',
+        isPrimary: bid === app.borrower_id,
+        counts: await countBorrowersExperience([bid], client),
+      });
+    }
+  }
   const requiredAny = hasRequirement(required);
   // NO experience claimed on the file → there is nothing to verify, so the
   // track-record condition is NOT APPLICABLE. We auto-satisfy it (stamped
@@ -71,6 +127,7 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   const satisfied = notApplicable || met;
   const payload = {
     autoExperienceTask: true, notApplicable, required, counts, satisfied,
+    perBorrower,
     checkedAt: new Date().toISOString(),
   };
 
@@ -103,14 +160,33 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
     return { required, counts, satisfied: true, itemId: item.id };
   }
 
-  // Auto-managed (no human sign-off): n/a → satisfied (drops out of the open
-  // conditions list); requirement met → received (awaiting sign-off); requested
-  // but unmet → outstanding.
-  const status = notApplicable ? 'satisfied' : met ? 'received' : 'outstanding';
+  // The experience condition is ALWAYS a visible slot (#97) — a reminder that
+  // never silently disappears. When NO experience is claimed on the file it stays
+  // 'outstanding' but is NOT required: the team can sign it off freely (nothing
+  // to verify for the current structure) or leave it open. When experience IS
+  // claimed it's required — 'received' once met (awaiting sign-off), else
+  // 'outstanding' — and the sign-off gate enforces verification.
+  const status = met ? 'received' : 'outstanding';
+  const isRequired = !notApplicable;
   await client.query(
-    `UPDATE checklist_items SET status=$3, tool_payload=$2, updated_at=now() WHERE id=$1`,
-    [item.id, JSON.stringify(payload), status]);
+    `UPDATE checklist_items SET status=$3, is_required=$4, tool_payload=$2, updated_at=now() WHERE id=$1`,
+    [item.id, JSON.stringify(payload), status, isRequired]);
   return { required, counts, satisfied, itemId: item.id };
+}
+
+// #103 — one-shot boot backfill: recompute the experience condition for every
+// co-borrower file so its payload carries the per-borrower breakdown (and each
+// borrower's own track-record link) without waiting for the next experience-
+// affecting action. Safe to re-run — the sync preserves genuine sign-offs and a
+// pure recompute never changes the summed requirement, so nothing reopens.
+async function backfillCoBorrowerExperience(client = db) {
+  const r = await client.query(
+    `SELECT id FROM applications WHERE co_borrower_id IS NOT NULL AND deleted_at IS NULL`);
+  let n = 0;
+  for (const row of r.rows) {
+    try { await syncExperienceChecklistForApplication(row.id, client); n++; } catch (_) { /* best-effort */ }
+  }
+  return n;
 }
 
 async function syncExperienceChecklistForBorrower(borrowerId, client = db) {
@@ -126,7 +202,12 @@ async function syncExperienceChecklistForBorrower(borrowerId, client = db) {
 module.exports = {
   bucketOf,
   countBorrowerExperience,
+  countBorrowersExperience,
+  backfillCoBorrowerExperience,
+  fileBorrowerIds,
   requestedFromApp,
   syncExperienceChecklistForApplication,
   syncExperienceChecklistForBorrower,
+  RECENT_EXIT_SQL,
+  EXIT_DATE_SQL,
 };

@@ -230,11 +230,19 @@ export const api = {
   staffLeadCapture: () => req('GET', '/api/staff/lead-capture'),
   staffApplication: (id) => req('GET', `/api/staff/applications/${id}`),
   staffSetCoBorrower: (id, body) => req('POST', `/api/staff/applications/${id}/co-borrower`, body),
+  // #81 — subject vesting LLC ownership across the file's borrowers
+  staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
+  staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
   staffAppDocuments:(id) => req('GET', `/api/staff/applications/${id}/documents`),
   staffReviewDoc:   (id, action, reason, opts) => req('POST', `/api/staff/documents/${id}/review`, { action, reason, ...(opts || {}) }),
   staffDownloadDoc: (id) => download(`/api/staff/documents/${id}/download`),
   staffBorrowerSearch: (q) => req('GET', '/api/staff/borrowers/search?q=' + encodeURIComponent(q)),
+  // #83 — loan-officer borrower management
+  staffBorrowers:   () => req('GET', '/api/staff/borrowers'),
+  staffBorrowerInvite: (id) => req('POST', `/api/staff/borrowers/${id}/portal-invite`),
+  staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
+  staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
@@ -274,6 +282,12 @@ export const api = {
   staffSetClosingDate: (appId, b) => req('POST', `/api/staff/applications/${appId}/closing-date`, b),
   staffEditApplication: (appId, b) => req('PATCH', `/api/staff/applications/${appId}/details`, b),
   staffNudge:          (appId) => req('POST', `/api/staff/applications/${appId}/nudge`),
+  // Reminders + task management (#93). staffReminders returns { reminders,
+  // contacts, outstanding } so the composer is populated in one round-trip.
+  staffReminders:      (appId) => req('GET', `/api/staff/applications/${appId}/reminders`),
+  staffCreateReminder: (appId, b) => req('POST', `/api/staff/applications/${appId}/reminders`, b),
+  staffUpdateReminder: (appId, rid, b) => req('PATCH', `/api/staff/applications/${appId}/reminders/${rid}`, b),
+  staffDeleteReminder: (appId, rid) => req('DELETE', `/api/staff/applications/${appId}/reminders/${rid}`),
   // Archive = reversible soft-remove (leaves the Archived folder); Purge =
   // permanent hard delete (row + children + stored bytes, gone from all figures).
   staffArchiveApp:  (appId, reason) => req('POST', `/api/staff/applications/${appId}/archive`, { reason }),

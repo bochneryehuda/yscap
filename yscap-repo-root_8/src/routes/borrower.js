@@ -17,7 +17,7 @@ const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
-const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower } = require('../lib/experience');
+const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
 const llcLib = require('../lib/llc');
 const apprCard = require('../lib/appraisal-card');
 const conditionEngine = require('../lib/conditions/engine');
@@ -266,6 +266,8 @@ router.post('/applications', async (req, res) => {
   // borrower previously chose "save to next file". Best-effort; never blocks.
   try { await apprCard.autoApplySavedCardIfOptedIn(appId, me(req)); } catch (_) {}
   await audit(req, 'create_application', 'application', appId);
+  // Create + link the ClickUp task in the correct folder on file-start (#92).
+  require('../clickup/orchestrator').createForNewFile(appId).catch((e) => console.error('[clickup] create-on-start (apply)', appId, e && e.message));
   res.status(201).json({ ok: true, applicationId: appId });
 });
 
@@ -316,15 +318,22 @@ function stripInternalAppFields(row) {
 
 async function loadFileForPricing(appId, borrowerId) {
   const a = await db.query(
-    `SELECT a.*, b.fico
+    // Pricing FICO = the HIGHEST score across the file's borrowers (#99): with a
+    // co-borrower, the stronger credit prices the deal. NULL when neither has one.
+    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
       WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND a.deleted_at IS NULL`,
     [appId, borrowerId]);
   const app = a.rows[0];
   if (!app) return null;
+  // The file's experience for pricing = BOTH borrowers on it, summed (#80).
+  // This is an aggregate count feeding the frozen pricing engine — it exposes
+  // no individual deal detail of the other borrower.
+  const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
-       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
   const exp = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
@@ -384,7 +393,10 @@ router.get('/applications/:id/pricing', async (req, res) => {
     const stripInternal = (q) => { if (q && typeof q === 'object') { const { adminPricing, ...rest } = q; return rest; } return q; };
     const stripInternalInputs = (inp) => {
       if (!inp || typeof inp !== 'object') return inp;
-      const { markupStdPct, markupGoldPct, ...rest } = inp;
+      // Co-borrower privacy (#82): the stored inputs carry the PRIMARY borrower's
+      // FICO, which the co-borrower must never read. Strip it from the borrower
+      // channel entirely (staff pricing is a separate endpoint, unaffected).
+      const { markupStdPct, markupGoldPct, fico, ...rest } = inp;
       return rest;
     };
     const redactRow = (row) => row ? { ...row, quote: stripInternal(row.quote), inputs: stripInternalInputs(row.inputs) } : row;
@@ -413,6 +425,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   const appId = req.params.id;
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+    if (locked) return res.status(409).json({ error: locked });
     const f = await loadFileForPricing(appId, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const b = req.body || {};
@@ -452,6 +466,15 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     finally { client.release(); }
     // Registration rewrites loan amount / rate / program — re-run condition rules.
     try { await conditionEngine.evaluateApplication(appId, { reason: 'product_registered' }); } catch (_) {}
+    // Replace the generic bank-statement condition with the detailed liquidity
+    // requirement from the freshly-registered quote — same as the staff register
+    // path (#85). Without this a borrower-registered product left no breakdown and
+    // never reopened on a later increase.
+    try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
+
+    // Push the freshly-committed scenario (loan amount, rate, rehab, term, IR,
+    // ARV / as-is / purchase, assignment, desired rate) to ClickUp immediately.
+    require('../clickup/orchestrator').pushApplication(appId).catch((e) => console.error('[clickup] push after register (borrower)', appId, e && e.message));
 
     await audit(req, 'register_product', 'application', appId,
       { program, status: quote.status, noteRate: quote.noteRate, totalLoan: total, productLabel: quote.productLabel || null,
@@ -548,6 +571,18 @@ router.get('/applications/:id/checklist', async (req, res) => {
     let ctx = null;
     try { const loaded = await conditionEngine.loadRuleContext(req.params.id); ctx = loaded && loaded.ctx; } catch (_) {}
     const fieldsByKey = await conditionRegistry.fieldMap(db);
+    // Co-borrower privacy (#82): personal fields (FICO / citizenship / home state)
+    // are per-borrower. loadRuleContext builds them from the PRIMARY borrower, so
+    // pre-fill those from the VIEWER's OWN record instead — a co-borrower must
+    // never see the primary's FICO, and vice-versa. App/deal fields stay from ctx.
+    const BORROWER_SCOPED = new Set(['fico', 'citizenship', 'borrower_state']);
+    let selfVals = null;
+    if (rows.some((it) => it.tool_key === 'info_field' && BORROWER_SCOPED.has(it.field_key))) {
+      try {
+        const sb = (await db.query(`SELECT fico, citizenship, current_address FROM borrowers WHERE id=$1`, [me(req)])).rows[0];
+        if (sb) selfVals = { fico: sb.fico ?? null, citizenship: sb.citizenship ?? null, borrower_state: (sb.current_address && sb.current_address.state) || null };
+      } catch (_) { selfVals = {}; }
+    }
     for (const it of rows) {
       if (it.tool_key !== 'info_field' || !it.field_key) continue;
       const f = fieldsByKey[it.field_key];
@@ -557,7 +592,9 @@ router.get('/applications/:id/checklist', async (req, res) => {
         // Borrower-facing field label only — never the internal f.label.
         label: f.borrowerLabel || 'Additional information', hint: f.borrowerHint || undefined,
       };
-      it.field_value = ctx ? (ctx[it.field_key] ?? null) : null;
+      it.field_value = BORROWER_SCOPED.has(it.field_key)
+        ? (selfVals ? (selfVals[it.field_key] ?? null) : null)
+        : (ctx ? (ctx[it.field_key] ?? null) : null);
     }
   }
   res.json(rows);
@@ -580,7 +617,11 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
     return res.status(400).json({ error: 'a value is required' });
   let saved;
   try {
-    saved = await conditionEngine.writeFieldValue(req.params.id, own.rows[0].borrower_id, item.field_key, req.body.value,
+    // Co-borrower privacy (#82): a borrower-scoped field (e.g. FICO) is written to
+    // the borrower who is ANSWERING — me(req) — never to the primary. Otherwise a
+    // co-borrower answering a FICO condition would overwrite the primary's credit
+    // score. App/deal fields ignore this id (they write to the application).
+    saved = await conditionEngine.writeFieldValue(req.params.id, me(req), item.field_key, req.body.value,
       { kind: 'borrower', id: me(req) });
   } catch (e) {
     return res.status(e.status || 400).json({ error: e.message });
@@ -651,19 +692,34 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const stripped = stripToolAttachments(rawPayload);
   const payload = stripped.payload;
   const notes = (req.body && req.body.notes) ? String(req.body.notes).slice(0, 2000) : null;
+  // FATAL rehab-budget gate (#75): the Scope of Work total must match the file's
+  // required rehab budget EXACTLY. A mismatch is refused BEFORE the condition is
+  // touched, so the condition stays outstanding (a real fail the borrower sees) —
+  // the Scope of Work can never silently change the loan's budget.
+  let sowSeed = false;
+  if (it.rows[0].tool_key === 'rehab_budget') {
+    // The rehab budget is loan structure — frozen at Clear-to-Close (#84).
+    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
+    if (locked) return res.status(409).json({ error: locked, fatal: true });
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
+    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
+    sowSeed = chk.seed;
+  }
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($4,tool_state), status='received', notes=COALESCE($3,notes), updated_at=now()
       WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload), notes,
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
-  // The rehab-budget tool's grand total IS the file's rehab budget, which feeds
-  // the pricing engine — sync it onto the application so terms reflect the SOW.
+  // ONLY when the file has no rehab budget yet does the Scope of Work seed it —
+  // it never overrides a budget already set by the application / registered
+  // product (that would silently reprice the loan). The gate above guarantees a
+  // match in every other case.
   if (it.rows[0].tool_key === 'rehab_budget') {
     const total = Number(payload && payload.total);
-    if (isFinite(total) && total >= 0) {
+    if (sowSeed && isFinite(total) && total >= 0) {
       await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
-      try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'rehab_budget_saved' }); } catch (_) {}
     }
+    try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'rehab_budget_saved' }); } catch (_) {}
   }
   const storedExports = await storeToolAttachments({
     req, appId: req.params.id, borrowerId: own.rows[0].borrower_id,
@@ -836,12 +892,17 @@ router.post('/applications/:id/link-llc', async (req, res) => {
       WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
     [req.params.id, me(req)]);
   if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
-  if (['funded', 'declined', 'withdrawn'].includes(app.rows[0].status))
-    return res.status(409).json({ error: 'this file is closed — the vesting entity can no longer be changed' });
+  // The vesting entity is part of the loan structure — frozen at Clear-to-Close
+  // and beyond (#84). Move the file back to an earlier status to change it.
+  if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.rows[0].status))
+    return res.status(409).json({ error: 'This file is Clear to Close — the vesting entity is locked. Move it back to an earlier status to change it.' });
   const own = await db.query(`SELECT id FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'llc not found' });
   const previous = app.rows[0].llc_id;
   await db.query(`UPDATE applications SET llc_id=$2, updated_at=now() WHERE id=$1`, [req.params.id, b.llcId]);
+  // Link both of the file's borrowers to the newly-vesting LLC (#81) — the entity
+  // is owned by both; each borrower's ownership % is set on the file.
+  try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(req.params.id); } catch (_) { /* best-effort */ }
   try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ }
   // reopen + appId: the previous entity's state no longer drives this file's
   // LLC condition — recompute it from the NEWLY linked entity, even downgrading
@@ -1467,7 +1528,14 @@ router.get('/documents/:id/download', async (req, res) => {
       WHERE id=$1 AND visibility='borrower' AND (borrower_id=$2 OR application_id IN
         (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)
         OR (llc_id IS NOT NULL AND llc_id IN
-          (SELECT llc_id FROM applications WHERE (borrower_id=$2 OR co_borrower_id=$2) AND llc_id IS NOT NULL)))`,
+          (SELECT llc_id FROM applications WHERE (borrower_id=$2 OR co_borrower_id=$2) AND llc_id IS NOT NULL)))
+      -- Co-borrower privacy (#82): having access to the shared FILE does not grant
+      -- access to the OTHER borrower's PERSONAL uploads (their government ID, bank
+      -- statements, etc.). Only serve a document that is the caller's own, is not
+      -- tied to a person (file-level), is a shared vesting-entity doc, or is a
+      -- staff/tool-produced file artifact.
+      AND (borrower_id=$2 OR borrower_id IS NULL OR llc_id IS NOT NULL
+           OR uploaded_by_kind='staff' OR source_type='system')`,
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'download_document', 'document', r.rows[0].id);
@@ -1683,9 +1751,13 @@ router.get('/applications/:id/mentionables', async (req, res) => {
                WHERE a.id=$1 AND s.is_active=true`, [req.params.id]),
     db.query(`SELECT id, label, status FROM checklist_items
                WHERE application_id=$1 AND audience IN ('borrower','both') ORDER BY sort_order LIMIT 200`, [req.params.id]),
+    // Co-borrower privacy (#82): don't surface the OTHER borrower's personal
+    // uploads in the mention list — same rule as the download endpoint.
     db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1
                 AND visibility='borrower' AND source_type <> 'chat_attachment'
-              ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
+                AND (borrower_id=$2 OR borrower_id IS NULL OR llc_id IS NOT NULL
+                     OR uploaded_by_kind='staff' OR source_type='system')
+              ORDER BY created_at DESC LIMIT 100`, [req.params.id, me(req)]),
     db.query(`SELECT id, COALESCE(property_address->>'oneLine', property_address->>'street', 'Application') AS label
                 FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1`, [me(req)]),
   ]);
@@ -1967,6 +2039,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
     }
   } catch (e) { /* notification failure never blocks submission */ }
 
+  // Create + link the ClickUp task in the correct folder on file-start (#92).
+  require('../clickup/orchestrator').createForNewFile(appId).catch((e) => console.error('[clickup] create-on-start (draft submit)', appId, e && e.message));
   res.status(201).json({ ok: true, applicationId: appId, ysLoanNumber: ins.rows[0].ys_loan_number });
 });
 

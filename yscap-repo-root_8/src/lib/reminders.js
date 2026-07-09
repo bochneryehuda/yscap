@@ -1,0 +1,299 @@
+'use strict';
+
+/**
+ * Reminders + task management (#93) — the engine behind a loan file's "Remind"
+ * button. Staff schedule a reminder or a task with a due date+time, a set of
+ * recipients (any mix of the loan team, the borrower/co-borrower, or an ad-hoc
+ * email), and a message. A lightweight dispatcher (started from server.js) fans
+ * the notification out at the due moment via the normal notify service, so the
+ * in-app + branded-email plumbing, borrower notification preferences, and the
+ * note-buyer redaction rules all keep applying.
+ *
+ * Recipients are described by the client as ROLE TOKENS ({kind:'self'|
+ * 'loan_officer'|'processor'|'underwriter'|'borrower'|'co_borrower'} / an
+ * explicit {kind:'staff',id} / an {kind:'email',email}) and RESOLVED on the
+ * server against the file + actor into concrete {kind,id/email,name,role}
+ * entries. That keeps the client from having to know every email and lets the
+ * stored list stay meaningful even if the roster later changes.
+ */
+const db = require('../db');
+const notify = require('./notify');
+const email = require('./email');
+
+const KINDS = new Set(['reminder', 'task']);
+
+function niceWhen(due) {
+  try {
+    return new Date(due).toLocaleString('en-US', {
+      weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    });
+  } catch (_) { return String(due); }
+}
+
+// Resolve the client's recipient tokens into concrete, de-duplicated entries.
+// Unknown / unfilled roles (e.g. "processor" on a file with no processor) are
+// silently dropped rather than erroring, so the caller never has to pre-check.
+async function resolveRecipients(app, actorId, tokens, client = db) {
+  const out = [];
+  const seen = new Set();
+  const staffIds = new Set();
+  const borrowerIds = new Set();
+  const emails = new Map();   // lowercased email -> display name
+
+  for (const t of Array.isArray(tokens) ? tokens : []) {
+    if (!t || typeof t !== 'object') continue;
+    const kind = String(t.kind || '').toLowerCase();
+    if (kind === 'self') { if (actorId) staffIds.add(actorId); }
+    else if (kind === 'loan_officer') { if (app.loan_officer_id) staffIds.add(app.loan_officer_id); }
+    else if (kind === 'processor') { if (app.processor_id) staffIds.add(app.processor_id); }
+    else if (kind === 'underwriter') { if (app.underwriter_id) staffIds.add(app.underwriter_id); }
+    else if (kind === 'staff') { if (t.id) staffIds.add(t.id); }
+    else if (kind === 'borrower') { if (app.borrower_id) borrowerIds.add(app.borrower_id); }
+    else if (kind === 'co_borrower') { if (app.co_borrower_id) borrowerIds.add(app.co_borrower_id); }
+    else if (kind === 'email') {
+      const e = String(t.email || '').trim().toLowerCase();
+      if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) emails.set(e, String(t.name || '').trim() || e);
+    }
+  }
+
+  if (staffIds.size) {
+    const r = await client.query(
+      `SELECT id, full_name, email, role FROM staff_users WHERE id = ANY($1::uuid[]) AND is_active=true`,
+      [[...staffIds]]);
+    for (const s of r.rows) {
+      const key = 'staff:' + s.id; if (seen.has(key)) continue; seen.add(key);
+      out.push({ kind: 'staff', id: s.id, name: s.full_name || s.email, email: s.email || null, role: s.role || null });
+    }
+  }
+  if (borrowerIds.size) {
+    const r = await client.query(
+      `SELECT id, first_name, last_name, email FROM borrowers WHERE id = ANY($1::uuid[])`,
+      [[...borrowerIds]]);
+    for (const b of r.rows) {
+      const key = 'borrower:' + b.id; if (seen.has(key)) continue; seen.add(key);
+      const isCo = app.co_borrower_id && b.id === app.co_borrower_id;
+      out.push({
+        kind: 'borrower', id: b.id,
+        name: [b.first_name, b.last_name].filter(Boolean).join(' ') || b.email || 'Borrower',
+        email: b.email || null, role: isCo ? 'co_borrower' : 'borrower',
+      });
+    }
+  }
+  for (const [e, name] of emails) {
+    const key = 'email:' + e; if (seen.has(key)) continue; seen.add(key);
+    out.push({ kind: 'email', email: e, name: name || e, role: 'contact' });
+  }
+  return out;
+}
+
+// The set of contacts the composer offers for a file (role tokens + concrete
+// details for display). Loan-team members come from the file's assignments; the
+// borrower + co-borrower from the file. "You" is always offered.
+async function contactsForApplication(appId, actor, client = db) {
+  const ar = await client.query(
+    `SELECT a.borrower_id, a.co_borrower_id, a.loan_officer_id, a.processor_id, a.underwriter_id,
+            b.first_name AS b_first, b.last_name AS b_last, b.email AS b_email,
+            cb.first_name AS c_first, cb.last_name AS c_last, cb.email AS c_email
+       FROM applications a
+       JOIN borrowers b ON b.id=a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+      WHERE a.id=$1`, [appId]);
+  const a = ar.rows[0];
+  if (!a) return [];
+  const staffIds = [a.loan_officer_id, a.processor_id, a.underwriter_id, actor && actor.id].filter(Boolean);
+  const staffById = {};
+  if (staffIds.length) {
+    const sr = await client.query(
+      `SELECT id, full_name, email, role FROM staff_users WHERE id = ANY($1::uuid[])`, [staffIds]);
+    for (const s of sr.rows) staffById[s.id] = s;
+  }
+  const out = [];
+  const nameOf = (id) => (staffById[id] ? (staffById[id].full_name || staffById[id].email) : null);
+  out.push({ token: 'self', kind: 'staff', label: 'You' + (nameOf(actor && actor.id) ? ` (${nameOf(actor.id)})` : ''), role: 'you' });
+  if (a.loan_officer_id && a.loan_officer_id !== (actor && actor.id))
+    out.push({ token: 'loan_officer', kind: 'staff', label: `Loan officer${nameOf(a.loan_officer_id) ? ` - ${nameOf(a.loan_officer_id)}` : ''}`, role: 'loan_officer' });
+  if (a.processor_id)
+    out.push({ token: 'processor', kind: 'staff', label: `Processor${nameOf(a.processor_id) ? ` - ${nameOf(a.processor_id)}` : ''}`, role: 'processor' });
+  if (a.underwriter_id)
+    out.push({ token: 'underwriter', kind: 'staff', label: `Underwriter${nameOf(a.underwriter_id) ? ` - ${nameOf(a.underwriter_id)}` : ''}`, role: 'underwriter' });
+  if (a.borrower_id)
+    out.push({ token: 'borrower', kind: 'borrower', label: `Borrower${[a.b_first, a.b_last].filter(Boolean).length ? ` - ${[a.b_first, a.b_last].filter(Boolean).join(' ')}` : ''}`, role: 'borrower' });
+  if (a.co_borrower_id)
+    out.push({ token: 'co_borrower', kind: 'borrower', label: `Co-borrower${[a.c_first, a.c_last].filter(Boolean).length ? ` - ${[a.c_first, a.c_last].filter(Boolean).join(' ')}` : ''}`, role: 'co_borrower' });
+  return out;
+}
+
+// Borrower-facing outstanding items for the "prefill outstanding conditions"
+// helper. Deliberately uses the BORROWER label/title only (never the internal
+// wording, which can carry capital-partner detail) - safe to show to anyone.
+async function outstandingItems(appId, client = db) {
+  const items = await client.query(
+    `SELECT COALESCE(borrower_label,label) AS label FROM checklist_items
+      WHERE application_id=$1 AND audience IN ('borrower','both')
+        AND status IN ('outstanding','requested','issue')
+      ORDER BY sort_order LIMIT 30`, [appId]);
+  const conds = await client.query(
+    `SELECT borrower_title AS title FROM conditions
+      WHERE application_id=$1 AND audience IN ('borrower','both') AND borrower_title IS NOT NULL
+        AND status IN ('open','borrower_responded') LIMIT 30`, [appId]);
+  return [...items.rows.map(r => r.label), ...conds.rows.map(r => r.title)].filter(Boolean);
+}
+
+async function listForApplication(appId, client = db) {
+  const r = await client.query(
+    `SELECT r.*, cu.full_name AS created_by_name, au.full_name AS assignee_name,
+            comp.full_name AS completed_by_name
+       FROM reminders r
+       LEFT JOIN staff_users cu ON cu.id=r.created_by
+       LEFT JOIN staff_users au ON au.id=r.assignee_staff_id
+       LEFT JOIN staff_users comp ON comp.id=r.completed_by
+      WHERE r.application_id=$1
+      ORDER BY (r.status IN ('done','dismissed','cancelled')) ASC, r.due_at ASC`,
+    [appId]);
+  return r.rows;
+}
+
+async function create(appId, input, actor, client = db) {
+  const ar = await client.query(
+    `SELECT id, borrower_id, co_borrower_id, loan_officer_id, processor_id, underwriter_id
+       FROM applications WHERE id=$1`, [appId]);
+  const app = ar.rows[0];
+  if (!app) { const e = new Error('application not found'); e.status = 404; throw e; }
+
+  const kind = KINDS.has(String(input.kind)) ? input.kind : 'reminder';
+  const title = String(input.title || '').trim();
+  if (!title) { const e = new Error('a title is required'); e.status = 400; throw e; }
+  const due = input.dueAt ? new Date(input.dueAt) : null;
+  if (!due || isNaN(due.getTime())) { const e = new Error('a valid due date/time is required'); e.status = 400; throw e; }
+  const remindAt = input.remindAt ? new Date(input.remindAt) : null;
+  const recipients = await resolveRecipients(app, actor && actor.id, input.recipients, client);
+  if (!recipients.length) { const e = new Error('add at least one recipient'); e.status = 400; throw e; }
+  let assignee = null;
+  if (kind === 'task' && input.assigneeStaffId) {
+    const sr = await client.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true`, [input.assigneeStaffId]);
+    if (sr.rows[0]) assignee = sr.rows[0].id;
+  }
+
+  const r = await client.query(
+    `INSERT INTO reminders (application_id, kind, title, body, due_at, remind_at, recipients, assignee_staff_id, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9) RETURNING id`,
+    [appId, kind, title, String(input.body || '').trim() || null, due.toISOString(),
+     remindAt && !isNaN(remindAt.getTime()) ? remindAt.toISOString() : null,
+     JSON.stringify(recipients), assignee, actor && actor.id || null]);
+  return r.rows[0].id;
+}
+
+async function update(id, patch, actor, client = db) {
+  const cur = await client.query(`SELECT * FROM reminders WHERE id=$1`, [id]);
+  const row = cur.rows[0];
+  if (!row) { const e = new Error('reminder not found'); e.status = 404; throw e; }
+
+  const sets = [], vals = []; let i = 1;
+  const add = (col, v) => { sets.push(`${col}=$${i++}`); vals.push(v); };
+
+  if (typeof patch.title === 'string' && patch.title.trim()) add('title', patch.title.trim());
+  if ('body' in patch) add('body', String(patch.body || '').trim() || null);
+  if (patch.dueAt) { const d = new Date(patch.dueAt); if (!isNaN(d.getTime())) { add('due_at', d.toISOString()); add('fired_at', null); if (row.status === 'sent') add('status', 'scheduled'); } }
+  if ('remindAt' in patch) { const d = patch.remindAt ? new Date(patch.remindAt) : null; add('remind_at', d && !isNaN(d.getTime()) ? d.toISOString() : null); add('reminded_at', null); }
+  if (patch.status === 'done') { add('status', 'done'); add('completed_at', new Date().toISOString()); add('completed_by', actor && actor.id || null); }
+  else if (patch.status === 'dismissed') { add('status', 'dismissed'); add('completed_at', new Date().toISOString()); add('completed_by', actor && actor.id || null); }
+  else if (patch.status === 'cancelled') { add('status', 'cancelled'); }
+  else if (patch.status === 'scheduled') { add('status', 'scheduled'); add('completed_at', null); add('completed_by', null); }
+
+  if (!sets.length) return row;
+  sets.push('updated_at=now()'); vals.push(id);
+  const r = await client.query(`UPDATE reminders SET ${sets.join(',')} WHERE id=$${i} RETURNING *`, vals);
+  return r.rows[0];
+}
+
+async function remove(id, client = db) {
+  await client.query(`DELETE FROM reminders WHERE id=$1`, [id]);
+}
+
+// Send a reminder's notification to every recipient. Reused for the due firing
+// and the optional pre-due nudge (prefix differs). Best-effort per recipient.
+async function _deliver(row, { lead } = {}) {
+  const recipients = Array.isArray(row.recipients) ? row.recipients : [];
+  const when = niceWhen(row.due_at);
+  const isTask = row.kind === 'task';
+  const label = isTask ? 'Task' : 'Reminder';
+  const titleLine = lead
+    ? `Upcoming ${label.toLowerCase()}: ${row.title}`
+    : `${label}: ${row.title}`;
+  const bodyLines = [];
+  if (row.body) bodyLines.push(row.body);
+  bodyLines.push(lead ? `Due ${when}.` : (isTask ? `This task is due now (${when}).` : `This was scheduled for ${when}.`));
+  const body = bodyLines.join(' ');
+  const link = `/app/${row.application_id}`;   // notifyBorrower/notifyStaff route by audience
+  const staffLink = `/internal/app/${row.application_id}`;
+
+  for (const rcp of recipients) {
+    try {
+      if (rcp.kind === 'staff' && rcp.id) {
+        await notify.notifyStaff(rcp.id, {
+          type: 'reminder', title: titleLine, body,
+          applicationId: row.application_id, link: staffLink, ctaLabel: 'Open the loan file',
+        });
+      } else if (rcp.kind === 'borrower' && rcp.id) {
+        await notify.notifyBorrower(rcp.id, {
+          type: 'reminder', title: titleLine, body,
+          applicationId: row.application_id, link, ctaLabel: 'Open your file',
+        });
+      } else if (rcp.kind === 'email' && rcp.email) {
+        const msg = notify.buildEmail({
+          title: titleLine, body, link: staffLink, ctaLabel: 'Open the loan file',
+        }, 'staff');
+        await email.sendMail({ to: [rcp.email], subject: msg.subject, text: msg.text, html: msg.html }).catch(() => {});
+      }
+    } catch (_) { /* one bad recipient never blocks the rest */ }
+  }
+}
+
+// One dispatch pass: fire due reminders and any pre-due nudges. Idempotent -
+// fired_at / reminded_at stamps stop a row from being sent twice.
+async function dispatchDue(client = db) {
+  let fired = 0;
+  // 1) Pre-due nudges (tasks with remind_at reached, not yet nudged, not fired).
+  const leads = await client.query(
+    `SELECT * FROM reminders
+      WHERE status='scheduled' AND remind_at IS NOT NULL AND reminded_at IS NULL
+        AND fired_at IS NULL AND remind_at <= now() AND due_at > now()
+      ORDER BY remind_at LIMIT 100`);
+  for (const row of leads.rows) {
+    await _deliver(row, { lead: true });
+    await client.query(`UPDATE reminders SET reminded_at=now(), updated_at=now() WHERE id=$1`, [row.id]);
+  }
+  // 2) Due firings.
+  const due = await client.query(
+    `SELECT * FROM reminders
+      WHERE status='scheduled' AND fired_at IS NULL AND due_at <= now()
+      ORDER BY due_at LIMIT 100`);
+  for (const row of due.rows) {
+    await _deliver(row, {});
+    // A one-shot reminder is 'sent' once fired; a task stays actionable (still
+    // 'scheduled' with fired_at stamped) so it lives on until marked done.
+    if (row.kind === 'task') {
+      await client.query(`UPDATE reminders SET fired_at=now(), updated_at=now() WHERE id=$1`, [row.id]);
+    } else {
+      await client.query(`UPDATE reminders SET fired_at=now(), status='sent', updated_at=now() WHERE id=$1`, [row.id]);
+    }
+    fired++;
+  }
+  return fired;
+}
+
+let dispatcherStarted = false;
+function startDispatcher() {
+  if (dispatcherStarted) return;
+  dispatcherStarted = true;
+  // Minute cadence: reminders are scheduled to the minute, so this fires each due
+  // one within ~60s. Cheap query (partial index on status='scheduled').
+  setInterval(() => { dispatchDue().catch((e) => console.error('[reminders] dispatch:', e.message)); }, 60000).unref();
+}
+
+module.exports = {
+  resolveRecipients, contactsForApplication, outstandingItems,
+  listForApplication, create, update, remove,
+  dispatchDue, startDispatcher,
+};

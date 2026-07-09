@@ -13,10 +13,10 @@ const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
 const cfg = require('../config');
 const storage = require('../lib/storage');
-const { requireAuth, requireRole } = require('../auth');
+const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
-const { syncExperienceChecklistForApplication } = require('../lib/experience');
+const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
@@ -251,13 +251,22 @@ router.get('/applications', async (req, res) => {
     const where = ['a.deleted_at IS NULL'];
     if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
 
-    // status GROUP — same predicates the dashboard uses.
-    if (q.group === 'active') where.push(`a.status NOT IN ('funded','declined','withdrawn')`);
-    else if (q.group === 'cancelled') where.push(`a.status IN ('declined','withdrawn')`);
-    else if (q.group === 'closed') where.push(`a.status = 'funded'`);
-    // 'all'/absent → no status-group predicate.
+    // status GROUP — same predicates the dashboard uses. An EXACT status filter
+    // takes precedence over the group bucket: applying both (e.g. group=active
+    // AND status=funded from a stale URL/deep-link) would contradict and return
+    // ZERO rows — the classic "switch to Funded shows nothing" bug. So when an
+    // exact status is set, skip the group predicate entirely.
+    if (q.status) {
+      where.push(`a.status = ${add(String(q.status))}`);
+    } else if (q.group === 'active') {
+      where.push(`a.status NOT IN ('funded','declined','withdrawn')`);
+    } else if (q.group === 'cancelled') {
+      where.push(`a.status IN ('declined','withdrawn')`);
+    } else if (q.group === 'closed') {
+      where.push(`a.status = 'funded'`);
+    }
+    // 'all'/absent group with no status → no status predicate.
 
-    if (q.status) where.push(`a.status = ${add(String(q.status))}`);
     if (q.program) where.push(`a.program = ${add(String(q.program))}`);
     if (q.loanType) where.push(`a.loan_type = ${add(String(q.loanType))}`);
     // Free-text search across borrower name, YS loan number, and property address.
@@ -328,8 +337,15 @@ router.get('/applications', async (req, res) => {
       amount_desc: 'a.loan_amount DESC NULLS LAST',
       amount_asc: 'a.loan_amount ASC NULLS LAST',
       closing_desc: 'a.actual_closing DESC NULLS LAST',
+      closing_asc: 'a.actual_closing ASC NULLS LAST',
+      name_asc: 'b.last_name ASC, b.first_name ASC',
+      name_desc: 'b.last_name DESC, b.first_name DESC',
     };
-    const orderBy = SORTS[String(q.sort || '')] || SORTS.created_desc;
+    // A UNIQUE tiebreaker (a.id) after the chosen sort — imported ClickUp files
+    // often share the same created timestamp, and without a stable tiebreaker
+    // those equal-key rows reshuffle between fetches, which reads as "the sort is
+    // random / broken."
+    const orderBy = (SORTS[String(q.sort || '')] || SORTS.created_desc) + ', a.id DESC';
 
     const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
@@ -512,6 +528,14 @@ router.post('/applications', async (req, res) => {
 
     try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType, { isAssignment }); }
     catch (e) { console.error('[staff-origination] checklist failed:', db.describeError(e)); }
+    // Optionally add a CO-BORROWER right at creation (#98) — same identity-graph
+    // linking as adding one later. A bad co-borrower payload must not fail the
+    // whole file (it's already created); surface it as a soft warning instead.
+    let coBorrowerId = null, coBorrowerWarning = null;
+    if (b.coBorrower && (b.coBorrower.borrowerId || b.coBorrower.firstName || b.coBorrower.email)) {
+      try { coBorrowerId = await attachCoBorrowerToApp(appId, borrowerId, b.coBorrower); }
+      catch (e) { coBorrowerWarning = e.message || 'could not add the co-borrower'; console.error('[staff-origination] co-borrower failed:', e.message); }
+    }
     // Oversight flag: a scoped staffer opening a file for a PRE-EXISTING borrower
     // they had no prior relationship with now gains that borrower's PII (SSN) +
     // shared profile docs. This is allowed (owner-directed multi-file), but we
@@ -523,7 +547,11 @@ router.post('/applications', async (req, res) => {
         [borrowerId, req.actor.id, appId]);
       crossBorrower = !rel.rows[0];
     }
-    await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId, crossBorrower: crossBorrower || undefined });
+    await audit(req, 'create_application', 'application', appId, { origin: 'staff', borrowerId, coBorrowerId: coBorrowerId || undefined, crossBorrower: crossBorrower || undefined });
+    // Create + link the ClickUp task in the correct folder (officer's pipeline, or
+    // Lead Capture if none) the moment the file is started (#92). Best-effort and
+    // non-blocking — the file is created regardless of ClickUp availability.
+    require('../clickup/orchestrator').createForNewFile(appId).catch((e) => console.error('[clickup] create-on-start (staff)', appId, e && e.message));
 
     // Optionally invite the borrower to the portal for this file right away.
     let invited = null;
@@ -533,7 +561,8 @@ router.post('/applications', async (req, res) => {
     }
     res.status(201).json({
       ok: true, applicationId: appId, ysLoanNumber: ins.rows[0].ys_loan_number,
-      borrowerId, borrowerCreated: br.rows[0].created, invited });
+      borrowerId, borrowerCreated: br.rows[0].created, invited,
+      coBorrowerId, coBorrowerWarning: coBorrowerWarning || undefined });
   } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
 });
 
@@ -613,6 +642,60 @@ router.get('/applications/:id', async (req, res) => {
   res.json(r.rows[0]);
 });
 
+// Resolve-or-create a co-borrower from an identity payload and bind it to a
+// file. Shared by the standalone /co-borrower endpoint AND file creation (#98),
+// so "add a co-borrower while creating the application" runs the exact same
+// linking (identity-graph match, encrypted SSN, gov-ID condition, LLC owners).
+// Throws an Error with `.status` on a validation problem. `primaryBorrowerId`
+// guards against linking the primary borrower to themselves.
+async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
+  let coId = b.borrowerId || null;
+  if (!coId) {
+    const first = String(b.firstName || '').trim();
+    const last = String(b.lastName || '').trim();
+    const email = String(b.email || '').trim().toLowerCase();
+    if (!first || !last) { const e = new Error('co-borrower first and last name are required'); e.status = 400; throw e; }
+    if (!email) { const e = new Error('co-borrower email is required'); e.status = 400; throw e; }
+    const ssn = b.ssn ? String(b.ssn) : null;
+    const identity = require('../clickup/identity');
+    const ssnHash = ssn ? identity.ssnHash(ssn, cfg.ssnMatchKey) : null;
+    const ssnEnc = ssn ? C.encryptSSN(ssn) : null;
+    const ssnLast4 = ssn ? ssn.replace(/\D/g, '').slice(-4) : null;
+    // Identity graph: match an existing borrower by SSN-hash first (so the same
+    // person across files stays one record), else create/update by email.
+    if (ssnHash) {
+      const m = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 LIMIT 1`, [ssnHash]);
+      if (m.rows[0]) coId = m.rows[0].id;
+    }
+    if (!coId) {
+      const ins = await db.query(
+        `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
+         ON CONFLICT (email) DO UPDATE SET
+           first_name=COALESCE(NULLIF(borrowers.first_name,''),EXCLUDED.first_name),
+           last_name=COALESCE(NULLIF(borrowers.last_name,''),EXCLUDED.last_name),
+           cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
+           date_of_birth=COALESCE(borrowers.date_of_birth,EXCLUDED.date_of_birth),
+           ssn_encrypted=COALESCE(borrowers.ssn_encrypted,EXCLUDED.ssn_encrypted),
+           ssn_last4=COALESCE(borrowers.ssn_last4,EXCLUDED.ssn_last4),
+           ssn_hash=COALESCE(borrowers.ssn_hash,EXCLUDED.ssn_hash),
+           updated_at=now()
+         RETURNING id`,
+        [first, last, email, b.phone || null, b.dob || null, ssnEnc, ssnLast4, ssnHash]);
+      coId = ins.rows[0].id;
+    }
+  }
+  if (coId === primaryBorrowerId) { const e = new Error('the co-borrower must be a different person than the primary borrower'); e.status = 400; throw e; }
+  await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1`, [appId, coId]);
+  // The co-borrower's government-ID condition (named with their name) appears
+  // on the file the moment they're linked.
+  try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, coId); } catch (_) {}
+  // Link both borrowers to the file's vesting LLC so the entity is owned by
+  // both — each borrower's ownership % is filled in on the file (#81).
+  try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(appId); } catch (_) {}
+  return coId;
+}
+
 // Set / link / unlink the CO-BORROWER on a file. Staff enter the second
 // borrower's identity (or link an existing borrower id); it creates/updates an
 // ENCRYPTED borrower record (SSN encrypted at rest + hashed for the identity
@@ -623,60 +706,60 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
   try {
     const b = req.body || {};
     const appId = req.params.id;
-    const ar = await db.query(`SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1`, [appId]);
+    const ar = await db.query(`SELECT borrower_id, co_borrower_id, llc_id FROM applications WHERE id=$1`, [appId]);
     const app = ar.rows[0];
     if (!app) return res.status(404).json({ error: 'not found' });
 
     if (b.unlink === true) {
       await db.query(`UPDATE applications SET co_borrower_id=NULL, updated_at=now() WHERE id=$1`, [appId]);
       try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, null); } catch (_) {}
+      // Also drop the co-borrower's ownership link on the file's vesting LLC (#81).
+      try { if (app.llc_id && app.co_borrower_id) await require('../lib/llc-borrowers').unlinkBorrower(app.llc_id, app.co_borrower_id); } catch (_) {}
       await audit(req, 'unlink_co_borrower', 'application', appId, {});
       return res.json({ ok: true, unlinked: true });
     }
 
-    let coId = b.borrowerId || null;
-    if (!coId) {
-      const first = String(b.firstName || '').trim();
-      const last = String(b.lastName || '').trim();
-      const email = String(b.email || '').trim().toLowerCase();
-      if (!first || !last) return res.status(400).json({ error: 'co-borrower first and last name are required' });
-      if (!email) return res.status(400).json({ error: 'co-borrower email is required' });
-      const ssn = b.ssn ? String(b.ssn) : null;
-      const identity = require('../clickup/identity');
-      const ssnHash = ssn ? identity.ssnHash(ssn, cfg.ssnMatchKey) : null;
-      const ssnEnc = ssn ? C.encryptSSN(ssn) : null;
-      const ssnLast4 = ssn ? ssn.replace(/\D/g, '').slice(-4) : null;
-      // Identity graph: match an existing borrower by SSN-hash first (so the same
-      // person across files stays one record), else create/update by email.
-      if (ssnHash) {
-        const m = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 LIMIT 1`, [ssnHash]);
-        if (m.rows[0]) coId = m.rows[0].id;
-      }
-      if (!coId) {
-        const ins = await db.query(
-          `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
-           ON CONFLICT (email) DO UPDATE SET
-             first_name=COALESCE(NULLIF(borrowers.first_name,''),EXCLUDED.first_name),
-             last_name=COALESCE(NULLIF(borrowers.last_name,''),EXCLUDED.last_name),
-             cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
-             date_of_birth=COALESCE(borrowers.date_of_birth,EXCLUDED.date_of_birth),
-             ssn_encrypted=COALESCE(borrowers.ssn_encrypted,EXCLUDED.ssn_encrypted),
-             ssn_last4=COALESCE(borrowers.ssn_last4,EXCLUDED.ssn_last4),
-             ssn_hash=COALESCE(borrowers.ssn_hash,EXCLUDED.ssn_hash),
-             updated_at=now()
-           RETURNING id`,
-          [first, last, email, b.phone || null, b.dob || null, ssnEnc, ssnLast4, ssnHash]);
-        coId = ins.rows[0].id;
-      }
-    }
-    if (coId === app.borrower_id) return res.status(400).json({ error: 'the co-borrower must be a different person than the primary borrower' });
-    await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1`, [appId, coId]);
-    // The co-borrower's government-ID condition (named with their name) appears
-    // on the file the moment they're linked.
-    try { await require('../lib/co-borrower').ensureCoBorrowerIdCondition(appId, coId); } catch (_) {}
+    const coId = await attachCoBorrowerToApp(appId, app.borrower_id, b);
     await audit(req, 'set_co_borrower', 'application', appId, { coBorrowerId: coId });
     res.json({ ok: true, coBorrowerId: coId });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error', detail: e.message });
+  }
+});
+
+// #81 — the subject vesting LLC's borrower-owners and each one's ownership %.
+// On a co-borrower file both borrowers own the entity; this reads / sets their
+// stakes and keeps the entity linked to both.
+router.get('/applications/:id/vesting-llc-owners', async (req, res) => {
+  try {
+    const a = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    if (!a.llc_id) return res.json({ llcId: null, owners: [] });
+    const llc = (await db.query(`SELECT llc_name FROM llcs WHERE id=$1`, [a.llc_id])).rows[0];
+    const owners = await require('../lib/llc-borrowers').getOwners(a.llc_id);
+    res.json({ llcId: a.llc_id, llcName: llc && llc.llc_name, owners });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/applications/:id/vesting-llc-owners', async (req, res) => {
+  try {
+    const a = (await db.query(`SELECT llc_id, borrower_id FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    if (!a.llc_id) return res.status(400).json({ error: 'link a vesting LLC to this file first' });
+    const lb = require('../lib/llc-borrowers');
+    const owners = Array.isArray((req.body || {}).owners) ? req.body.owners : [];
+    for (const o of owners) {
+      const p = lb.pct(o.ownershipPct);
+      if (p && typeof p === 'object' && p.error) return res.status(400).json({ error: p.error });
+      await lb.linkBorrower(a.llc_id, o.borrowerId, p == null ? null : p);
+      // Keep llcs.ownership_pct in step with the PRIMARY owner's stake so the
+      // existing LLC verification math stays consistent.
+      if (o.borrowerId === a.borrower_id && p != null) {
+        await db.query(`UPDATE llcs SET ownership_pct=$2, updated_at=now() WHERE id=$1`, [a.llc_id, p]);
+      }
+    }
+    await audit(req, 'set_vesting_llc_owners', 'application', req.params.id, { count: owners.length });
+    res.json({ ok: true, owners: await lb.getOwners(a.llc_id) });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
@@ -688,16 +771,25 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
 // experience buckets the engines expect (flips / holds / ground-up).
 async function loadFileForPricing(appId) {
   const a = await db.query(
-    `SELECT a.*, b.fico FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+    // Pricing FICO = the HIGHEST score across the file's borrowers (#99): with a
+    // co-borrower, the stronger credit prices the deal. NULL when neither has one.
+    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+       FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+      WHERE a.id=$1`, [appId]);
   const app = a.rows[0];
   if (!app) return null;
   // Only VERIFIED deals count toward experience/tier — the same basis the
   // borrowers.tier recompute uses. Unverified, borrower-claimed deals must not
   // inflate the authoritative pricing tier. Staff can still override the exp*
   // inputs in the panel for a what-if.
+  // On a co-borrower file the experience is the SUM of BOTH borrowers (#80):
+  // e.g. 2 flips each → 4 flips feed the pricing engine. This only changes the
+  // COUNT fed in, never the frozen pricing math.
+  const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
-       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
   const exp = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
@@ -771,6 +863,8 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
   const appId = req.params.id;
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
+    const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+    if (locked) return res.status(409).json({ error: locked });
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
     const f = await loadFileForPricing(appId);
@@ -836,6 +930,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // persistProductRegistration above.)
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
 
+    // Register committed the priced scenario onto the file (loan amount, rate,
+    // rehab budget, term, IR months, ARV / as-is / purchase, assignment split,
+    // desired rate). Push those changed fields to ClickUp immediately so the task
+    // mirrors the registration instead of waiting for the next reconcile.
+    require('../clickup/orchestrator').pushApplication(appId).catch((e) => console.error('[clickup] push after register (staff)', appId, e && e.message));
+
     // Notify the assigned team (LO + processor), not the borrower.
     try {
       const t = await db.query(`SELECT loan_officer_id, processor_id, ys_loan_number FROM applications WHERE id=$1`, [appId]);
@@ -871,18 +971,26 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
   const appId = req.params.id;
   const payload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : null;
   if (!payload) return res.status(400).json({ error: 'payload required' });
+  const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
+  if (locked) return res.status(409).json({ error: locked });
   try {
     let it = await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' LIMIT 1`, [appId]);
     let itemId = it.rows[0] && it.rows[0].id;
     if (!itemId) {
       const ins = await db.query(
-        `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,tool_key,created_by_kind,created_by_id)
-         VALUES ('application',$1,'Rehab budget','borrower','task','rehab_budget','staff',$2) RETURNING id`, [appId, req.actor.id]);
+        `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,tool_key,created_by_kind,created_by_id)
+         VALUES ('application',$1,'Rehab budget','Rehab budget','borrower','task','rehab_budget','staff',$2) RETURNING id`, [appId, req.actor.id]);
       itemId = ins.rows[0].id;
     }
-    await db.query(`UPDATE checklist_items SET tool_payload=$2, status='received', updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload)]);
+    // FATAL rehab-budget gate (#75): the Scope of Work total must match the
+    // file's required rehab budget EXACTLY and can never override it. Checked
+    // before the condition is marked received, so a mismatch leaves it open.
     const total = Number(payload.total);
-    if (isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
+    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, total);
+    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total });
+    await db.query(`UPDATE checklist_items SET tool_payload=$2, status='received', updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload)]);
+    // Seed the file budget from the SOW ONLY when none is set yet (never override).
+    if (chk.seed && isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
     res.json({ ok: true, itemId });
@@ -921,6 +1029,10 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     [req.params.itemId, req.params.id]);
   if (!it.rows[0]) return res.status(404).json({ error: 'tool task not found' });
   const toolKey = it.rows[0].tool_key;
+  if (toolKey === 'rehab_budget') {   // #84 — rehab budget is loan structure, frozen at CTC
+    const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
+    if (locked) return res.status(409).json({ error: locked, fatal: true });
+  }
   const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
   const attachments = (Array.isArray(rawPayload.attachments) ? rawPayload.attachments : []).slice(0, 4)
     .map((a) => ({
@@ -931,16 +1043,24 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const payload = { ...rawPayload };
   delete payload.attachments;
   if (attachments.length) payload.export_files = attachments.map((a) => ({ filename: a.filename, contentType: a.contentType }));
+  // FATAL rehab-budget gate (#75) — SOW total must match the file budget exactly
+  // and never override it; refused before the condition is marked received.
+  let sowSeed = false;
+  if (toolKey === 'rehab_budget') {
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
+    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
+    sowSeed = chk.seed;
+  }
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status='received', updated_at=now() WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload),
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
   if (toolKey === 'rehab_budget') {
     const total = Number(payload && payload.total);
-    if (isFinite(total) && total >= 0) {
+    if (sowSeed && isFinite(total) && total >= 0) {
       await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
-      try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
     }
+    try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
   // A resubmission outdates the previous exports: the old PDF/Excel are
   // superseded and the fresh ones become the current versions on the condition.
@@ -992,10 +1112,16 @@ router.get('/applications/:id/checklist', async (req, res) => {
 router.post('/applications/:id/checklist', async (req, res) => {
   const b = req.body || {};
   if (!b.label) return res.status(400).json({ error: 'label required' });
+  // This IS a borrower-facing request — the typed label is what the borrower
+  // should see, so it doubles as the borrower_label. Without it the borrower
+  // portal would show the generic "An item your loan team needs" (#78).
+  const audience = b.audience || 'borrower';
+  const borrowerLabel = (audience === 'borrower' || audience === 'both')
+    ? String(b.borrowerLabel || b.label).trim().slice(0, 300) : null;
   const r = await db.query(
-    `INSERT INTO checklist_items (scope,application_id,label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
-     VALUES ('application',$1,$2,$3,'document',$4,$5,'staff',$6) RETURNING id`,
-    [req.params.id, b.label, b.audience || 'borrower', b.isRequired !== false, b.dueDate || null, req.actor.id]);
+    `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
+     VALUES ('application',$1,$2,$3,$4,'document',$5,$6,'staff',$7) RETURNING id`,
+    [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, b.dueDate || null, req.actor.id]);
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
   if (app.rows[0]) {
     const ctx = await notify.fileContext(req.params.id);
@@ -1351,9 +1477,14 @@ async function signOffGate(itemId, actor) {
 
   if (!isProduct && !isBudget && !isExp) return null;
 
-  const ar = await db.query(`SELECT rehab_budget, borrower_id FROM applications WHERE id=$1`, [item.application_id]);
+  const ar = await db.query(
+    `SELECT rehab_budget, borrower_id, co_borrower_id,
+            requested_exp_flips, requested_exp_holds, requested_exp_ground
+       FROM applications WHERE id=$1`, [item.application_id]);
   const app = ar.rows[0];
   if (!app) return null;
+  // Experience for the FILE counts BOTH borrowers on it (#80).
+  const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const reg = (await db.query(
     `SELECT inputs, quote FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [item.application_id])).rows[0] || null;
@@ -1377,11 +1508,16 @@ async function signOffGate(itemId, actor) {
     }
     return null;
   }
-  // isExp
+  // isExp — the experience REMINDER slot (#97). When NO experience is claimed on
+  // the file (nothing to verify for the chosen structure), it may be signed off
+  // freely; it only becomes gated once experience is claimed on the application /
+  // term sheet / product.
+  const claimed = (Number(app.requested_exp_flips) || 0) + (Number(app.requested_exp_holds) || 0) + (Number(app.requested_exp_ground) || 0);
+  if (claimed === 0) return null;
   if (!reg) return 'Register a product first — experience is checked against the registered product before this can be signed off.';
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) dt, count(*)::int n
-       FROM track_records WHERE borrower_id=$1 AND is_verified=true GROUP BY 1`, [app.borrower_id]);
+       FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
   const v = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
     if (/ground|construction/.test(row.dt)) v.ground += row.n;
@@ -1586,6 +1722,96 @@ router.get('/borrowers/search', async (req, res) => {
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+
+// ---------------- Loan-officer borrower management (#83) ----------------
+// The LO's book of borrowers: everyone on a file they run (seesAll staff get
+// everyone), with portal-account state and last activity, plus the actions an LO
+// needs — invite to the portal, email a reset link, or set a password directly.
+// Scoped exactly like every other staff borrower read. Registered before
+// /borrowers/:id so "borrowers" is never captured as an :id.
+router.get('/borrowers', async (req, res) => {
+  try {
+    const params = [];
+    let scope = '';
+    if (!seesAll(req)) {
+      params.push(req.actor.id);
+      scope = `WHERE EXISTS (SELECT 1 FROM applications a
+                              WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
+                                AND (a.loan_officer_id=$1 OR a.processor_id=$1))`;
+    }
+    const r = await db.query(
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
+              (ba.borrower_id IS NOT NULL) AS has_account,
+              ba.last_login_at, b.last_seen_at,
+              (SELECT count(*)::int FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL) AS files,
+              (SELECT id FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL
+                 ORDER BY created_at DESC LIMIT 1) AS latest_file_id
+         FROM borrowers b
+         LEFT JOIN borrower_auth ba ON ba.borrower_id=b.id
+        ${scope}
+        ORDER BY COALESCE(ba.last_login_at, b.last_seen_at) DESC NULLS LAST, b.last_name, b.first_name
+        LIMIT 500`, params);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Invite a borrower to the portal — binds to their most recent file and emails
+// the set-password link. Re-inviting just issues a fresh link.
+router.post('/borrowers/:id/portal-invite', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(404).json({ error: 'not found' });
+    if (!b.email) return res.status(400).json({ error: 'this borrower has no email on file' });
+    const app = (await db.query(
+      `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+      [req.params.id])).rows[0];
+    if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
+    const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+});
+
+// Email the borrower a password-reset link (staff never see the password).
+router.post('/borrowers/:id/reset-password', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = (await db.query(
+      `SELECT b.id, b.email, b.first_name FROM borrowers b
+         JOIN borrower_auth ba ON ba.borrower_id=b.id WHERE b.id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(400).json({ error: 'this borrower has no portal account yet — invite them first' });
+    if (!b.email) return res.status(400).json({ error: 'this borrower has no email on file' });
+    const { token } = await issueEmailToken({ borrowerId: b.id, email: b.email, kind: 'reset', ttlMin: 60, withToken: true });
+    await mail.send('passwordReset', b.email, { firstName: b.first_name, resetUrl: mail.link('/reset?token=' + token), minutes: 60 });
+    await audit(req, 'borrower_reset_password_email', 'borrower', b.id, {});
+    res.json({ ok: true, emailed: true });
+  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+});
+
+// Set a borrower's password directly (LO-assisted). Creates the login row if the
+// borrower had none, bumps token_version to revoke any live sessions, audits it,
+// and notifies the borrower their password changed.
+router.post('/borrowers/:id/set-password', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const pw = String((req.body || {}).password || '');
+    if (pw.length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
+    const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+    if (!b) return res.status(404).json({ error: 'not found' });
+    const hash = await C.hashPassword(pw);
+    const existing = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [req.params.id]);
+    if (existing.rows[0]) {
+      await db.query(
+        `UPDATE borrower_auth SET password_hash=$2, token_version=token_version+1,
+             failed_attempts=0, locked_until=NULL WHERE borrower_id=$1`, [req.params.id, hash]);
+    } else {
+      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,$2,0)`, [req.params.id, hash]);
+    }
+    await audit(req, 'borrower_set_password', 'borrower', b.id, {});
+    try { if (b.email) await mail.send('passwordChanged', b.email, { firstName: b.first_name }); } catch (_) {}
+    res.json({ ok: true, set: true, hadAccount: !!existing.rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message || 'server error' }); }
+});
 // (A borrower's entities live at GET /borrowers/:id/llcs below — the full
 // review bundle; its rows carry id/llc_name/is_verified for the track-record
 // tool's linker plus members/slots/completeness for the LLC review panel.)
@@ -1670,7 +1896,7 @@ router.delete('/track-records/:id', async (req, res) => {
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   await db.query(`DELETE FROM track_records WHERE id=$1`, [req.params.id]);
   await db.query(
-    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
+    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
     [tr.rows[0].borrower_id]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   await audit(req, 'staff_delete_track_record', 'track_record', req.params.id);
@@ -1879,7 +2105,7 @@ router.post('/track-records/:id/verify', async (req, res) => {
       WHERE id=$1`, [req.params.id, req.actor.id, status, counts]);
   // recompute borrower tier = count of verified track records
   await db.query(
-    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true) WHERE id=$1`,
+    `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
     [tr.rows[0].borrower_id]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   // Tier / verified-experience counts are rule-engine fields.
@@ -2045,6 +2271,64 @@ router.post('/applications/:id/nudge', async (req, res) => {
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items' });
     await audit(req, 'nudge_borrower', 'application', req.params.id, { count: list.length });
     res.json({ ok: true, count: list.length });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ── Reminders + task management (#93) ────────────────────────────────────────
+// The "Remind" button on a file. A reminder/task has a due date+time, a set of
+// recipients (any mix of the loan team, the borrower/co-borrower, or an ad-hoc
+// email) and a message; a task also carries an assignee. The boot dispatcher
+// fires the notification at the due moment via the normal notify fan-out.
+const reminders = require('../lib/reminders');
+
+// Everything the composer needs in one call: existing reminders on the file,
+// the selectable contacts, and the borrower-facing outstanding items (for the
+// "prefill outstanding conditions" helper). Access is already gated by the
+// /applications/:id scope middleware above.
+router.get('/applications/:id/reminders', async (req, res) => {
+  try {
+    const [list, contacts, outstanding] = await Promise.all([
+      reminders.listForApplication(req.params.id),
+      reminders.contactsForApplication(req.params.id, req.actor),
+      reminders.outstandingItems(req.params.id),
+    ]);
+    res.json({ reminders: list, contacts, outstanding });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/reminders', async (req, res) => {
+  try {
+    const id = await reminders.create(req.params.id, req.body || {}, req.actor);
+    await audit(req, 'create_reminder', 'application', req.params.id,
+      { reminderId: id, kind: (req.body || {}).kind || 'reminder' });
+    res.json({ ok: true, id });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.patch('/applications/:id/reminders/:rid', async (req, res) => {
+  try {
+    // Defense in depth: the reminder must belong to this (already-scoped) file.
+    const own = await db.query(`SELECT 1 FROM reminders WHERE id=$1 AND application_id=$2`, [req.params.rid, req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    const row = await reminders.update(req.params.rid, req.body || {}, req.actor);
+    await audit(req, 'update_reminder', 'application', req.params.id, { reminderId: req.params.rid, status: (req.body || {}).status });
+    res.json({ ok: true, reminder: row });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.delete('/applications/:id/reminders/:rid', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT 1 FROM reminders WHERE id=$1 AND application_id=$2`, [req.params.rid, req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    await reminders.remove(req.params.rid);
+    await audit(req, 'delete_reminder', 'application', req.params.id, { reminderId: req.params.rid });
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

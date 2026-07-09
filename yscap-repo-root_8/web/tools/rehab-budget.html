@@ -16,6 +16,38 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../suite.css?v=n1">
 <link rel="stylesheet" href="rehab-budget.css">
+<!-- Embedded-in-portal mode (?embed=1): hide the marketing shell and lock dark
+     theme BEFORE first paint, so opening the Scope of Work from a loan file never
+     flashes the light-themed standalone tool ("the static version, different
+     coloring"). The portal bridge re-applies the same rules after load; doing it
+     here first removes the flash. -->
+<script>
+(function () {
+  try {
+    var q = new URLSearchParams(location.search);
+    if (q.get("embed") === "1") {
+      var de = document.documentElement;
+      de.setAttribute("data-embed", "1");
+      de.setAttribute("data-theme", "dark");
+    }
+  } catch (e) {}
+})();
+</script>
+<style>
+html[data-embed] .topbar,
+html[data-embed] .suite-footer,
+html[data-embed] .grain,
+html[data-embed] .orb,
+html[data-embed] #floatActions,
+html[data-embed] .fa-wrap,
+html[data-embed] .ys-theme-toggle { display: none !important; }
+html[data-embed] .rb-hero .suite-eyebrow,
+html[data-embed] .rb-hero h1,
+html[data-embed] .rb-hero .tool-tagline,
+html[data-embed] .rb-hero .intro { display: none !important; }
+html[data-embed] .rb-hero { padding: .6rem 1rem .2rem; }
+html[data-embed] main { padding-top: 0 !important; }
+</style>
 </head>
 <body>
 <div class="grain" aria-hidden="true"></div>

@@ -575,6 +575,15 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     if (coBorrowerTaskId) {
       try { await db.query(`UPDATE applications SET co_borrower_task_id=COALESCE(co_borrower_task_id,$2), updated_at=now() WHERE id=$1`, [targetId, coBorrowerTaskId]); } catch (_) {}
     }
+    // Vesting LLC: link the ClickUp entity as the file's vesting LLC when the file
+    // has none yet. `llc_id` is NOT in `cols` (so the COALESCE update above never
+    // touches it), which meant an LLC added to a task after the file existed only
+    // landed in the borrower's LLC library, never on the file. Fill-only (WHERE
+    // llc_id IS NULL) so a staff-set / corrected vesting entity is never clobbered
+    // — same semantics as the co-borrower link above.
+    if (llcId) {
+      try { await db.query(`UPDATE applications SET llc_id=$2, updated_at=now() WHERE id=$1 AND llc_id IS NULL`, [targetId, llcId]); } catch (_) {}
+    }
     return { applicationId: targetId, matchStatus, detail };
   }
   if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };

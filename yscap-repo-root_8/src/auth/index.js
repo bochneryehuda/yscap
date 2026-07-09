@@ -528,4 +528,4 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json({ kind: 'borrower', ...r.rows[0] });
 });
 
-module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower };
+module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, issueEmailToken };

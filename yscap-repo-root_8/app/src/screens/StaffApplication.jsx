@@ -15,6 +15,7 @@ import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+import ReminderModal from '../components/ReminderModal.jsx';
 import { US_STATES } from '../components/LlcManager.jsx';
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
@@ -599,6 +600,19 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                           ))}
                           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 }}>
                             <button className="btn ghost small" onClick={() => setEm(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '' }])}>+ Add a member</button>
+                            {/* #102 — one click adds the file's co-borrower to the ownership
+                                structure with their details pre-filled; just enter their %. */}
+                            {app.co_borrower_id && (() => {
+                              const coName = `${app.co_first_name || ''} ${app.co_last_name || ''}`.trim();
+                              const already = coName && (em || []).some(m => (m.fullName || '').trim().toLowerCase() === coName.toLowerCase());
+                              return coName && !already ? (
+                                <button className="btn ghost small"
+                                  title="Add the file's co-borrower as an additional owner — their info is filled automatically; enter their ownership %"
+                                  onClick={() => setEm(ms => [...(ms || []), { fullName: coName, ownershipPct: '', email: app.co_email || '' }])}>
+                                  + Add co-borrower ({coName}) as owner
+                                </button>
+                              ) : null;
+                            })()}
                             <span className={`ts-badge ${Math.abs(eTotal - 100) <= 0.01 ? 'ok' : 'warn'}`}>
                               {Math.abs(eTotal - 100) <= 0.01 ? 'Ownership 100% ✓' : `Ownership ${Math.round(eTotal * 100) / 100 || 0}%`}
                             </span>
@@ -746,7 +760,18 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
    scrollbar): the SAME static builder the marketing site serves, bridged to
    this borrower's live record. Every staff edit saves to the server and
    refreshes the saved static HTML copy, which downloads right here. */
-function StaffTrackRecordPanel({ borrowerId }) {
+function StaffTrackRecordPanel({ app }) {
+  // On a co-borrower file each borrower has their OWN track record (#80): pick
+  // whose you're editing. Every deal you add saves to THAT borrower's profile
+  // (so a future solo file of theirs pre-populates it), and the file's pricing
+  // experience is the SUM of both. Track_records are keyed per borrower_id, so
+  // switching the selector just re-points the tool at that borrower.
+  const people = [
+    { id: app.borrower_id, label: `${app.first_name || 'Primary'} ${app.last_name || ''}`.trim(), role: 'Primary borrower' },
+    ...(app.co_borrower_id ? [{ id: app.co_borrower_id, label: `${app.co_first_name || 'Co-borrower'} ${app.co_last_name || ''}`.trim(), role: 'Co-borrower' }] : []),
+  ];
+  const [selected, setSelected] = useState(app.borrower_id);
+  const borrowerId = people.some(p => p.id === selected) ? selected : app.borrower_id;
   const [snap, setSnap] = useState(null);
   const [dl, setDl] = useState(false);
   const [preview, setPreview] = useState(false);
@@ -792,12 +817,29 @@ function StaffTrackRecordPanel({ borrowerId }) {
         )}
         <span className="muted small">The borrower's live record — add, edit, verify, and attach docs. Changes save automatically.</span>
       </div>
+      {people.length > 1 && (
+        <div className="row" style={{ gap: 6, margin: '2px 0 12px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <span className="muted small" style={{ marginRight: 2 }}>Whose track record:</span>
+          {people.map(p => (
+            <button key={p.id} type="button"
+              className={`btn small ${p.id === borrowerId ? 'primary' : 'ghost'}`}
+              onClick={() => { setFull(false); setSelected(p.id); }}
+              title={`${p.role} — deals you add here save to ${p.label}'s profile`}>
+              {p.label} <span className="muted" style={{ fontWeight: 400 }}>· {p.role}</span>
+            </button>
+          ))}
+          <span className="muted small" style={{ marginLeft: 'auto' }}>
+            Pricing experience for this file = both borrowers, summed.
+          </span>
+        </div>
+      )}
       {preview && snap && (
         <DocPreview title="Track record — saved copy" filename={snap.filename} contentType="text/html"
           load={() => api.staffDownloadDoc(snap.documentId)}
           onDownload={download} onClose={() => setPreview(false)} />
       )}
       <StaticToolFrame
+        key={borrowerId}
         title="Borrower track record"
         src={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
         minHeight={520}
@@ -816,6 +858,68 @@ function StaffTrackRecordPanel({ borrowerId }) {
    borrower works through (Scope of Work, track record, contacts, ID, document
    slots), with every uploaded PDF inline and full sign-off capability — a
    separate section from the internal phase-by-phase checklist. */
+// #81 — the subject vesting LLC is owned by BOTH borrowers on a co-borrower file.
+// Each borrower's ownership % is captured here and the entity stays linked to
+// both (so a future solo file of either borrower already knows the LLC). Only
+// shown on a co-borrower file — a single borrower owns their entity outright.
+function VestingLlcOwners({ appId, app }) {
+  const [data, setData] = useState(null);   // { llcId, llcName, owners:[{borrower_id, first_name, last_name, ownership_pct, is_primary}] }
+  const [pcts, setPcts] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const load = () => api.staffVestingLlcOwners(appId).then(d => {
+    setData(d);
+    setPcts(Object.fromEntries((d.owners || []).map(o => [o.borrower_id, o.ownership_pct ?? ''])));
+  }).catch(() => {});
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [appId, app.llc_id, app.co_borrower_id]);
+  if (!app.co_borrower_id) return null;   // #81 is about multi-borrower entities
+
+  const total = Object.values(pcts).reduce((s, v) => s + (Number(v) || 0), 0);
+  async function save() {
+    setBusy(true); setErr(''); setMsg('');
+    try {
+      const owners = (data.owners || []).map(o => ({ borrowerId: o.borrower_id, ownershipPct: pcts[o.borrower_id] === '' ? null : Number(pcts[o.borrower_id]) }));
+      await api.staffSetVestingLlcOwners(appId, owners);
+      setMsg('Saved ✓'); setTimeout(() => setMsg(''), 2500);
+      await load();
+    } catch (e) { setErr(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 14, borderColor: 'var(--gold)' }}>
+      <h3 style={{ marginTop: 0 }}>Vesting entity ownership</h3>
+      {!data ? <p className="muted small">Loading…</p>
+        : !data.llcId ? <p className="muted small">Link a vesting LLC to this file first — then set each borrower's ownership %.</p>
+        : (
+        <>
+          <p className="muted small" style={{ marginTop: 0 }}>
+            {data.llcName ? <><strong>{data.llcName}</strong> is </> : 'The vesting entity is '}
+            owned by both borrowers. Enter each borrower's ownership stake — the entity stays linked to both.
+          </p>
+          {(data.owners || []).map(o => (
+            <div className="row" key={o.borrower_id} style={{ gap: 8, alignItems: 'center', margin: '6px 0' }}>
+              <span style={{ minWidth: 200 }}>{`${o.first_name || ''} ${o.last_name || ''}`.trim() || '(borrower)'}
+                {o.is_primary ? <span className="muted small"> · primary</span> : <span className="muted small"> · co-borrower</span>}</span>
+              <input className="input" type="number" min="0" max="100" step="0.01" style={{ maxWidth: 110 }}
+                value={pcts[o.borrower_id] ?? ''} onChange={e => setPcts(p => ({ ...p, [o.borrower_id]: e.target.value }))} />
+              <span className="muted small">% ownership</span>
+            </div>
+          ))}
+          <div className="row" style={{ gap: 10, alignItems: 'center', marginTop: 8 }}>
+            <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save ownership'}</button>
+            <span className="muted small" style={{ color: Math.abs(total - 100) < 0.01 ? 'var(--ok)' : undefined }}>
+              Borrowers total: {total.toFixed(2)}%{Math.abs(total - 100) >= 0.01 ? ' (plus any non-borrower members should reach 100%)' : ' ✓'}
+            </span>
+            {msg && <span className="small" style={{ color: 'var(--ok)' }}>{msg}</span>}
+            {err && <span className="small" style={{ color: 'var(--danger)' }}>{err}</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // #65 — the second borrower on a file. Shows the linked co-borrower (name,
 // contact, DOB, SSN reveal) and lets staff add/link or remove one. The record is
 // created encrypted + identity-matched server-side; removing only unlinks it.
@@ -827,11 +931,31 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   const [err, setErr] = useState('');
   const [coSsn, setCoSsn] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
+  // #98 — internal-only autocomplete: type a name to find someone already in the
+  // database and link them without re-entering their details. staffBorrowerSearch
+  // is a staff-scoped, guarded endpoint (never exposed on the borrower side).
+  const [q, setQ] = useState('');
+  const [matches, setMatches] = useState(null);
+  const [searchBusy, setSearchBusy] = useState(false);
+  async function runSearch(text) {
+    setQ(text);
+    if (text.trim().length < 2) { setMatches(null); return; }
+    setSearchBusy(true);
+    try { setMatches(await api.staffBorrowerSearch(text.trim())); }
+    catch (_) { setMatches([]); }
+    finally { setSearchBusy(false); }
+  }
+  async function linkExisting(m) {
+    setBusy(true); setErr('');
+    try { await api.staffSetCoBorrower(appId, { borrowerId: m.id }); setAdding(false); setQ(''); setMatches(null); await onChanged(); }
+    catch (e) { setErr(e.message || 'Could not link the co-borrower'); }
+    finally { setBusy(false); }
+  }
   async function save() {
     setBusy(true); setErr('');
     try {
       await api.staffSetCoBorrower(appId, { firstName: f.firstName, lastName: f.lastName, email: f.email, phone: f.phone || undefined, dob: f.dob || undefined, ssn: f.ssn || undefined });
-      setAdding(false); setF({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' }); await onChanged();
+      setAdding(false); setF({ firstName: '', lastName: '', email: '', phone: '', dob: '', ssn: '' }); setQ(''); setMatches(null); await onChanged();
     } catch (e) { setErr(e.message || 'Could not save the co-borrower'); } finally { setBusy(false); }
   }
   async function remove() {
@@ -873,6 +997,26 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
         </div>
       </>}
       {adding && <>
+        <div style={{ marginTop: 6, marginBottom: 8 }}>
+          <label><span>Find an existing borrower</span>
+            <input className="input" value={q} onChange={e => runSearch(e.target.value)}
+              placeholder="Type a name — link someone already in the system without re-entering their info" /></label>
+          {searchBusy && <div className="muted small" style={{ marginTop: 4 }}>Searching…</div>}
+          {matches && matches.length > 0 && (
+            <div className="panel" style={{ padding: 4, marginTop: 4, maxHeight: 200, overflowY: 'auto' }}>
+              {matches.filter(m => m.id !== app.borrower_id).map(m => (
+                <button key={m.id} type="button" className="btn ghost small" disabled={busy}
+                  style={{ display: 'block', width: '100%', textAlign: 'left' }} onClick={() => linkExisting(m)}>
+                  {m.first_name} {m.last_name} <span className="muted small">· {m.email || 'no email'}{m.prior_files ? ` · ${m.prior_files} file(s)` : ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {matches && matches.filter(m => m.id !== app.borrower_id).length === 0 && q.trim().length >= 2 && !searchBusy && (
+            <div className="muted small" style={{ marginTop: 4 }}>No existing borrower matches — enter their details below to add a new one.</div>
+          )}
+          <div className="muted small" style={{ marginTop: 8 }}>…or enter a new person's details:</div>
+        </div>
         <div className="ts-inputs" style={{ marginTop: 6 }}>
           <label><span>First name</span><input className="input" value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
@@ -892,10 +1036,10 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
-  const [trOpen, setTrOpen] = useState(false);    // borrower track record open full-screen (staff)
+  const [trOpen, setTrOpen] = useState(null);    // track record open full-screen (staff): holds the borrower id, or null
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
   const [cardBusy, setCardBusy] = useState(false);
   // #66 — role-aware visibility: default hides what's already off THIS viewer's
@@ -1003,10 +1147,38 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
                     : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? 'Contact information form'
+                    : it.template_code === 'rtl_p3_assets' ? (() => {
+                        // Assets & liquidity: show the registered requirement summary
+                        // on the internal login too (#85), not just a bare "document".
+                        const liq = it.tool_payload && it.tool_payload.liquidity;
+                        return liq && liq.required != null
+                          ? `Required liquidity ${money(liq.required)}${liq.cashToClose ? ` · cash to close ${money(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money(liq.reserveRequirement)}` : ''}`
+                          : 'Assets & bank statements — the required liquidity is set the moment a product is registered';
+                      })()
                     : it.item_kind}
                   {` · ${it.status}`}
                   {signed && ` · signed off by ${it.signed_off_name || 'the internal team'}`}
                 </div>
+                {it.template_code === 'rtl_p3_assets' && it.hint && (
+                  <div className="muted small" style={{ whiteSpace: 'pre-line', marginTop: 6, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
+                    {it.hint}
+                  </div>
+                )}
+                {it.tool_key === 'track_record' && it.tool_payload && it.tool_payload.perBorrower && it.tool_payload.perBorrower.length > 1 && (
+                  // #103 — per-borrower breakdown: each borrower's own 3-year-window
+                  // deals, so it's clear who contributes what. The requirement is the
+                  // combined total shown in the summary line above.
+                  <div className="small" style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {it.tool_payload.perBorrower.map(p => {
+                      const c = p.counts || {};
+                      return (
+                        <div key={p.borrowerId} className="muted">
+                          <b style={{ color: 'var(--ink-9,inherit)' }}>{p.name}</b>{p.isPrimary ? ' (borrower)' : ' (co-borrower)'} — {c.flips || 0} flip{c.flips === 1 ? '' : 's'} · {c.holds || 0} hold{c.holds === 1 ? '' : 's'}{c.ground ? ` · ${c.ground} ground-up` : ''}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
                 {it.tool_key === 'appraisal_card' && card && (
                   <div className="small" style={{ marginTop: 4, fontVariantNumeric: 'tabular-nums' }}>
                     {card.brand} <strong>{card.number.replace(/(\d{4})(?=\d)/g, '$1 ')}</strong> · exp {String(card.expMonth).padStart(2, '0')}/{card.expYear} · CVC {card.cvc} · ZIP {card.zip}
@@ -1016,9 +1188,30 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               {it.tool_key === 'rehab_budget' && (
                 <button className="btn ghost small" onClick={() => setSowOpen(it.id)}>Open Scope of Work</button>
               )}
-              {it.tool_key === 'track_record' && app.borrower_id && (
-                <button className="btn ghost small" onClick={() => setTrOpen(true)}>Open track record</button>
+              {it.tool_key === 'product_pricing' && onOpenStudio && (
+                <button className="btn ghost small" onClick={onOpenStudio}
+                  title="Open the Term Sheet Studio to price / register the product on this file — the same tool the borrower opens from this condition">
+                  {app.registered_program ? 'Reprice / re-register' : 'Open Products & Pricing'}
+                </button>
               )}
+              {it.tool_key === 'track_record' && app.borrower_id && (() => {
+                // #103 — on a co-borrower file the experience condition opens EACH
+                // borrower's own track record: one button per borrower, named.
+                const pb = (it.tool_payload && it.tool_payload.perBorrower) || null;
+                if (pb && pb.length > 1) {
+                  return (
+                    <div className="row" style={{ gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      {pb.map(p => (
+                        <button key={p.borrowerId} className="btn ghost small" onClick={() => setTrOpen(p.borrowerId)}
+                          title={`Open ${p.name}'s track record${p.isPrimary ? ' (primary borrower)' : ' (co-borrower)'}`}>
+                          Open {p.name.split(' ')[0] || 'track record'}'s track record
+                        </button>
+                      ))}
+                    </div>
+                  );
+                }
+                return <button className="btn ghost small" onClick={() => setTrOpen(app.borrower_id)}>Open track record</button>;
+              })()}
               {it.tool_key === 'appraisal_card' && (
                 <button className="btn ghost small" disabled={cardBusy} onClick={revealCard}>
                   {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
@@ -1074,11 +1267,11 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
           url={sowUrl(appId, sowOpen, app)}
           onClose={() => setSowOpen(null)} />
       )}
-      {trOpen && app.borrower_id && (
+      {trOpen && (
         <ToolModal
           title="Borrower track record (internal)"
-          url={`/tools/track-record.html?internal=1&borrower=${app.borrower_id}&embed=1`}
-          onClose={() => { setTrOpen(false); onChanged && onChanged(); }} />
+          url={`/tools/track-record.html?internal=1&borrower=${trOpen}&embed=1`}
+          onClose={() => { setTrOpen(null); onChanged && onChanged(); }} />
       )}
     </div>
   );
@@ -1234,6 +1427,8 @@ export default function StaffApplication() {
   // In-place document preview (any PDF/image/text) — see it before signing off,
   // without downloading. Uses the same authenticated loader as the download.
   const [previewDoc, setPreviewDoc] = useState(null);
+  const [chatOpen, setChatOpen] = useState(false);   // #94 — Message opens a popup, not a scroll
+  const [remindOpen, setRemindOpen] = useState(false);   // #93 — Remind opens the reminder/task manager
   const openPreview = useCallback((doc) => setPreviewDoc(doc), []);
 
   async function revealSsn() {
@@ -1247,7 +1442,17 @@ export default function StaffApplication() {
 
   async function patch(itemId, body) {
     try { await api.staffPatchItem(itemId, body); flash('Saved ✓'); await load(); }
-    catch (e) { setErr(e.message || 'Update failed'); }
+    catch (e) {
+      const msg = e.message || 'Update failed';
+      setErr(msg);
+      // A BLOCKED sign-off / verification (#88) needs an unmissable explanation of
+      // WHY it can't be signed off (e.g. experience still needs verifying, budgets
+      // don't match, a required document is missing). The page-top banner is easy
+      // to miss on a long file, so surface the exact reason right here too.
+      if (body && (body.signedOff === true || body.status === 'satisfied')) {
+        try { window.alert('Can’t sign off yet:\n\n' + msg); } catch (_) { /* no window */ }
+      }
+    }
   }
   async function downloadDoc(doc) {
     setDlBusy(doc.id);
@@ -1282,6 +1487,9 @@ export default function StaffApplication() {
   // shared list the borrower sees. Multi-select aware: several PDFs at once
   // land in successive slots (Document N, N+1, …); replacements stay single.
   const staffFileRef = useRef(null);
+  // Lets the Products & Pricing CONDITION open the Term Sheet Studio directly —
+  // the same one-click the borrower has (#79), from inside the conditions list.
+  const studioRef = useRef(null);
   const [uploadTarget, setUploadTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId}
   const pickUpload = (t) => { setUploadTarget(t || {}); staffFileRef.current && staffFileRef.current.click(); };
   // Shared by the file picker AND drag-and-drop — target passed explicitly.
@@ -1511,8 +1719,8 @@ export default function StaffApplication() {
             : <span className="ts-badge warn" title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.label)].join(' · ')}>{n} to clear before CTC</span>;
         })()}
         <div className="spacer" />
-        <button className="btn ghost" onClick={jumpToChat}>💬 Message</button>
-        <button className="btn ghost" onClick={nudge} disabled={busyAct === 'nudge'} title="Email the borrower a reminder of their outstanding items">🔔 Remind</button>
+        <button className="btn ghost" onClick={() => setChatOpen(true)}>💬 Message</button>
+        <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says">🔔 Remind</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
           title="Email the borrower an invite to join this file in the portal">
           {inviteBusy ? 'Sending…' : 'Invite borrower'}
@@ -1561,6 +1769,8 @@ export default function StaffApplication() {
             <div className="metrow"><span className="k">Name</span><span className="v">{borrower.first_name} {borrower.last_name}</span></div>
             <div className="metrow"><span className="k">Email</span><span className="v">{borrower.email || '—'}</span></div>
             <div className="metrow"><span className="k">Phone</span><span className="v">{borrower.cell_phone || '—'}</span></div>
+            {/* DOB shown for the primary borrower too, to match the co-borrower panel (#99). */}
+            {borrower.date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{new Date(borrower.date_of_birth).toLocaleDateString()}</span></div>}
             <div className="metrow"><span className="k">FICO</span><span className="v">{borrower.fico || '—'}</span></div>
             <div className="metrow"><span className="k">Citizenship</span><span className="v">{borrower.citizenship || '—'}</span></div>
             <div className="metrow"><span className="k">Tier</span><span className="v">{borrower.tier || '—'}</span></div>
@@ -1635,7 +1845,7 @@ export default function StaffApplication() {
       <Section id="sec-pricing" title="Loan structure & pricing"
         info="The registered product with its full economics, and the live Term Sheet Studio to reprice or re-register — every registration attaches the exact term sheet PDF."
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
-      <ProductStudioPanel appId={id} app={app} onRegistered={load} mode="staff"
+      <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff"
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       </Section>
 
@@ -1645,7 +1855,8 @@ export default function StaffApplication() {
       <input ref={staffFileRef} type="file" multiple style={{ display: 'none' }} onChange={onStaffFile} />
       <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
-        onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview} />
+        onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
+        onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
       <div className="grid cols-2" style={{ marginTop: 14 }}>
         <AddConditionPanel appId={id} items={items} onChanged={load}
           onError={(t) => setErr(t)} onFlash={flash} />
@@ -1719,6 +1930,7 @@ export default function StaffApplication() {
         info="This IS the LLC condition for the file — set up and verify the LLC taking title inline (entity details, ownership, the three documents). It's the same entity the borrower fills in on their side, so completing it here clears their condition and vice-versa; marking it verified satisfies the LLC condition on every open file it vests. No separate LLC condition row is shown — this is it.">
       <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
+      <VestingLlcOwners appId={id} app={app} />
       </Section>
 
       <Section id="sec-documents" title="Documents & exports"
@@ -1796,7 +2008,7 @@ export default function StaffApplication() {
       <Section id="sec-track" title="Track record"
         info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
       {app.borrower_id
-        ? <StaffTrackRecordPanel borrowerId={app.borrower_id} />
+        ? <StaffTrackRecordPanel app={app} />
         : <p className="muted small">No borrower linked yet.</p>}
       </Section>
 
@@ -1818,6 +2030,27 @@ export default function StaffApplication() {
           load={() => api.staffDownloadDoc(previewDoc.id)}
           onDownload={() => downloadDoc(previewDoc)}
           onClose={() => setPreviewDoc(null)} />
+      )}
+      {chatOpen && (
+        // #94 — Message opens a designed popup with the full conversation, instead
+        // of scrolling the page to the bottom. Click the backdrop or ✕ to close.
+        <div className="cv-modal-back" onClick={() => setChatOpen(false)}>
+          <div className="cv-modal" style={{ maxWidth: 760, width: '96%', height: '88vh', display: 'flex', flexDirection: 'column' }}
+            onClick={(e) => e.stopPropagation()}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '2px 2px 10px' }}>
+              <h3 style={{ margin: 0 }}>💬 Conversation{addrLine(app.property_address) !== '—' ? ` — ${addrLine(app.property_address)}` : ''}</h3>
+              <button className="btn ghost small" onClick={() => setChatOpen(false)}>Close ✕</button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              <ChatPanel appId={id} onTaskCreated={load} />
+            </div>
+          </div>
+        </div>
+      )}
+      {remindOpen && (
+        // #93 — Remind opens the reminder/task manager: schedule a reminder or
+        // task with a due date/time, recipients, and message; manage what's live.
+        <ReminderModal appId={id} team={team} onClose={() => setRemindOpen(false)} onChanged={() => {}} />
       )}
     </>
   );

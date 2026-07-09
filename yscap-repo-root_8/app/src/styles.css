@@ -1,11 +1,26 @@
-/* ===== YS CAPITAL PORTAL — brand system (mirrors site :root, dark) ===== */
+/* ===== YS CAPITAL PORTAL — brand system (white-first redesign, owner 2026-07-08)
+   The legacy dark-theme token NAMES are kept and remapped to the new light
+   palette, so the whole portal reconverts to a calm, premium, white-first look
+   WITHOUT touching component markup or logic. New --ys-* / semantic aliases are
+   defined alongside for direct use. A focused override block at the very bottom
+   of this file fixes the handful of rules that hard-coded dark values. ===== */
 :root{
-  --ink:#141B22; --ink-1:#1B242D; --ink-2:#232F3A; --ink-3:#2B3945;
-  --teal:#7FA9B0; --teal-br:#AAD4D9; --teal-dp:#4E777F;
-  --gold:#C9A86A; --ivory:#F4F0E7; --muted:#A6B3BA; --on-accent:#08232b;
-  --line:rgba(255,255,255,.09); --danger:#E0736B; --ok:#8FC7A0;
-  --serif:'Fraunces',Georgia,serif; --sans:'Hanken Grotesk',system-ui,Arial,sans-serif;
-  --radius:14px; --radius-sm:10px;
+  /* page + surfaces */
+  --ink:#F7FAF9; --ink-1:#FFFFFF; --ink-2:#F1F6F5; --ink-3:#E7EFEE;
+  /* accents (teal primary, soft-teal border, gold) */
+  --teal:#2F7F86; --teal-br:#286D73; --teal-dp:#A8D3D0;
+  --gold:#B9944A; --ivory:#172326; --muted:#5D6B70; --on-accent:#FFFFFF;
+  --line:#DCE7E5; --danger:#B42318; --ok:#178560;
+  /* semantic aliases (match the owner palette 1:1) */
+  --bg:#F7FAF9; --surface:#FFFFFF; --surface-soft:#F1F6F5;
+  --border:#DCE7E5; --border-strong:#C8D7D4;
+  --text:#172326; --text-muted:#5D6B70; --text-soft:#819096;
+  --primary:#2F7F86; --primary-hover:#286D73; --primary-soft:#E5F3F2; --primary-border:#A8D3D0;
+  --gold-soft:#FFF6E2; --success:#178560; --success-soft:#EAF8F1;
+  --warning:#B7791F; --warning-soft:#FFF7E6; --danger-soft:#FDECEC; --focus:#7CC8CC;
+  --serif:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --radius:14px; --radius-sm:12px;
 }
 *{box-sizing:border-box}
 html,body,#root{height:100%}
@@ -89,6 +104,13 @@ textarea{min-height:90px;resize:vertical}
 .pill.new{color:var(--teal-br);border-color:var(--teal-dp)}
 .pill.approved,.pill.clear_to_close,.pill.funded{color:var(--ok);border-color:rgba(143,199,160,.4)}
 .pill.declined,.pill.withdrawn{color:var(--danger);border-color:rgba(224,115,107,.4)}
+.pill.ok{color:var(--ok);border-color:rgba(143,199,160,.4)}
+.pill.muted{color:var(--muted)}
+/* Reminders & tasks modal (#93) */
+.fld{display:flex;flex-direction:column;gap:4px}
+.fld>.k{color:var(--muted);font-size:13px;font-weight:600}
+.fld .muted{font-weight:400}
+@media (max-width:720px){.rem-grid{grid-template-columns:1fr !important}}
 .metrow{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}
 .metrow:first-child{border-top:none}
 .metrow .k{color:var(--muted);font-size:13px} .metrow .v{font-weight:600}
@@ -966,3 +988,134 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .cc-addtype{border:1px solid var(--line);background:var(--ink-2);color:var(--muted);border-radius:999px;
   padding:6px 13px;font-size:13px;cursor:pointer;font-family:var(--sans)}
 .cc-addtype.on{background:var(--teal-dp);border-color:var(--teal);color:var(--ivory);font-weight:700}
+
+/* =====================================================================
+   WHITE-FIRST REDESIGN OVERRIDES (owner 2026-07-08)
+   Calm, premium, white surfaces. Appended last so it refines the base
+   rules without reordering them. Colours resolve from the remapped tokens
+   above; these rules only fix the spots that hard-coded dark values, need a
+   new light-mode treatment, or tune spacing / sizing / hierarchy.
+   ===================================================================== */
+
+/* — Typography: one clean Inter/system-ui voice; tight, direct headings — */
+body{background:var(--bg);color:var(--text)}
+h1,h2,h3{font-family:var(--sans);font-weight:600;letter-spacing:-.012em;color:var(--text)}
+h1{font-size:24px} h2{font-size:19px} h3{font-size:16px}
+a{color:var(--primary)} a:hover{color:var(--primary-hover)}
+.muted{color:var(--text-muted)} .kpi .kpi-v{font-family:var(--sans)}
+.gold-rule{background:var(--gold)}
+
+/* — Roomy, centred content column (1180 / 32 / 16) — */
+.wrap{max-width:1180px;padding:0 32px}
+@media(max-width:720px){.wrap{padding:0 16px}}
+
+/* — Header: white, quiet, one brand hairline at the very top — */
+.header{background:var(--surface);backdrop-filter:none;
+  box-shadow:0 1px 0 var(--border),0 1px 14px rgba(23,35,38,.03)}
+.brand-word,.file-top-addr{color:var(--text)}
+.brand-lockup-img{filter:none}
+.nav a.active,.nav a:hover{color:var(--text)}
+
+/* — Cards / panels: soft even shadow, generous radius, no dark glow — */
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  box-shadow:0 8px 24px rgba(23,35,38,.06)}
+.panel:hover{border-color:var(--border)}
+.item{background:var(--surface)}
+.item:hover{border-color:var(--primary-border)}
+
+/* — Buttons: 44px, 12px radius; calm (no lift) — */
+.btn{min-height:44px;border-radius:12px}
+.btn:hover,.btn:active{transform:none}
+.btn.primary{background:var(--primary);color:#fff;box-shadow:0 1px 2px rgba(23,35,38,.10)}
+.btn.primary:hover{background:var(--primary-hover);box-shadow:0 2px 8px rgba(47,127,134,.20)}
+.btn.ghost{background:var(--surface);border-color:var(--border);color:var(--text)}
+.btn.ghost:hover{background:var(--surface-soft);border-color:var(--border-strong);color:var(--text)}
+.btn.link{background:none;color:var(--primary)} .btn.link:hover{color:var(--primary-hover)}
+.btn.small{min-height:36px}
+@media(max-width:720px){.btn,.btn.small,.btn.link{min-height:44px}}
+
+/* — Inputs: white, 12px radius, calm 3px focus ring — */
+.input,select,textarea{background:var(--surface);border-color:var(--border);color:var(--text);border-radius:12px}
+input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=range]),
+select,textarea{min-height:44px}
+.input:focus,select:focus,textarea:focus,
+.input:focus-visible,select:focus-visible,textarea:focus-visible{
+  outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-soft)}
+.field label{color:var(--text-muted)}
+select:not([multiple]){background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%235D6B70' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
+select option{background:var(--surface);color:var(--text)}
+.eye-btn{background:var(--surface-soft);border-color:var(--border);color:var(--primary)}
+.eye-btn:hover:not(:disabled){background:var(--primary-soft);color:var(--primary-hover)}
+
+/* — Status pills: soft fills, no heavy outlines — */
+.pill{background:var(--surface-soft);border-color:var(--border);color:var(--text-muted)}
+.pill.new{background:var(--primary-soft);color:var(--primary-hover);border-color:transparent}
+.pill.approved,.pill.clear_to_close,.pill.funded,.pill.ok,.pill.done{
+  background:var(--success-soft);color:var(--success);border-color:transparent}
+.pill.declined,.pill.withdrawn{background:var(--danger-soft);color:var(--danger);border-color:transparent}
+
+/* — Notices: soft tint + readable text — */
+.notice.err{background:var(--danger-soft);border:1px solid #F1C4BF;color:#8A1C13}
+.notice.ok{background:var(--success-soft);border:1px solid #BDE6D2;color:#0F6A4C}
+.notice.info{background:var(--primary-soft);border:1px solid var(--primary-border);color:var(--primary-hover)}
+
+/* — Auth: light page, centred white card (no dark full-screen) — */
+.authbg{background:var(--bg)}
+.authcard{box-shadow:0 8px 24px rgba(23,35,38,.06)}
+
+/* — KPI / metric tiles: flat white cards — */
+.kpi{background:var(--surface);box-shadow:0 8px 24px rgba(23,35,38,.06)}
+.kpi:hover{border-color:var(--primary-border);transform:none}
+
+/* — File nav rail: white, quiet, gold active edge — */
+.file-nav ol{background:var(--surface);box-shadow:0 8px 24px rgba(23,35,38,.05)}
+.file-nav-badge{background:var(--surface-soft);color:var(--primary-hover)}
+.file-section .sec-head{border-color:var(--border)}
+
+/* — Chat: light bubbles; my bubble is primary with white text — */
+.msg-bubble.me{color:#fff}
+.cv-bubble.me{background:var(--primary);border-color:var(--primary);color:#fff}
+.cv-bubble.me .cv-tick,.cv-bubble.me .cv-tick.read{color:rgba(255,255,255,.85)}
+.msg-att-file{background:var(--surface);border-color:var(--border)}
+.chat-ava,.chat-badge{color:#fff}
+
+/* — Dark overlays → light washes — */
+.drop-hint{background:rgba(247,250,249,.9);color:var(--primary)}
+.toolsheet-savewash{background:rgba(247,250,249,.86);color:var(--text)}
+.toolsheet{background:var(--bg)}
+.toolsheet-head{background:var(--surface)}
+
+/* — Term-sheet / status badges + reasons: soft light tints — */
+.ts-badge.ok{background:var(--success-soft);color:var(--success);border-color:transparent}
+.ts-badge.warn{background:var(--warning-soft);color:var(--warning);border-color:transparent}
+.ts-badge.err{background:var(--danger-soft);color:var(--danger);border-color:transparent}
+.ts-reasons li.ok{background:var(--success-soft);color:var(--success)}
+.ts-reasons li.warn{background:var(--warning-soft);color:var(--warning)}
+.ts-reasons li.err{background:var(--danger-soft);color:var(--danger)}
+
+/* — Tooltip bubble → white with border — */
+.info-tip-bubble{background:var(--surface);color:var(--text);border-color:var(--border);
+  box-shadow:0 8px 24px rgba(23,35,38,.12)}
+
+/* — Highlighted rows / summaries use warm amber or teal tints (never dark) — */
+.rb-summary{background:var(--warning-soft);border-left-color:var(--gold)}
+.rb-line.rb-suggested{background:var(--warning-soft)}
+.cv-composer.borrower-visible{background:var(--warning-soft);border-top-color:#E9D8AE}
+.cv-visible-banner{background:var(--warning-soft);color:var(--warning)}
+.progress{background:var(--surface-soft)}
+
+/* — Checklist / condition rows: calm teal wash on hover — */
+.checkitem:hover,a.checkitem:hover{background:var(--primary-soft)}
+a.checkitem:hover{transform:none;border-color:var(--primary-border)}
+
+/* — Chat internals: keep text readable on the new light bubbles / white boxes — */
+.msg-att-file{color:var(--text)}
+.msg-rx{background:var(--surface-soft);border-color:var(--border);color:var(--text)}
+.msg-rx.mine{background:var(--primary-soft);border-color:var(--primary-border)}
+.msg-bubble.me .mention,.msg-bubble.me .entity-chip{
+  color:#fff;background:rgba(255,255,255,.20);border-color:rgba(255,255,255,.45)}
+.cv-bubble.me .cv-quote{background:rgba(255,255,255,.16)}
+.cv-bubble.me .cv-quote strong,.cv-bubble.me .cv-quote span{color:rgba(255,255,255,.9)}
+
+/* — Keyboard focus uses the brand focus colour — */
+:focus-visible{outline-color:var(--focus)}
