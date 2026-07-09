@@ -289,6 +289,7 @@ router.post('/borrower/forgot', async (req, res) => {
   const { email } = req.body || {};
   try {
     if (email) {
+      // Borrower self-service reset (needs an existing portal account).
       const r = await db.query(
         `SELECT b.id, b.first_name FROM borrowers b
            JOIN borrower_auth ba ON ba.borrower_id=b.id WHERE b.email=$1 LIMIT 1`, [email]);
@@ -300,8 +301,28 @@ router.post('/borrower/forgot', async (req, res) => {
           firstName: b.first_name,
           resetUrl: mail.link('/reset?token=' + token), minutes: 60 });
       }
+      // STAFF self-service reset. The staff console login AND the borrower login
+      // share this one "Forgot password?" endpoint, but it previously checked
+      // borrowers ONLY — so a staffer who entered their own email got NOTHING
+      // (no email was ever sent; delivery was fine, the send never happened).
+      // Now, when the email belongs to an active staff user, issue a console-
+      // reset link too. Mirrors admin.js /staff/:id/reset-email exactly: an
+      // invite_tokens 'staff' row + the staffPasswordReset email -> /accept.
+      const s = await db.query(
+        `SELECT id, email, full_name, role FROM staff_users
+          WHERE lower(email)=lower($1) AND is_active=true LIMIT 1`, [email]);
+      const su = s.rows[0];
+      if (su) {
+        const stoken = C.randomToken(24);
+        await db.query(
+          `INSERT INTO invite_tokens (token_hash,kind,email,role,created_by,expires_at)
+           VALUES ($1,'staff',$2,$3,$4, now() + interval '7 days')`,
+          [C.sha256(stoken), su.email, su.role, su.id]);
+        await mail.send('staffPasswordReset', su.email, {
+          fullName: su.full_name, url: mail.link('/accept?token=' + stoken), days: 7 });
+      }
     }
-  } catch (e) { /* swallow */ }
+  } catch (e) { /* swallow — never reveal which accounts exist (enumeration-safe) */ }
   res.json({ ok: true });
 });
 
