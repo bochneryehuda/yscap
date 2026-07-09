@@ -1968,7 +1968,7 @@ router.get('/borrowers/:id/applications', async (req, res) => {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const r = await db.query(
       `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.status, a.internal_status,
-              a.property_address, a.loan_amount, a.created_at, a.closing_date, a.funded_date,
+              a.property_address, a.loan_amount, a.created_at, a.expected_closing, a.actual_closing,
               a.borrower_id=$1 AS is_primary, a.co_borrower_id=$1 AS is_co_borrower,
               off.full_name AS loan_officer_name, l.llc_name AS entity_name, l.is_verified AS entity_verified
          FROM applications a
@@ -2287,6 +2287,71 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
 // Fill in / correct an entity's details on the borrower's behalf. Mirrors the
 // borrower's PATCH /llcs/:id, including the verified-lock: a verified entity
 // must be unlocked (POST /llcs/:id/verify {verified:false}) before edits.
+// Staff single-entity bundle — parity with the borrower GET /llcs/:id so the
+// SHARED LlcManager component works from the staff CRM entity section (it was
+// hard-wired to the borrower-only endpoint, which 403'd for staff — the CRM
+// Entities tab showed "borrower only"). Scoped by canSeeBorrowerId; staff always
+// manage (read_only:false).
+router.get('/llcs/:id', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const bundle = await llcLib.getLlcBundle(req.params.id);
+    if (!bundle) return res.status(404).json({ error: 'not found' });
+    res.json({ ...bundle, read_only: false });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// Staff upload of an entity document into a specific LLC checklist slot, WITHOUT a
+// file context (the CRM entity library has no appId). Mirrors the LLC path of the
+// staff app-doc upload; visibility='borrower' so the entity's docs stay shared.
+router.post('/llcs/:id/documents', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+    const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before replacing its documents' });
+    if (b.checklistItemId) {
+      const ci = await db.query(`SELECT id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, req.params.id]);
+      if (!ci.rows[0]) return res.status(404).json({ error: 'checklist item not found on this entity' });
+    }
+    const buf = Buffer.from(b.dataBase64, 'base64');
+    if (!buf.length) return res.status(400).json({ error: 'empty file' });
+    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    const r = await db.query(
+      `INSERT INTO documents (checklist_item_id,llc_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,slot_label,visibility)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'borrower') RETURNING id`,
+      [b.checklistItemId || null, req.params.id, own.rows[0].borrower_id, b.filename,
+       b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, slot]);
+    if (b.checklistItemId) {
+      if (b.replaceDocumentId) {
+        await db.query(
+          `UPDATE documents SET is_current=false,
+              review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+            WHERE id=$1 AND checklist_item_id=$2`, [b.replaceDocumentId, b.checklistItemId]);
+      }
+      await db.query(
+        `UPDATE documents SET is_current=false,
+            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+          WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
+            AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
+            AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
+        [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
+      await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
+      enqueueChecklistStatusPush(b.checklistItemId).catch(() => {});
+    }
+    try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
+    await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, llcId: req.params.id });
+    res.status(201).json({ ok: true, documentId: r.rows[0].id });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
 router.patch('/llcs/:id', async (req, res) => {
   const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });

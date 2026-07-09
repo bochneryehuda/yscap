@@ -248,6 +248,24 @@ async function reconcileLinkedProgramsOnce() {
       else console.error('[clickup] reconcile-programs task failed', row.task_id, e.message);
     }
   }
+  // Re-examine files previously FLAGGED 'manual_review' — including orphans flagged
+  // by an EARLIER build (before merge-on-heal existed), which the query above
+  // excludes so they'd otherwise stay stuck forever. If such a file's task is now
+  // confirmed deleted, treat it as an orphan so resolveOrphans can merge it into a
+  // live sibling. We do NOT re-ingest these (that would clear a genuine ambiguous
+  // flag) — only check task liveness (its live sibling is already in liveTaskIds
+  // from the main loop above, which is what the merge path needs).
+  const flagged = await db.query(
+    `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
+            a.property_address->>'oneLine' AS one_line
+       FROM applications a
+      WHERE a.sync_state='manual_review' AND a.deleted_at IS NULL
+        AND a.clickup_pipeline_task_id IS NOT NULL`);
+  for (const row of flagged.rows) {
+    if (liveTaskIds.has(String(row.task_id))) continue;   // its own task is live → genuinely ambiguous, leave it
+    try { await clickup.getTask(row.task_id); liveTaskIds.add(String(row.task_id)); }
+    catch (e) { if (isTaskDeletedError(e)) orphans.push(row); }
+  }
   // Circuit-breaker: a large 404 fraction (or NO task resolving at all) is almost
   // certainly an API/token outage, not mass task deletion — do nothing this run.
   let orphan = { archived: 0, merged: 0, flagged: 0, skipped: 0 };
