@@ -59,7 +59,33 @@ async function setVestingLlc(appId, llcId, opts = {}) {
 // The full follow-through — identical to what the HTTP link routes have always run,
 // now shared. Kept cheap in steady state: the heavy condition re-eval only fires
 // when the entity actually changed (force) or the LLC doc checklist was just built.
+// Ensure the borrower-facing LLC condition (rtl_p1_llc, audience 'both') exists on
+// the file, so a file that vests in an entity ALWAYS surfaces the LLC section + its
+// three documents to the borrower as an external condition — some files predate the
+// condition or carried a partial checklist. Idempotent (NOT EXISTS guard); the
+// column list mirrors the proven migration-066 backfill.
+async function ensureLlcCondition(appId) {
+  try {
+    await db.query(
+      `INSERT INTO checklist_items
+         (template_id, scope, label, borrower_label, audience, item_kind, role_scope,
+          phase, hint, borrower_hint, is_gate, is_milestone, sort_order, tool_key,
+          clickup_field_id, tpr_exclude, created_by_kind, is_required, application_id)
+       SELECT t.id, t.scope, t.label, t.borrower_label, t.audience, t.item_kind,
+              COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
+              COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false),
+              COALESCE(t.sort_order,130), t.tool_key, t.clickup_field_id,
+              COALESCE(t.tpr_exclude,false), 'system', COALESCE(t.is_required,true), $1
+         FROM checklist_templates t
+        WHERE t.code='rtl_p1_llc' AND t.is_active=true
+          AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.application_id=$1 AND ci.template_id=t.id)`,
+      [appId]);
+  } catch (_) { /* best-effort */ }
+}
+
 async function runWiring(appId, llcId, source, push, { force = false, actor = null } = {}) {
+  // The borrower-facing LLC condition must exist before we sync its state below.
+  await ensureLlcCondition(appId);
   try { await require('./llc-borrowers').syncVestingLlcBorrowers(appId); } catch (_) { /* best-effort */ }
   let created = false;
   try {
