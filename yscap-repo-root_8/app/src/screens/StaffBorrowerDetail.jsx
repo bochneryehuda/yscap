@@ -295,7 +295,7 @@ function Entities({ id }) {
               {l.is_verified ? <span className="pill ok" style={{ marginLeft: 8 }}>Verified ✓</span> : <span className="pill" style={{ marginLeft: 8 }}>Unverified</span>}
             </h3>
           </div>
-          <LlcManager llcId={l.id} onChanged={reload} compactHeader />
+          <LlcManager llcId={l.id} onChanged={reload} compactHeader staff />
         </div>
       ))}
     </div>

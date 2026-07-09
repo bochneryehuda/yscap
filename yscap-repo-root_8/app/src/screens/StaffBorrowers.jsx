@@ -59,31 +59,51 @@ export default function StaffBorrowers() {
     finally { setBusy(''); }
   }
 
-  const [sortKey, setSortKey] = useState('recent');   // recent | name | officer | files
+  const [sortKey, setSortKey] = useState('recent');   // recent | name | officer | files | portal | created
+  const [officer, setOfficer] = useState('all');       // filter: '' = unassigned, else officer name
+  // Distinct loan officers present in the list, for the "whose clients" filter.
+  const officers = useMemo(() => rows
+    ? [...new Set(rows.map(b => b.loan_officer_name).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+    : [], [rows]);
+  const hasUnassigned = useMemo(() => !!(rows && rows.some(b => !b.loan_officer_name)), [rows]);
+  const byName = (a, b) => `${a.last_name || ''} ${a.first_name || ''}`.trim().localeCompare(`${b.last_name || ''} ${b.first_name || ''}`.trim());
   const filtered = useMemo(() => {
     if (!rows) return null;
     const needle = q.trim().toLowerCase();
     let list = !needle ? rows.slice() : rows.filter(b =>
       `${b.first_name || ''} ${b.last_name || ''} ${b.email || ''} ${b.cell_phone || ''} ${b.loan_officer_name || ''}`.toLowerCase().includes(needle));
+    // Filter to a single loan officer's clients (or the unassigned bucket).
+    if (officer !== 'all') list = list.filter(b => (b.loan_officer_name || '') === (officer === '__none__' ? '' : officer));
     const cmp = {
-      name: (a, b) => `${a.last_name || ''} ${a.first_name || ''}`.trim().localeCompare(`${b.last_name || ''} ${b.first_name || ''}`.trim()),
-      officer: (a, b) => String(a.loan_officer_name || '~~~').localeCompare(String(b.loan_officer_name || '~~~')),
-      files: (a, b) => (b.files || 0) - (a.files || 0),
+      name: byName,
+      // Group by officer, then by borrower name within each officer.
+      officer: (a, b) => String(a.loan_officer_name || '~~~zzz').localeCompare(String(b.loan_officer_name || '~~~zzz')) || byName(a, b),
+      files: (a, b) => (b.files || 0) - (a.files || 0) || byName(a, b),
       recent: (a, b) => new Date(b.last_login_at || b.last_seen_at || 0) - new Date(a.last_login_at || a.last_seen_at || 0),
+      // Portal-active first, then by name — surfaces who still needs an invite.
+      portal: (a, b) => (Number(!!b.has_account) - Number(!!a.has_account)) || byName(a, b),
+      created: (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
     }[sortKey];
     return cmp ? list.sort(cmp) : list;
-  }, [rows, q, sortKey]);
+  }, [rows, q, sortKey, officer]);
 
   return (
     <div className="wrap">
       <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
         <h1 style={{ margin: 0 }}>Borrowers</h1>
         <div className="spacer" />
-        <select className="input" value={sortKey} onChange={e => setSortKey(e.target.value)} style={{ maxWidth: 170 }} title="Sort borrowers">
-          <option value="recent">Most recent</option>
+        <select className="input" value={officer} onChange={e => setOfficer(e.target.value)} style={{ maxWidth: 200 }} title="Show only this loan officer's clients">
+          <option value="all">All loan officers</option>
+          {officers.map(o => <option key={o} value={o}>{o}</option>)}
+          {hasUnassigned && <option value="__none__">(Unassigned)</option>}
+        </select>
+        <select className="input" value={sortKey} onChange={e => setSortKey(e.target.value)} style={{ maxWidth: 180, marginLeft: 8 }} title="Sort borrowers">
+          <option value="recent">Most recent login</option>
           <option value="name">Name (A–Z)</option>
           <option value="officer">Loan officer</option>
           <option value="files"># of files</option>
+          <option value="portal">Portal status</option>
+          <option value="created">Newest added</option>
         </select>
         <input className="input" placeholder="Search name, email, phone, officer…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 280, marginLeft: 8 }} />
       </div>

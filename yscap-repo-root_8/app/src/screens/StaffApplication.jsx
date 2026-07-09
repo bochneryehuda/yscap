@@ -1785,7 +1785,7 @@ export default function StaffApplication() {
         <div className="panel">
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>
           {borrower ? <>
-            <div className="metrow"><span className="k">Name</span><span className="v">{borrower.first_name} {borrower.last_name}</span></div>
+            <div className="metrow"><span className="k">Name</span><span className="v">{app.borrower_id ? <Link to={`/internal/borrowers/${app.borrower_id}`} title="Open borrower CRM profile">{borrower.first_name} {borrower.last_name}</Link> : <>{borrower.first_name} {borrower.last_name}</>}</span></div>
             <div className="metrow"><span className="k">Email</span><span className="v">{borrower.email || '—'}</span></div>
             <div className="metrow"><span className="k">Phone</span><span className="v">{borrower.cell_phone || '—'}</span></div>
             {/* DOB shown for the primary borrower too, to match the co-borrower panel (#99). */}

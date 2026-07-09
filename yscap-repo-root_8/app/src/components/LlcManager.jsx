@@ -69,7 +69,24 @@ function SlotRow({ llc, slot, onPick, onDownload, onPreview, dlBusy, uploading, 
   );
 }
 
-export default function LlcManager({ llcId, onChanged, compactHeader }) {
+export default function LlcManager({ llcId, onChanged, compactHeader, staff = false }) {
+  // Staff and borrower hit different route namespaces for the SAME entity actions.
+  // This component was hard-wired to the borrower endpoints, so rendering it in a
+  // staff surface (the CRM entity section) 403'd ("borrower only"). The `staff`
+  // prop routes every call to the staff equivalents.
+  const A = staff ? {
+    get: (id) => api.staffLlc(id),
+    update: (id, b) => api.staffUpdateLlc(id, b),
+    members: (id, m) => api.staffSaveLlcMembers(id, m),
+    upload: (b) => api.staffUploadLlcDoc(b.llcId, b),
+    download: (id) => api.staffDownloadDoc(id),
+  } : {
+    get: (id) => api.llc(id),
+    update: (id, b) => api.updateLlc(id, b),
+    members: (id, m) => api.saveLlcMembers(id, m),
+    upload: (b) => api.uploadDoc(b),
+    download: (id) => api.downloadDoc(id),
+  };
   const [llc, setLlc] = useState(null);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -86,7 +103,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
 
   const load = () => {
     const forId = llcId;
-    return api.llc(llcId).then(l => {
+    return A.get(llcId).then(l => {
       if (idRef.current !== forId) return;
       setLlc(l);
       setF({
@@ -103,7 +120,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
 
   async function saveDetails() {
     setBusy('details'); setErr('');
-    try { await api.updateLlc(llcId, f); flash('Saved ✓'); await load(); onChanged && onChanged(); }
+    try { await A.update(llcId, f); flash('Saved ✓'); await load(); onChanged && onChanged(); }
     catch (e) { setErr(e.message || 'Could not save'); }
     finally { setBusy(''); }
   }
@@ -112,8 +129,8 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
     try {
       // The borrower's own % lives in the details form — save it together with
       // the members so "Save ownership" never reverts an unsaved percentage.
-      await api.updateLlc(llcId, f);
-      await api.saveLlcMembers(llcId, members.filter(m => m.fullName.trim()).map(m => ({
+      await A.update(llcId, f);
+      await A.members(llcId, members.filter(m => m.fullName.trim()).map(m => ({
         fullName: m.fullName.trim(), ownershipPct: Number(m.ownershipPct), email: m.email.trim() || undefined,
       })));
       flash('Ownership saved ✓'); await load(); onChanged && onChanged();
@@ -130,7 +147,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
     setBusy('upload'); setErr('');
     try {
       for (const file of files) {
-        await api.uploadDoc({
+        await A.upload({
           llcId, checklistItemId: slot.item_id,
           filename: file.name, contentType: file.type, dataBase64: await fileToBase64(file),
         });
@@ -144,7 +161,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
   const onFile = (e) => uploadToSlot((e.target && e.target.files) || [], slotRef.current);
   async function downloadSlot(slot) {
     setDlBusy(slot.document_id);
-    try { const { blob, filename } = await api.downloadDoc(slot.document_id); saveBlob(blob, filename || slot.filename); }
+    try { const { blob, filename } = await A.download(slot.document_id); saveBlob(blob, filename || slot.filename); }
     catch (e) { setErr(e.message || 'Download failed'); }
     finally { setDlBusy(null); }
   }
@@ -248,7 +265,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader }) {
       </div>
       {previewSlot && (
         <DocPreview title={previewSlot.label} filename={previewSlot.filename}
-          load={() => api.downloadDoc(previewSlot.document_id)}
+          load={() => A.download(previewSlot.document_id)}
           onDownload={() => downloadSlot(previewSlot)}
           onClose={() => setPreviewSlot(null)} />
       )}
