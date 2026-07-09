@@ -763,6 +763,87 @@ router.post('/applications/:id/vesting-llc-owners', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
+// The entities that are VERIFIABLE from inside this file — NOT the borrower's
+// whole LLC library. That set is exactly: the file's vesting entity
+// (applications.llc_id) PLUS the entities tied to this borrower's (and any
+// co-borrower's) track record — the LLCs that held/flipped the track-record
+// properties, either by the real track_records.llc_id link or by a name match
+// of the free-text track_records.entity_name against the borrower's own library.
+// Any LLC unrelated to the application or the track record is deliberately
+// excluded. Returns the same verify bundles as GET /borrowers/:id/llcs plus a
+// `vesting` flag, so the in-file review section shows only the relevant entities.
+// Path is under the /applications/:id scope middleware (assigned staff / seesAll).
+router.get('/applications/:id/verify-llcs', async (req, res) => {
+  try {
+    const idsRes = await db.query(
+      `WITH b AS (SELECT borrower_id, co_borrower_id, llc_id FROM applications WHERE id=$1)
+       SELECT DISTINCT x.id FROM (
+         -- the file's vesting entity
+         SELECT b.llc_id AS id FROM b WHERE b.llc_id IS NOT NULL
+         UNION
+         -- track-record entities, real FK link
+         SELECT t.llc_id FROM track_records t, b
+          WHERE t.llc_id IS NOT NULL
+            AND t.borrower_id IN (b.borrower_id, b.co_borrower_id)
+         UNION
+         -- track-record entities recorded only as free-text, matched by name
+         -- against THIS borrower's / co-borrower's own library (never global)
+         SELECT l.id FROM llcs l, b
+          WHERE l.borrower_id IN (b.borrower_id, b.co_borrower_id)
+            AND EXISTS (
+              SELECT 1 FROM track_records t
+               WHERE t.borrower_id IN (b.borrower_id, b.co_borrower_id)
+                 AND t.entity_name IS NOT NULL
+                 AND lower(btrim(t.entity_name)) = lower(btrim(l.llc_name))
+            )
+       ) x`, [req.params.id]);
+    const app = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+    const out = [];
+    for (const row of idsRes.rows) {
+      const bundle = await llcLib.getLlcBundle(row.id);
+      if (bundle) out.push({
+        ...bundle,
+        vesting: app.llc_id === row.id,
+        missing: llcLib.missingForVerification(bundle, bundle.members, bundle.slots),
+      });
+    }
+    // Vesting entity first, then the rest by name for a stable order.
+    out.sort((a2, b2) => (b2.vesting - a2.vesting) || String(a2.llc_name || '').localeCompare(String(b2.llc_name || '')));
+    res.json({ vestingLlcId: app.llc_id || null, llcs: out });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// Set (or change) the file's vesting entity — staff parity with the borrower's
+// link-llc. The entity must belong to the file's borrower or co-borrower. Honors
+// the Clear-to-Close lock (#84) and keeps the multi-borrower owner link, LLC
+// document checklist, and LLC condition in step (same follow-through as
+// borrower.js link-llc). Used by the in-file entity section when staff stand up
+// / pick the vesting entity for a file that has none.
+router.post('/applications/:id/vesting-llc', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.llcId) return res.status(400).json({ error: 'llcId required' });
+    const app = (await db.query(
+      `SELECT id, llc_id, status, borrower_id, co_borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`,
+      [req.params.id])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.status))
+      return res.status(409).json({ error: 'This file is Clear to Close — the vesting entity is locked. Move it back to an earlier status to change it.' });
+    const own = (await db.query(
+      `SELECT id FROM llcs WHERE id=$1 AND borrower_id = ANY($2::uuid[])`,
+      [b.llcId, [app.borrower_id, app.co_borrower_id].filter(Boolean)])).rows[0];
+    if (!own) return res.status(404).json({ error: 'entity not found for this borrower' });
+    const previous = app.llc_id;
+    await db.query(`UPDATE applications SET llc_id=$2, updated_at=now() WHERE id=$1`, [req.params.id, b.llcId]);
+    try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(req.params.id); } catch (_) {}
+    try { await require('./borrower').generateLlcChecklist(b.llcId); } catch (_) {}
+    try { await llcLib.syncLlcConditions(b.llcId, { appId: req.params.id, reopen: true }); } catch (_) {}
+    try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'llc_linked' }); } catch (_) {}
+    await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
 /* ---------------- Product registration / term sheet ----------------
    Pricing is computed here on the server from the same FROZEN engines the
    browser loads, so a registered product is always authoritative. */

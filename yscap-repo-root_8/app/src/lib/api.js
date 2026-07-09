@@ -248,6 +248,10 @@ export const api = {
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
+  // In-file verify set: the file's vesting entity + this borrower's track-record
+  // entities only (not the borrower's whole LLC library). Returns { vestingLlcId, llcs:[{...,vesting}] }.
+  staffAppVerifyLlcs: (appId) => req('GET', `/api/staff/applications/${appId}/verify-llcs`),
+  staffSetVestingLlc: (appId, llcId) => req('POST', `/api/staff/applications/${appId}/vesting-llc`, { llcId }),
   staffCreateLlc:    (borrowerId, b) => req('POST', `/api/staff/borrowers/${borrowerId}/llcs`, b),
   staffUpdateLlc:    (id, b) => req('PATCH', `/api/staff/llcs/${id}`, b),
   staffSaveLlcMembers: (id, members) => req('PUT', `/api/staff/llcs/${id}/members`, { members }),
