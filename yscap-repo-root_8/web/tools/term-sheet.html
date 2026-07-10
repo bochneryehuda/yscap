@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="../theme.js?v=n1"></script>
+<script src="../theme.js?v=n2"></script>
 <script src="../brand.js?v=n1"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Term Sheet Studio — A Signable Fix &amp; Flip Term Sheet in About a Minute</title>
@@ -13,7 +13,16 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=n1">
+<link rel="stylesheet" href="../suite.css?v=n2">
+<!-- This tool is WHITE-FIRST always (owner-directed): it must match the portal it
+     embeds into (Products & Pricing / Term Sheet Studio), so we force the light
+     theme before first paint regardless of any stale saved 'dark' preference. The
+     portal iframe (TermSheetStudio.jsx) also re-stamps light + hides the chrome. -->
+<script>
+(function () {
+  try { document.documentElement.setAttribute("data-theme", "light"); } catch (e) {}
+})();
+</script>
 <style>
   .hidden{ display:none !important; }
   /* Bridge (and any conditional row): when a field in a two-column row is hidden, collapse the row to one column so there's no empty slot. */
