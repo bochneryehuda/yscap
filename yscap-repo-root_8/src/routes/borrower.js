@@ -692,33 +692,43 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const stripped = stripToolAttachments(rawPayload);
   const payload = stripped.payload;
   const notes = (req.body && req.body.notes) ? String(req.body.notes).slice(0, 2000) : null;
-  // FATAL rehab-budget gate (#75): the Scope of Work total must match the file's
-  // required rehab budget EXACTLY. A mismatch is refused BEFORE the condition is
-  // touched, so the condition stays outstanding (a real fail the borrower sees) —
-  // the Scope of Work can never silently change the loan's budget.
-  let sowSeed = false;
+  // Scope-of-Work condition logic (owner-directed 2026-07-09). Saving a SOW NEVER
+  // changes the file's rehab budget (frozen) and NEVER refuses on a mismatch — the
+  // SOW saves as a DRAFT so it can be reopened + adjusted. The exact-match rule is
+  // purely a CONDITION gate: the condition stays open (uncleared) for EVERY party
+  // and carries a plain-language note until the line items total the budget exactly.
+  let sowMismatch = null;
   if (it.rows[0].tool_key === 'rehab_budget') {
     // The rehab budget is loan structure — frozen at Clear-to-Close (#84).
     const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
     if (locked) return res.status(409).json({ error: locked, fatal: true });
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
-    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
-    sowSeed = chk.seed;
+    if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
   }
+  // Status: a matching SOW → 'received'; a mismatch WITH content → 'issue' (visible,
+  // not cleared); a mismatch with an empty draft (opened + exited) → leave the
+  // status untouched. Non-rehab tools are always 'received'.
+  const rbTotal = Number(payload && payload.total);
+  const toolStatus = sowMismatch ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
-    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($4,tool_state), status='received', notes=COALESCE($3,notes), updated_at=now()
+    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($4,tool_state), status=COALESCE($5,status), notes=COALESCE($3,notes), updated_at=now()
       WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload), notes,
-     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
-  // ONLY when the file has no rehab budget yet does the Scope of Work seed it —
-  // it never overrides a budget already set by the application / registered
-  // product (that would silently reprice the loan). The gate above guarantees a
-  // match in every other case.
+     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
+  // Populate the condition with a plain-language note about the match state, on
+  // BOTH a mismatch and a match — visible to every party. '[auto]' notes are ours
+  // to overwrite; a staff-typed note is never clobbered.
   if (it.rows[0].tool_key === 'rehab_budget') {
-    const total = Number(payload && payload.total);
-    if (sowSeed && isFinite(total) && total >= 0) {
-      await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
-    }
+    const rbMoney = require('../lib/rehab-budget').money;
+    const note = sowMismatch
+      ? `[auto] Scope of Work total ${rbMoney(rbTotal)} does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the line items total exactly ${rbMoney(sowMismatch.required)}.`
+      : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`;
+    try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
+  }
+  // The Scope of Work NEVER writes the file's rehab budget (owner-directed — the
+  // budget is frozen and set on the application / registered product). Just
+  // re-evaluate the file's rule conditions after the save.
+  if (it.rows[0].tool_key === 'rehab_budget') {
     try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'rehab_budget_saved' }); } catch (_) {}
   }
   const storedExports = await storeToolAttachments({
@@ -746,7 +756,10 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
       }
     }
   } catch (_) { /* notification is best-effort */ }
-  res.json({ ok: true, status: 'received', exports: storedExports });
+  // Always 200 — the SOW saved (as a draft on a mismatch). `mismatch` tells the
+  // tool to show a non-blocking notice and let the user exit; the condition stays
+  // open until the totals match exactly.
+  res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowMismatch || undefined, exports: storedExports });
 });
 
 // ---------------- TOOL STATE (Scope of Work autosave) ----------------

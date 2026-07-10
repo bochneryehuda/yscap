@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="../theme.js?v=n1"></script>
+<script src="../theme.js?v=n2"></script>
 <script src="../brand.js?v=n1"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Rehab Budget — Scope of Work Builder</title>
@@ -14,22 +14,19 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=n1">
-<link rel="stylesheet" href="rehab-budget.css">
-<!-- Embedded-in-portal mode (?embed=1): hide the marketing shell and lock dark
-     theme BEFORE first paint, so opening the Scope of Work from a loan file never
-     flashes the light-themed standalone tool ("the static version, different
-     coloring"). The portal bridge re-applies the same rules after load; doing it
-     here first removes the flash. -->
+<link rel="stylesheet" href="../suite.css?v=n2">
+<link rel="stylesheet" href="rehab-budget.css?v=n2">
+<!-- This tool is WHITE-FIRST always (owner-directed): it must match the portal it
+     embeds into, so we force the light theme before first paint regardless of any
+     stale saved 'dark' preference. Embed mode (?embed=1) additionally hides the
+     marketing shell. -->
 <script>
 (function () {
   try {
+    var de = document.documentElement;
+    de.setAttribute("data-theme", "light");   // white-first — matches the portal
     var q = new URLSearchParams(location.search);
-    if (q.get("embed") === "1") {
-      var de = document.documentElement;
-      de.setAttribute("data-embed", "1");
-      de.setAttribute("data-theme", "light");   // white-first, matches the portal it embeds into
-    }
+    if (q.get("embed") === "1") de.setAttribute("data-embed", "1");
   } catch (e) {}
 })();
 </script>
@@ -102,10 +99,10 @@ html[data-embed] main { padding-top: 0 !important; }
 
 <div class="rb-flash" id="rb-flash"></div>
 
-<script src="../suite.js"></script>
-<script src="rb-logo.js"></script>
-<script src="rehab-budget.js"></script>
-<script src="rehab-budget-portal.js"></script>
+<script src="../suite.js?v=n2"></script>
+<script src="rb-logo.js?v=n2"></script>
+<script src="rehab-budget.js?v=n2"></script>
+<script src="rehab-budget-portal.js?v=n2"></script>
 <script src="../float-actions.js"></script>
 </body>
 </html>

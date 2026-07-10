@@ -63,6 +63,32 @@
   }
   function clearFatal() { if (fatalBar) fatalBar.style.display = "none"; }
 
+  // ---- non-blocking "saved as a draft" notice --------------------------------
+  // Owner-directed: a Scope of Work whose total doesn't match the file's rehab
+  // budget still SAVES (as a draft) — the condition simply stays open. This amber
+  // notice explains that WITHOUT blocking; the user can keep working or exit.
+  var noticeBar = null;
+  function showNotice(msg) {
+    if (!noticeBar) {
+      noticeBar = document.createElement("div");
+      noticeBar.className = "rb-portal-notice";
+      noticeBar.setAttribute("role", "status");
+      noticeBar.style.cssText =
+        "position:sticky;top:0;z-index:115;margin:0 0 .9rem;padding:.8rem 1rem;border-radius:12px;" +
+        "border:1px solid #e8c477;background:#fff7e6;color:#7a5a12;font-weight:600;line-height:1.45;" +
+        "box-shadow:0 6px 20px rgba(0,0,0,.08)";
+      var wrap = document.querySelector(".rb-wrap");
+      if (wrap) wrap.insertBefore(noticeBar, wrap.firstChild);
+    }
+    noticeBar.innerHTML =
+      '<div style="display:flex;gap:.6rem;align-items:flex-start">' +
+      '<span style="font-size:1.1rem;line-height:1">💾</span>' +
+      '<div><strong style="display:block;margin-bottom:.15rem">Saved as a draft — this condition stays open</strong>' +
+      '<span style="font-weight:500">' + esc(msg) + '</span></div></div>';
+    noticeBar.style.display = "";
+  }
+  function clearNotice() { if (noticeBar) noticeBar.style.display = "none"; }
+
   // A cheap signature of the current builder state + grand total. When the file
   // is closed ("Done") and nothing changed since the last successful save, we
   // skip re-exporting — that redundant second save is what left the borrower
@@ -273,6 +299,17 @@
       }
       clearFatal();
       lastSavedSig = curSig();
+      // Owner-directed: a total that doesn't match the file budget STILL saved (as a
+      // draft). Show a non-blocking notice and let the user exit — the condition
+      // stays open until the line items total the budget exactly.
+      if (d && d.mismatch) {
+        showNotice((d.mismatch && d.mismatch.message) || "The Scope of Work total doesn't match the file's rehab budget yet, so this condition stays open. Your work is saved — reopen any time to finish the line items.");
+        if (submitBtn) submitBtn.textContent = "Saved (draft) ✓";
+        setChip("Saved as a draft — doesn't match the budget yet");
+        setTimeout(function () { if (submitBtn) { submitBtn.textContent = orig; submitBtn.disabled = false; } busy = false; }, 2500);
+        return { ok: true, mismatch: true };
+      }
+      clearNotice();
       if (submitBtn) submitBtn.textContent = "Saved ✓";
       setChip("Rehab budget saved — HTML, Excel & PDF are on the condition ✓");
       setTimeout(function () { if (submitBtn) { submitBtn.textContent = orig; submitBtn.disabled = false; } busy = false; }, 2500);
