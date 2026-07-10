@@ -702,7 +702,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     // The rehab budget is loan structure — frozen at Clear-to-Close (#84).
     const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
     if (locked) return res.status(409).json({ error: locked, fatal: true });
-    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
     if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
   }
   // Status: a matching SOW → 'received'; a mismatch WITH content → 'issue' (visible,
@@ -721,7 +721,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   if (it.rows[0].tool_key === 'rehab_budget') {
     const rbMoney = require('../lib/rehab-budget').money;
     const note = sowMismatch
-      ? `[auto] Scope of Work total ${rbMoney(rbTotal)} does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the line items total exactly ${rbMoney(sowMismatch.required)}.`
+      ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
       : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`;
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
   }

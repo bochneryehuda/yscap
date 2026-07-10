@@ -1074,13 +1074,13 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
     // exact-match rule is a CONDITION gate only — the condition stays open with a
     // plain-language note until the line items total the budget exactly.
     const total = Number(payload.total);
-    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, total);
+    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, payload);
     const mismatch = chk.ok ? null : { required: chk.required, total, message: chk.message };
     const st = mismatch ? (isFinite(total) && total > 0 ? 'issue' : null) : 'received';
     await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload), st]);
     const rbMoney = require('../lib/rehab-budget').money;
     const note = mismatch
-      ? `[auto] Scope of Work total ${rbMoney(total)} does not match the file's rehab budget ${rbMoney(mismatch.required)} — this condition stays open for all parties until the line items total exactly ${rbMoney(mismatch.required)}.`
+      ? `[auto] Scope of Work (line items ${rbMoney(total)}) does not match the file's rehab budget ${rbMoney(mismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(mismatch.required)}.`
       : `[auto] Scope of Work totals ${rbMoney(total)} and matches the file's rehab budget — ready to clear.`;
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [itemId, note]); } catch (_) {}
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
@@ -1141,7 +1141,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // plain-language note until the line items total the budget exactly.
   let sowMismatch = null;
   if (toolKey === 'rehab_budget') {
-    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
     if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
   }
   const rbTotal = Number(payload && payload.total);
@@ -1153,7 +1153,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   if (toolKey === 'rehab_budget') {
     const rbMoney = require('../lib/rehab-budget').money;
     const note = sowMismatch
-      ? `[auto] Scope of Work total ${rbMoney(rbTotal)} does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the line items total exactly ${rbMoney(sowMismatch.required)}.`
+      ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
       : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`;
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
@@ -1599,8 +1599,15 @@ async function signOffGate(itemId, actor) {
     if (sowTotal == null) return 'The Scope of Work / rehab budget has not been submitted yet.';
     const appBudget = Number(app.rehab_budget) || 0;
     const regBudget = reg.inputs && reg.inputs.rehabBudget != null ? Number(reg.inputs.rehabBudget) : null;
-    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget))) {
-      return `Budgets do not match — Scope of Work total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must all agree before sign-off: update the Scope of Work or re-register the product so the numbers match.`;
+    // The FIRST-PAGE construction budget on the SOW (state.target) — prefilled
+    // from the application ("the total you start at originally"). When set it must
+    // ALSO equal the budget exactly, so the number you start at, the line-item
+    // total, the file budget and the product budget all agree (owner-directed
+    // 2026-07-10 belt-and-suspenders).
+    const fpTarget = require('../lib/rehab-budget').firstPageBudget(item.tool_payload);
+    const fpSet = fpTarget != null && fpTarget > 0;
+    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget)) || (fpSet && !eq(fpTarget, appBudget))) {
+      return `Budgets do not match — first-page construction budget ${fpSet ? money(fpTarget) : '—'}, Scope of Work line-item total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
     }
     return null;
   }
