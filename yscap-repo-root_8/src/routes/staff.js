@@ -1069,18 +1069,23 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
          VALUES ('application',$1,'Rehab budget','Rehab budget','borrower','task','rehab_budget','staff',$2) RETURNING id`, [appId, req.actor.id]);
       itemId = ins.rows[0].id;
     }
-    // FATAL rehab-budget gate (#75): the Scope of Work total must match the
-    // file's required rehab budget EXACTLY and can never override it. Checked
-    // before the condition is marked received, so a mismatch leaves it open.
+    // Scope-of-Work condition logic (owner-directed 2026-07-09): the SOW always
+    // saves (never refused) and NEVER changes the file's rehab budget (frozen). The
+    // exact-match rule is a CONDITION gate only — the condition stays open with a
+    // plain-language note until the line items total the budget exactly.
     const total = Number(payload.total);
     const chk = await require('../lib/rehab-budget').checkSowBudget(appId, total);
-    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total });
-    await db.query(`UPDATE checklist_items SET tool_payload=$2, status='received', updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload)]);
-    // Seed the file budget from the SOW ONLY when none is set yet (never override).
-    if (chk.seed && isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
+    const mismatch = chk.ok ? null : { required: chk.required, total, message: chk.message };
+    const st = mismatch ? (isFinite(total) && total > 0 ? 'issue' : null) : 'received';
+    await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload), st]);
+    const rbMoney = require('../lib/rehab-budget').money;
+    const note = mismatch
+      ? `[auto] Scope of Work total ${rbMoney(total)} does not match the file's rehab budget ${rbMoney(mismatch.required)} — this condition stays open for all parties until the line items total exactly ${rbMoney(mismatch.required)}.`
+      : `[auto] Scope of Work totals ${rbMoney(total)} and matches the file's rehab budget — ready to clear.`;
+    try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [itemId, note]); } catch (_) {}
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
-    res.json({ ok: true, itemId });
+    res.json({ ok: true, itemId, mismatch: mismatch || undefined });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1130,23 +1135,27 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const payload = { ...rawPayload };
   delete payload.attachments;
   if (attachments.length) payload.export_files = attachments.map((a) => ({ filename: a.filename, contentType: a.contentType }));
-  // FATAL rehab-budget gate (#75) — SOW total must match the file budget exactly
-  // and never override it; refused before the condition is marked received.
-  let sowSeed = false;
+  // Scope-of-Work condition logic (owner-directed 2026-07-09): the SOW always saves
+  // (never refused) and NEVER changes the file's rehab budget (frozen). The
+  // exact-match rule is a CONDITION gate only — the condition stays open with a
+  // plain-language note until the line items total the budget exactly.
+  let sowMismatch = null;
   if (toolKey === 'rehab_budget') {
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
-    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
-    sowSeed = chk.seed;
+    if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
   }
+  const rbTotal = Number(payload && payload.total);
+  const toolStatus = sowMismatch ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
-    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status='received', updated_at=now() WHERE id=$1`,
+    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now() WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload),
-     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
+     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
   if (toolKey === 'rehab_budget') {
-    const total = Number(payload && payload.total);
-    if (sowSeed && isFinite(total) && total >= 0) {
-      await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
-    }
+    const rbMoney = require('../lib/rehab-budget').money;
+    const note = sowMismatch
+      ? `[auto] Scope of Work total ${rbMoney(rbTotal)} does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the line items total exactly ${rbMoney(sowMismatch.required)}.`
+      : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`;
+    try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
   // A resubmission outdates the previous exports: the old PDF/Excel are
@@ -1171,7 +1180,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     out.push({ id: r.rows[0].id, filename: a.filename });
   }
   await audit(req, 'staff_tool_submit', 'checklist_item', req.params.itemId, { toolKey, files: out.map((x) => x.filename) });
-  res.json({ ok: true, status: 'received', exports: out });
+  res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowMismatch || undefined, exports: out });
 });
 
 router.get('/applications/:id/checklist', async (req, res) => {
