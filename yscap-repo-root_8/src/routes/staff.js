@@ -3746,6 +3746,68 @@ router.delete('/vendors/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------------- GENERAL FILE CONTACTS — staff side (#144) ----------------
+// Any staff on the file can add any kind of vendor. The contact is tied to the
+// file's borrower (so it shows on the borrower profile) AND flows into the
+// company-wide vendor directory (service_contacts). Many contacts per file.
+const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+router.get('/applications/:id/file-contacts', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const r = await db.query(
+    `SELECT l.id AS link_id, sc.id AS contact_id, sc.contact_type, sc.custom_type,
+            sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address, sc.notes,
+            l.added_by_kind, l.created_at,
+            s.full_name AS added_by_staff, (b.first_name||' '||b.last_name) AS added_by_borrower
+       FROM application_service_contacts l
+       JOIN service_contacts sc ON sc.id = l.service_contact_id
+       LEFT JOIN staff_users s ON s.id = l.added_by_id AND l.added_by_kind='staff'
+       LEFT JOIN borrowers b ON b.id = l.added_by_id AND l.added_by_kind='borrower'
+      WHERE l.application_id=$1
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/applications/:id/file-contacts', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
+  const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
+  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+  if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
+  const sc = await db.query(
+    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,phone,address,notes,added_by_staff_id,last_used_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) RETURNING id`,
+    [app.rows[0].borrower_id, type, custom, b.companyName || null, b.contactName || null, b.email || null, b.phone || null, b.address || null, b.notes || null, req.actor.id]);
+  const link = await db.query(
+    `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
+     VALUES ($1,$2,$3,'staff',$4)
+     ON CONFLICT (application_id,service_contact_id) DO UPDATE SET contact_type=EXCLUDED.contact_type RETURNING id`,
+    [req.params.id, sc.rows[0].id, type, req.actor.id]);
+  await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
+  res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: sc.rows[0].id });
+});
+router.delete('/file-contacts/:linkId', async (req, res) => {
+  const f = await db.query(`SELECT application_id FROM application_service_contacts WHERE id=$1`, [req.params.linkId]);
+  if (!f.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canTouchApp(req, f.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+  await db.query(`DELETE FROM application_service_contacts WHERE id=$1`, [req.params.linkId]);
+  await audit(req, 'remove_file_contact', 'application', f.rows[0].application_id, {});
+  res.json({ ok: true });
+});
+// A borrower's whole vendor list (profile) — every contact tied to the borrower.
+router.get('/borrowers/:id/contacts', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+  const r = await db.query(
+    `SELECT sc.id, sc.contact_type, sc.custom_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.notes,
+            count(l.application_id)::int AS files_used
+       FROM service_contacts sc
+       LEFT JOIN application_service_contacts l ON l.service_contact_id = sc.id
+      WHERE sc.borrower_id=$1
+      GROUP BY sc.id
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [req.params.id]);
+  res.json(r.rows);
+});
+
 // ---------------- chat v3: conversations, receipts, presence ----------------
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).

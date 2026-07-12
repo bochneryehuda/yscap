@@ -1184,6 +1184,65 @@ router.post('/contacts', async (req, res) => {
   res.status(201).json({ ok: true, contactId });
 });
 
+// ---------------- GENERAL FILE CONTACTS (#144) ----------------
+// Any party can add any kind of vendor to a file; contacts live in
+// service_contacts (=> company-wide vendor management) and link to the file via
+// application_service_contacts (MANY per file). Shared across the file.
+const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+router.get('/applications/:id/file-contacts', async (req, res) => {
+  const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
+  const r = await db.query(
+    `SELECT l.id AS link_id, sc.id AS contact_id, sc.contact_type, sc.custom_type,
+            sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address, sc.notes,
+            l.added_by_kind, l.created_at
+       FROM application_service_contacts l
+       JOIN service_contacts sc ON sc.id = l.service_contact_id
+      WHERE l.application_id=$1
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/applications/:id/file-contacts', async (req, res) => {
+  const b = req.body || {};
+  const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
+  const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
+  const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
+  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  const sc = await db.query(
+    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,phone,address,notes,added_by_borrower_id,last_used_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$1,now()) RETURNING id`,
+    [me(req), type, custom, b.companyName || null, b.contactName || null, b.email || null, b.phone || null, b.address || null, b.notes || null]);
+  const scId = sc.rows[0].id;
+  const link = await db.query(
+    `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
+     VALUES ($1,$2,$3,'borrower',$4)
+     ON CONFLICT (application_id,service_contact_id) DO UPDATE SET contact_type=EXCLUDED.contact_type RETURNING id`,
+    [req.params.id, scId, type, me(req)]);
+  await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
+  res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: scId });
+});
+router.delete('/file-contacts/:linkId', async (req, res) => {
+  const r = await db.query(
+    `DELETE FROM application_service_contacts l USING applications a
+      WHERE l.id=$1 AND l.application_id=a.id AND (a.borrower_id=$2 OR a.co_borrower_id=$2) RETURNING l.id`,
+    [req.params.linkId, me(req)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+// Borrower profile: every vendor this borrower is dealing with, across all files.
+router.get('/my-contacts', async (req, res) => {
+  const r = await db.query(
+    `SELECT sc.id, sc.contact_type, sc.custom_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.notes,
+            count(l.application_id)::int AS files_used
+       FROM service_contacts sc
+       LEFT JOIN application_service_contacts l ON l.service_contact_id = sc.id
+      WHERE sc.borrower_id=$1
+      GROUP BY sc.id
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [me(req)]);
+  res.json(r.rows);
+});
+
 // ---------------- PARTNERS (reusable co-borrowers) ----------------
 router.get('/partners', async (req, res) => {
   const r = await db.query(

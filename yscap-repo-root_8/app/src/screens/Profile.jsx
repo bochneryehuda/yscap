@@ -4,6 +4,7 @@ import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
 import Entities from '../components/Entities.jsx';
+import { BorrowerContacts } from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import { fileToBase64 } from '../lib/files.js';
 import { Link } from 'react-router-dom';
@@ -287,6 +288,12 @@ export default function Profile() {
             {trCounts.ground > 0 && <span className="reqchip">{trCounts.ground} ground-up</span>}
           </div>
         )}
+      </div>
+
+      <div className="panel" style={{ marginTop: 18 }}>
+        <h3 style={{ marginBottom: 4 }}>Your vendors &amp; contacts</h3>
+        <p className="muted small" style={{ marginTop: 0 }}>Everyone you work with across your files — realtors, attorneys, title, insurance, contractors and more. Add them on any file's Contacts section.</p>
+        <BorrowerContacts isStaff={false} />
       </div>
 
       <div className="row" style={{ marginTop: 8 }}>

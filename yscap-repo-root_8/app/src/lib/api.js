@@ -183,6 +183,11 @@ export const api = {
   // reusable service contacts (title company / insurance agent)
   contacts:     (type) => req('GET', `/api/borrower/contacts${type ? `?type=${type}` : ''}`),
   saveContact:  (b) => req('POST', '/api/borrower/contacts', b),
+  // general file contacts (#144) — any vendor, many per file, shared on the file
+  fileContacts:    (appId) => req('GET', `/api/borrower/applications/${appId}/file-contacts`),
+  addFileContact:  (appId, b) => req('POST', `/api/borrower/applications/${appId}/file-contacts`, b),
+  delFileContact:  (linkId) => req('DELETE', `/api/borrower/file-contacts/${linkId}`),
+  myContacts:      () => req('GET', '/api/borrower/my-contacts'),
 
   // reusable LLC / vesting-entity database (info + ownership + 3 doc slots)
   llcs:         () => req('GET', '/api/borrower/llcs'),
@@ -387,6 +392,11 @@ export const api = {
   staffAddVendor:    (b) => req('POST', '/api/staff/vendors', b),
   staffUpdateVendor: (id, b) => req('PATCH', `/api/staff/vendors/${id}`, b),
   staffDeleteVendor: (id) => req('DELETE', `/api/staff/vendors/${id}`),
+  // general file contacts (#144) — staff side + a borrower's whole vendor list
+  staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
+  staffAddFileContact: (appId, b) => req('POST', `/api/staff/applications/${appId}/file-contacts`, b),
+  staffDelFileContact: (linkId) => req('DELETE', `/api/staff/file-contacts/${linkId}`),
+  staffBorrowerContacts: (borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/contacts`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
 
   // ---- admin: team / staff management ----
