@@ -234,12 +234,23 @@ async function resolveEntityByName(borrowerId, name) {
   const nm = String(name || '').trim().slice(0, 160);
   if (!nm) return null;
   const hit = await db.query(
-    `SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, nm]);
+    `SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, nm]);
   if (hit.rows[0]) return hit.rows[0].id;
-  const ins = await db.query(
-    `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, nm]);
-  try { await generateLlcChecklist(ins.rows[0].id); } catch (_) { /* best-effort */ }
-  return ins.rows[0].id;
+  try {
+    const ins = await db.query(
+      `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, nm]);
+    try { await generateLlcChecklist(ins.rows[0].id); } catch (_) { /* best-effort */ }
+    return ins.rows[0].id;
+  } catch (e) {
+    // Lost a race (or matched a whitespace-variant of an existing name) on the
+    // uq_llcs_borrower_name unique index (db/082) — re-select the winner so the
+    // file still links a real entity instead of silently failing.
+    if (e && e.code === '23505') {
+      const again = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, nm]);
+      if (again.rows[0]) return again.rows[0].id;
+    }
+    throw e;
+  }
 }
 
 router.post('/applications', async (req, res) => {

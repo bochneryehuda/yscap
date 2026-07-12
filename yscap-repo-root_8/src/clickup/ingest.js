@@ -162,7 +162,7 @@ async function resolveBorrower(read, taskId) {
 async function upsertLlc(borrowerId, llcName, ein, taskId) {
   if (!llcName) return null;
   const name = String(llcName).trim();
-  const found = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, name]);
+  const found = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, name]);
   if (found.rows[0]) return found.rows[0].id;
   try {
     const r = await db.query(
@@ -175,7 +175,7 @@ async function upsertLlc(borrowerId, llcName, ein, taskId) {
     // uq_llcs_borrower_name unique index (db/082). Re-select the winner — no
     // duplicate. (Before that index exists there is no 23505, so this never runs.)
     if (e && e.code === '23505') {
-      const again = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, name]);
+      const again = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, name]);
       if (again.rows[0]) return again.rows[0].id;
     }
     throw e;
