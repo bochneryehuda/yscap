@@ -129,10 +129,6 @@ module.exports = {
   storageDir:      process.env.STORAGE_DIR || 'uploads',
   maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '20', 10),   // per-file cap
 
-  // --- admin pricing unlock (Term Sheet Studio fee/markup overrides) ---
-  // Matches the static tool's soft gate; server-verified when a borrower
-  // session sends admin overrides with a registration.
-
   // --- ClickUp bidirectional sync (server-side token only) ---
   clickupToken:         process.env.CLICKUP_API_TOKEN,
   clickupTeamId:        process.env.CLICKUP_TEAM_ID || '9011888435',
