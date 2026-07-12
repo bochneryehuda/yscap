@@ -1208,6 +1208,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
             ci.field_key, ci.category, ci.origin_kind, ci.origin_detail, ci.esign_doc, ci.borrower_label,
+            -- The borrower-facing hint carries an "accept + request another document"
+            -- ask ("Still needed: …") — staff must see what was requested, not only
+            -- the borrower (#125). Rendered on the staff borrower-conditions panel.
+            ci.borrower_hint,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             (SELECT slots FROM checklist_templates t WHERE t.id=ci.template_id) AS slots,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
@@ -2507,6 +2511,17 @@ router.post('/llcs/:id/verify', async (req, res) => {
   const b = req.body || {};
   const verified = b.verified !== false;   // default true (backward compatible)
 
+  // Verifying an LLC SIGNS OFF the rtl_p1_llc condition (satisfied + signed_off)
+  // on every vesting file — that is the processor's call, never a loan officer's
+  // (#126). Revoking is a "send it back" any reviewer may do, but it reopens the
+  // borrower's condition, so it now REQUIRES a reason the borrower is shown (#125).
+  if (verified && !can(req.actor, 'sign_off_conditions')) {
+    return res.status(403).json({ error: 'Only a processor can verify an LLC — verifying signs off the entity condition. Reject a document or raise an issue instead.' });
+  }
+  if (!verified && !String(b.reason || '').trim()) {
+    return res.status(400).json({ error: 'a reason is required to revoke verification — the borrower is told why' });
+  }
+
   if (verified) {
     const bundle = await llcLib.getLlcBundle(req.params.id);
     const missing = llcLib.missingForVerification(bundle, bundle.members, bundle.slots);
@@ -2547,6 +2562,12 @@ router.post('/track-records/:id/verify', async (req, res) => {
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   const status = TR_STATUSES.includes(req.body && req.body.status) ? req.body.status : 'verified';
   const counts = status === 'verified' || status === 'limited';
+  // Marking a line item verified/limited COUNTS toward the experience tier and
+  // drives the experience condition to satisfied — a sign-off, so processor-only
+  // (#126). A non-counting status (pending/docs) is a review action anyone may set.
+  if (counts && !can(req.actor, 'sign_off_conditions')) {
+    return res.status(403).json({ error: 'Only a processor can verify a track-record line item — it signs off the experience condition. Request documents or raise an issue instead.' });
+  }
   await db.query(
     `UPDATE track_records
         SET verification_status=$3,

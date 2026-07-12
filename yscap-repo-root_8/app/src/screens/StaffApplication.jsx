@@ -315,6 +315,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                       <button className="btn ghost small" disabled={dlBusy === doc.id} onClick={() => onDownloadDoc(doc)}>{dlBusy === doc.id ? '…' : 'Download'}</button>
                       {onUploadTo && <button className="btn link small" title="Replace this document with a new version" onClick={() => onUploadTo({ itemId: it.id, slot: slot.label, replaceDocumentId: doc.id })}>Replace</button>}
                       {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(doc, 'accept')}>Accept</button>}
+                      {completer && <button className="btn ghost small" title="Accept this document but keep the condition open — ask the borrower for one more" onClick={() => onReviewDoc(doc, 'accept_more')}>Accept +1 more</button>}
                       {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(doc, 'reject')}>Reject</button>}
                     </>
                   ) : (
@@ -340,6 +341,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                     <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => onDownloadDoc(d)}>{dlBusy === d.id ? '…' : 'Download'}</button>
                     {onUploadTo && d.source_type !== 'system' && <button className="btn link small" title="Replace this document with a new version" onClick={() => onUploadTo({ itemId: it.id, slot: d.slot_label || undefined, replaceDocumentId: d.id })}>Replace</button>}
                     {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
+                    {completer && <button className="btn ghost small" title="Accept this document but keep the condition open — ask the borrower for one more" onClick={() => onReviewDoc(d, 'accept_more')}>Accept +1 more</button>}
                     {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
                   </div>
                 );
@@ -400,7 +402,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
    Accept / Reject, plus the whole-LLC "Mark verified" sign-off. Verifying an
    entity auto-satisfies the LLC condition on every open file it vests;
    revoking (or rejecting one of its documents) reopens those conditions. */
-function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, reviewBusy, onPreview }) {
+function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, reviewBusy, onPreview, role }) {
+  // Verifying an LLC signs off the entity condition — processor/underwriter only,
+  // never a loan officer (#126). The LO can still reject documents and raise issues.
+  const completer = canComplete(role);
   const [llcs, setLlcs] = useState(null);
   const [openId, setOpenId] = useState(null);
   const [busy, setBusy] = useState('');
@@ -500,8 +505,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     if (busy) return;
     let reason;
     if (!verified) {
-      reason = window.prompt('Revoke verification of this LLC? The LLC condition reopens on every open file vesting in it, and the borrower is notified. Optional reason:');
-      if (reason === null) return;
+      reason = window.prompt('Revoke verification of this LLC? The LLC condition reopens on every open file vesting in it, and the borrower is notified. Reason (the borrower is told why — required):');
+      if (reason === null || !reason.trim()) return;   // reason is required (#125)
     } else if (!window.confirm(`Mark "${llc.llc_name}" as a verified LLC? The LLC condition on every open file vesting in it is satisfied and signed off automatically.`)) return;
     setBusy(llc.id); setErr('');
     try {
@@ -732,7 +737,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                                 title="Upload a replacement (e.g. the borrower emailed a new copy)"
                                 onClick={() => pickSlot({ llcId: l.id, itemId: s.item_id, slotLabel: s.slot_label || s.label, replaceDocumentId: s.document_id })}>Replace</button>
                             )}
-                            {rs !== 'accepted' && <button className="btn primary small" disabled={reviewBusy} onClick={() => review(s, 'accept')}>Accept</button>}
+                            {completer && rs !== 'accepted' && <button className="btn primary small" disabled={reviewBusy} onClick={() => review(s, 'accept')}>Accept</button>}
                             {rs !== 'rejected' && <button className="btn link small" disabled={reviewBusy} onClick={() => review(s, 'reject')}>Reject</button>}
                           </>
                         ) : (
@@ -750,11 +755,15 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                   })}
                   <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     {l.is_verified
-                      ? <button className="btn ghost small" disabled={busy === l.id} onClick={() => setVerified(l, false)}>{busy === l.id ? '…' : 'Revoke verification'}</button>
-                      : <button className="btn primary small" disabled={busy === l.id || (l.missing || []).length > 0}
-                          title={(l.missing || []).length ? l.missing.join(' · ') : 'All requirements met'}
-                          onClick={() => setVerified(l, true)}>{busy === l.id ? '…' : 'Mark LLC verified'}</button>}
-                    {!l.is_verified && (l.missing || []).length > 0 && (
+                      ? (completer
+                          ? <button className="btn ghost small" disabled={busy === l.id} onClick={() => setVerified(l, false)}>{busy === l.id ? '…' : 'Revoke verification'}</button>
+                          : <span className="pill small" style={{ borderColor: 'var(--ok)', color: 'var(--ok)' }}>Verified ✓</span>)
+                      : (completer
+                          ? <button className="btn primary small" disabled={busy === l.id || (l.missing || []).length > 0}
+                              title={(l.missing || []).length ? l.missing.join(' · ') : 'All requirements met'}
+                              onClick={() => setVerified(l, true)}>{busy === l.id ? '…' : 'Mark LLC verified'}</button>
+                          : <span className="muted small">Verifying is the processor's sign-off — you can reject documents or raise an issue.</span>)}
+                    {!l.is_verified && completer && (l.missing || []).length > 0 && (
                       <span className="muted small">Outstanding: {l.missing.slice(0, 4).join(' · ')}{l.missing.length > 4 ? ` · +${l.missing.length - 4} more` : ''}</span>
                     )}
                     {appId && (
@@ -932,6 +941,24 @@ function StaffTrackRecordPanel({ app }) {
           url={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
           onClose={() => { setFull(false); refreshSnap(); }} />
       )}
+    </div>
+  );
+}
+
+/* An internal note on any condition (borrower-facing conditions and raised
+   issues included) — the internal checklist Item already had one; this brings
+   notes to every condition on the borrower-conditions view too (#126). Notes are
+   staff-only (ci.notes is never sent to the borrower). */
+function CondNote({ item, onPatch }) {
+  const [v, setV] = useState(item.notes || '');
+  const [saved, setSaved] = useState(false);
+  return (
+    <div className="row" style={{ width: '100%', gap: 8, paddingLeft: 20, marginTop: 4 }}>
+      <input className="input small" placeholder="Internal note (staff-only)…" value={v} style={{ flex: 1 }}
+        onChange={(e) => { setV(e.target.value); setSaved(false); }} />
+      <button className="btn ghost small" onClick={async () => { await onPatch(item.id, { notes: v }); setSaved(true); }}>
+        {saved ? 'Saved ✓' : 'Save note'}
+      </button>
     </div>
   );
 }
@@ -1346,6 +1373,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             {(it.issue_reason || it.rejection_reason) && (
               <div className="small" style={{ color: 'var(--danger)', paddingLeft: 20 }}>Sent back: {it.issue_reason || it.rejection_reason}</div>
             )}
+            {it.borrower_hint && /still needed/i.test(it.borrower_hint) && (
+              <div className="small" style={{ color: 'var(--gold)', paddingLeft: 20 }}>Requested from borrower: {it.borrower_hint.replace(/^[\s\S]*?Still needed:\s*/i, '')}</div>
+            )}
+            <CondNote item={it} onPatch={onPatch} />
             {itemDocs.length > 0 && (
               <div style={{ width: '100%', paddingLeft: 20 }}>
                 {itemDocs.map((d, i) => {
@@ -2043,7 +2074,7 @@ export default function StaffApplication() {
 
       <Section id="sec-entity" title="LLC condition — vesting entity"
         info="This IS the LLC condition for the file — set up and verify the LLC taking title inline (entity details, ownership, the three documents). It's the same entity the borrower fills in on their side, so completing it here clears their condition and vice-versa; marking it verified satisfies the LLC condition on every open file it vests. No separate LLC condition row is shown — this is it.">
-      <LlcReview appId={id} app={app} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
+      <LlcReview appId={id} app={app} role={role} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
       <VestingLlcOwners appId={id} app={app} />
       </Section>

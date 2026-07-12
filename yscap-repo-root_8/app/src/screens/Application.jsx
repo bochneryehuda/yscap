@@ -999,6 +999,14 @@ export default function Application() {
                         Needs a new version: {assetsItem.rejection_reason}
                       </div>
                     )}
+                    {/* A staffer accepted a statement but asked for one more — the
+                        registered-requirement subtitle above hides the hint, so
+                        surface the "Still needed" ask here too (#125). */}
+                    {assetsItem.hint && /still needed/i.test(assetsItem.hint) && (
+                      <div className="small" style={{ color: 'var(--gold)', marginBottom: 6 }}>
+                        Still needed: {assetsItem.hint.replace(/^[\s\S]*?Still needed:\s*/i, '')}
+                      </div>
+                    )}
                     {docs.map((d, i) => (
                       <div className="row" key={d.id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
                         <span className="muted small" style={{ minWidth: 90 }}>{d.slot_label || `Document ${i + 1}`}</span>
