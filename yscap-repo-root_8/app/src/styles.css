@@ -39,7 +39,9 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%;overflow-x:hidden;overf
 body{margin:0;background:var(--ink);color:var(--ivory);font-family:var(--sans);
   font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;overflow-x:hidden;overflow-x:clip}
 button,a,.btn,select,summary,[role=button]{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
-img,video,canvas,svg{max-width:100%}
+/* NOT canvas: the PDF viewer sizes its <canvas> explicitly for zoom, and a
+   width-only cap distorts the page aspect ratio (squished PDFs). */
+img,video,svg{max-width:100%}
 a{color:var(--teal-br);text-decoration:none} a:hover{text-decoration:underline}
 h1,h2,h3{font-family:var(--serif);font-weight:600;line-height:1.2;margin:0}
 h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
@@ -350,7 +352,9 @@ a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
    readable, instead of a swipe row that hid two-thirds of them off-screen. */
 @media(max-width:720px){
   .header .wrap{flex-wrap:nowrap;height:60px;padding-top:0;padding-bottom:0;gap:12px}
-  .nav-toggle{display:inline-flex}
+  /* keep the toggle (which flips to ✕) ABOVE the drawer + scrim so it stays
+     visible and directly tappable to close */
+  .nav-toggle{display:inline-flex;position:relative;z-index:901}
   .nav-scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:850;
     animation:navfade .18s ease}
   .nav{position:fixed;top:0;right:0;bottom:0;width:min(86vw,320px);max-width:320px;
