@@ -873,7 +873,14 @@ const RB = (function(){
       }
       if(!stt){ flash("Couldn't read that file — please import an Excel exported by this tool."); return; }
       S=Object.assign(blank(),stt); S.vd=Object.assign(blank().vd,stt.vd||{}); S.cont=Object.assign(blank().cont,stt.cont||{}); S.gcFee=Object.assign(blank().gcFee,stt.gcFee||{}); S.custom=stt.custom||[];
-      step=STEPS.length-1; render({scroll:true}); flash("Imported — "+(isMulti()?(unitCount()+" units"):"single-family")+", "+(S.txn==="refi"?"refinance":"purchase")+". Pick up where you left off.");
+      ensureGoldContingency();   // a Gold file's imported SOW still carries the 5% contingency
+      step=STEPS.length-1; render({scroll:true});
+      // Persist the imported budget immediately — same as any manual edit. Without
+      // this the import lived only in memory: the draft (tool_state) was never
+      // autosaved, so it "didn't stick" to the condition on reopen. save() fires
+      // the portal autosave hook (RB_PORTAL_ONSAVE) when embedded in a loan file.
+      save();
+      flash("Imported — "+(isMulti()?(unitCount()+" units"):"single-family")+", "+(S.txn==="refi"?"refinance":"purchase")+". Pick up where you left off.");
     }catch(e){ flash("Import failed — please use a file exported by this tool."); if(window.console)console.error(e); }
   }
 
