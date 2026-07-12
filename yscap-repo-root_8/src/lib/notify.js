@@ -12,6 +12,7 @@ const email = require('./email');
 const tpl = require('./email/template');
 const { link: portalLink } = require('./email/catalog');
 const cfg = require('../config');
+const { scrubText, scrubTextExcept } = require('./borrower-safe');
 
 /* Turn a notification's opts into a branded {subject,html,text}. */
 function buildEmail(opts, audience) {
@@ -50,13 +51,22 @@ async function _mark(id, status) {
 
 /** Notify one staff user. opts: {type,title,body,applicationId,link,emailTo,meta,lines,ctaLabel,greeting,note} */
 async function notifyStaff(staffId, opts) {
+  // S1-01 control center: a manager can switch a member's notifications OFF. When
+  // off, we still write the in-app row (so their in-app queue keeps working and
+  // nothing is lost) but skip the EMAIL. On by default; unknown column / missing
+  // row falls back to enabled.
+  let emailOn = true;
+  try {
+    const p = await db.query(`SELECT notifications_enabled FROM staff_users WHERE id=$1`, [staffId]);
+    if (p.rows[0] && p.rows[0].notifications_enabled === false) emailOn = false;
+  } catch (_) { /* column exists after migration 085; default on */ }
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,staff_id,type,title,body,application_id,link)
      VALUES ('staff',$1,$2,$3,$4,$5,$6) RETURNING id`,
     [staffId, opts.type, opts.title, opts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
-  const to = opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId);
-  _emailRow(id, to, opts, 'staff');   // fire-and-forget
+  const to = emailOn ? (opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId)) : [];
+  _emailRow(id, to, opts, 'staff');   // fire-and-forget (marks 'skipped' when `to` is empty)
   return id;
 }
 
@@ -90,13 +100,33 @@ async function notifyBorrower(borrowerId, opts) {
   // Muted in-app and not a must-see? Drop it entirely — this is the borrower
   // choosing to quiet a nervous-making category.
   if (!pref.in_app && !ALWAYS_IN_APP.has(opts.type)) return null;
+  // SECURITY (frozen rule): a capital-partner / note-buyer name must never reach
+  // a borrower. Scrub every borrower-facing text field once here at the single
+  // chokepoint, so BOTH the stored in-app row and the branded email are clean no
+  // matter who assembled `opts` (e.g. a staff-typed condition label). Staff
+  // notifications (notifyStaff) are intentionally NOT scrubbed.
+  // Protect the file's own clean data (address / borrower name / program /
+  // money) — which arrives as `meta` values — from the partner names that
+  // collide with common place names ("Churchill", "Blue Lake"), while still
+  // scrubbing a partner name a staffer typed into the title/body. `meta` itself
+  // is trusted DB data and is left as-is.
+  const protect = Array.isArray(opts.meta) ? opts.meta.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
+  const sopts = {
+    ...opts,
+    title: scrubTextExcept(opts.title, protect),
+    body: scrubTextExcept(opts.body, protect),
+    note: scrubTextExcept(opts.note, protect),
+    greeting: scrubTextExcept(opts.greeting, protect),
+    ctaLabel: scrubText(opts.ctaLabel),
+    lines: Array.isArray(opts.lines) ? opts.lines.map((l) => scrubTextExcept(l, protect)) : opts.lines,
+  };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)
      VALUES ('borrower',$1,$2,$3,$4,$5,$6) RETURNING id`,
-    [borrowerId, opts.type, opts.title, opts.body || null, opts.applicationId || null, opts.link || null]);
+    [borrowerId, opts.type, sopts.title, sopts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
   const to = pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [];
-  _emailRow(id, to, opts, 'borrower');
+  _emailRow(id, to, sopts, 'borrower');
   return id;
 }
 

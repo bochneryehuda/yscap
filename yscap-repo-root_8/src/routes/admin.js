@@ -74,8 +74,26 @@ function roleGuard(req, currentRole, newRole) {
     return { code: 403, error: 'only a super admin can modify a super admin account' };
   if (newRole === 'super_admin' && !isSuper(req))
     return { code: 403, error: 'only a super admin can grant the super admin role' };
+  // The `admin` role carries EVERY platform-wide power by default, so GRANTING it
+  // — minting a new admin via create, or promoting an existing account — is
+  // super-admin-only too. Without this, a non-super manage_team holder could hand
+  // out the whole platform through the role channel instead of the permissions
+  // channel, sidestepping the powerful-cap gate below (audit RESIDUAL 1).
+  if (newRole === 'admin' && !isSuper(req))
+    return { code: 403, error: 'only a super admin can grant the admin role' };
   return null;
 }
+
+// Platform-wide capabilities that ONLY a super admin may grant (through either the
+// role or the permissions channel). These are the "keys to the whole platform" —
+// granting any of them is exactly how "manage team" could become a path to every
+// power, so they are gated ABOVE the manage_team capability itself. view_audit_log
+// is included because it exposes the company-wide PII trail across every file.
+const POWERFUL_CAPS = ['manage_team', 'platform_setup', 'delete_files', 'see_all_files', 'manage_conditions', 'view_audit_log'];
+// UUIDs are case-insensitive/canonicalizing in Postgres, so a self-vs-target id
+// compare MUST be case-folded — otherwise the same actor's own id in a different
+// case slips past the self-escalation block (audit DEFECT 1).
+const sameId = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 
 // Roles + capability catalog + each role's default grants, for the Team UI.
 router.get('/permissions-meta', (req, res) => {
@@ -90,12 +108,14 @@ router.get('/staff', async (req, res) => {
   const r = await db.query(
     `SELECT id,email,full_name,role,title,department,phone,cell,ext,
             is_active,site_selectable,sort_order,mfa_enabled,permissions,
+            COALESCE(notifications_enabled,true) AS notifications_enabled,
             COALESCE(visible_officer_ids,'{}')::uuid[] AS visible_officer_ids,
             (password_hash IS NOT NULL) AS has_login, last_login_at
        FROM staff_users ORDER BY department NULLS LAST, sort_order, full_name`);
   res.json(r.rows.map((row) => ({
     ...row,
     permissions: row.permissions || null,
+    notificationsEnabled: row.notifications_enabled !== false,
     visibleOfficerIds: row.visible_officer_ids || [],
     effectivePermissions: [...effectivePermissions(row.role, row.permissions)],
   })));
@@ -112,7 +132,7 @@ router.post('/staff', async (req, res) => {
   if (!email || !fullName) return res.status(400).json({ error: 'email and fullName required' });
   if (!ROLES.includes(role)) return res.status(400).json({ error: 'bad role' });
   if (b.department && !DEPTS.includes(b.department)) return res.status(400).json({ error: 'bad department' });
-  if (b.password && String(b.password).length < 8) return res.status(400).json({ error: 'password too short' });
+  if (b.password) { const w = C.passwordProblem(b.password); if (w) return res.status(400).json({ error: w }); }
   try {
     // Guard against granting super_admin, or silently touching an existing
     // super_admin (e.g. re-adding the president's email would otherwise
@@ -121,9 +141,21 @@ router.post('/staff', async (req, res) => {
     const existing = await db.query(`SELECT role FROM staff_users WHERE email=$1`, [email]);
     const g = roleGuard(req, existing.rows[0] && existing.rows[0].role, role);
     if (g) return res.status(g.code).json({ error: g.error });
+    // S1-05: a non-super must not touch (or mint an invite for) an EXISTING admin
+    // account. Without this, re-inviting an admin's email returns a raw invite
+    // token that /auth/accept would use to overwrite that admin's password and
+    // hand back an admin session — an admin-account takeover (post-fix audit
+    // HIGH). super_admin targets are already blocked by roleGuard above.
+    if (!isSuper(req) && existing.rows[0] && existing.rows[0].role === 'admin')
+      return res.status(403).json({ error: 'only a super admin can modify an admin account' });
 
     const dept = b.department || (['processor', 'underwriter', 'loan_coordinator', 'software_setup'].includes(role) ? 'operations' : 'sales');
     const permOverrides = sanitizeOverrides(b.permissions);
+    // S1-05: the create path must apply the SAME powerful-cap gate as the edit
+    // path — otherwise a non-super manage_team holder could mint a brand-new
+    // account pre-loaded with platform-wide overrides (audit RESIDUAL 1).
+    if (permOverrides && !isSuper(req) && POWERFUL_CAPS.some((c) => permOverrides[c] === true))
+      return res.status(403).json({ error: 'Only a super admin can grant platform-wide permissions (manage team, platform setup, delete files, see all files, manage conditions, view audit log).' });
     const r = await db.query(
       `INSERT INTO staff_users
          (email,full_name,role,title,department,phone,cell,ext,
@@ -166,15 +198,47 @@ router.patch('/staff/:id', async (req, res) => {
   const b = req.body || {};
   if (b.role && !ROLES.includes(b.role)) return res.status(400).json({ error: 'bad role' });
   if (b.department && !DEPTS.includes(b.department)) return res.status(400).json({ error: 'bad department' });
-  const g = roleGuard(req, await targetRole(req.params.id), b.role);
+  const tRole = await targetRole(req.params.id);
+  const g = roleGuard(req, tRole, b.role);
   if (g) return res.status(g.code).json({ error: g.error });
+  // S1-05: a staffer cannot escalate THEMSELVES — no editing your own role,
+  // permissions, or shared-file access (that's how "manage team" became a path
+  // to self-granting every power). The id compare is case-folded because a
+  // Postgres uuid matches case-insensitively — a raw === would let the actor's
+  // own id in a different case slip past this block (audit DEFECT 1).
+  if (sameId(req.params.id, req.actor.id) &&
+      (b.role !== undefined || b.permissions !== undefined || b.visibleOfficerIds !== undefined)) {
+    return res.status(403).json({ error: 'You cannot change your own role, permissions, or file access.' });
+  }
+  // S1-05: an existing admin account holds every platform-wide power, so only a
+  // super admin may change ANOTHER admin's role / permissions / file access /
+  // active state (mirrors the password-reset guard below). A non-super can still
+  // edit their OWN profile above and freely manage the lower roles.
+  if (!isSuper(req) && tRole === 'admin' && !sameId(req.params.id, req.actor.id) &&
+      (b.role !== undefined || b.permissions !== undefined ||
+       b.visibleOfficerIds !== undefined || b.isActive !== undefined)) {
+    return res.status(403).json({ error: "Only a super admin can change another admin's role, permissions, access, or active status." });
+  }
+  // S1-05: only a SUPER admin may grant the powerful, platform-wide capabilities.
+  if (b.permissions !== undefined && !isSuper(req)) {
+    const _ov = sanitizeOverrides(b.permissions) || {};
+    if (POWERFUL_CAPS.some((c) => _ov[c] === true))
+      return res.status(403).json({ error: 'Only a super admin can grant platform-wide permissions (manage team, platform setup, delete files, see all files, manage conditions, view audit log).' });
+  }
   const map = {
     full_name: b.fullName, role: b.role, title: b.title, department: b.department,
     phone: b.phone, cell: b.cell, ext: b.ext,
     is_active: b.isActive, site_selectable: b.siteSelectable, sort_order: b.sortOrder,
+    // S1-01: per-member notification switch (control center). On by default;
+    // when off, notifyStaff stops emailing this member (in-app row still kept).
+    notifications_enabled: b.notificationsEnabled,
   };
   const sets = [], vals = []; let i = 1;
   for (const [k, v] of Object.entries(map)) if (v !== undefined) { sets.push(`${k}=$${i++}`); vals.push(v); }
+  // Deactivating a staffer must cut off ALL their live sessions immediately —
+  // including the SSE chat stream — so bump the token version, invalidating every
+  // existing token in one shot (S1-01: a fired staffer kept receiving live chat).
+  if (b.isActive === false) sets.push('token_version=token_version+1');
   // Permission overrides: {} or null clears them (fall back to role defaults).
   if (b.permissions !== undefined) {
     const ov = sanitizeOverrides(b.permissions);
@@ -196,6 +260,12 @@ router.patch('/staff/:id', async (req, res) => {
     const r = await db.query(`UPDATE staff_users SET ${sets.join(',')} WHERE id=$${i} RETURNING id`, vals);
     if (!r.rows[0]) return res.status(404).json({ error: 'staff member not found' });   // was phantom {ok:true}
     roster.bust();
+    // S1-01: deactivation also force-closes any live SSE stream this staffer is
+    // holding right now, so a fired staffer stops receiving live chat instantly
+    // (the token bump only stops the NEXT connect; this ends the current one).
+    if (b.isActive === false) {
+      try { require('../lib/events').disconnectUser('staff', req.params.id); } catch (_) {}
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'could not update staff member' }); }
 });
@@ -203,11 +273,17 @@ router.patch('/staff/:id', async (req, res) => {
 // Set / reset a staff password (admin-driven provisioning or lockout recovery).
 router.post('/staff/:id/password', async (req, res) => {
   const pw = (req.body || {}).password || '';
-  if (String(pw).length < 8) return res.status(400).json({ error: 'password too short (min 8)' });
-  const g = roleGuard(req, await targetRole(req.params.id));
+  { const w = C.passwordProblem(pw); if (w) return res.status(400).json({ error: w }); }
+  const tRole = await targetRole(req.params.id);
+  const g = roleGuard(req, tRole);
   if (g) return res.status(g.code).json({ error: g.error });
+  // S1-05: resetting an ADMIN's password (a peer-admin takeover vector) is
+  // super-admin-only; roleGuard already blocks resetting a super_admin.
+  if (tRole === 'admin' && !isSuper(req))
+    return res.status(403).json({ error: "Only a super admin can reset another admin's password." });
   const r = await db.query(
-    `UPDATE staff_users SET password_hash=$2, token_version=token_version+1, updated_at=now()
+    `UPDATE staff_users SET password_hash=$2, token_version=token_version+1,
+        failed_attempts=0, locked_until=NULL, updated_at=now()
       WHERE id=$1 RETURNING email`, [req.params.id, await C.hashPassword(pw)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'staff not found' });
   res.json({ ok: true, email: r.rows[0].email });
@@ -242,8 +318,14 @@ router.post('/staff/:id/welcome', async (req, res) => {
 // already have a login — accepting the token resets their password (the /accept
 // staff path does ON CONFLICT DO UPDATE password_hash). super_admin-protected.
 router.post('/staff/:id/reset-email', async (req, res) => {
-  const g = roleGuard(req, await targetRole(req.params.id));
+  const tRole = await targetRole(req.params.id);
+  const g = roleGuard(req, tRole);
   if (g) return res.status(g.code).json({ error: g.error });
+  // S1-05: sending a password-reset email for another ADMIN is super-admin-only,
+  // mirroring the /staff/:id/password guard — keeps the whole admin-account
+  // surface consistent (an admin is otherwise a takeover target).
+  if (tRole === 'admin' && !isSuper(req))
+    return res.status(403).json({ error: "Only a super admin can reset another admin's password." });
   const r = await db.query(`SELECT email, full_name, role FROM staff_users WHERE id=$1 AND is_active=true`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'staff not found' });
   try {

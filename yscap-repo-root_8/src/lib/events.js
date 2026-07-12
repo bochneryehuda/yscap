@@ -26,6 +26,7 @@
  *   notify               {title, body, link}            — in-app toast (urgent re-ping)
  */
 const db = require('../db');
+const { scrubText } = require('./borrower-safe');
 
 const conns = new Map();          // connId -> { res, kind, id, key, role, openConv, teamKeys }
 let nextConnId = 1;
@@ -107,6 +108,29 @@ function setOpenConversation(connId, conversationId) {
   if (c) c.openConv = conversationId || null;
 }
 
+/**
+ * Borrower-safe copy of an event payload: replace any capital-partner name a
+ * staffer typed with the program name, in the chat message body, its
+ * quoted-reply preview, and a top-level toast `body` (urgent pings). Returns the
+ * original object untouched when there is nothing to scrub (so staff payloads
+ * are never cloned/altered). Only applied to BORROWER recipients.
+ */
+function borrowerSafeEvent(data) {
+  if (!data || typeof data !== 'object') return data;
+  let out = data;
+  if (typeof data.body === 'string') out = { ...out, body: scrubText(data.body) };
+  const m = data.message;
+  if (m && typeof m === 'object') {
+    const body = typeof m.body === 'string' ? scrubText(m.body) : m.body;
+    const rs = (m.reply_snippet && typeof m.reply_snippet.body === 'string')
+      ? { ...m.reply_snippet, body: scrubText(m.reply_snippet.body) } : m.reply_snippet;
+    const er = Array.isArray(m.entity_refs)
+      ? m.entity_refs.map(r => (r && typeof r.label === 'string') ? { ...r, label: scrubText(r.label) } : r) : m.entity_refs;
+    if (body !== m.body || rs !== m.reply_snippet || er !== m.entity_refs) out = { ...out, message: { ...m, body, reply_snippet: rs, entity_refs: er } };
+  }
+  return out;
+}
+
 /** Fan an event out to a conversation: its (non-removed) members plus any
     connection that has the conversation open (admins/underwriters reading a
     chat they aren't members of still see it live). */
@@ -118,16 +142,44 @@ async function publishToConversation(conversationId, event, data, { excludeKey =
         WHERE conversation_id=$1 AND removed_at IS NULL`, [conversationId]);
     memberKeys = new Set(r.rows.map(m => keyOf(m.member_kind, m.member_id)));
   } catch (_) { /* fall back to open-conv fan-out only */ }
+  // A borrower must never receive a capital-partner name a staffer typed into a
+  // chat message. Scrub the body + quoted-reply preview for BORROWER connections
+  // only; staff connections get the real text. Body-less events
+  // (receipts/presence/typing) pass through untouched.
+  const borrowerData = borrowerSafeEvent(data);
   for (const c of conns.values()) {
     if (c.key === excludeKey) continue;
-    if (memberKeys.has(c.key) || c.openConv === conversationId) write(c, event, data);
+    if (memberKeys.has(c.key) || c.openConv === conversationId) {
+      write(c, event, c.kind === 'borrower' ? borrowerData : data);
+    }
   }
+}
+
+/** Force-close every open SSE stream for one user (e.g. a staffer just
+    deactivated). Ending the HTTP response makes the browser's EventSource fire
+    onerror and try to reconnect — but the reconnect carries the same token,
+    which the deactivation's token_version bump + is_active check now reject at
+    /api/events. Without this, an ALREADY-OPEN stream kept delivering live chat
+    until the socket happened to drop (S1-01 residual). The registered 'close'
+    handler does the registry + presence cleanup. */
+function disconnectUser(kind, id) {
+  const key = keyOf(kind, id);
+  let closed = 0;
+  for (const c of conns.values()) {
+    if (c.key !== key) continue;
+    try { c.res.end(); } catch (_) { /* already dead; 'close' will clean up */ }
+    closed++;
+  }
+  return closed;
 }
 
 /** Direct fan-out to one user's connections (badges, urgent pings). */
 function publishToUser(kind, id, event, data) {
   const key = keyOf(kind, id);
-  for (const c of conns.values()) if (c.key === key) write(c, event, data);
+  // Borrower-bound toasts (urgent chat pings) carry a raw body — scrub for
+  // borrower recipients; staff get the real text.
+  const out = kind === 'borrower' ? borrowerSafeEvent(data) : data;
+  for (const c of conns.values()) if (c.key === key) write(c, event, out);
 }
 
 // Keep proxies from idling the stream out; a comment frame is ignored by
@@ -139,5 +191,6 @@ setInterval(() => {
 module.exports = {
   addClient, setOpenConversation,
   publishToConversation, publishToUser,
+  disconnectUser,
   isOnline, onlineKeys, keyOf,
 };

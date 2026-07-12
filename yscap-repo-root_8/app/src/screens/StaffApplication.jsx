@@ -14,6 +14,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
+import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
@@ -1548,6 +1549,7 @@ export default function StaffApplication() {
   const { search } = useLocation();
   const { role, can } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
+  const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed
   const canDelete = can('delete_files');
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
@@ -1834,6 +1836,7 @@ export default function StaffApplication() {
   }
   async function clearCond(cid) { if (busyAct) return; setBusyAct('cond:' + cid); try { await api.staffClearCondition(cid); flash('Cleared ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   async function waiveCond(cid) { if (busyAct) return; const r = window.prompt('Waive this condition — reason (required):'); if (!r) return; setBusyAct('cond:' + cid); try { await api.staffWaiveCondition(cid, r); flash('Waived ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
+  async function reviewCond(cid, reviewed) { if (busyAct) return; setBusyAct('cond:' + cid); try { await api.staffReviewCondition(cid, reviewed); flash(reviewed ? 'Marked reviewed ✓' : 'Review cleared'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   async function addCondition() {
     if (!newCond.trim()) return;
     try { await api.staffAddCondition(id, { label: newCond.trim(), audience: 'staff' }); setNewCond(''); flash('Added ✓'); await load(); }
@@ -2036,6 +2039,9 @@ export default function StaffApplication() {
           <div className="metrow"><span className="k">Processor</span><span className="v">{procName || '—'}</span></div>
           {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
           <div className="gold-rule" style={{ margin: '10px 0' }} />
+          {/* Reassigning a file is an admin function (S3-02) — the server 403s a
+              non-admin, so don't offer the control to them. */}
+          {isAdmin ? (<>
           <div className="field"><label>Assign loan officer</label>
             <select className="input" value={lo} onChange={e => setLo(e.target.value)}>
               <option value="">— select —</option>
@@ -2047,6 +2053,7 @@ export default function StaffApplication() {
               {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
             </select></div>
           <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>Assign</button>
+          </>) : <p className="muted small">Only an admin can change who this file is assigned to.</p>}
         </div>
       </div>
       </Section>
@@ -2073,13 +2080,14 @@ export default function StaffApplication() {
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
         onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
         onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
+      <StaffChangeRequests appId={id} onChanged={load} />
       <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
       <div className="grid cols-2" style={{ marginTop: 14 }}>
         <AddConditionPanel appId={id} items={items} onChanged={load}
           onError={(t) => setErr(t)} onFlash={flash} />
         <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}
           cForm={cForm} setCForm={setCForm} addLoanCondition={addLoanCondition}
-          clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} />
+          clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} completer={completer} reviewCond={reviewCond} />
       </div>
       </Section>
 
@@ -2275,7 +2283,7 @@ export default function StaffApplication() {
 
 /* Underwriting loan conditions (clear / waive / add) — lives inside the
    Conditions-to-close section, beside the borrower request box. */
-function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm, addLoanCondition, clearCond, waiveCond, isAdmin }) {
+function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm, addLoanCondition, clearCond, waiveCond, isAdmin, completer, reviewCond }) {
   return (
         <div className="panel">
           <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
@@ -2306,11 +2314,16 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
                     <div className="muted small">
                       {sev} · {c.audience === 'staff' ? 'Internal' : 'Borrower-facing'}
                       {c.status !== 'open' ? ` · ${c.status}${c.cleared_by_name ? ` by ${c.cleared_by_name}` : ''}` : ''}
+                      {open && c.reviewed_by_name ? ` · reviewed by ${c.reviewed_by_name}` : ''}
                       {c.waive_reason ? ` · ${c.waive_reason}` : ''}
                     </div>
                   </div>
-                  {open && <button className="btn ghost small" onClick={() => clearCond(c.id)}>Clear</button>}
+                  {/* Clearing (sign-off) is a processor/underwriter call; a loan officer marks it reviewed instead. */}
+                  {open && completer && <button className="btn ghost small" onClick={() => clearCond(c.id)}>Clear</button>}
                   {open && isAdmin && <button className="btn link small" onClick={() => waiveCond(c.id)}>Waive</button>}
+                  {open && !completer && <button className="btn ghost small" onClick={() => reviewCond(c.id, !c.reviewed_by)}
+                    title="Mark that you've reviewed this — a processor or underwriter still signs it off">
+                    {c.reviewed_by ? 'Reviewed ✓ — undo' : 'Mark done'}</button>}
                 </div>
               );
             });

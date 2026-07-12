@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 
 // Fallback role list (replaced live by GET /permissions-meta).
 const FALLBACK_ROLES = [
@@ -57,7 +58,7 @@ export default function StaffTeam() {
         ext: form.ext.trim() || undefined, siteSelectable: form.siteSelectable,
       };
       if (form.provision === 'password') {
-        if (form.password.length < 8) throw new Error('Password must be at least 8 characters.');
+        { const w = passwordProblem(form.password); if (w) throw new Error(w); }
         body.password = form.password;
       } else { body.sendInvite = true; }
       const r = await api.adminCreateStaff(body);
@@ -78,7 +79,7 @@ export default function StaffTeam() {
   async function savePassword(id) {
     setErr('');
     try {
-      if (pwVal.length < 8) throw new Error('Password must be at least 8 characters.');
+      { const w = passwordProblem(pwVal); if (w) throw new Error(w); }
       await api.adminSetStaffPassword(id, pwVal);
       setPwFor(null); setPwVal(''); flash('Password set. They can log in now.');
       await load();
@@ -167,7 +168,8 @@ export default function StaffTeam() {
             </select></div>
           {form.provision === 'password' && (
             <div className="field"><label>Temporary password</label>
-              <input className="input" type="text" value={form.password} onChange={e => set('password', e.target.value)} placeholder="min 8 characters" /></div>
+              <input className="input" type="text" value={form.password} onChange={e => set('password', e.target.value)} placeholder="Set a starting password" />
+              <div className="hint" style={{ marginTop: 6 }}>{PASSWORD_HINT}</div></div>
           )}
           <div className="field" style={{ alignSelf: 'end' }}>
             <button className="btn primary" disabled={busy}>{busy ? 'Adding…' : 'Add team member'}</button>
@@ -212,6 +214,10 @@ export default function StaffTeam() {
                     <input type="checkbox" checked={!!s.is_active}
                       onChange={e => patch(s.id, { isActive: e.target.checked }, s.is_active ? 'Deactivated.' : 'Activated.')} /> Active
                   </label>
+                  <label className="muted small" style={{ display: 'flex', gap: 5, alignItems: 'center', cursor: 'pointer' }} title="Email notifications (their in-app notifications stay on either way)">
+                    <input type="checkbox" checked={s.notificationsEnabled !== false}
+                      onChange={e => patch(s.id, { notificationsEnabled: e.target.checked }, e.target.checked ? 'Email notifications on.' : 'Email notifications off.')} /> Notify
+                  </label>
                   <button className="btn link" onClick={() => { setPwFor(pwFor === s.id ? null : s.id); setPwVal(''); }}>
                     {s.has_login ? 'Reset password' : 'Set password'}
                   </button>
@@ -225,11 +231,14 @@ export default function StaffTeam() {
                   </button>
                 </div>
                 {pwFor === s.id && (
-                  <div className="row" style={{ gap: 8, width: '100%', marginTop: 8 }}>
-                    <input className="input" style={{ maxWidth: 240 }} type="text" placeholder="New password (min 8)"
-                      value={pwVal} onChange={e => setPwVal(e.target.value)} />
-                    <button className="btn primary" onClick={() => savePassword(s.id)}>Save password</button>
-                    <button className="btn ghost" onClick={() => { setPwFor(null); setPwVal(''); }}>Cancel</button>
+                  <div style={{ width: '100%', marginTop: 8 }}>
+                    <div className="row" style={{ gap: 8 }}>
+                      <input className="input" style={{ maxWidth: 240 }} type="text" placeholder="New password"
+                        value={pwVal} onChange={e => setPwVal(e.target.value)} />
+                      <button className="btn primary" onClick={() => savePassword(s.id)}>Save password</button>
+                      <button className="btn ghost" onClick={() => { setPwFor(null); setPwVal(''); }}>Cancel</button>
+                    </div>
+                    <div className="hint" style={{ marginTop: 6 }}>{PASSWORD_HINT}</div>
                   </div>
                 )}
                 {permFor === s.id && (

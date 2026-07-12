@@ -784,11 +784,6 @@ export default function Apply() {
           )}
           {step === 4 && (
             <>
-              <button className="btn link small" type="button" onClick={unlockAdminPricing}
-                style={{ opacity: adminKey ? 1 : 0.45 }}
-                title="Admin mode — unlock markup, origination and fee overrides (password required)">
-                {adminKey ? 'Admin mode on — lock' : 'Admin mode'}
-              </button>
               <button className="btn ghost" type="button" onClick={finishLater} disabled={!appId}
                 title="Your application is already submitted — register the product later from your file.">
                 Finish later — go to my file

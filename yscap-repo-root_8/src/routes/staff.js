@@ -7,8 +7,10 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const { scrubText } = require('../lib/borrower-safe');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
+const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
 const cfg = require('../config');
@@ -1244,17 +1246,19 @@ router.post('/applications/:id/checklist', async (req, res) => {
   // portal would show the generic "An item your loan team needs" (#78).
   const audience = b.audience || 'borrower';
   const borrowerLabel = (audience === 'borrower' || audience === 'both')
-    ? String(b.borrowerLabel || b.label).trim().slice(0, 300) : null;
+    ? scrubText(String(b.borrowerLabel || b.label).trim().slice(0, 300)) : null;
   const r = await db.query(
     `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
      VALUES ('application',$1,$2,$3,$4,'document',$5,$6,'staff',$7) RETURNING id`,
     [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, b.dueDate || null, req.actor.id]);
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
-  if (app.rows[0]) {
+  // Only tell the borrower when the item is actually borrower-facing, and show
+  // them the BORROWER-facing wording (never the internal label). (S2-02)
+  if (app.rows[0] && audience !== 'staff') {
     const ctx = await notify.fileContext(req.params.id);
     await notify.notifyBorrower(app.rows[0].borrower_id, {
       type: 'condition_added', title: 'New document requested on your file',
-      body: `"${b.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
+      body: `"${borrowerLabel || b.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
       meta: (ctx && ctx.meta) || undefined,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
   }
@@ -1335,9 +1339,9 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
      VALUES ('application',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'staff',$15,'manual_custom')
      RETURNING id`,
     [req.params.id, label.slice(0, 300),
-     String(b.borrowerLabel || '').trim().slice(0, 300) || null,
+     scrubText(String(b.borrowerLabel || '').trim().slice(0, 300)) || null,
      String(b.hint || '').trim().slice(0, 2000) || null,
-     String(b.borrowerHint || '').trim().slice(0, 2000) || null,
+     scrubText(String(b.borrowerHint || '').trim().slice(0, 2000)) || null,
      audience, CONDITION_TYPES[type].itemKind, toolKey || null, fieldKey,
      type === 'esign' ? (String(b.esignDoc || '').trim().slice(0, 300) || null) : null,
      category, b.isRequired !== false, b.dueDate || null,
@@ -1485,10 +1489,12 @@ router.get('/applications/:id/activity', async (req, res) => {
 // ---- first-class conditions (object model) ----
 router.get('/applications/:id/conditions', async (req, res) => {
   const r = await db.query(
-    `SELECT c.*, cb.full_name AS created_by_name, xb.full_name AS cleared_by_name
+    `SELECT c.*, cb.full_name AS created_by_name, xb.full_name AS cleared_by_name,
+            rb.full_name AS reviewed_by_name
        FROM conditions c
        LEFT JOIN staff_users cb ON cb.id=c.created_by
        LEFT JOIN staff_users xb ON xb.id=c.cleared_by
+       LEFT JOIN staff_users rb ON rb.id=c.reviewed_by
       WHERE c.application_id=$1 ORDER BY (c.status='open') DESC, c.created_at DESC`, [req.params.id]);
   res.json(r.rows);
 });
@@ -1520,7 +1526,12 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
     res.status(201).json({ ok: true, conditionId: r.rows[0].id });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+// Clearing (signing off) a first-class condition is the PROCESSOR/underwriter's
+// call (audit S3-01) — a loan officer marks it REVIEWED instead (below), never
+// cleared. Mirrors the checklist sign-off gate + the sibling /waive gate.
 router.post('/loan-conditions/:cid/clear', async (req, res) => {
+  if (!can(req.actor, 'sign_off_conditions'))
+    return res.status(403).json({ error: 'Only a processor or underwriter can clear (sign off) a condition — mark it reviewed instead.' });
   try {
     const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
     if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -1528,6 +1539,27 @@ router.post('/loan-conditions/:cid/clear', async (req, res) => {
     await db.query(`UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(), updated_at=now() WHERE id=$1`, [req.params.cid, req.actor.id]);
     await audit(req, 'clear_condition', 'condition', req.params.cid);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// The lighter "reviewed" stamp — a loan officer's "I looked at it / I believe
+// it's done". It NEVER changes the condition's status (still open until a
+// sign-off holder clears/waives it); it just records who reviewed it and when.
+// Sign-off holders may review too. `{reviewed:false}` clears the stamp.
+router.post('/loan-conditions/:cid/review', async (req, res) => {
+  if (!can(req.actor, 'review_conditions') && !can(req.actor, 'sign_off_conditions'))
+    return res.status(403).json({ error: 'You do not have permission to review conditions on this file.' });
+  const reviewed = !(req.body && req.body.reviewed === false);
+  try {
+    const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
+    if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+    await db.query(
+      reviewed
+        ? `UPDATE conditions SET reviewed_by=$2, reviewed_at=now(), updated_at=now() WHERE id=$1`
+        : `UPDATE conditions SET reviewed_by=NULL, reviewed_at=NULL, updated_at=now() WHERE id=$1`,
+      [req.params.cid, reviewed ? req.actor.id : null]);
+    await audit(req, reviewed ? 'review_condition' : 'unreview_condition', 'condition', req.params.cid);
+    res.json({ ok: true, reviewed });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.post('/loan-conditions/:cid/waive', async (req, res) => {
@@ -1544,6 +1576,85 @@ router.post('/loan-conditions/:cid/waive', async (req, res) => {
     const r = await db.query(`UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(), updated_at=now() WHERE id=$1 RETURNING id`, [req.params.cid, reason.slice(0, 500), req.actor.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     await audit(req, 'waive_condition', 'condition', req.params.cid, { reason });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- borrower change requests (S5-03 sandbox) ----------------
+// On a REGISTERED file, a borrower can no longer edit the deal economics
+// directly; each proposed change is a `change_requests` row the assigned loan
+// officer / processor approves or rejects here. Approving applies the value in an
+// audited write (which re-fires the economics-reopen trigger); rejecting closes
+// it and the live record never changed.
+router.get('/applications/:id/change-requests', async (req, res) => {
+  const r = await db.query(
+    `SELECT cr.id, cr.field, cr.field_label, cr.old_value, cr.new_value, cr.reason, cr.status,
+            cr.decision_note, cr.created_at, cr.decided_at, cr.requested_by_kind,
+            db_.full_name AS decided_by_name
+       FROM change_requests cr
+       LEFT JOIN staff_users db_ ON db_.id=cr.decided_by
+      WHERE cr.application_id=$1
+      ORDER BY (cr.status='pending') DESC, cr.created_at DESC`, [req.params.id]);
+  res.json(r.rows);
+});
+
+// Approve a pending change request → apply the value to the live record.
+router.post('/change-requests/:cid/approve', async (req, res) => {
+  const note = String((req.body || {}).note || '').trim() || null;
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    // Lock the row so two reviewers can't both apply it.
+    const cr = (await client.query(
+      `SELECT * FROM change_requests WHERE id=$1 FOR UPDATE`, [req.params.cid])).rows[0];
+    if (!cr) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+    if (!(await canTouchApp(req, cr.application_id))) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'forbidden' }); }
+    if (cr.status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: `this request is already ${cr.status}` }); }
+    const applied = await changeRequests.applyRequest(client, cr, req.actor.id, note);
+    await client.query('COMMIT');
+    // The change is already committed — never let the audit/notify below turn a
+    // successful apply into a 500.
+    try {
+      await audit(req, 'approve_change_request', 'application', cr.application_id,
+        { field: applied.field, from: applied.oldValue, to: applied.newValue });
+    } catch (_) {}
+    // Tell the borrower their requested change was accepted (borrower-safe copy).
+    try {
+      await notify.notifyAppBorrowers(cr.application_id, {
+        type: 'change_request', title: 'Your requested change was approved',
+        body: `Your loan team approved your update to ${cr.field_label}.`,
+        applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
+    } catch (_) {}
+    res.json({ ok: true, applied });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    res.status(500).json({ error: 'server error' });
+  } finally { client.release(); }
+});
+
+// Reject a pending change request → it closes and the live record is untouched.
+router.post('/change-requests/:cid/reject', async (req, res) => {
+  const note = String((req.body || {}).note || '').trim() || null;
+  try {
+    const cr = (await db.query(`SELECT application_id, field_label, status FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
+    if (!cr) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
+    if (cr.status !== 'pending') return res.status(409).json({ error: `this request is already ${cr.status}` });
+    // The status guard in the WHERE makes this atomic against a concurrent approve
+    // (which row-locks + rechecks 'pending'): if the request was decided between
+    // the SELECT above and here, the UPDATE touches nothing and we 409 — so a
+    // reject can never overwrite an already-approved (and applied) request.
+    const upd = await db.query(
+      `UPDATE change_requests SET status='rejected', decided_by=$2, decided_at=now(), decision_note=$3, updated_at=now()
+        WHERE id=$1 AND status='pending' RETURNING id`, [req.params.cid, req.actor.id, note]);
+    if (!upd.rows[0]) return res.status(409).json({ error: 'this request was just decided by someone else' });
+    await audit(req, 'reject_change_request', 'application', cr.application_id, { field: cr.field_label });
+    try {
+      await notify.notifyAppBorrowers(cr.application_id, {
+        type: 'change_request', title: 'Update on your requested change',
+        body: `Your loan team reviewed your requested change to ${cr.field_label}.`,
+        applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
+    } catch (_) {}
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -1832,7 +1943,20 @@ router.post('/applications/:id/assign', async (req, res) => {
   const { loanOfficerId, processorId } = req.body || {};
   if (!loanOfficerId && !processorId) return res.status(400).json({ error: 'loanOfficerId or processorId required' });
   try {
+    // Reassigning a file is a manager function (audit S3-02). A non-admin may
+    // ONLY claim a currently-EMPTY slot for THEMSELVES — never take over a file
+    // already assigned to another officer/processor. Admins may (re)assign
+    // freely. The audit records both the previous and new owner.
+    const cur = await db.query(`SELECT loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'application not found' });
+    const admin = isAdmin(req);
     if (loanOfficerId) {
+      const selfClaimEmpty = !cur.rows[0].loan_officer_id && String(loanOfficerId) === String(req.actor.id);
+      if (!admin && !selfClaimEmpty) {
+        return res.status(403).json({ error: cur.rows[0].loan_officer_id
+          ? 'Only an admin can reassign a file that already has a loan officer.'
+          : 'Only an admin can assign this file to another officer — you may claim an unassigned file for yourself.' });
+      }
       const off = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true`, [loanOfficerId]);
       if (!off.rows[0]) return res.status(404).json({ error: 'officer not found' });
       const u = await db.query(`UPDATE applications SET loan_officer_id=$2, loan_officer_name=$3, updated_at=now() WHERE id=$1`,
@@ -1841,9 +1965,15 @@ router.post('/applications/:id/assign', async (req, res) => {
       await notify.notifyStaff(loanOfficerId, {
         type: 'assignment', title: 'Application assigned to you', applicationId: req.params.id,
         link: `/internal/app/${req.params.id}` });
-      await audit(req, 'assign_application', 'application', req.params.id, { loanOfficerId });
+      await audit(req, 'assign_application', 'application', req.params.id, { from: cur.rows[0].loan_officer_id || null, to: loanOfficerId });
     }
     if (processorId) {
+      const selfClaimEmpty = !cur.rows[0].processor_id && String(processorId) === String(req.actor.id);
+      if (!admin && !selfClaimEmpty) {
+        return res.status(403).json({ error: cur.rows[0].processor_id
+          ? 'Only an admin can reassign the processor on a file.'
+          : 'Only an admin can assign this file to another processor — you may claim an unassigned file for yourself.' });
+      }
       const p = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [processorId]);
       if (!p.rows[0]) return res.status(404).json({ error: 'processor not found' });
       const u = await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
@@ -1852,7 +1982,7 @@ router.post('/applications/:id/assign', async (req, res) => {
       await notify.notifyStaff(processorId, {
         type: 'assignment', title: 'File assigned to you for processing', applicationId: req.params.id,
         link: `/internal/app/${req.params.id}` });
-      await audit(req, 'assign_processor', 'application', req.params.id, { processorId });
+      await audit(req, 'assign_processor', 'application', req.params.id, { from: cur.rows[0].processor_id || null, to: processorId });
     }
     enqueueClickupPush(req.params.id, ['officer', 'processor']).catch(() => {}); // propagate officer/processor to ClickUp promptly
     res.json({ ok: true });
@@ -2010,7 +2140,7 @@ router.post('/borrowers/:id/set-password', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const pw = String((req.body || {}).password || '');
-    if (pw.length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
+    { const w = C.passwordProblem(pw); if (w) return res.status(400).json({ error: w }); }
     const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
     if (!b) return res.status(404).json({ error: 'not found' });
     const hash = await C.hashPassword(pw);

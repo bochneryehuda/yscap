@@ -128,7 +128,7 @@ const staffToken    = (id, role, tv) => C.signJwt({ sub: id, kind: 'staff', role
 router.post('/borrower/register', async (req, res) => {
   const { email, password, firstName, lastName, cellPhone } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'email + password required' });
-  if (String(password).length < 8) return res.status(400).json({ error: 'password too short' });
+  { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
   let client;
   try {
     client = await db.getClient();
@@ -336,7 +336,7 @@ router.post('/borrower/forgot', async (req, res) => {
 router.post('/borrower/reset', async (req, res) => {
   const { token, password } = req.body || {};
   if (!token || !password) return res.status(400).json({ error: 'token + password required' });
-  if (String(password).length < 8) return res.status(400).json({ error: 'password too short' });
+  { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
   try {
     const r = await db.query(
       `SELECT * FROM email_tokens
@@ -396,12 +396,23 @@ router.post('/staff/login', async (req, res, next) => {
   const { email, password } = req.body || {};
   try {
     const r = await db.query(
-      `SELECT id, role, password_hash, mfa_enabled, token_version FROM staff_users
-       WHERE email=$1 AND is_active=true`, [email]);
+      `SELECT id, role, password_hash, mfa_enabled, token_version, failed_attempts, locked_until
+         FROM staff_users WHERE email=$1 AND is_active=true`, [email]);
     const row = r.rows[0];
-    if (!row || !row.password_hash || !(await C.verifyPassword(password, row.password_hash)))
+    // Run a real password hash even when the account doesn't exist / is inactive,
+    // so the response time doesn't reveal which staff emails are real (S1-06
+    // enumeration) — same defense the borrower login already uses.
+    if (!row || !row.password_hash) { await C.hashPassword(String(password || '')).catch(() => {}); return res.status(401).json({ error: 'invalid credentials' }); }
+    if (row.locked_until && new Date(row.locked_until) > new Date())
+      return res.status(423).json({ error: 'account locked — try later' });
+    if (!(await C.verifyPassword(password, row.password_hash))) {
+      // Count the miss and lock after MAX_FAILED (S1-02) — staff had no lockout.
+      const fa = row.failed_attempts + 1;
+      await db.query(`UPDATE staff_users SET failed_attempts=$2, locked_until=$3 WHERE id=$1`,
+        [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]);
       return res.status(401).json({ error: 'invalid credentials' });
-    await db.query(`UPDATE staff_users SET last_login_at=now() WHERE id=$1`, [row.id]);
+    }
+    await db.query(`UPDATE staff_users SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE id=$1`, [row.id]);
     if (row.mfa_enabled)
       return res.json({ mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'staff', role: row.role, mfa: true }, 300) });
     res.json({ token: staffToken(row.id, row.role, row.token_version) });
@@ -425,12 +436,17 @@ router.post('/staff', requireAuth, requireRole('admin'), async (req, res) => {
   const { email, fullName, role, password } = req.body || {};
   if (!ASSIGNABLE_ROLES.includes(role))
     return res.status(400).json({ error: 'bad role' });
+  if (password) { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
   // The ON CONFLICT upsert can overwrite an existing user's role — never let a
-  // non-super-admin demote/alter a super_admin by targeting their email.
+  // non-super-admin demote/alter a super_admin (or admin) by targeting their
+  // email, and never let a non-super mint an admin (which carries every
+  // platform-wide power). Mirrors the admin-console roleGuard (S1-05).
   if (req.actor.role !== 'super_admin') {
+    if (role === 'admin')
+      return res.status(403).json({ error: 'only a super admin can grant the admin role' });
     const ex = await db.query(`SELECT role FROM staff_users WHERE email=$1`, [email]);
-    if (ex.rows[0] && ex.rows[0].role === 'super_admin')
-      return res.status(403).json({ error: 'only a super admin can modify a super admin' });
+    if (ex.rows[0] && (ex.rows[0].role === 'super_admin' || ex.rows[0].role === 'admin'))
+      return res.status(403).json({ error: 'only a super admin can modify a super admin or admin account' });
   }
   try {
     const r = await db.query(
@@ -453,17 +469,22 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
     inviteRole = role || 'loan_officer';
     if (inviteRole === 'super_admin') {
       if (req.actor.role !== 'super_admin') return res.status(403).json({ error: 'only a super admin can grant super_admin' });
+    } else if (inviteRole === 'admin') {
+      // admin carries every platform-wide power, so granting it via invite is
+      // super-admin-only too (S1-05 — mirrors the console roleGuard).
+      if (req.actor.role !== 'super_admin') return res.status(403).json({ error: 'only a super admin can grant the admin role' });
     } else if (!ASSIGNABLE_ROLES.includes(inviteRole)) {
       return res.status(400).json({ error: 'bad role' });
     }
-    // SECURITY: an invite to an existing super_admin's email would, via accept()'s
-    // ON CONFLICT DO UPDATE, overwrite that account's password AND return its
-    // unchanged super_admin role — a takeover. Never let a non-super-admin invite
-    // (and thereby seize) an existing super_admin. Mirrors the /auth/staff guard.
+    // SECURITY: an invite to an existing super_admin's (or admin's) email would,
+    // via accept()'s ON CONFLICT DO UPDATE, overwrite that account's password AND
+    // return its unchanged privileged role — a takeover. Never let a
+    // non-super-admin invite (and thereby seize) an existing super_admin or admin.
+    // Mirrors the /auth/staff guard.
     if (email) {
       const ex = await db.query(`SELECT role FROM staff_users WHERE lower(email)=lower($1)`, [email]);
-      if (ex.rows[0] && ex.rows[0].role === 'super_admin' && req.actor.role !== 'super_admin') {
-        return res.status(403).json({ error: 'only a super admin can invite or modify a super admin account' });
+      if (ex.rows[0] && (ex.rows[0].role === 'super_admin' || ex.rows[0].role === 'admin') && req.actor.role !== 'super_admin') {
+        return res.status(403).json({ error: 'only a super admin can invite or modify a super admin or admin account' });
       }
     }
   }
@@ -492,6 +513,7 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
 router.post('/accept', async (req, res, next) => {
   const { token, password, firstName, lastName, fullName } = req.body || {};
   if (!token || !password) return res.status(400).json({ error: 'token + password required' });
+  { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
   const inv = await db.query(
     `SELECT * FROM invite_tokens WHERE token_hash=$1 AND accepted_at IS NULL AND expires_at > now()`,
     [C.sha256(token)]);
@@ -500,17 +522,21 @@ router.post('/accept', async (req, res, next) => {
   try {
     if (row.kind === 'staff') {
       // SECURITY (defense in depth): never let accept() silently seize a
-      // pre-existing super_admin account (overwriting its password + returning its
-      // role) unless the invite itself was for super_admin — which only a
-      // super_admin can create. Blocks the invite→accept takeover even if a bad
-      // invite slipped through.
+      // pre-existing privileged account (overwriting its password + returning its
+      // role) unless the invite role MATCHES that account's role — which, for
+      // admin/super_admin, only a super_admin can create. Blocks the
+      // invite→accept takeover even if a bad invite slipped through (post-fix
+      // audit HIGH: a non-super minted a loan_officer invite for an existing
+      // admin's email and accepted it to overwrite that admin's password).
       const existing = await db.query(`SELECT role FROM staff_users WHERE lower(email)=lower($1)`, [row.email]);
-      if (existing.rows[0] && existing.rows[0].role === 'super_admin' && row.role !== 'super_admin') {
-        return res.status(403).json({ error: 'cannot take over an existing super admin account' });
+      if (existing.rows[0] && (existing.rows[0].role === 'super_admin' || existing.rows[0].role === 'admin')
+          && row.role !== existing.rows[0].role) {
+        return res.status(403).json({ error: 'cannot take over an existing admin account' });
       }
       const s = await db.query(
         `INSERT INTO staff_users (email,full_name,role,password_hash) VALUES ($1,$2,$3,$4)
-         ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash RETURNING id,role,token_version`,
+         ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash,
+           failed_attempts=0, locked_until=NULL RETURNING id,role,token_version`,
         [row.email, fullName || row.email, row.role || 'loan_officer', await C.hashPassword(password)]);
       await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
       return res.json({ token: staffToken(s.rows[0].id, s.rows[0].role, s.rows[0].token_version) });

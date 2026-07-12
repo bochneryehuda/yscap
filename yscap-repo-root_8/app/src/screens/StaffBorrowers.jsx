@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 
 // #83 — the loan officer's book of borrowers. Everyone on a file they run (or,
 // for staff who see all files, everyone), with portal-account state and last
@@ -48,7 +49,7 @@ export default function StaffBorrowers() {
     finally { setBusy(''); }
   }
   async function setPassword(b) {
-    if (pwVal.length < 8) { fail('Password must be at least 8 characters.'); return; }
+    { const w = passwordProblem(pwVal); if (w) { fail(w); return; } }
     setBusy('setpw:' + b.id);
     try {
       await api.staffBorrowerSetPassword(b.id, pwVal);
@@ -179,12 +180,13 @@ export default function StaffBorrowers() {
                         <td colSpan={7} style={{ padding: '10px 12px' }}>
                           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                             <span className="small">Set a new password for <strong>{name}</strong>:</span>
-                            <input className="input" type="text" autoComplete="off" placeholder="At least 8 characters"
+                            <input className="input" type="text" autoComplete="off" placeholder="New password"
                               value={pwVal} onChange={e => setPwVal(e.target.value)} style={{ maxWidth: 260 }} />
                             <button className="btn primary small" disabled={busy === 'setpw:' + b.id} onClick={() => setPassword(b)}>
                               {busy === 'setpw:' + b.id ? 'Saving…' : 'Set password'}</button>
                             <span className="muted small">The borrower can sign in with this immediately; open sessions are signed out.</span>
                           </div>
+                          <div className="hint" style={{ marginTop: 6 }}>{PASSWORD_HINT}</div>
                         </td>
                       </tr>
                     )}

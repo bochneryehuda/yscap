@@ -513,16 +513,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                   {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
                 </button>
                 <button className="btn ghost" onClick={closeStudio}>Save &amp; exit</button>
-                {!isStaff && (
-                  <button className="btn link small" type="button" onClick={toggleAdmin}
-                    style={{ opacity: adminKey ? 1 : 0.45 }}
-                    title="Admin mode — unlock markup, origination and fee overrides (password required)">
-                    {adminKey ? (adminOpen ? 'Admin mode on — lock' : 'Admin mode locked — reopen') : 'Admin mode'}
-                  </button>
-                )}
-                {!isStaff && adminKey && !adminOpen && (
-                  <span className="muted small">Admin overrides stay active while locked — they carry into the registration.</span>
-                )}
+                {/* Borrower-side "admin pricing" was removed (S1-04): the server no
+                    longer honors a borrower adminKey, so no borrower admin-mode UI. */}
                 <span className="muted small studio-foot-status">{statusLine}</span>
               </div>
             </div>

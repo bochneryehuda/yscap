@@ -14,6 +14,7 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const { scrubText } = require('../lib/borrower-safe');
 const registry = require('../lib/conditions/field-registry');
 const rules = require('../lib/conditions/rules');
 const engine = require('../lib/conditions/engine');
@@ -116,6 +117,11 @@ function normalizeDefinition(b, existing, fields) {
   }
   out.hint = b.hint !== undefined ? (String(b.hint || '').trim().slice(0, 2000) || null) : (existing ? existing.hint : null);
   out.borrower_hint = b.borrowerHint !== undefined ? (String(b.borrowerHint || '').trim().slice(0, 2000) || null) : (existing ? existing.borrower_hint : null);
+  // Borrower-facing wording must never carry a capital-partner name — replace any
+  // with the program name. Also covers the blank-borrower-label default above,
+  // which copies the INTERNAL label into borrower_label.
+  out.borrower_label = scrubText(out.borrower_label);
+  out.borrower_hint = scrubText(out.borrower_hint);
   out.esign_doc = b.esignDoc !== undefined ? (String(b.esignDoc || '').trim().slice(0, 300) || null) : (existing ? existing.esign_doc : null);
   out.phase = b.phase !== undefined ? (b.phase || null) : (existing ? existing.phase : null);
   out.sort_order = b.sortOrder !== undefined ? (Number(b.sortOrder) || 500) : (existing ? existing.sort_order : 500);

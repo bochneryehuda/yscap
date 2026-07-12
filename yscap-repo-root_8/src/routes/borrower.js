@@ -7,6 +7,7 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const { scrubText, scrubFields } = require('../lib/borrower-safe');
 const cfg = require('../config');
 const C = require('../lib/crypto');
 const storage = require('../lib/storage');
@@ -22,6 +23,7 @@ const llcLib = require('../lib/llc');
 const apprCard = require('../lib/appraisal-card');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
+const changeRequests = require('../lib/change-requests');
 const { enqueueChecklistStatusPush } = require('../clickup/enqueue');
 
 router.use(requireAuth, requireBorrower);
@@ -312,6 +314,11 @@ router.get('/applications/:id', async (req, res) => {
 
 // Columns on `applications` that must never be returned to a borrower.
 const BORROWER_HIDDEN_APP_FIELDS = [
+  // raw_intake is the ORIGINAL submission blob — on a joint file it carries the
+  // OTHER borrower's personal info (the primary's DOB/address/phone typed at
+  // submit). The structured fields the portal needs are returned separately, so
+  // the raw blob never needs to reach a borrower (S1-03). Not used by the app.
+  'raw_intake',
   'lender', 'investor_loan_number', 'channel', 'clickup_extra',
   'clickup_pipeline_task_id', 'clickup_folder_id', 'clickup_list_id',
   'internal_status', 'sync_state', 'clickup_last_synced_at', 'clickup_status_updated_at', 'hot_poll_until',
@@ -324,7 +331,25 @@ const BORROWER_HIDDEN_APP_FIELDS = [
 function stripInternalAppFields(row) {
   if (!row || typeof row !== 'object') return row;
   for (const k of BORROWER_HIDDEN_APP_FIELDS) delete row[k];
+  // Strip OUR internal margin from the registered product's quote. A borrower
+  // may see their loan structure (rate, loan amount, appraised value) but never
+  // the markup / fee build-up (S1-03). adminPricing is the internal block.
+  if (row.registered_quote && typeof row.registered_quote === 'object' && !Array.isArray(row.registered_quote)) {
+    const { adminPricing, ...rest } = row.registered_quote;
+    row.registered_quote = rest;
+  }
   return row;
+}
+
+// Scrub capital-partner names out of an LLC bundle's document slots before it
+// reaches a borrower: label/hint COALESCE to the INTERNAL wording (llc.js) and
+// rejection_reason is staff free-text. Mutates + returns the bundle (a fresh
+// object from getLlcBundle).
+function scrubLlcSlots(bundle) {
+  if (bundle && Array.isArray(bundle.slots)) {
+    bundle.slots = bundle.slots.map((s) => scrubFields(s, ['label', 'hint', 'rejection_reason']));
+  }
+  return bundle;
 }
 
 async function loadFileForPricing(appId, borrowerId) {
@@ -375,20 +400,13 @@ function borrowerPricingOverrides(raw) {
   }
   return out;
 }
-// Admin pricing unlock: a borrower session that presents the admin key (the
-// Term Sheet Studio's admin-mode password, server-verified) may also send the
-// staff-grade fee / markup / manual-basis overrides.
-const ADMIN_OVERRIDE_KEYS = ['markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct',
-  'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
-  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths'];
-function mergeAdminOverrides(overrides, raw, adminKey) {
-  if (!adminKey || adminKey !== cfg.adminPricingKey) return overrides;
-  for (const k of ADMIN_OVERRIDE_KEYS) {
-    if (raw && raw[k] != null && raw[k] !== '') overrides[k] = raw[k];
-  }
-  if (raw && raw.manualPricing != null) overrides.manualPricing = !!raw.manualPricing;
-  return overrides;
-}
+// SECURITY (audit S1-04, owner-directed 2026-07-12): the borrower-side "admin
+// pricing unlock" was REMOVED. A borrower session may only ever send the safe,
+// clamped knobs from borrowerPricingOverrides() — never the staff-grade
+// fee / markup / manual-basis overrides (markup%, origination, lender/credit/
+// appraisal/title fees, manual LTV/rate). Those belong only to the staff pricing
+// routes (loan officer / processor / admin), gated by staff auth. There is no
+// longer any adminKey path a borrower can present, and no hardcoded key.
 
 router.get('/applications/:id/pricing', async (req, res) => {
   try {
@@ -427,9 +445,7 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const f = await loadFileForPricing(req.params.id, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
-    const overrides = mergeAdminOverrides(
-      borrowerPricingOverrides((req.body && req.body.overrides) || {}),
-      (req.body && req.body.overrides) || {}, req.body && req.body.adminKey);
+    const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
     const out = pricing.quoteAll(f.app, f.exp, overrides);
     res.json({ ...out, experience: f.exp });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
@@ -445,7 +461,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
-    const overrides = mergeAdminOverrides(borrowerPricingOverrides(b.overrides || {}), b.overrides || {}, b.adminKey);
+    const overrides = borrowerPricingOverrides(b.overrides || {});
     // A REGISTERED product is authoritative terms. Never let borrower-claimed
     // experience beat the verified track record here — staff loan officers are
     // forbidden from injecting these same keys (ADMIN_ONLY_OVERRIDE_KEYS), so a
@@ -559,7 +575,10 @@ router.get('/applications/:id/conditions', async (req, res) => {
        FROM conditions
       WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('open','borrower_responded')
       ORDER BY created_at`, [req.params.id]);
-  res.json(r.rows);
+  // Scrub any capital-partner name out of borrower-facing wording on the way out
+  // — covers already-stored data (e.g. a borrower_title defaulted from an
+  // internal title). Staff surfaces are never scrubbed.
+  res.json(r.rows.map((row) => ({ ...row, title: scrubText(row.title), detail: scrubText(row.detail) })));
 });
 
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
@@ -589,6 +608,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
   // Info-field conditions carry their field definition (type/options/labels)
   // and the field's current value so the portal can render a typed input.
   const rows = r.rows;
+  // Scrub capital-partner names from borrower-facing wording (label/hint/reason)
+  // before anything else uses `rows` — covers data where borrower_label was
+  // defaulted from the internal label.
+  for (const it of rows) { it.label = scrubText(it.label); it.hint = scrubText(it.hint); it.rejection_reason = scrubText(it.rejection_reason); }
   if (rows.some((it) => it.tool_key === 'info_field' && it.field_key)) {
     let ctx = null;
     try { const loaded = await conditionEngine.loadRuleContext(req.params.id); ctx = loaded && loaded.ctx; } catch (_) {}
@@ -637,6 +660,19 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
   if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
   if ((req.body || {}).value === undefined || req.body.value === null || req.body.value === '')
     return res.status(400).json({ error: 'a value is required' });
+  // S5-03: on a REGISTERED file, an economics field answered here is a change to
+  // authoritative terms — route it through the approval sandbox instead of writing
+  // the live record. Personal/verification fields (FICO, DOB, …) are unaffected.
+  if (changeRequests.isGovernedField(item.field_key) && await changeRequests.isBorrowerLocked(req.params.id)) {
+    try {
+      const cr = await changeRequests.openRequest(req.params.id, item.field_key, req.body.value,
+        { reason: req.body.reason || null, requesterKind: 'borrower', requesterId: me(req) });
+      if (!cr.unchanged) await notifyTeamOfChangeRequests(req.params.id, [cr]);
+      return res.json({ ok: true, locked: true, changeRequested: !cr.unchanged, field: item.field_key });
+    } catch (e) {
+      return res.status(e.status || 400).json({ error: e.message });
+    }
+  }
   let saved;
   try {
     // Co-borrower privacy (#82): a borrower-scoped field (e.g. FICO) is written to
@@ -827,7 +863,7 @@ router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
 router.get('/llcs', async (req, res) => {
   const r = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 ORDER BY created_at`, [me(req)]);
   const out = [];
-  for (const row of r.rows) out.push(await llcLib.getLlcBundle(row.id));
+  for (const row of r.rows) out.push(scrubLlcSlots(await llcLib.getLlcBundle(row.id)));
   res.json(out.filter(Boolean));
 });
 router.get('/llcs/:id', async (req, res) => {
@@ -843,7 +879,7 @@ router.get('/llcs/:id', async (req, res) => {
       [req.params.id, me(req)]);
     if (!linked.rows[0]) return res.status(404).json({ error: 'not found' });
   }
-  const bundle = await llcLib.getLlcBundle(req.params.id);
+  const bundle = scrubLlcSlots(await llcLib.getLlcBundle(req.params.id));
   res.json({ ...bundle, read_only: !mine });
 });
 
@@ -1109,11 +1145,25 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
   const bid = own.rows[0].borrower_id;
   const b = req.body || {};
   try {
+    // S5-03: once a product is registered, the borrower can no longer write the
+    // deal economics straight onto the live record — each proposed change becomes
+    // an approval-gated change request that the loan officer + processor rule on.
+    // Personal fields (below) stay directly editable either way.
+    const locked = await changeRequests.isBorrowerLocked(req.params.id);
+    const requested = [];
     const appVals = [req.params.id], appSets = [], appKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
       if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      if (locked) {
+        try {
+          const cr = await changeRequests.openRequest(req.params.id, k, b[k],
+            { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req) });
+          if (!cr.unchanged) requested.push(cr);
+        } catch (_) { /* skip a bad field, keep going with the rest */ }
+        continue;   // never a live write for a governed field on a locked file
+      }
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     if (appSets.length) {
@@ -1121,6 +1171,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, appKeys); } catch (_) {}
     }
+    if (requested.length) await notifyTeamOfChangeRequests(req.params.id, requested);
     // Personal fields update the actor's OWN profile only — a co-borrower must
     // not overwrite the primary borrower's DOB / phone / FICO / citizenship
     // (their own values differ). App/deal fields above are file-level and either
@@ -1133,8 +1184,55 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
     }
     if (brSets.length) { brSets.push('updated_at=now()'); await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals); }
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      locked,
+      // When the file is locked, tell the UI which economics edits were turned
+      // into pending change requests (so it can show "sent to your loan team").
+      changeRequests: requested.map((r) => ({ field: r.field, label: r.field_label, newValue: r.new_value })),
+    });
   } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+});
+
+// Tell the loan officer + processor a borrower has proposed an economics change
+// on a registered file (S5-03). Best-effort; mirrors the info-condition notice.
+async function notifyTeamOfChangeRequests(appId, requested) {
+  try {
+    const a = await db.query(
+      `SELECT a.loan_officer_id, a.processor_id, b.first_name, b.last_name
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+    const row = a.rows[0]; if (!row) return;
+    const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+    const fields = requested.map((r) => r.field_label).join(', ');
+    const ctx = await notify.fileContext(appId);
+    for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
+      await notify.notifyStaff(sid, {
+        type: 'change_request',
+        title: `${who} requested a change to ${fields}`,
+        body: `${ctx ? ctx.label : 'A file'} — review the requested change and approve or reject it.`,
+        meta: (ctx && ctx.meta) || undefined,
+        applicationId: appId, link: `/internal/app/${appId}`, ctaLabel: 'Review the change' });
+    }
+  } catch (_) { /* best-effort */ }
+}
+
+// The borrower's own change requests for a file (pending first). `locked` tells
+// the UI whether the file is past registration (so it shows the sandbox instead
+// of directly-editable economics fields). Decision notes are scrubbed like every
+// other borrower-facing text so no capital-partner name can slip through.
+router.get('/applications/:id/change-requests', async (req, res) => {
+  const own = await db.query(
+    `SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+    [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const r = await db.query(
+    `SELECT id, field, field_label, old_value, new_value, reason, status, decision_note, created_at, decided_at
+       FROM change_requests WHERE application_id=$1
+      ORDER BY (status='pending') DESC, created_at DESC LIMIT 50`, [req.params.id]);
+  res.json({
+    locked: await changeRequests.isBorrowerLocked(req.params.id),
+    requests: r.rows.map((row) => ({ ...row, decision_note: scrubText(row.decision_note) })),
+  });
 });
 
 // ---------------- SERVICE CONTACTS (title company / insurance agent) ----------------
@@ -1633,7 +1731,9 @@ router.get('/documents', async (req, res) => {
         AND visibility='borrower' AND source_type <> 'chat_attachment'
       ORDER BY is_current DESC, created_at DESC`,
     [me(req), req.query.applicationId || null]);
-  res.json(r.rows);
+  // rejection_reason AND slot_label are staff free-text shown to the borrower —
+  // scrub any capital-partner name out of both.
+  res.json(r.rows.map((row) => scrubFields(row, ['rejection_reason', 'slot_label'])));
 });
 
 // Download a document the borrower may see: their own uploads plus staff files
@@ -1687,7 +1787,10 @@ router.get('/notifications', async (req, res) => {
   const r = await db.query(
     `SELECT id,type,title,body,application_id,link,read_at,created_at FROM notifications
      WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 100`, [me(req)]);
-  res.json(r.rows);
+  // Some notification rows are written directly (chat bell) bypassing the
+  // notify.notifyBorrower scrub — scrub title/body on the way out (covers
+  // already-stored rows too).
+  res.json(r.rows.map((row) => scrubFields(row, ['title', 'body'])));
 });
 router.post('/notifications/:id/read', async (req, res) => {
   await db.query(`UPDATE notifications SET read_at=now() WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
@@ -1740,6 +1843,7 @@ router.get('/messages', async (req, res) => {
       ORDER BY m.created_at DESC LIMIT 500`,
     [me(req), req.query.applicationId || null]);
   r.rows.reverse();   // newest-500 window, still rendered oldest-first
+  for (const m of r.rows) if (m && typeof m.body === 'string') m.body = scrubText(m.body);  // no partner name to a borrower
   // Opening the thread clears the "new message" badge for staff replies —
   // legacy read_at plus the new per-member watermark (035).
   if (req.query.applicationId) {
@@ -1899,7 +2003,7 @@ router.get('/chat/inbox', async (req, res) => {
                            ORDER BY created_at DESC LIMIT 1) lm ON true
       WHERE a.borrower_id=$1 OR a.co_borrower_id=$1
       ORDER BY lm.created_at DESC NULLS LAST`, [me(req)]);
-  res.json(r.rows);
+  res.json(r.rows.map((row) => scrubFields(row, ['last_body'])));
 });
 
 // ---------------- chat v3: conversations, receipts, presence ----------------

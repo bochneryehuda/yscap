@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import LlcManager from '../components/LlcManager.jsx';
+import { passwordProblem } from '../lib/password.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -94,7 +95,7 @@ function Header({ b, name, onChanged }) {
     finally { setBusy(''); }
   }
   async function savePw() {
-    if ((pw || '').length < 8) { fail('Password must be at least 8 characters.'); return; }
+    { const w = passwordProblem(pw); if (w) { fail(w); return; } }
     setBusy('setpw');
     try { await api.staffBorrowerSetPassword(b.id, pw); flash('Password set — open sessions were signed out.'); setPw(null); onChanged(); }
     catch (e) { fail(e.message || 'Could not set password'); }
