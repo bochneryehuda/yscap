@@ -313,6 +313,11 @@ router.get('/applications/:id', async (req, res) => {
 
 // Columns on `applications` that must never be returned to a borrower.
 const BORROWER_HIDDEN_APP_FIELDS = [
+  // raw_intake is the ORIGINAL submission blob — on a joint file it carries the
+  // OTHER borrower's personal info (the primary's DOB/address/phone typed at
+  // submit). The structured fields the portal needs are returned separately, so
+  // the raw blob never needs to reach a borrower (S1-03). Not used by the app.
+  'raw_intake',
   'lender', 'investor_loan_number', 'channel', 'clickup_extra',
   'clickup_pipeline_task_id', 'clickup_folder_id', 'clickup_list_id',
   'internal_status', 'sync_state', 'clickup_last_synced_at', 'clickup_status_updated_at', 'hot_poll_until',
@@ -325,6 +330,13 @@ const BORROWER_HIDDEN_APP_FIELDS = [
 function stripInternalAppFields(row) {
   if (!row || typeof row !== 'object') return row;
   for (const k of BORROWER_HIDDEN_APP_FIELDS) delete row[k];
+  // Strip OUR internal margin from the registered product's quote. A borrower
+  // may see their loan structure (rate, loan amount, appraised value) but never
+  // the markup / fee build-up (S1-03). adminPricing is the internal block.
+  if (row.registered_quote && typeof row.registered_quote === 'object' && !Array.isArray(row.registered_quote)) {
+    const { adminPricing, ...rest } = row.registered_quote;
+    row.registered_quote = rest;
+  }
   return row;
 }
 
