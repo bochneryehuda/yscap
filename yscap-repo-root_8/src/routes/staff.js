@@ -1251,11 +1251,13 @@ router.post('/applications/:id/checklist', async (req, res) => {
      VALUES ('application',$1,$2,$3,$4,'document',$5,$6,'staff',$7) RETURNING id`,
     [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, b.dueDate || null, req.actor.id]);
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
-  if (app.rows[0]) {
+  // Only tell the borrower when the item is actually borrower-facing, and show
+  // them the BORROWER-facing wording (never the internal label). (S2-02)
+  if (app.rows[0] && audience !== 'staff') {
     const ctx = await notify.fileContext(req.params.id);
     await notify.notifyBorrower(app.rows[0].borrower_id, {
       type: 'condition_added', title: 'New document requested on your file',
-      body: `"${b.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
+      body: `"${borrowerLabel || b.label}" was added to your conditions on ${ctx ? ctx.label : 'your file'}.`,
       meta: (ctx && ctx.meta) || undefined,
       applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Open your conditions' });
   }
