@@ -99,7 +99,7 @@ export default function ToolModal({ url, title, onClose }) {
       {saveError && (
         <div role="alert" style={{
           margin: '10px 16px 0', padding: '12px 14px', borderRadius: 10,
-          border: '1px solid #e06666', background: '#3a1414', color: '#ffd9d9',
+          border: '1px solid var(--danger)', background: 'var(--danger-soft)', color: 'var(--danger)',
           fontWeight: 600, lineHeight: 1.45,
         }}>
           <span style={{ marginRight: 8 }}>⛔</span>

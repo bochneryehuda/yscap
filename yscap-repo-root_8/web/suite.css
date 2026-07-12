@@ -31,10 +31,17 @@
     --good:#7FB08A; --warn:#C9A86A; --bad:#C98A6A;
 }
 *{ box-sizing:border-box; }
-html{ scroll-behavior:smooth; }
+html{ scroll-behavior:smooth; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 body{
     margin:0; font-family:var(--font-b); background:var(--ink); color:var(--ivory);
     line-height:1.6; -webkit-font-smoothing:antialiased; overflow-x:hidden;
+}
+button,a,select,[role=button]{ -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
+/* iOS Safari zooms the page in when a focused field is < 16px. Force 16px on
+   every form control on phones so tapping a field in any embedded tool never
+   triggers that zoom (the tighter rem sizes are kept above this breakpoint). */
+@media (max-width:720px){
+    input:not([type=checkbox]):not([type=radio]), select, textarea { font-size:16px !important; }
 }
 a{ color:inherit; text-decoration:none; }
 img{ max-width:100%; display:block; }

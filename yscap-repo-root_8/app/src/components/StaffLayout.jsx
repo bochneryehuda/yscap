@@ -15,6 +15,7 @@ export default function StaffLayout({ children }) {
   const { signOut, role, can } = useAuth();
   const nav = useNavigate();
   const [unread, setUnread] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
     let alive = true;
     const poll = () => api.staffConversations()
@@ -56,7 +57,10 @@ export default function StaffLayout({ children }) {
       <header className="header">
         <div className="wrap">
           <Brand to="/internal" ariaLabel="YS Capital Group — Internal" console={consoleLabel} />
-          <nav className="nav">
+          <button className="nav-toggle" aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>{menuOpen ? '✕' : '☰'}</button>
+          {menuOpen && <div className="nav-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
+          <nav className={`nav ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
             <NavLink to="/internal" end>Pipeline</NavLink>
             <NavLink to="/internal/tasks">My tasks</NavLink>
             <NavLink to="/internal/chat" style={{ position: 'relative' }}>
