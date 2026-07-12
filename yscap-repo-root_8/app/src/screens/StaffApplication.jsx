@@ -815,7 +815,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
    scrollbar): the SAME static builder the marketing site serves, bridged to
    this borrower's live record. Every staff edit saves to the server and
    refreshes the saved static HTML copy, which downloads right here. */
-function StaffTrackRecordPanel({ app }) {
+function StaffTrackRecordPanel({ app, role }) {
   // On a co-borrower file each borrower has their OWN track record (#80): pick
   // whose you're editing. Every deal you add saves to THAT borrower's profile
   // (so a future solo file of theirs pre-populates it), and the file's pricing
@@ -2195,7 +2195,7 @@ export default function StaffApplication() {
       <Section id="sec-track" title="Track record"
         info="The borrower's live track record — one record shared by every file. Add, edit, verify and attach closing docs; changes save automatically.">
       {app.borrower_id
-        ? <StaffTrackRecordPanel app={app} />
+        ? <StaffTrackRecordPanel app={app} role={role} />
         : <p className="muted small">No borrower linked yet.</p>}
       </Section>
 

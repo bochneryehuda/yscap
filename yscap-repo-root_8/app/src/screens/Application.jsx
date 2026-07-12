@@ -657,9 +657,18 @@ export default function Application() {
   const itemLabelById = Object.fromEntries(items.map(it => [it.id, it.label]));
   const sowExports = sowItem ? currentDocsFor(sowItem.id).filter(d => d.doc_kind === 'rehab_budget_export') : [];
   const req = experienceRequirement(app);
-  // Live experience counts straight from the borrower's track record — always
-  // in step with the general Track Record section, no save needed.
+  // Experience progress toward the requirement. Prefer the SERVER-authoritative
+  // count from the experience condition's payload — it applies the frozen 3-year
+  // exit window AND sums the co-borrower's deals, so the borrower's "still need X"
+  // matches the staff view and the requirement math exactly (#121). The condition
+  // sync runs on every checklist GET, so the payload is current. Fall back to a
+  // local all-deals compute only if the payload hasn't landed yet.
   const liveCounts = (() => {
+    const sc = trItem && trItem.tool_payload && trItem.tool_payload.counts;
+    if (sc && typeof sc === 'object') {
+      const flips = sc.flips || 0, holds = sc.holds || 0, ground = sc.ground || 0;
+      return { flips, holds, ground, total: sc.total != null ? sc.total : (flips + holds + ground) };
+    }
     const c = { flips: 0, holds: 0, ground: 0, total: 0 };
     for (const r of trRows) {
       const t = String(r.deal_type || '').toLowerCase();
