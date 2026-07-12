@@ -199,7 +199,7 @@ router.post('/borrower/login', async (req, res, next) => {
   try {
     const r = await db.query(
       `SELECT b.id, a.password_hash, a.mfa_enabled, a.token_version, a.failed_attempts, a.locked_until
-       FROM borrowers b JOIN borrower_auth a ON a.borrower_id=b.id WHERE lower(b.email)=lower($1)`, [email]);
+       FROM borrowers b JOIN borrower_auth a ON a.borrower_id=b.id WHERE b.email=$1`, [email]);
     const row = r.rows[0];
     // Run a real password hash even when the account doesn't exist, so the
     // response time doesn't reveal whether the email is registered (enumeration).
@@ -269,7 +269,7 @@ router.post('/borrower/resend-verification', async (req, res) => {
       const r = await db.query(
         `SELECT b.id, b.first_name, ba.email_verified
            FROM borrowers b JOIN borrower_auth ba ON ba.borrower_id=b.id
-          WHERE lower(b.email)=lower($1) LIMIT 1`, [email]);
+          WHERE b.email=$1 LIMIT 1`, [email]);
       const b = r.rows[0];
       if (b && !b.email_verified) {
         const { token, code } = await issueEmailToken({
@@ -292,7 +292,7 @@ router.post('/borrower/forgot', async (req, res) => {
       // Borrower self-service reset (needs an existing portal account).
       const r = await db.query(
         `SELECT b.id, b.first_name FROM borrowers b
-           JOIN borrower_auth ba ON ba.borrower_id=b.id WHERE lower(b.email)=lower($1) LIMIT 1`, [email]);
+           JOIN borrower_auth ba ON ba.borrower_id=b.id WHERE b.email=$1 LIMIT 1`, [email]);
       const b = r.rows[0];
       if (b) {
         const { token } = await issueEmailToken({
