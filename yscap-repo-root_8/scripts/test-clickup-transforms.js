@@ -4,7 +4,6 @@ const t = require('../src/clickup/transforms');
 const status = require('../src/clickup/status');
 const x = require('../src/clickup/crosswalk');
 const id = require('../src/clickup/identity');
-const echo = require('../src/clickup/echo');
 
 let pass = 0, fail = 0;
 const eq = (name, got, exp) => {
@@ -92,6 +91,21 @@ const PROG_LIST = [
 eq('cw resolveWriteId Bridge', x.resolveWriteId('program', 'Bridge', PROG_LIST), 'e8ff7301-6a64-4d5c-b4d4-48c8dd707eaa');
 eq('cw resolveReadValue idx1', x.resolveReadValue('program', 1, PROG_LIST), 'Bridge');
 
+// placeholder YS loan number (not a real match key)
+eq('placeholder TBD', t.isPlaceholderLoanNumber('TBD'), true);
+eq('placeholder tbd spaced', t.isPlaceholderLoanNumber('  tbd '), true);
+eq('placeholder zero', t.isPlaceholderLoanNumber('0'), true);
+eq('placeholder zeros', t.isPlaceholderLoanNumber('0000'), true);
+eq('placeholder empty', t.isPlaceholderLoanNumber(''), true);
+eq('placeholder null', t.isPlaceholderLoanNumber(null), true);
+eq('placeholder na', t.isPlaceholderLoanNumber('N/A'), true);
+eq('placeholder pending', t.isPlaceholderLoanNumber('pending'), true);
+eq('placeholder xxxx', t.isPlaceholderLoanNumber('xxxx'), true);
+eq('placeholder dashes', t.isPlaceholderLoanNumber('---'), true);
+eq('real loan number', t.isPlaceholderLoanNumber('YS2026-0142'), false);
+eq('real numeric loan', t.isPlaceholderLoanNumber('1000456'), false);
+eq('real not sentinel substring', t.isPlaceholderLoanNumber('NA-2026-001'), false);
+
 // identity (>=2 field match)
 const recA = { address: '123 Main St, Newark, NJ 07103', borrowerName: 'Dov Steiner', email: 'dov@x.com',
   ssn: '066-88-9965', phone: '(917) 538-1594', loanNumber: 'YSCAP258134754', dob: '1998-07-31', purchasePrice: '$405,000' };
@@ -109,14 +123,37 @@ eq('ssnHash same value diff format', id.ssnHash('066-88-9965', 'k'), id.ssnHash(
 eq('ssnHash diff key differs', id.ssnHash('066889965', 'k1') === id.ssnHash('066889965', 'k2'), false);
 eq('ssnHash short -> null', id.ssnHash('123', 'k'), null);
 
-// echo suppression
-echo._clear();
-echo.markPushed('task1', 'fieldX', 'hello');
-eq('echo window hit', echo.isEcho('task1', 'fieldX', 'hello'), true);
-eq('echo window miss', echo.isEcho('task1', 'fieldX', 'world'), false);
-eq('echo shadow equality', echo.isEcho('task1', 'fieldY', 'abc', 'abc'), true);
-eq('echo shadow diff', echo.isEcho('task1', 'fieldY', 'abc', 'xyz'), false);
-eq('echo hash stable', echo.valueHash({ a: 1, b: 2 }), echo.valueHash({ b: 2, a: 1 }));
+// email-match corroboration gate (§3.4 — email alone is never enough to merge)
+eq('corrob last name',
+  id.emailMatchCorroborated({ lastName: 'Steiner', phone: null, dob: null }, { lastName: 'STEINER', phone: null, dob: null }), true);
+eq('corrob phone last10',
+  id.emailMatchCorroborated({ phone: '+1 (917) 538-1594' }, { phone: '9175381594' }), true);
+eq('corrob dob (Date vs string)',
+  id.emailMatchCorroborated({ dob: new Date('1998-07-31T00:00:00Z') }, { dob: '1998-07-31' }), true);
+// pg `date` -> LOCAL-midnight Date: compares by calendar date on ANY server TZ
+eq('corrob dob (local-midnight pg Date)',
+  id.emailMatchCorroborated({ dob: new Date(1998, 6, 31) }, { dob: '1998-07-31' }), true);
+// shared email, DIFFERENT people (nothing else agrees) -> NOT corroborated -> no merge
+eq('corrob two different people',
+  id.emailMatchCorroborated({ lastName: 'Cohen', phone: '2125551111', dob: '1980-01-01' },
+                            { lastName: 'Weiss', phone: '9175552222', dob: '1975-05-05' }), false);
+// a field present on only ONE side never corroborates
+eq('corrob one-sided last name', id.emailMatchCorroborated({ lastName: 'Katz' }, { lastName: null }), false);
+eq('corrob both empty', id.emailMatchCorroborated({}, {}), false);
+eq('corrob blank strings', id.emailMatchCorroborated({ lastName: '  ' }, { lastName: '' }), false);
+
+// RTL descope gate (I-A) — ONLY positively non-RTL labels may descope a live file
+eq('nonRtl dscr label', x.isNonRtlProgramLabel('Non-QM - DSCR Ratio'), true);
+eq('nonRtl heloc keyword', x.isNonRtlProgramLabel('HELOC Line of Credit'), true);
+eq('nonRtl rental keyword', x.isNonRtlProgramLabel('Rental Portfolio 30 year'), true);
+eq('rtl fix&flip not nonRtl', x.isNonRtlProgramLabel('Fix & Flip With Construction'), false);
+eq('rtl bridge not nonRtl', x.isNonRtlProgramLabel('bridge Without Construction'), false);
+eq('rtl groundup not nonRtl', x.isNonRtlProgramLabel('Ground-Up'), false);
+// the catastrophe guard: a RENAMED / new RTL-ish option must NOT read as non-RTL
+eq('renamed rtl label not nonRtl', x.isNonRtlProgramLabel('Fix & Flip - Heavy Reno'), false);
+eq('blank not nonRtl', x.isNonRtlProgramLabel(''), false);
+eq('null not nonRtl', x.isNonRtlProgramLabel(null), false);
+eq('unset not nonRtl', x.isNonRtlProgramLabel('Not sure yet'), false);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

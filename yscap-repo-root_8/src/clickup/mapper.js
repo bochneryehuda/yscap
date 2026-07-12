@@ -308,6 +308,15 @@ function readTaskFields(task, options = {}) {
     if (v !== undefined) dst[f.t][f.col] = v;
   }
 
+  // A PLACEHOLDER YS loan number ("TBD" / "0" / "N/A" / blank …) is not a real
+  // match key — drop it so two unrelated brand-new deals both marked "TBD" can
+  // never link to each other on it (or collide on the ys_loan_number unique
+  // index). Treated as "no number yet"; a COALESCE upsert then never overwrites a
+  // real stored number with a placeholder either.
+  if (out.app.ys_loan_number != null && T.isPlaceholderLoanNumber(out.app.ys_loan_number)) {
+    delete out.app.ys_loan_number;
+  }
+
   // specials (read)
   const nm = m[F.SHARED.borrowerName];
   if (nm && nm.value) { const p = T.splitName(nm.value); out.borrower.first_name = p.first; out.borrower.last_name = p.last; }

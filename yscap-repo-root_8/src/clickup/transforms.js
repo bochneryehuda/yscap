@@ -136,6 +136,31 @@ function dropdownIdToLabel(optionList, id) {
   return hit ? hit.name : null;
 }
 
+// ---- YS loan number: placeholder / sentinel detection ---------------------
+// The YS loan number is a GLOBAL match key (same number == same loan), so a
+// PLACEHOLDER typed into that field ("TBD", "0", "N/A", blank, …) must NEVER be
+// treated as a real number — otherwise two unrelated brand-new deals both marked
+// "TBD" would link to each other (and collide on the unique index). This returns
+// true for anything that is clearly a "no number yet" placeholder rather than a
+// real loan number. Matching is on the WHOLE trimmed string (so a real number that
+// merely CONTAINS "na"/"x" is never misclassified).
+const LOAN_NUMBER_SENTINELS = new Set([
+  'tbd', 'tba', 'tbc', 'n/a', 'na', 'n\\a', 'none', 'null', 'nil', 'nan',
+  'pending', 'pend', 'unknown', 'unk', 'test', 'temp', 'tmp', 'placeholder',
+  'loan', 'number', 'loannumber', 'loan number', 'loan#', 'loan #', '#',
+  'none yet', 'not yet', 'no number', 'no loan number', 'tbd.', 'to be determined',
+]);
+function isPlaceholderLoanNumber(v) {
+  if (v == null) return true;
+  const s = String(v).trim().toLowerCase();
+  if (s === '') return true;                              // blank / whitespace
+  if (LOAN_NUMBER_SENTINELS.has(s)) return true;          // exact sentinel word
+  const stripped = s.replace(/[\s\-_.#/\\]/g, '');        // drop separators/punct
+  if (stripped === '' || /^0+$/.test(stripped)) return true; // all zeros / all punct
+  if (/^x+$/.test(stripped) || /^\?+$/.test(stripped)) return true; // xxxx / ????
+  return false;
+}
+
 // ---- masking (for logs / activity feed) -----------------------------------
 function maskSSN(ssn) {
   const d = String(ssn || '').replace(/\D/g, '');
@@ -154,5 +179,6 @@ module.exports = {
   normalizeMarried, normalizeMarriedAI, portalMaritalToMarried, marriedToPortalMarital,
   parseCardLine, joinCardLine,
   dropdownIndexToLabel, dropdownIndexToId, dropdownLabelToId, dropdownIdToLabel,
+  isPlaceholderLoanNumber,
   maskSSN, maskCard,
 };

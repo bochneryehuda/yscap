@@ -70,44 +70,66 @@ async function recordContacts(borrowerId, borrower, taskId) {
 }
 
 /**
- * Resolve the borrower for a task's read fields. Returns { borrowerId, created, weak }.
- * Strong SSN-hash match links silently; a weak (>=2 non-SSN) match creates the
- * profile but queues a confirmation instead of merging blindly.
+ * Resolve the borrower for a task's read fields. Returns { borrowerId, created }.
+ * Two auto-merge signals only: (1) an exact SSN-hash (unique per person), or
+ * (2) an email match CORROBORATED by a second identity field (last name / phone /
+ * DOB). An email ALONE is never enough — per identity.js §3.4 "one field is never
+ * enough" — so a shared spouse/broker/attorney email can't collapse two different
+ * borrowers. Anything weaker creates a DISTINCT profile (safe over-split; a human
+ * can merge) rather than risk a wrong-merge that cross-contaminates PII/loans.
  */
 async function resolveBorrower(read, taskId) {
   const b = read.borrower || {};
   const ssnHash = identity.ssnHash(b.ssn, cfg.ssnMatchKey);
-  let ssnConflict = false; // set if an email match has a DIFFERENT SSN (two people)
+  // Set when an email match is FOUND but we decline to merge (SSN conflict, or no
+  // corroborating 2nd field). The email is then unsafe to reuse on the INSERT.
+  let emailUnsafe = false;
+  // The existing borrower an UNCORROBORATED email match pointed at — recorded as a
+  // "possible duplicate — review" candidate after the distinct profile is created.
+  let possibleDupOfId = null;
 
   // 1) strong: exact SSN-hash
   if (ssnHash) {
     const r = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 LIMIT 1`, [ssnHash]);
     if (r.rows[0]) { await recordContacts(r.rows[0].id, b, taskId); return { borrowerId: r.rows[0].id, created: false }; }
   }
-  // 2) email exact — a strong-ish signal, BUT guard against a shared email for
-  //    two different people: if both sides have an SSN-hash and they DIFFER, do
-  //    NOT merge (that would attach this loan/PII to the wrong borrower). Fall
-  //    through to create a distinct profile instead.
+  // 2) email exact — a strong-ish signal, but NOT proof of the same person on its
+  //    own. Require corroboration by a second identity field before merging:
+  //      • DIFFERENT SSN-hash on the two sides  -> definitely two people, never merge.
+  //      • SAME SSN-hash                         -> merge (strong).
+  //      • no SSN either side                    -> merge ONLY if last name / phone
+  //        (last 10) / DOB also agrees; else create a distinct profile.
   if (b.email) {
-    const r = await db.query(`SELECT id, ssn_hash FROM borrowers WHERE email=$1 LIMIT 1`, [String(b.email).toLowerCase().trim()]);
-    if (r.rows[0]) {
-      ssnConflict = ssnHash && r.rows[0].ssn_hash && ssnHash !== r.rows[0].ssn_hash;
-      if (!ssnConflict) {
-        if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, r.rows[0].id]);
-        await recordContacts(r.rows[0].id, b, taskId);
-        return { borrowerId: r.rows[0].id, created: false };
+    const r = await db.query(
+      `SELECT id, ssn_hash, last_name, cell_phone, date_of_birth FROM borrowers WHERE email=$1 LIMIT 1`,
+      [String(b.email).toLowerCase().trim()]);
+    const ex = r.rows[0];
+    if (ex) {
+      const ssnConflict = ssnHash && ex.ssn_hash && ssnHash !== ex.ssn_hash;
+      const ssnAgree    = ssnHash && ex.ssn_hash && ssnHash === ex.ssn_hash;
+      const corroborated = identity.emailMatchCorroborated(
+        { lastName: b.last_name, phone: b.cell_phone, dob: b.date_of_birth },
+        { lastName: ex.last_name, phone: ex.cell_phone, dob: ex.date_of_birth });
+      if (!ssnConflict && (ssnAgree || corroborated)) {
+        if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, ex.id]);
+        await recordContacts(ex.id, b, taskId);
+        return { borrowerId: ex.id, created: false };
       }
+      emailUnsafe = true;   // matched, but not the same person we can prove → don't reuse the email
+      // A shared email with NO corroboration (and no SSN conflict) is a genuine
+      // "might be the same person" — flag it for human review. An SSN conflict is a
+      // confirmed DIFFERENT person, so it is not flagged.
+      if (!ssnConflict) possibleDupOfId = ex.id;
     }
   }
-  // 3) weak: >=2 identity fields among recent candidates (name/phone) -> create + queue confirm
-  //    (kept cheap: candidate pool by last name / phone digits)
-  // 4) none -> create a shadow profile
+  // 3) weak / none -> create a DISTINCT profile (never a blind single-field merge).
   const first = b.first_name || 'Unknown', last = b.last_name || 'Unknown';
-  // CRITICAL: if the email belongs to a DIFFERENT person (SSN conflict above), do
-  // NOT reuse it here — the INSERT's ON CONFLICT (email) DO UPDATE would resolve to
-  // that other person's row and re-merge the two we just refused to merge (wrong
-  // loan/PII attachment). Use a synthetic unique email so a distinct profile is created.
-  const email = (b.email && !ssnConflict) ? String(b.email).toLowerCase().trim() : `noemail+${taskId}@clickup.local`;
+  // CRITICAL: if the email match was declined above (different person, or
+  // uncorroborated), do NOT reuse it here — the INSERT's ON CONFLICT (email) DO
+  // UPDATE would resolve to that other person's row and re-merge the two we just
+  // refused to merge (wrong loan/PII attachment). Use a synthetic unique email so
+  // a distinct profile is created.
+  const email = (b.email && !emailUnsafe) ? String(b.email).toLowerCase().trim() : `noemail+${taskId}@clickup.local`;
   const ins = await db.query(
     `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,citizenship,fico,current_address,
                             marital_status,employment_type,employer,ssn_hash,origin)
@@ -120,6 +142,19 @@ async function resolveBorrower(read, taskId) {
   if (b.ssn) { try { await db.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1 AND ssn_encrypted IS NULL`,
     [borrowerId, C.encryptSSN(String(b.ssn)), String(b.ssn).replace(/\D/g, '').slice(-4)]); } catch (_) {} }
   await recordContacts(borrowerId, b, taskId);
+  // "Possible duplicate — please check": the email pointed at an existing borrower
+  // we could not corroborate, so we created a DISTINCT profile (safe over-split).
+  // Record the pair so a human is TOLD, instead of the split happening silently.
+  // Idempotent (one open row per pair) and best-effort — never blocks ingest.
+  if (possibleDupOfId && possibleDupOfId !== borrowerId) {
+    try {
+      await db.query(
+        `INSERT INTO borrower_dedup_candidates (borrower_id, matched_borrower_id, reason, source_task_id)
+         VALUES ($1,$2,'shared_email_uncorroborated',$3)
+         ON CONFLICT (borrower_id, matched_borrower_id) DO NOTHING`,
+        [borrowerId, possibleDupOfId, taskId]);
+    } catch (_) { /* dedup-candidate logging is best-effort */ }
+  }
   return { borrowerId, created: true };
 }
 
@@ -446,7 +481,11 @@ async function ingestTask(task, options = {}, opts = {}) {
   let coBorrowerId = null;
   if (read.coBorrower && (read.coBorrower.first_name || read.coBorrower.email)) {
     try {
-      const co = await resolveBorrower({ borrower: read.coBorrower }, task.id);
+      // Distinct synthetic-email discriminator (`<taskId>-co`) so a co-borrower
+      // with NO email doesn't collide with the PRIMARY's `noemail+<taskId>` shadow
+      // (which would ON CONFLICT resolve back to the primary and silently drop the
+      // co-borrower). A co-borrower WITH a real email is unaffected.
+      const co = await resolveBorrower({ borrower: read.coBorrower }, `${task.id}-co`);
       if (co.borrowerId && co.borrowerId !== borrowerId) coBorrowerId = co.borrowerId;
     } catch (_) { /* co-borrower is best-effort */ }
   }
@@ -478,13 +517,20 @@ async function ingestTask(task, options = {}, opts = {}) {
     // RTL and the program was later corrected in ClickUp (e.g. Short-Term Rehab →
     // DSCR), descope it: remove it from the portal WITHOUT touching ClickUp.
     //
-    // SAFETY: only descope on a POSITIVELY-identified non-RTL program — a real,
-    // resolved *Program label that is neither RTL nor an "unset" sentinel. A
-    // blank/unresolved program (rawProgram empty — e.g. a cold/stale option cache
-    // or a field a staffer cleared) leaves the linked file untouched, so a
-    // transient read failure can NEVER soft-delete a live loan file.
+    // SAFETY (2026-07-12 audit — I-A): descope ONLY on a label we POSITIVELY
+    // recognize as non-RTL (DSCR / long-term / rental — see crosswalk
+    // .isNonRtlProgramLabel). Previously ANY non-blank label the RTL crosswalk
+    // failed to map counted as "non-RTL" — so RENAMING an RTL option in ClickUp,
+    // adding a new RTL-ish label, or a stale option cache mis-resolving the label
+    // would read program=null + rawProgram non-empty and SOFT-DELETE every live
+    // RTL file on the next reconcile ("my files vanished"). Now an unrecognized
+    // label leaves the file untouched (data_only snapshot only) — keeping a
+    // possibly-stale file is far safer than mass-deleting real ones. Blank /
+    // unresolved / "unset" programs still never descope (transient-read guard).
     const rawProg = (read.rawProgram || '').trim();
-    const positivelyNonRtl = rawProg !== '' && !UNSET_PROGRAM_LABELS.has(rawProg.toLowerCase());
+    const positivelyNonRtl = rawProg !== ''
+      && !UNSET_PROGRAM_LABELS.has(rawProg.toLowerCase())
+      && crosswalk.isNonRtlProgramLabel(rawProg);
     if (positivelyNonRtl) {
       const desc = await descopeFlipped(task.id);
       if (desc) { applicationId = desc.id; matchStatus = 'descoped'; matchDetail = { from: desc.program, to: rawProg }; }

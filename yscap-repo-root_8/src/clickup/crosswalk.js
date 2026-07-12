@@ -137,6 +137,28 @@ function fromClickUpLabel(key, clickupLabel) {
 }
 
 /**
+ * RTL descope classification (portal-side policy, blueprint §4).
+ *
+ * The portal only BUILDS three RTL products (Fix & Flip / Bridge / Ground-Up). A
+ * LINKED RTL file whose ClickUp *Program was intentionally changed to a long-term
+ * / rental / DSCR product is "descoped" (soft-removed from the portal). To keep
+ * that from ever MASS-soft-deleting real loan files, descope must fire ONLY on a
+ * raw ClickUp label we POSITIVELY recognize as non-RTL — never merely because the
+ * RTL crosswalk above failed to map a label (a renamed / newly-added / typo'd
+ * option, or a stale option cache that mis-resolves the label would otherwise
+ * make every live RTL file "look" non-RTL and vanish). This is an explicit
+ * allowlist plus a conservative keyword backstop; none of the keywords can appear
+ * in an RTL label (Fix & Flip / Bridge / Ground-Up), so a match is a safe signal.
+ */
+const NON_RTL_PROGRAM_LABELS = new Set(['non-qm - dscr ratio']);
+const NON_RTL_KEYWORDS = /\b(dscr|non.?qm|heloc|rental|30\s*year|long.?term|conventional)\b/i;
+function isNonRtlProgramLabel(rawLabel) {
+  const s = String(rawLabel == null ? '' : rawLabel).trim();
+  if (!s) return false;
+  return NON_RTL_PROGRAM_LABELS.has(s.toLowerCase()) || NON_RTL_KEYWORDS.test(s);
+}
+
+/**
  * Resolve a portal value to the ClickUp option UUID to WRITE, using the live
  * option list [{id,orderindex,name}] for that field.
  */
@@ -155,4 +177,4 @@ function resolveReadValue(key, orderindex, optionList) {
   return label ? fromClickUpLabel(key, label) : null;
 }
 
-module.exports = { FIELDS, toClickUpLabel, fromClickUpLabel, resolveWriteId, resolveReadValue };
+module.exports = { FIELDS, toClickUpLabel, fromClickUpLabel, resolveWriteId, resolveReadValue, isNonRtlProgramLabel };

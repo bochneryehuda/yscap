@@ -47,10 +47,18 @@ async function optionMap() {
 
 // ---- outbound (portal → ClickUp) -----------------------------------------
 async function pushOutboxOnce() {
+  // Also RECLAIM jobs stranded in 'processing' — if the process crashed between
+  // marking a job 'processing' and finalizing it, it would otherwise be lost
+  // forever (a silently-dropped outbound push). updated_at is stamped to now() on
+  // claim, so a 5-minute floor only catches genuine crash orphans, never a live
+  // in-flight push (which finishes in well under a second). Re-running a push is
+  // idempotent (setField writes the same values), so reclaim is safe.
   const r = await db.query(
     `UPDATE sync_queue SET status='processing', updated_at=now()
-      WHERE id = (SELECT id FROM sync_queue WHERE target='clickup' AND direction='push'
-                   AND status='queued' AND run_after <= now() ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+      WHERE id = (SELECT id FROM sync_queue WHERE target='clickup' AND direction='push' AND op='update'
+                   AND run_after <= now()
+                   AND (status='queued' OR (status='processing' AND updated_at < now() - interval '5 minutes'))
+                   ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
       RETURNING *`);
   const job = r.rows[0];
   if (!job) return false;
@@ -90,9 +98,21 @@ async function sweepDirtyOnce() {
 
 // ---- inbound (ClickUp → portal) ------------------------------------------
 async function processInboxOnce() {
+  // Also RECLAIM inbox rows stranded in 'processing' by a crash mid-ingest (they'd
+  // otherwise never be re-driven). The age is measured from CLAIM time
+  // (processing_started_at, stamped below) — NOT receipt time — so an overlapping
+  // drain can never re-grab a row that is still being ingested during a >15-min
+  // backlog (which would double-ingest and, since upsertLlc/upsertTrackRecord are
+  // check-then-insert without a unique constraint, create duplicate rows). The
+  // COALESCE(..., received_at) fallback reclaims any row left 'processing' before
+  // this column existed (db/080). A genuine crash orphan is re-ingested safely
+  // (ingestTask is idempotent: COALESCE upserts, no-downgrade, ON CONFLICT keys).
   const r = await db.query(
-    `UPDATE clickup_webhook_inbox SET status='processing'
-      WHERE id = (SELECT id FROM clickup_webhook_inbox WHERE status='received'
+    `UPDATE clickup_webhook_inbox SET status='processing', processing_started_at=now()
+      WHERE id = (SELECT id FROM clickup_webhook_inbox
+                   WHERE status='received'
+                      OR (status='processing'
+                          AND COALESCE(processing_started_at, received_at) < now() - interval '15 minutes')
                    ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`);
   const row = r.rows[0];
   if (!row) return false;
