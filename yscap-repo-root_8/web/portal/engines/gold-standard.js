@@ -256,9 +256,14 @@
     // Renovation on this program cannot finance an interest reserve — force the request to zero
     // so nothing populates, nothing is financed, and nothing enters cost regardless of the input.
     if (isReno) irMonthsReq = 0;
+    // Interest reserve may be requested as an exact dollar AMOUNT instead of months
+    // (owner-directed 2026-07-12). Reno finances no reserve, and a LOCKED/mandatory
+    // reserve (ground-up tier-2, or tier-1 sizing >= $1.5MM below) is always the
+    // months-based 75%-of-term figure — so the amount override is dropped there.
+    var irAmount = isReno ? 0 : Math.max(0, num(input.irAmount));
     var irRequired = false, irLocked = false;
     var reserveCapMonths = isGround ? 0.75 * termMonths : (isReno ? 0 : termMonths);   // ground-up: 75% of term; reno: none; bridge: term
-    if (isGround && tier >= 2) { irMonthsReq = reserveCapMonths; irRequired = true; irLocked = true; }   // mandatory, locked at 75% of full term
+    if (isGround && tier >= 2) { irMonthsReq = reserveCapMonths; irRequired = true; irLocked = true; irAmount = 0; }   // mandatory, locked at 75% of full term
     var irMonthsEff = Math.min(irMonthsReq, reserveCapMonths);          // lesser of chosen and the cap (reno ⇒ 0)
     var reserveTermCapped = irMonthsReq > reserveCapMonths + 1e-9;      // borrower asked for more than the cap allows
     var reserveCapIsConstruction = isGround;                            // cap reason: 75%-of-term vs loan-term
@@ -319,7 +324,11 @@
     var dealForSize = {
       loanType: loanType, purchasePrice: effPurchase, asIsValue: input.asIsValue, arv: input.arv,
       rehabBudget: (pr.kind === "bridge" ? 0 : num(input.rehabBudget)),
-      irMonths: irMonthsEff, accrual: input.accrual, reserveInCost: reserveInCost,
+      irMonths: irMonthsEff, irAmount: irAmount, accrual: input.accrual, reserveInCost: reserveInCost,
+      // An exact-dollar reserve is capped at Gold's frozen reserve ceiling — the
+      // 75%-of-term construction cap on ground-up (loan term otherwise) — exactly
+      // like the months path, so an amount can never exceed what months could.
+      reserveCapMonths: reserveCapMonths,
       noteRateForIR: 0.10, bridge: (pr.kind === "bridge")
     };
     var sizing = YSP.sizeLoan(dealForSize, caps);
@@ -327,10 +336,10 @@
     // elect to omit it ONLY for loans under $1.5MM. If a Tier 1 construction loan sizes at $1.5MM or
     // more, lock in the full-term (75%) reserve and re-size so it enters the cost basis.
     if (isGround && tier === 1 && !irRequired && sizing.totalLoan >= 1500000) {
-      irMonthsReq = reserveCapMonths; irRequired = true; irLocked = true;
+      irMonthsReq = reserveCapMonths; irRequired = true; irLocked = true; irAmount = 0;
       irMonthsEff = Math.min(irMonthsReq, reserveCapMonths);
       reserveTermCapped = irMonthsReq > reserveCapMonths + 1e-9;
-      dealForSize.irMonths = irMonthsEff;
+      dealForSize.irMonths = irMonthsEff; dealForSize.irAmount = 0;
       sizing = YSP.sizeLoan(dealForSize, caps);
     }
     var buy0 = buyPrice(pr.product, tier, input, sizing.totalLoan);

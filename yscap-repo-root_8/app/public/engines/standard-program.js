@@ -212,6 +212,24 @@
     var arv = Math.max(0, d.arv || 0);
     var rehab = isBridge ? 0 : Math.max(0, d.rehabBudget || 0);
     var irMonths = isBridge ? 0 : Math.max(0, d.irMonths || 0);
+    // Interest reserve can be requested as a number of MONTHS (computed from the
+    // monthly interest payment) OR as an EXACT dollar AMOUNT (owner-directed
+    // 2026-07-12). When an amount is given it is used directly as the desired
+    // reserve and then fit through the SAME caps/guidelines as the months path.
+    // Additive: when irAmount is 0/absent every expression below is identical to
+    // the months-only behavior — zero change to existing sizing.
+    var irAmount = isBridge ? 0 : Math.max(0, d.irAmount || 0);
+    // Term ceiling on the reserve (owner-directed 2026-07-12): the financed reserve
+    // may never exceed the ENTIRE-TERM interest — reserveCapMonths x the monthly
+    // payment. The months path is already term-capped upstream (irMonths <= the
+    // cap); this enforces the SAME ceiling on an exact-dollar AMOUNT so e.g. a
+    // $14,000 request on a 12-month deal at $1,000/mo is capped at $12,000. The cap
+    // is the program's reserve-month ceiling: full term (Standard) or the frozen
+    // 75%-of-term (Gold ground-up). fullPmt is the live monthly interest at the
+    // current loan size, so the ceiling tracks the loan exactly like the months
+    // path. capMo <= 0 (not supplied) leaves prior behavior untouched.
+    var capMo = Math.max(0, d.reserveCapMonths || 0);
+    function capDesired(val, pmt) { return (capMo > 0) ? Math.min(val, capMo * pmt) : val; }
     var reserveInCost = (d.reserveInCost !== false);   // Standard Program: reserve is part of cost
 
     // value bases
@@ -265,36 +283,36 @@
       maxReserve = Math.max(0, Math.min(capHard - rehabLoan - initialMax, (m < 1 ? (m * costBasis0 - rehabLoan - initialMax) : Infinity)));
       acquisition = initialMax;
       totalLoan = acquisition + rehabLoan;
-      if (irMonths > 0) {
+      if (irMonths > 0 || irAmount > 0) {
         for (var it = 0; it < 40; it++) {
           fullPmt = totalLoan * (rate / 12);
-          desired = irMonths * fullPmt;
+          desired = capDesired(irAmount > 0 ? irAmount : irMonths * fullPmt, fullPmt);
           var Rfit = Math.max(0, Math.min(desired, maxReserve));
           var newTotal = acquisition + rehabLoan + Rfit;
           if (Math.abs(Rfit - financedIR) < 0.5 && Math.abs(newTotal - totalLoan) < 0.5) { financedIR = Rfit; totalLoan = newTotal; break; }
           financedIR = Rfit; totalLoan = newTotal;
         }
-        fullPmt = totalLoan * (rate / 12); desired = irMonths * fullPmt;
+        fullPmt = totalLoan * (rate / 12); desired = capDesired(irAmount > 0 ? irAmount : irMonths * fullPmt, fullPmt);
       }
       totalLoan = acquisition + rehabLoan + financedIR;
     } else {
       // in-cost reserve: grows the basis, sized together with the initial
       totalLoan = totalAt(0);
-      if (irMonths > 0) {
+      if (irMonths > 0 || irAmount > 0) {
         for (var it2 = 0; it2 < 40; it2++) {
           fullPmt = totalLoan * (rate / 12);
-          desired = irMonths * fullPmt;
+          desired = capDesired(irAmount > 0 ? irAmount : irMonths * fullPmt, fullPmt);
           var Rfit2 = Math.max(0, Math.min(desired, maxReserveFit(desired)));
           var newTotal2 = totalAt(Rfit2);
           if (Math.abs(Rfit2 - financedIR) < 0.5 && Math.abs(newTotal2 - totalLoan) < 0.5) { financedIR = Rfit2; totalLoan = newTotal2; break; }
           financedIR = Rfit2; totalLoan = newTotal2;
         }
-        fullPmt = totalLoan * (rate / 12); desired = irMonths * fullPmt;
+        fullPmt = totalLoan * (rate / 12); desired = capDesired(irAmount > 0 ? irAmount : irMonths * fullPmt, fullPmt);
       }
       acquisition = Math.max(0, initialAt(financedIR));
       totalLoan = acquisition + rehabLoan + financedIR;
       if (totalLoan > capHard + 0.5) { rehabLoan = Math.max(0, capHard - acquisition - financedIR); rehabOverCap = true; totalLoan = acquisition + rehabLoan + financedIR; }
-      maxReserve = irMonths > 0 ? maxReserveFit(Math.max(desired, capHard)) : 0;
+      maxReserve = (irMonths > 0 || irAmount > 0) ? maxReserveFit(Math.max(desired, capHard)) : 0;
     }
 
     // Final loan-to-cost guard: on rehab-dominant deals the 100%-financed rehab can push the total
@@ -311,7 +329,7 @@
     }
 
     // reserve metrics: financedIR is what actually fits; the request beyond it is not eligible
-    var reserveCapped = irMonths > 0 && desired > financedIR + 1;
+    var reserveCapped = (irMonths > 0 || irAmount > 0) && desired > financedIR + 1;
     var maxReserveMonths = fullPmt > 0 ? financedIR / fullPmt : 0;
     var reserveCapBy = "";
     if (reserveCapped) {
@@ -498,11 +516,19 @@
     var irMonthsReq = Math.max(0, input.irMonths || 0);
     var irMonthsEff = Math.min(irMonthsReq, termMonths);
     var reserveTermCapped = irMonthsReq > termMonths;
+    // Interest reserve may instead be requested as an exact dollar AMOUNT
+    // (owner-directed 2026-07-12). It is not month-capped (there's no term to cap
+    // a dollar figure against); it's fit through the leverage caps inside sizeLoan.
+    // Bridge finances no reserve, so drop it there just like irMonths.
+    var irAmountReq = (sc === "BR") ? 0 : Math.max(0, input.irAmount || 0);
     var rate0 = rateOvr || noteRate({ strategyCode: sc, tier: tier, fico: fico || 700, ltc: maxLTC, term: termMonths,
       loanType: loanType, cashOut: cashOut, foreclosure: foreclosure, heavy: heavy });
     var dealForSize = {
       loanType: loanType, purchasePrice: effPurchase, asIsValue: input.asIsValue, arv: input.arv,
-      rehabBudget: rehab, irMonths: irMonthsEff, accrual: input.accrual, noteRateForIR: rate0 || 0.105,
+      rehabBudget: rehab, irMonths: irMonthsEff, irAmount: irAmountReq, accrual: input.accrual, noteRateForIR: rate0 || 0.105,
+      // Reserve is capped at the ENTIRE loan term — an exact-dollar amount can
+      // never finance more than term-months of interest (same ceiling months obey).
+      reserveCapMonths: termMonths,
       reserveInCost: true, bridge: (sc === "BR")
     };
     var sizing = sizeLoan(dealForSize, capsEff);
