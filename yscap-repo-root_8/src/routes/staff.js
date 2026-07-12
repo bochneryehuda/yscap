@@ -2902,6 +2902,21 @@ router.patch('/applications/:id/details', async (req, res) => {
     // {field: {from, to}} so the Activity feed can say precisely what changed.
     const beforeQ = await db.query(`SELECT ${touchedCols.join(',')} FROM applications WHERE id=$1`, [req.params.id]);
     const before = beforeQ.rows[0] || {};
+    // S3-06: on a PRICED file (a product is registered), only underwriting-authority
+    // roles (seesAll: admin / underwriter / loan_coordinator) may RAISE the appraisal
+    // values that drive leverage — as-is value and ARV. A loan officer can still edit
+    // other fields, and lowering a value (less leverage) is allowed; inflating a value
+    // to re-price higher is an underwriter's call. The change already reopens Products
+    // & Pricing via the db/072 trigger — this adds the who-can-raise control.
+    if (!seesAll(req)) {
+      const raised = [];
+      const oldN = (c) => (before[c] == null ? null : Number(before[c]));
+      const newN = (v) => (v === '' || v == null ? null : Number(v));
+      if ('asIsValue' in b) { const o = oldN('as_is_value'), n = newN(b.asIsValue); if (o != null && n != null && n > o) raised.push('the as-is value'); }
+      if ('arv' in b) { const o = oldN('arv'), n = newN(b.arv); if (o != null && n != null && n > o) raised.push('the ARV'); }
+      if (raised.length && await changeRequests.isBorrowerLocked(req.params.id))
+        return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
+    }
     const upd = await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
     if (upd.rowCount === 0) return res.status(404).json({ error: 'application not found' });
     enqueueClickupPush(req.params.id, touchedCols).catch(() => {}); // propagate ONLY the edited columns to ClickUp promptly
@@ -3075,6 +3090,18 @@ async function completeFields(req, res, borrowerScoped) {
       if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
+    // S3-06 (mirror of /details): this path overwrites unconditionally, so it's
+    // also a raising vector — a non-seesAll staffer may not RAISE the as-is value
+    // or ARV on a priced file. Filling a blank or lowering is still allowed.
+    if (!seesAll(req) && ('as_is_value' in b || 'arv' in b)) {
+      const cur = (await db.query(`SELECT as_is_value, arv FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+      const moneyN = (v) => { if (v === '' || v == null) return null; const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : null; };
+      const raised = [];
+      if ('as_is_value' in b) { const o = cur.as_is_value == null ? null : Number(cur.as_is_value), n = moneyN(b.as_is_value); if (o != null && n != null && n > o) raised.push('the as-is value'); }
+      if ('arv' in b) { const o = cur.arv == null ? null : Number(cur.arv), n = moneyN(b.arv); if (o != null && n != null && n > o) raised.push('the ARV'); }
+      if (raised.length && await changeRequests.isBorrowerLocked(req.params.id))
+        return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
+    }
     if (appSets.length) {
       appSets.push('updated_at=now()');
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
@@ -3097,6 +3124,11 @@ async function completeFields(req, res, borrowerScoped) {
 }
 router.post('/applications/:id/complete-fields', (req, res) => completeFields(req, res, false));
 
+// S3-05: DECISION-grade statuses are an underwriting call — only roles with
+// see_all_files authority (admin / underwriter / loan_coordinator) may move a file
+// into one. A loan officer or processor can advance a file through the working
+// statuses but cannot approve, clear-to-close, fund, or decline it.
+const DECISION_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined']);
 router.patch('/applications/:id', async (req, res) => {
   const { status } = req.body || {};
   const force = !!(req.body && req.body.force);
@@ -3106,6 +3138,8 @@ router.patch('/applications/:id', async (req, res) => {
       `SELECT status, borrower_id, loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
     if (cur.rows[0].status === status) return res.json({ ok: true, unchanged: true, status });
+    if (DECISION_STATUSES.has(status) && !seesAll(req))
+      return res.status(403).json({ error: 'Only an underwriter or admin can move a file to this status.' });
     // Gate the underwriting-critical transitions on conditions-to-close + gate items.
     let forced = false;
     if (status === 'clear_to_close' || status === 'funded') {
@@ -3156,6 +3190,10 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
     if (statusMap.norm(cur.rows[0].internal_status) === statusMap.norm(internalStatus))
       return res.json({ ok: true, unchanged: true, internal_status: internalStatus, status: external });
+    // S3-05: the internal-status path re-derives the borrower-facing status, so it
+    // is a second door into the decision-grade buckets — gate it the same way.
+    if (DECISION_STATUSES.has(external) && !seesAll(req))
+      return res.status(403).json({ error: 'Only an underwriter or admin can move a file to this status.' });
     await db.query(
       `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, internalStatus, external]);
@@ -3220,13 +3258,20 @@ router.delete('/applications/:id', async (req, res) => {
 // Mounted OUTSIDE the /applications/:id path so it isn't read as an id.
 router.get('/archived-applications', async (req, res) => {
   if (!can(req.actor, 'delete_files')) return res.status(403).json({ error: 'forbidden' });
+  // S3-09: scope to the officer's own files exactly like GET /applications does —
+  // a non-seesAll staffer granted delete_files must not see every officer's
+  // archived files. seesAll actors get the empty scope (all archived files).
+  const s = scopeClause(req);
+  const params = [...s.params];
+  const where = ['a.deleted_at IS NOT NULL'];
+  if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
   const r = await db.query(
     `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.status, a.property_address,
             a.loan_amount, a.deleted_at, a.created_at,
             b.first_name, b.last_name, b.email
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
-      WHERE a.deleted_at IS NOT NULL
-      ORDER BY a.deleted_at DESC`);
+      WHERE ${where.join(' AND ')}
+      ORDER BY a.deleted_at DESC`, params);
   res.json(r.rows);
 });
 
