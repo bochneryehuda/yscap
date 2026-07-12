@@ -1612,8 +1612,12 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     if (cr.status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: `this request is already ${cr.status}` }); }
     const applied = await changeRequests.applyRequest(client, cr, req.actor.id, note);
     await client.query('COMMIT');
-    await audit(req, 'approve_change_request', 'application', cr.application_id,
-      { field: applied.field, from: applied.oldValue, to: applied.newValue });
+    // The change is already committed — never let the audit/notify below turn a
+    // successful apply into a 500.
+    try {
+      await audit(req, 'approve_change_request', 'application', cr.application_id,
+        { field: applied.field, from: applied.oldValue, to: applied.newValue });
+    } catch (_) {}
     // Tell the borrower their requested change was accepted (borrower-safe copy).
     try {
       await notify.notifyAppBorrowers(cr.application_id, {
@@ -1636,9 +1640,14 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
     if (!cr) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
     if (cr.status !== 'pending') return res.status(409).json({ error: `this request is already ${cr.status}` });
-    await db.query(
+    // The status guard in the WHERE makes this atomic against a concurrent approve
+    // (which row-locks + rechecks 'pending'): if the request was decided between
+    // the SELECT above and here, the UPDATE touches nothing and we 409 — so a
+    // reject can never overwrite an already-approved (and applied) request.
+    const upd = await db.query(
       `UPDATE change_requests SET status='rejected', decided_by=$2, decided_at=now(), decision_note=$3, updated_at=now()
-        WHERE id=$1`, [req.params.cid, req.actor.id, note]);
+        WHERE id=$1 AND status='pending' RETURNING id`, [req.params.cid, req.actor.id, note]);
+    if (!upd.rows[0]) return res.status(409).json({ error: 'this request was just decided by someone else' });
     await audit(req, 'reject_change_request', 'application', cr.application_id, { field: cr.field_label });
     try {
       await notify.notifyAppBorrowers(cr.application_id, {

@@ -29,6 +29,14 @@ const FIELD_LABELS = {
   rehab_budget: 'Rehab budget',
 };
 const MONEY_FIELDS = new Set(['purchase_price', 'as_is_value', 'arv', 'rehab_budget']);
+// Governed fields whose value must be one of a fixed set. property_type is the
+// only one the borrower UI offers as a picker, and it has a stable option list —
+// validate it so a hand-crafted request can't smuggle a junk value onto the file
+// even if a reviewer approves without looking. (program/loan_type are free-text
+// underwriting inputs the borrower UI never offers and staff eyeball on review.)
+const FIELD_OPTIONS = {
+  property_type: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'],
+};
 const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS, k);
 
 // A file is "locked" for the borrower once it carries a CURRENT product
@@ -75,6 +83,8 @@ async function openRequest(appId, field, rawValue, { reason, requesterKind = 'bo
   if (!isGovernedField(field)) throw Object.assign(new Error('field is not change-requestable'), { status: 400 });
   const newValue = normalizeValue(field, rawValue);
   if (newValue == null || newValue === '') throw Object.assign(new Error('a value is required'), { status: 400 });
+  if (FIELD_OPTIONS[field] && !FIELD_OPTIONS[field].includes(newValue))
+    throw Object.assign(new Error(`${FIELD_LABELS[field]} must be one of: ${FIELD_OPTIONS[field].join(', ')}`), { status: 400 });
   const oldValue = await currentValue(appId, field, client);
   const oldNorm = normalizeValue(field, oldValue);
   if (oldNorm === newValue) return { unchanged: true, field };
