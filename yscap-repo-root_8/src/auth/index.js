@@ -396,12 +396,23 @@ router.post('/staff/login', async (req, res, next) => {
   const { email, password } = req.body || {};
   try {
     const r = await db.query(
-      `SELECT id, role, password_hash, mfa_enabled, token_version FROM staff_users
-       WHERE email=$1 AND is_active=true`, [email]);
+      `SELECT id, role, password_hash, mfa_enabled, token_version, failed_attempts, locked_until
+         FROM staff_users WHERE email=$1 AND is_active=true`, [email]);
     const row = r.rows[0];
-    if (!row || !row.password_hash || !(await C.verifyPassword(password, row.password_hash)))
+    // Run a real password hash even when the account doesn't exist / is inactive,
+    // so the response time doesn't reveal which staff emails are real (S1-06
+    // enumeration) — same defense the borrower login already uses.
+    if (!row || !row.password_hash) { await C.hashPassword(String(password || '')).catch(() => {}); return res.status(401).json({ error: 'invalid credentials' }); }
+    if (row.locked_until && new Date(row.locked_until) > new Date())
+      return res.status(423).json({ error: 'account locked — try later' });
+    if (!(await C.verifyPassword(password, row.password_hash))) {
+      // Count the miss and lock after MAX_FAILED (S1-02) — staff had no lockout.
+      const fa = row.failed_attempts + 1;
+      await db.query(`UPDATE staff_users SET failed_attempts=$2, locked_until=$3 WHERE id=$1`,
+        [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]);
       return res.status(401).json({ error: 'invalid credentials' });
-    await db.query(`UPDATE staff_users SET last_login_at=now() WHERE id=$1`, [row.id]);
+    }
+    await db.query(`UPDATE staff_users SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE id=$1`, [row.id]);
     if (row.mfa_enabled)
       return res.json({ mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'staff', role: row.role, mfa: true }, 300) });
     res.json({ token: staffToken(row.id, row.role, row.token_version) });
