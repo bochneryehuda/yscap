@@ -26,7 +26,7 @@ export default function EditFileDetails({ app, onSaved }) {
     rehabType: app.rehab_type || '', sqftPre: num(app.sqft_pre), sqftPost: num(app.sqft_post),
     requestedExpFlips: num(app.requested_exp_flips), requestedExpHolds: num(app.requested_exp_holds),
     requestedExpGround: num(app.requested_exp_ground), requestedExpReo: num(app.requested_exp_reo),
-    requestedIrMonths: num(app.requested_ir_months), term: app.term || '',
+    requestedIrMonths: num(app.requested_ir_months), requestedIrAmount: num(app.requested_ir_amount), term: app.term || '',
     payoffAmount: num(app.payoff_amount), originalPurchasePrice: num(app.original_purchase_price),
     acquisitionDate: app.acquisition_date ? String(app.acquisition_date).slice(0, 10) : '',
     isAssignment: !!app.is_assignment, underlyingContractPrice: num(app.underlying_contract_price), assignmentFee: num(app.assignment_fee),
@@ -47,7 +47,7 @@ export default function EditFileDetails({ app, onSaved }) {
         rehabType: f.rehabType, sqftPre: f.sqftPre, sqftPost: f.sqftPost,
         requestedExpFlips: f.requestedExpFlips, requestedExpHolds: f.requestedExpHolds,
         requestedExpGround: f.requestedExpGround, requestedExpReo: f.requestedExpReo,
-        requestedIrMonths: f.requestedIrMonths, term: f.term,
+        requestedIrMonths: f.requestedIrMonths, requestedIrAmount: f.requestedIrAmount, term: f.term,
         payoffAmount: isRefi ? f.payoffAmount : '',
         originalPurchasePrice: isRefi ? f.originalPurchasePrice : '',
         acquisitionDate: isRefi ? f.acquisitionDate : '',
@@ -118,6 +118,7 @@ export default function EditFileDetails({ app, onSaved }) {
             </label>
             <label><span>Term (months)</span><input className="input" value={f.term} onChange={(e) => set('term', e.target.value)} placeholder="e.g. 12" /></label>
             <label><span>Interest reserve (months)</span><input className="input" type="number" min="0" max="24" value={f.requestedIrMonths} onChange={(e) => set('requestedIrMonths', e.target.value)} /></label>
+            <label><span>…or interest reserve (exact $)</span><input className="input" type="number" min="0" step="1000" placeholder="blank = size from months" value={f.requestedIrAmount} onChange={(e) => set('requestedIrAmount', e.target.value)} /></label>
             {needsSqft(f.rehabType) && <>
               <label><span>Existing sq ft</span><input className="input" type="number" min="0" value={f.sqftPre} onChange={(e) => set('sqftPre', e.target.value)} /></label>
               <label><span>Completed sq ft</span><input className="input" type="number" min="0" value={f.sqftPost} onChange={(e) => set('sqftPost', e.target.value)} /></label>

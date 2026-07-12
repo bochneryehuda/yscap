@@ -31,6 +31,7 @@ const FIELD_LABEL = {
   requested_exp_flips: 'Experience — flips', requested_exp_holds: 'Experience — holds',
   requested_exp_ground: 'Experience — ground-up', requested_exp_reo: 'Experience — REO',
   requested_ir_months: 'Interest reserve (months)',
+  requested_ir_amount: 'Interest reserve (amount)',
   payoff_amount: 'Payoff amount', original_purchase_price: 'Original purchase price',
   acquisition_date: 'Date acquired', underlying_contract_price: 'Underlying contract price',
   assignment_fee: 'Assignment fee', property_type: 'Property type', loan_type: 'Loan type',

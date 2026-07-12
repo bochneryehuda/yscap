@@ -92,6 +92,7 @@ async function loadRuleContext(appId) {
     loan_to_cost: loanAmount != null && cost > 0 ? Math.round((loanAmount / cost) * 1000) / 10 : null,
     rate_pct: num(a.rate_pct),
     requested_ir_months: num(a.requested_ir_months),
+    requested_ir_amount: num(a.requested_ir_amount),
     is_assignment: !!a.is_assignment,
     status: a.status,
 

@@ -138,6 +138,8 @@ const FIELDS = [
   { key: 'rate_pct', label: 'Note rate %', group: 'Loan & program', type: 'percent' },
   { key: 'requested_ir_months', label: 'Interest reserve months', group: 'Loan & program', type: 'number', writable: true,
     borrowerLabel: 'Requested interest reserve (months)', borrowerHint: 'How many months of interest reserve are you requesting? (0–24)' },
+  { key: 'requested_ir_amount', label: 'Interest reserve amount ($)', group: 'Loan & program', type: 'money', writable: true,
+    borrowerLabel: 'Requested interest reserve (exact $ amount)', borrowerHint: 'Request an exact dollar interest reserve instead of months. Capped at the full loan term; leave blank to size from months.' },
   { key: 'is_assignment', label: 'Assignment purchase?', group: 'Loan & program', type: 'boolean' },
   { key: 'status', label: 'File status', group: 'Loan & program', type: 'enum',
     options: [
@@ -226,6 +228,7 @@ const BY_KEY = Object.fromEntries(FIELDS.map((f) => [f.key, f]));
 const WRITE_TARGETS = {
   loan_amount: { table: 'applications', column: 'loan_amount' },
   requested_ir_months: { table: 'applications', column: 'requested_ir_months' },
+  requested_ir_amount: { table: 'applications', column: 'requested_ir_amount' },
   units: { table: 'applications', column: 'units' },
   purchase_price: { table: 'applications', column: 'purchase_price' },
   as_is_value: { table: 'applications', column: 'as_is_value' },
