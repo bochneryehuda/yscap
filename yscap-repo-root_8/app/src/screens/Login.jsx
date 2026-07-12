@@ -4,7 +4,7 @@ import { api } from '../lib/api.js';
 import { useAuth, useAuthNotice } from '../lib/auth.jsx';
 import { BrandLockup } from '../components/Layout.jsx';
 import PasswordInput from '../components/PasswordInput.jsx';
-import { PASSWORD_HINT } from '../lib/password.js';
+import { PASSWORD_HINT, passwordProblem } from '../lib/password.js';
 
 export default function Login() {
   const { signIn } = useAuth();
@@ -38,7 +38,9 @@ export default function Login() {
     finally { setBusy(false); }
   }
   async function submitRegister() {
-    setErr(''); setBusy(true);
+    setErr('');
+    { const w = passwordProblem(password); if (w) return setErr(w); }
+    setBusy(true);
     try {
       const r = await api.register({ email: email.trim(), password, firstName: first.trim(), lastName: last.trim() });
       done(r.token);
