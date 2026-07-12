@@ -331,6 +331,9 @@ export const api = {
   staffEditMessage: (msgId, body) => req('PATCH', `/api/staff/messages/${msgId}`, { body }),
   staffDeleteMessage:(msgId) => req('DELETE', `/api/staff/messages/${msgId}`),
   staffMentionables:(appId) => req('GET', `/api/staff/applications/${appId}/mentionables`),
+  // System-wide audit log (#145) — the company-wide compliance trail.
+  auditLog:         (params) => req('GET', '/api/staff/audit-log' + qs(params)),
+  auditLogFacets:   () => req('GET', '/api/staff/audit-log/facets'),
   adminWelcome:     (id) => req('POST', `/api/admin/staff/${id}/welcome`),
   adminResetStaffEmail: (id) => req('POST', `/api/admin/staff/${id}/reset-email`),
   adminWelcomeAll:  (all) => req('POST', '/api/admin/staff/welcome-all', { onlyWithoutLogin: !all }),

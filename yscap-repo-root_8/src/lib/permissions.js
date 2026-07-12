@@ -39,6 +39,7 @@ const CAPABILITIES = [
   { key: 'manage_vendors', label: 'Manage the vendor directory', hint: 'Title & insurance vendor list.' },
   { key: 'manage_team', label: 'Manage the team', hint: 'Add staff, set roles, set passwords.' },
   { key: 'platform_setup', label: 'Platform setup', hint: 'Integrations, email config, and other software setup.' },
+  { key: 'view_audit_log', label: 'View the system audit log', hint: 'The company-wide trail of every action across every file and borrower.' },
 ];
 const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 
@@ -46,7 +47,7 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
   super_admin: CAP_KEYS.slice(),
-  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'manage_conditions', 'waive_conditions', 'delete_files', 'manage_vendors', 'manage_team', 'platform_setup'],
+  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'manage_conditions', 'waive_conditions', 'delete_files', 'manage_vendors', 'manage_team', 'platform_setup', 'view_audit_log'],
   // Underwriters run per-file conditions + sign-off + waive; the GLOBAL studio
   // (manage_conditions) is admin/software-setup by default but an admin can
   // grant it to a specific underwriter from the Team screen.

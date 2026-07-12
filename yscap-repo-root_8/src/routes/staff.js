@@ -3808,6 +3808,137 @@ router.get('/borrowers/:id/contacts', async (req, res) => {
   res.json(r.rows);
 });
 
+// ---------------- system-wide audit log (#145) -----------------------------
+// The company-wide trail: every action across every file and borrower, in one
+// searchable place, each row linked to the file / borrower / staffer involved.
+// The DEEP per-file and per-borrower trails already exist
+// (/applications/:id/activity, /borrowers/:id/activity); this is the global
+// compliance view. Gated on the dedicated view_audit_log capability
+// (admin/super_admin by default; grantable to a compliance underwriter).
+const { describeAction: describeAuditAction, CATEGORIES: AUDIT_CATEGORIES } = require('../lib/audit-actions');
+const AUDIT_ACTOR_KINDS = new Set(['staff', 'borrower', 'system']);
+
+router.get('/audit-log', async (req, res) => {
+  if (!can(req.actor, 'view_audit_log')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const q = String(req.query.q || '').trim();
+    const action = String(req.query.action || '').trim();
+    const actorKind = AUDIT_ACTOR_KINDS.has(String(req.query.actorKind || '')) ? String(req.query.actorKind) : '';
+    const actorId = String(req.query.actorId || '').trim();
+    const entityType = String(req.query.entityType || '').trim();
+    const from = String(req.query.from || '').trim();
+    const to = String(req.query.to || '').trim();
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 300);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const params = [];
+    const where = [];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+
+    if (action) where.push(`al.action = ${P(action)}`);
+    if (actorKind) where.push(`al.actor_kind = ${P(actorKind)}`);
+    if (actorId) where.push(`al.actor_id = ${P(actorId)}::uuid`);
+    if (entityType) where.push(`al.entity_type = ${P(entityType)}`);
+    if (from) where.push(`al.created_at >= ${P(from)}::timestamptz`);
+    if (to) where.push(`al.created_at < (${P(to)}::date + 1)`); // inclusive of the whole "to" day
+    if (q) {
+      // Free-text across who did it, what they did, and which borrower / property.
+      const like = P('%' + q + '%');
+      where.push(`(
+        s.full_name ILIKE ${like} OR ab.first_name ILIKE ${like} OR ab.last_name ILIKE ${like}
+        OR al.action ILIKE ${like}
+        OR appb.first_name ILIKE ${like} OR appb.last_name ILIKE ${like}
+        OR eb.first_name ILIKE ${like} OR eb.last_name ILIKE ${like}
+        OR app.property_address::text ILIKE ${like}
+      )`);
+    }
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+    const lim = P(limit), off = P(offset);
+    const sql = `
+      SELECT al.id, al.created_at, al.action, al.actor_kind, al.actor_id,
+             al.entity_type, al.entity_id, al.ip_address::text AS ip_address, al.detail,
+             CASE WHEN al.actor_kind='staff' THEN s.full_name
+                  WHEN al.actor_kind='borrower' THEN NULLIF(btrim(coalesce(ab.first_name,'')||' '||coalesce(ab.last_name,'')), '')
+                  ELSE NULL END AS actor_name,
+             s.role AS actor_role,
+             app.id AS app_id,
+             app.property_address AS app_address,
+             appb.id AS app_borrower_id,
+             NULLIF(btrim(coalesce(appb.first_name,'')||' '||coalesce(appb.last_name,'')), '') AS app_borrower_name,
+             lo.id AS app_officer_id, lo.full_name AS app_officer_name,
+             eb.id AS ent_borrower_id,
+             NULLIF(btrim(coalesce(eb.first_name,'')||' '||coalesce(eb.last_name,'')), '') AS ent_borrower_name
+        FROM audit_log al
+        LEFT JOIN staff_users s ON al.actor_kind='staff' AND s.id = al.actor_id
+        LEFT JOIN borrowers ab ON al.actor_kind='borrower' AND ab.id = al.actor_id
+        LEFT JOIN applications app ON al.entity_type='application' AND app.id = al.entity_id
+        LEFT JOIN borrowers appb ON appb.id = app.borrower_id
+        LEFT JOIN staff_users lo ON lo.id = app.loan_officer_id
+        LEFT JOIN borrowers eb ON al.entity_type='borrower' AND eb.id = al.entity_id
+        ${whereSql}
+       ORDER BY al.created_at DESC, al.id DESC
+       LIMIT ${lim} OFFSET ${off}`;
+    const r = await db.query(sql, params);
+
+    const rows = r.rows.map((row) => {
+      const meta = describeAuditAction(row.action);
+      let addr = row.app_address;
+      if (typeof addr === 'string') { try { addr = JSON.parse(addr); } catch (_) { addr = null; } }
+      const addressText = addr
+        ? (addr.oneLine || [addr.line1 || addr.street, addr.city, addr.state].filter(Boolean).join(', ') || null)
+        : null;
+      return {
+        id: String(row.id),
+        at: row.created_at,
+        action: row.action,
+        action_label: meta.label,
+        category: meta.cat,
+        actor_kind: row.actor_kind,
+        actor_id: row.actor_id,
+        actor_name: row.actor_name || (row.actor_kind === 'system' ? 'System' : (row.actor_kind === 'borrower' ? 'A borrower' : 'A staff member')),
+        actor_role: row.actor_role || null,
+        entity_type: row.entity_type,
+        entity_id: row.entity_id,
+        ip_address: row.ip_address || null,
+        detail: row.detail || null,
+        // Linking context: which file / borrower / officer this touched.
+        app_id: row.app_id || null,
+        app_address: addressText,
+        app_borrower_id: row.app_borrower_id || null,
+        app_borrower_name: row.app_borrower_name || null,
+        app_officer_id: row.app_officer_id || null,
+        app_officer_name: row.app_officer_name || null,
+        ent_borrower_id: row.ent_borrower_id || null,
+        ent_borrower_name: row.ent_borrower_name || null,
+      };
+    });
+    res.json({ rows, limit, offset, hasMore: rows.length === limit });
+  } catch (e) {
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Facets for the audit-log filters: the distinct actions actually present (with
+// human labels + counts), the categories, and the staff roster for the actor
+// picker. Cheap, cached lightly by the client.
+router.get('/audit-log/facets', async (req, res) => {
+  if (!can(req.actor, 'view_audit_log')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const [acts, staff] = await Promise.all([
+      db.query(`SELECT action, count(*)::int AS n FROM audit_log GROUP BY action ORDER BY n DESC`),
+      db.query(`SELECT id, full_name, role FROM staff_users WHERE is_active IS NOT FALSE ORDER BY full_name`),
+    ]);
+    const actions = acts.rows.map((a) => {
+      const meta = describeAuditAction(a.action);
+      return { action: a.action, label: meta.label, category: meta.cat, count: a.n };
+    });
+    res.json({ actions, categories: AUDIT_CATEGORIES, staff: staff.rows });
+  } catch (e) {
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // ---------------- chat v3: conversations, receipts, presence ----------------
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).
