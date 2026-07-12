@@ -1336,9 +1336,9 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
      VALUES ('application',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'staff',$15,'manual_custom')
      RETURNING id`,
     [req.params.id, label.slice(0, 300),
-     String(b.borrowerLabel || '').trim().slice(0, 300) || null,
+     scrubText(String(b.borrowerLabel || '').trim().slice(0, 300)) || null,
      String(b.hint || '').trim().slice(0, 2000) || null,
-     String(b.borrowerHint || '').trim().slice(0, 2000) || null,
+     scrubText(String(b.borrowerHint || '').trim().slice(0, 2000)) || null,
      audience, CONDITION_TYPES[type].itemKind, toolKey || null, fieldKey,
      type === 'esign' ? (String(b.esignDoc || '').trim().slice(0, 300) || null) : null,
      category, b.isRequired !== false, b.dueDate || null,

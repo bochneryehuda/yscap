@@ -12,8 +12,8 @@
  * program name. Applied in three layers for defense-in-depth:
  *   1) on WRITE — Condition Studio + per-file condition authoring, so a name
  *      never gets stored in a borrower field in the first place;
- *   2) on OUTPUT — borrower condition/checklist render, so already-stored data
- *      is scrubbed on the way out;
+ *   2) on OUTPUT — borrower condition/checklist/LLC/document render, so
+ *      already-stored data is scrubbed on the way out;
  *   3) at the NOTIFY chokepoint — notify.notifyBorrower, so every borrower
  *      email + in-app alert is scrubbed regardless of who built the text.
  *
@@ -42,10 +42,47 @@ function scrubText(value) {
   if (typeof value !== 'string' || value === '') return value;
   let out = value;
   for (const re of PARTNER_PATTERNS) out = out.replace(re, PROGRAM);
-  // Collapse an accidental "…program program" (e.g. "BlueLake program" -> the
-  // replacement would otherwise duplicate the word).
+  // Collapse an accidental "…program program" (e.g. "BlueLake program" would
+  // otherwise duplicate the word).
   out = out.replace(/Gold Standard program(\s+program)\b/gi, PROGRAM);
   return out;
+}
+
+// Unicode private-use sentinels — these never occur in real copy, so masking a
+// protected value can't collide with digits/letters already in the text.
+const MARK_OPEN = '';
+const MARK_CLOSE = '';
+
+/**
+ * Scrub partner names from `text` but PROTECT the given substrings.
+ *
+ * Some partner names collide with ordinary words that appear in legitimate
+ * borrower data — "Churchill" and "Blue Lake" are common street / place names,
+ * so a property address like "12 Churchill Lane" must NOT be rewritten. At the
+ * notify chokepoint the file's address / borrower name / program arrive as clean
+ * `meta` values; we mask those exact strings, run the scrub (so a staff-typed
+ * condition label elsewhere in the same body IS replaced), then restore them.
+ * Protected values come from trusted DB fields (never a staff-typed label), so
+ * they never legitimately need scrubbing.
+ * @param {*} text
+ * @param {string[]} protect  exact substrings to leave untouched
+ */
+function scrubTextExcept(text, protect) {
+  if (typeof text !== 'string' || text === '') return text;
+  const vals = Array.isArray(protect)
+    ? [...new Set(protect.filter((p) => typeof p === 'string' && p.length >= 3))].sort((a, b) => b.length - a.length)
+    : [];
+  if (!vals.length) return scrubText(text);
+  const marks = [];
+  let s = text;
+  for (const p of vals) {
+    if (!s.includes(p)) continue;
+    s = s.split(p).join(MARK_OPEN + marks.length + MARK_CLOSE);
+    marks.push(p);
+  }
+  s = scrubText(s);
+  for (let i = 0; i < marks.length; i++) s = s.split(MARK_OPEN + i + MARK_CLOSE).join(marks[i]);
+  return s;
 }
 
 /**
@@ -67,4 +104,4 @@ function hasPartnerName(value) {
   return PARTNER_PATTERNS.some((re) => { re.lastIndex = 0; return re.test(value); });
 }
 
-module.exports = { scrubText, scrubFields, hasPartnerName, PROGRAM, PARTNER_PATTERNS };
+module.exports = { scrubText, scrubTextExcept, scrubFields, hasPartnerName, PROGRAM, PARTNER_PATTERNS };

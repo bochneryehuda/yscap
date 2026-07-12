@@ -12,7 +12,7 @@ const email = require('./email');
 const tpl = require('./email/template');
 const { link: portalLink } = require('./email/catalog');
 const cfg = require('../config');
-const { scrubText } = require('./borrower-safe');
+const { scrubText, scrubTextExcept } = require('./borrower-safe');
 
 /* Turn a notification's opts into a branded {subject,html,text}. */
 function buildEmail(opts, audience) {
@@ -96,14 +96,20 @@ async function notifyBorrower(borrowerId, opts) {
   // chokepoint, so BOTH the stored in-app row and the branded email are clean no
   // matter who assembled `opts` (e.g. a staff-typed condition label). Staff
   // notifications (notifyStaff) are intentionally NOT scrubbed.
+  // Protect the file's own clean data (address / borrower name / program /
+  // money) — which arrives as `meta` values — from the partner names that
+  // collide with common place names ("Churchill", "Blue Lake"), while still
+  // scrubbing a partner name a staffer typed into the title/body. `meta` itself
+  // is trusted DB data and is left as-is.
+  const protect = Array.isArray(opts.meta) ? opts.meta.map((m) => m && m.value).filter((v) => typeof v === 'string') : [];
   const sopts = {
     ...opts,
-    title: scrubText(opts.title),
-    body: scrubText(opts.body),
-    note: scrubText(opts.note),
-    greeting: scrubText(opts.greeting),
+    title: scrubTextExcept(opts.title, protect),
+    body: scrubTextExcept(opts.body, protect),
+    note: scrubTextExcept(opts.note, protect),
+    greeting: scrubTextExcept(opts.greeting, protect),
     ctaLabel: scrubText(opts.ctaLabel),
-    lines: Array.isArray(opts.lines) ? opts.lines.map(scrubText) : opts.lines,
+    lines: Array.isArray(opts.lines) ? opts.lines.map((l) => scrubTextExcept(l, protect)) : opts.lines,
   };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)

@@ -7,7 +7,7 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
-const { scrubText } = require('../lib/borrower-safe');
+const { scrubText, scrubFields } = require('../lib/borrower-safe');
 const cfg = require('../config');
 const C = require('../lib/crypto');
 const storage = require('../lib/storage');
@@ -326,6 +326,17 @@ function stripInternalAppFields(row) {
   if (!row || typeof row !== 'object') return row;
   for (const k of BORROWER_HIDDEN_APP_FIELDS) delete row[k];
   return row;
+}
+
+// Scrub capital-partner names out of an LLC bundle's document slots before it
+// reaches a borrower: label/hint COALESCE to the INTERNAL wording (llc.js) and
+// rejection_reason is staff free-text. Mutates + returns the bundle (a fresh
+// object from getLlcBundle).
+function scrubLlcSlots(bundle) {
+  if (bundle && Array.isArray(bundle.slots)) {
+    bundle.slots = bundle.slots.map((s) => scrubFields(s, ['label', 'hint', 'rejection_reason']));
+  }
+  return bundle;
 }
 
 async function loadFileForPricing(appId, borrowerId) {
@@ -835,7 +846,7 @@ router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
 router.get('/llcs', async (req, res) => {
   const r = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 ORDER BY created_at`, [me(req)]);
   const out = [];
-  for (const row of r.rows) out.push(await llcLib.getLlcBundle(row.id));
+  for (const row of r.rows) out.push(scrubLlcSlots(await llcLib.getLlcBundle(row.id)));
   res.json(out.filter(Boolean));
 });
 router.get('/llcs/:id', async (req, res) => {
@@ -851,7 +862,7 @@ router.get('/llcs/:id', async (req, res) => {
       [req.params.id, me(req)]);
     if (!linked.rows[0]) return res.status(404).json({ error: 'not found' });
   }
-  const bundle = await llcLib.getLlcBundle(req.params.id);
+  const bundle = scrubLlcSlots(await llcLib.getLlcBundle(req.params.id));
   res.json({ ...bundle, read_only: !mine });
 });
 
@@ -1641,7 +1652,9 @@ router.get('/documents', async (req, res) => {
         AND visibility='borrower' AND source_type <> 'chat_attachment'
       ORDER BY is_current DESC, created_at DESC`,
     [me(req), req.query.applicationId || null]);
-  res.json(r.rows);
+  // rejection_reason is staff free-text shown to the borrower — scrub any
+  // capital-partner name out of it.
+  res.json(r.rows.map((row) => scrubFields(row, ['rejection_reason'])));
 });
 
 // Download a document the borrower may see: their own uploads plus staff files
