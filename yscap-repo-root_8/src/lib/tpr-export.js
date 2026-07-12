@@ -219,11 +219,13 @@ async function buildTprExport(appId) {
         AND d.review_status='accepted' AND d.is_current=true
         AND d.source_type <> 'chat_attachment'
         AND (ci.tpr_exclude IS NOT TRUE)
-        -- S4-03: default to borrower-visible documents only; a staff_only /
-        -- internal document rides along ONLY if its item is deliberately opted in
-        -- (tpr_include). Default visibility is 'borrower', so this drops just the
-        -- documents a staffer explicitly marked internal.
-        AND (d.visibility = 'borrower' OR ci.tpr_include IS TRUE)
+        -- S4-03: never ship a document a staffer marked truly INTERNAL to the note
+        -- buyer. We deliberately KEEP 'staff_only' here — the buyer's clean file
+        -- needs the staff-managed loan documents (appraisal, title, insurance),
+        -- which live on staff-audience conditions. Only 'internal' is held back;
+        -- the existing per-item tpr_exclude flag remains the way to drop a
+        -- specific document.
+        AND d.visibility <> 'internal'
       ORDER BY ci.sort_order NULLS LAST, d.created_at`, [appId])).rows;
 
   // Required document items still missing an accepted doc — the pre-flight list.
@@ -251,7 +253,7 @@ async function buildTprExport(appId) {
        FROM documents
       WHERE track_record_id = ANY($1::uuid[]) AND is_current=true AND source_type <> 'chat_attachment'
         AND review_status <> 'rejected'
-        AND visibility = 'borrower'   -- S4-03: never ship a staff_only/internal doc to the note buyer
+        AND visibility <> 'internal'   -- S4-03: never ship a truly-internal doc to the note buyer
       ORDER BY created_at`, [records.map(r => r.id)])).rows : [];
   const docsByTr = {};
   for (const d of trDocs) (docsByTr[d.track_record_id] = docsByTr[d.track_record_id] || []).push(d);

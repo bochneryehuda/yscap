@@ -371,9 +371,13 @@ function scrubLlcSlots(bundle) {
   if (!bundle) return bundle;
   // S2-11: staff identity is internal — the borrower must not see WHICH staffer
   // verified the entity or reviewed each document. Drop verified_by (staff uuid)
-  // from the bundle and reviewed_by_name from every slot. (getLlcBundle is shared
-  // with the staff panel, which keeps these — this scrub is the borrower path.)
+  // from the bundle and reviewed_by_name from every slot. Also drop the ClickUp
+  // sync internals (getLlcBundle uses SELECT *), matching the track-record scrub.
+  // (getLlcBundle is shared with the staff panel, which keeps these — this scrub
+  // is the borrower path.)
   delete bundle.verified_by;
+  delete bundle.source_task_id;
+  delete bundle.origin;
   if (Array.isArray(bundle.slots)) {
     bundle.slots = bundle.slots.map((s) => {
       const out = scrubFields(s, ['label', 'hint', 'rejection_reason']);
@@ -1413,14 +1417,15 @@ router.upsertPartner = upsertPartner;
 // file. Loan-file experience conditions link here automatically.
 router.get('/track-records', async (req, res) => {
   // Explicit borrower-safe allowlist — NEVER `t.*`. The row carries internal-only
-  // columns the borrower must not see: `lo_notes`/`notes` (candid staff notes on
-  // the deal, S2-06), `verified_by` (which staffer verified it, S2-11), plus the
-  // internal verification_status and ClickUp sync fields. Send only the borrower's
-  // own factual deal data + the plain "verified" boolean and their doc status.
+  // columns the borrower must not see: `lo_notes` (candid staff notes on the deal,
+  // S2-06), `verified_by` (which staffer verified it, S2-11), plus the internal
+  // verification_status and ClickUp sync fields. `notes` is the BORROWER'S OWN
+  // field ("anything the underwriter should know") and is kept. Send only the
+  // borrower's own factual deal data + the plain "verified" boolean and doc status.
   const r = await db.query(
     `SELECT t.id, t.borrower_id, t.llc_id, t.property_address, t.deal_type,
             t.purchase_price, t.sale_price, t.rehab_amount, t.purchase_date, t.sale_date,
-            t.rent_amount, t.rent_date, t.refi_amount, t.refi_date, t.current_value,
+            t.rent_amount, t.rent_date, t.refi_amount, t.refi_date, t.current_value, t.notes,
             t.is_verified, t.docs_status, t.created_at, t.updated_at,
             COALESCE(t.entity_name, l.llc_name) AS entity_name,
             (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count
