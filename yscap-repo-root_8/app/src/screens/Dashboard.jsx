@@ -86,6 +86,45 @@ export default function Dashboard() {
   const activeApps = (apps || []).filter(a => !['declined', 'withdrawn'].includes(a.status));
   const outstanding = (apps || []).reduce((s, a) => s + Math.max(0, (a.borrower_total || 0) - (a.borrower_done || 0)), 0);
   const unreadTotal = Object.values(unread).reduce((s, n) => s + n, 0);
+  // Borrower dashboard order (owner-directed #149/#150): lead with the loans —
+  // ACTIVE files (in-progress applications) first, then MORTGAGES (funded/closed
+  // loans the borrower actually took — the section is named "Mortgages", not
+  // "files"), then the task/document rollups + activity at the BOTTOM.
+  const isDead = (a) => ['declined', 'withdrawn', 'cancelled'].includes(a.status);
+  const isMortgage = (a) => ['funded', 'closed'].includes(a.status);
+  const inProgress = (apps || []).filter(a => !isDead(a) && !isMortgage(a));
+  const mortgages = (apps || []).filter(isMortgage);
+  const loanCard = (a) => (
+    <Link to={`/app/${a.id}`} key={a.id} className="panel" style={{ textDecoration: 'none', color: 'inherit' }}>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <span className={`pill ${a.status}`}>{String(a.status || 'new').replace(/_/g, ' ')}</span>
+        {unread[a.id] && <span className="chat-badge" style={{ marginLeft: 8 }} title="New messages">💬 {unread[a.id]}</span>}
+        <div className="spacer" />
+        <span className="muted small">{a.ys_loan_number || 'Pending #'}</span>
+      </div>
+      <h3 style={{ marginBottom: 10 }}>{addrLine(a.property_address)}</h3>
+      <div className="metrow"><span className="k">Program</span><span className="v">{a.program || '—'}</span></div>
+      <div className="metrow"><span className="k">Loan type</span><span className="v">{a.loan_type || '—'}</span></div>
+      <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(a.loan_amount)}</span></div>
+      <div className="metrow"><span className="k">Officer</span><span className="v">{a.loan_officer_name || 'Lead Capture'}</span></div>
+      {a.borrower_total > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div className="row" style={{ marginBottom: 4 }}>
+            <span className="muted small">Your checklist</span>
+            <div className="spacer" />
+            <span className="muted small">{a.borrower_done}/{a.borrower_total} · {pct(a)}%</span>
+          </div>
+          <div className="progress"><div className="progress-fill" style={{ width: pct(a) + '%' }} /></div>
+        </div>
+      )}
+      {a.status === 'funded' && (
+        <button className="btn primary" style={{ marginTop: 12, width: '100%' }}
+          disabled={drawBusy === a.id} onClick={e => requestDraw(e, a.id)}>
+          {drawBusy === a.id ? 'Sending…' : '💰 Request a draw'}
+        </button>
+      )}
+    </Link>
+  );
 
   return (
     <>
@@ -121,6 +160,52 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* ACTIVE FILES + MORTGAGES first — the loans are the main thing on login
+          (#149). Task/document rollups and activity move below. */}
+      {apps == null ? <div className="panel muted">Loading…</div>
+        : (apps.length === 0 && drafts.length === 0) ? (
+          <div className="panel">
+            <h3>No applications yet</h3>
+            <p className="muted" style={{ margin: '8px 0 16px' }}>
+              Start your first loan application. Everything saves automatically as you go.
+            </p>
+            <button className="btn primary" onClick={newApplication}>Start an application</button>
+          </div>
+        ) : (
+          <>
+            {inProgress.length > 0 && (
+              <div id="loans" style={{ marginBottom: 18 }}>
+                <h3 style={{ marginBottom: 10 }}>Active files</h3>
+                <div className="grid cols-2">{inProgress.map(loanCard)}</div>
+              </div>
+            )}
+            {mortgages.length > 0 && (
+              <div style={{ marginBottom: 18 }}>
+                <h3 style={{ marginBottom: 4 }}>Mortgages</h3>
+                <p className="muted small" style={{ marginBottom: 10 }}>Loans you've closed with YS Capital.</p>
+                <div className="grid cols-2">{mortgages.map(loanCard)}</div>
+              </div>
+            )}
+          </>
+        )}
+
+      {drafts.length > 0 && (
+        <div className="panel" style={{ marginBottom: 18 }}>
+          <h3 style={{ marginBottom: 12 }}>Continue where you left off</h3>
+          {drafts.map(d => (
+            <div className="item" key={d.id}>
+              <div>
+                <div className="ttl">{d.label || 'Draft application'}</div>
+                <div className="muted small">Saved {dstr(d.updated_at)} · step {d.step}</div>
+              </div>
+              <div className="row">
+                <Link className="btn ghost" to={`/apply/${d.id}`}>Resume</Link>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {apps && (() => {
         const groups = (apps || []).filter(a => (outByLoan[a.id] || []).length > 0);
         if (!groups.length) return null;
@@ -152,68 +237,6 @@ export default function Dashboard() {
           </div>
         );
       })()}
-
-      {drafts.length > 0 && (
-        <div className="panel" style={{ marginBottom: 18 }}>
-          <h3 style={{ marginBottom: 12 }}>Continue where you left off</h3>
-          {drafts.map(d => (
-            <div className="item" key={d.id}>
-              <div>
-                <div className="ttl">{d.label || 'Draft application'}</div>
-                <div className="muted small">Saved {dstr(d.updated_at)} · step {d.step}</div>
-              </div>
-              <div className="row">
-                <Link className="btn ghost" to={`/apply/${d.id}`}>Resume</Link>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {apps == null ? <div className="panel muted">Loading…</div>
-        : apps.length === 0 && drafts.length === 0 ? (
-          <div className="panel">
-            <h3>No applications yet</h3>
-            <p className="muted" style={{ margin: '8px 0 16px' }}>
-              Start your first loan application. Everything saves automatically as you go.
-            </p>
-            <button className="btn primary" onClick={newApplication}>Start an application</button>
-          </div>
-        ) : (
-          <div className="grid cols-2" id="loans">
-            {apps.map(a => (
-              <Link to={`/app/${a.id}`} key={a.id} className="panel" style={{ textDecoration: 'none', color: 'inherit' }}>
-                <div className="row" style={{ marginBottom: 10 }}>
-                  <span className={`pill ${a.status}`}>{String(a.status || 'new').replace(/_/g, ' ')}</span>
-                  {unread[a.id] && <span className="chat-badge" style={{ marginLeft: 8 }} title="New messages">💬 {unread[a.id]}</span>}
-                  <div className="spacer" />
-                  <span className="muted small">{a.ys_loan_number || 'Pending #'}</span>
-                </div>
-                <h3 style={{ marginBottom: 10 }}>{addrLine(a.property_address)}</h3>
-                <div className="metrow"><span className="k">Program</span><span className="v">{a.program || '—'}</span></div>
-                <div className="metrow"><span className="k">Loan type</span><span className="v">{a.loan_type || '—'}</span></div>
-                <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(a.loan_amount)}</span></div>
-                <div className="metrow"><span className="k">Officer</span><span className="v">{a.loan_officer_name || 'Lead Capture'}</span></div>
-                {a.borrower_total > 0 && (
-                  <div style={{ marginTop: 12 }}>
-                    <div className="row" style={{ marginBottom: 4 }}>
-                      <span className="muted small">Your checklist</span>
-                      <div className="spacer" />
-                      <span className="muted small">{a.borrower_done}/{a.borrower_total} · {pct(a)}%</span>
-                    </div>
-                    <div className="progress"><div className="progress-fill" style={{ width: pct(a) + '%' }} /></div>
-                  </div>
-                )}
-                {a.status === 'funded' && (
-                  <button className="btn primary" style={{ marginTop: 12, width: '100%' }}
-                    disabled={drawBusy === a.id} onClick={e => requestDraw(e, a.id)}>
-                    {drawBusy === a.id ? 'Sending…' : '💰 Request a draw'}
-                  </button>
-                )}
-              </Link>
-            ))}
-          </div>
-        )}
 
       {notifs.length > 0 && (
         <div className="panel" style={{ marginTop: 18 }}>

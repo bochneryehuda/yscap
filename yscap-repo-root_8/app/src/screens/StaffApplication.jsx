@@ -1425,8 +1425,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 </button>
               )}
               {it.reviewed_at
-                ? <button className="btn ghost small" title={`Reviewed by ${it.reviewed_by_name || 'staff'}`} onClick={() => onPatch(it.id, { reviewed: false })}>Reviewed ✓</button>
-                : <button className="btn ghost small" onClick={() => onPatch(it.id, { reviewed: true })}>Mark reviewed</button>}
+                ? <button className="btn ghost small" title={`Marked done by ${it.reviewed_by_name || 'staff'} — undo to put it back on your list`} onClick={() => onPatch(it.id, { reviewed: false })}>Done ✓</button>
+                : <button className="btn ghost small" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
               {completer && (signed
                 ? <button className="btn ghost small" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
                 : <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}

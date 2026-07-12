@@ -1453,8 +1453,16 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
                    AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
           AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'
           AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = documents.checklist_item_id AND ci.tpr_exclude IS TRUE)`, [req.params.id])).rows[0].c;
+    // A document condition only counts as "missing" for the export when it has
+    // NO accepted current document and isn't satisfied/signed off. (Accepting a
+    // document now leaves the condition 'received' until sign-off — #135 — so
+    // 'satisfied' alone would wrongly flag accepted-but-unsigned docs as missing.)
     const missing = (await db.query(
-      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied' AND tpr_exclude IS NOT TRUE ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
+      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items ci
+        WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied'
+          AND signed_off_at IS NULL AND tpr_exclude IS NOT TRUE
+          AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id=ci.id AND d.is_current AND d.review_status='accepted')
+        ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
     res.json({ includedCount: included, missing });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3441,8 +3449,9 @@ router.post('/applications/:id/documents', async (req, res) => {
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the
 // rejected file in history (never in the clean file), and flips its checklist
 // item back to 'issue' so the borrower sees exactly what to fix and re-uploads.
-// Acceptance marks the item satisfied. Only accepted+current docs count for the
-// file (see getApprovedDocuments / future TPR export).
+// Acceptance marks the item RECEIVED (not satisfied) — the condition stays open
+// until a reviewer signs it off (#135). Only accepted+current docs count for the
+// file (see getApprovedDocuments / TPR export).
 router.post('/documents/:id/review', async (req, res) => {
   const b = req.body || {};
   const action = b.action;
