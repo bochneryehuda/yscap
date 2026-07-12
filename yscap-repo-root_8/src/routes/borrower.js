@@ -471,6 +471,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // path (#85). Without this a borrower-registered product left no breakdown and
     // never reopened on a later increase.
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
+    // Gold Standard Program requires a 5% SOW contingency: reopen the rehab-budget
+    // condition (even if already signed off) with a FATAL note when the saved
+    // Scope of Work is missing it.
+    try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
 
     // Push the freshly-committed scenario (loan amount, rate, rehab, term, IR,
     // ARV / as-is / purchase, assignment, desired rate) to ClickUp immediately.
@@ -697,19 +701,22 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // SOW saves as a DRAFT so it can be reopened + adjusted. The exact-match rule is
   // purely a CONDITION gate: the condition stays open (uncleared) for EVERY party
   // and carries a plain-language note until the line items total the budget exactly.
-  let sowMismatch = null;
+  let sowMismatch = null, goldSow = { ok: true };
   if (it.rows[0].tool_key === 'rehab_budget') {
     // The rehab budget is loan structure — frozen at Clear-to-Close (#84).
     const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
     if (locked) return res.status(409).json({ error: locked, fatal: true });
     const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
     if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
+    // Gold Standard Program: the SOW must carry a >= 5% construction contingency.
+    goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
   }
-  // Status: a matching SOW → 'received'; a mismatch WITH content → 'issue' (visible,
-  // not cleared); a mismatch with an empty draft (opened + exited) → leave the
-  // status untouched. Non-rehab tools are always 'received'.
+  // Status: a matching SOW → 'received'; a budget mismatch OR a missing Gold 5%
+  // contingency WITH content → 'issue' (visible, not cleared); an empty draft
+  // (opened + exited) → leave the status untouched. Non-rehab tools → 'received'.
   const rbTotal = Number(payload && payload.total);
-  const toolStatus = sowMismatch ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
+  const sowOpen = !!sowMismatch || !goldSow.ok;
+  const toolStatus = sowOpen ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($4,tool_state), status=COALESCE($5,status), notes=COALESCE($3,notes), updated_at=now()
       WHERE id=$1`,
@@ -722,7 +729,9 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     const rbMoney = require('../lib/rehab-budget').money;
     const note = sowMismatch
       ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
-      : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`;
+      : (!goldSow.ok
+        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
+        : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`);
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
   }
   // The Scope of Work NEVER writes the file's rehab budget (owner-directed — the
@@ -759,7 +768,8 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // Always 200 — the SOW saved (as a draft on a mismatch). `mismatch` tells the
   // tool to show a non-blocking notice and let the user exit; the condition stays
   // open until the totals match exactly.
-  res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowMismatch || undefined, exports: storedExports });
+  const sowNotice = sowMismatch || (!goldSow.ok ? { gold: true, message: require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG } : undefined);
+  res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowNotice, exports: storedExports });
 });
 
 // ---------------- TOOL STATE (Scope of Work autosave) ----------------

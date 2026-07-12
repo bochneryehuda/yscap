@@ -30,6 +30,11 @@ DECLARE
   req         numeric;
   sow_total   numeric;
   fp_target   numeric;
+  prog        text;      -- registered program (gold/standard) for the contingency rule
+  g_sub       numeric;   -- construction subtotal on the SOW
+  g_cont      numeric;   -- contingency amount on the SOW
+  g_mode      text;      -- contingency input mode (pct/amount)
+  g_val       numeric;   -- contingency input value
 BEGIN
   -- Only ever gate the COMPLETION state of a condition.
   IF NEW.status IS DISTINCT FROM 'satisfied' THEN
@@ -101,6 +106,26 @@ BEGIN
      AND round(fp_target * 100) <> round(req * 100) THEN
     RAISE EXCEPTION 'SOW budget guard: the first-page construction budget % does not equal the required rehab budget % (must match to the cent).', fp_target, req
       USING ERRCODE = 'check_violation';
+  END IF;
+
+  -- Gold Standard Program (owner-directed 2026-07-12): the SOW must carry a
+  -- contingency of at least 5% of the construction subtotal. A pct-mode
+  -- contingency of >= 5 satisfies by definition; otherwise the contingency
+  -- amount must be >= 5% of the subtotal (½-dollar tolerance for float noise).
+  -- The tool submits `subtotal` + `contingency` amounts; a payload that carries
+  -- neither those nor a pct-mode >=5 cannot prove the reserve, so it fails closed.
+  SELECT program INTO prog FROM product_registrations
+    WHERE application_id = NEW.application_id AND is_current LIMIT 1;
+  IF prog ~* 'gold' THEN
+    g_sub  := NULLIF(regexp_replace(COALESCE(NEW.tool_payload->>'subtotal', ''), '[^0-9.]', '', 'g'), '')::numeric;
+    g_cont := NULLIF(regexp_replace(COALESCE(NEW.tool_payload->>'contingency', ''), '[^0-9.]', '', 'g'), '')::numeric;
+    g_mode := NEW.tool_payload#>>'{state,cont,mode}';
+    g_val  := NULLIF(regexp_replace(COALESCE(NEW.tool_payload#>>'{state,cont,value}', ''), '[^0-9.]', '', 'g'), '')::numeric;
+    IF NOT ( (g_mode = 'pct' AND g_val IS NOT NULL AND g_val >= 5)
+             OR (g_sub IS NOT NULL AND g_sub > 0 AND g_cont IS NOT NULL AND g_cont + 0.5 >= 0.05 * g_sub) ) THEN
+      RAISE EXCEPTION 'SOW budget guard: the Gold Standard Program requires at least a 5%% construction contingency on the Scope of Work.'
+        USING ERRCODE = 'check_violation';
+    END IF;
   END IF;
 
   RETURN NEW;

@@ -218,6 +218,8 @@ function sowUrl(appId, itemId, app) {
   else if (/moderate/i.test(rt)) p.set('projType', 'moderate');
   else if (/cosmetic/i.test(rt)) p.set('projType', 'cosmetic');
   if (Number(a.rehab_budget) > 0) p.set('target', String(Math.round(Number(a.rehab_budget))));
+  // Gold Standard files auto-fill a 5% construction contingency in the builder.
+  if (/gold/i.test(String(a.registered_program || ''))) p.set('program', 'gold');
   return `/tools/rehab-budget.html?${p.toString()}`;
 }
 const STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];

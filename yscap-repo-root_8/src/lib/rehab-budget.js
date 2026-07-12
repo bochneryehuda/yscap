@@ -90,4 +90,97 @@ async function checkSowBudget(appId, totalOrPayload, client = db) {
   return { ok: true, seed: false, required, total, target };
 }
 
-module.exports = { requiredRehabBudget, checkSowBudget, firstPageBudget, money, eqCents, toNum };
+// ---------------------------------------------------------------------------
+// Gold Standard Program — 5% Scope-of-Work contingency (owner-directed 2026-07-12)
+//
+// A file registered under the Gold Standard Program must carry a contingency of
+// at least 5% of the construction (line-item) subtotal on its Scope of Work. The
+// contingency lives WITHIN the frozen rehab budget (grand = subtotal +
+// contingency + GC fee), so it never changes the budget — it's a composition
+// requirement, enforced as a CONDITION gate exactly like the exact-match rule:
+// the SOW always saves as a draft, but the rehab-budget condition can't be
+// signed off (and is reopened on Gold registration) until the 5% is present.
+
+const GOLD_CONTINGENCY_PCT = 5;
+const GOLD_CONTINGENCY_MSG =
+  'The Gold Standard Program requires at least a 5% contingency on the construction Scope of Work budget. '
+  + 'Add a contingency of 5% or more (the builder auto-fills 5% for Gold files) before this condition can be signed off. '
+  + 'Your work is saved — reopen the Scope of Work any time to add it.';
+
+// Extract the construction subtotal and contingency amount from a saved SOW
+// payload. The tool submits both amounts directly; older payloads are derived
+// from state.cont (pct mode only — an amount-mode legacy payload is unknowable
+// without the frozen line-item engine, so it reads as null and fails closed).
+function sowContingency(payload) {
+  if (!payload || typeof payload !== 'object') return { subtotal: null, contingency: null };
+  let subtotal = payload.subtotal != null ? toNum(payload.subtotal) : null;
+  let contingency = payload.contingency != null ? toNum(payload.contingency) : null;
+  const st = payload.state && typeof payload.state === 'object' ? payload.state : null;
+  const cont = st && st.cont && typeof st.cont === 'object' ? st.cont : null;
+  if (contingency == null && cont && cont.mode === 'pct' && subtotal != null) {
+    contingency = subtotal * (toNum(cont.value) || 0) / 100;
+  }
+  return { subtotal, contingency, cont };
+}
+
+// True when the SOW carries a >= 5% contingency. A pct-mode contingency of >= 5
+// is 5%-of-subtotal by definition; otherwise compare the amounts (½-dollar
+// tolerance for float noise). Unknowable composition → false (fail closed).
+function goldContingencyOk(payload) {
+  const info = sowContingency(payload);
+  if (info.cont && info.cont.mode === 'pct' && (toNum(info.cont.value) || 0) + 1e-9 >= GOLD_CONTINGENCY_PCT) return true;
+  if (info.subtotal != null && info.subtotal > 0 && info.contingency != null) {
+    return info.contingency + 0.5 >= (GOLD_CONTINGENCY_PCT / 100) * info.subtotal;
+  }
+  return false;
+}
+
+// Program-aware SOW check: on a Gold file the SOW must carry the 5% contingency.
+// Returns { ok, program, message }. Non-Gold files always pass here.
+async function checkGoldSow(appId, payload, client = db) {
+  let program = null;
+  try {
+    const r = await client.query(
+      `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
+    program = r.rows[0] ? r.rows[0].program : null;
+  } catch (_) {}
+  if (!/gold/i.test(String(program || ''))) return { ok: true, program };
+  if (goldContingencyOk(payload)) return { ok: true, program };
+  return { ok: false, program, message: GOLD_CONTINGENCY_MSG };
+}
+
+// Called after a product is (re)registered. When the file is Gold and its saved
+// SOW lacks the 5% contingency, REOPEN the rehab-budget condition — clearing any
+// prior sign-off — and stamp a FATAL [auto] note. This is what makes "even if the
+// condition was already signed off, registering Gold reopens it" work. Non-Gold
+// registration never disturbs the condition here. Idempotent.
+async function enforceGoldSowContingency(appId, client = db) {
+  try {
+    const pr = (await client.query(
+      `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
+    if (!pr || !/gold/i.test(String(pr.program || ''))) return { changed: false, program: pr && pr.program };
+    const it = (await client.query(
+      `SELECT id, status, tool_payload, signed_off_at FROM checklist_items
+        WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [appId])).rows[0];
+    if (!it) return { changed: false, program: pr.program };
+    if (goldContingencyOk(it.tool_payload)) return { changed: false, program: pr.program, ok: true };
+    const note = '[auto] ' + GOLD_CONTINGENCY_MSG;
+    await client.query(
+      `UPDATE checklist_items
+          SET status='issue', signed_off_at=NULL, signed_off_by=NULL,
+              reviewed_at=NULL, reviewed_by=NULL,
+              notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END,
+              updated_at=now()
+        WHERE id=$1`, [it.id, note]);
+    return { changed: true, reopened: true, program: pr.program };
+  } catch (e) {
+    console.error('[rehab-budget] enforceGoldSowContingency failed', appId, e && e.message);
+    return { changed: false, error: e && e.message };
+  }
+}
+
+module.exports = {
+  requiredRehabBudget, checkSowBudget, firstPageBudget, money, eqCents, toNum,
+  sowContingency, goldContingencyOk, checkGoldSow, enforceGoldSowContingency,
+  GOLD_CONTINGENCY_PCT, GOLD_CONTINGENCY_MSG,
+};
