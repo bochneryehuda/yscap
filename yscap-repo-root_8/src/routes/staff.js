@@ -1196,6 +1196,12 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
 });
 
 router.get('/applications/:id/checklist', async (req, res) => {
+  // Recompute the experience/track-record condition from the file's current
+  // requested experience + verified counts BEFORE reading the checklist — same as
+  // the borrower side (borrower.js). Without this the staff conditions view could
+  // show a stale "No experience required" after experience was entered on the
+  // application or in Products & Pricing (all-sides parity).
+  try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
   const r = await db.query(
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
