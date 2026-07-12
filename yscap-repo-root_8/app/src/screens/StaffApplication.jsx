@@ -2038,6 +2038,9 @@ export default function StaffApplication() {
           <div className="metrow"><span className="k">Processor</span><span className="v">{procName || '—'}</span></div>
           {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
           <div className="gold-rule" style={{ margin: '10px 0' }} />
+          {/* Reassigning a file is an admin function (S3-02) — the server 403s a
+              non-admin, so don't offer the control to them. */}
+          {isAdmin ? (<>
           <div className="field"><label>Assign loan officer</label>
             <select className="input" value={lo} onChange={e => setLo(e.target.value)}>
               <option value="">— select —</option>
@@ -2049,6 +2052,7 @@ export default function StaffApplication() {
               {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
             </select></div>
           <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>Assign</button>
+          </>) : <p className="muted small">Only an admin can change who this file is assigned to.</p>}
         </div>
       </div>
       </Section>
