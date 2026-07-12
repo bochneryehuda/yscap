@@ -962,6 +962,22 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
     const { overrides } = sanitizeOverrides(req, b.overrides || {});
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
+    // S3-06: this endpoint writes arv back onto the file and sizes the loan off
+    // both the arv and the as-is value, so a raised arv/as-is OVERRIDE here is the
+    // same higher-leverage raise the /details + /complete-fields gates forbid. On a
+    // priced file (re-registration), a non-seesAll staffer may not raise either.
+    // Underwriters/admins and the FIRST registration (not yet priced) are unaffected.
+    if (!seesAll(req) && await changeRequests.isBorrowerLocked(appId)) {
+      const oa = f.app.arv == null ? null : Number(f.app.arv);
+      const oi = f.app.as_is_value == null ? null : Number(f.app.as_is_value);
+      const na = inputs.arv == null ? null : Number(inputs.arv);
+      const ni = inputs.asIsValue == null ? null : Number(inputs.asIsValue);
+      const raised = [];
+      if (oa != null && na != null && na > oa) raised.push('the ARV');
+      if (oi != null && ni != null && ni > oi) raised.push('the as-is value');
+      if (raised.length)
+        return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
+    }
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
