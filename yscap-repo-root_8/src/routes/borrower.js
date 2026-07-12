@@ -565,9 +565,13 @@ router.get('/applications/:id/checklist', async (req, res) => {
             -- above is safe.
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
-            (SELECT d.rejection_reason FROM documents d
-              WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
-              ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1) AS rejection_reason
+            -- issue_reason is a borrower-SAFE reason (set when staff reject / push
+            -- back / raise an issue against a condition) — unlike ci.notes it may be
+            -- shown. Fall back to the latest rejected document's reason.
+            COALESCE(ci.issue_reason,
+              (SELECT d.rejection_reason FROM documents d
+                WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
+                ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason
        FROM checklist_items ci
       WHERE ci.application_id=$1 AND ci.audience IN ('borrower','both')
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);

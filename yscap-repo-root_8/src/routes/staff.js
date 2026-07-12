@@ -24,6 +24,7 @@ const conditionEngine = require('../lib/conditions/engine');
 const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
+const { raiseEntityIssue } = require('../lib/raise-issue');
 
 const { can } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
@@ -1212,7 +1213,15 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             ci.assignee_staff_id, asg.full_name AS assignee_name,
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
-            ci.reviewed_by, rv.full_name AS reviewed_by_name, ci.reviewed_at
+            ci.reviewed_by, rv.full_name AS reviewed_by_name, ci.reviewed_at,
+            -- The borrower-visible reason a condition was rejected / pushed back /
+            -- raised (#125): staff must see it on the condition too, not only in the
+            -- separate documents panel. Falls back to the latest rejected document's
+            -- reason so the staff condition row shows the same "why" the borrower sees.
+            ci.issue_reason, ci.raised_entity,
+            (SELECT d.rejection_reason FROM documents d
+              WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
+              ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1) AS rejection_reason
        FROM checklist_items ci
        LEFT JOIN staff_users asg ON asg.id = ci.assignee_staff_id
        LEFT JOIN staff_users so  ON so.id  = ci.signed_off_by
@@ -1696,6 +1705,19 @@ router.patch('/checklist/:itemId', async (req, res) => {
   if (b.reviewed === true && !can(req.actor, 'review_conditions') && !canComplete) {
     return res.status(403).json({ error: 'You do not have permission to review conditions on this file.' });
   }
+  // Push-back / reject / reopen: send a condition back to the borrower with a
+  // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
+  // verb covers reject (an open item is not acceptable), push-back, and add-back /
+  // reopen (a satisfied or signed-off item is sent back). A reason is REQUIRED. Any
+  // reviewer may push back (loan officers included).
+  if (b.pushBack === true) {
+    if (!can(req.actor, 'review_conditions') && !canComplete) {
+      return res.status(403).json({ error: 'You do not have permission to send conditions back on this file.' });
+    }
+    if (!String(b.issueReason || '').trim()) {
+      return res.status(400).json({ error: 'a reason is required to send this condition back to the borrower' });
+    }
+  }
   // Data-integrity gates on the three tool-backed conditions: a product must be
   // registered, the rehab budget must agree across SOW/file/product, and
   // verified experience must back the registered product. Blocks the sign-off
@@ -1711,8 +1733,9 @@ router.patch('/checklist/:itemId', async (req, res) => {
 
   // Sign-off forces status='satisfied' below, so skip an explicit status here
   // when signing off in the same call — otherwise the UPDATE sets the `status`
-  // column twice and Postgres rejects it (42601) with a 500.
-  if (b.status && b.signedOff !== true) add('status=?', b.status);
+  // column twice and Postgres rejects it (42601) with a 500. Push-back also owns
+  // the status ('issue'), so skip the explicit one in that case too.
+  if (b.status && b.signedOff !== true && b.pushBack !== true) add('status=?', b.status);
   if (b.notes != null) add('notes=?', b.notes);
   if ('assigneeStaffId' in b) add('assignee_staff_id=?', b.assigneeStaffId || null);
   // Requirement toggle — e.g. the LLC's Certificate of Good Standing is
@@ -1735,6 +1758,20 @@ router.patch('/checklist/:itemId', async (req, res) => {
     sets.push('reviewed_by=NULL', 'reviewed_at=NULL');
   }
 
+  // Push-back: flip to 'issue', clear every completion stamp (sign-off + review),
+  // and record the borrower-visible reason. Works on an open OR an already-cleared
+  // condition (reopen / add-back). issue_reason is what the borrower is shown.
+  if (b.pushBack === true) {
+    add('issue_reason=?', String(b.issueReason).slice(0, 500));
+    sets.push("status='issue'", 'signed_off_by=NULL', 'signed_off_at=NULL', 'reviewed_by=NULL', 'reviewed_at=NULL');
+  } else if (b.issueReason != null) {
+    // A plain reject that passes an explicit status='issue' can carry the reason.
+    add('issue_reason=?', String(b.issueReason).slice(0, 500));
+  }
+  // Resolving a condition clears any stale push-back reason so a re-satisfied item
+  // never keeps showing an old "needs a fix" note.
+  if (b.signedOff === true || b.status === 'satisfied') sets.push('issue_reason=NULL');
+
   const r = await db.query(`UPDATE checklist_items SET ${sets.join(', ')} WHERE id=$1`, params);
   // A wrong/deleted item id used to answer {ok:true} — the UI showed a sign-off
   // that never persisted. Phantom success is this repo's #1 bug class.
@@ -1742,6 +1779,30 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // Propagate a mapped condition's status to its ClickUp dropdown (scoped push;
   // self-gating no-op for unmapped items / unlinked files).
   enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
+
+  // Push-back: audit it and tell the borrower what needs fixing (only for
+  // borrower-facing conditions — a staff-only item has no borrower to notify).
+  if (b.pushBack === true) {
+    try { await audit(req, 'push_back_condition', 'checklist_item', req.params.itemId, { reason: String(b.issueReason).slice(0, 500) }); } catch (_) {}
+    try {
+      const it = await db.query(
+        `SELECT ci.application_id, ci.audience, COALESCE(ci.borrower_label, ci.label) AS label, a.borrower_id
+           FROM checklist_items ci LEFT JOIN applications a ON a.id=ci.application_id WHERE ci.id=$1`,
+        [req.params.itemId]);
+      const row = it.rows[0];
+      if (row && row.borrower_id && row.audience !== 'staff') {
+        const ctx = row.application_id ? await notify.fileContext(row.application_id) : null;
+        await notify.notifyBorrower(row.borrower_id, {
+          type: 'doc_rejected',
+          title: `"${row.label}" needs your attention`,
+          body: `Your loan team sent "${row.label}" back${ctx ? ` (${ctx.label})` : ''}: ${String(b.issueReason).slice(0, 180)}`,
+          meta: (ctx && ctx.meta) || undefined,
+          applicationId: row.application_id,
+          link: row.application_id ? `/app/${row.application_id}` : '/profile',
+          ctaLabel: 'Review the condition' });
+      }
+    } catch (_) { /* best-effort */ }
+  }
   res.json({ ok: true });
 });
 
@@ -2503,6 +2564,49 @@ router.post('/track-records/:id/verify', async (req, res) => {
   try { await conditionEngine.evaluateBorrowerApplications(tr.rows[0].borrower_id, { actor: req.actor, reason: 'track_record_verified' }); } catch (_) {}
   await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
   res.json({ ok: true, status });
+});
+
+// ---------------- raise an issue against a track-record line item / an LLC ----------------
+// A staffer reviewing a track-record line item or a vesting entity can post a
+// request/issue against it. It becomes a real condition ON A FILE, NAMED by the
+// entity (property address / LLC name) + the reason, visible to BOTH the internal
+// team and the borrower. See src/lib/raise-issue.js. The staffer raises it from
+// within a file (applicationId), so the condition attaches to that loan.
+function addressLabel(pa) {
+  if (!pa || typeof pa !== 'object') return '';
+  if (pa.oneLine) return String(pa.oneLine);
+  return [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ');
+}
+router.post('/track-records/:id/raise-issue', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const appId = b.applicationId;
+    if (!appId) return res.status(400).json({ error: 'applicationId is required — raise the issue from within a loan file' });
+    if (!String(b.reason || '').trim()) return res.status(400).json({ error: 'a reason is required' });
+    const tr = await db.query(`SELECT borrower_id, property_address FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!tr.rows[0]) return res.status(404).json({ error: 'track record not found' });
+    if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+    const name = addressLabel(tr.rows[0].property_address) || 'a past project';
+    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id });
+    await audit(req, 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/llcs/:id/raise-issue', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const appId = b.applicationId;
+    if (!appId) return res.status(400).json({ error: 'applicationId is required — raise the issue from within a loan file' });
+    if (!String(b.reason || '').trim()) return res.status(400).json({ error: 'a reason is required' });
+    const own = await db.query(`SELECT borrower_id, llc_name FROM llcs WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'entity not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id });
+    await audit(req, 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
 
 // ---------------- advance application status ----------------
@@ -3327,6 +3431,12 @@ router.post('/documents/:id/review', async (req, res) => {
     return res.status(403).json({ error: 'Only the processor can accept a document — you can reject it or mark the condition reviewed.' });
   }
   if (action === 'reject' && !String(b.reason || '').trim()) return res.status(400).json({ error: 'a rejection reason is required' });
+  // Accept + request another document: the borrower must be told WHAT else is
+  // needed, so the note is required too (owner-directed 2026-07-12) — an empty
+  // "request more" left the borrower with a still-open condition and no reason.
+  if (action === 'accept' && b.requestMore && !String(b.note || '').trim()) {
+    return res.status(400).json({ error: 'tell the borrower what additional document is needed' });
+  }
   try {
     const r = await db.query(
       `SELECT id,filename,application_id,borrower_id,llc_id,checklist_item_id FROM documents WHERE id=$1`, [req.params.id]);
