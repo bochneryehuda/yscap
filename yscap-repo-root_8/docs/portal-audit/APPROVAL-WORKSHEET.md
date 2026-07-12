@@ -43,7 +43,17 @@ pay for a fix that's already done.
 | S5-01 | Owner asked to understand | 💬 explained below; awaiting OK |
 | S5-03 | Prevent it; on a would-be delete, **alert LO/processor for manual review** instead | ✅ approved → build (explained below) |
 
-_All other findings (the ~45 below) are awaiting the owner's call._
+### Round-2 refinements (owner replies)
+
+- **S1-03** — ✅ build. Borrowers **see the loan structure** (both co-borrowers) and their **own** personal info; they must **not** see the **profit margin** or the **other borrower's** personal info. Careful field-by-field allowlist.
+- **S2-04** — ❌ **not an issue per owner.** Appraised value is fine for the borrower to see; the other calc fields are acceptable. (Still make sure no margin/partner-name hides inside the ClickUp copy — covered by S1-03/S5-01.)
+- **S2-02** — ✅ build. Keep the current button; **add a control that reveals a "borrower-facing wording" box** so staff can enter internal wording AND borrower-facing wording for the requested item.
+- **S4-02** — ⏸ **ignore** (parked, like S4-01).
+- **S5-01** — ✅ build. Instead of blocking the save, **auto-replace any capital-partner name with the program text ("Gold Standard program") on the borrower side.** A sanitizer on all borrower-facing output.
+- **S3-04** — ✅ owner chose **(b)**: an LO **can undo** a sign-off (including a processor's), but **still cannot sign off** (re-complete) — sign-off stays with processor/admin. So: keep undo open to LO; keep the sign-off gate.
+- **S5-03** — ✅ build the "hold as claimed + alert, never silent auto-delete" fix. **PLUS a major new project:** after the borrower submits (past products & pricing), **lock the borrower out of directly editing loan details**; give them a **change-request "sandbox"** — proposed changes go to the loan officer + processor for approval, and only take effect once approved. Research modern lender patterns first; build carefully. _(Tracked as its own design+build effort, not a quick fix.)_
+
+_All other findings (the ~45 below) are awaiting the owner's call — I'll re-send them after the approved build is done._
 
 ---
 
