@@ -26,6 +26,7 @@
  *   notify               {title, body, link}            — in-app toast (urgent re-ping)
  */
 const db = require('../db');
+const { scrubText } = require('./borrower-safe');
 
 const conns = new Map();          // connId -> { res, kind, id, key, role, openConv, teamKeys }
 let nextConnId = 1;
@@ -118,9 +119,19 @@ async function publishToConversation(conversationId, event, data, { excludeKey =
         WHERE conversation_id=$1 AND removed_at IS NULL`, [conversationId]);
     memberKeys = new Set(r.rows.map(m => keyOf(m.member_kind, m.member_id)));
   } catch (_) { /* fall back to open-conv fan-out only */ }
+  // A borrower must never receive a capital-partner name a staffer typed into a
+  // chat message. Scrub the message body for BORROWER connections only; staff
+  // connections get the real text. Only message events carry a body — other
+  // events (receipts/presence/typing) pass through untouched.
+  let borrowerData = data;
+  if (data && data.message && typeof data.message.body === 'string') {
+    borrowerData = { ...data, message: { ...data.message, body: scrubText(data.message.body) } };
+  }
   for (const c of conns.values()) {
     if (c.key === excludeKey) continue;
-    if (memberKeys.has(c.key) || c.openConv === conversationId) write(c, event, data);
+    if (memberKeys.has(c.key) || c.openConv === conversationId) {
+      write(c, event, c.kind === 'borrower' ? borrowerData : data);
+    }
   }
 }
 

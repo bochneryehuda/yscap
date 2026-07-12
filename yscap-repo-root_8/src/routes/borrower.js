@@ -1752,6 +1752,7 @@ router.get('/messages', async (req, res) => {
       ORDER BY m.created_at DESC LIMIT 500`,
     [me(req), req.query.applicationId || null]);
   r.rows.reverse();   // newest-500 window, still rendered oldest-first
+  for (const m of r.rows) if (m && typeof m.body === 'string') m.body = scrubText(m.body);  // no partner name to a borrower
   // Opening the thread clears the "new message" badge for staff replies —
   // legacy read_at plus the new per-member watermark (035).
   if (req.query.applicationId) {
@@ -1911,7 +1912,7 @@ router.get('/chat/inbox', async (req, res) => {
                            ORDER BY created_at DESC LIMIT 1) lm ON true
       WHERE a.borrower_id=$1 OR a.co_borrower_id=$1
       ORDER BY lm.created_at DESC NULLS LAST`, [me(req)]);
-  res.json(r.rows);
+  res.json(r.rows.map((row) => scrubFields(row, ['last_body'])));
 });
 
 // ---------------- chat v3: conversations, receipts, presence ----------------

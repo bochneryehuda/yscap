@@ -8,6 +8,7 @@ const router = require('../lib/safe-router')();
 const db = require('../db');
 const chat = require('../lib/chat');
 const events = require('../lib/events');
+const { scrubText } = require('../lib/borrower-safe');
 
 const me = (req) => req.actor.id;
 const borrowerActor = (req) => ({ kind: 'borrower', id: req.actor.id, roleLabel: 'Borrower' });
@@ -73,6 +74,7 @@ router.get('/conversations', async (req, res) => {
   res.json({
     conversations: r.rows.map(row => ({
       ...row,
+      last_body: scrubText(row.last_body),   // never surface a partner name to a borrower
       last_seq: row.last_seq == null ? null : Number(row.last_seq),
       last_read_seq: row.last_read_seq == null ? null : Number(row.last_read_seq),
       members: (row.members || []).map(m => ({ ...m, online: online.has(`${m.kind}:${m.id}`) })),
@@ -98,7 +100,7 @@ router.get('/conversations/:cid', async (req, res) => {
     id: conv.id, applicationId: conv.application_id, name: conv.name, emoji: conv.emoji,
     topic: conv.topic, ysLoanNumber: conv.ys_loan_number, propertyAddress: conv.property_address,
     members,
-    pinned: pinned.rows.map(p => ({ ...p, seq: Number(p.seq) })),
+    pinned: pinned.rows.map(p => ({ ...p, body: scrubText(p.body), seq: Number(p.seq) })),
     draft: myDraft.rows[0] ? myDraft.rows[0].body : '',
   });
 });
@@ -107,6 +109,9 @@ router.get('/conversations/:cid/messages', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
   const beforeSeq = req.query.before ? Number(req.query.before) : null;
   const msgs = await chat.fetchMessages(conv.id, { beforeSeq, limit: Number(req.query.limit) || 60 });
+  // Scrub any capital-partner name a staffer typed into a message before the
+  // borrower reads it (staff see the real name via the staff-chat routes).
+  for (const m of msgs) if (m && typeof m.body === 'string') m.body = scrubText(m.body);
   res.json({ messages: msgs, members: await chat.membersOf(conv.id) });
 });
 
