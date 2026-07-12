@@ -656,6 +656,9 @@ export default function Application() {
   const currentDocsFor = (itemId) => uploads.filter(d => d.checklist_item_id === itemId && d.is_current !== false && d.review_status !== 'superseded');
   const itemLabelById = Object.fromEntries(items.map(it => [it.id, it.label]));
   const sowExports = sowItem ? currentDocsFor(sowItem.id).filter(d => d.doc_kind === 'rehab_budget_export') : [];
+  // The registered term sheet now saves onto the Products & Pricing condition
+  // itself (#139) — surface it there as a document slot.
+  const tsDocs = ppItem ? currentDocsFor(ppItem.id).filter(d => d.doc_kind === 'term_sheet' || /term.?sheet/i.test(d.slot_label || d.filename || '')) : [];
   const req = experienceRequirement(app);
   // Experience progress toward the requirement. Prefer the SERVER-authoritative
   // count from the experience condition's payload — it applies the frozen 3-year
@@ -868,6 +871,7 @@ export default function Application() {
                     ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
                     : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
                   status={(isDone(ppItem.status) || app.registered_program) ? 'Completed' : 'To do'}
+                  open={tsDocs.length > 0}
                   action={<button className="btn primary small" onClick={() => {
                     // Same full-screen tool sheet as the Scope of Work — no
                     // scrolling hunt for the panel.
@@ -876,7 +880,24 @@ export default function Application() {
                   }}>
                     {app.registered_program ? 'Reprice / re-register' : 'Open Products & Pricing'}
                   </button>}
-                />
+                >
+                  {tsDocs.length > 0 && (
+                    <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                      {tsDocs.map(d => {
+                        const canPreview = /pdf|html|image|png|jpe?g/i.test(d.content_type || d.filename);
+                        return (
+                          <span key={d.id} className="row" style={{ gap: 4 }}>
+                            {canPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => setPreviewDoc(d)}>Preview term sheet</button>}
+                            <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                              {dlBusy === d.id ? '…' : '⤓ Term sheet'}
+                            </button>
+                          </span>
+                        );
+                      })}
+                      <span className="muted small" style={{ alignSelf: 'center' }}>Saved from your registration. Re-registering replaces it.</span>
+                    </div>
+                  )}
+                </ConditionRow>
               )}
 
               {/* 1 — Rehab budget / Scope of Work */}
