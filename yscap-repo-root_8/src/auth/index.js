@@ -379,7 +379,7 @@ router.post('/mfa/enable', requireAuth, async (req, res) => {
   // Issue one-time backup codes so a lost authenticator doesn't lock them out.
   // Store hashed; return the plaintext ONCE for the user to save.
   const backupCodes = C.newBackupCodes(10);
-  await db.query(`UPDATE ${tbl} SET mfa_enabled=true, mfa_backup_codes=$2, failed_attempts=0, locked_until=NULL WHERE ${idCol}=$1`,
+  await db.query(`UPDATE ${tbl} SET mfa_enabled=true, mfa_backup_codes=$2, mfa_failed_attempts=0, mfa_locked_until=NULL WHERE ${idCol}=$1`,
     [req.actor.id, backupCodes.map(C.hashBackupCode)]);
   res.json({ ok: true, mfaEnabled: true, backupCodes });
   // Confirmation email (best-effort, never blocks the response).
@@ -408,26 +408,30 @@ const mfaIdCol = (kind) => (kind === 'staff' ? 'id' : 'borrower_id');
  */
 async function verifyMfaStep(kind, userId, code) {
   const tbl = mfaTbl(kind), idCol = mfaIdCol(kind);
+  // DEDICATED mfa counter (db/089) — NOT the shared password failed_attempts. A
+  // password login resets the password counter, so sharing it let an attacker who
+  // knows the password re-login to zero the count and guess codes forever. These
+  // columns clear only on a successful 2FA step, so the lock actually holds.
   const r = await db.query(
-    `SELECT mfa_secret, mfa_backup_codes, failed_attempts, locked_until FROM ${tbl} WHERE ${idCol}=$1`, [userId]);
+    `SELECT mfa_secret, mfa_backup_codes, mfa_failed_attempts, mfa_locked_until FROM ${tbl} WHERE ${idCol}=$1`, [userId]);
   const row = r.rows[0];
   if (!row) return { status: 401, error: 'invalid code' };
-  if (row.locked_until && new Date(row.locked_until) > new Date())
+  if (row.mfa_locked_until && new Date(row.mfa_locked_until) > new Date())
     return { status: 423, error: 'too many wrong codes — please try again later' };
   if (row.mfa_secret && C.verifyTotp(row.mfa_secret, code)) {
-    await db.query(`UPDATE ${tbl} SET failed_attempts=0, locked_until=NULL WHERE ${idCol}=$1`, [userId]);
+    await db.query(`UPDATE ${tbl} SET mfa_failed_attempts=0, mfa_locked_until=NULL WHERE ${idCol}=$1`, [userId]);
     return { ok: true };
   }
   const codes = Array.isArray(row.mfa_backup_codes) ? row.mfa_backup_codes : [];
   const h = C.hashBackupCode(code);
   if (code && codes.includes(h)) {
     const remaining = codes.filter((c) => c !== h);   // one-time: consume it
-    await db.query(`UPDATE ${tbl} SET mfa_backup_codes=$2, failed_attempts=0, locked_until=NULL WHERE ${idCol}=$1`,
+    await db.query(`UPDATE ${tbl} SET mfa_backup_codes=$2, mfa_failed_attempts=0, mfa_locked_until=NULL WHERE ${idCol}=$1`,
       [userId, remaining]);
     return { ok: true, usedBackup: true, backupRemaining: remaining.length };
   }
-  const fa = (row.failed_attempts || 0) + 1;
-  await db.query(`UPDATE ${tbl} SET failed_attempts=$2, locked_until=$3 WHERE ${idCol}=$1`,
+  const fa = (row.mfa_failed_attempts || 0) + 1;
+  await db.query(`UPDATE ${tbl} SET mfa_failed_attempts=$2, mfa_locked_until=$3 WHERE ${idCol}=$1`,
     [userId, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]);
   return { status: 401, error: 'invalid code' };
 }
@@ -446,13 +450,13 @@ router.get('/mfa/status', requireAuth, async (req, res) => {
 router.post('/mfa/disable', requireAuth, async (req, res) => {
   const { code } = req.body || {};
   const tbl = mfaTbl(req.actor.kind), idCol = mfaIdCol(req.actor.kind);
-  const r = await db.query(`SELECT mfa_secret, mfa_enabled, mfa_backup_codes FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
-  const row = r.rows[0];
-  if (!row || !row.mfa_enabled) return res.json({ ok: true, mfaEnabled: false });   // already off
-  const totpOk = row.mfa_secret && C.verifyTotp(row.mfa_secret, code);
-  const backupOk = Array.isArray(row.mfa_backup_codes) && !!code && row.mfa_backup_codes.includes(C.hashBackupCode(code));
-  if (!totpOk && !backupOk) return res.status(401).json({ error: 'invalid code' });
-  await db.query(`UPDATE ${tbl} SET mfa_enabled=false, mfa_secret=NULL, mfa_backup_codes=NULL WHERE ${idCol}=$1`, [req.actor.id]);
+  const r = await db.query(`SELECT mfa_enabled FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
+  if (!r.rows[0] || !r.rows[0].mfa_enabled) return res.json({ ok: true, mfaEnabled: false });   // already off
+  // Require a valid current code, WITH the same lockout as login — so a stolen
+  // session can't brute-force the code to strip 2FA.
+  const v = await verifyMfaStep(req.actor.kind, req.actor.id, code);
+  if (!v.ok) return res.status(v.status).json({ error: v.error });
+  await db.query(`UPDATE ${tbl} SET mfa_enabled=false, mfa_secret=NULL, mfa_backup_codes=NULL, mfa_failed_attempts=0, mfa_locked_until=NULL WHERE ${idCol}=$1`, [req.actor.id]);
   res.json({ ok: true, mfaEnabled: false });
 });
 
@@ -461,12 +465,11 @@ router.post('/mfa/disable', requireAuth, async (req, res) => {
 router.post('/mfa/backup-codes', requireAuth, async (req, res) => {
   const { code } = req.body || {};
   const tbl = mfaTbl(req.actor.kind), idCol = mfaIdCol(req.actor.kind);
-  const r = await db.query(`SELECT mfa_secret, mfa_enabled, mfa_backup_codes FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
-  const row = r.rows[0];
-  if (!row || !row.mfa_enabled) return res.status(400).json({ error: 'two-factor is not enabled' });
-  const totpOk = row.mfa_secret && C.verifyTotp(row.mfa_secret, code);
-  const backupOk = Array.isArray(row.mfa_backup_codes) && !!code && row.mfa_backup_codes.includes(C.hashBackupCode(code));
-  if (!totpOk && !backupOk) return res.status(401).json({ error: 'invalid code' });
+  const r = await db.query(`SELECT mfa_enabled FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
+  if (!r.rows[0] || !r.rows[0].mfa_enabled) return res.status(400).json({ error: 'two-factor is not enabled' });
+  // Same code check + lockout as login (a valid TOTP/backup code required).
+  const v = await verifyMfaStep(req.actor.kind, req.actor.id, code);
+  if (!v.ok) return res.status(v.status).json({ error: v.error });
   const backupCodes = C.newBackupCodes(10);
   await db.query(`UPDATE ${tbl} SET mfa_backup_codes=$2 WHERE ${idCol}=$1`, [req.actor.id, backupCodes.map(C.hashBackupCode)]);
   res.json({ ok: true, backupCodes });
