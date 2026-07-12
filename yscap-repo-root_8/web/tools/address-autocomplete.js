@@ -7,6 +7,14 @@
      YSAddr.attach(document.getElementById('pStreet'), function (addr) {
        // addr = { line1, city, state, zip, country }
      });
+
+   The suggestion menu is rendered as a FIXED-position element anchored to the
+   input's bounding rect and appended to <body> (owner-directed 2026-07-12) — so
+   it can NEVER be clipped by an ancestor's overflow (the old "only 1 address /
+   too short" bug) and NEVER overlaps the field itself (the old "pops up on top
+   of the text bar" bug). It's white-first to match the portal, dark only under
+   [data-theme="dark"]. Repositions on scroll/resize while open, and flips above
+   the field when there isn't room below.
    ===================================================================== */
 (function () {
   "use strict";
@@ -18,18 +26,22 @@
     var s = document.createElement("style");
     s.id = STYLE_ID;
     s.textContent =
-      ".ysaddr-menu{position:absolute;z-index:9999;left:0;right:0;margin-top:4px;background:#1B242D;" +
-      "border:1px solid #2A3742;border-radius:10px;box-shadow:0 18px 50px -12px rgba(0,0,0,.6);overflow:hidden;" +
-      "font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-height:280px;overflow-y:auto}" +
-      ".ysaddr-item{padding:10px 13px;font-size:13.5px;color:#F4F0E7;cursor:pointer;line-height:1.35;" +
-      "border-bottom:1px solid #232F3A;display:flex;gap:9px;align-items:flex-start}" +
+      // WHITE-FIRST: default light, matches the (light) tools/portal.
+      ".ysaddr-menu{position:fixed;z-index:2147483000;background:#fff;" +
+      "border:1px solid #DCE7E5;border-radius:11px;box-shadow:0 18px 50px -12px rgba(22,32,29,.30);overflow-y:auto;" +
+      "font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-height:min(320px,44vh)}" +
+      ".ysaddr-item{padding:11px 14px;font-size:14px;color:#172326;cursor:pointer;line-height:1.35;" +
+      "border-bottom:1px solid #F1ECE1;display:flex;gap:9px;align-items:flex-start}" +
       ".ysaddr-item:last-child{border-bottom:0}" +
-      ".ysaddr-item .pin{color:#7FA9B0;flex:0 0 auto;margin-top:1px}" +
-      ".ysaddr-item.active,.ysaddr-item:hover{background:#232F3A}" +
-      ".ysaddr-foot{padding:7px 13px;font-size:10.5px;color:#74848C;text-align:right;letter-spacing:.03em}" +
-      "@media (prefers-color-scheme:light){.ysaddr-menu{background:#fff;border-color:#E4DDCE}" +
-      ".ysaddr-item{color:#1B242D;border-bottom-color:#F1ECE1}.ysaddr-item.active,.ysaddr-item:hover{background:#F6F2E9}" +
-      ".ysaddr-foot{color:#8A979C}}";
+      ".ysaddr-item .pin{color:#2F7F86;flex:0 0 auto;margin-top:2px}" +
+      ".ysaddr-item.active,.ysaddr-item:hover{background:#F1F6F5}" +
+      ".ysaddr-foot{padding:7px 14px;font-size:10.5px;color:#8A979C;text-align:right;letter-spacing:.03em}" +
+      // Dark only when the page is explicitly in the dark theme.
+      ':root[data-theme="dark"] .ysaddr-menu{background:#1B242D;border-color:#2A3742;box-shadow:0 18px 50px -12px rgba(0,0,0,.6)}' +
+      ':root[data-theme="dark"] .ysaddr-item{color:#F4F0E7;border-bottom-color:#232F3A}' +
+      ':root[data-theme="dark"] .ysaddr-item .pin{color:#7FA9B0}' +
+      ':root[data-theme="dark"] .ysaddr-item.active,:root[data-theme="dark"] .ysaddr-item:hover{background:#232F3A}' +
+      ':root[data-theme="dark"] .ysaddr-foot{color:#74848C}';
     document.head.appendChild(s);
   }
 
@@ -40,15 +52,42 @@
     input._ysaddr = true;
     injectStyle();
     input.setAttribute("autocomplete", "off");
-    // The input needs a positioned ancestor for the absolute menu; wrap it.
-    var host = input.parentNode;
-    if (getComputedStyle(host).position === "static") host.style.position = "relative";
 
     var menu = null, items = [], active = -1, seq = 0, lastQ = "", timer = null;
 
-    function close() { if (menu) { menu.remove(); menu = null; } items = []; active = -1; }
+    // Keep the menu glued to the input on scroll/resize while it is open.
+    function position() {
+      if (!menu) return;
+      var r = input.getBoundingClientRect();
+      var vh = window.innerHeight || document.documentElement.clientHeight;
+      var below = vh - r.bottom, above = r.top;
+      var mh = menu.offsetHeight || 0;
+      menu.style.left = Math.round(r.left) + "px";
+      menu.style.width = Math.round(r.width) + "px";
+      // Flip above only when there's clearly more room up top and it won't fit below.
+      if (mh && below < mh + 8 && above > below) {
+        menu.style.top = Math.round(r.top - mh - 4) + "px";
+      } else {
+        menu.style.top = Math.round(r.bottom + 4) + "px";
+      }
+    }
+    var onScroll = function () { position(); };
+
+    function close() {
+      if (menu) { menu.remove(); menu = null; }
+      items = []; active = -1;
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    }
     function open() {
-      if (!menu) { menu = document.createElement("div"); menu.className = "ysaddr-menu"; host.appendChild(menu); }
+      if (!menu) {
+        menu = document.createElement("div");
+        menu.className = "ysaddr-menu";
+        document.body.appendChild(menu);         // escape ancestor overflow/stacking
+        // `true` (capture) so scrolling of ANY ancestor container repositions us.
+        window.addEventListener("scroll", onScroll, true);
+        window.addEventListener("resize", onScroll);
+      }
     }
     function render(list, provider) {
       open();
@@ -59,12 +98,16 @@
       Array.prototype.forEach.call(menu.querySelectorAll(".ysaddr-item"), function (el) {
         el.addEventListener("mousedown", function (e) { e.preventDefault(); choose(parseInt(el.getAttribute("data-i"), 10)); });
       });
+      position();                                // measure AFTER content is in the DOM
     }
     function highlight(n) {
       var els = menu ? menu.querySelectorAll(".ysaddr-item") : [];
       if (!els.length) return;
       active = (n + els.length) % els.length;
-      Array.prototype.forEach.call(els, function (el, i) { el.classList.toggle("active", i === active); });
+      Array.prototype.forEach.call(els, function (el, i) {
+        el.classList.toggle("active", i === active);
+        if (i === active && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+      });
     }
 
     async function choose(i) {

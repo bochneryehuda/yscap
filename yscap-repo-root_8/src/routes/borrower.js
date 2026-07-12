@@ -1228,29 +1228,44 @@ router.get('/track-records', async (req, res) => {
 // Shared field validation + column mapping for create/update. Mirrors the
 // static Track Record tool's rules: a flip needs a sale; a hold needs a
 // lease-up or refinance exit; ground-up needs any exit.
+// The ONLY hard requirement to SAVE a track-record line is a property address —
+// the line's identity (owner-directed 2026-07-12: "each required field should be
+// able to be completed and saved independently… it should still save even if you
+// don't have all the information"). Every other field is optional and persisted
+// as-provided so a borrower/officer can fill the record incrementally / autosave.
+// Completeness is surfaced as a NON-BLOCKING warning (trackRecordMissing) and
+// separately governs whether the entry QUALIFIES toward experience (verified +
+// recent exit, in track-record.js qualifies()) — an incomplete row saves fine, it
+// just doesn't count yet. `trackRecordErrors` keeps its name (imported elsewhere)
+// but is now the minimal save gate.
 function trackRecordErrors(b) {
-  const dealType = b.dealType || 'flip';
-  const typeText = String(dealType).toLowerCase();
   const addressText = b.propertyAddress && (b.propertyAddress.oneLine || b.propertyAddress.street || b.propertyAddress.line1);
   if (!addressText) return 'property address is required';
-  if (!moneyField(b.purchasePrice)) return 'purchase price is required';
-  if (!b.purchaseDate) return 'purchase date is required';
-  if (!moneyField(b.rehabAmount)) return 'rehab budget is required';
+  return null;
+}
+// What this entry still needs to be COMPLETE (count toward experience). Returned
+// to the UI as a warning list so it can show "still needed: …" at the bottom of
+// the line. NEVER blocks the save.
+function trackRecordMissing(b) {
+  const typeText = String(b.dealType || 'flip').toLowerCase();
   const isHold = typeText.indexOf('hold') >= 0 || typeText.indexOf('rental') >= 0;
   const isGround = typeText.indexOf('ground') >= 0;
-  if (!isHold && !isGround && (!moneyField(b.salePrice) || !b.saleDate)) {
-    return 'sale price and sale date are required for a fix-and-flip deal';
+  const miss = [];
+  if (!moneyField(b.purchasePrice)) miss.push('purchase price');
+  if (!b.purchaseDate) miss.push('purchase date');
+  if (!moneyField(b.rehabAmount)) miss.push('rehab budget');
+  if (!isHold && !isGround) {
+    if (!moneyField(b.salePrice)) miss.push('sale price');
+    if (!b.saleDate) miss.push('sale date');
   }
-  if (isHold && (!moneyField(b.rentAmount) && !moneyField(b.refiAmount))) {
-    return 'monthly rent or refinance amount is required for a fix-and-hold deal';
-  }
-  if (isHold && (!b.rentDate && !b.refiDate)) {
-    return 'rent date or refinance date is required for a fix-and-hold deal';
+  if (isHold) {
+    if (!moneyField(b.rentAmount) && !moneyField(b.refiAmount)) miss.push('monthly rent or refinance amount');
+    if (!b.rentDate && !b.refiDate) miss.push('rent date or refinance date');
   }
   if (isGround && !((moneyField(b.salePrice) && b.saleDate) || (moneyField(b.rentAmount) && b.rentDate) || (moneyField(b.refiAmount) && b.refiDate))) {
-    return 'ground-up experience needs a sale, rent, or refinance exit';
+    miss.push('a completed exit (sale, rent, or refinance)');
   }
-  return null;
+  return miss;
 }
 function trackRecordCols(b) {
   return {
@@ -1288,7 +1303,7 @@ router.post('/track-records', async (req, res) => {
      VALUES ($1,$2,${names.map((_, i) => '$' + (i + 3)).join(',')}) RETURNING id`,
     [me(req), b.llcId || null, ...vals]);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
-  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
+  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id, missing: trackRecordMissing(b) });
 });
 // Edit an entry — only the borrower's own, and only while it is unverified
 // (a verified entry is locked as underwriting evidence).
@@ -1310,7 +1325,7 @@ router.put('/track-records/:id', async (req, res) => {
       WHERE id=$1 AND borrower_id=$2`,
     [req.params.id, me(req), b.llcId || null, ...vals]);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
-  res.json({ ok: true });
+  res.json({ ok: true, missing: trackRecordMissing(b) });
 });
 // Delete a track-record entry — only the borrower's own, and only while it is
 // still unverified (a verified entry is locked as underwriting evidence).
@@ -2215,3 +2230,4 @@ module.exports.backfillRtlChecklists = backfillRtlChecklists;
 module.exports.generateLlcChecklist = generateLlcChecklist;
 module.exports.trackRecordErrors = trackRecordErrors;
 module.exports.trackRecordCols = trackRecordCols;
+module.exports.trackRecordMissing = trackRecordMissing;

@@ -322,7 +322,13 @@ router.post('/borrower/forgot', async (req, res) => {
           fullName: su.full_name, url: mail.link('/accept?token=' + stoken), days: 7 });
       }
     }
-  } catch (e) { /* swallow — never reveal which accounts exist (enumeration-safe) */ }
+  } catch (e) {
+    // Never reveal which accounts exist (enumeration-safe) — but DO log the
+    // failure server-side so "reset email not received" is diagnosable (e.g. a
+    // DB error, or an email provider that failed / is unconfigured). The client
+    // still gets a uniform { ok: true }.
+    console.error('[auth] forgot-password handler error (returning ok for enumeration-safety):', (e && e.message) || e);
+  }
   res.json({ ok: true });
 });
 

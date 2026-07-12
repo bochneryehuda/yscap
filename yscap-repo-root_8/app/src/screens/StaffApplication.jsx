@@ -370,12 +370,15 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           <option value="">Unassigned</option>
           {team.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
         </select>
+        {/* LO "Done": marks the condition completed/submitted from the loan
+            officer's side (owner-directed #133). It clears off the LO's default
+            filter but the processor's list keeps it until SHE signs off. */}
         {it.reviewed_at
-          ? <button className="btn ghost" onClick={() => onPatch(it.id, { reviewed: false })}>Undo reviewed</button>
-          : <button className="btn ghost" onClick={() => onPatch(it.id, { reviewed: true })}>Mark reviewed</button>}
+          ? <button className="btn ghost" title="You marked this done — undo to put it back on your list" onClick={() => onPatch(it.id, { reviewed: false })}>Undo done</button>
+          : <button className="btn ghost" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
         {completer && (signed
           ? <button className="btn ghost" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
-          : <button className="btn primary" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}
+          : <button className="btn primary" title="Sign off = the whole condition is complete (processor step). This is what removes it from the list for everyone." onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}
         {it.audience !== 'staff' && (
           <button className="btn ghost" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
             onClick={() => {
@@ -1195,7 +1198,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // #66 — role-aware visibility: default hides what's already off THIS viewer's
   // plate (LO clears on review/"complete"; processor·underwriter on sign-off;
   // anyone on satisfied). The picker re-shows cleared items or everything.
-  const [condFilter, setCondFilter] = useState('todo');
+  const [condFilter, setCondFilter] = useState('mine');
   // The LLC condition stays its OWN dedicated section (LlcReview) AND is also
   // surfaced here as a condition to close, rendered with the full entity template
   // (owner-directed). It's excluded from the generic list below (so it isn't a bare
@@ -1224,8 +1227,30 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   const docsFor = (itemId) => docs.filter(d => d.checklist_item_id === itemId && d.is_current && d.source_type !== 'chat_attachment');
   const signedCount = ordered.filter(it => it.signed_off_at).length;
   const isLO = role === 'loan_officer';
+  // Role-aware "off my plate" (owner-directed #135): a loan officer clears a
+  // condition by marking it Done (reviewed) OR when it's signed off/satisfied;
+  // a processor/underwriter only clears it by SIGNING IT OFF — so an accepted
+  // (received) document keeps the condition on the processor's list until she
+  // signs off. This is why accept now sets 'received', not 'satisfied'.
   const offMyPlate = (it) => it.status === 'satisfied' || !!it.signed_off_at || (isLO && !!it.reviewed_at);
-  const visible = ordered.filter(it => condFilter === 'all' ? true : condFilter === 'cleared' ? offMyPlate(it) : !offMyPlate(it));
+  const matchFilter = (it) => {
+    switch (condFilter) {
+      case 'awaiting':  return ['outstanding', 'requested'].includes(it.status) && !it.signed_off_at;      // nothing submitted yet
+      case 'review':    return it.status === 'received' && !it.signed_off_at;                              // uploaded/accepted, not signed off
+      case 'attention': return it.status === 'issue';                                                       // needs a fix
+      case 'signed':    return !!it.signed_off_at || it.status === 'satisfied';                             // done
+      case 'all':       return true;
+      case 'mine':
+      default:          return !offMyPlate(it);                                                             // role default
+    }
+  };
+  const visible = ordered.filter(matchFilter);
+  // The LLC condition renders as its own row; drive its visibility off a
+  // synthesized status so it honors the same filters.
+  const llcPseudo = { id: '__llc', tool_key: null, reviewed_at: null,
+    status: app.entity_verified ? 'satisfied' : (app.llc_id ? 'received' : 'outstanding'),
+    signed_off_at: app.entity_verified ? 'x' : null };
+  const llcShown = !!llcCondItem && matchFilter(llcPseudo);
 
   if (ordered.length === 0 && !llcCondItem) return null;
   return (
@@ -1233,11 +1258,14 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
         <h3>Borrower conditions</h3>
         <div className="spacer" />
-        <select className="input" style={{ maxWidth: 170 }} value={condFilter} onChange={e => setCondFilter(e.target.value)}
-          title={isLO ? 'To do = still needs your review' : 'To do = still needs your sign-off'}>
-          <option value="todo">{isLO ? 'To review' : 'To sign off'}</option>
-          <option value="cleared">Cleared</option>
-          <option value="all">Show all</option>
+        <select className="input" style={{ maxWidth: 210 }} value={condFilter} onChange={e => setCondFilter(e.target.value)}
+          title={isLO ? 'Your default shows conditions still needing your review; marking one Done clears it here.' : 'Your default shows conditions still needing your sign-off; accepting a document keeps it here until you sign off.'}>
+          <option value="mine">{isLO ? 'Needs my review' : 'Needs my sign-off'}</option>
+          <option value="awaiting">Not submitted yet</option>
+          <option value="review">In review — not signed off</option>
+          <option value="attention">Needs attention</option>
+          <option value="signed">Signed off</option>
+          <option value="all">All conditions</option>
         </select>
         <span className="muted small">{signedCount}/{ordered.length} signed off</span>
       </div>
@@ -1247,7 +1275,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
       {/* The LLC condition to close — the FULL entity template (details, ownership,
           the three documents, verification state), rendered here as a condition in
           addition to its dedicated Vesting entity section above. Gate. */}
-      {llcCondItem && (condFilter === 'all' || (condFilter === 'cleared') === !!app.entity_verified) && (
+      {llcShown && (
         <div className="checkitem" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8, borderColor: 'var(--gold)' }}>
           <div className="row" style={{ gap: 8, alignItems: 'center' }}>
             <span className={`dot ${app.entity_verified ? 'done' : 'outstanding'}`} />
@@ -1264,8 +1292,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
             : <p className="muted small" style={{ margin: 0 }}>No vesting entity linked yet — link or create one in the “Vesting entity (LLC)” section above.</p>}
         </div>
       )}
-      {visible.length === 0 && (
-        <p className="muted small">Nothing {isLO ? 'left to review' : 'left to sign off'} — switch to “Cleared” or “Show all” to see the rest.</p>
+      {visible.length === 0 && !llcShown && (
+        <p className="muted small">Nothing matches this filter — switch to “All conditions” to see everything on the file.</p>
       )}
       {visible.map(it => {
         const itemDocs = docsFor(it.id);
@@ -1397,8 +1425,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 </button>
               )}
               {it.reviewed_at
-                ? <button className="btn ghost small" title={`Reviewed by ${it.reviewed_by_name || 'staff'}`} onClick={() => onPatch(it.id, { reviewed: false })}>Reviewed ✓</button>
-                : <button className="btn ghost small" onClick={() => onPatch(it.id, { reviewed: true })}>Mark reviewed</button>}
+                ? <button className="btn ghost small" title={`Marked done by ${it.reviewed_by_name || 'staff'} — undo to put it back on your list`} onClick={() => onPatch(it.id, { reviewed: false })}>Done ✓</button>
+                : <button className="btn ghost small" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
               {completer && (signed
                 ? <button className="btn ghost small" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
                 : <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}

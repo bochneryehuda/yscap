@@ -78,6 +78,7 @@ export function buildStudioState(x) {
   const asIs = rawNum(x.asIsValue) || price;
   const v = {
     borrowerName: x.borrowerName || '',
+    coBorrowerName: x.coBorrowerName || '',
     propAddr: x.address || '',
     dealPurpose: studioDealPurpose(x.loanType),
     dealType: studioDealType(x.program),
@@ -124,7 +125,7 @@ function readSnapshot(win) {
   return {
     program, ready, missing, std, gold, d,
     fields: {
-      borrowerName: val('borrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
+      borrowerName: val('borrowerName'), coBorrowerName: val('coBorrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
       dealPurpose: val('dealPurpose'), dealType: val('dealType'),
       propState: val('propState'), propType: val('propType'),
       price: val('price'), isAssign: chk('isAssign'), origPrice: val('origPrice'),

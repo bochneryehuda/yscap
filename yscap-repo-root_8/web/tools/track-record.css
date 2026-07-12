@@ -197,7 +197,14 @@
 :root[data-theme="light"] .tr-inp input[type=date]{ color-scheme:light; }
 
 .tr-form-msg{ display:none; }
-.tr-form-msg.err{ display:block; color:var(--ivory); background:color-mix(in srgb,var(--bad) 16%,transparent); border:1px solid color-mix(in srgb,var(--bad) 42%,transparent); border-radius:10px; padding:.7rem .95rem; font-size:.86rem; font-weight:500; }
+.tr-form-msg.err,.tr-form-msg.warn,.tr-form-msg.ok,.tr-form-msg.info{ display:block; border-radius:10px; padding:.7rem .95rem; font-size:.86rem; font-weight:500; line-height:1.5; }
+.tr-form-msg.err{ color:var(--ivory); background:color-mix(in srgb,var(--bad) 16%,transparent); border:1px solid color-mix(in srgb,var(--bad) 42%,transparent); }
+/* Autosave states (owner-directed 2026-07-12): warn = saved but incomplete;
+   ok = complete/counts; info = neutral prompt. Never a blocking red. */
+.tr-form-msg.warn{ color:var(--ivory); background:color-mix(in srgb,var(--warn) 15%,transparent); border:1px solid color-mix(in srgb,var(--warn) 42%,transparent); }
+.tr-form-msg.warn b{ color:var(--warn); font-weight:700; }
+.tr-form-msg.ok{ color:var(--ivory); background:color-mix(in srgb,var(--good) 14%,transparent); border:1px solid color-mix(in srgb,var(--good) 40%,transparent); }
+.tr-form-msg.info{ color:var(--muted); background:color-mix(in srgb,var(--teal) 8%,transparent); border:1px solid var(--line); }
 .tr-form-foot{ display:flex; justify-content:flex-end; gap:.7rem; margin-top:1.5rem; padding-top:1.2rem; border-top:1px solid var(--line); }
 
 /* ---------- responsive ---------- */

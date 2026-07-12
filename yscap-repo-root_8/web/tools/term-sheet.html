@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="../theme.js?v=n3"></script>
+<script src="../theme.js?v=n6"></script>
 <script src="../brand.js?v=n1"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Term Sheet Studio — A Signable Fix &amp; Flip Term Sheet in About a Minute</title>
@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=n2">
+<link rel="stylesheet" href="../suite.css?v=n6">
 <!-- This tool is WHITE-FIRST always (owner-directed): it must match the portal it
      embeds into (Products & Pricing / Term Sheet Studio), so we force the light
      theme before first paint regardless of any stale saved 'dark' preference. The
@@ -277,6 +277,10 @@
             <div class="field">
                 <label for="borrowerName">Borrower / entity name <em>(optional)</em></label>
                 <div class="input"><input id="borrowerName" type="text" placeholder="e.g. Klein Holdings LLC"></div>
+            </div>
+            <div class="field">
+                <label for="coBorrowerName">Co-borrower name <em>(optional — adds a second signature line)</em></label>
+                <div class="input"><input id="coBorrowerName" type="text" placeholder="e.g. Sarah Klein"></div>
             </div>
             <div class="field cond" data-cond="addr">
                 <label for="propAddr">Subject property address</label>
@@ -623,7 +627,7 @@
 <script src="standard-program.js?v=admin13"></script>
 <script src="gold-standard.js?v=admin13"></script>
 <script src="title-cost.js?v=admin8"></script>
-<script src="termsheet.js?v=admin13"></script>
+<script src="termsheet.js?v=cob1"></script>
 <script src="../float-actions.js?v=admin8"></script>
 </body>
 </html>

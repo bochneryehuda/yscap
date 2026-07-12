@@ -4,15 +4,31 @@
    Self-contained: tokens, base, nav, footer, calculator components.
    =========================================================== */
 
+/* WHITE-FIRST (owner-directed 2026-07-12): the LIGHT palette is now the BASE
+   :root, so every page/tool renders white by DEFAULT — even if the theme JS
+   never runs, a data-theme attribute is stripped, or a cached page requests an
+   old asset. Dark is an explicit opt-in via :root[data-theme="dark"] (the top
+   toggle). This inverts the previous dark-first model, which showed dark on any
+   gap in the light overrides and was the root cause of "tools still open dark". */
 :root{
+    color-scheme:light;
+    --on-accent:#FFFFFF;
+    --ink:#F7FAF9; --ink-1:#FFFFFF; --ink-2:#F1F6F5; --ink-3:#E7EFEE;
+    --line:#DCE7E5; --line-2:rgba(23,35,38,.05);
+    --teal:#2F7F86; --teal-br:#286D73; --teal-dp:#1F5B60; --teal-glow:rgba(47,127,134,.14);
+    --gold:#B9944A; --ivory:#172326; --ivory-soft:#2C3832; --muted:#5D6B70; --muted-2:#819096;
+    --good:#178560; --warn:#B7791F; --bad:#B42318;
+    --maxw:1180px; --r:16px; --ease:cubic-bezier(.22,.61,.36,1);
+    --font-d:"Fraunces",Georgia,serif; --font-b:"Hanken Grotesk",system-ui,sans-serif;
+}
+:root[data-theme="dark"]{
+    color-scheme:dark;
     --on-accent:#08232b;
     --ink:#141B22; --ink-1:#1B242D; --ink-2:#232F3A; --ink-3:#2B3945;
     --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.05);
     --teal:#7FA9B0; --teal-br:#AAD4D9; --teal-dp:#4E777F; --teal-glow:rgba(127,169,176,.22);
     --gold:#C9A86A; --ivory:#F4F0E7; --ivory-soft:#E4DFD3; --muted:#A6B3BA; --muted-2:#808E97;
     --good:#7FB08A; --warn:#C9A86A; --bad:#C98A6A;
-    --maxw:1180px; --r:16px; --ease:cubic-bezier(.22,.61,.36,1);
-    --font-d:"Fraunces",Georgia,serif; --font-b:"Hanken Grotesk",system-ui,sans-serif;
 }
 *{ box-sizing:border-box; }
 html{ scroll-behavior:smooth; }

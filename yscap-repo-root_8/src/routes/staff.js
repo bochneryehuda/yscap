@@ -1453,8 +1453,16 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
                    AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
           AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'
           AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = documents.checklist_item_id AND ci.tpr_exclude IS TRUE)`, [req.params.id])).rows[0].c;
+    // A document condition only counts as "missing" for the export when it has
+    // NO accepted current document and isn't satisfied/signed off. (Accepting a
+    // document now leaves the condition 'received' until sign-off — #135 — so
+    // 'satisfied' alone would wrongly flag accepted-but-unsigned docs as missing.)
     const missing = (await db.query(
-      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied' AND tpr_exclude IS NOT TRUE ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
+      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items ci
+        WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied'
+          AND signed_off_at IS NULL AND tpr_exclude IS NOT TRUE
+          AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id=ci.id AND d.is_current AND d.review_status='accepted')
+        ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
     res.json({ includedCount: included, missing });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -2236,7 +2244,7 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
 });
 // Staff manage the borrower's general track record on their behalf: add,
 // edit, remove entries, and attach/read the per-entry supporting documents.
-const { trackRecordErrors, trackRecordCols } = require('./borrower');
+const { trackRecordErrors, trackRecordCols, trackRecordMissing } = require('./borrower');
 router.post('/borrowers/:id/track-records', async (req, res) => {
   const b = req.body || {};
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -2255,7 +2263,7 @@ router.post('/borrowers/:id/track-records', async (req, res) => {
     [req.params.id, ...vals]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(req.params.id); } catch (_) {}
   await audit(req, 'staff_add_track_record', 'track_record', r.rows[0].id);
-  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
+  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id, missing: trackRecordMissing(b) });
 });
 router.put('/track-records/:id', async (req, res) => {
   const b = req.body || {};
@@ -2279,7 +2287,7 @@ router.put('/track-records/:id', async (req, res) => {
     [req.params.id, ...vals]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   await audit(req, 'staff_edit_track_record', 'track_record', req.params.id);
-  res.json({ ok: true });
+  res.json({ ok: true, missing: trackRecordMissing(b) });
 });
 router.delete('/track-records/:id', async (req, res) => {
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
@@ -3441,8 +3449,9 @@ router.post('/applications/:id/documents', async (req, res) => {
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the
 // rejected file in history (never in the clean file), and flips its checklist
 // item back to 'issue' so the borrower sees exactly what to fix and re-uploads.
-// Acceptance marks the item satisfied. Only accepted+current docs count for the
-// file (see getApprovedDocuments / future TPR export).
+// Acceptance marks the item RECEIVED (not satisfied) — the condition stays open
+// until a reviewer signs it off (#135). Only accepted+current docs count for the
+// file (see getApprovedDocuments / TPR export).
 router.post('/documents/:id/review', async (req, res) => {
   const b = req.body || {};
   const action = b.action;
@@ -3493,8 +3502,16 @@ router.post('/documents/:id/review', async (req, res) => {
                   borrower_hint=COALESCE($3, borrower_hint), updated_at=now() WHERE id=$1`,
           [doc.checklist_item_id, moreNote ? `Still needed: ${moreNote}` : '', newHint]);
       } else {
+        // Accepting a document only marks the condition RECEIVED — NOT satisfied
+        // (owner-directed 2026-07-12). The condition stays open on the list until
+        // a reviewer explicitly SIGNS IT OFF (which routes through signOffGate and
+        // therefore enforces every required document/slot — e.g. a background AND
+        // criminal report, insurance binder AND invoice). This prevents a
+        // multi-document condition from "flying away" the moment ONE of its
+        // documents is accepted, and keeps accept (doc is good) distinct from
+        // sign-off (the whole condition is complete). Reject -> issue.
         await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
-          [doc.checklist_item_id, action === 'accept' ? 'satisfied' : 'issue']);
+          [doc.checklist_item_id, action === 'accept' ? 'received' : 'issue']);
       }
       enqueueChecklistStatusPush(doc.checklist_item_id).catch(() => {}); // mapped conditions → ClickUp dropdown
     }
