@@ -387,20 +387,13 @@ function borrowerPricingOverrides(raw) {
   }
   return out;
 }
-// Admin pricing unlock: a borrower session that presents the admin key (the
-// Term Sheet Studio's admin-mode password, server-verified) may also send the
-// staff-grade fee / markup / manual-basis overrides.
-const ADMIN_OVERRIDE_KEYS = ['markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct',
-  'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
-  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths'];
-function mergeAdminOverrides(overrides, raw, adminKey) {
-  if (!adminKey || adminKey !== cfg.adminPricingKey) return overrides;
-  for (const k of ADMIN_OVERRIDE_KEYS) {
-    if (raw && raw[k] != null && raw[k] !== '') overrides[k] = raw[k];
-  }
-  if (raw && raw.manualPricing != null) overrides.manualPricing = !!raw.manualPricing;
-  return overrides;
-}
+// SECURITY (audit S1-04, owner-directed 2026-07-12): the borrower-side "admin
+// pricing unlock" was REMOVED. A borrower session may only ever send the safe,
+// clamped knobs from borrowerPricingOverrides() — never the staff-grade
+// fee / markup / manual-basis overrides (markup%, origination, lender/credit/
+// appraisal/title fees, manual LTV/rate). Those belong only to the staff pricing
+// routes (loan officer / processor / admin), gated by staff auth. There is no
+// longer any adminKey path a borrower can present, and no hardcoded key.
 
 router.get('/applications/:id/pricing', async (req, res) => {
   try {
@@ -439,9 +432,7 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const f = await loadFileForPricing(req.params.id, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
-    const overrides = mergeAdminOverrides(
-      borrowerPricingOverrides((req.body && req.body.overrides) || {}),
-      (req.body && req.body.overrides) || {}, req.body && req.body.adminKey);
+    const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
     const out = pricing.quoteAll(f.app, f.exp, overrides);
     res.json({ ...out, experience: f.exp });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
@@ -457,7 +448,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     if (!f) return res.status(404).json({ error: 'not found' });
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
-    const overrides = mergeAdminOverrides(borrowerPricingOverrides(b.overrides || {}), b.overrides || {}, b.adminKey);
+    const overrides = borrowerPricingOverrides(b.overrides || {});
     // A REGISTERED product is authoritative terms. Never let borrower-claimed
     // experience beat the verified track record here — staff loan officers are
     // forbidden from injecting these same keys (ADMIN_ONLY_OVERRIDE_KEYS), so a
