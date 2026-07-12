@@ -84,6 +84,9 @@ async function resolveBorrower(read, taskId) {
   // Set when an email match is FOUND but we decline to merge (SSN conflict, or no
   // corroborating 2nd field). The email is then unsafe to reuse on the INSERT.
   let emailUnsafe = false;
+  // The existing borrower an UNCORROBORATED email match pointed at — recorded as a
+  // "possible duplicate — review" candidate after the distinct profile is created.
+  let possibleDupOfId = null;
 
   // 1) strong: exact SSN-hash
   if (ssnHash) {
@@ -113,6 +116,10 @@ async function resolveBorrower(read, taskId) {
         return { borrowerId: ex.id, created: false };
       }
       emailUnsafe = true;   // matched, but not the same person we can prove → don't reuse the email
+      // A shared email with NO corroboration (and no SSN conflict) is a genuine
+      // "might be the same person" — flag it for human review. An SSN conflict is a
+      // confirmed DIFFERENT person, so it is not flagged.
+      if (!ssnConflict) possibleDupOfId = ex.id;
     }
   }
   // 3) weak / none -> create a DISTINCT profile (never a blind single-field merge).
@@ -135,6 +142,19 @@ async function resolveBorrower(read, taskId) {
   if (b.ssn) { try { await db.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1 AND ssn_encrypted IS NULL`,
     [borrowerId, C.encryptSSN(String(b.ssn)), String(b.ssn).replace(/\D/g, '').slice(-4)]); } catch (_) {} }
   await recordContacts(borrowerId, b, taskId);
+  // "Possible duplicate — please check": the email pointed at an existing borrower
+  // we could not corroborate, so we created a DISTINCT profile (safe over-split).
+  // Record the pair so a human is TOLD, instead of the split happening silently.
+  // Idempotent (one open row per pair) and best-effort — never blocks ingest.
+  if (possibleDupOfId && possibleDupOfId !== borrowerId) {
+    try {
+      await db.query(
+        `INSERT INTO borrower_dedup_candidates (borrower_id, matched_borrower_id, reason, source_task_id)
+         VALUES ($1,$2,'shared_email_uncorroborated',$3)
+         ON CONFLICT (borrower_id, matched_borrower_id) DO NOTHING`,
+        [borrowerId, possibleDupOfId, taskId]);
+    } catch (_) { /* dedup-candidate logging is best-effort */ }
+  }
   return { borrowerId, created: true };
 }
 

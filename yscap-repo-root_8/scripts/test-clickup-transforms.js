@@ -4,7 +4,6 @@ const t = require('../src/clickup/transforms');
 const status = require('../src/clickup/status');
 const x = require('../src/clickup/crosswalk');
 const id = require('../src/clickup/identity');
-const echo = require('../src/clickup/echo');
 
 let pass = 0, fail = 0;
 const eq = (name, got, exp) => {
@@ -92,6 +91,21 @@ const PROG_LIST = [
 eq('cw resolveWriteId Bridge', x.resolveWriteId('program', 'Bridge', PROG_LIST), 'e8ff7301-6a64-4d5c-b4d4-48c8dd707eaa');
 eq('cw resolveReadValue idx1', x.resolveReadValue('program', 1, PROG_LIST), 'Bridge');
 
+// placeholder YS loan number (not a real match key)
+eq('placeholder TBD', t.isPlaceholderLoanNumber('TBD'), true);
+eq('placeholder tbd spaced', t.isPlaceholderLoanNumber('  tbd '), true);
+eq('placeholder zero', t.isPlaceholderLoanNumber('0'), true);
+eq('placeholder zeros', t.isPlaceholderLoanNumber('0000'), true);
+eq('placeholder empty', t.isPlaceholderLoanNumber(''), true);
+eq('placeholder null', t.isPlaceholderLoanNumber(null), true);
+eq('placeholder na', t.isPlaceholderLoanNumber('N/A'), true);
+eq('placeholder pending', t.isPlaceholderLoanNumber('pending'), true);
+eq('placeholder xxxx', t.isPlaceholderLoanNumber('xxxx'), true);
+eq('placeholder dashes', t.isPlaceholderLoanNumber('---'), true);
+eq('real loan number', t.isPlaceholderLoanNumber('YS2026-0142'), false);
+eq('real numeric loan', t.isPlaceholderLoanNumber('1000456'), false);
+eq('real not sentinel substring', t.isPlaceholderLoanNumber('NA-2026-001'), false);
+
 // identity (>=2 field match)
 const recA = { address: '123 Main St, Newark, NJ 07103', borrowerName: 'Dov Steiner', email: 'dov@x.com',
   ssn: '066-88-9965', phone: '(917) 538-1594', loanNumber: 'YSCAP258134754', dob: '1998-07-31', purchasePrice: '$405,000' };
@@ -140,15 +154,6 @@ eq('renamed rtl label not nonRtl', x.isNonRtlProgramLabel('Fix & Flip - Heavy Re
 eq('blank not nonRtl', x.isNonRtlProgramLabel(''), false);
 eq('null not nonRtl', x.isNonRtlProgramLabel(null), false);
 eq('unset not nonRtl', x.isNonRtlProgramLabel('Not sure yet'), false);
-
-// echo suppression
-echo._clear();
-echo.markPushed('task1', 'fieldX', 'hello');
-eq('echo window hit', echo.isEcho('task1', 'fieldX', 'hello'), true);
-eq('echo window miss', echo.isEcho('task1', 'fieldX', 'world'), false);
-eq('echo shadow equality', echo.isEcho('task1', 'fieldY', 'abc', 'abc'), true);
-eq('echo shadow diff', echo.isEcho('task1', 'fieldY', 'abc', 'xyz'), false);
-eq('echo hash stable', echo.valueHash({ a: 1, b: 2 }), echo.valueHash({ b: 2, a: 1 }));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

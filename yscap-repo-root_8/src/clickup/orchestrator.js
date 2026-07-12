@@ -1,8 +1,10 @@
 /**
  * Push orchestrator — portal → ClickUp. Glues the DB, the mapper, the live
- * option registry, echo-suppression, routing, and the REST client to create or
- * update a Pipeline task from a portal application. Pull/ingest lives in
- * ingest.js (shared with the backfill).
+ * option registry, routing, and the REST client to create or update a Pipeline
+ * task from a portal application. Pull/ingest lives in ingest.js (shared with the
+ * backfill). Loop-safety on the inbound pull of our own write is structural
+ * (idempotent COALESCE + no-downgrade checklist + scoped enqueue-on-write), not a
+ * separate echo-suppression pass.
  *
  * Gated by cfg.clickupSyncEnabled; every call is a no-op when the master switch
  * is off, so this is safe to wire before go-live.
@@ -12,9 +14,7 @@ const cfg = require('../config');
 const clickup = require('./client');
 const registry = require('./registry');
 const mapper = require('./mapper');
-const echo = require('./echo');
 const statusMap = require('./status');
-const F = require('./fields');
 const routing = require('./routing');
 
 let _address = null;
@@ -150,38 +150,27 @@ async function pushApplication(appId, opts = {}) {
     id = task.id;
     await db.query(`UPDATE applications SET clickup_pipeline_task_id=$1, sync_state='linked', clickup_last_synced_at=now(), updated_at=now() WHERE id=$2`, [id, appId]);
   } else {
-    // field-by-field update (setField) so we can stamp echo per field. Checklist
-    // fields stamp echo with the round-trip TOKEN (the status the option reads
-    // back as), not the option UUID, so inbound echo suppression matches.
+    // Field-by-field update (setField). Loop-safety on the subsequent inbound pull
+    // of our own write is STRUCTURAL, not echo-based (see below): re-applying a
+    // just-pushed value is an idempotent COALESCE no-op, and checklist statuses use
+    // the no-downgrade/skip-equal rule — so there is no pull→push loop to suppress.
     for (const c of chosen) {
-      const echoVal = c.token != null ? c.token : c.value;
-      try { await clickup.setField(id, c.id, c.value); echo.markPushed(id, c.id, echoVal); }
+      try { await clickup.setField(id, c.id, c.value); }
       catch (e) { console.error('[clickup] setField failed', c.id, e.message); }
     }
     if (pushStatus && built.statusName) { try { await clickup.updateTask(id, { status: built.statusName }); } catch (_) {} }
     await db.query(`UPDATE applications SET clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`, [appId]);
   }
 
-  // Shadow the pushed values for echo comparison. NEVER store plaintext PII at
-  // rest: SSN / appraisal-card values are replaced with a short salted hash so
-  // the shadow is still comparable but carries no readable secret. On a scoped
-  // push, MERGE the pushed fields into the existing shadow (don't claim fields
-  // we didn't write) so echo suppression stays accurate.
-  const SENSITIVE = new Set([F.SHARED.borrowerSSN, F.EXTRA.card]);
-  const hashVal = (v) => 'h:' + require('crypto').createHmac('sha256', cfg.ssnKey).update(String(v)).digest('hex').slice(0, 24);
-  const pushedIds = new Set(chosen.map((c) => c.id));
-  const shadow = scoped ? { ...(ctx._row.clickup_shadow || {}) } : {};
-  for (const c of built.customFields) {
-    if (scoped && !pushedIds.has(c.id)) continue;
-    shadow[c.id] = SENSITIVE.has(c.id) ? hashVal(c.value) : c.value;
-  }
-  // Checklist fields: shadow the round-trip TOKEN (status), matching inbound
-  // normalizeInbound output, so a subsequent pull of our own write is suppressed.
-  for (const c of built.checklistFields) {
-    if (pushedIds.has(c.id)) shadow[c.id] = (c.token != null ? c.token : c.value);
-  }
-  await db.query(`UPDATE applications SET clickup_shadow=$1, clickup_shadow_hash=$2 WHERE id=$3`,
-    [JSON.stringify(shadow), echo.shadowHash(shadow), appId]).catch(() => {});
+  // NOTE (2026-07-12 audit — I-B): the former per-field "echo shadow" was removed.
+  // It was write-only — inbound ingest never consulted it — so it gave a false
+  // impression of an active loop guard while doing nothing. Loop-safety here is
+  // achieved structurally instead: (1) inbound writes every column via
+  // COALESCE(pulled, col), so re-applying our own pushed value is a no-op;
+  // (2) checklist statuses use no-downgrade + skip-when-equal; (3) outbound is
+  // scoped enqueue-on-write only (no dirty-sweep), so a pull never re-enqueues a
+  // push. If a future NON-idempotent both-way field is added (pull value differs
+  // from the pushed value), reintroduce a real, wired suppression at that point.
   await logSync('push', appId, id, { fields: chosen.length, scoped: !!scoped });
   return { taskId: id, fields: chosen.length, scoped: !!scoped };
 }

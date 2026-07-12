@@ -207,4 +207,45 @@ router.post('/manual-review/:appId/resolve', async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
 
+// ---- Possible-duplicate borrower review (audit item #5) -------------------
+// Borrowers the inbound sync declined to auto-merge because they shared an email
+// with an existing profile but had no corroborating 2nd identity field. Each is a
+// DISTINCT profile that MIGHT be the same person; surfaced here so a human is told
+// instead of the split happening silently. Read-only list + a resolve action that
+// records the verdict — the actual record merge stays a deliberate manual step.
+router.get('/duplicate-candidates', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT d.id, d.reason, d.source_task_id, d.status, d.created_at,
+              d.borrower_id,         nb.first_name AS new_first,     nb.last_name AS new_last,     nb.email AS new_email,
+              d.matched_borrower_id, mb.first_name AS matched_first, mb.last_name AS matched_last, mb.email AS matched_email,
+              (SELECT count(*)::int FROM applications a WHERE a.borrower_id=d.borrower_id         AND a.deleted_at IS NULL) AS new_files,
+              (SELECT count(*)::int FROM applications a WHERE a.borrower_id=d.matched_borrower_id AND a.deleted_at IS NULL) AS matched_files
+         FROM borrower_dedup_candidates d
+         JOIN borrowers nb ON nb.id=d.borrower_id
+         JOIN borrowers mb ON mb.id=d.matched_borrower_id
+        WHERE d.status='open'
+        ORDER BY d.created_at DESC LIMIT 200`);
+    res.json({ rows: r.rows });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// Record the human verdict: 'distinct' (different people — keep separate),
+// 'duplicate' (same person — flag for a manual merge), or 'reviewed' (looked,
+// handled elsewhere). Closes the open alert. NEVER merges records automatically.
+router.post('/duplicate-candidates/:id/resolve', async (req, res) => {
+  const action = req.body && req.body.action;
+  const next = ['distinct', 'duplicate', 'reviewed'].includes(action) ? action : null;
+  if (!next) return res.status(400).json({ error: "action must be 'distinct', 'duplicate', or 'reviewed'" });
+  try {
+    const r = await db.query(
+      `UPDATE borrower_dedup_candidates SET status=$1, resolved_at=now(), resolved_by=$2
+        WHERE id=$3 AND status='open' RETURNING id, status`,
+      [next, req.actor.id, req.params.id]);
+    if (r.rowCount === 0) return res.status(404).json({ error: 'candidate not found or already resolved' });
+    await audit(req, 'clickup_dedup_resolve', null, JSON.stringify({ candidate: req.params.id, action: next }));
+    res.json({ ok: true, id: r.rows[0].id, status: r.rows[0].status });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
 module.exports = router;
