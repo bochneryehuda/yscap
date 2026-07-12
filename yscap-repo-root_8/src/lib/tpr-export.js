@@ -40,11 +40,15 @@ function folderFor(label = '') {
   return '01_Application_and_Terms';
 }
 // A term-sheet document is the one that goes in its own folder.
-const isTermSheet = (d) => d.doc_kind === 'term_sheet' || /term\s*sheet/i.test(d.item_label || '');
+const isTermSheet = (d) => d.doc_kind === 'term_sheet' || /term\s*sheet/i.test(d.item_label || '') || /term\s*sheet/i.test(d.filename || '');
 
 const sanitize = (s) => String(s || 'document').replace(/[^a-zA-Z0-9._ -]/g, '').replace(/\s+/g, '_').slice(0, 80);
 // Folder-name form of an address (spaces/commas kept as separators, trimmed).
-const folderName = (s) => String(s || 'Property').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90) || 'Property';
+// Path separators AND dot-runs are neutralized so a crafted address can never
+// produce a `..` traversal segment in a ZIP entry name.
+const folderName = (s) => String(s || 'Property')
+  .replace(/[\\/:*?"<>|]/g, ' ').replace(/\.{2,}/g, '.').replace(/(^[.\s]+|[.\s]+$)/g, '')
+  .replace(/\s+/g, ' ').trim().slice(0, 90) || 'Property';
 
 function addrText(a) {
   if (!a) return '';
@@ -53,7 +57,13 @@ function addrText(a) {
 }
 
 const money = (v) => v == null || v === '' ? '' : '$' + Math.round(Number(v)).toLocaleString('en-US');
-const dateStr = (v) => v ? String(v).slice(0, 10) : '';
+// node-postgres returns date/timestamptz columns as JS Date objects, so a bare
+// String(v).slice(0,10) yields "Sun Jul 12" — format the Date properly.
+const dateStr = (v) => {
+  if (!v) return '';
+  if (v instanceof Date) return isNaN(v) ? '' : v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+};
 const DEAL_LABEL = { flip: 'Fix & Flip', 'fix-and-hold': 'Fix & Hold', 'fix_and_hold': 'Fix & Hold', ground_up: 'Ground-Up', 'ground-up': 'Ground-Up', rental: 'Rental', bridge: 'Bridge' };
 const dealLabel = (t) => DEAL_LABEL[t] || (t ? String(t).replace(/_/g, ' ') : '—');
 
@@ -157,7 +167,7 @@ function trackRecordHtml({ borrowerName, generatedAt, loanNumber, records }) {
   .foot{margin-top:16px;color:#888;font-size:11px}
 </style></head><body>
   <h1>Operating Track Record</h1>
-  <div class="sub">${xmlEsc(borrowerName)}${loanNumber ? ' · Loan ' + xmlEsc(loanNumber) : ''} · Generated ${xmlEsc(generatedAt)} · YS Capital Group</div>
+  <div class="sub">${xmlEsc(borrowerName)}${loanNumber ? ' · Loan ' + xmlEsc(loanNumber) : ''} · Generated ${xmlEsc(String(generatedAt).slice(0, 10))} · YS Capital Group</div>
   <div class="stats">
     <div class="stat"><b>${records.length}</b><span>Projects</span></div>
     <div class="stat"><b>${verified}</b><span>Verified</span></div>
@@ -228,6 +238,7 @@ async function buildTprExport(appId) {
     `SELECT id, track_record_id, filename, storage_ref, created_at
        FROM documents
       WHERE track_record_id = ANY($1::uuid[]) AND is_current=true AND source_type <> 'chat_attachment'
+        AND review_status <> 'rejected'
       ORDER BY created_at`, [records.map(r => r.id)])).rows : [];
   const docsByTr = {};
   for (const d of trDocs) (docsByTr[d.track_record_id] = docsByTr[d.track_record_id] || []).push(d);

@@ -1453,6 +1453,15 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
                    AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
           AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'
           AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = documents.checklist_item_id AND ci.tpr_exclude IS TRUE)`, [req.params.id])).rows[0].c;
+    // The DPR also packages the borrower's (+ co-borrower's) track-record
+    // verification documents — count them so the panel promise matches the ZIP.
+    const trackDocs = (await db.query(
+      `SELECT count(*)::int c FROM documents
+        WHERE is_current=true AND source_type<>'chat_attachment' AND review_status<>'rejected'
+          AND track_record_id IN (
+            SELECT id FROM track_records WHERE borrower_id IN (
+              SELECT borrower_id FROM applications WHERE id=$1
+              UNION SELECT co_borrower_id FROM applications WHERE id=$1 AND co_borrower_id IS NOT NULL))`, [req.params.id])).rows[0].c;
     // A document condition only counts as "missing" for the export when it has
     // NO accepted current document and isn't satisfied/signed off. (Accepting a
     // document now leaves the condition 'received' until sign-off — #135 — so
@@ -1463,7 +1472,7 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
           AND signed_off_at IS NULL AND tpr_exclude IS NOT TRUE
           AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id=ci.id AND d.is_current AND d.review_status='accepted')
         ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
-    res.json({ includedCount: included, missing });
+    res.json({ includedCount: included, trackDocs, missing });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -2566,16 +2575,28 @@ router.post('/llcs/:id/verify', async (req, res) => {
 // 'verified' and 'limited' both count toward the borrower's experience tier.
 const TR_STATUSES = ['pending', 'docs', 'verified', 'limited'];
 router.post('/track-records/:id/verify', async (req, res) => {
-  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+  const tr = await db.query(
+    `SELECT t.borrower_id, t.is_verified, t.property_address
+       FROM track_records t WHERE t.id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   const status = TR_STATUSES.includes(req.body && req.body.status) ? req.body.status : 'verified';
   const counts = status === 'verified' || status === 'limited';
+  const wasVerified = tr.rows[0].is_verified === true;
+  // Moving a currently-verified line item to a non-counting status is a REVOKE:
+  // it pulls the project out of the experience tier and reopens the experience
+  // condition, so — exactly like the LLC unverify (#125/#147) — it REQUIRES a
+  // reason the borrower is shown and it notifies them.
+  const isRevoke = wasVerified && !counts;
   // Marking a line item verified/limited COUNTS toward the experience tier and
   // drives the experience condition to satisfied — a sign-off, so processor-only
   // (#126). A non-counting status (pending/docs) is a review action anyone may set.
   if (counts && !can(req.actor, 'sign_off_conditions')) {
     return res.status(403).json({ error: 'Only a processor can verify a track-record line item — it signs off the experience condition. Request documents or raise an issue instead.' });
+  }
+  const reason = String((req.body && req.body.reason) || '').trim().slice(0, 500);
+  if (isRevoke && !reason) {
+    return res.status(400).json({ error: 'a reason is required to revoke verification — the borrower is told why' });
   }
   await db.query(
     `UPDATE track_records
@@ -2591,9 +2612,20 @@ router.post('/track-records/:id/verify', async (req, res) => {
     [tr.rows[0].borrower_id]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   // Tier / verified-experience counts are rule-engine fields.
-  try { await conditionEngine.evaluateBorrowerApplications(tr.rows[0].borrower_id, { actor: req.actor, reason: 'track_record_verified' }); } catch (_) {}
-  await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
-  res.json({ ok: true, status });
+  try { await conditionEngine.evaluateBorrowerApplications(tr.rows[0].borrower_id, { actor: req.actor, reason: isRevoke ? 'track_record_unverified' : 'track_record_verified' }); } catch (_) {}
+  if (isRevoke) {
+    await audit(req, 'unverify_track_record', 'track_record', req.params.id, { status, reason });
+    const addr = (tr.rows[0].property_address && (tr.rows[0].property_address.oneLine || tr.rows[0].property_address.line1)) || 'a property';
+    try {
+      await notify.notifyBorrower(tr.rows[0].borrower_id, {
+        type: 'track_record_unverified', title: 'A track-record project needs attention',
+        body: `Verification of your project at ${addr} was revoked: ${reason}. Please review it and its documents on your track record.`,
+        link: '/track-record', ctaLabel: 'Review your track record' });
+    } catch (_) { /* best-effort */ }
+  } else {
+    await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
+  }
+  res.json({ ok: true, status, revoked: isRevoke });
 });
 
 // ---------------- raise an issue against a track-record line item / an LLC ----------------

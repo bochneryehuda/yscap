@@ -308,7 +308,16 @@ function TrackRecord({ id }) {
   const [busy, setBusy] = useState('');
   async function verify(t) {
     setBusy(t.id);
-    try { await api.staffVerifyTrackRecord(t.id); reload(); } catch (e) { alert(e.message || 'Could not verify'); }
+    try { await api.staffVerifyTrackRecord(t.id, { status: 'verified' }); reload(); } catch (e) { alert(e.message || 'Could not verify'); }
+    finally { setBusy(''); }
+  }
+  async function revoke(t) {
+    const reason = window.prompt('Revoke this project’s verification. The borrower is notified with this reason:');
+    if (reason == null) return;                       // cancelled
+    if (!reason.trim()) { alert('A reason is required to revoke verification.'); return; }
+    setBusy(t.id);
+    try { await api.staffVerifyTrackRecord(t.id, { status: 'pending', reason: reason.trim() }); reload(); }
+    catch (e) { alert(e.message || 'Could not revoke verification'); }
     finally { setBusy(''); }
   }
   if (err) return <div className="notice err">{err}</div>;
@@ -329,7 +338,9 @@ function TrackRecord({ id }) {
               <td style={{ padding: '10px 12px' }}>{money(t.purchase_price)}</td>
               <td style={{ padding: '10px 12px' }}>{money(t.sale_price || t.current_value)}</td>
               <td style={{ padding: '10px 12px' }}>{t.is_verified ? <span className="pill ok">✓</span> : <span className="pill">no</span>}</td>
-              <td style={{ padding: '10px 12px' }}>{!t.is_verified && <button className="btn ghost small" disabled={busy === t.id} onClick={() => verify(t)}>Verify</button>}</td>
+              <td style={{ padding: '10px 12px' }}>{t.is_verified
+                ? <button className="btn ghost small" disabled={busy === t.id} onClick={() => revoke(t)} title="Revoke this project’s verification (borrower is notified)">Revoke</button>
+                : <button className="btn ghost small" disabled={busy === t.id} onClick={() => verify(t)}>Verify</button>}</td>
             </tr>
           ))}
         </tbody>
