@@ -3493,8 +3493,16 @@ router.post('/documents/:id/review', async (req, res) => {
                   borrower_hint=COALESCE($3, borrower_hint), updated_at=now() WHERE id=$1`,
           [doc.checklist_item_id, moreNote ? `Still needed: ${moreNote}` : '', newHint]);
       } else {
+        // Accepting a document only marks the condition RECEIVED — NOT satisfied
+        // (owner-directed 2026-07-12). The condition stays open on the list until
+        // a reviewer explicitly SIGNS IT OFF (which routes through signOffGate and
+        // therefore enforces every required document/slot — e.g. a background AND
+        // criminal report, insurance binder AND invoice). This prevents a
+        // multi-document condition from "flying away" the moment ONE of its
+        // documents is accepted, and keeps accept (doc is good) distinct from
+        // sign-off (the whole condition is complete). Reject -> issue.
         await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
-          [doc.checklist_item_id, action === 'accept' ? 'satisfied' : 'issue']);
+          [doc.checklist_item_id, action === 'accept' ? 'received' : 'issue']);
       }
       enqueueChecklistStatusPush(doc.checklist_item_id).catch(() => {}); // mapped conditions → ClickUp dropdown
     }

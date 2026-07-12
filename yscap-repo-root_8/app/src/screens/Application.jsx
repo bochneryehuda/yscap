@@ -834,9 +834,10 @@ export default function Application() {
           <h3>Your conditions</h3>
           <div className="spacer" />
           <span className="muted small">{nDone}/{items.length} complete</span>
-          <select className="input" style={{ maxWidth: 190 }} value={docFilter} onChange={e => setDocFilter(e.target.value)}>
-            <option value="open">Open (to do)</option>
+          <select className="input" style={{ maxWidth: 200 }} value={docFilter} onChange={e => setDocFilter(e.target.value)}>
+            <option value="open">Open — still needs you</option>
             <option value="review">Submitted — in review</option>
+            <option value="attention">Needs attention</option>
             <option value="done">Completed</option>
             <option value="all">All conditions</option>
           </select>
