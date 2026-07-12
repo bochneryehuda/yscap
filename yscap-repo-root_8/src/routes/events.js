@@ -20,9 +20,15 @@ router.get('/', async (req, res) => {
   if (!claims || claims.mfa) return res.status(401).json({ error: 'unauthenticated' });
   const tbl = claims.kind === 'staff' ? 'staff_users' : 'borrower_auth';
   const idCol = claims.kind === 'staff' ? 'id' : 'borrower_id';
-  const r = await db.query(`SELECT token_version FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
-  const tv = r.rows[0] ? r.rows[0].token_version : null;
+  // Staff also gets an is_active check — a deactivated staffer must NOT keep the
+  // live stream (S1-01). borrower_auth has no is_active column, so only select it
+  // for staff.
+  const cols = claims.kind === 'staff' ? 'token_version, is_active' : 'token_version';
+  const r = await db.query(`SELECT ${cols} FROM ${tbl} WHERE ${idCol}=$1`, [claims.sub]);
+  const row = r.rows[0];
+  const tv = row ? row.token_version : null;
   if (tv === null || tv !== (claims.tv || 0)) return res.status(401).json({ error: 'session expired' });
+  if (claims.kind === 'staff' && !row.is_active) return res.status(401).json({ error: 'account disabled' });
 
   // Borrowers only receive presence for the staff on their own files.
   let teamKeys = null;

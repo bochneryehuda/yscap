@@ -175,6 +175,10 @@ router.patch('/staff/:id', async (req, res) => {
   };
   const sets = [], vals = []; let i = 1;
   for (const [k, v] of Object.entries(map)) if (v !== undefined) { sets.push(`${k}=$${i++}`); vals.push(v); }
+  // Deactivating a staffer must cut off ALL their live sessions immediately —
+  // including the SSE chat stream — so bump the token version, invalidating every
+  // existing token in one shot (S1-01: a fired staffer kept receiving live chat).
+  if (b.isActive === false) sets.push('token_version=token_version+1');
   // Permission overrides: {} or null clears them (fall back to role defaults).
   if (b.permissions !== undefined) {
     const ov = sanitizeOverrides(b.permissions);
