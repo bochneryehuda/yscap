@@ -4,6 +4,7 @@ const t = require('../src/clickup/transforms');
 const status = require('../src/clickup/status');
 const x = require('../src/clickup/crosswalk');
 const id = require('../src/clickup/identity');
+const routing = require('../src/clickup/routing');
 
 let pass = 0, fail = 0;
 const eq = (name, got, exp) => {
@@ -122,6 +123,29 @@ eq('identity bestMatch', best && best.record.id, 'app1');
 eq('ssnHash same value diff format', id.ssnHash('066-88-9965', 'k'), id.ssnHash('066889965', 'k'));
 eq('ssnHash diff key differs', id.ssnHash('066889965', 'k1') === id.ssnHash('066889965', 'k2'), false);
 eq('ssnHash short -> null', id.ssnHash('123', 'k'), null);
+
+// case-insensitivity of matching keys (same value in any case must match)
+eq('identity name case-insensitive',
+  id.normalizeIdentity({ borrowerName: 'John SMITH' }).borrowerName,
+  id.normalizeIdentity({ borrowerName: 'john smith' }).borrowerName);
+eq('identity email case-insensitive',
+  id.normalizeIdentity({ email: 'A@B.Com' }).email, id.normalizeIdentity({ email: 'a@b.com' }).email);
+eq('identity loan# case-insensitive',
+  id.normalizeIdentity({ loanNumber: 'YS-123a' }).loanNumber, id.normalizeIdentity({ loanNumber: 'ys-123A' }).loanNumber);
+eq('identity address case-insensitive',
+  id.normalizeIdentity({ address: '123 MAIN St' }).address, id.normalizeIdentity({ address: '123 main st' }).address);
+eq('identity 2-match across mixed case',
+  id.isMatch({ borrowerName: 'John Smith', email: 'A@B.com' },
+             { borrowerName: 'JOHN SMITH', email: 'a@b.COM' }), true);
+eq('corroborate last name mixed case',
+  id.emailMatchCorroborated({ lastName: 'MENDLOVIC' }, { lastName: 'mendlovic' }), true);
+
+// case-insensitive officer routing (a case difference must not drop to Lead Capture)
+eq('routing case-insensitive folder',
+  routing.resolveRouting('Yehuda Bochner').pipelineFolderId,
+  routing.resolveRouting('yehuda bochner').pipelineFolderId);
+eq('routing all-caps still an officer', routing.resolveRouting('YEHUDA BOCHNER').role, 'loan_officer');
+eq('routing unknown -> unassigned', routing.resolveRouting('Nobody Here').role, 'unassigned');
 
 // email-match corroboration gate (§3.4 — email alone is never enough to merge)
 eq('corrob last name',
