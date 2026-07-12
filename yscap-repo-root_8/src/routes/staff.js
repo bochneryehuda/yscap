@@ -1833,7 +1833,20 @@ router.post('/applications/:id/assign', async (req, res) => {
   const { loanOfficerId, processorId } = req.body || {};
   if (!loanOfficerId && !processorId) return res.status(400).json({ error: 'loanOfficerId or processorId required' });
   try {
+    // Reassigning a file is a manager function (audit S3-02). A non-admin may
+    // ONLY claim a currently-EMPTY slot for THEMSELVES — never take over a file
+    // already assigned to another officer/processor. Admins may (re)assign
+    // freely. The audit records both the previous and new owner.
+    const cur = await db.query(`SELECT loan_officer_id, processor_id FROM applications WHERE id=$1`, [req.params.id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'application not found' });
+    const admin = isAdmin(req);
     if (loanOfficerId) {
+      const selfClaimEmpty = !cur.rows[0].loan_officer_id && String(loanOfficerId) === String(req.actor.id);
+      if (!admin && !selfClaimEmpty) {
+        return res.status(403).json({ error: cur.rows[0].loan_officer_id
+          ? 'Only an admin can reassign a file that already has a loan officer.'
+          : 'Only an admin can assign this file to another officer — you may claim an unassigned file for yourself.' });
+      }
       const off = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true`, [loanOfficerId]);
       if (!off.rows[0]) return res.status(404).json({ error: 'officer not found' });
       const u = await db.query(`UPDATE applications SET loan_officer_id=$2, loan_officer_name=$3, updated_at=now() WHERE id=$1`,
@@ -1842,9 +1855,15 @@ router.post('/applications/:id/assign', async (req, res) => {
       await notify.notifyStaff(loanOfficerId, {
         type: 'assignment', title: 'Application assigned to you', applicationId: req.params.id,
         link: `/internal/app/${req.params.id}` });
-      await audit(req, 'assign_application', 'application', req.params.id, { loanOfficerId });
+      await audit(req, 'assign_application', 'application', req.params.id, { from: cur.rows[0].loan_officer_id || null, to: loanOfficerId });
     }
     if (processorId) {
+      const selfClaimEmpty = !cur.rows[0].processor_id && String(processorId) === String(req.actor.id);
+      if (!admin && !selfClaimEmpty) {
+        return res.status(403).json({ error: cur.rows[0].processor_id
+          ? 'Only an admin can reassign the processor on a file.'
+          : 'Only an admin can assign this file to another processor — you may claim an unassigned file for yourself.' });
+      }
       const p = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [processorId]);
       if (!p.rows[0]) return res.status(404).json({ error: 'processor not found' });
       const u = await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
@@ -1853,7 +1872,7 @@ router.post('/applications/:id/assign', async (req, res) => {
       await notify.notifyStaff(processorId, {
         type: 'assignment', title: 'File assigned to you for processing', applicationId: req.params.id,
         link: `/internal/app/${req.params.id}` });
-      await audit(req, 'assign_processor', 'application', req.params.id, { processorId });
+      await audit(req, 'assign_processor', 'application', req.params.id, { from: cur.rows[0].processor_id || null, to: processorId });
     }
     enqueueClickupPush(req.params.id, ['officer', 'processor']).catch(() => {}); // propagate officer/processor to ClickUp promptly
     res.json({ ok: true });
