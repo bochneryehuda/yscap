@@ -162,12 +162,24 @@ async function resolveBorrower(read, taskId) {
 async function upsertLlc(borrowerId, llcName, ein, taskId) {
   if (!llcName) return null;
   const name = String(llcName).trim();
-  const found = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, name]);
+  const found = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, name]);
   if (found.rows[0]) return found.rows[0].id;
-  const r = await db.query(
-    `INSERT INTO llcs (borrower_id, llc_name, ein, is_verified, origin, source_task_id)
-     VALUES ($1,$2,$3,false,'clickup_backfill',$4) RETURNING id`, [borrowerId, name, ein || null, taskId]);
-  return r.rows[0].id;
+  try {
+    const r = await db.query(
+      `INSERT INTO llcs (borrower_id, llc_name, ein, is_verified, origin, source_task_id)
+       VALUES ($1,$2,$3,false,'clickup_backfill',$4) RETURNING id`, [borrowerId, name, ein || null, taskId]);
+    return r.rows[0].id;
+  } catch (e) {
+    // Concurrency race: a parallel ingest (reconcile sweep vs live webhook) created
+    // the SAME (borrower, name) LLC between our SELECT and INSERT and won the
+    // uq_llcs_borrower_name unique index (db/082). Re-select the winner — no
+    // duplicate. (Before that index exists there is no 23505, so this never runs.)
+    if (e && e.code === '23505') {
+      const again = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, name]);
+      if (again.rows[0]) return again.rows[0].id;
+    }
+    throw e;
+  }
 }
 
 const addrKey = (a) => {
@@ -202,14 +214,24 @@ async function upsertTrackRecord(borrowerId, read, taskId) {
       [exists.rows[0].id, dealType, inferred, a.property_address ? JSON.stringify(a.property_address) : null]).catch(() => {});
     return exists.rows[0].id;
   }
-  const r = await db.query(
-    `INSERT INTO track_records (borrower_id, property_address, deal_type, purchase_price, purchase_date, sale_date,
-                               is_verified, origin, source_task_id, inferred, address_key, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,false,'clickup_backfill',$7,$8,$9,$10) RETURNING id`,
-    [borrowerId, a.property_address ? JSON.stringify(a.property_address) : null, dealType,
-     a.purchase_price || null, a.acquisition_date || null, a.actual_closing || null,
-     taskId, inferred, key, 'Auto-derived from ClickUp; unverified']);
-  return r.rows[0].id;
+  try {
+    const r = await db.query(
+      `INSERT INTO track_records (borrower_id, property_address, deal_type, purchase_price, purchase_date, sale_date,
+                                 is_verified, origin, source_task_id, inferred, address_key, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,false,'clickup_backfill',$7,$8,$9,$10) RETURNING id`,
+      [borrowerId, a.property_address ? JSON.stringify(a.property_address) : null, dealType,
+       a.purchase_price || null, a.acquisition_date || null, a.actual_closing || null,
+       taskId, inferred, key, 'Auto-derived from ClickUp; unverified']);
+    return r.rows[0].id;
+  } catch (e) {
+    // Concurrency race on uq_track_records_source_task (db/082): a parallel ingest
+    // of the SAME task created the record first. Re-select by task id — no duplicate.
+    if (e && e.code === '23505' && taskId) {
+      const again = await db.query(`SELECT id FROM track_records WHERE source_task_id=$1 LIMIT 1`, [taskId]);
+      if (again.rows[0]) return again.rows[0].id;
+    }
+    throw e;
+  }
 }
 
 /** Resolve a ClickUp officer/processor email → an active staff_users row. */
