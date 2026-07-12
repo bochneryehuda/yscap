@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 
 /* Pick a vesting entity / LLC from the borrower's reusable LLC database, or
    create a new one inline. Creating a new LLC materializes its required
@@ -25,9 +26,10 @@ export default function LlcPicker({ value, onPick, placeholder }) {
   const exact = llcs.find(l => (l.llc_name || '').toLowerCase() === q);
 
   const choose = (l) => { setName(l.llc_name); setOpen(false); onPick && onPick({ id: l.id, name: l.llc_name }); };
+  const gate = useSubmitGate();
   async function create() {
     const nm = name.trim();
-    if (!nm || busy) return;
+    if (!nm || busy || !gate.enter()) return;   // guard against a double-tap creating two LLCs
     setBusy(true);
     try {
       const r = await api.createLlc({ llcName: nm });
@@ -35,7 +37,7 @@ export default function LlcPicker({ value, onPick, placeholder }) {
       setOpen(false);
       onPick && onPick({ id: r.llcId, name: nm });
     } catch { /* leave as typed text */ }
-    finally { setBusy(false); }
+    finally { setBusy(false); gate.leave(); }
   }
 
   return (

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 
 /* General file contacts (#144). Any party can add any kind of vendor to a file;
    every contact flows into the company-wide vendor directory and is shared with
@@ -37,15 +38,17 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
   const load = () => (isStaff ? api.staffFileContacts(appId) : api.fileContacts(appId)).then(setList).catch(() => setList([]));
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [appId, isStaff]);
 
+  const gate = useSubmitGate();
   async function add() {
     setErr('');
     if (!f.companyName && !f.contactName && !f.email && !f.phone) { setErr('Enter at least one detail (company, name, email or phone).'); return; }
+    if (!gate.enter()) return;             // a contact is already being added
     setBusy(true);
     try {
       await (isStaff ? api.staffAddFileContact(appId, f) : api.addFileContact(appId, f));
       setF(BLANK); setAdding(false); await load();
     } catch (e) { setErr((e && e.message) || 'Could not add the contact.'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); gate.leave(); }
   }
   async function remove(linkId) {
     if (!window.confirm('Remove this contact from the file? (It stays in the company vendor directory.)')) return;

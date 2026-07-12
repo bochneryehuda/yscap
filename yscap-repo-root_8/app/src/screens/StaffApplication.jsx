@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
 import { useAuth } from '../lib/auth.jsx';
 import ChatThread from '../components/ChatThread.jsx';
@@ -451,8 +452,10 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     } catch (e) { setErr(e.message || 'Could not save the entity'); }
     finally { setBusy(''); }
   }
+  const entityGate = useSubmitGate();
   async function createEntity() {
     if (!cf.llcName.trim()) { setErr('Entity name is required'); return; }
+    if (!entityGate.enter()) return;       // a create is already in flight (double-click)
     setBusy('create'); setErr('');
     try {
       const created = await api.staffCreateLlc(app.borrower_id, {
@@ -469,7 +472,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
       flash('Entity created ✓ — its document slots are ready for upload.');
       setShowCreate(false); setCf(blankCreate); await load(); onChanged && await onChanged();
     } catch (e) { setErr(e.message || 'Could not create the entity'); }
-    finally { setBusy(''); }
+    finally { setBusy(''); entityGate.leave(); }
   }
   // Shared by the file picker AND per-slot drag-and-drop — target passed in.
   async function uploadLlcFiles(fileList, tgt) {

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
@@ -336,6 +337,7 @@ export default function Apply() {
 
   // The application is ALREADY submitted by the time step 4 renders — this
   // only registers the product on it (the last, skippable step).
+  const regGate = useSubmitGate();
   async function registerProduct() {
     const target = appIdRef.current;
     if (!target) { setErr('The application has not finished submitting — one moment.'); return; }
@@ -348,6 +350,7 @@ export default function Apply() {
       setErr("This scenario isn't eligible as entered — adjust the deal above, or finish later and price it with your loan team.");
       return;
     }
+    if (!regGate.enter()) return;          // a registration is already in flight
     setErr(''); setBusy(true);
     try {
       // the EXACT term sheet the static studio exports (best-effort)
@@ -386,7 +389,7 @@ export default function Apply() {
       nav(`/app/${target}`);
     } catch (e) {
       const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
-      setErr(detail); setBusy(false);
+      setErr(detail); setBusy(false); regGate.leave();
     }
   }
 

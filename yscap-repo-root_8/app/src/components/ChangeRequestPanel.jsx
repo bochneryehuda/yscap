@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 
 // Borrower change-request "sandbox" (S5-03). Once a product is registered, the
 // borrower can't edit the deal numbers directly — they PROPOSE a change here and
@@ -41,8 +42,10 @@ export default function ChangeRequestPanel({ appId }) {
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [appId]);
 
+  const gate = useSubmitGate();
   async function submit() {
     if (value === '' || value == null) { setErr('Enter the new value you want.'); return; }
+    if (!gate.enter()) return;             // a request is already being sent
     setBusy(true); setErr(''); setOk('');
     try {
       const r = await api.requestChange(appId, field, value, reason.trim() || undefined);
@@ -51,7 +54,7 @@ export default function ChangeRequestPanel({ appId }) {
       setValue(''); setReason('');
       await load();
     } catch (e) { setErr(e.message || 'Could not send your request.'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); gate.leave(); }
   }
 
   if (!state.locked) return null;

@@ -2412,10 +2412,22 @@ router.post('/borrowers/:id/track-records', async (req, res) => {
   }
   const names = Object.keys(cols);
   const vals = Object.values(cols);
+  // Idempotent create: a stable clientRowId per line collapses a repeated POST
+  // (autosave retry, second tab, network replay, double-tap) onto one row
+  // instead of a duplicate — belt-and-suspenders behind the tool's client-side
+  // create-once fix. Rows without a key keep plain-insert (partial index ignores
+  // NULLs). Staff may edit verified rows, so the upsert updates unconditionally.
+  const clientRowId = b.clientRowId ? String(b.clientRowId).slice(0, 80) : null;
+  const allNames = ['borrower_id', 'client_row_id', ...names];
+  const allVals = [req.params.id, clientRowId, ...vals];
+  const ph = allVals.map((_, i) => '$' + (i + 1)).join(',');
+  const updateSet = [...names.map(n => `${n}=EXCLUDED.${n}`), 'updated_at=now()'].join(', ');
   const r = await db.query(
-    `INSERT INTO track_records (borrower_id,${names.join(',')})
-     VALUES ($1,${names.map((_, i) => '$' + (i + 2)).join(',')}) RETURNING id`,
-    [req.params.id, ...vals]);
+    `INSERT INTO track_records (${allNames.join(',')}) VALUES (${ph})
+     ON CONFLICT (borrower_id, client_row_id) WHERE client_row_id IS NOT NULL
+       DO UPDATE SET ${updateSet}
+     RETURNING id`,
+    allVals);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(req.params.id); } catch (_) {}
   await audit(req, 'staff_add_track_record', 'track_record', r.rows[0].id);
   res.status(201).json({ ok: true, trackRecordId: r.rows[0].id, missing: trackRecordMissing(b) });

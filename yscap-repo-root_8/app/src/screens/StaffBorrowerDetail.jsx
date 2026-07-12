@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 import LlcManager from '../components/LlcManager.jsx';
 import { passwordProblem } from '../lib/password.js';
 
@@ -377,14 +378,16 @@ function Tasks({ id }) {
   const [nf, setNf] = useState(null);   // new task form
   const [busy, setBusy] = useState(false);
   const [e2, setE2] = useState('');
+  const gate = useSubmitGate();
   async function create() {
     if (!nf.title.trim() || !nf.dueAt) { setE2('Title and a due date are required.'); return; }
+    if (!gate.enter()) return;             // a create is already in flight
     setBusy(true); setE2('');
     try {
       await api.staffCreateBorrowerReminder(id, { kind: nf.kind, title: nf.title.trim(), body: nf.body || undefined, dueAt: new Date(nf.dueAt).toISOString() });
       setNf(null); reload();
     } catch (e) { setE2(e.message || 'Could not create'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); gate.leave(); }
   }
   async function complete(r) {
     try { await api.staffUpdateReminder(r.application_id, r.id, { status: 'done' }); reload(); } catch (e) { alert(e.message || 'Failed'); }
@@ -491,11 +494,13 @@ function Notes({ id }) {
   const [rows, err, reload] = useLoad(() => api.staffBorrowerNotes(id), [id]);
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
+  const gate = useSubmitGate();
   async function add() {
     if (!body.trim()) return;
+    if (!gate.enter()) return;             // a note add is already in flight
     setBusy(true);
     try { await api.staffAddBorrowerNote(id, body.trim()); setBody(''); reload(); } catch (e) { alert(e.message || 'Could not add note'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); gate.leave(); }
   }
   async function del(n) {
     if (!window.confirm('Delete this note?')) return;
