@@ -14,6 +14,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
+import FileContacts from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
@@ -2072,6 +2073,7 @@ export default function StaffApplication() {
         onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
         onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
         onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
+      <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
       <div className="grid cols-2" style={{ marginTop: 14 }}>
         <AddConditionPanel appId={id} items={items} onChanged={load}
           onError={(t) => setErr(t)} onFlash={flash} />

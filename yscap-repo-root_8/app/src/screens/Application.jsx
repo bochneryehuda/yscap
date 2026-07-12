@@ -13,6 +13,7 @@ import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import { MoneyInput } from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+import FileContacts from '../components/FileContacts.jsx';
 import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
@@ -697,6 +698,7 @@ export default function Application() {
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
     { id: 'sec-conditions', label: 'Conditions to close', badge: nOpen || '' },
+    { id: 'sec-contacts', label: 'Contacts' },
     ...(uploads.length ? [{ id: 'sec-documents', label: 'Document history', badge: uploads.length }] : []),
     { id: 'sec-messages', label: 'Messages' },
     { id: 'sec-activity', label: 'Activity' },
@@ -1105,6 +1107,11 @@ export default function Application() {
           <p className="muted small">No conditions requested yet. Your coordinator will post them here.</p>
         )}
       </div>
+      </Section>
+
+      <Section id="sec-contacts" title="Contacts"
+        info="Everyone working on this deal — realtor, attorney, title, insurance, contractor and more. Add anyone; they're shared on the file and saved to your contacts.">
+        <FileContacts appId={id} heading="Contacts on this file" />
       </Section>
 
       {uploads.length > 0 && (
