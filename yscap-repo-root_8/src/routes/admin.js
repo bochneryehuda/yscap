@@ -108,12 +108,14 @@ router.get('/staff', async (req, res) => {
   const r = await db.query(
     `SELECT id,email,full_name,role,title,department,phone,cell,ext,
             is_active,site_selectable,sort_order,mfa_enabled,permissions,
+            COALESCE(notifications_enabled,true) AS notifications_enabled,
             COALESCE(visible_officer_ids,'{}')::uuid[] AS visible_officer_ids,
             (password_hash IS NOT NULL) AS has_login, last_login_at
        FROM staff_users ORDER BY department NULLS LAST, sort_order, full_name`);
   res.json(r.rows.map((row) => ({
     ...row,
     permissions: row.permissions || null,
+    notificationsEnabled: row.notifications_enabled !== false,
     visibleOfficerIds: row.visible_officer_ids || [],
     effectivePermissions: [...effectivePermissions(row.role, row.permissions)],
   })));
@@ -227,6 +229,9 @@ router.patch('/staff/:id', async (req, res) => {
     full_name: b.fullName, role: b.role, title: b.title, department: b.department,
     phone: b.phone, cell: b.cell, ext: b.ext,
     is_active: b.isActive, site_selectable: b.siteSelectable, sort_order: b.sortOrder,
+    // S1-01: per-member notification switch (control center). On by default;
+    // when off, notifyStaff stops emailing this member (in-app row still kept).
+    notifications_enabled: b.notificationsEnabled,
   };
   const sets = [], vals = []; let i = 1;
   for (const [k, v] of Object.entries(map)) if (v !== undefined) { sets.push(`${k}=$${i++}`); vals.push(v); }
@@ -255,6 +260,12 @@ router.patch('/staff/:id', async (req, res) => {
     const r = await db.query(`UPDATE staff_users SET ${sets.join(',')} WHERE id=$${i} RETURNING id`, vals);
     if (!r.rows[0]) return res.status(404).json({ error: 'staff member not found' });   // was phantom {ok:true}
     roster.bust();
+    // S1-01: deactivation also force-closes any live SSE stream this staffer is
+    // holding right now, so a fired staffer stops receiving live chat instantly
+    // (the token bump only stops the NEXT connect; this ends the current one).
+    if (b.isActive === false) {
+      try { require('../lib/events').disconnectUser('staff', req.params.id); } catch (_) {}
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'could not update staff member' }); }
 });

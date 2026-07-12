@@ -155,6 +155,24 @@ async function publishToConversation(conversationId, event, data, { excludeKey =
   }
 }
 
+/** Force-close every open SSE stream for one user (e.g. a staffer just
+    deactivated). Ending the HTTP response makes the browser's EventSource fire
+    onerror and try to reconnect — but the reconnect carries the same token,
+    which the deactivation's token_version bump + is_active check now reject at
+    /api/events. Without this, an ALREADY-OPEN stream kept delivering live chat
+    until the socket happened to drop (S1-01 residual). The registered 'close'
+    handler does the registry + presence cleanup. */
+function disconnectUser(kind, id) {
+  const key = keyOf(kind, id);
+  let closed = 0;
+  for (const c of conns.values()) {
+    if (c.key !== key) continue;
+    try { c.res.end(); } catch (_) { /* already dead; 'close' will clean up */ }
+    closed++;
+  }
+  return closed;
+}
+
 /** Direct fan-out to one user's connections (badges, urgent pings). */
 function publishToUser(kind, id, event, data) {
   const key = keyOf(kind, id);
@@ -173,5 +191,6 @@ setInterval(() => {
 module.exports = {
   addClient, setOpenConversation,
   publishToConversation, publishToUser,
+  disconnectUser,
   isOnline, onlineKeys, keyOf,
 };

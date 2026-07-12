@@ -51,13 +51,22 @@ async function _mark(id, status) {
 
 /** Notify one staff user. opts: {type,title,body,applicationId,link,emailTo,meta,lines,ctaLabel,greeting,note} */
 async function notifyStaff(staffId, opts) {
+  // S1-01 control center: a manager can switch a member's notifications OFF. When
+  // off, we still write the in-app row (so their in-app queue keeps working and
+  // nothing is lost) but skip the EMAIL. On by default; unknown column / missing
+  // row falls back to enabled.
+  let emailOn = true;
+  try {
+    const p = await db.query(`SELECT notifications_enabled FROM staff_users WHERE id=$1`, [staffId]);
+    if (p.rows[0] && p.rows[0].notifications_enabled === false) emailOn = false;
+  } catch (_) { /* column exists after migration 085; default on */ }
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,staff_id,type,title,body,application_id,link)
      VALUES ('staff',$1,$2,$3,$4,$5,$6) RETURNING id`,
     [staffId, opts.type, opts.title, opts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
-  const to = opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId);
-  _emailRow(id, to, opts, 'staff');   // fire-and-forget
+  const to = emailOn ? (opts.emailTo ? [].concat(opts.emailTo) : await _staffEmail(staffId)) : [];
+  _emailRow(id, to, opts, 'staff');   // fire-and-forget (marks 'skipped' when `to` is empty)
   return id;
 }
 

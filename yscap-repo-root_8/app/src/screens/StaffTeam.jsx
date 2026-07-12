@@ -214,6 +214,10 @@ export default function StaffTeam() {
                     <input type="checkbox" checked={!!s.is_active}
                       onChange={e => patch(s.id, { isActive: e.target.checked }, s.is_active ? 'Deactivated.' : 'Activated.')} /> Active
                   </label>
+                  <label className="muted small" style={{ display: 'flex', gap: 5, alignItems: 'center', cursor: 'pointer' }} title="Email notifications (their in-app notifications stay on either way)">
+                    <input type="checkbox" checked={s.notificationsEnabled !== false}
+                      onChange={e => patch(s.id, { notificationsEnabled: e.target.checked }, e.target.checked ? 'Email notifications on.' : 'Email notifications off.')} /> Notify
+                  </label>
                   <button className="btn link" onClick={() => { setPwFor(pwFor === s.id ? null : s.id); setPwVal(''); }}>
                     {s.has_login ? 'Reset password' : 'Set password'}
                   </button>
