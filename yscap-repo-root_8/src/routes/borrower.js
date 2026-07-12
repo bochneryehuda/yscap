@@ -996,10 +996,15 @@ router.post('/applications/:id/link-llc', async (req, res) => {
   const b = req.body || {};
   if (!b.llcId) return res.status(400).json({ error: 'llcId required' });
   const app = await db.query(
-    `SELECT id, llc_id, status FROM applications
+    `SELECT id, llc_id, status, borrower_id FROM applications
       WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
     [req.params.id, me(req)]);
   if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
+  // S2-10: the vesting entity is the LLC taking title on the loan — a CO-borrower
+  // must not be able to point it at THEIR own LLC. Only the primary borrower sets
+  // vesting (and the LLC-ownership check below then scopes to the primary's library).
+  if (String(app.rows[0].borrower_id) !== String(me(req)))
+    return res.status(403).json({ error: 'Only the primary borrower can set the vesting entity for this loan.' });
   // The vesting entity is part of the loan structure — frozen at Clear-to-Close
   // and beyond (#84). Move the file back to an earlier status to change it.
   if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.rows[0].status))
@@ -1314,9 +1319,12 @@ router.post('/contacts', async (req, res) => {
   }
   // Submitting the contact form satisfies its checklist task (moves to review).
   if (b.checklistItemId) {
+    // S2-09: borrower-facing items only — the id is borrower-supplied, so file
+    // ownership alone can't stop a borrower flipping a staff-only condition.
     await db.query(
       `UPDATE checklist_items SET status='received', updated_at=now()
-        WHERE id=$1 AND application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)`,
+        WHERE id=$1 AND audience IN ('borrower','both')
+          AND application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)`,
       [b.checklistItemId, me(req)]);
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   }
@@ -1681,7 +1689,10 @@ router.post('/documents', async (req, res) => {
           AND ($4::text IS NOT NULL OR $5::uuid IS NULL)
           AND ($4::text IS NULL OR slot_label IS NOT DISTINCT FROM $4)`,
       [b.checklistItemId, me(req), r.rows[0].id, slot, b.replaceDocumentId || null]);
-    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
+    // S2-09: only a BORROWER-FACING item may be flipped by a borrower — never a
+    // staff-only condition (the id is borrower-supplied, so ownership alone is not
+    // enough). Mirrors the audience guard on the tool/info endpoints.
+    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND audience IN ('borrower','both') AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   }
   // An LLC document changed — recompute the LLC condition on every open file
