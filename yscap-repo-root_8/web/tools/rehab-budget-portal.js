@@ -162,6 +162,13 @@
 
   // Rewire the review step every render: the primary action on the file is
   // SAVE (Excel + PDF + HTML onto the condition), with Export PDF secondary.
+  // An Excel IMPORT must persist to the CONDITION (tool_payload), not just the
+  // draft (tool_state) the tool's autosave writes — otherwise the imported Scope
+  // of Work "doesn't stick": staff see the old total and sign-off is blocked
+  // because tool_payload stays stale/null (#122 gap). Run a full submit right after
+  // a successful import, mirroring the track-record portal's post-import persist.
+  window.RB_PORTAL_ONIMPORT = function () { try { submit(); } catch (e) { /* best-effort */ } };
+
   window.RB_PORTAL_ONRENDER = function () {
     document.querySelectorAll("#rb-body button").forEach(function (b) {
       var t = b.textContent || "";

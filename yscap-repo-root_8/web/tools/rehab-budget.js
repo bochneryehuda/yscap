@@ -880,6 +880,11 @@ const RB = (function(){
       // autosaved, so it "didn't stick" to the condition on reopen. save() fires
       // the portal autosave hook (RB_PORTAL_ONSAVE) when embedded in a loan file.
       save();
+      // On a loan file, a DRAFT autosave (tool_state) is not enough — the imported
+      // Scope of Work must persist to the CONDITION (tool_payload) or it "doesn't
+      // stick": staff see the stale total and sign-off is blocked (#122). Fire the
+      // portal import hook so the wrapper runs a full submit right after import.
+      if(window.RB_PORTAL_ONIMPORT){ try{ window.RB_PORTAL_ONIMPORT(); }catch(e){} }
       flash("Imported — "+(isMulti()?(unitCount()+" units"):"single-family")+", "+(S.txn==="refi"?"refinance":"purchase")+". Pick up where you left off.");
     }catch(e){ flash("Import failed — please use a file exported by this tool."); if(window.console)console.error(e); }
   }
