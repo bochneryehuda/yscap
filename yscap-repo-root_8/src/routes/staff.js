@@ -3370,6 +3370,16 @@ router.post('/applications/:id/documents', async (req, res) => {
     llcId = l.rows[0].id;
     borrowerId = l.rows[0].borrower_id;
   }
+  // Term sheets auto-attach to the Products & Pricing register condition as a
+  // document slot (owner-directed #139): the registered term sheet saves STRAIGHT
+  // INTO that condition, not just as a loose file. Only when the caller didn't
+  // already target a specific condition or an LLC slot.
+  if (b.docKind === 'term_sheet' && !b.checklistItemId && !llcId) {
+    const pp = await db.query(
+      `SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='product_pricing' ORDER BY created_at LIMIT 1`,
+      [req.params.id]);
+    if (pp.rows[0]) { b.checklistItemId = pp.rows[0].id; if (!b.slot) b.slot = 'Term sheet'; }
+  }
   let itemLabel = '';
   let itemAudience = null;
   if (b.checklistItemId) {

@@ -1399,6 +1399,16 @@ router.post('/documents', async (req, res) => {
     // A verified LLC's document set is locked — staff verified it as-is.
     if (o.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before replacing documents' });
   }
+  // Term sheets auto-attach to the Products & Pricing register condition as a
+  // document slot (owner-directed #139): the registered term sheet saves straight
+  // into that condition, not just as a loose file — unless the caller already
+  // targeted a specific condition or an LLC slot.
+  if (b.docKind === 'term_sheet' && b.applicationId && !b.checklistItemId && !b.llcId) {
+    const pp = await db.query(
+      `SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='product_pricing' ORDER BY created_at LIMIT 1`,
+      [b.applicationId]);
+    if (pp.rows[0]) { b.checklistItemId = pp.rows[0].id; if (!b.slot) b.slot = 'Term sheet'; }
+  }
   // The checklist item must be the borrower's own too — otherwise the document
   // row can be pointed at another borrower's checklist-item id.
   if (b.checklistItemId) {
