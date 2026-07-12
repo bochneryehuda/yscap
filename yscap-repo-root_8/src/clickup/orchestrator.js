@@ -71,6 +71,7 @@ async function loadPushContext(appId) {
       units: row.units, term: row.term, ppp: row.ppp, ltv: row.ltv, rate_pct: row.rate_pct,
       loan_amount: row.loan_amount, purchase_price: row.purchase_price, as_is_value: row.as_is_value, arv: row.arv,
       rehab_budget: row.rehab_budget, rehab_type: row.rehab_type, dscr_ratio: row.dscr_ratio,
+      is_assignment: row.is_assignment,
       assignment_fee: row.assignment_fee, underlying_contract_price: row.underlying_contract_price,
       original_purchase_price: row.original_purchase_price, acquisition_date: row.acquisition_date,
       ys_loan_number: row.ys_loan_number, expected_closing: row.expected_closing, submitted_at: row.submitted_at,

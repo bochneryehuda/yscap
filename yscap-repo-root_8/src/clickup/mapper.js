@@ -85,8 +85,16 @@ const FIELD_MAP = [
   { cu: F.PIPELINE.constructionBudget, t: 'a', col: 'rehab_budget', type: 'currency', dir: 'both' },
   { cu: F.SYNC.rehabType, t: 'a', col: 'rehab_type', type: 'dropdown', enumKey: 'rehab_type', dir: 'both' },
   { cu: F.PIPELINE.dscrRatio, t: 'a', col: 'dscr_ratio', type: 'number', dir: 'both' },
-  { cu: F.EXTRA.assignmentFee, t: 'a', col: 'assignment_fee', type: 'currency', dir: 'both' },
-  { cu: F.EXTRA.underlyingPrice, t: 'a', col: 'underlying_contract_price', type: 'currency', dir: 'both' },
+  // Assignment now maps to the DEDICATED "Contract assignment" ClickUp fields
+  // (owner-directed 2026-07-12) — NOT the refi "Original Purchase Price" field:
+  //   is_assignment           <-> Contract assignment (checkbox)
+  //   assignment_fee          <-> Contract assignment/flip fee (added on top of underlying)
+  //   underlying_contract_price <-> Contract assignment underlying purchase price
+  { cu: F.EXTRA.contractAssignChecked, t: 'a', col: 'is_assignment', type: 'checkbox', dir: 'both' },
+  { cu: F.EXTRA.contractAssignFee, t: 'a', col: 'assignment_fee', type: 'currency', dir: 'both' },
+  { cu: F.EXTRA.contractAssignUnderlying, t: 'a', col: 'underlying_contract_price', type: 'currency', dir: 'both' },
+  // 'Original Purchase Price? (Refi only)' — the property's ORIGINAL acquisition
+  // price on a refinance; must NEVER carry the assignment underlying.
   { cu: F.EXTRA.originalPurchase, t: 'a', col: 'original_purchase_price', type: 'currency', dir: 'both' },
   { cu: F.EXTRA.acquisitionDate, t: 'a', col: 'acquisition_date', type: 'date', dir: 'both' },
   { cu: F.SYNC.approxAppraisedValue, t: 'a', col: 'approx_appraised_value', type: 'currency', dir: 'pull' }, // informational

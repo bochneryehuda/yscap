@@ -160,9 +160,16 @@ const EXTRA = {
   yearsAtResidence:   'fabf5994-e218-43ee-9694-3b2e0caf2a12', // short_text
   priorAddress:       '616f218e-7bb3-4ee2-9f94-f9f96a054516', // location
   ratePct:            'ca47de7f-40b7-4a98-b540-2378c0e87954', // number (Desired Rate %)
-  assignmentFee:      '6d62e510-9ef7-4d96-b81f-fa1251b11c26', // currency
-  underlyingPrice:    '1a83ab87-bb06-4f20-8187-2bc0476d1f05', // currency
-  originalPurchase:   '253e80ff-9a76-432e-a2ac-366db5a2c3c5', // currency (Refi)
+  assignmentFee:      '6d62e510-9ef7-4d96-b81f-fa1251b11c26', // currency (LEGACY 'Assignment fee' — superseded by contractAssignFee)
+  underlyingPrice:    '1a83ab87-bb06-4f20-8187-2bc0476d1f05', // currency (LEGACY 'Underlying purchase price' — superseded by contractAssignUnderlying)
+  originalPurchase:   '253e80ff-9a76-432e-a2ac-366db5a2c3c5', // currency — 'Original Purchase Price? (Refi only)': the property's ORIGINAL acquisition price for a refinance, NOT the assignment underlying (owner-directed 2026-07-12)
+  // Dedicated "Contract assignment" fields (owner-directed 2026-07-12): the
+  // assignment data maps to these, NOT to originalPurchase. Checkbox = is an
+  // assignment; flip fee = amount added ON TOP of the underlying seller price;
+  // underlying = the seller's contract price. All bidirectional.
+  contractAssignChecked:    '40dec3f5-6245-422b-a49b-983d3cfe9a43', // checkbox 'Contract assignment'
+  contractAssignFee:        '273c41d1-10ee-4b02-aa74-7007f8023574', // currency 'Contract assignment/flip fee'
+  contractAssignUnderlying: 'de81ad3e-572e-4e83-b9d9-c284400c9df1', // currency 'Contract assignment underlying purchase price'
   acquisitionDate:    'dd703e85-247e-4b3b-9664-f73c4877162c', // date
   card:               '684c900f-9e5a-4e73-9115-f2bebb9783b6', // short_text (appraisal card)
   depositReceived:    'b0e894cc-7551-4e2b-85ea-50aadc6a1de0', // drop_down
