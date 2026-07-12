@@ -75,6 +75,7 @@ router.get('/conversations', async (req, res) => {
     conversations: r.rows.map(row => ({
       ...row,
       last_body: scrubText(row.last_body),   // never surface a partner name to a borrower
+      name: scrubText(row.name), topic: scrubText(row.topic),   // staff can rename/topic a borrower conv
       last_seq: row.last_seq == null ? null : Number(row.last_seq),
       last_read_seq: row.last_read_seq == null ? null : Number(row.last_read_seq),
       members: (row.members || []).map(m => ({ ...m, online: online.has(`${m.kind}:${m.id}`) })),
@@ -97,8 +98,8 @@ router.get('/conversations/:cid', async (req, res) => {
     db.query(`SELECT body FROM chat_drafts WHERE conversation_id=$1 AND member_kind='borrower' AND member_id=$2`, [conv.id, me(req)]),
   ]);
   res.json({
-    id: conv.id, applicationId: conv.application_id, name: conv.name, emoji: conv.emoji,
-    topic: conv.topic, ysLoanNumber: conv.ys_loan_number, propertyAddress: conv.property_address,
+    id: conv.id, applicationId: conv.application_id, name: scrubText(conv.name), emoji: conv.emoji,
+    topic: scrubText(conv.topic), ysLoanNumber: conv.ys_loan_number, propertyAddress: conv.property_address,
     members,
     pinned: pinned.rows.map(p => ({ ...p, body: scrubText(p.body), seq: Number(p.seq) })),
     draft: myDraft.rows[0] ? myDraft.rows[0].body : '',
@@ -117,6 +118,8 @@ router.get('/conversations/:cid/messages', async (req, res) => {
     if (typeof m.body === 'string') m.body = scrubText(m.body);
     if (m.reply_snippet && typeof m.reply_snippet.body === 'string')
       m.reply_snippet = { ...m.reply_snippet, body: scrubText(m.reply_snippet.body) };
+    if (Array.isArray(m.entity_refs))
+      m.entity_refs = m.entity_refs.map(r => (r && typeof r.label === 'string') ? { ...r, label: scrubText(r.label) } : r);
   }
   res.json({ messages: msgs, members: await chat.membersOf(conv.id) });
 });

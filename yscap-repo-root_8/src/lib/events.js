@@ -124,7 +124,9 @@ function borrowerSafeEvent(data) {
     const body = typeof m.body === 'string' ? scrubText(m.body) : m.body;
     const rs = (m.reply_snippet && typeof m.reply_snippet.body === 'string')
       ? { ...m.reply_snippet, body: scrubText(m.reply_snippet.body) } : m.reply_snippet;
-    if (body !== m.body || rs !== m.reply_snippet) out = { ...out, message: { ...m, body, reply_snippet: rs } };
+    const er = Array.isArray(m.entity_refs)
+      ? m.entity_refs.map(r => (r && typeof r.label === 'string') ? { ...r, label: scrubText(r.label) } : r) : m.entity_refs;
+    if (body !== m.body || rs !== m.reply_snippet || er !== m.entity_refs) out = { ...out, message: { ...m, body, reply_snippet: rs, entity_refs: er } };
   }
   return out;
 }

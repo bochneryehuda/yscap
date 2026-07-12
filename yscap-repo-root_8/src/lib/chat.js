@@ -26,6 +26,7 @@ const notify = require('./notify');
 const email = require('./email');
 const { link: portalLink } = require('./email/catalog');
 const { can } = require('./permissions');
+const { scrubText } = require('./borrower-safe');
 
 const CHAT_EMAIL_DELAY_MIN = 10;      // email fallback only if still unread after this
 const URGENT_RENOTIFY_MIN = 2;        // Teams-style urgent re-ping cadence
@@ -581,7 +582,7 @@ async function fireChatEmail(j) {
       const link = isBorrower ? `/app/${conv.application_id}` : `/internal/chat?c=${conv.id}`;
       const msg = notify.buildEmail({
         title: n === 1 ? 'You have an unread message' : `You have ${n} unread messages`,
-        body: `${n === 1 ? 'A message is' : `${n} messages are`} waiting for you in “${conv.name}”` +
+        body: `${n === 1 ? 'A message is' : `${n} messages are`} waiting for you in “${isBorrower ? scrubText(conv.name) : conv.name}”` +
               (ctx ? ` on ${ctx.loanNo} (${ctx.addr})` : '') + '.',
         link, ctaLabel: 'Open the conversation',
         meta: ctx ? ctx.meta : [],
