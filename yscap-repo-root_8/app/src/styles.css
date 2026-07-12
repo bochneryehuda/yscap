@@ -24,8 +24,22 @@
 }
 *{box-sizing:border-box}
 html,body,#root{height:100%}
+/* Mobile base: never let the browser reflow-zoom text, kill the grey tap flash,
+   and hard-guard against accidental horizontal scroll on phones.
+   CRITICAL (owner 2026-07-12): `overflow-x:clip` on <html> is what keeps the
+   portal mobile. A tiny phantom overflow (a wide tooltip, a flex child without
+   min-width:0) used to widen the LAYOUT VIEWPORT past 720px on a phone, which
+   silently switched OFF every `max-width:720px` media query — so the whole
+   console cascaded to its DESKTOP layout and the browser zoomed out to ~1292px
+   (tiny, unusable). Clipping horizontal overflow at the root pins the viewport
+   to the device width, so the mobile breakpoints actually apply. `clip` (not
+   `hidden`) is used deliberately: it does NOT create a scroll container, so it
+   never breaks position:sticky. Inner `overflow-x:auto` scrollers still scroll. */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%;overflow-x:hidden;overflow-x:clip}
 body{margin:0;background:var(--ink);color:var(--ivory);font-family:var(--sans);
-  font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;overflow-x:hidden;overflow-x:clip}
+button,a,.btn,select,summary,[role=button]{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+img,video,canvas,svg{max-width:100%}
 a{color:var(--teal-br);text-decoration:none} a:hover{text-decoration:underline}
 h1,h2,h3{font-family:var(--serif);font-weight:600;line-height:1.2;margin:0}
 h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
@@ -63,6 +77,12 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .nav a,.nav .btn,.nav .pill{white-space:nowrap}
 .nav a{color:var(--muted);font-weight:500;font-size:14px}
 .nav a.active,.nav a:hover{color:var(--ivory);text-decoration:none}
+/* Mobile menu: a hamburger button + slide-in drawer. Both are desktop-hidden
+   here and switched on in the phone media query below. */
+.nav-toggle{display:none;flex:none;width:44px;height:44px;margin-left:auto;
+  align-items:center;justify-content:center;border:1px solid var(--line);border-radius:10px;
+  background:var(--ink-1);color:var(--ivory);font-size:18px;line-height:1;cursor:pointer}
+.nav-scrim{display:none}
 .content{flex:1;padding:30px 0 60px}
 
 /* cards / panels */
@@ -325,14 +345,32 @@ a.checkitem:hover{background:var(--ink-2);border-color:var(--teal-dp)}
   .header .wrap{height:auto;flex-wrap:wrap;gap:10px 24px;padding-top:12px;padding-bottom:12px}
   .nav{flex-wrap:wrap;row-gap:8px}
 }
-/* on phones the nav becomes one swipeable row (standard mobile tabs)
-   instead of stacking into two or three crowded rows */
+/* On phones the whole nav collapses behind a hamburger and slides in as a
+   right-side drawer — every console link (11 on staff) is reachable and
+   readable, instead of a swipe row that hid two-thirds of them off-screen. */
 @media(max-width:720px){
-  .nav{width:100%;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
-    justify-content:flex-start;padding-bottom:2px;scrollbar-width:none}
-  .nav::-webkit-scrollbar{display:none}
-  .nav a{padding:8px 0}
+  .header .wrap{flex-wrap:nowrap;height:60px;padding-top:0;padding-bottom:0;gap:12px}
+  .nav-toggle{display:inline-flex}
+  .nav-scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:850;
+    animation:navfade .18s ease}
+  .nav{position:fixed;top:0;right:0;bottom:0;width:min(86vw,320px);max-width:320px;
+    flex-direction:column;align-items:stretch;justify-content:flex-start;gap:0;
+    background:var(--ink-1);border-left:1px solid var(--line);z-index:900;
+    padding:calc(16px + env(safe-area-inset-top)) calc(18px + env(safe-area-inset-right))
+            calc(20px + env(safe-area-inset-bottom)) 18px;
+    overflow-y:auto;-webkit-overflow-scrolling:touch;
+    transform:translateX(100%);transition:transform .22s cubic-bezier(.32,.72,.35,1);
+    box-shadow:-16px 0 44px -24px rgba(0,0,0,.55)}
+  .nav.open{transform:none}
+  .nav a,.nav .pill{width:100%;min-height:48px;display:flex;align-items:center;
+    font-size:16px;padding:12px 4px;border-bottom:1px solid var(--line)}
+  .nav a.active{color:var(--teal-br);font-weight:700}
+  .nav .pill{border-bottom:none;margin-top:6px;justify-content:center}
+  .nav .btn{width:100%;justify-content:center;margin-top:14px;min-height:48px}
+  .nav .bell{width:100%;min-height:48px;justify-content:flex-start}
+  .nav .chat-badge.nav{position:static;margin-left:auto}
 }
+@keyframes navfade{from{opacity:0}to{opacity:1}}
 @media(max-width:520px){
   .brand .sub{display:none}
   .brand-word{font-size:16px;letter-spacing:1.5px}
@@ -617,6 +655,12 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .studio-foot{position:sticky;bottom:0;background:var(--ink-1);padding:10px 0;z-index:5}
 
 @media(max-width:720px){
+  /* iOS Safari zooms the whole page in when a focused field is < 16px — force
+     16px on every form control on phones so tapping a field never zooms. The
+     15px desktop density is preserved above this breakpoint. */
+  .input,select,textarea,input:not([type=checkbox]):not([type=radio]){font-size:16px}
+  /* selects/date pickers get a real touch height too */
+  select,.input{min-height:44px}
   /* touch-primary controls get real hit areas (btn.small/.btn.link
      out-specify the generic .btn rule above, so restate them) */
   .btn.small{padding:9px 14px;font-size:13px}
@@ -702,10 +746,13 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   width:min(290px,72vw);background:var(--ink-3);color:var(--ivory);border:1px solid var(--teal-dp);
   border-radius:10px;padding:9px 12px;font-size:12.5px;font-weight:400;line-height:1.45;
   text-transform:none;letter-spacing:normal;white-space:normal;text-align:left;
-  opacity:0;visibility:hidden;transition:opacity .12s;z-index:60;pointer-events:none;
+  opacity:0;display:none;transition:opacity .12s;z-index:60;pointer-events:none;
   box-shadow:0 8px 24px rgba(0,0,0,.4)}
+/* Shown only on hover/focus. `display:none` while hidden (not visibility:hidden)
+   so the 290px bubble never occupies layout width and can't nudge the page wide
+   on a phone. */
 .info-tip:hover .info-tip-bubble,.info-tip:focus .info-tip-bubble,
-.info-tip:focus-visible .info-tip-bubble{opacity:1;visibility:visible}
+.info-tip:focus-visible .info-tip-bubble{opacity:1;display:block}
 
 /* lift the "dead" flatness a touch: panels get depth, condition rows breathe */
 .panel{box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 10px 26px -18px rgba(0,0,0,.55)}
@@ -716,8 +763,11 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .file-layout{display:block}
   /* phones: the identity bar flows normally (the wrapping header makes a
      fixed offset unreliable) and the chip rail keeps its own stickiness */
-  .file-top{position:static;flex-wrap:wrap;box-shadow:none}
-  .file-top-addr{white-space:normal}
+  .file-top{position:static;flex-wrap:wrap;box-shadow:none;gap:8px 14px}
+  /* the borrower·address title takes its OWN full-width row so it reads on one
+     or two lines instead of being crushed word-per-line between the buttons */
+  .file-top-main{flex:1 1 100%}
+  .file-top-addr{white-space:normal;font-size:17px}
   .file-nav{position:sticky;top:0;margin:0 -24px 18px;padding:8px 16px;
     background:linear-gradient(180deg,var(--ink) 82%,transparent);border-bottom:1px solid var(--line)}
   .file-nav ol{display:flex;overflow-x:auto;gap:4px;padding:4px;scrollbar-width:none;border-radius:12px}
@@ -941,6 +991,18 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .cv-modal-back{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;display:flex;
   align-items:center;justify-content:center;padding:20px}
 .cv-modal{width:100%;max-width:480px;max-height:85vh;overflow-y:auto}
+/* Phones: a centred card is cramped and hard to reach one-handed — every modal
+   (reminder composer, document preview, chat pickers) becomes a thumb-reachable
+   bottom sheet that fills the width, rounds only its top, respects the home-bar
+   safe area, and scrolls its own body. !important overrides the per-modal inline
+   width/height so they all behave identically on mobile. */
+@media (max-width:640px){
+  .cv-modal-back{padding:0;align-items:flex-end}
+  .cv-modal{width:100%!important;max-width:100%!important;max-height:92dvh;
+    border-radius:16px 16px 0 0;
+    padding-bottom:env(safe-area-inset-bottom);
+    animation:sheetup .26s cubic-bezier(.32,.72,.35,1)}
+}
 
 /* ============================ Condition Center ============================ */
 /* Rule builder — "field · operator · value" rows with ALL/ANY groups. */

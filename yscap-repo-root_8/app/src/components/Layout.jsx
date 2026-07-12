@@ -37,6 +37,7 @@ export default function Layout({ children }) {
   const { signOut } = useAuth();
   const nav = useNavigate();
   const [unread, setUnread] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -51,7 +52,10 @@ export default function Layout({ children }) {
       <header className="header">
         <div className="wrap">
           <Brand />
-          <nav className="nav">
+          <button className="nav-toggle" aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>{menuOpen ? '✕' : '☰'}</button>
+          {menuOpen && <div className="nav-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
+          <nav className={`nav ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
             <NavLink to="/dashboard">Dashboard</NavLink>
             <NavLink to="/apply">New application</NavLink>
             <NavLink to="/profile">Profile</NavLink>
