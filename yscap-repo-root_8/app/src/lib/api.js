@@ -298,6 +298,7 @@ export const api = {
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
   staffWaiveCondition:   (cid, reason) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason }),
+  staffReviewCondition:  (cid, reviewed) => req('POST', `/api/staff/loan-conditions/${cid}/review`, { reviewed }),
   staffAssign:      (appId, b) => req('POST', `/api/staff/applications/${appId}/assign`, b),
   staffSetStatus:   (appId, status, force) => req('PATCH', `/api/staff/applications/${appId}`, force ? { status, force: true } : { status }),
   // Internal (ClickUp) status — the exact 38-status task workflow. The list feeds

@@ -1548,6 +1548,7 @@ export default function StaffApplication() {
   const { search } = useLocation();
   const { role, can } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
+  const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed
   const canDelete = can('delete_files');
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
@@ -1834,6 +1835,7 @@ export default function StaffApplication() {
   }
   async function clearCond(cid) { if (busyAct) return; setBusyAct('cond:' + cid); try { await api.staffClearCondition(cid); flash('Cleared ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   async function waiveCond(cid) { if (busyAct) return; const r = window.prompt('Waive this condition — reason (required):'); if (!r) return; setBusyAct('cond:' + cid); try { await api.staffWaiveCondition(cid, r); flash('Waived ✓'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
+  async function reviewCond(cid, reviewed) { if (busyAct) return; setBusyAct('cond:' + cid); try { await api.staffReviewCondition(cid, reviewed); flash(reviewed ? 'Marked reviewed ✓' : 'Review cleared'); await load(); } catch (e) { setErr(e.message); } finally { setBusyAct(''); } }
   async function addCondition() {
     if (!newCond.trim()) return;
     try { await api.staffAddCondition(id, { label: newCond.trim(), audience: 'staff' }); setNewCond(''); flash('Added ✓'); await load(); }
@@ -2079,7 +2081,7 @@ export default function StaffApplication() {
           onError={(t) => setErr(t)} onFlash={flash} />
         <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}
           cForm={cForm} setCForm={setCForm} addLoanCondition={addLoanCondition}
-          clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} />
+          clearCond={clearCond} waiveCond={waiveCond} isAdmin={isAdmin} completer={completer} reviewCond={reviewCond} />
       </div>
       </Section>
 
@@ -2275,7 +2277,7 @@ export default function StaffApplication() {
 
 /* Underwriting loan conditions (clear / waive / add) — lives inside the
    Conditions-to-close section, beside the borrower request box. */
-function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm, addLoanCondition, clearCond, waiveCond, isAdmin }) {
+function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm, addLoanCondition, clearCond, waiveCond, isAdmin, completer, reviewCond }) {
   return (
         <div className="panel">
           <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
@@ -2306,11 +2308,16 @@ function LoanConditionsPanel({ conds, condFilter, setCondFilter, cForm, setCForm
                     <div className="muted small">
                       {sev} · {c.audience === 'staff' ? 'Internal' : 'Borrower-facing'}
                       {c.status !== 'open' ? ` · ${c.status}${c.cleared_by_name ? ` by ${c.cleared_by_name}` : ''}` : ''}
+                      {open && c.reviewed_by_name ? ` · reviewed by ${c.reviewed_by_name}` : ''}
                       {c.waive_reason ? ` · ${c.waive_reason}` : ''}
                     </div>
                   </div>
-                  {open && <button className="btn ghost small" onClick={() => clearCond(c.id)}>Clear</button>}
+                  {/* Clearing (sign-off) is a processor/underwriter call; a loan officer marks it reviewed instead. */}
+                  {open && completer && <button className="btn ghost small" onClick={() => clearCond(c.id)}>Clear</button>}
                   {open && isAdmin && <button className="btn link small" onClick={() => waiveCond(c.id)}>Waive</button>}
+                  {open && !completer && <button className="btn ghost small" onClick={() => reviewCond(c.id, !c.reviewed_by)}
+                    title="Mark that you've reviewed this — a processor or underwriter still signs it off">
+                    {c.reviewed_by ? 'Reviewed ✓ — undo' : 'Mark done'}</button>}
                 </div>
               );
             });
