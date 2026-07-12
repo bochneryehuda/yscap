@@ -115,9 +115,18 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
         SET loan_amount=$2,
             rate_pct=$3,
             ltv=$4,
-            requested_exp_flips=$5,
-            requested_exp_holds=$6,
-            requested_exp_ground=$7,
+            -- requested_exp_* is the borrower's CLAIMED experience (what the
+            -- experience condition requires). buildInputs prices NON-admin
+            -- registrations off VERIFIED counts (claim overrides are stripped for
+            -- borrower/LO), so inputs.exp* here is the verified count (often 0) —
+            -- writing it verbatim ZEROED the claim and reverted the condition to
+            -- "No experience required" (#121). Never LOWER the claim on register:
+            -- GREATEST preserves what the borrower entered on the application, and
+            -- still lets an admin who raised experience in the studio push it up.
+            -- The claim is otherwise owned by the application form / details edit.
+            requested_exp_flips=GREATEST(COALESCE(requested_exp_flips,0), $5),
+            requested_exp_holds=GREATEST(COALESCE(requested_exp_holds,0), $6),
+            requested_exp_ground=GREATEST(COALESCE(requested_exp_ground,0), $7),
             rehab_budget=$8,
             term=$9,
             requested_ir_months=$10,
