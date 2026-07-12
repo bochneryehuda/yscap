@@ -292,8 +292,11 @@ async function findExistingApp(task, read, borrowerId) {
   // across ALL borrowers (not just the resolved one) so a re-linked/re-keyed file
   // links instead of colliding on the unique index (which would otherwise throw).
   if (read.app.ys_loan_number) {
+    // Case-insensitive (+ whitespace-tolerant) so "YS-123" and "ys-123" are the
+    // SAME loan — matching how the identity scan below normalizes loanNumber, so a
+    // mere case difference can never miss a link and split one loan into two files.
     const ln = await db.query(
-      `SELECT id, clickup_pipeline_task_id FROM applications WHERE ys_loan_number=$1 AND deleted_at IS NULL LIMIT 1`,
+      `SELECT id, clickup_pipeline_task_id FROM applications WHERE lower(btrim(ys_loan_number))=lower(btrim($1)) AND deleted_at IS NULL LIMIT 1`,
       [read.app.ys_loan_number]
     ).catch(() => ({ rows: [] }));
     if (ln.rows[0]) {
