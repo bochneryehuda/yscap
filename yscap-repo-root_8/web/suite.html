@@ -2,7 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="theme.js?v=n1"></script>
+<script src="theme.js?v=n3"></script>
+<script>
+(function () {
+  try {
+    var de = document.documentElement;
+    de.setAttribute("data-theme", "light");   // white-first — matches the portal (belt-and-suspenders vs a stale theme.js)
+    var q = new URLSearchParams(location.search);
+    if (q.get("embed") === "1") de.setAttribute("data-embed", "1");
+  } catch (e) {}
+})();
+</script>
 <script src="brand.js?v=n1"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Capital Investor Suite — Real Estate Calculators</title>
