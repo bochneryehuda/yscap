@@ -614,6 +614,21 @@ const TR=(function(){
     render();
   }
 
-  return { share, exportXlsx, importXlsx, exportPdf, _state:()=>S, setState, snap:()=>snap() };
+  /* Portal bridge accessor: a freshly-added line starts with a client temp id
+     ("p<random>"); the bridge creates it on the server and gets a real id back.
+     Adopt that server id in place of the temp one across the working set, the
+     add/edit overlay still open in front of the user, and any rendered card —
+     so every later keystroke UPDATES this same row instead of inserting a new
+     record each time (the autosave duplicate-record bug). */
+  function adoptServerId(tempId, serverId){
+    if(tempId==null||serverId==null||tempId===serverId) return;
+    S.props.forEach(p=>{ if(p&&p.id===tempId) p.id=serverId; });
+    if(editingId===tempId) editingId=serverId;
+    const ov=$("#tr-ov");
+    if(ov&&ov._work&&ov._work.id===tempId) ov._work.id=serverId;
+    try{ document.querySelectorAll('[data-card="'+tempId+'"]').forEach(el=>el.setAttribute("data-card",serverId)); }catch(e){}
+  }
+
+  return { share, exportXlsx, importXlsx, exportPdf, _state:()=>S, setState, adoptServerId, snap:()=>snap() };
 })();
 if(typeof window!=="undefined") window.TR=TR;

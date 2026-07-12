@@ -143,7 +143,18 @@
   var basePayloads = {};                 // server id -> JSON of last-known payload
   var knownIds = [];
   var propsById = {};                    // server id -> last-loaded prop (for UI badges)
+  var idMap = {};                        // client temp id ("p<random>") -> server id
   var loaded = false, syncing = false, pendingSnap = null, syncT = null;
+
+  // Drop a server id from every local index (after a DELETE) so it can't be
+  // re-deleted or leak a stale temp->server mapping.
+  function forgetId(id) {
+    var i = knownIds.indexOf(id);
+    if (i >= 0) knownIds.splice(i, 1);
+    delete basePayloads[id];
+    delete propsById[id];
+    Object.keys(idMap).forEach(function (t) { if (idMap[t] === id) delete idMap[t]; });
+  }
 
   window.TR_PORTAL_ONSAVE = function (snapshot) {
     if (!loaded) return;
@@ -171,26 +182,58 @@
     var snapshot = pendingSnap;
     if (!snapshot) return;
     pendingSnap = null; syncing = true;
-    var ops = 0;
+    var changed = false, failed = false;
     try {
       var present = {};
       for (var i = 0; i < snapshot.props.length; i++) {
         var p = snapshot.props[i];
+        // A line the tool just added carries a client temp id; once we've created
+        // it server-side we remember its real id here, so this resolves to that
+        // real id on every later pass.
+        var sid = idMap[p.id] != null ? idMap[p.id] : p.id;
         var pay = payloadFromProp(p);
         var js = JSON.stringify(pay);
-        if (knownIds.indexOf(p.id) < 0) { ops++; await api("POST", createUrl(), pay); }
-        else { present[p.id] = true; if (basePayloads[p.id] !== js) { ops++; await api("PUT", recordUrl(p.id), pay); } }
+        if (knownIds.indexOf(sid) < 0) {
+          // BRAND-NEW line — create it exactly ONCE. Then adopt the server id
+          // back into the tool + the open form so the next keystroke UPDATES
+          // this row instead of inserting another (the bug that saved a fresh
+          // record for "13", "130", "1305 Barbara", … while typing an address).
+          var created = await api("POST", createUrl(), pay);
+          var newId = created && (created.trackRecordId != null ? created.trackRecordId : created.id);
+          changed = true;
+          if (newId != null) {
+            idMap[p.id] = newId;
+            knownIds.push(newId);
+            basePayloads[newId] = js;
+            present[newId] = true;
+            propsById[newId] = Object.assign({}, p, { id: newId, status: "pending", _verified: false, _docCount: 0, _dealType: pay.dealType });
+            try { TR.adoptServerId(p.id, newId); } catch (e) { /* tool still works */ }
+          }
+        } else {
+          present[sid] = true;
+          if (basePayloads[sid] !== js) { await api("PUT", recordUrl(sid), pay); basePayloads[sid] = js; changed = true; }
+        }
       }
-      for (var k = 0; k < knownIds.length; k++) {
-        var id = knownIds[k];
-        if (!present[id]) { ops++; await api("DELETE", recordUrl(id)); }
-      }
+      // Anything we know server-side that's no longer in the tool was deleted.
+      var toDelete = knownIds.filter(function (id) { return !present[id]; });
+      for (var k = 0; k < toDelete.length; k++) { await api("DELETE", recordUrl(toDelete[k])); forgetId(toDelete[k]); changed = true; }
     } catch (e) {
+      failed = true;
       flash((e && e.message) || "Couldn't save that change — reloading your record.");
-      ops++;
     } finally {
-      if (ops) await reload().catch(function () {});
       syncing = false;
+      if (failed) {
+        // Hard failure: pull the server's truth back so the tool and our indexes
+        // agree again (this reload replaces the working set — safe here because
+        // the edit already failed).
+        await reload().catch(function () {});
+      } else if (changed) {
+        // Keep the host page's requirement counts live and refresh the saved
+        // static copy — WITHOUT the wholesale reload()/setState() that used to
+        // wipe an in-progress add and re-create it as a new record every pass.
+        try { window.parent.postMessage({ type: "ys-tr-sync", counts: bucketCounts(snapshot.props) }, location.origin); } catch (e) { /* not embedded */ }
+        scheduleSnapshot();
+      }
       if (pendingSnap) syncT = setTimeout(runSync, 120);
     }
   }
@@ -199,7 +242,9 @@
   async function reload() {
     var rows = await api("GET", listUrl());
     var props = (rows || []).map(propFromRow);
-    basePayloads = {}; knownIds = []; propsById = {};
+    // A full reload rebuilds identity from the server — every row now carries its
+    // real id, so any client-temp->server mapping is obsolete.
+    basePayloads = {}; knownIds = []; propsById = {}; idMap = {};
     props.forEach(function (p) {
       knownIds.push(p.id);
       propsById[p.id] = p;
