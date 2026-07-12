@@ -117,7 +117,7 @@ function qs(params) {
 
 // Login/MFA/registration endpoints answer 401 for bad credentials — that must
 // show as an error on the form, never trigger the global "session expired" path.
-const AUTH_CALL = /^\/auth\/((borrower|staff)\/(login|mfa\/verify|register)|mfa\/enable)/;
+const AUTH_CALL = /^\/auth\/((borrower|staff)\/(login|mfa\/verify|register)|mfa\/(enable|disable|backup-codes))/;
 
 async function req(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
@@ -145,6 +145,13 @@ export const api = {
   login: (email, password) => req('POST', '/auth/borrower/login', { email, password }),
   mfaVerify: (challenge, code) => req('POST', '/auth/borrower/mfa/verify', { challenge, code }),
   register: (b) => req('POST', '/auth/borrower/register', b),
+
+  // Self-service 2FA (shared borrower/staff endpoints — the token identifies who).
+  mfaStatus:      () => req('GET', '/auth/mfa/status'),
+  mfaSetup:       () => req('POST', '/auth/mfa/setup'),
+  mfaEnable:      (code) => req('POST', '/auth/mfa/enable', { code }),
+  mfaDisable:     (code) => req('POST', '/auth/mfa/disable', { code }),
+  mfaRegenBackup: (code) => req('POST', '/auth/mfa/backup-codes', { code }),
 
   verifyEmail:        (b) => req('POST', '/auth/borrower/verify', b),          // {token} or {email,code}
   resendVerification: (email) => req('POST', '/auth/borrower/resend-verification', { email }),

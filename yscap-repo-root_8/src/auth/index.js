@@ -224,9 +224,10 @@ router.post('/borrower/mfa/verify', async (req, res) => {
   const claims = C.verifyJwt(challenge);
   if (!claims || !claims.mfa || claims.kind !== 'borrower') return res.status(401).json({ error: 'bad challenge' });
   try {
-    const r = await db.query(`SELECT mfa_secret, token_version FROM borrower_auth WHERE borrower_id=$1`, [claims.sub]);
-    if (!r.rows[0] || !C.verifyTotp(r.rows[0].mfa_secret, code)) return res.status(401).json({ error: 'invalid code' });
-    res.json({ token: borrowerToken(claims.sub, r.rows[0].token_version) });
+    const v = await verifyMfaStep('borrower', claims.sub, code);
+    if (!v.ok) return res.status(v.status).json({ error: v.error });
+    const tv = await db.query(`SELECT token_version FROM borrower_auth WHERE borrower_id=$1`, [claims.sub]);
+    res.json({ token: borrowerToken(claims.sub, tv.rows[0].token_version), usedBackup: v.usedBackup || undefined, backupRemaining: v.backupRemaining });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -375,8 +376,12 @@ router.post('/mfa/enable', requireAuth, async (req, res) => {
   const r = await db.query(`SELECT mfa_secret FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
   if (!r.rows[0]?.mfa_secret || !C.verifyTotp(r.rows[0].mfa_secret, code))
     return res.status(401).json({ error: 'invalid code' });
-  await db.query(`UPDATE ${tbl} SET mfa_enabled=true WHERE ${idCol}=$1`, [req.actor.id]);
-  res.json({ ok: true, mfaEnabled: true });
+  // Issue one-time backup codes so a lost authenticator doesn't lock them out.
+  // Store hashed; return the plaintext ONCE for the user to save.
+  const backupCodes = C.newBackupCodes(10);
+  await db.query(`UPDATE ${tbl} SET mfa_enabled=true, mfa_backup_codes=$2, failed_attempts=0, locked_until=NULL WHERE ${idCol}=$1`,
+    [req.actor.id, backupCodes.map(C.hashBackupCode)]);
+  res.json({ ok: true, mfaEnabled: true, backupCodes });
   // Confirmation email (best-effort, never blocks the response).
   try {
     let email = null, firstName = null;
@@ -389,6 +394,82 @@ router.post('/mfa/enable', requireAuth, async (req, res) => {
     }
     if (email) await mail.send('mfaEnabled', email, { firstName });
   } catch (_) {}
+});
+
+// Helpers to address either login table from the actor kind.
+const mfaTbl = (kind) => (kind === 'staff' ? 'staff_users' : 'borrower_auth');
+const mfaIdCol = (kind) => (kind === 'staff' ? 'id' : 'borrower_id');
+
+/**
+ * Verify one MFA step at login — accepts the current TOTP code OR a one-time
+ * backup (recovery) code — with a lockout so codes can't be brute-forced (S1-09).
+ * Shares the account's failed_attempts/locked_until counters. Returns {ok,...} or
+ * {status,error}. A used backup code is consumed.
+ */
+async function verifyMfaStep(kind, userId, code) {
+  const tbl = mfaTbl(kind), idCol = mfaIdCol(kind);
+  const r = await db.query(
+    `SELECT mfa_secret, mfa_backup_codes, failed_attempts, locked_until FROM ${tbl} WHERE ${idCol}=$1`, [userId]);
+  const row = r.rows[0];
+  if (!row) return { status: 401, error: 'invalid code' };
+  if (row.locked_until && new Date(row.locked_until) > new Date())
+    return { status: 423, error: 'too many wrong codes — please try again later' };
+  if (row.mfa_secret && C.verifyTotp(row.mfa_secret, code)) {
+    await db.query(`UPDATE ${tbl} SET failed_attempts=0, locked_until=NULL WHERE ${idCol}=$1`, [userId]);
+    return { ok: true };
+  }
+  const codes = Array.isArray(row.mfa_backup_codes) ? row.mfa_backup_codes : [];
+  const h = C.hashBackupCode(code);
+  if (code && codes.includes(h)) {
+    const remaining = codes.filter((c) => c !== h);   // one-time: consume it
+    await db.query(`UPDATE ${tbl} SET mfa_backup_codes=$2, failed_attempts=0, locked_until=NULL WHERE ${idCol}=$1`,
+      [userId, remaining]);
+    return { ok: true, usedBackup: true, backupRemaining: remaining.length };
+  }
+  const fa = (row.failed_attempts || 0) + 1;
+  await db.query(`UPDATE ${tbl} SET failed_attempts=$2, locked_until=$3 WHERE ${idCol}=$1`,
+    [userId, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]);
+  return { status: 401, error: 'invalid code' };
+}
+
+// Current 2FA state for the signed-in user (drives the Security screen).
+router.get('/mfa/status', requireAuth, async (req, res) => {
+  const tbl = mfaTbl(req.actor.kind), idCol = mfaIdCol(req.actor.kind);
+  const r = await db.query(
+    `SELECT mfa_enabled, COALESCE(array_length(mfa_backup_codes, 1), 0) AS backup_remaining
+       FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
+  res.json({ mfaEnabled: !!r.rows[0]?.mfa_enabled, backupRemaining: r.rows[0]?.backup_remaining || 0 });
+});
+
+// Turn 2FA OFF for the signed-in user. Requires a valid current code (TOTP or a
+// backup code) so a hijacked session can't silently strip the second factor.
+router.post('/mfa/disable', requireAuth, async (req, res) => {
+  const { code } = req.body || {};
+  const tbl = mfaTbl(req.actor.kind), idCol = mfaIdCol(req.actor.kind);
+  const r = await db.query(`SELECT mfa_secret, mfa_enabled, mfa_backup_codes FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
+  const row = r.rows[0];
+  if (!row || !row.mfa_enabled) return res.json({ ok: true, mfaEnabled: false });   // already off
+  const totpOk = row.mfa_secret && C.verifyTotp(row.mfa_secret, code);
+  const backupOk = Array.isArray(row.mfa_backup_codes) && !!code && row.mfa_backup_codes.includes(C.hashBackupCode(code));
+  if (!totpOk && !backupOk) return res.status(401).json({ error: 'invalid code' });
+  await db.query(`UPDATE ${tbl} SET mfa_enabled=false, mfa_secret=NULL, mfa_backup_codes=NULL WHERE ${idCol}=$1`, [req.actor.id]);
+  res.json({ ok: true, mfaEnabled: false });
+});
+
+// Regenerate the backup codes (invalidates the old set). Requires a valid current
+// code, and only while 2FA is on. Returns the new plaintext set once.
+router.post('/mfa/backup-codes', requireAuth, async (req, res) => {
+  const { code } = req.body || {};
+  const tbl = mfaTbl(req.actor.kind), idCol = mfaIdCol(req.actor.kind);
+  const r = await db.query(`SELECT mfa_secret, mfa_enabled, mfa_backup_codes FROM ${tbl} WHERE ${idCol}=$1`, [req.actor.id]);
+  const row = r.rows[0];
+  if (!row || !row.mfa_enabled) return res.status(400).json({ error: 'two-factor is not enabled' });
+  const totpOk = row.mfa_secret && C.verifyTotp(row.mfa_secret, code);
+  const backupOk = Array.isArray(row.mfa_backup_codes) && !!code && row.mfa_backup_codes.includes(C.hashBackupCode(code));
+  if (!totpOk && !backupOk) return res.status(401).json({ error: 'invalid code' });
+  const backupCodes = C.newBackupCodes(10);
+  await db.query(`UPDATE ${tbl} SET mfa_backup_codes=$2 WHERE ${idCol}=$1`, [req.actor.id, backupCodes.map(C.hashBackupCode)]);
+  res.json({ ok: true, backupCodes });
 });
 
 // ---------------- staff login ----------------
@@ -422,9 +503,11 @@ router.post('/staff/mfa/verify', async (req, res) => {
   const { challenge, code } = req.body || {};
   const claims = C.verifyJwt(challenge);
   if (!claims || !claims.mfa || claims.kind !== 'staff') return res.status(401).json({ error: 'bad challenge' });
-  const r = await db.query(`SELECT mfa_secret, role, token_version FROM staff_users WHERE id=$1`, [claims.sub]);
-  if (!r.rows[0] || !C.verifyTotp(r.rows[0].mfa_secret, code)) return res.status(401).json({ error: 'invalid code' });
-  res.json({ token: staffToken(claims.sub, r.rows[0].role, r.rows[0].token_version) });
+  const v = await verifyMfaStep('staff', claims.sub, code);
+  if (!v.ok) return res.status(v.status).json({ error: v.error });
+  const r = await db.query(`SELECT role, token_version FROM staff_users WHERE id=$1`, [claims.sub]);
+  if (!r.rows[0]) return res.status(401).json({ error: 'invalid code' });
+  res.json({ token: staffToken(claims.sub, r.rows[0].role, r.rows[0].token_version), usedBackup: v.usedBackup || undefined, backupRemaining: v.backupRemaining });
 });
 
 // ---------------- admin: create staff + invites ----------------
