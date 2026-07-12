@@ -198,7 +198,10 @@
           // back into the tool + the open form so the next keystroke UPDATES
           // this row instead of inserting another (the bug that saved a fresh
           // record for "13", "130", "1305 Barbara", … while typing an address).
-          var created = await api("POST", createUrl(), pay);
+          // Send the line's stable local id as an idempotency key: if this POST
+          // is ever retried (network replay, second tab) the server UPDATEs the
+          // one row instead of inserting a duplicate (db/087). Belt-and-suspenders.
+          var created = await api("POST", createUrl(), Object.assign({ clientRowId: p.id }, pay));
           var newId = created && (created.trackRecordId != null ? created.trackRecordId : created.id);
           changed = true;
           if (newId != null) {

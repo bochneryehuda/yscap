@@ -1466,12 +1466,30 @@ router.post('/track-records', async (req, res) => {
   const cols = trackRecordCols(b);
   const names = Object.keys(cols);
   const vals = Object.values(cols);
+  // Idempotent create: the tool sends one stable clientRowId per new line, so a
+  // repeated POST (autosave retry, second tab, network replay) UPDATEs the one
+  // row instead of inserting a duplicate. A verified row is locked (mirrors the
+  // PUT guard) — the conflict then no-ops and we re-select its id. Rows without
+  // a clientRowId keep plain-insert behavior (the partial index ignores NULLs).
+  const clientRowId = b.clientRowId ? String(b.clientRowId).slice(0, 80) : null;
+  const allNames = ['borrower_id', 'llc_id', 'client_row_id', ...names];
+  const allVals = [me(req), b.llcId || null, clientRowId, ...vals];
+  const ph = allVals.map((_, i) => '$' + (i + 1)).join(',');
+  const updateSet = ['llc_id=EXCLUDED.llc_id', ...names.map(n => `${n}=EXCLUDED.${n}`), 'updated_at=now()'].join(', ');
   const r = await db.query(
-    `INSERT INTO track_records (borrower_id,llc_id,${names.join(',')})
-     VALUES ($1,$2,${names.map((_, i) => '$' + (i + 3)).join(',')}) RETURNING id`,
-    [me(req), b.llcId || null, ...vals]);
+    `INSERT INTO track_records (${allNames.join(',')}) VALUES (${ph})
+     ON CONFLICT (borrower_id, client_row_id) WHERE client_row_id IS NOT NULL
+       DO UPDATE SET ${updateSet} WHERE track_records.is_verified = false
+     RETURNING id`,
+    allVals);
+  // Conflict hit a verified (locked) row → no row returned; hand back its id.
+  let trId = r.rows[0] && r.rows[0].id;
+  if (!trId && clientRowId) {
+    const ex = await db.query(`SELECT id FROM track_records WHERE borrower_id=$1 AND client_row_id=$2`, [me(req), clientRowId]);
+    trId = ex.rows[0] && ex.rows[0].id;
+  }
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
-  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id, missing: trackRecordMissing(b) });
+  res.status(201).json({ ok: true, trackRecordId: trId, missing: trackRecordMissing(b) });
 });
 // Edit an entry — only the borrower's own, and only while it is unverified
 // (a verified entry is locked as underwriting evidence).
