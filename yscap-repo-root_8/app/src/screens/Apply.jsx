@@ -287,7 +287,7 @@ export default function Apply() {
       loanType: portalLoanType(f.dealPurpose),
       asIsValue: f.asIs, arv: f.arv, rehabBudget: f.construction,
       requestedExpFlips: f.expFlips, requestedExpHolds: f.expBrrrr, requestedExpGround: f.expGround,
-      termMonths: f.tsTerm, irMonths: f.irMonths || '0',
+      termMonths: f.tsTerm, irMonths: f.irMonths || '0', irAmount: f.irAmount || '0',
       isAssignment: !!f.isAssign && !refi,
     };
     if (!refi) patch.purchasePrice = f.price;
@@ -328,7 +328,7 @@ export default function Apply() {
       asIsValue: form.asIsValue, arv: form.arv, rehabBudget: form.rehabBudget, rehabType: form.rehabType,
       fico: (form.personal || {}).fico,
       expFlips: form.requestedExpFlips, expHolds: form.requestedExpHolds, expGround: form.requestedExpGround,
-      termMonths: form.termMonths, irMonths: form.irMonths,
+      termMonths: form.termMonths, irMonths: form.irMonths, irAmount: form.irAmount,
     });
     // rebuilt on entering the step — inside it, the studio is the editor
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -356,6 +356,7 @@ export default function Apply() {
       const overrides = {
         targetLTC: (d.inp && d.inp.targetLTC) || undefined,
         irMonths: s.fields.irMonths || 0,
+        irAmount: s.fields.irAmount || 0,
         term: s.fields.tsTerm,
         fico: s.fields.fico,
         expFlips: s.fields.expFlips, expHolds: s.fields.expBrrrr, expGround: s.fields.expGround,

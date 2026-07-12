@@ -354,6 +354,9 @@ function borrowerPricingOverrides(raw) {
   const targetLTC = Number(raw && raw.targetLTC);
   if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
   if (raw && raw.irMonths != null && raw.irMonths !== '') { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
+  // Interest reserve may instead be an exact dollar amount (the engine caps it at
+  // the loan term). 0 is allowed and clears any prior amount → months path.
+  if (raw && raw.irAmount != null && raw.irAmount !== '') { const v = clamp(raw.irAmount, 0, 100000000); if (v != null) out.irAmount = Math.round(v); }
   if (raw && raw.term != null && raw.term !== '') { const v = clamp(raw.term, 1, 36); if (v != null) out.term = Math.round(v); }
   if (raw && raw.fico != null && raw.fico !== '') { const v = clamp(raw.fico, 300, 850); if (v != null) out.fico = Math.round(v); }
   for (const k of ['expFlips', 'expHolds', 'expGround']) {
@@ -1985,8 +1988,9 @@ router.post('/drafts/:id/submit', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,
         term,requested_ir_months,
         requested_exp_reo,payoff_amount,original_purchase_price,acquisition_date,
+        requested_ir_amount,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,'portal',$23,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
@@ -1995,7 +1999,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
-     intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice), b.acquisitionDate || null]);
+     intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice), b.acquisitionDate || null,
+     moneyField(b.irAmount)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
   if (b.llcId) { try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ } }
