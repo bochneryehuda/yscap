@@ -428,6 +428,18 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     : snap && !snap.program ? 'Tap a program card above to choose Standard or Gold Standard.'
     : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money(d.cashToClose)} · liquidity ${money(d.liquidity)}`
     : '';
+  // A PLAIN-LANGUAGE reason the product can't be registered yet — shown as a
+  // prominent banner in the studio so the Register action never silently
+  // "does nothing" (owner-directed 2026-07-12: "it holds you back from
+  // registering the product"). The Register button is always clickable (only
+  // disabled while busy) so a click also surfaces the specific reason.
+  const blockReason = busy ? ''
+    : !snap ? 'The Term Sheet Studio is still loading — give it a moment, then register.'
+    : !snap.ready ? 'To register, add the required pricing fields: ' + ((snap.missing && snap.missing.join(', ')) || 'see the highlighted fields in the studio') + '.'
+    : !snap.program ? 'Choose a product — tap the Standard or Gold Standard card in the studio.'
+    : (d && d.status === 'INELIGIBLE') ? "This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review."
+    : (d && !(d.totalLoan > 0)) ? "This scenario didn't size a loan yet — check the purchase price, ARV / as-is value and rehab budget in the studio."
+    : '';
 
   return (
     <div className="panel" style={{ marginTop: 18 }}>
@@ -469,14 +481,15 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
               <span className="muted small">Autosaves as you work — leaving saves your scenario to the file too.</span>
             </div>
             {cur && <span className="ts-badge ok" style={{ marginRight: 4 }}>Registered · {money(cur.total_loan)} @ {pct(cur.note_rate)}</span>}
-            <button className="btn primary toolsheet-done" disabled={busy || !canRegister} onClick={register}>
+            <button className="btn primary toolsheet-done" disabled={busy} onClick={register}>
               {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
             </button>
           </header>
-          {(err || msg) && (
+          {(err || msg || blockReason) && (
             <div className="toolsheet-sub">
               {err && <span role="alert" className="small" style={{ color: 'var(--danger)' }}>{err}</span>}
               {msg && !err && <span className="small" style={{ color: 'var(--ok)' }}>{msg}</span>}
+              {blockReason && !err && !msg && <span className="small" style={{ color: 'var(--warning)' }}>⚠ {blockReason}</span>}
             </div>
           )}
           <div className="toolsheet-body scroll" ref={sheetBodyRef}>
@@ -491,7 +504,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                     showAdmin={isStaff} onState={onStudioState} />
                 : <p className="muted small">Loading your scenario…</p>}
               <div className="toolsheet-actions">
-                <button className="btn primary" disabled={busy || !canRegister} onClick={register}>
+                <button className="btn primary" disabled={busy} onClick={register}>
                   {busy ? 'Registering…' : cur ? 'Re-register this product' : 'Register this product'}
                 </button>
                 <button className="btn ghost" onClick={closeStudio}>Save &amp; exit</button>
