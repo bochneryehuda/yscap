@@ -78,6 +78,13 @@ export function overridesFromSnapshot(snap, mode) {
   const base = compact({
     targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
     irMonths: f.irMonths === '' ? null : f.irMonths,
+    // Interest reserve may instead be an exact dollar amount (owner-directed
+    // 2026-07-12) — carried through to the frozen engine, which honors it over
+    // months and fits it under the same caps. A BLANK amount is sent as 0 (not
+    // null) so it actively clears any previously-registered amount: null would be
+    // skipped by the override loop, leaving a stale amount to wrongly win over a
+    // freshly-chosen months value when a file switches from amount back to months.
+    irAmount: f.irAmount === '' ? 0 : f.irAmount,
     term: f.tsTerm,
     fico: f.fico,
     expFlips: f.expFlips, expHolds: f.expBrrrr, expGround: f.expGround,
@@ -179,7 +186,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)} / ${money(inp.arv)}`} />
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
-          <Row k="Interest reserve" v={`${inp.irMonths || 0} months`} />
+          <Row k="Interest reserve" v={inp.irAmount ? money(inp.irAmount) : `${inp.irMonths || 0} months`} />
           {showAdmin && q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
             <Row k="Admin pricing" v={`${q.adminPricing.markupPct != null ? 'markup ' + q.adminPricing.markupPct + '%' : ''}${q.adminPricing.manualPricing ? ' · manual basis' : ''}`.trim()} />
           )}
@@ -357,7 +364,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         rehabType: app.rehab_type,
         fico: app.fico || (profile && profile.fico) || '',
         expFlips: app.requested_exp_flips, expHolds: app.requested_exp_holds, expGround: app.requested_exp_ground,
-        termMonths: app.term, irMonths: app.requested_ir_months,
+        termMonths: app.term, irMonths: app.requested_ir_months, irAmount: app.requested_ir_amount,
       });
     }
     return st;

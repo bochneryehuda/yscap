@@ -126,6 +126,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             underlying_contract_price = CASE WHEN $12 THEN $13 ELSE underlying_contract_price END,
             assignment_fee            = CASE WHEN $12 THEN $14 ELSE assignment_fee END,
             desired_rate=$15,
+            requested_ir_amount=$16,
             updated_at=now()
       WHERE id=$1`,
     [
@@ -144,6 +145,7 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
       isAssign ? (num(inputs.sellerPrice) || null) : null,
       isAssign ? Math.max(0, num(inputs.purchasePrice) - num(inputs.sellerPrice)) : null,
       ratePct != null ? ratePct.toFixed(3) : null,   // desired_rate is TEXT; mirror the registered rate
+      num(inputs.irAmount) || null,                   // $16 — exact interest-reserve amount (null = months path)
     ]);
   await replaceProductConditions(client, { appId, registrationId, quote, registeredByStaffId });
   await syncExperienceChecklistForApplication(appId, client);
