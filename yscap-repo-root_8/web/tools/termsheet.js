@@ -60,6 +60,7 @@
       rehabBudget: num("construction"),
       term: num("tsTerm") || 12,
       irMonths: num("irMonths"),
+      irAmount: num("irAmount"),   // exact interest-reserve $ amount (overrides months when > 0)
       accrual: "Non-Dutch",
       sqftAddition: chk("sqft"),
       heavyRehab: (YSP.normStrategy(dealType()) === "FF") ? (val("rehabScope") === "heavy") : false,
@@ -129,7 +130,7 @@
     L.push("ARV: " + (num("arv") ? YS.fmtUSD(num("arv")) : "—"));
     L.push("Rehab budget: " + (num("construction") ? YS.fmtUSD(num("construction")) : "$0"));
     L.push("Requested term: " + (num("tsTerm") || 12) + " months");
-    L.push("Interest reserve: " + (num("irMonths") || 0) + " months");
+    L.push("Interest reserve: " + (num("irAmount") > 0 ? YS.fmtUSD(num("irAmount")) : (num("irMonths") || 0) + " months"));
     L.push("Estimated FICO: " + (num("fico") || "—"));
     L.push("Experience (36 mo): flips " + (num("expFlips") || 0) + ", holds/BRRRR " + (num("expBrrrr") || 0) + ", ground-up " + (num("expGround") || 0));
     if (d && d.totalLoan > 0) L.push("Indicated loan amount: " + YS.fmtUSD(d.totalLoan));
@@ -158,7 +159,7 @@
     var isBridge = YSP.normStrategy(dealType()) === "BR";
     $$('[data-cond="hasRehab"]').forEach(function (n) { show(n, !isBridge); });
     $$('[data-cond="bridgeOnly"]').forEach(function (n) { show(n, isBridge); });
-    if (isBridge) { ["construction", "arv", "irMonths"].forEach(function (id) { var e = el(id); if (e && e.value) e.value = ""; }); }
+    if (isBridge) { ["construction", "arv", "irMonths", "irAmount"].forEach(function (id) { var e = el(id); if (e && e.value) e.value = ""; }); }
 
     // Ground-up defaults: first time the user selects ground-up, set an 18-month term and
     // pre-fill a full-term financed reserve (required for non-top-tier; optional for 8+ experience).
@@ -804,7 +805,9 @@
       ["As-is value", num("asIs") ? money(num("asIs")) : EM],
       ["After-repair value (ARV)", num("arv") ? money(num("arv")) : EM],
       ["Requested term (months)", String(num("tsTerm") || 12)],
-      ["Interest reserve (months)", String((d.inp && d.inp.irMonths) || num("irMonths") || 0)],
+      (num("irAmount") > 0)
+        ? ["Interest reserve (amount)", money(num("irAmount"))]
+        : ["Interest reserve (months)", String((d.inp && d.inp.irMonths) || num("irMonths") || 0)],
       ["Estimated FICO", num("fico") ? String(num("fico")) : EM],
       ["Experience (flips / holds / ground-up)", num("expFlips") + " / " + num("expBrrrr") + " / " + num("expGround")]
     ];
@@ -1093,6 +1096,7 @@
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(sub), x, y + 51);
         doc.line(x, y + 70, x + scolW - 90, y + 70); doc.text("Date", x, y + 81);
       }
+      var coBorrowerName = pdfSafe((val("coBorrowerName") || "").trim());
       if (d.status === "INELIGIBLE") {
         // Not eligible as entered → no signable terms (unprofitable / ineligible deals get no term sheet).
         var inelWhy = (d.reasons || []).filter(function (r) { return r.level === "INELIGIBLE"; }).map(function (r) { return r.msg; }).filter(Boolean);
@@ -1102,10 +1106,19 @@
         doc.text(pdfSafe("Because this scenario is not eligible as entered" + (inelWhy.length ? " (" + shortMsg(inelWhy[0]) + ")" : "") + ", there is no acceptance or signature block. Adjust the inputs above to see whether an eligible structure is available, or submit it to our team for a manual review."), M, y + 15, { maxWidth: W - 2 * M });
         y += 44; footer();
       } else {
-        para("5.  Validity & acceptance.  This term sheet is valid through " + fmtD(exp) + (d.inp.state ? (" for a property located in " + d.inp.state) : "") + ". It is not binding unless and until it is accepted in writing by the borrower below and countersigned by an authorized representative of " + LENDER.name + ".", 7.5);
-        brk(110); band("Acceptance & signatures"); brk(86);
+        para("5.  Validity & acceptance.  This term sheet is valid through " + fmtD(exp) + (d.inp.state ? (" for a property located in " + d.inp.state) : "") + ". It is not binding unless and until it is accepted in writing by the borrower" + (coBorrowerName ? " and co-borrower" : "") + " below and countersigned by an authorized representative of " + LENDER.name + ".", 7.5);
+        brk(coBorrowerName ? 200 : 110); band("Acceptance & signatures"); brk(86);
         sigBlock(sx1, val("borrowerName") || "Borrower", "Borrower / authorized signatory");
-        sigBlock(sx2, LENDER.name, "Authorized representative \u2014 required to validate");
+        // When the file has TWO borrowers, the term sheet carries a second
+        // signature line for the co-borrower (owner-directed #137) side-by-side
+        // with the borrower; the lender line drops to the next row.
+        if (coBorrowerName) {
+          sigBlock(sx2, coBorrowerName, "Co-borrower / authorized signatory");
+          y += 92; brk(86);
+          sigBlock(sx1, LENDER.name, "Authorized representative \u2014 required to validate");
+        } else {
+          sigBlock(sx2, LENDER.name, "Authorized representative \u2014 required to validate");
+        }
         y += 92; footer();
       }
 
@@ -1430,7 +1443,9 @@
       num("arv") > 0 ? ["After-repair value (ARV)", money(num("arv"))] : null,
       num("construction") > 0 ? ["Construction / rehab budget", money(num("construction"))] : null,
       ["Requested term", (inp.term || 12) + " months"],
-      (inp.irMonths > 0) ? ["Requested interest reserve", inp.irMonths + " months"] : null
+      (inp.irAmount > 0)
+        ? ["Requested interest reserve", money(inp.irAmount)]
+        : (inp.irMonths > 0) ? ["Requested interest reserve", inp.irMonths + " months"] : null
     ]);
 
     // derivation

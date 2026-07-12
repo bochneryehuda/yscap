@@ -85,8 +85,16 @@ const FIELD_MAP = [
   { cu: F.PIPELINE.constructionBudget, t: 'a', col: 'rehab_budget', type: 'currency', dir: 'both' },
   { cu: F.SYNC.rehabType, t: 'a', col: 'rehab_type', type: 'dropdown', enumKey: 'rehab_type', dir: 'both' },
   { cu: F.PIPELINE.dscrRatio, t: 'a', col: 'dscr_ratio', type: 'number', dir: 'both' },
-  { cu: F.EXTRA.assignmentFee, t: 'a', col: 'assignment_fee', type: 'currency', dir: 'both' },
-  { cu: F.EXTRA.underlyingPrice, t: 'a', col: 'underlying_contract_price', type: 'currency', dir: 'both' },
+  // Assignment now maps to the DEDICATED "Contract assignment" ClickUp fields
+  // (owner-directed 2026-07-12) — NOT the refi "Original Purchase Price" field:
+  //   is_assignment           <-> Contract assignment (checkbox)
+  //   assignment_fee          <-> Contract assignment/flip fee (added on top of underlying)
+  //   underlying_contract_price <-> Contract assignment underlying purchase price
+  { cu: F.EXTRA.contractAssignChecked, t: 'a', col: 'is_assignment', type: 'checkbox', dir: 'both' },
+  { cu: F.EXTRA.contractAssignFee, t: 'a', col: 'assignment_fee', type: 'currency', dir: 'both' },
+  { cu: F.EXTRA.contractAssignUnderlying, t: 'a', col: 'underlying_contract_price', type: 'currency', dir: 'both' },
+  // 'Original Purchase Price? (Refi only)' — the property's ORIGINAL acquisition
+  // price on a refinance; must NEVER carry the assignment underlying.
   { cu: F.EXTRA.originalPurchase, t: 'a', col: 'original_purchase_price', type: 'currency', dir: 'both' },
   { cu: F.EXTRA.acquisitionDate, t: 'a', col: 'acquisition_date', type: 'date', dir: 'both' },
   { cu: F.SYNC.approxAppraisedValue, t: 'a', col: 'approx_appraised_value', type: 'currency', dir: 'pull' }, // informational
@@ -298,6 +306,15 @@ function readTaskFields(task, options = {}) {
     if (f.dir === 'push') continue;                       // portal-owned, never pulled
     const v = readValue(f, m[f.cu], options);
     if (v !== undefined) dst[f.t][f.col] = v;
+  }
+
+  // A PLACEHOLDER YS loan number ("TBD" / "0" / "N/A" / blank …) is not a real
+  // match key — drop it so two unrelated brand-new deals both marked "TBD" can
+  // never link to each other on it (or collide on the ys_loan_number unique
+  // index). Treated as "no number yet"; a COALESCE upsert then never overwrites a
+  // real stored number with a placeholder either.
+  if (out.app.ys_loan_number != null && T.isPlaceholderLoanNumber(out.app.ys_loan_number)) {
+    delete out.app.ys_loan_number;
   }
 
   // specials (read)

@@ -15,6 +15,7 @@ export default function StaffLayout({ children }) {
   const { signOut, role, can } = useAuth();
   const nav = useNavigate();
   const [unread, setUnread] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
     let alive = true;
     const poll = () => api.staffConversations()
@@ -50,12 +51,16 @@ export default function StaffLayout({ children }) {
   const canManageVendors = can('manage_vendors');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
+  const canViewAudit = can('view_audit_log');
   return (
     <div className="shell">
       <header className="header">
         <div className="wrap">
           <Brand to="/internal" ariaLabel="YS Capital Group — Internal" console={consoleLabel} />
-          <nav className="nav">
+          <button className="nav-toggle" aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+            aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>{menuOpen ? '✕' : '☰'}</button>
+          {menuOpen && <div className="nav-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
+          <nav className={`nav ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
             <NavLink to="/internal" end>Pipeline</NavLink>
             <NavLink to="/internal/tasks">My tasks</NavLink>
             <NavLink to="/internal/chat" style={{ position: 'relative' }}>
@@ -68,6 +73,7 @@ export default function StaffLayout({ children }) {
             {canManageVendors && <NavLink to="/internal/vendors" title="Title & insurance vendor directory">Vendors</NavLink>}
             {canDeleteFiles && <NavLink to="/internal/archived" title="Archived files — restore or delete permanently">Archived</NavLink>}
             {canPlatformSetup && <NavLink to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill">ClickUp</NavLink>}
+            {canViewAudit && <NavLink to="/internal/audit" title="System audit log — every action across every file & borrower">Audit log</NavLink>}
             <span className="pill" title="Your role">{ROLE_LABEL[role] || role || 'Internal'}</span>
             <button className="btn ghost small" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
           </nav>

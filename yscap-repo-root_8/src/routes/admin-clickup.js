@@ -27,6 +27,48 @@ async function audit(req, action, appId, detail) {
   } catch (_) { /* audit best-effort */ }
 }
 
+// Read-only diagnostics for the ClickUp↔portal join: why a file isn't linked or
+// its LLC/conditions aren't populating. Super-admin gated (platform_setup).
+// Returns names, addresses, and linking IDs only — NO SSN or sensitive PII.
+//   GET /api/admin/clickup/diag?q=<borrower name or property address>
+router.get('/diag', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const out = {};
+    out.buckets = (await db.query(
+      `SELECT match_status, count(*)::int n FROM clickup_task_index WHERE match_status IS NOT NULL GROUP BY match_status ORDER BY n DESC`)).rows;
+    out.unlinkedSample = (await db.query(
+      `SELECT task_id, task_name, kind, match_status, borrower_id, application_id, llc_id
+         FROM clickup_task_index WHERE match_status IN ('skipped','ambiguous')
+        ORDER BY snapshot_at DESC NULLS LAST LIMIT 40`)).rows;
+    if (q) {
+      const like = '%' + q + '%';
+      out.apps = (await db.query(
+        `SELECT a.id, a.ys_loan_number, a.program, a.status, a.internal_status,
+                a.clickup_pipeline_task_id, a.sync_state, a.deleted_at,
+                a.property_address->>'oneLine' AS address, a.borrower_id, a.co_borrower_id,
+                a.llc_id, l.llc_name AS vesting_llc_name,
+                b.first_name, b.last_name,
+                (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS checklist_items,
+                EXISTS (SELECT 1 FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+                         WHERE ci.application_id=a.id AND t.code='rtl_cond_fraud') AS has_fraud_condition
+           FROM applications a
+           JOIN borrowers b ON b.id=a.borrower_id
+           LEFT JOIN llcs l ON l.id=a.llc_id
+          WHERE (b.first_name||' '||b.last_name ILIKE $1 OR a.property_address->>'oneLine' ILIKE $1)
+          ORDER BY a.created_at DESC LIMIT 25`, [like])).rows;
+      const bids = [...new Set(out.apps.map((a) => a.borrower_id).filter(Boolean))];
+      if (bids.length) {
+        out.llcs = (await db.query(
+          `SELECT id, borrower_id, llc_name, ein, source_task_id, is_verified FROM llcs WHERE borrower_id = ANY($1::uuid[]) ORDER BY created_at`, [bids])).rows;
+        out.taskIndex = (await db.query(
+          `SELECT task_id, task_name, kind, match_status, borrower_id, application_id, llc_id FROM clickup_task_index WHERE borrower_id = ANY($1::uuid[])`, [bids])).rows;
+      }
+    }
+    res.json(out);
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
 router.get('/health', async (req, res) => {
   const out = {
     enabled: cfg.clickupSyncEnabled, tokenSet: !!cfg.clickupToken, webhookSecretSet: !!cfg.clickupWebhookSecret,
@@ -105,8 +147,10 @@ router.post('/file/:appId/repull', async (req, res) => {
 });
 
 // Re-check every linked file's ClickUp program and descope any that were flipped
-// to a non-RTL type (e.g. Short-Term Rehab → DSCR). Portal-only; ClickUp untouched.
-// Returns {checked, descoped}. Safe to run any time (idempotent).
+// to a non-RTL type (e.g. Short-Term Rehab → DSCR); AND resolve orphaned files
+// whose ClickUp task was deleted (a task deleted+recreated leaves a stale duplicate)
+// — soft-archiving an empty stale duplicate that has a live sibling, or flagging it
+// for Manual Review otherwise. Portal-only; ClickUp untouched. Idempotent.
 router.post('/reconcile-programs', async (req, res) => {
   if (!cfg.clickupToken) return res.status(400).json({ error: 'CLICKUP_API_TOKEN not set' });
   // Fire-and-forget (one serial ClickUp getTask per linked file — can take minutes
@@ -160,6 +204,47 @@ router.post('/manual-review/:appId/resolve', async (req, res) => {
     if (r.rowCount === 0) return res.status(404).json({ error: 'file not found in Manual Review' });
     await audit(req, 'clickup_manual_review_resolve', req.params.appId, { action, sync_state: next });
     res.json({ ok: true, id: r.rows[0].id, sync_state: r.rows[0].sync_state });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// ---- Possible-duplicate borrower review (audit item #5) -------------------
+// Borrowers the inbound sync declined to auto-merge because they shared an email
+// with an existing profile but had no corroborating 2nd identity field. Each is a
+// DISTINCT profile that MIGHT be the same person; surfaced here so a human is told
+// instead of the split happening silently. Read-only list + a resolve action that
+// records the verdict — the actual record merge stays a deliberate manual step.
+router.get('/duplicate-candidates', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT d.id, d.reason, d.source_task_id, d.status, d.created_at,
+              d.borrower_id,         nb.first_name AS new_first,     nb.last_name AS new_last,     nb.email AS new_email,
+              d.matched_borrower_id, mb.first_name AS matched_first, mb.last_name AS matched_last, mb.email AS matched_email,
+              (SELECT count(*)::int FROM applications a WHERE a.borrower_id=d.borrower_id         AND a.deleted_at IS NULL) AS new_files,
+              (SELECT count(*)::int FROM applications a WHERE a.borrower_id=d.matched_borrower_id AND a.deleted_at IS NULL) AS matched_files
+         FROM borrower_dedup_candidates d
+         JOIN borrowers nb ON nb.id=d.borrower_id
+         JOIN borrowers mb ON mb.id=d.matched_borrower_id
+        WHERE d.status='open'
+        ORDER BY d.created_at DESC LIMIT 200`);
+    res.json({ rows: r.rows });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// Record the human verdict: 'distinct' (different people — keep separate),
+// 'duplicate' (same person — flag for a manual merge), or 'reviewed' (looked,
+// handled elsewhere). Closes the open alert. NEVER merges records automatically.
+router.post('/duplicate-candidates/:id/resolve', async (req, res) => {
+  const action = req.body && req.body.action;
+  const next = ['distinct', 'duplicate', 'reviewed'].includes(action) ? action : null;
+  if (!next) return res.status(400).json({ error: "action must be 'distinct', 'duplicate', or 'reviewed'" });
+  try {
+    const r = await db.query(
+      `UPDATE borrower_dedup_candidates SET status=$1, resolved_at=now(), resolved_by=$2
+        WHERE id=$3 AND status='open' RETURNING id, status`,
+      [next, req.actor.id, req.params.id]);
+    if (r.rowCount === 0) return res.status(404).json({ error: 'candidate not found or already resolved' });
+    await audit(req, 'clickup_dedup_resolve', null, JSON.stringify({ candidate: req.params.id, action: next }));
+    res.json({ ok: true, id: r.rows[0].id, status: r.rows[0].status });
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
 

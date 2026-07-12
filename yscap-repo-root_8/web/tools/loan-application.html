@@ -1,6 +1,16 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-<script src="../theme.js?v=n1"></script>
+<script src="../theme.js?v=n6"></script>
+<script>
+(function () {
+  try {
+    var de = document.documentElement;
+    de.setAttribute("data-theme", "light");   // white-first — matches the portal (belt-and-suspenders vs a stale theme.js)
+    var q = new URLSearchParams(location.search);
+    if (q.get("embed") === "1") de.setAttribute("data-embed", "1");
+  } catch (e) {}
+})();
+</script>
 <script src="../brand.js?v=n1"></script>
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,11 +22,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com/">
 <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=n1">
+<link rel="stylesheet" href="../suite.css?v=n7">
 <style>
 /* ===========================================================
    BORROWER APPLICATION — page-specific components
-   (everything else inherits from suite.css?v=n1)
+   (everything else inherits from suite.css?v=n7)
    =========================================================== */
 .app-wrap{ max-width:920px; margin:0 auto; padding:0 1.5rem; }
 .app-wrap.wide{ max-width:var(--maxw); }
@@ -720,6 +730,7 @@
                         <span style="display:inline-flex;align-items:center"><input type="checkbox" id="finReserve"><span class="track"></span></span>
                     </label>
                     <div class="field cond hidden" data-cond="finReserve" style="max-width:260px"><label for="resMonths">Months of reserve</label><div class="input"><input id="resMonths" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+                    <div class="field cond hidden" data-cond="finReserve" style="max-width:260px"><label for="resAmount">…or exact reserve <em>($ amount)</em></label><div class="input"><span class="adorn">$</span><input id="resAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
                 </div>
             </div>
 
@@ -927,9 +938,9 @@
 
 <script src="../suite.js?v=admin8"></script>
 <script src="rb-logo.js?v=admin8"></script>
-<script src="standard-program.js?v=admin12"></script>
+<script src="standard-program.js?v=admin13"></script>
 <script src="title-cost.js?v=admin8"></script>
-<script src="address-autocomplete.js?v=admin8"></script>
+<script src="address-autocomplete.js?v=admin9"></script>
 <script>
 /* =====================================================================
    YS LOAN APPLICATION — wizard logic (v2)
@@ -1153,7 +1164,7 @@
     show($('[data-cond="isRefi"]'), isRefi());
     show($('[data-cond="isAssign"]'), el("isAssign").checked && !isRefi());
     // rehab / contacts
-    show($('[data-cond="finReserve"]'), el("finReserve").checked);
+    $$('[data-cond="finReserve"]').forEach(function (n) { show(n, el("finReserve").checked); });
     show($('[data-cond="attyPurchase"]'), !isRefi());
     // total experience readout (ground-up counts only ground-up experience)
     var et = el("expTotal");
@@ -1224,7 +1235,7 @@
     L.push("As-is value: " + (num("asIs") ? YS.fmtUSD(num("asIs")) : "\u2014"));
     L.push("ARV: " + (num("arv") ? YS.fmtUSD(num("arv")) : "\u2014"));
     L.push("Rehab budget: " + (rehabTotal() ? YS.fmtUSD(rehabTotal()) : "$0"));
-    L.push("Interest reserve: " + ((el("finReserve") && el("finReserve").checked) ? (num("resMonths") + " months requested") : "Paid out of pocket"));
+    L.push("Interest reserve: " + ((el("finReserve") && el("finReserve").checked) ? (num("resAmount") > 0 ? (YS.fmtUSD(num("resAmount")) + " requested") : (num("resMonths") + " months requested")) : "Paid out of pocket"));
     L.push("Estimated FICO: " + (num("fico") || "\u2014"));
     L.push("Experience (36 mo): flips " + (num("expFlips") || 0) + ", holds/BRRRR " + (num("expBrrrr") || 0) + ", ground-up " + (num("expGround") || 0));
     if (totalLoan > 0) L.push("Indicated loan amount: " + YS.fmtUSD(totalLoan));
@@ -1283,6 +1294,7 @@
     var rehab = rehabTotal(), arv = num("arv");
     var fico = num("fico");
     var resMonths = (el("finReserve") && el("finReserve").checked) ? num("resMonths") : 0;
+    var resAmount = (el("finReserve") && el("finReserve").checked) ? num("resAmount") : 0;
     var inp = {
       loanType: isRefi() ? "Refinance" : "Purchase",
       cashOut: isCashOut(),
@@ -1295,7 +1307,7 @@
       asIsValue: num("asIs"),
       arv: arv,
       rehabBudget: rehab,
-      term: 12, irMonths: resMonths, accrual: "Non-Dutch", reserveInCost: true,
+      term: 12, irMonths: resMonths, irAmount: resAmount, accrual: "Non-Dutch", reserveInCost: true,
       sqftAddition: rehabType() === "Adding square footage" && !isGroundUp(),
       heavyRehab: rehabType() === "Heavy",
       propertyType: propTypeToken(),
@@ -1524,7 +1536,7 @@
     S.push({ title: "Acquisition & valuation", step: 2, items: a });
     S.push({ title: "Rehab, timeline & experience", step: 2, items: [
       ["Total rehab budget", money("rehab")],
-      ["Interest reserve", el("finReserve").checked ? (num("resMonths") + " months requested (if available)") : "Paid out of pocket"],
+      ["Interest reserve", el("finReserve").checked ? (num("resAmount") > 0 ? (YS.fmtUSD(num("resAmount")) + " requested (if available)") : (num("resMonths") + " months requested (if available)")) : "Paid out of pocket"],
       ["Project length", (val("projMonths") || "\u2014") + " months"], ["Requested term", (val("termMonths") || "\u2014") + " months"],
       ["Total experience", experienceTotal() + (experienceTotal() === 1 ? " project " : " projects ") + (isGroundUp() ? "(ground-up only)" : "(last 36 mo)") + (num("expRentals") ? " \u00b7 " + num("expRentals") + " rentals owned" : "")],
       ["Estimated FICO", ficoVal() ? String(ficoVal()) : ""]

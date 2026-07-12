@@ -59,7 +59,8 @@ export default function ToolModal({ url, title, onClose }) {
   }, [saveAndClose]);
 
   // Theme + reveal on DOM-ready rather than the full `load` event — a stalled
-  // third-party resource (fonts CDN) must not leave the tool hidden/light.
+  // third-party resource (fonts CDN) must not leave the tool hidden/unthemed.
+  // White-first: the embed matches the portal's white coloring around it.
   useEffect(() => {
     let done = false;
     const tick = setInterval(() => {
@@ -67,7 +68,7 @@ export default function ToolModal({ url, title, onClose }) {
       try {
         const doc = frameRef.current && frameRef.current.contentWindow && frameRef.current.contentWindow.document;
         if (!doc || doc.readyState === 'loading' || !doc.body || (doc.location && doc.location.href === 'about:blank')) return;
-        doc.documentElement.setAttribute('data-theme', 'dark');
+        doc.documentElement.setAttribute('data-theme', 'light');
         if (!doc.getElementById('ys-portal-embed-style')) {
           const style = doc.createElement('style');
           style.id = 'ys-portal-embed-style';
@@ -98,7 +99,7 @@ export default function ToolModal({ url, title, onClose }) {
       {saveError && (
         <div role="alert" style={{
           margin: '10px 16px 0', padding: '12px 14px', borderRadius: 10,
-          border: '1px solid #e06666', background: '#3a1414', color: '#ffd9d9',
+          border: '1px solid var(--danger)', background: 'var(--danger-soft)', color: 'var(--danger)',
           fontWeight: 600, lineHeight: 1.45,
         }}>
           <span style={{ marginRight: 8 }}>⛔</span>

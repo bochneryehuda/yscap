@@ -107,6 +107,10 @@ function buildInputs(app, experience, overrides) {
     expGround: experience ? num(experience.ground) : 0,
     term: parseTermMonths(app.term),
     irMonths: num(app.requested_ir_months),
+    // Interest reserve as an exact dollar amount — an alternative to months
+    // (owner-directed 2026-07-12). When > 0 the engines use it directly as the
+    // desired reserve; 0/absent falls back to the months path (no change).
+    irAmount: num(app.requested_ir_amount),
     heavyRehab: /heavy|gut|ground/i.test(clean(app.rehab_type)),
     sqftAddition: /square|sf|addition|ground/i.test(clean(app.rehab_type)) || num(app.sqft_post) > num(app.sqft_pre),
     targetLTC: 0,
@@ -114,7 +118,7 @@ function buildInputs(app, experience, overrides) {
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
-    'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'targetLTC',
+    'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC',
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
     'markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',

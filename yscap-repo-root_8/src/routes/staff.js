@@ -24,6 +24,7 @@ const conditionEngine = require('../lib/conditions/engine');
 const conditionRules = require('../lib/conditions/rules');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
+const { raiseEntityIssue } = require('../lib/raise-issue');
 
 const { can } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
@@ -32,6 +33,12 @@ router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'under
 // Who sees every file vs. only their assigned ones — now a capability, so an
 // admin can grant "see all files" to a coordinator without a code change.
 const seesAll = (req) => can(req.actor, 'see_all_files');
+// The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
+// (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
+// processors may open ANY borrower's full profile; loan_officers stay limited to
+// borrowers they've done a loan for. File-level access (/applications/:id) is
+// unchanged — a processor still opens individual files only where assigned.
+const seesAllBorrowers = (req) => seesAll(req) || (req.actor && req.actor.role === 'processor');
 // The standard post-closing trailing-doc set, seeded when a file funds.
 const POST_CLOSING_SET = [
   ['note', 'Final executed note'],
@@ -763,6 +770,87 @@ router.post('/applications/:id/vesting-llc-owners', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
+// The entities that are VERIFIABLE from inside this file — NOT the borrower's
+// whole LLC library. That set is exactly: the file's vesting entity
+// (applications.llc_id) PLUS the entities tied to this borrower's (and any
+// co-borrower's) track record — the LLCs that held/flipped the track-record
+// properties, either by the real track_records.llc_id link or by a name match
+// of the free-text track_records.entity_name against the borrower's own library.
+// Any LLC unrelated to the application or the track record is deliberately
+// excluded. Returns the same verify bundles as GET /borrowers/:id/llcs plus a
+// `vesting` flag, so the in-file review section shows only the relevant entities.
+// Path is under the /applications/:id scope middleware (assigned staff / seesAll).
+router.get('/applications/:id/verify-llcs', async (req, res) => {
+  try {
+    const idsRes = await db.query(
+      `WITH b AS (SELECT borrower_id, co_borrower_id, llc_id FROM applications WHERE id=$1)
+       SELECT DISTINCT x.id FROM (
+         -- the file's vesting entity
+         SELECT b.llc_id AS id FROM b WHERE b.llc_id IS NOT NULL
+         UNION
+         -- track-record entities, real FK link
+         SELECT t.llc_id FROM track_records t, b
+          WHERE t.llc_id IS NOT NULL
+            AND t.borrower_id IN (b.borrower_id, b.co_borrower_id)
+         UNION
+         -- track-record entities recorded only as free-text, matched by name
+         -- against THIS borrower's / co-borrower's own library (never global)
+         SELECT l.id FROM llcs l, b
+          WHERE l.borrower_id IN (b.borrower_id, b.co_borrower_id)
+            AND EXISTS (
+              SELECT 1 FROM track_records t
+               WHERE t.borrower_id IN (b.borrower_id, b.co_borrower_id)
+                 AND t.entity_name IS NOT NULL
+                 AND lower(btrim(t.entity_name)) = lower(btrim(l.llc_name))
+            )
+       ) x`, [req.params.id]);
+    const app = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+    const out = [];
+    for (const row of idsRes.rows) {
+      const bundle = await llcLib.getLlcBundle(row.id);
+      if (bundle) out.push({
+        ...bundle,
+        vesting: app.llc_id === row.id,
+        missing: llcLib.missingForVerification(bundle, bundle.members, bundle.slots),
+      });
+    }
+    // Vesting entity first, then the rest by name for a stable order.
+    out.sort((a2, b2) => (b2.vesting - a2.vesting) || String(a2.llc_name || '').localeCompare(String(b2.llc_name || '')));
+    res.json({ vestingLlcId: app.llc_id || null, llcs: out });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// Set (or change) the file's vesting entity — staff parity with the borrower's
+// link-llc. The entity must belong to the file's borrower or co-borrower. Honors
+// the Clear-to-Close lock (#84) and keeps the multi-borrower owner link, LLC
+// document checklist, and LLC condition in step (same follow-through as
+// borrower.js link-llc). Used by the in-file entity section when staff stand up
+// / pick the vesting entity for a file that has none.
+router.post('/applications/:id/vesting-llc', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.llcId) return res.status(400).json({ error: 'llcId required' });
+    const app = (await db.query(
+      `SELECT id, llc_id, status, borrower_id, co_borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`,
+      [req.params.id])).rows[0];
+    if (!app) return res.status(404).json({ error: 'not found' });
+    if (['clear_to_close', 'funded', 'declined', 'withdrawn'].includes(app.status))
+      return res.status(409).json({ error: 'This file is Clear to Close — the vesting entity is locked. Move it back to an earlier status to change it.' });
+    const own = (await db.query(
+      `SELECT id FROM llcs WHERE id=$1 AND borrower_id = ANY($2::uuid[])`,
+      [b.llcId, [app.borrower_id, app.co_borrower_id].filter(Boolean)])).rows[0];
+    if (!own) return res.status(404).json({ error: 'entity not found for this borrower' });
+    const previous = app.llc_id;
+    // Single authority (src/lib/vesting.js): set llc_id + the full wiring (owner
+    // links, LLC doc checklist, LLC condition, rule re-eval) AND enqueue the
+    // outbound ClickUp push so the portal-set vesting entity propagates back to the
+    // task — previously the vesting change was never pushed to ClickUp.
+    try { await require('../lib/vesting').setVestingLlc(req.params.id, b.llcId, { source: 'staff', actor: req.actor, force: true }); } catch (_) {}
+    await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
 /* ---------------- Product registration / term sheet ----------------
    Pricing is computed here on the server from the same FROZEN engines the
    browser loads, so a registered product is always authoritative. */
@@ -929,6 +1017,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // repopulating the track-record condition is handled inside
     // persistProductRegistration above.)
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
+    // Gold Standard Program requires a 5% SOW contingency: if the file just
+    // registered Gold and the saved Scope of Work doesn't carry it, REOPEN the
+    // rehab-budget condition (even if it was already signed off) with a FATAL note.
+    try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
 
     // Register committed the priced scenario onto the file (loan amount, rate,
     // rehab budget, term, IR months, ARV / as-is / purchase, assignment split,
@@ -982,18 +1074,27 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
          VALUES ('application',$1,'Rehab budget','Rehab budget','borrower','task','rehab_budget','staff',$2) RETURNING id`, [appId, req.actor.id]);
       itemId = ins.rows[0].id;
     }
-    // FATAL rehab-budget gate (#75): the Scope of Work total must match the
-    // file's required rehab budget EXACTLY and can never override it. Checked
-    // before the condition is marked received, so a mismatch leaves it open.
+    // Scope-of-Work condition logic (owner-directed 2026-07-09): the SOW always
+    // saves (never refused) and NEVER changes the file's rehab budget (frozen). The
+    // exact-match rule is a CONDITION gate only — the condition stays open with a
+    // plain-language note until the line items total the budget exactly.
     const total = Number(payload.total);
-    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, total);
-    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total });
-    await db.query(`UPDATE checklist_items SET tool_payload=$2, status='received', updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload)]);
-    // Seed the file budget from the SOW ONLY when none is set yet (never override).
-    if (chk.seed && isFinite(total) && total >= 0) await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [appId, total]);
+    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, payload);
+    const mismatch = chk.ok ? null : { required: chk.required, total, message: chk.message };
+    const goldSow = await require('../lib/rehab-budget').checkGoldSow(appId, payload);
+    const st = (mismatch || !goldSow.ok) ? (isFinite(total) && total > 0 ? 'issue' : null) : 'received';
+    await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload), st]);
+    const rbMoney = require('../lib/rehab-budget').money;
+    const note = mismatch
+      ? `[auto] Scope of Work (line items ${rbMoney(total)}) does not match the file's rehab budget ${rbMoney(mismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(mismatch.required)}.`
+      : (!goldSow.ok
+        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
+        : `[auto] Scope of Work totals ${rbMoney(total)} and matches the file's rehab budget — ready to clear.`);
+    try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [itemId, note]); } catch (_) {}
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
-    res.json({ ok: true, itemId });
+    const notice = mismatch || (!goldSow.ok ? { gold: true, message: require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG } : undefined);
+    res.json({ ok: true, itemId, mismatch: notice });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1043,23 +1144,30 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const payload = { ...rawPayload };
   delete payload.attachments;
   if (attachments.length) payload.export_files = attachments.map((a) => ({ filename: a.filename, contentType: a.contentType }));
-  // FATAL rehab-budget gate (#75) — SOW total must match the file budget exactly
-  // and never override it; refused before the condition is marked received.
-  let sowSeed = false;
+  // Scope-of-Work condition logic (owner-directed 2026-07-09): the SOW always saves
+  // (never refused) and NEVER changes the file's rehab budget (frozen). The
+  // exact-match rule is a CONDITION gate only — the condition stays open with a
+  // plain-language note until the line items total the budget exactly.
+  let sowMismatch = null, goldSow = { ok: true };
   if (toolKey === 'rehab_budget') {
-    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
-    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
-    sowSeed = chk.seed;
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
+    if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
+    goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
   }
+  const rbTotal = Number(payload && payload.total);
+  const toolStatus = (sowMismatch || !goldSow.ok) ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
-    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status='received', updated_at=now() WHERE id=$1`,
+    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now() WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload),
-     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
+     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
   if (toolKey === 'rehab_budget') {
-    const total = Number(payload && payload.total);
-    if (sowSeed && isFinite(total) && total >= 0) {
-      await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
-    }
+    const rbMoney = require('../lib/rehab-budget').money;
+    const note = sowMismatch
+      ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
+      : (!goldSow.ok
+        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
+        : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`);
+    try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
   // A resubmission outdates the previous exports: the old PDF/Excel are
@@ -1084,21 +1192,40 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     out.push({ id: r.rows[0].id, filename: a.filename });
   }
   await audit(req, 'staff_tool_submit', 'checklist_item', req.params.itemId, { toolKey, files: out.map((x) => x.filename) });
-  res.json({ ok: true, status: 'received', exports: out });
+  const sowNotice = sowMismatch || (!goldSow.ok ? { gold: true, message: require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG } : undefined);
+  res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowNotice, exports: out });
 });
 
 router.get('/applications/:id/checklist', async (req, res) => {
+  // Recompute the experience/track-record condition from the file's current
+  // requested experience + verified counts BEFORE reading the checklist — same as
+  // the borrower side (borrower.js). Without this the staff conditions view could
+  // show a stale "No experience required" after experience was entered on the
+  // application or in Products & Pricing (all-sides parity).
+  try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
   const r = await db.query(
     `SELECT ci.id, ci.label, ci.status, ci.audience, ci.item_kind, ci.is_required,
             ci.phase, ci.role_scope, ci.hint, ci.is_gate, ci.is_milestone, ci.sort_order,
             ci.due_date, ci.notes, ci.created_by_kind, ci.created_at,
             ci.field_key, ci.category, ci.origin_kind, ci.origin_detail, ci.esign_doc, ci.borrower_label,
+            -- The borrower-facing hint carries an "accept + request another document"
+            -- ask ("Still needed: …") — staff must see what was requested, not only
+            -- the borrower (#125). Rendered on the staff borrower-conditions panel.
+            ci.borrower_hint,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             (SELECT slots FROM checklist_templates t WHERE t.id=ci.template_id) AS slots,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
             ci.assignee_staff_id, asg.full_name AS assignee_name,
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
-            ci.reviewed_by, rv.full_name AS reviewed_by_name, ci.reviewed_at
+            ci.reviewed_by, rv.full_name AS reviewed_by_name, ci.reviewed_at,
+            -- The borrower-visible reason a condition was rejected / pushed back /
+            -- raised (#125): staff must see it on the condition too, not only in the
+            -- separate documents panel. Falls back to the latest rejected document's
+            -- reason so the staff condition row shows the same "why" the borrower sees.
+            ci.issue_reason, ci.raised_entity,
+            (SELECT d.rejection_reason FROM documents d
+              WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
+              ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1) AS rejection_reason
        FROM checklist_items ci
        LEFT JOIN staff_users asg ON asg.id = ci.assignee_staff_id
        LEFT JOIN staff_users so  ON so.id  = ci.signed_off_by
@@ -1326,9 +1453,26 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
                    AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
           AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'
           AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = documents.checklist_item_id AND ci.tpr_exclude IS TRUE)`, [req.params.id])).rows[0].c;
+    // The DPR also packages the borrower's (+ co-borrower's) track-record
+    // verification documents — count them so the panel promise matches the ZIP.
+    const trackDocs = (await db.query(
+      `SELECT count(*)::int c FROM documents
+        WHERE is_current=true AND source_type<>'chat_attachment' AND review_status<>'rejected'
+          AND track_record_id IN (
+            SELECT id FROM track_records WHERE borrower_id IN (
+              SELECT borrower_id FROM applications WHERE id=$1
+              UNION SELECT co_borrower_id FROM applications WHERE id=$1 AND co_borrower_id IS NOT NULL))`, [req.params.id])).rows[0].c;
+    // A document condition only counts as "missing" for the export when it has
+    // NO accepted current document and isn't satisfied/signed off. (Accepting a
+    // document now leaves the condition 'received' until sign-off — #135 — so
+    // 'satisfied' alone would wrongly flag accepted-but-unsigned docs as missing.)
     const missing = (await db.query(
-      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied' AND tpr_exclude IS NOT TRUE ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
-    res.json({ includedCount: included, missing });
+      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items ci
+        WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied'
+          AND signed_off_at IS NULL AND tpr_exclude IS NOT TRUE
+          AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id=ci.id AND d.is_current AND d.review_status='accepted')
+        ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
+    res.json({ includedCount: included, trackDocs, missing });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1486,7 +1630,7 @@ async function signOffGate(itemId, actor) {
   // Experience for the FILE counts BOTH borrowers on it (#80).
   const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const reg = (await db.query(
-    `SELECT inputs, quote FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
+    `SELECT inputs, quote, program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [item.application_id])).rows[0] || null;
   const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
   // Exact match to the cent (owner-directed): the Scope of Work must equal the
@@ -1503,8 +1647,21 @@ async function signOffGate(itemId, actor) {
     if (sowTotal == null) return 'The Scope of Work / rehab budget has not been submitted yet.';
     const appBudget = Number(app.rehab_budget) || 0;
     const regBudget = reg.inputs && reg.inputs.rehabBudget != null ? Number(reg.inputs.rehabBudget) : null;
-    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget))) {
-      return `Budgets do not match — Scope of Work total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must all agree before sign-off: update the Scope of Work or re-register the product so the numbers match.`;
+    // The FIRST-PAGE construction budget on the SOW (state.target) — prefilled
+    // from the application ("the total you start at originally"). When set it must
+    // ALSO equal the budget exactly, so the number you start at, the line-item
+    // total, the file budget and the product budget all agree (owner-directed
+    // 2026-07-10 belt-and-suspenders).
+    const fpTarget = require('../lib/rehab-budget').firstPageBudget(item.tool_payload);
+    const fpSet = fpTarget != null && fpTarget > 0;
+    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget)) || (fpSet && !eq(fpTarget, appBudget))) {
+      return `Budgets do not match — first-page construction budget ${fpSet ? money(fpTarget) : '—'}, Scope of Work line-item total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
+    }
+    // Gold Standard Program: the Scope of Work must carry a >= 5% construction
+    // contingency (owner-directed 2026-07-12). The budget still matches exactly
+    // above — this is a composition requirement on top of it.
+    if (/gold/i.test(String(reg.program || '')) && !require('../lib/rehab-budget').goldContingencyOk(item.tool_payload)) {
+      return require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG;
     }
     return null;
   }
@@ -1569,6 +1726,19 @@ router.patch('/checklist/:itemId', async (req, res) => {
   if (b.reviewed === true && !can(req.actor, 'review_conditions') && !canComplete) {
     return res.status(403).json({ error: 'You do not have permission to review conditions on this file.' });
   }
+  // Push-back / reject / reopen: send a condition back to the borrower with a
+  // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
+  // verb covers reject (an open item is not acceptable), push-back, and add-back /
+  // reopen (a satisfied or signed-off item is sent back). A reason is REQUIRED. Any
+  // reviewer may push back (loan officers included).
+  if (b.pushBack === true) {
+    if (!can(req.actor, 'review_conditions') && !canComplete) {
+      return res.status(403).json({ error: 'You do not have permission to send conditions back on this file.' });
+    }
+    if (!String(b.issueReason || '').trim()) {
+      return res.status(400).json({ error: 'a reason is required to send this condition back to the borrower' });
+    }
+  }
   // Data-integrity gates on the three tool-backed conditions: a product must be
   // registered, the rehab budget must agree across SOW/file/product, and
   // verified experience must back the registered product. Blocks the sign-off
@@ -1584,8 +1754,9 @@ router.patch('/checklist/:itemId', async (req, res) => {
 
   // Sign-off forces status='satisfied' below, so skip an explicit status here
   // when signing off in the same call — otherwise the UPDATE sets the `status`
-  // column twice and Postgres rejects it (42601) with a 500.
-  if (b.status && b.signedOff !== true) add('status=?', b.status);
+  // column twice and Postgres rejects it (42601) with a 500. Push-back also owns
+  // the status ('issue'), so skip the explicit one in that case too.
+  if (b.status && b.signedOff !== true && b.pushBack !== true) add('status=?', b.status);
   if (b.notes != null) add('notes=?', b.notes);
   if ('assigneeStaffId' in b) add('assignee_staff_id=?', b.assigneeStaffId || null);
   // Requirement toggle — e.g. the LLC's Certificate of Good Standing is
@@ -1608,6 +1779,20 @@ router.patch('/checklist/:itemId', async (req, res) => {
     sets.push('reviewed_by=NULL', 'reviewed_at=NULL');
   }
 
+  // Push-back: flip to 'issue', clear every completion stamp (sign-off + review),
+  // and record the borrower-visible reason. Works on an open OR an already-cleared
+  // condition (reopen / add-back). issue_reason is what the borrower is shown.
+  if (b.pushBack === true) {
+    add('issue_reason=?', String(b.issueReason).slice(0, 500));
+    sets.push("status='issue'", 'signed_off_by=NULL', 'signed_off_at=NULL', 'reviewed_by=NULL', 'reviewed_at=NULL');
+  } else if (b.issueReason != null) {
+    // A plain reject that passes an explicit status='issue' can carry the reason.
+    add('issue_reason=?', String(b.issueReason).slice(0, 500));
+  }
+  // Resolving a condition clears any stale push-back reason so a re-satisfied item
+  // never keeps showing an old "needs a fix" note.
+  if (b.signedOff === true || b.status === 'satisfied') sets.push('issue_reason=NULL');
+
   const r = await db.query(`UPDATE checklist_items SET ${sets.join(', ')} WHERE id=$1`, params);
   // A wrong/deleted item id used to answer {ok:true} — the UI showed a sign-off
   // that never persisted. Phantom success is this repo's #1 bug class.
@@ -1615,6 +1800,30 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // Propagate a mapped condition's status to its ClickUp dropdown (scoped push;
   // self-gating no-op for unmapped items / unlinked files).
   enqueueChecklistStatusPush(req.params.itemId).catch(() => {});
+
+  // Push-back: audit it and tell the borrower what needs fixing (only for
+  // borrower-facing conditions — a staff-only item has no borrower to notify).
+  if (b.pushBack === true) {
+    try { await audit(req, 'push_back_condition', 'checklist_item', req.params.itemId, { reason: String(b.issueReason).slice(0, 500) }); } catch (_) {}
+    try {
+      const it = await db.query(
+        `SELECT ci.application_id, ci.audience, COALESCE(ci.borrower_label, ci.label) AS label, a.borrower_id
+           FROM checklist_items ci LEFT JOIN applications a ON a.id=ci.application_id WHERE ci.id=$1`,
+        [req.params.itemId]);
+      const row = it.rows[0];
+      if (row && row.borrower_id && row.audience !== 'staff') {
+        const ctx = row.application_id ? await notify.fileContext(row.application_id) : null;
+        await notify.notifyBorrower(row.borrower_id, {
+          type: 'doc_rejected',
+          title: `"${row.label}" needs your attention`,
+          body: `Your loan team sent "${row.label}" back${ctx ? ` (${ctx.label})` : ''}: ${String(b.issueReason).slice(0, 180)}`,
+          meta: (ctx && ctx.meta) || undefined,
+          applicationId: row.application_id,
+          link: row.application_id ? `/app/${row.application_id}` : '/profile',
+          ctaLabel: 'Review the condition' });
+      }
+    } catch (_) { /* best-effort */ }
+  }
   res.json({ ok: true });
 });
 
@@ -1658,7 +1867,7 @@ router.post('/applications/:id/assign', async (req, res) => {
 // May the actor see a specific borrower? seesAll (admin/super_admin/underwriter)
 // always; otherwise only if assigned to one of that borrower's files.
 async function canSeeBorrowerId(req, borrowerId) {
-  if (seesAll(req)) return true;
+  if (seesAllBorrowers(req)) return true;
   if (!borrowerId) return false;
   const r = await db.query(
     `SELECT 1 FROM applications
@@ -1733,21 +1942,27 @@ router.get('/borrowers', async (req, res) => {
   try {
     const params = [];
     let scope = '';
-    if (!seesAll(req)) {
+    if (!seesAllBorrowers(req)) {
       params.push(req.actor.id);
       scope = `WHERE EXISTS (SELECT 1 FROM applications a
                               WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
                                 AND (a.loan_officer_id=$1 OR a.processor_id=$1))`;
     }
     const r = await db.query(
-      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.tier, b.created_at,
               (ba.borrower_id IS NOT NULL) AS has_account,
               ba.last_login_at, b.last_seen_at,
               (SELECT count(*)::int FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL) AS files,
-              (SELECT id FROM applications WHERE borrower_id=b.id AND deleted_at IS NULL
-                 ORDER BY created_at DESC LIMIT 1) AS latest_file_id
+              lf.id AS latest_file_id,
+              off.full_name AS loan_officer_name
          FROM borrowers b
          LEFT JOIN borrower_auth ba ON ba.borrower_id=b.id
+         LEFT JOIN LATERAL (
+           SELECT id, loan_officer_id FROM applications
+            WHERE borrower_id=b.id AND deleted_at IS NULL
+            ORDER BY created_at DESC LIMIT 1
+         ) lf ON true
+         LEFT JOIN staff_users off ON off.id = lf.loan_officer_id
         ${scope}
         ORDER BY COALESCE(ba.last_login_at, b.last_seen_at) DESC NULLS LAST, b.last_name, b.first_name
         LIMIT 500`, params);
@@ -1819,10 +2034,203 @@ router.get('/borrowers/:id', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const r = await db.query(
-      `SELECT id,first_name,last_name,email,cell_phone,date_of_birth,ssn_last4,fico,citizenship,tier FROM borrowers WHERE id=$1`,
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.date_of_birth,
+              b.ssn_last4, b.fico, b.citizenship, b.marital_status, b.dependents_count, b.tier,
+              b.current_address, b.mailing_address, b.years_at_residence, b.months_at_residence,
+              b.housing_status, b.housing_payment, b.contact_type, b.primary_officer_id,
+              b.photo_id_document_id, b.created_at, b.last_seen_at,
+              (SELECT last_login_at FROM borrower_auth WHERE borrower_id=b.id) AS last_login_at,
+              (b.ssn_encrypted IS NOT NULL) AS has_ssn,
+              off.full_name AS primary_officer_name
+         FROM borrowers b
+         LEFT JOIN staff_users off ON off.id = b.primary_officer_id
+        WHERE b.id=$1`,
       [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     res.json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Edit a borrower's CRM / contact fields (staff, audited). Identity fields that
+// belong to underwriting (SSN, FICO, DOB, legal name) are intentionally NOT
+// editable here — those are corrected on the file. This is contact + CRM metadata.
+router.patch('/borrowers/:id', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const sets = [], vals = [req.params.id];
+    const put = (col, val) => { vals.push(val); sets.push(`${col}=$${vals.length}`); };
+    if (b.email != null) put('email', String(b.email).trim().toLowerCase() || null);
+    if (b.cellPhone != null) put('cell_phone', String(b.cellPhone).trim() || null);
+    if (b.contactType != null) put('contact_type', String(b.contactType).trim() || null);
+    if (b.maritalStatus != null) put('marital_status', String(b.maritalStatus).trim() || null);
+    if (b.citizenship != null) put('citizenship', String(b.citizenship).trim() || null);
+    if (b.currentAddress !== undefined) put('current_address', b.currentAddress ? JSON.stringify(b.currentAddress) : null);
+    if (b.mailingAddress !== undefined) put('mailing_address', b.mailingAddress ? JSON.stringify(b.mailingAddress) : null);
+    if (b.primaryOfficerId !== undefined) put('primary_officer_id', b.primaryOfficerId || null);
+    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+    sets.push('updated_at=now()');
+    try {
+      await db.query(`UPDATE borrowers SET ${sets.join(', ')} WHERE id=$1`, vals);
+    } catch (e) {
+      if (e.code === '23505') return res.status(409).json({ error: 'that email is already in use by another borrower' });
+      throw e;
+    }
+    await audit(req, 'update_borrower', 'borrower', req.params.id, { fields: sets.slice(0, -1).map((s) => s.split('=')[0]) });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// The borrower's loan files (one per property) — their "mortgages with us". Scoped
+// by canSeeBorrower; the list is view context (opening an individual file still
+// goes through the /applications/:id scope). Includes the borrower as primary or
+// co-borrower so a co-borrowed file shows up on both profiles.
+router.get('/borrowers/:id/applications', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT a.id, a.ys_loan_number, a.program, a.loan_type, a.status, a.internal_status,
+              a.property_address, a.loan_amount, a.created_at, a.expected_closing, a.actual_closing,
+              a.borrower_id=$1 AS is_primary, a.co_borrower_id=$1 AS is_co_borrower,
+              off.full_name AS loan_officer_name, l.llc_name AS entity_name, l.is_verified AS entity_verified
+         FROM applications a
+         LEFT JOIN staff_users off ON off.id = a.loan_officer_id
+         LEFT JOIN llcs l ON l.id = a.llc_id
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
+        ORDER BY a.created_at DESC`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Open conditions/tasks-to-clear rolled up across ALL of the borrower's files —
+// so staff see everything outstanding for the person in one place.
+router.get('/borrowers/:id/conditions', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT c.id, c.application_id, c.title, c.status, c.audience, c.severity, c.created_at,
+              a.ys_loan_number, a.property_address
+         FROM conditions c
+         JOIN applications a ON a.id = c.application_id
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
+          AND c.status IN ('open','borrower_responded')
+        ORDER BY c.created_at DESC`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Reminders + tasks across the borrower's files (the #93 system, rolled up per
+// borrower). Creating a task attaches it to the chosen file (or the latest file)
+// so it flows through the existing, tested reminder dispatcher unchanged.
+router.get('/borrowers/:id/reminders', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT r.id, r.application_id, r.kind, r.title, r.body, r.due_at, r.status,
+              r.assignee_staff_id, r.completed_at, r.created_at,
+              a.ys_loan_number, a.property_address,
+              asg.full_name AS assignee_name
+         FROM reminders r
+         JOIN applications a ON a.id = r.application_id
+         LEFT JOIN staff_users asg ON asg.id = r.assignee_staff_id
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
+        ORDER BY (r.status='scheduled') DESC, r.due_at ASC`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/borrowers/:id/reminders', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const body = req.body || {};
+    // Attach to the given file if it belongs to this borrower, else the latest file.
+    let appId = body.applicationId || null;
+    const owns = await db.query(
+      `SELECT id FROM applications
+        WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL
+          ${appId ? 'AND id=$2' : ''}
+        ORDER BY created_at DESC LIMIT 1`, appId ? [req.params.id, appId] : [req.params.id]);
+    if (!owns.rows[0]) return res.status(400).json({ error: 'this borrower has no file to attach a task to' });
+    appId = owns.rows[0].id;
+    const id = await reminders.create(appId, body, req.actor);
+    await audit(req, 'create_reminder', 'application', appId, { reminderId: id, viaBorrower: req.params.id });
+    res.json({ ok: true, id, applicationId: appId });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// The borrower's document vault — every document on file for the person, across
+// their files + entity + track record. Download goes through /documents/:id/download.
+router.get('/borrowers/:id/documents', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT d.id, d.filename, d.content_type, d.size_bytes, d.doc_kind, d.created_at,
+              d.application_id, d.llc_id, d.track_record_id,
+              a.ys_loan_number
+         FROM documents d
+         LEFT JOIN applications a ON a.id = d.application_id
+        WHERE d.borrower_id=$1
+           OR d.application_id IN (SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL)
+           OR d.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$1)
+           OR d.track_record_id IN (SELECT id FROM track_records WHERE borrower_id=$1)
+        ORDER BY d.created_at DESC LIMIT 500`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Activity timeline for the borrower — staff actions on the person and on their
+// files (audit trail: SSN reveals, edits, password sets, doc downloads, etc.).
+router.get('/borrowers/:id/activity', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT g.id, g.action, g.entity_type, g.entity_id, g.detail, g.created_at,
+              g.actor_kind, su.full_name AS actor_name
+         FROM audit_log g
+         LEFT JOIN staff_users su ON su.id = g.actor_id AND g.actor_kind='staff'
+        WHERE (g.entity_type='borrower' AND g.entity_id=$1)
+           OR (g.entity_type IN ('application','document','track_record','llc')
+               AND g.entity_id IN (
+                 SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1)
+                 UNION SELECT id FROM llcs WHERE borrower_id=$1
+                 UNION SELECT id FROM track_records WHERE borrower_id=$1))
+        ORDER BY g.created_at DESC LIMIT 200`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Internal notes timeline on the borrower (staff-only, free text). A core CRM
+// feature: log a call, a preference, a heads-up. Author + timestamp captured.
+router.get('/borrowers/:id/notes', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT n.id, n.body, n.created_at, n.updated_at, n.author_staff_id, su.full_name AS author_name
+         FROM borrower_notes n LEFT JOIN staff_users su ON su.id = n.author_staff_id
+        WHERE n.borrower_id=$1 ORDER BY n.created_at DESC`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/borrowers/:id/notes', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const body = String((req.body || {}).body || '').trim();
+    if (!body) return res.status(400).json({ error: 'note body required' });
+    const r = await db.query(
+      `INSERT INTO borrower_notes (borrower_id, author_staff_id, body) VALUES ($1,$2,$3) RETURNING id`,
+      [req.params.id, req.actor.id, body]);
+    await audit(req, 'add_borrower_note', 'borrower', req.params.id, { noteId: r.rows[0].id });
+    res.json({ ok: true, id: r.rows[0].id });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.delete('/borrowers/:id/notes/:nid', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    await db.query(`DELETE FROM borrower_notes WHERE id=$1 AND borrower_id=$2`, [req.params.nid, req.params.id]);
+    await audit(req, 'delete_borrower_note', 'borrower', req.params.id, { noteId: req.params.nid });
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 // A borrower's investment track record (experience) — drives the pricing tier.
@@ -1845,7 +2253,7 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
 });
 // Staff manage the borrower's general track record on their behalf: add,
 // edit, remove entries, and attach/read the per-entry supporting documents.
-const { trackRecordErrors, trackRecordCols } = require('./borrower');
+const { trackRecordErrors, trackRecordCols, trackRecordMissing } = require('./borrower');
 router.post('/borrowers/:id/track-records', async (req, res) => {
   const b = req.body || {};
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -1864,7 +2272,7 @@ router.post('/borrowers/:id/track-records', async (req, res) => {
     [req.params.id, ...vals]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(req.params.id); } catch (_) {}
   await audit(req, 'staff_add_track_record', 'track_record', r.rows[0].id);
-  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
+  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id, missing: trackRecordMissing(b) });
 });
 router.put('/track-records/:id', async (req, res) => {
   const b = req.body || {};
@@ -1888,7 +2296,7 @@ router.put('/track-records/:id', async (req, res) => {
     [req.params.id, ...vals]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   await audit(req, 'staff_edit_track_record', 'track_record', req.params.id);
-  res.json({ ok: true });
+  res.json({ ok: true, missing: trackRecordMissing(b) });
 });
 router.delete('/track-records/:id', async (req, res) => {
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
@@ -1924,8 +2332,9 @@ router.get('/track-records/:id/documents', async (req, res) => {
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   const r = await db.query(
-    `SELECT id,filename,content_type,size_bytes,uploaded_by_kind,created_at FROM documents
-      WHERE track_record_id=$1 ORDER BY created_at`, [req.params.id]);
+    `SELECT id,filename,content_type,size_bytes,uploaded_by_kind,created_at,
+            review_status,rejection_reason,reviewed_at FROM documents
+      WHERE track_record_id=$1 AND is_current ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
 });
 router.post('/track-records/:id/documents', async (req, res) => {
@@ -2001,6 +2410,71 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
 // Fill in / correct an entity's details on the borrower's behalf. Mirrors the
 // borrower's PATCH /llcs/:id, including the verified-lock: a verified entity
 // must be unlocked (POST /llcs/:id/verify {verified:false}) before edits.
+// Staff single-entity bundle — parity with the borrower GET /llcs/:id so the
+// SHARED LlcManager component works from the staff CRM entity section (it was
+// hard-wired to the borrower-only endpoint, which 403'd for staff — the CRM
+// Entities tab showed "borrower only"). Scoped by canSeeBorrowerId; staff always
+// manage (read_only:false).
+router.get('/llcs/:id', async (req, res) => {
+  try {
+    const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    const bundle = await llcLib.getLlcBundle(req.params.id);
+    if (!bundle) return res.status(404).json({ error: 'not found' });
+    res.json({ ...bundle, read_only: false });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
+// Staff upload of an entity document into a specific LLC checklist slot, WITHOUT a
+// file context (the CRM entity library has no appId). Mirrors the LLC path of the
+// staff app-doc upload; visibility='borrower' so the entity's docs stay shared.
+router.post('/llcs/:id/documents', async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+    const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before replacing its documents' });
+    if (b.checklistItemId) {
+      const ci = await db.query(`SELECT id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, req.params.id]);
+      if (!ci.rows[0]) return res.status(404).json({ error: 'checklist item not found on this entity' });
+    }
+    const buf = Buffer.from(b.dataBase64, 'base64');
+    if (!buf.length) return res.status(400).json({ error: 'empty file' });
+    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    const r = await db.query(
+      `INSERT INTO documents (checklist_item_id,llc_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,slot_label,visibility)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'borrower') RETURNING id`,
+      [b.checklistItemId || null, req.params.id, own.rows[0].borrower_id, b.filename,
+       b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, slot]);
+    if (b.checklistItemId) {
+      if (b.replaceDocumentId) {
+        await db.query(
+          `UPDATE documents SET is_current=false,
+              review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+            WHERE id=$1 AND checklist_item_id=$2`, [b.replaceDocumentId, b.checklistItemId]);
+      }
+      await db.query(
+        `UPDATE documents SET is_current=false,
+            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+          WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
+            AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
+            AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
+        [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);
+      await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
+      enqueueChecklistStatusPush(b.checklistItemId).catch(() => {});
+    }
+    try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
+    await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, llcId: req.params.id });
+    res.status(201).json({ ok: true, documentId: r.rows[0].id });
+  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+});
+
 router.patch('/llcs/:id', async (req, res) => {
   const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -2055,6 +2529,17 @@ router.post('/llcs/:id/verify', async (req, res) => {
   const b = req.body || {};
   const verified = b.verified !== false;   // default true (backward compatible)
 
+  // Verifying an LLC SIGNS OFF the rtl_p1_llc condition (satisfied + signed_off)
+  // on every vesting file — that is the processor's call, never a loan officer's
+  // (#126). Revoking is a "send it back" any reviewer may do, but it reopens the
+  // borrower's condition, so it now REQUIRES a reason the borrower is shown (#125).
+  if (verified && !can(req.actor, 'sign_off_conditions')) {
+    return res.status(403).json({ error: 'Only a processor can verify an LLC — verifying signs off the entity condition. Reject a document or raise an issue instead.' });
+  }
+  if (!verified && !String(b.reason || '').trim()) {
+    return res.status(400).json({ error: 'a reason is required to revoke verification — the borrower is told why' });
+  }
+
   if (verified) {
     const bundle = await llcLib.getLlcBundle(req.params.id);
     const missing = llcLib.missingForVerification(bundle, bundle.members, bundle.slots);
@@ -2090,11 +2575,29 @@ router.post('/llcs/:id/verify', async (req, res) => {
 // 'verified' and 'limited' both count toward the borrower's experience tier.
 const TR_STATUSES = ['pending', 'docs', 'verified', 'limited'];
 router.post('/track-records/:id/verify', async (req, res) => {
-  const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
+  const tr = await db.query(
+    `SELECT t.borrower_id, t.is_verified, t.property_address
+       FROM track_records t WHERE t.id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   const status = TR_STATUSES.includes(req.body && req.body.status) ? req.body.status : 'verified';
   const counts = status === 'verified' || status === 'limited';
+  const wasVerified = tr.rows[0].is_verified === true;
+  // Moving a currently-verified line item to a non-counting status is a REVOKE:
+  // it pulls the project out of the experience tier and reopens the experience
+  // condition, so — exactly like the LLC unverify (#125/#147) — it REQUIRES a
+  // reason the borrower is shown and it notifies them.
+  const isRevoke = wasVerified && !counts;
+  // Marking a line item verified/limited COUNTS toward the experience tier and
+  // drives the experience condition to satisfied — a sign-off, so processor-only
+  // (#126). A non-counting status (pending/docs) is a review action anyone may set.
+  if (counts && !can(req.actor, 'sign_off_conditions')) {
+    return res.status(403).json({ error: 'Only a processor can verify a track-record line item — it signs off the experience condition. Request documents or raise an issue instead.' });
+  }
+  const reason = String((req.body && req.body.reason) || '').trim().slice(0, 500);
+  if (isRevoke && !reason) {
+    return res.status(400).json({ error: 'a reason is required to revoke verification — the borrower is told why' });
+  }
   await db.query(
     `UPDATE track_records
         SET verification_status=$3,
@@ -2109,9 +2612,63 @@ router.post('/track-records/:id/verify', async (req, res) => {
     [tr.rows[0].borrower_id]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   // Tier / verified-experience counts are rule-engine fields.
-  try { await conditionEngine.evaluateBorrowerApplications(tr.rows[0].borrower_id, { actor: req.actor, reason: 'track_record_verified' }); } catch (_) {}
-  await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
-  res.json({ ok: true, status });
+  try { await conditionEngine.evaluateBorrowerApplications(tr.rows[0].borrower_id, { actor: req.actor, reason: isRevoke ? 'track_record_unverified' : 'track_record_verified' }); } catch (_) {}
+  if (isRevoke) {
+    await audit(req, 'unverify_track_record', 'track_record', req.params.id, { status, reason });
+    const addr = (tr.rows[0].property_address && (tr.rows[0].property_address.oneLine || tr.rows[0].property_address.line1)) || 'a property';
+    try {
+      await notify.notifyBorrower(tr.rows[0].borrower_id, {
+        type: 'track_record_unverified', title: 'A track-record project needs attention',
+        body: `Verification of your project at ${addr} was revoked: ${reason}. Please review it and its documents on your track record.`,
+        link: '/track-record', ctaLabel: 'Review your track record' });
+    } catch (_) { /* best-effort */ }
+  } else {
+    await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
+  }
+  res.json({ ok: true, status, revoked: isRevoke });
+});
+
+// ---------------- raise an issue against a track-record line item / an LLC ----------------
+// A staffer reviewing a track-record line item or a vesting entity can post a
+// request/issue against it. It becomes a real condition ON A FILE, NAMED by the
+// entity (property address / LLC name) + the reason, visible to BOTH the internal
+// team and the borrower. See src/lib/raise-issue.js. The staffer raises it from
+// within a file (applicationId), so the condition attaches to that loan.
+function addressLabel(pa) {
+  if (!pa || typeof pa !== 'object') return '';
+  if (pa.oneLine) return String(pa.oneLine);
+  return [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ');
+}
+router.post('/track-records/:id/raise-issue', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const appId = b.applicationId;
+    if (!appId) return res.status(400).json({ error: 'applicationId is required — raise the issue from within a loan file' });
+    if (!String(b.reason || '').trim()) return res.status(400).json({ error: 'a reason is required' });
+    const tr = await db.query(`SELECT borrower_id, property_address FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!tr.rows[0]) return res.status(404).json({ error: 'track record not found' });
+    if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+    const name = addressLabel(tr.rows[0].property_address) || 'a past project';
+    const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id });
+    await audit(req, 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+router.post('/llcs/:id/raise-issue', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const appId = b.applicationId;
+    if (!appId) return res.status(400).json({ error: 'applicationId is required — raise the issue from within a loan file' });
+    if (!String(b.reason || '').trim()) return res.status(400).json({ error: 'a reason is required' });
+    const own = await db.query(`SELECT borrower_id, llc_name FROM llcs WHERE id=$1`, [req.params.id]);
+    if (!own.rows[0]) return res.status(404).json({ error: 'entity not found' });
+    if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+    const out = await raiseEntityIssue({ appId, entityKind: 'llc', entityId: req.params.id, entityName: own.rows[0].llc_name || 'the entity', reason: b.reason, actorId: req.actor.id });
+    await audit(req, 'raise_llc_issue', 'llc', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
 
 // ---------------- advance application status ----------------
@@ -2186,7 +2743,7 @@ router.patch('/applications/:id/details', async (req, res) => {
   const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
     arv: 'arv', rehabBudget: 'rehab_budget', sqftPre: 'sqft_pre', sqftPost: 'sqft_post',
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
-    requestedExpReo: 'requested_exp_reo', requestedIrMonths: 'requested_ir_months',
+    requestedExpReo: 'requested_exp_reo', requestedIrMonths: 'requested_ir_months', requestedIrAmount: 'requested_ir_amount',
     payoffAmount: 'payoff_amount', originalPurchasePrice: 'original_purchase_price',
     underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
   const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy',
@@ -2845,6 +3402,16 @@ router.post('/applications/:id/documents', async (req, res) => {
     llcId = l.rows[0].id;
     borrowerId = l.rows[0].borrower_id;
   }
+  // Term sheets auto-attach to the Products & Pricing register condition as a
+  // document slot (owner-directed #139): the registered term sheet saves STRAIGHT
+  // INTO that condition, not just as a loose file. Only when the caller didn't
+  // already target a specific condition or an LLC slot.
+  if (b.docKind === 'term_sheet' && !b.checklistItemId && !llcId) {
+    const pp = await db.query(
+      `SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='product_pricing' ORDER BY created_at LIMIT 1`,
+      [req.params.id]);
+    if (pp.rows[0]) { b.checklistItemId = pp.rows[0].id; if (!b.slot) b.slot = 'Term sheet'; }
+  }
   let itemLabel = '';
   let itemAudience = null;
   if (b.checklistItemId) {
@@ -2924,8 +3491,9 @@ router.post('/applications/:id/documents', async (req, res) => {
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the
 // rejected file in history (never in the clean file), and flips its checklist
 // item back to 'issue' so the borrower sees exactly what to fix and re-uploads.
-// Acceptance marks the item satisfied. Only accepted+current docs count for the
-// file (see getApprovedDocuments / future TPR export).
+// Acceptance marks the item RECEIVED (not satisfied) — the condition stays open
+// until a reviewer signs it off (#135). Only accepted+current docs count for the
+// file (see getApprovedDocuments / TPR export).
 router.post('/documents/:id/review', async (req, res) => {
   const b = req.body || {};
   const action = b.action;
@@ -2936,9 +3504,15 @@ router.post('/documents/:id/review', async (req, res) => {
     return res.status(403).json({ error: 'Only the processor can accept a document — you can reject it or mark the condition reviewed.' });
   }
   if (action === 'reject' && !String(b.reason || '').trim()) return res.status(400).json({ error: 'a rejection reason is required' });
+  // Accept + request another document: the borrower must be told WHAT else is
+  // needed, so the note is required too (owner-directed 2026-07-12) — an empty
+  // "request more" left the borrower with a still-open condition and no reason.
+  if (action === 'accept' && b.requestMore && !String(b.note || '').trim()) {
+    return res.status(400).json({ error: 'tell the borrower what additional document is needed' });
+  }
   try {
     const r = await db.query(
-      `SELECT id,filename,application_id,borrower_id,llc_id,checklist_item_id FROM documents WHERE id=$1`, [req.params.id]);
+      `SELECT id,filename,application_id,borrower_id,llc_id,checklist_item_id,track_record_id FROM documents WHERE id=$1`, [req.params.id]);
     const doc = r.rows[0];
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
@@ -2970,8 +3544,16 @@ router.post('/documents/:id/review', async (req, res) => {
                   borrower_hint=COALESCE($3, borrower_hint), updated_at=now() WHERE id=$1`,
           [doc.checklist_item_id, moreNote ? `Still needed: ${moreNote}` : '', newHint]);
       } else {
+        // Accepting a document only marks the condition RECEIVED — NOT satisfied
+        // (owner-directed 2026-07-12). The condition stays open on the list until
+        // a reviewer explicitly SIGNS IT OFF (which routes through signOffGate and
+        // therefore enforces every required document/slot — e.g. a background AND
+        // criminal report, insurance binder AND invoice). This prevents a
+        // multi-document condition from "flying away" the moment ONE of its
+        // documents is accepted, and keeps accept (doc is good) distinct from
+        // sign-off (the whole condition is complete). Reject -> issue.
         await db.query(`UPDATE checklist_items SET status=$2, updated_at=now() WHERE id=$1`,
-          [doc.checklist_item_id, action === 'accept' ? 'satisfied' : 'issue']);
+          [doc.checklist_item_id, action === 'accept' ? 'received' : 'issue']);
       }
       enqueueChecklistStatusPush(doc.checklist_item_id).catch(() => {}); // mapped conditions → ClickUp dropdown
     }
@@ -3011,6 +3593,24 @@ router.post('/documents/:id/review', async (req, res) => {
         if (wasVerified.rows[0]) await audit(req, 'unverify_llc', 'llc', doc.llc_id, { cause: 'document_rejected', documentId: doc.id });
       }
       try { await llcLib.syncLlcConditions(doc.llc_id, { reopen: action === 'reject' }); } catch (_) { /* best-effort */ }
+    }
+
+    // A track-record line-item document verdict: rejecting a document that a
+    // verified line item was verified against un-verifies that line item (its
+    // evidence no longer stands) and recomputes the borrower's tier + experience
+    // condition — mirroring the LLC behavior (#126 per-line-item reject).
+    if (doc.track_record_id && action === 'reject') {
+      const was = await db.query(
+        `UPDATE track_records SET verification_status='docs', is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now()
+          WHERE id=$1 AND is_verified=true RETURNING borrower_id`, [doc.track_record_id]);
+      if (was.rows[0]) {
+        await audit(req, 'unverify_track_record', 'track_record', doc.track_record_id, { cause: 'document_rejected', documentId: doc.id });
+        await db.query(
+          `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
+          [was.rows[0].borrower_id]);
+        try { await require('../lib/experience').syncExperienceChecklistForBorrower(was.rows[0].borrower_id); } catch (_) {}
+        try { await conditionEngine.evaluateBorrowerApplications(was.rows[0].borrower_id, { actor: req.actor, reason: 'track_record_doc_rejected' }); } catch (_) {}
+      }
     }
 
     // On rejection, tell the borrower what to fix. LLC documents live on the
@@ -3176,6 +3776,218 @@ router.delete('/vendors/:id', async (req, res) => {
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   await audit(req, 'delete_vendor', 'service_contact', req.params.id);
   res.json({ ok: true });
+});
+
+// ---------------- GENERAL FILE CONTACTS — staff side (#144) ----------------
+// Any staff on the file can add any kind of vendor. The contact is tied to the
+// file's borrower (so it shows on the borrower profile) AND flows into the
+// company-wide vendor directory (service_contacts). Many contacts per file.
+const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+router.get('/applications/:id/file-contacts', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const r = await db.query(
+    `SELECT l.id AS link_id, sc.id AS contact_id, sc.contact_type, sc.custom_type,
+            sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address, sc.notes,
+            l.added_by_kind, l.created_at,
+            s.full_name AS added_by_staff, (b.first_name||' '||b.last_name) AS added_by_borrower
+       FROM application_service_contacts l
+       JOIN service_contacts sc ON sc.id = l.service_contact_id
+       LEFT JOIN staff_users s ON s.id = l.added_by_id AND l.added_by_kind='staff'
+       LEFT JOIN borrowers b ON b.id = l.added_by_id AND l.added_by_kind='borrower'
+      WHERE l.application_id=$1
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/applications/:id/file-contacts', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
+  const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
+  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+  if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
+  const sc = await db.query(
+    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,phone,address,notes,added_by_staff_id,last_used_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()) RETURNING id`,
+    [app.rows[0].borrower_id, type, custom, b.companyName || null, b.contactName || null, b.email || null, b.phone || null, b.address || null, b.notes || null, req.actor.id]);
+  const link = await db.query(
+    `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
+     VALUES ($1,$2,$3,'staff',$4)
+     ON CONFLICT (application_id,service_contact_id) DO UPDATE SET contact_type=EXCLUDED.contact_type RETURNING id`,
+    [req.params.id, sc.rows[0].id, type, req.actor.id]);
+  await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
+  res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: sc.rows[0].id });
+});
+router.delete('/file-contacts/:linkId', async (req, res) => {
+  const f = await db.query(`SELECT application_id FROM application_service_contacts WHERE id=$1`, [req.params.linkId]);
+  if (!f.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canTouchApp(req, f.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+  await db.query(`DELETE FROM application_service_contacts WHERE id=$1`, [req.params.linkId]);
+  await audit(req, 'remove_file_contact', 'application', f.rows[0].application_id, {});
+  res.json({ ok: true });
+});
+// A borrower's whole vendor list (profile) — every contact tied to the borrower.
+router.get('/borrowers/:id/contacts', async (req, res) => {
+  if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+  const r = await db.query(
+    `SELECT sc.id, sc.contact_type, sc.custom_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.notes,
+            count(l.application_id)::int AS files_used
+       FROM service_contacts sc
+       LEFT JOIN application_service_contacts l ON l.service_contact_id = sc.id
+      WHERE sc.borrower_id=$1
+      GROUP BY sc.id
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [req.params.id]);
+  res.json(r.rows);
+});
+
+// ---------------- system-wide audit log (#145) -----------------------------
+// The company-wide trail: every action across every file and borrower, in one
+// searchable place, each row linked to the file / borrower / staffer involved.
+// The DEEP per-file and per-borrower trails already exist
+// (/applications/:id/activity, /borrowers/:id/activity); this is the global
+// compliance view. Gated on the dedicated view_audit_log capability
+// (admin/super_admin by default; grantable to a compliance underwriter).
+const {
+  describeAction: describeAuditAction, CATEGORIES: AUDIT_CATEGORIES,
+  KNOWN_CODES: AUDIT_KNOWN_CODES, CATEGORY_CODES: AUDIT_CATEGORY_CODES, codesMatchingText: auditCodesMatchingText,
+} = require('../lib/audit-actions');
+const AUDIT_ACTOR_KINDS = new Set(['staff', 'borrower', 'system']);
+const AUDIT_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+router.get('/audit-log', async (req, res) => {
+  if (!can(req.actor, 'view_audit_log')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const q = String(req.query.q || '').trim();
+    const action = String(req.query.action || '').trim();
+    const category = String(req.query.category || '').trim();
+    const actorKind = AUDIT_ACTOR_KINDS.has(String(req.query.actorKind || '')) ? String(req.query.actorKind) : '';
+    // Validate typed params so a malformed value is IGNORED, never a 500 from a
+    // failed ::uuid / ::date cast.
+    const actorIdRaw = String(req.query.actorId || '').trim();
+    const actorId = UUID_RE.test(actorIdRaw) ? actorIdRaw : '';
+    const entityType = String(req.query.entityType || '').trim();
+    const fromRaw = String(req.query.from || '').trim();
+    const from = AUDIT_DATE_RE.test(fromRaw) ? fromRaw : '';
+    const toRaw = String(req.query.to || '').trim();
+    const to = AUDIT_DATE_RE.test(toRaw) ? toRaw : '';
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 300);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const params = [];
+    const where = [];
+    const P = (v) => { params.push(v); return '$' + params.length; };
+
+    if (action) where.push(`al.action = ${P(action)}`);
+    // Category → the set of action codes in it (server-side, so pagination is
+    // correct). 'other' = any code not in the known map.
+    else if (category) {
+      if (category === 'other') where.push(`al.action <> ALL(${P(AUDIT_KNOWN_CODES)}::text[])`);
+      else where.push(`al.action = ANY(${P(AUDIT_CATEGORY_CODES[category] || [])}::text[])`);
+    }
+    if (actorKind) where.push(`al.actor_kind = ${P(actorKind)}`);
+    if (actorId) where.push(`al.actor_id = ${P(actorId)}::uuid`);
+    if (entityType) where.push(`al.entity_type = ${P(entityType)}`);
+    if (from) where.push(`al.created_at >= ${P(from)}::date`);
+    if (to) where.push(`al.created_at < (${P(to)}::date + 1)`); // inclusive of the whole "to" day
+    if (q) {
+      // Free-text across who did it (actor OR the file's loan officer), what
+      // they did (action code AND human label), and which borrower / property.
+      const like = P('%' + q + '%');
+      const codes = P(auditCodesMatchingText(q)); // action codes whose label matches
+      where.push(`(
+        s.full_name ILIKE ${like} OR ab.first_name ILIKE ${like} OR ab.last_name ILIKE ${like}
+        OR al.action ILIKE ${like} OR al.action = ANY(${codes}::text[])
+        OR appb.first_name ILIKE ${like} OR appb.last_name ILIKE ${like}
+        OR eb.first_name ILIKE ${like} OR eb.last_name ILIKE ${like}
+        OR lo.full_name ILIKE ${like}
+        OR app.property_address::text ILIKE ${like}
+      )`);
+    }
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+    const lim = P(limit), off = P(offset);
+    const sql = `
+      SELECT al.id, al.created_at, al.action, al.actor_kind, al.actor_id,
+             al.entity_type, al.entity_id, al.ip_address::text AS ip_address, al.detail,
+             CASE WHEN al.actor_kind='staff' THEN s.full_name
+                  WHEN al.actor_kind='borrower' THEN NULLIF(btrim(coalesce(ab.first_name,'')||' '||coalesce(ab.last_name,'')), '')
+                  ELSE NULL END AS actor_name,
+             s.role AS actor_role,
+             app.id AS app_id,
+             app.property_address AS app_address,
+             appb.id AS app_borrower_id,
+             NULLIF(btrim(coalesce(appb.first_name,'')||' '||coalesce(appb.last_name,'')), '') AS app_borrower_name,
+             lo.id AS app_officer_id, lo.full_name AS app_officer_name,
+             eb.id AS ent_borrower_id,
+             NULLIF(btrim(coalesce(eb.first_name,'')||' '||coalesce(eb.last_name,'')), '') AS ent_borrower_name
+        FROM audit_log al
+        LEFT JOIN staff_users s ON al.actor_kind='staff' AND s.id = al.actor_id
+        LEFT JOIN borrowers ab ON al.actor_kind='borrower' AND ab.id = al.actor_id
+        LEFT JOIN applications app ON al.entity_type IN ('application','clickup') AND app.id = al.entity_id
+        LEFT JOIN borrowers appb ON appb.id = app.borrower_id
+        LEFT JOIN staff_users lo ON lo.id = app.loan_officer_id
+        LEFT JOIN borrowers eb ON al.entity_type='borrower' AND eb.id = al.entity_id
+        ${whereSql}
+       ORDER BY al.created_at DESC, al.id DESC
+       LIMIT ${lim} OFFSET ${off}`;
+    const r = await db.query(sql, params);
+
+    const rows = r.rows.map((row) => {
+      const meta = describeAuditAction(row.action);
+      let addr = row.app_address;
+      if (typeof addr === 'string') { try { addr = JSON.parse(addr); } catch (_) { addr = null; } }
+      const addressText = addr
+        ? (addr.oneLine || [addr.line1 || addr.street, addr.city, addr.state].filter(Boolean).join(', ') || null)
+        : null;
+      return {
+        id: String(row.id),
+        at: row.created_at,
+        action: row.action,
+        action_label: meta.label,
+        category: meta.cat,
+        actor_kind: row.actor_kind,
+        actor_id: row.actor_id,
+        actor_name: row.actor_name || (row.actor_kind === 'system' ? 'System' : (row.actor_kind === 'borrower' ? 'A borrower' : 'A staff member')),
+        actor_role: row.actor_role || null,
+        entity_type: row.entity_type,
+        entity_id: row.entity_id,
+        ip_address: row.ip_address || null,
+        detail: row.detail || null,
+        // Linking context: which file / borrower / officer this touched.
+        app_id: row.app_id || null,
+        app_address: addressText,
+        app_borrower_id: row.app_borrower_id || null,
+        app_borrower_name: row.app_borrower_name || null,
+        app_officer_id: row.app_officer_id || null,
+        app_officer_name: row.app_officer_name || null,
+        ent_borrower_id: row.ent_borrower_id || null,
+        ent_borrower_name: row.ent_borrower_name || null,
+      };
+    });
+    res.json({ rows, limit, offset, hasMore: rows.length === limit });
+  } catch (e) {
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Facets for the audit-log filters: the distinct actions actually present (with
+// human labels + counts), the categories, and the staff roster for the actor
+// picker. Cheap, cached lightly by the client.
+router.get('/audit-log/facets', async (req, res) => {
+  if (!can(req.actor, 'view_audit_log')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const [acts, staff] = await Promise.all([
+      db.query(`SELECT action, count(*)::int AS n FROM audit_log GROUP BY action ORDER BY n DESC`),
+      db.query(`SELECT id, full_name, role FROM staff_users WHERE is_active IS NOT FALSE ORDER BY full_name`),
+    ]);
+    const actions = acts.rows.map((a) => {
+      const meta = describeAuditAction(a.action);
+      return { action: a.action, label: meta.label, category: meta.cat, count: a.n };
+    });
+    res.json({ actions, categories: AUDIT_CATEGORIES, staff: staff.rows });
+  } catch (e) {
+    res.status(500).json({ error: 'server error' });
+  }
 });
 
 // ---------------- chat v3: conversations, receipts, presence ----------------

@@ -13,6 +13,7 @@ import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import { MoneyInput } from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+import FileContacts from '../components/FileContacts.jsx';
 import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
@@ -51,6 +52,8 @@ function sowUrl(appId, item, app) {
   else if (/moderate/i.test(rt)) p.set('projType', 'moderate');
   else if (/cosmetic/i.test(rt)) p.set('projType', 'cosmetic');
   if (Number(app.rehab_budget) > 0) p.set('target', String(Math.round(Number(app.rehab_budget))));
+  // Gold Standard files auto-fill a 5% construction contingency in the builder.
+  if (/gold/i.test(String(app.registered_program || ''))) p.set('program', 'gold');
   return `/tools/rehab-budget.html?${p.toString()}`;
 }
 
@@ -654,10 +657,22 @@ export default function Application() {
   const currentDocsFor = (itemId) => uploads.filter(d => d.checklist_item_id === itemId && d.is_current !== false && d.review_status !== 'superseded');
   const itemLabelById = Object.fromEntries(items.map(it => [it.id, it.label]));
   const sowExports = sowItem ? currentDocsFor(sowItem.id).filter(d => d.doc_kind === 'rehab_budget_export') : [];
+  // The registered term sheet now saves onto the Products & Pricing condition
+  // itself (#139) — surface it there as a document slot.
+  const tsDocs = ppItem ? currentDocsFor(ppItem.id).filter(d => d.doc_kind === 'term_sheet' || /term.?sheet/i.test(d.slot_label || d.filename || '')) : [];
   const req = experienceRequirement(app);
-  // Live experience counts straight from the borrower's track record — always
-  // in step with the general Track Record section, no save needed.
+  // Experience progress toward the requirement. Prefer the SERVER-authoritative
+  // count from the experience condition's payload — it applies the frozen 3-year
+  // exit window AND sums the co-borrower's deals, so the borrower's "still need X"
+  // matches the staff view and the requirement math exactly (#121). The condition
+  // sync runs on every checklist GET, so the payload is current. Fall back to a
+  // local all-deals compute only if the payload hasn't landed yet.
   const liveCounts = (() => {
+    const sc = trItem && trItem.tool_payload && trItem.tool_payload.counts;
+    if (sc && typeof sc === 'object') {
+      const flips = sc.flips || 0, holds = sc.holds || 0, ground = sc.ground || 0;
+      return { flips, holds, ground, total: sc.total != null ? sc.total : (flips + holds + ground) };
+    }
     const c = { flips: 0, holds: 0, ground: 0, total: 0 };
     for (const r of trRows) {
       const t = String(r.deal_type || '').toLowerCase();
@@ -683,6 +698,7 @@ export default function Application() {
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
     { id: 'sec-conditions', label: 'Conditions to close', badge: nOpen || '' },
+    { id: 'sec-contacts', label: 'Contacts' },
     ...(uploads.length ? [{ id: 'sec-documents', label: 'Document history', badge: uploads.length }] : []),
     { id: 'sec-messages', label: 'Messages' },
     { id: 'sec-activity', label: 'Activity' },
@@ -823,9 +839,10 @@ export default function Application() {
           <h3>Your conditions</h3>
           <div className="spacer" />
           <span className="muted small">{nDone}/{items.length} complete</span>
-          <select className="input" style={{ maxWidth: 190 }} value={docFilter} onChange={e => setDocFilter(e.target.value)}>
-            <option value="open">Open (to do)</option>
+          <select className="input" style={{ maxWidth: 200 }} value={docFilter} onChange={e => setDocFilter(e.target.value)}>
+            <option value="open">Open — still needs you</option>
             <option value="review">Submitted — in review</option>
+            <option value="attention">Needs attention</option>
             <option value="done">Completed</option>
             <option value="all">All conditions</option>
           </select>
@@ -856,6 +873,7 @@ export default function Application() {
                     ? `Registered: ${app.registered_product_label || (app.registered_program === 'gold' ? 'Gold Standard Program' : 'Standard Program')} · ${money(app.registered_total_loan)}`
                     : 'Price your deal in the Term Sheet Studio and register your product — your terms, cash to close and liquidity requirement all come from it.'}
                   status={(isDone(ppItem.status) || app.registered_program) ? 'Completed' : 'To do'}
+                  open={tsDocs.length > 0}
                   action={<button className="btn primary small" onClick={() => {
                     // Same full-screen tool sheet as the Scope of Work — no
                     // scrolling hunt for the panel.
@@ -864,7 +882,24 @@ export default function Application() {
                   }}>
                     {app.registered_program ? 'Reprice / re-register' : 'Open Products & Pricing'}
                   </button>}
-                />
+                >
+                  {tsDocs.length > 0 && (
+                    <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                      {tsDocs.map(d => {
+                        const canPreview = /pdf|html|image|png|jpe?g/i.test(d.content_type || d.filename);
+                        return (
+                          <span key={d.id} className="row" style={{ gap: 4 }}>
+                            {canPreview && <button className="btn ghost small" title="Preview without downloading" onClick={() => setPreviewDoc(d)}>Preview term sheet</button>}
+                            <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>
+                              {dlBusy === d.id ? '…' : '⤓ Term sheet'}
+                            </button>
+                          </span>
+                        );
+                      })}
+                      <span className="muted small" style={{ alignSelf: 'center' }}>Saved from your registration. Re-registering replaces it.</span>
+                    </div>
+                  )}
+                </ConditionRow>
               )}
 
               {/* 1 — Rehab budget / Scope of Work */}
@@ -997,6 +1032,14 @@ export default function Application() {
                         Needs a new version: {assetsItem.rejection_reason}
                       </div>
                     )}
+                    {/* A staffer accepted a statement but asked for one more — the
+                        registered-requirement subtitle above hides the hint, so
+                        surface the "Still needed" ask here too (#125). */}
+                    {assetsItem.hint && /still needed/i.test(assetsItem.hint) && (
+                      <div className="small" style={{ color: 'var(--gold)', marginBottom: 6 }}>
+                        Still needed: {assetsItem.hint.replace(/^[\s\S]*?Still needed:\s*/i, '')}
+                      </div>
+                    )}
                     {docs.map((d, i) => (
                       <div className="row" key={d.id} style={{ gap: 8, flexWrap: 'wrap', padding: '3px 0' }}>
                         <span className="muted small" style={{ minWidth: 90 }}>{d.slot_label || `Document ${i + 1}`}</span>
@@ -1064,6 +1107,11 @@ export default function Application() {
           <p className="muted small">No conditions requested yet. Your coordinator will post them here.</p>
         )}
       </div>
+      </Section>
+
+      <Section id="sec-contacts" title="Contacts"
+        info="Everyone working on this deal — realtor, attorney, title, insurance, contractor and more. Add anyone; they're shared on the file and saved to your contacts.">
+        <FileContacts appId={id} heading="Contacts on this file" />
       </Section>
 
       {uploads.length > 0 && (

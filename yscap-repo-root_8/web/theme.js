@@ -4,18 +4,16 @@
 (function(){
   "use strict";
   var KEY="ys-theme";
-  function get(){
-    try{ var s=localStorage.getItem(KEY); if(s==="light"||s==="dark") return s; }catch(e){}
-    try{
-      if(window.matchMedia){
-        if(window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
-        if(window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
-      }
-    }catch(e){}
-    return "light";   // no saved choice and no system signal -> approachable light default
-  }
+  // White-first EVERYWHERE (owner-directed 2026-07-12): the marketing site and
+  // every standalone tool always OPEN in the light theme, matching the portal —
+  // a saved 'dark' preference is ignored on load, so the site/tools never render
+  // dark on first paint. The top toggle still switches to dark for the current
+  // view; a reload returns to white. `current` holds the live theme so the toggle
+  // flips correctly. (The portal/React embeds force light via their own hosts.)
+  var current="light";
+  function get(){ return current; }
   function save(t){ try{ localStorage.setItem(KEY,t); }catch(e){} }
-  function apply(t){ document.documentElement.setAttribute("data-theme", t); }
+  function apply(t){ current=t; document.documentElement.setAttribute("data-theme", t); }
   // In light theme, swap the teal-on-dark logo for the dark-teal logo that reads on light paper.
   function swapLogos(t){
     var dark=(t==="light"); var imgs=document.getElementsByTagName("img");

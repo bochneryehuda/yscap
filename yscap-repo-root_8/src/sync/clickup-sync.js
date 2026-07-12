@@ -47,10 +47,18 @@ async function optionMap() {
 
 // ---- outbound (portal → ClickUp) -----------------------------------------
 async function pushOutboxOnce() {
+  // Also RECLAIM jobs stranded in 'processing' — if the process crashed between
+  // marking a job 'processing' and finalizing it, it would otherwise be lost
+  // forever (a silently-dropped outbound push). updated_at is stamped to now() on
+  // claim, so a 5-minute floor only catches genuine crash orphans, never a live
+  // in-flight push (which finishes in well under a second). Re-running a push is
+  // idempotent (setField writes the same values), so reclaim is safe.
   const r = await db.query(
     `UPDATE sync_queue SET status='processing', updated_at=now()
-      WHERE id = (SELECT id FROM sync_queue WHERE target='clickup' AND direction='push'
-                   AND status='queued' AND run_after <= now() ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+      WHERE id = (SELECT id FROM sync_queue WHERE target='clickup' AND direction='push' AND op='update'
+                   AND run_after <= now()
+                   AND (status='queued' OR (status='processing' AND updated_at < now() - interval '5 minutes'))
+                   ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
       RETURNING *`);
   const job = r.rows[0];
   if (!job) return false;
@@ -90,9 +98,21 @@ async function sweepDirtyOnce() {
 
 // ---- inbound (ClickUp → portal) ------------------------------------------
 async function processInboxOnce() {
+  // Also RECLAIM inbox rows stranded in 'processing' by a crash mid-ingest (they'd
+  // otherwise never be re-driven). The age is measured from CLAIM time
+  // (processing_started_at, stamped below) — NOT receipt time — so an overlapping
+  // drain can never re-grab a row that is still being ingested during a >15-min
+  // backlog (which would double-ingest and, since upsertLlc/upsertTrackRecord are
+  // check-then-insert without a unique constraint, create duplicate rows). The
+  // COALESCE(..., received_at) fallback reclaims any row left 'processing' before
+  // this column existed (db/080). A genuine crash orphan is re-ingested safely
+  // (ingestTask is idempotent: COALESCE upserts, no-downgrade, ON CONFLICT keys).
   const r = await db.query(
-    `UPDATE clickup_webhook_inbox SET status='processing'
-      WHERE id = (SELECT id FROM clickup_webhook_inbox WHERE status='received'
+    `UPDATE clickup_webhook_inbox SET status='processing', processing_started_at=now()
+      WHERE id = (SELECT id FROM clickup_webhook_inbox
+                   WHERE status='received'
+                      OR (status='processing'
+                          AND COALESCE(processing_started_at, received_at) < now() - interval '15 minutes')
                    ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`);
   const row = r.rows[0];
   if (!row) return false;
@@ -138,30 +158,145 @@ async function reconcileOnce() {
   return tasks.length;
 }
 
-// ---- program reconcile (one-shot) -----------------------------------------
-// Re-check every LINKED, non-descoped RTL file against its CURRENT ClickUp task
-// program. If the program was changed to something we don't build yet (non-RTL,
-// e.g. Short-Term Rehab → DSCR), ingestTask descopes it — removes it from the
-// portal, ClickUp untouched. Bounded to already-linked files (cheap), idempotent
-// (descoped files are excluded next run), and read-only against ClickUp. Catches
-// the backlog of flips that predate the descope logic or that are older than the
-// reconcile poll's rolling window. Never creates or deletes anything in ClickUp.
+// True only when a ClickUp getTask failure means the task was DELETED (not a
+// transient/network/auth error). A hard 404 is definitive. ClickUp occasionally
+// returns 401 with a "Task not found" body for a deleted task, so we accept that
+// narrowly — but never a blanket 401 (that's a bad token, which would 404-classify
+// the whole portfolio). The reconcile circuit-breaker below is the second guard.
+function isTaskDeletedError(e) {
+  if (!e) return false;
+  if (e.status === 404) return true;
+  const msg = (e.body && (e.body.err || e.body.error || e.body.ECODE)) || e.message || '';
+  return e.status === 401 && /not\s*found|does not exist|deleted/i.test(String(msg));
+}
+
+// Best-effort system audit row (no request context; used by the sync worker).
+async function auditSystem(action, appId, detail) {
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,action,entity_type,entity_id,detail)
+       VALUES ('system',$1,'application',$2,$3)`,
+      [action, appId || null, detail ? JSON.stringify(detail) : null]);
+  } catch (_) { /* audit best-effort */ }
+}
+
+// Resolve files whose linked ClickUp task was DELETED (a hard 404 seen during the
+// reconcile pass). A ClickUp task that is deleted+recreated leaves the portal with
+// a stale orphan (old task, now 404) AND a fresh file for the new task — a
+// duplicate whose LLC/conditions live on the NEW file, so the orphan looks "empty"
+// and reads as "the sync is broken."
+//   • Orphan with a HEALTHY sibling (same borrower + same property by the SAME
+//     normalizer the dedup uses, task confirmed live THIS run) → MERGE: re-point
+//     the orphan's documents onto the sibling (nothing the borrower uploaded is
+//     lost), then soft-archive the orphan (deleted_at + sync_state='dead'). It
+//     drops out of every list + sync loop, ClickUp is untouched, fully reversible.
+//   • No live sibling → flag 'manual_review' so a human decides — never silently
+//     drop a borrower's only file for a property.
+// `liveTaskIds` are the task ids confirmed present in the same run — the merge path
+// REQUIRES one, so a global API/token outage (no live tasks) can never auto-archive
+// anything.
+async function resolveOrphans(orphans, liveTaskIds) {
+  const identity = require('../clickup/identity');
+  const q = (sql, p = []) => db.query(sql, p).then((r) => r.rows);
+  const norm = (a) => { try { return identity.normalizeIdentity({ address: a || null }).address || null; } catch { return null; } };
+  let archived = 0, merged = 0, flagged = 0;
+  for (const o of orphans) {
+    const oAddr = norm(o.one_line);
+    let sibling = null;
+    if (oAddr) {
+      const sibs = await q(
+        `SELECT id, property_address->>'oneLine' AS one_line, clickup_pipeline_task_id AS task_id
+           FROM applications
+          WHERE deleted_at IS NULL AND id <> $1 AND borrower_id = $2
+            AND clickup_pipeline_task_id IS NOT NULL AND clickup_pipeline_task_id <> $3`,
+        [o.id, o.borrower_id, o.task_id]);
+      for (const s of sibs) {
+        if (!liveTaskIds.has(String(s.task_id))) continue;   // sibling's own task must be live
+        if (norm(s.one_line) === oAddr) { sibling = s; break; }
+      }
+    }
+    const docs = (await q(`SELECT count(*)::int n FROM documents WHERE application_id=$1`, [o.id]))[0].n;
+    if (sibling) {
+      // Merge: re-point the orphan's documents onto the live sibling so nothing the
+      // borrower uploaded is lost, detaching them from the orphan's now-archived
+      // checklist items so they surface in the sibling's document vault. Then
+      // soft-archive the orphan (reversible; ClickUp untouched).
+      if (docs > 0) { await q(`UPDATE documents SET application_id=$2, checklist_item_id=NULL WHERE application_id=$1`, [sibling.id, o.id]); merged++; }
+      const u = await q(
+        `UPDATE applications SET deleted_at=now(), sync_state='dead', updated_at=now()
+          WHERE id=$1 AND deleted_at IS NULL RETURNING id`, [o.id]);
+      if (u.length) { archived++; await auditSystem('clickup_orphan_merged', o.id, { task: o.task_id, superseded_by: sibling.id, movedDocs: docs }); }
+    } else {
+      const u = await q(
+        `UPDATE applications SET sync_state='manual_review', updated_at=now()
+          WHERE id=$1 AND deleted_at IS NULL AND sync_state <> 'manual_review' RETURNING id`, [o.id]);
+      if (u.length) { flagged++; await auditSystem('clickup_orphan_flagged', o.id, { task: o.task_id, docs, reason: 'no_live_sibling' }); }
+    }
+  }
+  return { archived, merged, flagged };
+}
+
+// ---- program reconcile + orphan sweep (one-shot) --------------------------
+// Re-check every LINKED, non-descoped RTL file against its CURRENT ClickUp task:
+//   • program flipped to a non-RTL type (e.g. Short-Term Rehab → DSCR) → ingestTask
+//     descopes it (removed from the portal, ClickUp untouched).
+//   • ClickUp task DELETED (hard 404) → orphan-resolution (see resolveOrphans):
+//     soft-archive a stale duplicate, or flag it for manual review.
+// Bounded to already-linked files (cheap), idempotent (descoped/dead files are
+// excluded next run), and read-only against ClickUp. Never creates or deletes
+// anything in ClickUp. Reuses the getTask each linked file already makes, so
+// orphan detection adds zero ClickUp API load.
 async function reconcileLinkedProgramsOnce() {
   const r = await db.query(
-    `SELECT clickup_pipeline_task_id AS task_id FROM applications
-      WHERE clickup_pipeline_task_id IS NOT NULL AND deleted_at IS NULL
-        AND sync_state NOT IN ('descoped','manual_review')
-      ORDER BY updated_at DESC`);
+    `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
+            a.property_address->>'oneLine' AS one_line
+       FROM applications a
+      WHERE a.clickup_pipeline_task_id IS NOT NULL AND a.deleted_at IS NULL
+        AND a.sync_state NOT IN ('descoped','manual_review','dead')
+      ORDER BY a.updated_at DESC`);
   let checked = 0, descoped = 0;
+  const orphans = [];               // files whose ClickUp task returned a hard 404
+  const liveTaskIds = new Set();    // task ids confirmed present this run
   for (const row of r.rows) {
     try {
       const res = await ingestOne(row.task_id);
       checked++;
+      liveTaskIds.add(String(row.task_id));
       if (res && res.matchStatus === 'descoped') descoped++;
-    } catch (e) { console.error('[clickup] reconcile-programs task failed', row.task_id, e.message); }
+    } catch (e) {
+      if (isTaskDeletedError(e)) orphans.push(row);
+      else console.error('[clickup] reconcile-programs task failed', row.task_id, e.message);
+    }
   }
-  console.log(`[clickup-sync] reconcile-programs: checked ${checked} linked files, descoped ${descoped}`);
-  return { checked, descoped };
+  // Re-examine files previously FLAGGED 'manual_review' — including orphans flagged
+  // by an EARLIER build (before merge-on-heal existed), which the query above
+  // excludes so they'd otherwise stay stuck forever. If such a file's task is now
+  // confirmed deleted, treat it as an orphan so resolveOrphans can merge it into a
+  // live sibling. We do NOT re-ingest these (that would clear a genuine ambiguous
+  // flag) — only check task liveness (its live sibling is already in liveTaskIds
+  // from the main loop above, which is what the merge path needs).
+  const flagged = await db.query(
+    `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
+            a.property_address->>'oneLine' AS one_line
+       FROM applications a
+      WHERE a.sync_state='manual_review' AND a.deleted_at IS NULL
+        AND a.clickup_pipeline_task_id IS NOT NULL`);
+  for (const row of flagged.rows) {
+    if (liveTaskIds.has(String(row.task_id))) continue;   // its own task is live → genuinely ambiguous, leave it
+    try { await clickup.getTask(row.task_id); liveTaskIds.add(String(row.task_id)); }
+    catch (e) { if (isTaskDeletedError(e)) orphans.push(row); }
+  }
+  // Circuit-breaker: a large 404 fraction (or NO task resolving at all) is almost
+  // certainly an API/token outage, not mass task deletion — do nothing this run.
+  let orphan = { archived: 0, merged: 0, flagged: 0, skipped: 0 };
+  if (orphans.length && (liveTaskIds.size === 0 || orphans.length > Math.max(5, checked * 0.5))) {
+    orphan.skipped = orphans.length;
+    console.warn(`[clickup-sync] reconcile-programs: ${orphans.length}/${orphans.length + checked} tasks 404'd — treating as an API outage, skipping orphan resolution`);
+  } else if (orphans.length) {
+    orphan = { ...orphan, ...(await resolveOrphans(orphans, liveTaskIds)) };
+  }
+  console.log(`[clickup-sync] reconcile-programs: checked ${checked} linked files, descoped ${descoped}, orphans ${orphans.length} (archived ${orphan.archived}, merged-docs ${orphan.merged}, flagged ${orphan.flagged}, skipped ${orphan.skipped})`);
+  return { checked, descoped, orphans: orphans.length, ...orphan };
 }
 
 // ---- historical backfill (one-shot, paced) --------------------------------

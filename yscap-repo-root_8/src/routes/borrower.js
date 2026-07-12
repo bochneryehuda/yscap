@@ -234,12 +234,23 @@ async function resolveEntityByName(borrowerId, name) {
   const nm = String(name || '').trim().slice(0, 160);
   if (!nm) return null;
   const hit = await db.query(
-    `SELECT id FROM llcs WHERE borrower_id=$1 AND lower(llc_name)=lower($2) LIMIT 1`, [borrowerId, nm]);
+    `SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, nm]);
   if (hit.rows[0]) return hit.rows[0].id;
-  const ins = await db.query(
-    `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, nm]);
-  try { await generateLlcChecklist(ins.rows[0].id); } catch (_) { /* best-effort */ }
-  return ins.rows[0].id;
+  try {
+    const ins = await db.query(
+      `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`, [borrowerId, nm]);
+    try { await generateLlcChecklist(ins.rows[0].id); } catch (_) { /* best-effort */ }
+    return ins.rows[0].id;
+  } catch (e) {
+    // Lost a race (or matched a whitespace-variant of an existing name) on the
+    // uq_llcs_borrower_name unique index (db/082) — re-select the winner so the
+    // file still links a real entity instead of silently failing.
+    if (e && e.code === '23505') {
+      const again = await db.query(`SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`, [borrowerId, nm]);
+      if (again.rows[0]) return again.rows[0].id;
+    }
+    throw e;
+  }
 }
 
 router.post('/applications', async (req, res) => {
@@ -354,6 +365,9 @@ function borrowerPricingOverrides(raw) {
   const targetLTC = Number(raw && raw.targetLTC);
   if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
   if (raw && raw.irMonths != null && raw.irMonths !== '') { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
+  // Interest reserve may instead be an exact dollar amount (the engine caps it at
+  // the loan term). 0 is allowed and clears any prior amount → months path.
+  if (raw && raw.irAmount != null && raw.irAmount !== '') { const v = clamp(raw.irAmount, 0, 100000000); if (v != null) out.irAmount = Math.round(v); }
   if (raw && raw.term != null && raw.term !== '') { const v = clamp(raw.term, 1, 36); if (v != null) out.term = Math.round(v); }
   if (raw && raw.fico != null && raw.fico !== '') { const v = clamp(raw.fico, 300, 850); if (v != null) out.fico = Math.round(v); }
   for (const k of ['expFlips', 'expHolds', 'expGround']) {
@@ -471,6 +485,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // path (#85). Without this a borrower-registered product left no breakdown and
     // never reopened on a later increase.
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
+    // Gold Standard Program requires a 5% SOW contingency: reopen the rehab-budget
+    // condition (even if already signed off) with a FATAL note when the saved
+    // Scope of Work is missing it.
+    try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
 
     // Push the freshly-committed scenario (loan amount, rate, rehab, term, IR,
     // ARV / as-is / purchase, assignment, desired rate) to ClickUp immediately.
@@ -558,9 +576,13 @@ router.get('/applications/:id/checklist', async (req, res) => {
             -- above is safe.
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code,
             ci.tool_key, (ci.tool_payload IS NOT NULL) AS tool_submitted, ci.tool_payload,
-            (SELECT d.rejection_reason FROM documents d
-              WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
-              ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1) AS rejection_reason
+            -- issue_reason is a borrower-SAFE reason (set when staff reject / push
+            -- back / raise an issue against a condition) — unlike ci.notes it may be
+            -- shown. Fall back to the latest rejected document's reason.
+            COALESCE(ci.issue_reason,
+              (SELECT d.rejection_reason FROM documents d
+                WHERE d.checklist_item_id=ci.id AND d.review_status='rejected'
+                ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason
        FROM checklist_items ci
       WHERE ci.application_id=$1 AND ci.audience IN ('borrower','both')
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
@@ -692,33 +714,48 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const stripped = stripToolAttachments(rawPayload);
   const payload = stripped.payload;
   const notes = (req.body && req.body.notes) ? String(req.body.notes).slice(0, 2000) : null;
-  // FATAL rehab-budget gate (#75): the Scope of Work total must match the file's
-  // required rehab budget EXACTLY. A mismatch is refused BEFORE the condition is
-  // touched, so the condition stays outstanding (a real fail the borrower sees) —
-  // the Scope of Work can never silently change the loan's budget.
-  let sowSeed = false;
+  // Scope-of-Work condition logic (owner-directed 2026-07-09). Saving a SOW NEVER
+  // changes the file's rehab budget (frozen) and NEVER refuses on a mismatch — the
+  // SOW saves as a DRAFT so it can be reopened + adjusted. The exact-match rule is
+  // purely a CONDITION gate: the condition stays open (uncleared) for EVERY party
+  // and carries a plain-language note until the line items total the budget exactly.
+  let sowMismatch = null, goldSow = { ok: true };
   if (it.rows[0].tool_key === 'rehab_budget') {
     // The rehab budget is loan structure — frozen at Clear-to-Close (#84).
     const locked = await require('../lib/file-lock').structuralLockReason(req.params.id);
     if (locked) return res.status(409).json({ error: locked, fatal: true });
-    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
-    if (!chk.ok) return res.status(422).json({ error: chk.message, fatal: true, required: chk.required, total: Number(payload && payload.total) });
-    sowSeed = chk.seed;
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
+    if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
+    // Gold Standard Program: the SOW must carry a >= 5% construction contingency.
+    goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
   }
+  // Status: a matching SOW → 'received'; a budget mismatch OR a missing Gold 5%
+  // contingency WITH content → 'issue' (visible, not cleared); an empty draft
+  // (opened + exited) → leave the status untouched. Non-rehab tools → 'received'.
+  const rbTotal = Number(payload && payload.total);
+  const sowOpen = !!sowMismatch || !goldSow.ok;
+  const toolStatus = sowOpen ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
-    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($4,tool_state), status='received', notes=COALESCE($3,notes), updated_at=now()
+    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($4,tool_state), status=COALESCE($5,status), notes=COALESCE($3,notes), updated_at=now()
       WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload), notes,
-     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null]);
-  // ONLY when the file has no rehab budget yet does the Scope of Work seed it —
-  // it never overrides a budget already set by the application / registered
-  // product (that would silently reprice the loan). The gate above guarantees a
-  // match in every other case.
+     payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
+  // Populate the condition with a plain-language note about the match state, on
+  // BOTH a mismatch and a match — visible to every party. '[auto]' notes are ours
+  // to overwrite; a staff-typed note is never clobbered.
   if (it.rows[0].tool_key === 'rehab_budget') {
-    const total = Number(payload && payload.total);
-    if (sowSeed && isFinite(total) && total >= 0) {
-      await db.query(`UPDATE applications SET rehab_budget=$2, updated_at=now() WHERE id=$1`, [req.params.id, total]);
-    }
+    const rbMoney = require('../lib/rehab-budget').money;
+    const note = sowMismatch
+      ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
+      : (!goldSow.ok
+        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
+        : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`);
+    try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
+  }
+  // The Scope of Work NEVER writes the file's rehab budget (owner-directed — the
+  // budget is frozen and set on the application / registered product). Just
+  // re-evaluate the file's rule conditions after the save.
+  if (it.rows[0].tool_key === 'rehab_budget') {
     try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'rehab_budget_saved' }); } catch (_) {}
   }
   const storedExports = await storeToolAttachments({
@@ -746,7 +783,11 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
       }
     }
   } catch (_) { /* notification is best-effort */ }
-  res.json({ ok: true, status: 'received', exports: storedExports });
+  // Always 200 — the SOW saved (as a draft on a mismatch). `mismatch` tells the
+  // tool to show a non-blocking notice and let the user exit; the condition stays
+  // open until the totals match exactly.
+  const sowNotice = sowMismatch || (!goldSow.ok ? { gold: true, message: require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG } : undefined);
+  res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowNotice, exports: storedExports });
 });
 
 // ---------------- TOOL STATE (Scope of Work autosave) ----------------
@@ -899,17 +940,11 @@ router.post('/applications/:id/link-llc', async (req, res) => {
   const own = await db.query(`SELECT id FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'llc not found' });
   const previous = app.rows[0].llc_id;
-  await db.query(`UPDATE applications SET llc_id=$2, updated_at=now() WHERE id=$1`, [req.params.id, b.llcId]);
-  // Link both of the file's borrowers to the newly-vesting LLC (#81) — the entity
-  // is owned by both; each borrower's ownership % is set on the file.
-  try { await require('../lib/llc-borrowers').syncVestingLlcBorrowers(req.params.id); } catch (_) { /* best-effort */ }
-  try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ }
-  // reopen + appId: the previous entity's state no longer drives this file's
-  // LLC condition — recompute it from the NEWLY linked entity, even downgrading
-  // an auto-satisfied item left behind by the old link.
-  try { await llcLib.syncLlcConditions(b.llcId, { appId: req.params.id, reopen: true }); } catch (_) { /* best-effort */ }
-  // has_llc / llc_verified / llc_state are rule-engine fields.
-  try { await conditionEngine.evaluateApplication(req.params.id, { reason: 'llc_linked' }); } catch (_) {}
+  // Single authority (src/lib/vesting.js): set llc_id + full wiring (owner links,
+  // LLC doc checklist, LLC condition recompute, rule re-eval) AND enqueue the
+  // outbound ClickUp push so a borrower-set vesting entity propagates back to the
+  // task — previously the vesting change was never pushed to ClickUp.
+  try { await require('../lib/vesting').setVestingLlc(req.params.id, b.llcId, { source: 'borrower', force: true }); } catch (_) { /* best-effort */ }
   await audit(req, 'link_llc', 'application', req.params.id, { llcId: b.llcId, previous });
   res.json({ ok: true });
 });
@@ -1160,6 +1195,65 @@ router.post('/contacts', async (req, res) => {
   res.status(201).json({ ok: true, contactId });
 });
 
+// ---------------- GENERAL FILE CONTACTS (#144) ----------------
+// Any party can add any kind of vendor to a file; contacts live in
+// service_contacts (=> company-wide vendor management) and link to the file via
+// application_service_contacts (MANY per file). Shared across the file.
+const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+router.get('/applications/:id/file-contacts', async (req, res) => {
+  const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
+  const r = await db.query(
+    `SELECT l.id AS link_id, sc.id AS contact_id, sc.contact_type, sc.custom_type,
+            sc.company_name, sc.contact_name, sc.email, sc.phone, sc.address, sc.notes,
+            l.added_by_kind, l.created_at
+       FROM application_service_contacts l
+       JOIN service_contacts sc ON sc.id = l.service_contact_id
+      WHERE l.application_id=$1
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [req.params.id]);
+  res.json(r.rows);
+});
+router.post('/applications/:id/file-contacts', async (req, res) => {
+  const b = req.body || {};
+  const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
+  const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
+  const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
+  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  const sc = await db.query(
+    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,phone,address,notes,added_by_borrower_id,last_used_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$1,now()) RETURNING id`,
+    [me(req), type, custom, b.companyName || null, b.contactName || null, b.email || null, b.phone || null, b.address || null, b.notes || null]);
+  const scId = sc.rows[0].id;
+  const link = await db.query(
+    `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
+     VALUES ($1,$2,$3,'borrower',$4)
+     ON CONFLICT (application_id,service_contact_id) DO UPDATE SET contact_type=EXCLUDED.contact_type RETURNING id`,
+    [req.params.id, scId, type, me(req)]);
+  await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
+  res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: scId });
+});
+router.delete('/file-contacts/:linkId', async (req, res) => {
+  const r = await db.query(
+    `DELETE FROM application_service_contacts l USING applications a
+      WHERE l.id=$1 AND l.application_id=a.id AND (a.borrower_id=$2 OR a.co_borrower_id=$2) RETURNING l.id`,
+    [req.params.linkId, me(req)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+// Borrower profile: every vendor this borrower is dealing with, across all files.
+router.get('/my-contacts', async (req, res) => {
+  const r = await db.query(
+    `SELECT sc.id, sc.contact_type, sc.custom_type, sc.company_name, sc.contact_name, sc.email, sc.phone, sc.notes,
+            count(l.application_id)::int AS files_used
+       FROM service_contacts sc
+       LEFT JOIN application_service_contacts l ON l.service_contact_id = sc.id
+      WHERE sc.borrower_id=$1
+      GROUP BY sc.id
+      ORDER BY sc.contact_type, lower(coalesce(sc.company_name, sc.contact_name, sc.email, ''))`, [me(req)]);
+  res.json(r.rows);
+});
+
 // ---------------- PARTNERS (reusable co-borrowers) ----------------
 router.get('/partners', async (req, res) => {
   const r = await db.query(
@@ -1204,29 +1298,44 @@ router.get('/track-records', async (req, res) => {
 // Shared field validation + column mapping for create/update. Mirrors the
 // static Track Record tool's rules: a flip needs a sale; a hold needs a
 // lease-up or refinance exit; ground-up needs any exit.
+// The ONLY hard requirement to SAVE a track-record line is a property address —
+// the line's identity (owner-directed 2026-07-12: "each required field should be
+// able to be completed and saved independently… it should still save even if you
+// don't have all the information"). Every other field is optional and persisted
+// as-provided so a borrower/officer can fill the record incrementally / autosave.
+// Completeness is surfaced as a NON-BLOCKING warning (trackRecordMissing) and
+// separately governs whether the entry QUALIFIES toward experience (verified +
+// recent exit, in track-record.js qualifies()) — an incomplete row saves fine, it
+// just doesn't count yet. `trackRecordErrors` keeps its name (imported elsewhere)
+// but is now the minimal save gate.
 function trackRecordErrors(b) {
-  const dealType = b.dealType || 'flip';
-  const typeText = String(dealType).toLowerCase();
   const addressText = b.propertyAddress && (b.propertyAddress.oneLine || b.propertyAddress.street || b.propertyAddress.line1);
   if (!addressText) return 'property address is required';
-  if (!moneyField(b.purchasePrice)) return 'purchase price is required';
-  if (!b.purchaseDate) return 'purchase date is required';
-  if (!moneyField(b.rehabAmount)) return 'rehab budget is required';
+  return null;
+}
+// What this entry still needs to be COMPLETE (count toward experience). Returned
+// to the UI as a warning list so it can show "still needed: …" at the bottom of
+// the line. NEVER blocks the save.
+function trackRecordMissing(b) {
+  const typeText = String(b.dealType || 'flip').toLowerCase();
   const isHold = typeText.indexOf('hold') >= 0 || typeText.indexOf('rental') >= 0;
   const isGround = typeText.indexOf('ground') >= 0;
-  if (!isHold && !isGround && (!moneyField(b.salePrice) || !b.saleDate)) {
-    return 'sale price and sale date are required for a fix-and-flip deal';
+  const miss = [];
+  if (!moneyField(b.purchasePrice)) miss.push('purchase price');
+  if (!b.purchaseDate) miss.push('purchase date');
+  if (!moneyField(b.rehabAmount)) miss.push('rehab budget');
+  if (!isHold && !isGround) {
+    if (!moneyField(b.salePrice)) miss.push('sale price');
+    if (!b.saleDate) miss.push('sale date');
   }
-  if (isHold && (!moneyField(b.rentAmount) && !moneyField(b.refiAmount))) {
-    return 'monthly rent or refinance amount is required for a fix-and-hold deal';
-  }
-  if (isHold && (!b.rentDate && !b.refiDate)) {
-    return 'rent date or refinance date is required for a fix-and-hold deal';
+  if (isHold) {
+    if (!moneyField(b.rentAmount) && !moneyField(b.refiAmount)) miss.push('monthly rent or refinance amount');
+    if (!b.rentDate && !b.refiDate) miss.push('rent date or refinance date');
   }
   if (isGround && !((moneyField(b.salePrice) && b.saleDate) || (moneyField(b.rentAmount) && b.rentDate) || (moneyField(b.refiAmount) && b.refiDate))) {
-    return 'ground-up experience needs a sale, rent, or refinance exit';
+    miss.push('a completed exit (sale, rent, or refinance)');
   }
-  return null;
+  return miss;
 }
 function trackRecordCols(b) {
   return {
@@ -1264,7 +1373,7 @@ router.post('/track-records', async (req, res) => {
      VALUES ($1,$2,${names.map((_, i) => '$' + (i + 3)).join(',')}) RETURNING id`,
     [me(req), b.llcId || null, ...vals]);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
-  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
+  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id, missing: trackRecordMissing(b) });
 });
 // Edit an entry — only the borrower's own, and only while it is unverified
 // (a verified entry is locked as underwriting evidence).
@@ -1286,7 +1395,7 @@ router.put('/track-records/:id', async (req, res) => {
       WHERE id=$1 AND borrower_id=$2`,
     [req.params.id, me(req), b.llcId || null, ...vals]);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
-  res.json({ ok: true });
+  res.json({ ok: true, missing: trackRecordMissing(b) });
 });
 // Delete a track-record entry — only the borrower's own, and only while it is
 // still unverified (a verified entry is locked as underwriting evidence).
@@ -1304,8 +1413,8 @@ router.get('/track-records/:id/documents', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
-    `SELECT id,filename,content_type,size_bytes,created_at FROM documents
-      WHERE track_record_id=$1 AND visibility='borrower' ORDER BY created_at`, [req.params.id]);
+    `SELECT id,filename,content_type,size_bytes,created_at,review_status,rejection_reason FROM documents
+      WHERE track_record_id=$1 AND visibility='borrower' AND is_current ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
 });
 router.post('/track-records/:id/documents', async (req, res) => {
@@ -1359,6 +1468,16 @@ router.post('/documents', async (req, res) => {
     if (!o.rows[0]) return res.status(404).json({ error: 'llc not found' });
     // A verified LLC's document set is locked — staff verified it as-is.
     if (o.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before replacing documents' });
+  }
+  // Term sheets auto-attach to the Products & Pricing register condition as a
+  // document slot (owner-directed #139): the registered term sheet saves straight
+  // into that condition, not just as a loose file — unless the caller already
+  // targeted a specific condition or an LLC slot.
+  if (b.docKind === 'term_sheet' && b.applicationId && !b.checklistItemId && !b.llcId) {
+    const pp = await db.query(
+      `SELECT id FROM checklist_items WHERE application_id=$1 AND tool_key='product_pricing' ORDER BY created_at LIMIT 1`,
+      [b.applicationId]);
+    if (pp.rows[0]) { b.checklistItemId = pp.rows[0].id; if (!b.slot) b.slot = 'Term sheet'; }
   }
   // The checklist item must be the borrower's own too — otherwise the document
   // row can be pointed at another borrower's checklist-item id.
@@ -1968,8 +2087,9 @@ router.post('/drafts/:id/submit', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,
         term,requested_ir_months,
         requested_exp_reo,payoff_amount,original_purchase_price,acquisition_date,
+        requested_ir_amount,
         source,raw_intake,status,submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,'portal',$23,'new',now())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
      b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
@@ -1978,7 +2098,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
-     intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice), b.acquisitionDate || null]);
+     intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice), b.acquisitionDate || null,
+     moneyField(b.irAmount)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.
   if (b.llcId) { try { await generateLlcChecklist(b.llcId); } catch (_) { /* best-effort */ } }
@@ -2189,3 +2310,4 @@ module.exports.backfillRtlChecklists = backfillRtlChecklists;
 module.exports.generateLlcChecklist = generateLlcChecklist;
 module.exports.trackRecordErrors = trackRecordErrors;
 module.exports.trackRecordCols = trackRecordCols;
+module.exports.trackRecordMissing = trackRecordMissing;

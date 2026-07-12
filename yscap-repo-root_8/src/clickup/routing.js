@@ -138,16 +138,23 @@ function processorEmailFor(read) {
   return s ? s.staffEmail : field;
 }
 
+// Case-insensitive officer-name index: "yehuda bochner" resolves to the canonical
+// "Yehuda Bochner" routing, so a mere case difference never drops a new file into
+// Lead Capture instead of the officer's own folder.
+const _officerByLowerName = {};
+for (const k of Object.keys(LOAN_OFFICERS)) _officerByLowerName[k.trim().toLowerCase()] = k;
+
 /**
- * Resolve a site officer name to routing targets.
+ * Resolve a site officer name to routing targets (case-insensitive).
  * Returns { role, crmFolderId, pipelineFolderId } or the Lead Capture fallback.
  */
 function resolveRouting(officerName) {
-  const name = (officerName || '').trim();
-  if (name && LOAN_OFFICERS[name]) {
-    return { role: 'loan_officer', officer: name,
-             crmFolderId: LOAN_OFFICERS[name].crm,
-             pipelineFolderId: LOAN_OFFICERS[name].pipeline };
+  const raw = (officerName || '').trim();
+  const canonical = raw && (LOAN_OFFICERS[raw] ? raw : _officerByLowerName[raw.toLowerCase()]);
+  if (canonical && LOAN_OFFICERS[canonical]) {
+    return { role: 'loan_officer', officer: canonical,
+             crmFolderId: LOAN_OFFICERS[canonical].crm,
+             pipelineFolderId: LOAN_OFFICERS[canonical].pipeline };
   }
   // Unknown, blank, processor, or excluded -> Lead Capture for manual assignment.
   return { role: 'unassigned', officer: null,

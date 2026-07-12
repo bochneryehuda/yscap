@@ -192,7 +192,7 @@ const RB = (function(){
          layout:null, layoutNotes:"", adu:null, aduNotes:"", curb:null, curbNotes:"", other:"" },
     cats:{}, items:{}, custom:[], cont:{ mode:"pct", value:"" }, gcFee:{ mode:"pct", value:"" }
   };}
-  let S=blank(); let step=0; let scopeNote="";
+  let S=blank(); let step=0; let scopeNote=""; let goldMode=false;
 
   /* ---------- helpers ---------- */
   const $=s=>document.querySelector(s);
@@ -873,7 +873,19 @@ const RB = (function(){
       }
       if(!stt){ flash("Couldn't read that file — please import an Excel exported by this tool."); return; }
       S=Object.assign(blank(),stt); S.vd=Object.assign(blank().vd,stt.vd||{}); S.cont=Object.assign(blank().cont,stt.cont||{}); S.gcFee=Object.assign(blank().gcFee,stt.gcFee||{}); S.custom=stt.custom||[];
-      step=STEPS.length-1; render({scroll:true}); flash("Imported — "+(isMulti()?(unitCount()+" units"):"single-family")+", "+(S.txn==="refi"?"refinance":"purchase")+". Pick up where you left off.");
+      ensureGoldContingency();   // a Gold file's imported SOW still carries the 5% contingency
+      step=STEPS.length-1; render({scroll:true});
+      // Persist the imported budget immediately — same as any manual edit. Without
+      // this the import lived only in memory: the draft (tool_state) was never
+      // autosaved, so it "didn't stick" to the condition on reopen. save() fires
+      // the portal autosave hook (RB_PORTAL_ONSAVE) when embedded in a loan file.
+      save();
+      // On a loan file, a DRAFT autosave (tool_state) is not enough — the imported
+      // Scope of Work must persist to the CONDITION (tool_payload) or it "doesn't
+      // stick": staff see the stale total and sign-off is blocked (#122). Fire the
+      // portal import hook so the wrapper runs a full submit right after import.
+      if(window.RB_PORTAL_ONIMPORT){ try{ window.RB_PORTAL_ONIMPORT(); }catch(e){} }
+      flash("Imported — "+(isMulti()?(unitCount()+" units"):"single-family")+", "+(S.txn==="refi"?"refinance":"purchase")+". Pick up where you left off.");
     }catch(e){ flash("Import failed — please use a file exported by this tool."); if(window.console)console.error(e); }
   }
 
@@ -1087,7 +1099,23 @@ const RB = (function(){
       if(target>0 && !S.target) S.target=String(Math.round(target));
       var pj=q.get("projType");
       if(pj && !S.projType && /^(cosmetic|moderate|heavy|ground)$/.test(pj)) S.projType=pj;
+      // Gold Standard Program requires a >=5% construction contingency on the SOW
+      // (owner-directed 2026-07-12). When the file is registered Gold, auto-fill a
+      // 5% contingency if the current one is short — every time the tool opens.
+      goldMode = /gold/i.test(String(q.get("program")||""));
+      ensureGoldContingency();
     }catch(e){}
+  }
+
+  // Force a >=5% contingency for a Gold file when the current one is short. A
+  // pct-mode value >= 5 already satisfies it; otherwise (amount mode below 5% of
+  // subtotal, or nothing set) snap it to 5% pct. Never DOWNGRADES a larger reserve.
+  function ensureGoldContingency(){
+    if(!goldMode) return;
+    var sub=subtotal();
+    var okPct=(S.cont && S.cont.mode==="pct" && num(S.cont.value)>=5);
+    var okAmt=(sub>0 && contingency()>=0.05*sub-0.5);
+    if(!okPct && !okAmt){ S.cont={mode:"pct", value:"5"}; }
   }
 
   /* ---------- portal bridge state accessors ----------
@@ -1101,6 +1129,7 @@ const RB = (function(){
     S.cont=Object.assign(blank().cont,o.cont||{});
     S.gcFee=Object.assign(blank().gcFee,o.gcFee||{});
     S.custom=o.custom||[];
+    ensureGoldContingency();   // Gold files always carry a >=5% contingency
     render();
   }
 
@@ -1108,6 +1137,7 @@ const RB = (function(){
   function init(){ restore(); prefillFromQuery(); render(); document.addEventListener("click",()=>{ document.querySelectorAll(".rb-tip.show").forEach(t=>t.classList.remove("show")); }); }
   document.addEventListener("DOMContentLoaded", init);
   return { share, exportXlsx, importXlsx, exportPdf, emailLO,
-           getState:()=>snap(), setState, grandTotal:()=>grand(), commit };
+           getState:()=>snap(), setState, grandTotal:()=>grand(),
+           subtotal:()=>subtotal(), contingency:()=>contingency(), commit };
 })();
 if(typeof window!=="undefined") window.RB = RB;

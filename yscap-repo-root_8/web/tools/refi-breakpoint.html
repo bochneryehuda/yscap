@@ -2,7 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="../theme.js?v=n1"></script>
+<script src="../theme.js?v=n6"></script>
+<script>
+(function () {
+  try {
+    var de = document.documentElement;
+    de.setAttribute("data-theme", "light");   // white-first — matches the portal (belt-and-suspenders vs a stale theme.js)
+    var q = new URLSearchParams(location.search);
+    if (q.get("embed") === "1") de.setAttribute("data-embed", "1");
+  } catch (e) {}
+})();
+</script>
 <script src="../brand.js?v=n1"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Refi BreakPoint — Refinance Break-Even Calculator</title>
@@ -13,7 +23,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=n1">
+<link rel="stylesheet" href="../suite.css?v=n7">
 </head>
 <body>
 <div class="grain" aria-hidden="true"></div>

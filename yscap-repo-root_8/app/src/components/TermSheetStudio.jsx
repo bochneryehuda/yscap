@@ -78,6 +78,7 @@ export function buildStudioState(x) {
   const asIs = rawNum(x.asIsValue) || price;
   const v = {
     borrowerName: x.borrowerName || '',
+    coBorrowerName: x.coBorrowerName || '',
     propAddr: x.address || '',
     dealPurpose: studioDealPurpose(x.loanType),
     dealType: studioDealType(x.program),
@@ -95,6 +96,7 @@ export function buildStudioState(x) {
     expGround: rawNum(x.expGround) || '0',
     tsTerm: termDigits(x.termMonths || x.term),
     irMonths: rawNum(x.irMonths) || '',
+    irAmount: rawNum(x.irAmount) || '',
   };
   const c = {
     isAssign,
@@ -123,14 +125,14 @@ function readSnapshot(win) {
   return {
     program, ready, missing, std, gold, d,
     fields: {
-      borrowerName: val('borrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
+      borrowerName: val('borrowerName'), coBorrowerName: val('coBorrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
       dealPurpose: val('dealPurpose'), dealType: val('dealType'),
       propState: val('propState'), propType: val('propType'),
       price: val('price'), isAssign: chk('isAssign'), origPrice: val('origPrice'),
       asIs: val('asIs'), arv: val('arv'), construction: val('construction'),
       rehabScope: val('rehabScope'), sqft: chk('sqft'),
       fico: val('fico'), expFlips: val('expFlips'), expBrrrr: val('expBrrrr'), expGround: val('expGround'),
-      tsTerm: val('tsTerm'), irMonths: val('irMonths'),
+      tsTerm: val('tsTerm'), irMonths: val('irMonths'), irAmount: val('irAmount'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'),
       tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'),
@@ -165,7 +167,7 @@ export function scenarioFromEngineInputs(inp, extra = {}) {
     rehabType: inp.heavyRehab ? 'Heavy / gut rehab' : (inp.sqftAddition ? 'Adding square footage' : ''),
     fico: inp.fico,
     expFlips: inp.expFlips, expHolds: inp.expHolds, expGround: inp.expGround,
-    termMonths: inp.term, irMonths: inp.irMonths,
+    termMonths: inp.term, irMonths: inp.irMonths, irAmount: inp.irAmount,
     ...extra,
   };
 }
@@ -202,6 +204,7 @@ export function selectionFromSnapshot(snap) {
     noteRatePct: d.rate || 0,
     termMonths: d.term || null,
     irMonths: d.irMonths || 0,
+    irAmount: d.irAmount || 0,
     initialAdvance: d.initialAdvance || 0,
     rehabHoldback: d.rehabHoldback || 0,
     financedInterestReserve: d.financedIR || 0,
@@ -339,13 +342,14 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
 
     // Safety net: never leave the studio permanently hidden. If the engines are
     // slow (or the ready-poll is still spinning), reveal the frame anyway after
-    // a beat — earlyStamp has already made it dark + de-chromed, so revealing it
+    // a beat — earlyStamp has already made it light + de-chromed, so revealing it
     // shows the real tool loading, not the raw marketing page.
     const revealFallback = setTimeout(() => { if (!disposed) setLoaded(true); }, 2500);
 
-    // Belt-and-braces: stamp dark theme + chrome-hiding CSS the moment the
-    // frame's document exists (even mid-parse), so the FIRST paint is already
-    // dark and de-chromed — the fade-in below then reveals nothing wrong.
+    // Belt-and-braces: stamp the WHITE (light) theme + chrome-hiding CSS the
+    // moment the frame's document exists (even mid-parse), so the FIRST paint is
+    // already white and de-chromed — the fade-in below then reveals nothing
+    // wrong. The portal is white-first now, so every embedded tool is light.
     let earlyStamp = null;
     let stamped = false;
     const stampEarly = () => {
@@ -356,7 +360,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         // about:blank has no real URL yet; wait for the tool document.
         const href = frame.contentWindow.location && frame.contentWindow.location.href;
         if (!href || href === 'about:blank') return;
-        doc.documentElement.setAttribute('data-theme', 'dark');
+        doc.documentElement.setAttribute('data-theme', 'light');
         if (doc.head) {
           const s = doc.createElement('style');
           s.textContent = HIDE_CSS + '\n.ys-theme-toggle{display:none!important}';
@@ -404,9 +408,9 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
           const style = doc.createElement('style');
           style.textContent = HIDE_CSS;
           doc.head.appendChild(style);
-          // Match the always-dark portal regardless of the visitor's saved
+          // Match the white-first portal regardless of the visitor's saved
           // marketing-site theme; the embed hides the tool's own toggle.
-          doc.documentElement.setAttribute('data-theme', 'dark');
+          doc.documentElement.setAttribute('data-theme', 'light');
           const themeStyle = doc.createElement('style');
           themeStyle.textContent = '.ys-theme-toggle{display:none!important}';
           doc.head.appendChild(themeStyle);
@@ -433,7 +437,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
           if (f) f.dispatchEvent(new win.Event('input', { bubbles: true }));
         } catch (_) { /* studio still renders on its own next input */ }
 
-        // Everything above is applied — the frame is dark, de-chromed and
+        // Everything above is applied — the frame is white, de-chromed and
         // prefilled — so it is now safe to fade it into view.
         if (earlyStamp) { clearInterval(earlyStamp); earlyStamp = null; }
         setLoaded(true);

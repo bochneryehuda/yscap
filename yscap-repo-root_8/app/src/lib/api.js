@@ -183,6 +183,11 @@ export const api = {
   // reusable service contacts (title company / insurance agent)
   contacts:     (type) => req('GET', `/api/borrower/contacts${type ? `?type=${type}` : ''}`),
   saveContact:  (b) => req('POST', '/api/borrower/contacts', b),
+  // general file contacts (#144) — any vendor, many per file, shared on the file
+  fileContacts:    (appId) => req('GET', `/api/borrower/applications/${appId}/file-contacts`),
+  addFileContact:  (appId, b) => req('POST', `/api/borrower/applications/${appId}/file-contacts`, b),
+  delFileContact:  (linkId) => req('DELETE', `/api/borrower/file-contacts/${linkId}`),
+  myContacts:      () => req('GET', '/api/borrower/my-contacts'),
 
   // reusable LLC / vesting-entity database (info + ownership + 3 doc slots)
   llcs:         () => req('GET', '/api/borrower/llcs'),
@@ -244,15 +249,37 @@ export const api = {
   staffBorrowerResetPassword: (id) => req('POST', `/api/staff/borrowers/${id}/reset-password`),
   staffBorrowerSetPassword: (id, password) => req('POST', `/api/staff/borrowers/${id}/set-password`, { password }),
   staffBorrower:    (id) => req('GET', `/api/staff/borrowers/${id}`),
+  staffUpdateBorrower: (id, b) => req('PATCH', `/api/staff/borrowers/${id}`, b),
+  // Borrower CRM hub roll-ups
+  staffBorrowerApplications: (id) => req('GET', `/api/staff/borrowers/${id}/applications`),
+  staffBorrowerConditions:   (id) => req('GET', `/api/staff/borrowers/${id}/conditions`),
+  staffBorrowerReminders:    (id) => req('GET', `/api/staff/borrowers/${id}/reminders`),
+  staffCreateBorrowerReminder: (id, b) => req('POST', `/api/staff/borrowers/${id}/reminders`, b),
+  staffBorrowerDocuments:    (id) => req('GET', `/api/staff/borrowers/${id}/documents`),
+  staffBorrowerActivity:     (id) => req('GET', `/api/staff/borrowers/${id}/activity`),
+  staffBorrowerNotes:        (id) => req('GET', `/api/staff/borrowers/${id}/notes`),
+  staffAddBorrowerNote:      (id, body) => req('POST', `/api/staff/borrowers/${id}/notes`, { body }),
+  staffDeleteBorrowerNote:   (id, nid) => req('DELETE', `/api/staff/borrowers/${id}/notes/${nid}`),
   staffBorrowerSsn: (id) => req('GET', `/api/staff/borrowers/${id}/ssn`),
   staffBorrowerTrackRecords: (id) => req('GET', `/api/staff/borrowers/${id}/track-records`),
   staffTrackRecordSnapshot:  (id) => req('GET', `/api/staff/borrowers/${id}/track-record/snapshot`),
   staffBorrowerLlcs: (id) => req('GET', `/api/staff/borrowers/${id}/llcs`),
+  // In-file verify set: the file's vesting entity + this borrower's track-record
+  // entities only (not the borrower's whole LLC library). Returns { vestingLlcId, llcs:[{...,vesting}] }.
+  staffAppVerifyLlcs: (appId) => req('GET', `/api/staff/applications/${appId}/verify-llcs`),
+  staffSetVestingLlc: (appId, llcId) => req('POST', `/api/staff/applications/${appId}/vesting-llc`, { llcId }),
   staffCreateLlc:    (borrowerId, b) => req('POST', `/api/staff/borrowers/${borrowerId}/llcs`, b),
+  staffLlc:          (id) => req('GET', `/api/staff/llcs/${id}`),
   staffUpdateLlc:    (id, b) => req('PATCH', `/api/staff/llcs/${id}`, b),
   staffSaveLlcMembers: (id, members) => req('PUT', `/api/staff/llcs/${id}/members`, { members }),
+  staffUploadLlcDoc: (llcId, b) => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b)),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
-  staffVerifyTrackRecord:    (id) => req('POST', `/api/staff/track-records/${id}/verify`),
+  staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
+  // Raise an issue/request against a track-record line item or a vesting LLC — it
+  // becomes a named internal+external condition on the file (applicationId).
+  staffRaiseTrackRecordIssue: (id, applicationId, reason) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason }),
+  staffTrackRecordDocs: (id) => req('GET', `/api/staff/track-records/${id}/documents`),
+  staffRaiseLlcIssue:         (id, applicationId, reason) => req('POST', `/api/staff/llcs/${id}/raise-issue`, { applicationId, reason }),
   staffPatchItem:   (itemId, b) => req('PATCH', `/api/staff/checklist/${itemId}`, b),
   staffRequestDoc:  (appId, b) => req('POST', `/api/staff/applications/${appId}/checklist`, b),
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
@@ -304,6 +331,9 @@ export const api = {
   staffEditMessage: (msgId, body) => req('PATCH', `/api/staff/messages/${msgId}`, { body }),
   staffDeleteMessage:(msgId) => req('DELETE', `/api/staff/messages/${msgId}`),
   staffMentionables:(appId) => req('GET', `/api/staff/applications/${appId}/mentionables`),
+  // System-wide audit log (#145) — the company-wide compliance trail.
+  auditLog:         (params) => req('GET', '/api/staff/audit-log' + qs(params)),
+  auditLogFacets:   () => req('GET', '/api/staff/audit-log/facets'),
   adminWelcome:     (id) => req('POST', `/api/admin/staff/${id}/welcome`),
   adminResetStaffEmail: (id) => req('POST', `/api/admin/staff/${id}/reset-email`),
   adminWelcomeAll:  (all) => req('POST', '/api/admin/staff/welcome-all', { onlyWithoutLogin: !all }),
@@ -365,6 +395,11 @@ export const api = {
   staffAddVendor:    (b) => req('POST', '/api/staff/vendors', b),
   staffUpdateVendor: (id, b) => req('PATCH', `/api/staff/vendors/${id}`, b),
   staffDeleteVendor: (id) => req('DELETE', `/api/staff/vendors/${id}`),
+  // general file contacts (#144) — staff side + a borrower's whole vendor list
+  staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
+  staffAddFileContact: (appId, b) => req('POST', `/api/staff/applications/${appId}/file-contacts`, b),
+  staffDelFileContact: (linkId) => req('DELETE', `/api/staff/file-contacts/${linkId}`),
+  staffBorrowerContacts: (borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/contacts`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
 
   // ---- admin: team / staff management ----

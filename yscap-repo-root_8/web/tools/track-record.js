@@ -317,20 +317,44 @@ const TR=(function(){
     return ov;
   }
 
+  // Turn a blocking-error string ("Purchase price is required.") into a short
+  // field label for the non-blocking "still needed" warning list.
+  function missingLabel(e){ return String(e).replace(/\s*is required.*$/i,'').replace(/\s*for a (flip|hold)\.?$/i,'').replace(/^Enter (the )?/i,'').replace(/\.$/,'').trim(); }
   function wireForm(ov){
     ov.querySelector(".tr-ov-x").onclick=ov._close;
     ov.querySelectorAll("[data-cancel]").forEach(b=>b.onclick=ov._close);
+    const msg=ov.querySelector("#tr-form-msg");
     const readInputs=()=>{ ov.querySelectorAll("[data-f]").forEach(el=>{ ov._work[el.dataset.f]=el.value; }); };
-    ov.querySelectorAll("[data-f]").forEach(el=> el.addEventListener("input",()=>{ ov._work[el.dataset.f]=el.value; }));
-    const sw=ov.querySelector("[data-switch]"); if(sw) sw.onclick=()=>{ readInputs(); ov._work.kind=sw.dataset.switch; openForm(ov._work); };
+    // AUTOSAVE (owner-directed 2026-07-12): every line item saves as you type —
+    // no Save click required, and NO field is mandatory except the address (the
+    // line's identity). Partial entries persist; a live warning at the bottom
+    // lists what's still needed to COUNT toward experience, but never blocks.
+    function paintMsg(){
+      const p=ov._work; const v=validate(p);
+      const hasAddr=!!String(p.address||"").trim();
+      if(!hasAddr){ msg.className="tr-form-msg info"; msg.innerHTML="Enter a property address to start — everything else saves as you go."; return; }
+      if(v.errs.length){ msg.className="tr-form-msg warn"; msg.innerHTML="✔ Saved. Still needed to count toward your experience: <b>"+v.errs.map(e=>esc(missingLabel(e))).join("</b> · <b>")+"</b>"; }
+      else if(v.warns.length){ msg.className="tr-form-msg warn"; msg.innerHTML="✔ Saved. "+v.warns.map(esc).join(" · "); }
+      else { msg.className="tr-form-msg ok"; msg.innerHTML="✔ Saved — this deal is complete and counts toward your experience."; }
+    }
+    // Commit the working entry into S.props + persist (server/hash) — requires
+    // only a non-empty address so we never create a totally-blank row.
+    function commit(){ const p=ov._work; if(!String(p.address||"").trim()) return false;
+      const i=S.props.findIndex(x=>x.id===p.id); if(i>=0) S.props[i]=Object.assign({},p); else S.props.push(Object.assign({},p)); save(); return true; }
+    let _t=null;
+    ov.querySelectorAll("[data-f]").forEach(el=> el.addEventListener("input",()=>{
+      ov._work[el.dataset.f]=el.value;
+      clearTimeout(_t); _t=setTimeout(()=>{ commit(); paintMsg(); }, 450);
+    }));
+    const sw=ov.querySelector("[data-switch]"); if(sw) sw.onclick=()=>{ readInputs(); commit(); ov._work.kind=sw.dataset.switch; openForm(ov._work); };
     ov.querySelector("[data-save]").onclick=()=>{
-      readInputs(); const p=ov._work; const v=validate(p);
-      if(v.errs.length){ const m=ov.querySelector("#tr-form-msg"); m.className="tr-form-msg err"; m.innerHTML="Please fix: "+v.errs.map(esc).join(" · "); m.scrollIntoView({behavior:"smooth",block:"center"}); return; }
-      const i=S.props.findIndex(x=>x.id===p.id);
-      if(i>=0) S.props[i]=p; else S.props.push(p);
-      ov._close(); render();
-      flash((i>=0?"Saved":"Added")+" — "+(p.kind==="flip"?"Fix & Flip":"Fix & Hold")+" · "+addrLine(p));
+      readInputs(); const p=ov._work;
+      if(!String(p.address||"").trim()){ msg.className="tr-form-msg err"; msg.innerHTML="A property address is required to save this line."; msg.scrollIntoView({behavior:"smooth",block:"center"}); return; }
+      const existed=S.props.some(x=>x.id===p.id); commit(); ov._close(); render();
+      const v=validate(p);
+      flash((existed?"Saved":"Added")+" — "+addrLine(p)+(v.errs.length?(" · still needs "+v.errs.length+" field"+(v.errs.length===1?"":"s")):" · complete"));
     };
+    paintMsg();
   }
 
   /* ===================== WIRE MAIN ===================== */

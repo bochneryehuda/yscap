@@ -377,9 +377,21 @@
           sel.appendChild(o);
         });
         sel.onchange = function () {
-          api("POST", recordUrl(p.id) + "/verify", { status: sel.value })
+          var prev = p.status || "pending";
+          var wasVerified = prev === "verified" || prev === "limited";
+          var nowCounts = sel.value === "verified" || sel.value === "limited";
+          var body = { status: sel.value };
+          // Revoking a verified project reopens the borrower's experience and
+          // notifies them — so it requires a reason (mirrors the LLC revoke).
+          if (wasVerified && !nowCounts) {
+            var reason = window.prompt("Revoke this project's verification. The borrower is notified with this reason:");
+            if (reason == null) { sel.value = prev; return; }       // cancelled
+            if (!reason.trim()) { flash("A reason is required to revoke verification."); sel.value = prev; return; }
+            body.reason = reason.trim();
+          }
+          api("POST", recordUrl(p.id) + "/verify", body)
             .then(function () { flash("Verification updated — " + STATUS_LABEL[sel.value] + "."); return reload(); })
-            .catch(function (e) { flash(e.message || "Could not update verification"); });
+            .catch(function (e) { flash(e.message || "Could not update verification"); sel.value = prev; });
         };
         actions.appendChild(sel);
       }

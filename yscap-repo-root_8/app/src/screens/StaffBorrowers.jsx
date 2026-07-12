@@ -59,22 +59,56 @@ export default function StaffBorrowers() {
     finally { setBusy(''); }
   }
 
+  const [sortKey, setSortKey] = useState('recent');   // recent | name | officer | files | portal | created
+  const [officer, setOfficer] = useState('all');       // filter: '' = unassigned, else officer name
+  // Distinct loan officers present in the list, for the "whose clients" filter.
+  const officers = useMemo(() => rows
+    ? [...new Set(rows.map(b => b.loan_officer_name).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+    : [], [rows]);
+  const hasUnassigned = useMemo(() => !!(rows && rows.some(b => !b.loan_officer_name)), [rows]);
+  const byName = (a, b) => `${a.last_name || ''} ${a.first_name || ''}`.trim().localeCompare(`${b.last_name || ''} ${b.first_name || ''}`.trim());
   const filtered = useMemo(() => {
     if (!rows) return null;
     const needle = q.trim().toLowerCase();
-    if (!needle) return rows;
-    return rows.filter(b => `${b.first_name || ''} ${b.last_name || ''} ${b.email || ''} ${b.cell_phone || ''}`.toLowerCase().includes(needle));
-  }, [rows, q]);
+    let list = !needle ? rows.slice() : rows.filter(b =>
+      `${b.first_name || ''} ${b.last_name || ''} ${b.email || ''} ${b.cell_phone || ''} ${b.loan_officer_name || ''}`.toLowerCase().includes(needle));
+    // Filter to a single loan officer's clients (or the unassigned bucket).
+    if (officer !== 'all') list = list.filter(b => (b.loan_officer_name || '') === (officer === '__none__' ? '' : officer));
+    const cmp = {
+      name: byName,
+      // Group by officer, then by borrower name within each officer.
+      officer: (a, b) => String(a.loan_officer_name || '~~~zzz').localeCompare(String(b.loan_officer_name || '~~~zzz')) || byName(a, b),
+      files: (a, b) => (b.files || 0) - (a.files || 0) || byName(a, b),
+      recent: (a, b) => new Date(b.last_login_at || b.last_seen_at || 0) - new Date(a.last_login_at || a.last_seen_at || 0),
+      // Portal-active first, then by name — surfaces who still needs an invite.
+      portal: (a, b) => (Number(!!b.has_account) - Number(!!a.has_account)) || byName(a, b),
+      created: (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0),
+    }[sortKey];
+    return cmp ? list.sort(cmp) : list;
+  }, [rows, q, sortKey, officer]);
 
   return (
     <div className="wrap">
       <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
         <h1 style={{ margin: 0 }}>Borrowers</h1>
         <div className="spacer" />
-        <input className="input" placeholder="Search name, email, phone…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 280 }} />
+        <select className="input" value={officer} onChange={e => setOfficer(e.target.value)} style={{ maxWidth: 200 }} title="Show only this loan officer's clients">
+          <option value="all">All loan officers</option>
+          {officers.map(o => <option key={o} value={o}>{o}</option>)}
+          {hasUnassigned && <option value="__none__">(Unassigned)</option>}
+        </select>
+        <select className="input" value={sortKey} onChange={e => setSortKey(e.target.value)} style={{ maxWidth: 180, marginLeft: 8 }} title="Sort borrowers">
+          <option value="recent">Most recent login</option>
+          <option value="name">Name (A–Z)</option>
+          <option value="officer">Loan officer</option>
+          <option value="files"># of files</option>
+          <option value="portal">Portal status</option>
+          <option value="created">Newest added</option>
+        </select>
+        <input className="input" placeholder="Search name, email, phone, officer…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 280, marginLeft: 8 }} />
       </div>
       <p className="muted small" style={{ marginTop: 0 }}>
-        Your borrowers — invite them to the portal, email a password reset, or set a password for them. Last login shows their most recent portal sign-in.
+        Your borrowers — open a borrower to see their full CRM profile, or invite them to the portal, email a password reset, or set a password. Last login shows their most recent portal sign-in.
       </p>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
@@ -88,6 +122,7 @@ export default function StaffBorrowers() {
               <tr style={{ textAlign: 'left' }}>
                 <th style={{ padding: '10px 12px' }}>Borrower</th>
                 <th style={{ padding: '10px 12px' }}>Contact</th>
+                <th style={{ padding: '10px 12px' }}>Loan officer</th>
                 <th style={{ padding: '10px 12px' }}>Files</th>
                 <th style={{ padding: '10px 12px' }}>Portal</th>
                 <th style={{ padding: '10px 12px' }}>Last login</th>
@@ -102,15 +137,18 @@ export default function StaffBorrowers() {
                   <React.Fragment key={b.id}>
                     <tr style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
                       <td style={{ padding: '10px 12px', fontWeight: 600 }}>
-                        {b.latest_file_id
-                          ? <Link to={`/internal/app/${b.latest_file_id}`}>{name}</Link>
-                          : name}
+                        <Link to={`/internal/borrowers/${b.id}`}>{name}</Link>
                       </td>
                       <td style={{ padding: '10px 12px' }}>
                         <div className="small">{b.email || '—'}</div>
                         <div className="muted small">{b.cell_phone || ''}</div>
                       </td>
-                      <td style={{ padding: '10px 12px' }}>{b.files}</td>
+                      <td style={{ padding: '10px 12px' }} className="small">{b.loan_officer_name || <span className="muted">—</span>}</td>
+                      <td style={{ padding: '10px 12px' }}>
+                        {b.latest_file_id
+                          ? <Link to={`/internal/app/${b.latest_file_id}`} title="Open the most recent file">{b.files}</Link>
+                          : b.files}
+                      </td>
                       <td style={{ padding: '10px 12px' }}>
                         {b.has_account
                           ? <span className="pill" style={{ borderColor: 'var(--ok)', color: 'var(--ok)' }}>Active</span>
@@ -138,7 +176,7 @@ export default function StaffBorrowers() {
                     </tr>
                     {pwFor === b.id && (
                       <tr style={{ background: 'rgba(127,169,176,.06)' }}>
-                        <td colSpan={6} style={{ padding: '10px 12px' }}>
+                        <td colSpan={7} style={{ padding: '10px 12px' }}>
                           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                             <span className="small">Set a new password for <strong>{name}</strong>:</span>
                             <input className="input" type="text" autoComplete="off" placeholder="At least 8 characters"

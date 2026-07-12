@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="../theme.js?v=n1"></script>
+<script src="../theme.js?v=n6"></script>
 <script src="../brand.js?v=n1"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YS Term Sheet Studio — A Signable Fix &amp; Flip Term Sheet in About a Minute</title>
@@ -13,7 +13,16 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../suite.css?v=n1">
+<link rel="stylesheet" href="../suite.css?v=n7">
+<!-- This tool is WHITE-FIRST always (owner-directed): it must match the portal it
+     embeds into (Products & Pricing / Term Sheet Studio), so we force the light
+     theme before first paint regardless of any stale saved 'dark' preference. The
+     portal iframe (TermSheetStudio.jsx) also re-stamps light + hides the chrome. -->
+<script>
+(function () {
+  try { document.documentElement.setAttribute("data-theme", "light"); } catch (e) {}
+})();
+</script>
 <style>
   .hidden{ display:none !important; }
   /* Bridge (and any conditional row): when a field in a two-column row is hidden, collapse the row to one column so there's no empty slot. */
@@ -185,7 +194,7 @@
   .tip{ position:relative; display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; border-radius:50%; border:1px solid var(--muted); color:var(--muted); font-size:9px; font-style:normal; font-weight:700; line-height:1; cursor:help; margin-left:5px; vertical-align:middle; user-select:none; flex:0 0 auto; transition:color .15s, border-color .15s; }
   .tip:hover, .tip:focus-visible, .tip.tip-open{ border-color:var(--gold); color:var(--gold); outline:none; }
   .tip-bub{ position:absolute; bottom:150%; left:50%; transform:translateX(-50%); width:min(230px,72vw); background:var(--ink-2); border:1px solid var(--line); border-radius:9px; padding:.6rem .72rem; font-size:.72rem; font-style:normal; font-weight:400; line-height:1.5; letter-spacing:.005em; color:var(--ivory); box-shadow:0 10px 30px rgba(0,0,0,.45); opacity:0; visibility:hidden; transition:opacity .14s; z-index:60; text-align:left; pointer-events:none; white-space:normal; }
-  .tip-bub::after{ content:""; position:absolute; top:100%; left:50%; transform:translateX(-50%); border:6px solid transparent; border-top-color:#0e1a1e; }
+  .tip-bub::after{ content:""; position:absolute; top:100%; left:50%; transform:translateX(-50%); border:6px solid transparent; border-top-color:var(--ink-2); }
   .tip:hover .tip-bub, .tip:focus-visible .tip-bub, .tip.tip-open .tip-bub{ opacity:1; visibility:visible; }
   .tip.tip-r .tip-bub{ left:auto; right:-6px; transform:none; }
   .tip.tip-r .tip-bub::after{ left:auto; right:12px; transform:none; }
@@ -268,6 +277,10 @@
             <div class="field">
                 <label for="borrowerName">Borrower / entity name <em>(optional)</em></label>
                 <div class="input"><input id="borrowerName" type="text" placeholder="e.g. Klein Holdings LLC"></div>
+            </div>
+            <div class="field">
+                <label for="coBorrowerName">Co-borrower name <em>(optional — adds a second signature line)</em></label>
+                <div class="input"><input id="coBorrowerName" type="text" placeholder="e.g. Sarah Klein"></div>
             </div>
             <div class="field cond" data-cond="addr">
                 <label for="propAddr">Subject property address</label>
@@ -358,6 +371,7 @@
             <p class="panel-note cond hidden" data-cond="bridgeOnly">A bridge loan is sized against the as-is value only — there's no rehab holdback, after-repair value or interest reserve. Just set your requested term below.</p>
             <div class="field-rows two-col">
                 <div class="field cond" data-cond="hasRehab"><label for="irMonths">Interest reserve <em>(months)</em><span class="tip" tabindex="0" role="note" aria-label="Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.">i<span class="tip-bub">Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.</span></span></label><div class="input"><input id="irMonths" type="number" inputmode="numeric" min="0" max="24" placeholder="e.g. 6"></div></div>
+                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or exact reserve <em>(amount $)</em><span class="tip" tabindex="0" role="note" aria-label="Enter an exact dollar interest reserve instead of a number of months. When set, this OVERRIDES the months field. It is still fit under the same leverage caps. Leave blank to size the reserve from months.">i<span class="tip-bub">Enter an exact dollar interest reserve instead of a number of months. When set, this <b>overrides</b> the months field (still fit under the same leverage caps). Leave blank to size the reserve from months.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
                 <div class="field"><label for="tsTerm">Requested term <em>(months)</em></label><div class="input select"><select id="tsTerm">
                     <option value="6">6 months</option>
                     <option value="12" selected>12 months</option>
@@ -610,10 +624,10 @@
 
 <script src="../suite.js?v=admin8"></script>
 <script src="rb-logo.js?v=admin8"></script>
-<script src="standard-program.js?v=admin12"></script>
-<script src="gold-standard.js?v=admin9"></script>
+<script src="standard-program.js?v=admin13"></script>
+<script src="gold-standard.js?v=admin13"></script>
 <script src="title-cost.js?v=admin8"></script>
-<script src="termsheet.js?v=admin12"></script>
+<script src="termsheet.js?v=cob1"></script>
 <script src="../float-actions.js?v=admin8"></script>
 </body>
 </html>
