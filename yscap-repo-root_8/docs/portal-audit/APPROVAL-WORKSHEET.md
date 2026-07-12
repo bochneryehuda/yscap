@@ -22,6 +22,31 @@ pay for a fix that's already done.
 
 ---
 
+## Owner decisions — round 1 (Sections 1–5)
+
+| ID | Owner's call | Status |
+|---|---|---|
+| S1-04 | Remove pricing override from the **borrower** side; keep it on LO/processor/admin | ✅ approved → build |
+| S3-01 | LO may mark **"done" (their own review)** but **never sign off**; sign-off needs a second person | ✅ approved → build |
+| S4-01 | **Ignore** (CVC storage) | ⏸ parked per owner |
+| S1-01 | Add **notification controls** in the control center (on by default, can be turned off per member); also cut off fired staff | ✅ approved → build |
+| S1-02 | Full **standard login-security** upgrade (lockout, password rules, verification codes) | ✅ approved → build |
+| S1-03 | Hide internal **margin** + any hidden/internal data; borrower's **own** personal data is fine | ✅ approved → build |
+| S1-05 | LO/processor **never** get "manage team"; a **super-admin-granted** persona manages the team; **super-admin can never be overwritten** | ✅ approved → build |
+| S2-01 | Fix **ASAP** (partner-name leak path) | ✅ approved → build (top) |
+| S2-02 | Owner asked for a suggestion | 💬 answered below — no AI needed; awaiting OK |
+| S2-04 | Owner asked to understand | 💬 explained below (same fix as S1-03); awaiting OK |
+| S3-02 | Restrict reassignment to **admin**; LO can't take over others' files | ✅ approved → build |
+| S3-03 | LO says "I believe it's done"; secondary sign-off by processor/admin | ✅ **already fixed on main (#152)**; optional small add |
+| S3-04 | Owner wants LO to keep "undo sign-off" | ⚠️ conflict — see below; awaiting choice |
+| S4-02 | Owner asked what the issue is | 💬 explained below; awaiting decision |
+| S5-01 | Owner asked to understand | 💬 explained below; awaiting OK |
+| S5-03 | Prevent it; on a would-be delete, **alert LO/processor for manual review** instead | ✅ approved → build (explained below) |
+
+_All other findings (the ~45 below) are awaiting the owner's call._
+
+---
+
 ## The count
 
 | Section | 🔴 Crit | 🟠 High | 🟡 Med | ⚪ Low | Total |
