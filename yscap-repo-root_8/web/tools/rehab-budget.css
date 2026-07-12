@@ -1,12 +1,25 @@
 /* ---- self-contained design tokens (so colors never fall back to white/black) ---- */
+/* WHITE-FIRST base (owner-directed 2026-07-12): light is the DEFAULT palette so
+   the Scope-of-Work tool renders white even if the theme attribute never lands.
+   Dark is opt-in via :root[data-theme="dark"]. Mirrors suite.css inversion. */
 :root{
+  color-scheme:light;
+  --on-accent:#FFFFFF;
+  --ink:#F7FAF9; --ink-1:#FFFFFF; --ink-2:#F1F6F5; --ink-3:#E7EFEE;
+  --line:#DCE7E5; --line-2:rgba(23,35,38,.05);
+  --teal:#2F7F86; --teal-br:#286D73; --teal-dp:#1F5B60; --teal-glow:rgba(47,127,134,.14);
+  --gold:#B9944A; --ivory:#172326; --ivory-soft:#2C3832; --muted:#5D6B70; --muted-2:#819096;
+  --good:#178560; --warn:#B7791F; --bad:#B42318;
+  --r:16px; --font-d:"Fraunces",Georgia,serif; --font-b:"Hanken Grotesk",system-ui,-apple-system,sans-serif;
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
   --on-accent:#08232b;
   --ink:#0B1014; --ink-1:#10181F; --ink-2:#131C24; --ink-3:#18242E;
   --line:rgba(255,255,255,.14); --line-2:rgba(255,255,255,.07);
   --teal:#7FA9B0; --teal-br:#B6DCE1; --teal-dp:#4E777F; --teal-glow:rgba(127,169,176,.22);
   --gold:#D7B677; --ivory:#F7F4ED; --ivory-soft:#E7E2D6; --muted:#C2CDD2; --muted-2:#94A1A8;
   --good:#7FB08A; --warn:#C9A86A; --bad:#E0A085;
-  --r:16px; --font-d:"Fraunces",Georgia,serif; --font-b:"Hanken Grotesk",system-ui,-apple-system,sans-serif;
 }
 html{ background:var(--ink); }
 /* the shared site uses large blurred orbs + a noise overlay; on this long, input-heavy
