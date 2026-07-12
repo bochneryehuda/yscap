@@ -1699,7 +1699,10 @@ router.get('/notifications', async (req, res) => {
   const r = await db.query(
     `SELECT id,type,title,body,application_id,link,read_at,created_at FROM notifications
      WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 100`, [me(req)]);
-  res.json(r.rows);
+  // Some notification rows are written directly (chat bell) bypassing the
+  // notify.notifyBorrower scrub — scrub title/body on the way out (covers
+  // already-stored rows too).
+  res.json(r.rows.map((row) => scrubFields(row, ['title', 'body'])));
 });
 router.post('/notifications/:id/read', async (req, res) => {
   await db.query(`UPDATE notifications SET read_at=now() WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);

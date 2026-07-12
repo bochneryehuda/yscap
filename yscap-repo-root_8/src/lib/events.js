@@ -108,6 +108,27 @@ function setOpenConversation(connId, conversationId) {
   if (c) c.openConv = conversationId || null;
 }
 
+/**
+ * Borrower-safe copy of an event payload: replace any capital-partner name a
+ * staffer typed with the program name, in the chat message body, its
+ * quoted-reply preview, and a top-level toast `body` (urgent pings). Returns the
+ * original object untouched when there is nothing to scrub (so staff payloads
+ * are never cloned/altered). Only applied to BORROWER recipients.
+ */
+function borrowerSafeEvent(data) {
+  if (!data || typeof data !== 'object') return data;
+  let out = data;
+  if (typeof data.body === 'string') out = { ...out, body: scrubText(data.body) };
+  const m = data.message;
+  if (m && typeof m === 'object') {
+    const body = typeof m.body === 'string' ? scrubText(m.body) : m.body;
+    const rs = (m.reply_snippet && typeof m.reply_snippet.body === 'string')
+      ? { ...m.reply_snippet, body: scrubText(m.reply_snippet.body) } : m.reply_snippet;
+    if (body !== m.body || rs !== m.reply_snippet) out = { ...out, message: { ...m, body, reply_snippet: rs } };
+  }
+  return out;
+}
+
 /** Fan an event out to a conversation: its (non-removed) members plus any
     connection that has the conversation open (admins/underwriters reading a
     chat they aren't members of still see it live). */
@@ -120,13 +141,10 @@ async function publishToConversation(conversationId, event, data, { excludeKey =
     memberKeys = new Set(r.rows.map(m => keyOf(m.member_kind, m.member_id)));
   } catch (_) { /* fall back to open-conv fan-out only */ }
   // A borrower must never receive a capital-partner name a staffer typed into a
-  // chat message. Scrub the message body for BORROWER connections only; staff
-  // connections get the real text. Only message events carry a body — other
-  // events (receipts/presence/typing) pass through untouched.
-  let borrowerData = data;
-  if (data && data.message && typeof data.message.body === 'string') {
-    borrowerData = { ...data, message: { ...data.message, body: scrubText(data.message.body) } };
-  }
+  // chat message. Scrub the body + quoted-reply preview for BORROWER connections
+  // only; staff connections get the real text. Body-less events
+  // (receipts/presence/typing) pass through untouched.
+  const borrowerData = borrowerSafeEvent(data);
   for (const c of conns.values()) {
     if (c.key === excludeKey) continue;
     if (memberKeys.has(c.key) || c.openConv === conversationId) {
@@ -138,7 +156,10 @@ async function publishToConversation(conversationId, event, data, { excludeKey =
 /** Direct fan-out to one user's connections (badges, urgent pings). */
 function publishToUser(kind, id, event, data) {
   const key = keyOf(kind, id);
-  for (const c of conns.values()) if (c.key === key) write(c, event, data);
+  // Borrower-bound toasts (urgent chat pings) carry a raw body — scrub for
+  // borrower recipients; staff get the real text.
+  const out = kind === 'borrower' ? borrowerSafeEvent(data) : data;
+  for (const c of conns.values()) if (c.key === key) write(c, event, out);
 }
 
 // Keep proxies from idling the stream out; a comment frame is ignored by

@@ -110,8 +110,14 @@ router.get('/conversations/:cid/messages', async (req, res) => {
   const beforeSeq = req.query.before ? Number(req.query.before) : null;
   const msgs = await chat.fetchMessages(conv.id, { beforeSeq, limit: Number(req.query.limit) || 60 });
   // Scrub any capital-partner name a staffer typed into a message before the
-  // borrower reads it (staff see the real name via the staff-chat routes).
-  for (const m of msgs) if (m && typeof m.body === 'string') m.body = scrubText(m.body);
+  // borrower reads it — the body AND the quoted-reply preview (staff see the
+  // real name via the staff-chat routes).
+  for (const m of msgs) {
+    if (!m) continue;
+    if (typeof m.body === 'string') m.body = scrubText(m.body);
+    if (m.reply_snippet && typeof m.reply_snippet.body === 'string')
+      m.reply_snippet = { ...m.reply_snippet, body: scrubText(m.reply_snippet.body) };
+  }
   res.json({ messages: msgs, members: await chat.membersOf(conv.id) });
 });
 
@@ -130,6 +136,11 @@ router.post('/conversations/:cid/messages', async (req, res) => {
       replyToMessageId: b.replyToMessageId || null,
     });
     db.query(`DELETE FROM chat_drafts WHERE conversation_id=$1 AND member_kind='borrower' AND member_id=$2`, [conv.id, me(req)]).catch(() => {});
+    // The echo back to the borrower sender (body + any quoted-reply preview) is
+    // borrower-facing too — scrub it.
+    if (message && typeof message.body === 'string') message.body = scrubText(message.body);
+    if (message && message.reply_snippet && typeof message.reply_snippet.body === 'string')
+      message.reply_snippet = { ...message.reply_snippet, body: scrubText(message.reply_snippet.body) };
     res.status(201).json({ ok: true, message });
   } catch (e) {
     if (e.code === 'pii_blocked') return res.status(400).json({ error: e.message });
