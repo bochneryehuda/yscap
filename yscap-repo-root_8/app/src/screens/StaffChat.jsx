@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAuth } from '../lib/auth.jsx';
 import { subscribeChat } from '../lib/chatEvents.js';
 import ChatThread from '../components/ChatThread.jsx';
@@ -265,13 +266,15 @@ export function NewChatModal({ appId, onClose, onCreated }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   useEffect(() => { api.staffTeam().then(setTeam).catch(e => setErr(e.message)); }, []);
+  const gate = useSubmitGate();
   async function create() {
     if (!name.trim()) { setErr('Give the chat a name.'); return; }
+    if (!gate.enter()) return;             // a create is already in flight (Enter + click)
     setBusy(true); setErr('');
     try {
       const r = await api.staffCreateConversation(appId, { name: name.trim(), emoji, memberStaffIds: [...picked] });
       onCreated(r.conversationId);
-    } catch (e) { setErr(e.message); setBusy(false); }
+    } catch (e) { setErr(e.message); setBusy(false); gate.leave(); }
   }
   return (
     <div className="cv-modal-back" onClick={onClose}>

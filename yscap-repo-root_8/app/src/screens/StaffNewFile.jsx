@@ -133,6 +133,10 @@ export default function StaffNewFile() {
   });
   const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '', ...(_d && _d.addr ? _d.addr : {}) });
   const [busy, setBusy] = useState(false);
+  // Synchronous re-entry guard: `disabled={busy}` alone can't stop a second
+  // Enter-submit or double-click landing before React re-renders, which would
+  // create TWO loan files. A ref flips instantly, before the first await.
+  const submittingRef = useRef(false);
   const [err, setErr] = useState('');
   const [savedAt, setSavedAt] = useState(_d ? true : false);
 
@@ -220,6 +224,8 @@ export default function StaffNewFile() {
     if (!f.firstName.trim()) return setErr('Borrower first name is required.');
     if (!f.email.trim()) return setErr('Borrower email is required.');
     if (!addr.street.trim() && !addr.city.trim()) return setErr('Enter the property address.');
+    if (submittingRef.current) return;      // a second submit is already creating the file
+    submittingRef.current = true;
     setBusy(true);
     try {
       const body = {
@@ -264,6 +270,7 @@ export default function StaffNewFile() {
     } catch (e2) {
       setErr(e2.message || 'Could not create the file.');
       setBusy(false);
+      submittingRef.current = false;        // let them retry after a real failure
     }
   }
 

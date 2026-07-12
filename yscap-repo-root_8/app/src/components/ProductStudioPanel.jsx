@@ -1,5 +1,6 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 import TermSheetStudio, {
   buildStudioState, scenarioFromEngineInputs, adminStateFromEngineInputs, blobToBase64,
 } from './TermSheetStudio.jsx';
@@ -386,6 +387,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   const d = snap && snap.d;
   const canRegister = !!(snap && snap.ready && snap.program && d && d.status !== 'INELIGIBLE' && d.totalLoan > 0);
 
+  const gate = useSubmitGate();
   async function register() {
     const s = studioRef.current && studioRef.current.snapshot();
     if (!s) { setErr('The Term Sheet Studio is still loading.'); return; }
@@ -396,6 +398,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       setErr("This scenario isn't eligible as entered — adjust it in the studio, or contact your loan team for a manual review.");
       return;
     }
+    if (!gate.enter()) return;             // a registration is already in flight
     setBusy(true); setErr(''); setMsg('');
     try {
       // exact PDF from the static generator (best-effort — registration still proceeds)
@@ -426,7 +429,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     } catch (e) {
       const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
       setErr(detail);
-    } finally { setBusy(false); }
+    } finally { setBusy(false); gate.leave(); }
   }
 
   const statusLine = snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')

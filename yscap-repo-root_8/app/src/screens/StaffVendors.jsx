@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAuth } from '../lib/auth.jsx';
 
 /* Vendor directory (admin): every title company / insurance agent contact
@@ -62,10 +63,12 @@ export default function StaffVendors() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [type]);
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 3000); };
 
+  const gate = useSubmitGate();
   async function add(f) {
+    if (!gate.enter()) return;             // a vendor add is already in flight
     setBusy(true); setErr('');
     try { await api.staffAddVendor(f); setAdding(false); flash('Vendor added ✓'); await load(); }
-    catch (e) { setErr(e.message || 'Could not add'); } finally { setBusy(false); }
+    catch (e) { setErr(e.message || 'Could not add'); } finally { setBusy(false); gate.leave(); }
   }
   async function saveEdit(id, f) {
     setBusy(true); setErr('');

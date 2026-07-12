@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useSubmitGate } from '../lib/useSubmitGate.js';
 
 /**
  * Reminders + task management (#93) — the popup behind a file's "Remind" button.
@@ -115,12 +116,14 @@ export default function ReminderModal({ appId, team = [], onClose, onChanged }) 
     return mapped;
   }
 
+  const gate = useSubmitGate();
   async function submit() {
     setErr('');
     if (!title.trim()) { setErr('Give the reminder a title.'); return; }
     if (!dueAt) { setErr('Pick a due date and time.'); return; }
     const recipients = recipientsPayload();
     if (!recipients.length) { setErr('Choose at least one recipient.'); return; }
+    if (!gate.enter()) return;              // a create is already in flight
     setBusy(true);
     try {
       await api.staffCreateReminder(appId, {
@@ -134,7 +137,7 @@ export default function ReminderModal({ appId, team = [], onClose, onChanged }) 
       await load();
       onChanged && onChanged();
     } catch (e) { setErr(e.message || 'Could not save.'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); gate.leave(); }
   }
 
   async function setStatus(rid, status) {
