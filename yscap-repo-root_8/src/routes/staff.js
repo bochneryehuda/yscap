@@ -2315,8 +2315,9 @@ router.get('/track-records/:id/documents', async (req, res) => {
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   const r = await db.query(
-    `SELECT id,filename,content_type,size_bytes,uploaded_by_kind,created_at FROM documents
-      WHERE track_record_id=$1 ORDER BY created_at`, [req.params.id]);
+    `SELECT id,filename,content_type,size_bytes,uploaded_by_kind,created_at,
+            review_status,rejection_reason,reviewed_at FROM documents
+      WHERE track_record_id=$1 AND is_current ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
 });
 router.post('/track-records/:id/documents', async (req, res) => {
@@ -3460,7 +3461,7 @@ router.post('/documents/:id/review', async (req, res) => {
   }
   try {
     const r = await db.query(
-      `SELECT id,filename,application_id,borrower_id,llc_id,checklist_item_id FROM documents WHERE id=$1`, [req.params.id]);
+      `SELECT id,filename,application_id,borrower_id,llc_id,checklist_item_id,track_record_id FROM documents WHERE id=$1`, [req.params.id]);
     const doc = r.rows[0];
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
@@ -3533,6 +3534,24 @@ router.post('/documents/:id/review', async (req, res) => {
         if (wasVerified.rows[0]) await audit(req, 'unverify_llc', 'llc', doc.llc_id, { cause: 'document_rejected', documentId: doc.id });
       }
       try { await llcLib.syncLlcConditions(doc.llc_id, { reopen: action === 'reject' }); } catch (_) { /* best-effort */ }
+    }
+
+    // A track-record line-item document verdict: rejecting a document that a
+    // verified line item was verified against un-verifies that line item (its
+    // evidence no longer stands) and recomputes the borrower's tier + experience
+    // condition — mirroring the LLC behavior (#126 per-line-item reject).
+    if (doc.track_record_id && action === 'reject') {
+      const was = await db.query(
+        `UPDATE track_records SET verification_status='docs', is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now()
+          WHERE id=$1 AND is_verified=true RETURNING borrower_id`, [doc.track_record_id]);
+      if (was.rows[0]) {
+        await audit(req, 'unverify_track_record', 'track_record', doc.track_record_id, { cause: 'document_rejected', documentId: doc.id });
+        await db.query(
+          `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
+          [was.rows[0].borrower_id]);
+        try { await require('../lib/experience').syncExperienceChecklistForBorrower(was.rows[0].borrower_id); } catch (_) {}
+        try { await conditionEngine.evaluateBorrowerApplications(was.rows[0].borrower_id, { actor: req.actor, reason: 'track_record_doc_rejected' }); } catch (_) {}
+      }
     }
 
     // On rejection, tell the borrower what to fix. LLC documents live on the

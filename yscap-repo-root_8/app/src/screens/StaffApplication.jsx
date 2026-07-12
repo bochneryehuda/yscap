@@ -834,11 +834,36 @@ function StaffTrackRecordPanel({ app }) {
   // Per-line-item list so staff can raise an issue/request against a SPECIFIC
   // past project — it becomes a named condition on this file the borrower answers.
   const [trs, setTrs] = useState([]);
+  const [trDocs, setTrDocs] = useState({});   // { [trackRecordId]: [docs] } — per-line-item uploaded docs
   const [trBusy, setTrBusy] = useState('');
   const [trMsg, setTrMsg] = useState('');
+  const completerTR = canComplete(role);
   const refreshTrs = useCallback(() => {
-    api.staffBorrowerTrackRecords(borrowerId).then(rows => setTrs(Array.isArray(rows) ? rows : [])).catch(() => setTrs([]));
+    api.staffBorrowerTrackRecords(borrowerId).then(async rows => {
+      const list = Array.isArray(rows) ? rows : [];
+      setTrs(list);
+      // Pull each line item's uploaded documents so staff can accept/reject them
+      // per line item (#126). Best-effort; a failed fetch just shows no docs.
+      const docMap = {};
+      await Promise.all(list.map(async (t) => {
+        try { const d = await api.staffTrackRecordDocs(t.id); docMap[t.id] = Array.isArray(d) ? d : []; } catch (_) { docMap[t.id] = []; }
+      }));
+      setTrDocs(docMap);
+    }).catch(() => { setTrs([]); setTrDocs({}); });
   }, [borrowerId]);
+  // Accept / reject a document uploaded against a track-record line item. Reject
+  // requires a reason and un-verifies the line item (its evidence no longer stands).
+  const reviewTrDoc = useCallback(async (doc, action) => {
+    let reason;
+    if (action === 'reject') {
+      reason = window.prompt('Why is this document being rejected? The borrower is notified and the line item is un-verified until a new document is accepted.');
+      if (reason == null || !reason.trim()) return;
+    }
+    setTrBusy(doc.id); setTrMsg('');
+    try { await api.staffReviewDoc(doc.id, action, reason); setTrMsg(action === 'reject' ? 'Document rejected — the borrower was notified.' : 'Document accepted ✓'); refreshTrs(); }
+    catch (e) { setTrMsg(e.message || 'Could not review the document'); }
+    finally { setTrBusy(''); }
+  }, [refreshTrs]);
   const refreshSnap = useCallback(() => {
     api.staffTrackRecordSnapshot(borrowerId).then(setSnap).catch(() => {});
   }, [borrowerId]);
@@ -910,20 +935,36 @@ function StaffTrackRecordPanel({ app }) {
           {trs.map((t) => {
             const pa = t.property_address || {};
             const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
+            const itemDocs = trDocs[t.id] || [];
             return (
-              <div className="row" key={t.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '3px 0' }}>
-                <span className="small" style={{ flex: 1, minWidth: 160 }}>{addr}</span>
-                {t.verification_status && <span className="pill small">{t.verification_status}</span>}
-                <button className="btn ghost small" disabled={trBusy === t.id}
-                  title="Post a request/issue about this past project — it becomes a condition on this file"
-                  onClick={async () => {
-                    const reason = window.prompt(`Raise an issue on "${addr}" — what do you need? (the borrower will see this)`);
-                    if (reason == null || !reason.trim()) return;
-                    setTrBusy(t.id); setTrMsg('');
-                    try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); }
-                    catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
-                    finally { setTrBusy(''); }
-                  }}>Raise an issue</button>
+              <div key={t.id} style={{ padding: '4px 0', borderTop: '1px solid rgba(127,169,176,.15)' }}>
+                <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span className="small" style={{ flex: 1, minWidth: 160 }}>{addr}</span>
+                  {t.verification_status && <span className="pill small">{t.verification_status}</span>}
+                  <button className="btn ghost small" disabled={trBusy === t.id}
+                    title="Post a request/issue about this past project — it becomes a condition on this file"
+                    onClick={async () => {
+                      const reason = window.prompt(`Raise an issue on "${addr}" — what do you need? (the borrower will see this)`);
+                      if (reason == null || !reason.trim()) return;
+                      setTrBusy(t.id); setTrMsg('');
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); }
+                      catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
+                      finally { setTrBusy(''); }
+                    }}>Raise an issue</button>
+                </div>
+                {/* Per-line-item documents: accept / reject each with a reason (#126). */}
+                {itemDocs.map((d) => {
+                  const rs = d.review_status || 'pending';
+                  return (
+                    <div className="row" key={d.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
+                      <span className="small muted" style={{ flex: 1, minWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</span>
+                      <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
+                      {completerTR && rs !== 'accepted' && <button className="btn primary small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'accept')}>Accept</button>}
+                      {rs !== 'rejected' && <button className="btn link small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'reject')}>Reject</button>}
+                      {rs === 'rejected' && d.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 18 }}>{d.rejection_reason}</span>}
+                    </div>
+                  );
+                })}
               </div>
             );
           })}

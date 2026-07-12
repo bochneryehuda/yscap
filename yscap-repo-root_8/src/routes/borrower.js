@@ -1328,8 +1328,8 @@ router.get('/track-records/:id/documents', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
-    `SELECT id,filename,content_type,size_bytes,created_at FROM documents
-      WHERE track_record_id=$1 AND visibility='borrower' ORDER BY created_at`, [req.params.id]);
+    `SELECT id,filename,content_type,size_bytes,created_at,review_status,rejection_reason FROM documents
+      WHERE track_record_id=$1 AND visibility='borrower' AND is_current ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
 });
 router.post('/track-records/:id/documents', async (req, res) => {
