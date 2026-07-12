@@ -3815,19 +3815,29 @@ router.get('/borrowers/:id/contacts', async (req, res) => {
 // (/applications/:id/activity, /borrowers/:id/activity); this is the global
 // compliance view. Gated on the dedicated view_audit_log capability
 // (admin/super_admin by default; grantable to a compliance underwriter).
-const { describeAction: describeAuditAction, CATEGORIES: AUDIT_CATEGORIES } = require('../lib/audit-actions');
+const {
+  describeAction: describeAuditAction, CATEGORIES: AUDIT_CATEGORIES,
+  KNOWN_CODES: AUDIT_KNOWN_CODES, CATEGORY_CODES: AUDIT_CATEGORY_CODES, codesMatchingText: auditCodesMatchingText,
+} = require('../lib/audit-actions');
 const AUDIT_ACTOR_KINDS = new Set(['staff', 'borrower', 'system']);
+const AUDIT_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 router.get('/audit-log', async (req, res) => {
   if (!can(req.actor, 'view_audit_log')) return res.status(403).json({ error: 'forbidden' });
   try {
     const q = String(req.query.q || '').trim();
     const action = String(req.query.action || '').trim();
+    const category = String(req.query.category || '').trim();
     const actorKind = AUDIT_ACTOR_KINDS.has(String(req.query.actorKind || '')) ? String(req.query.actorKind) : '';
-    const actorId = String(req.query.actorId || '').trim();
+    // Validate typed params so a malformed value is IGNORED, never a 500 from a
+    // failed ::uuid / ::date cast.
+    const actorIdRaw = String(req.query.actorId || '').trim();
+    const actorId = UUID_RE.test(actorIdRaw) ? actorIdRaw : '';
     const entityType = String(req.query.entityType || '').trim();
-    const from = String(req.query.from || '').trim();
-    const to = String(req.query.to || '').trim();
+    const fromRaw = String(req.query.from || '').trim();
+    const from = AUDIT_DATE_RE.test(fromRaw) ? fromRaw : '';
+    const toRaw = String(req.query.to || '').trim();
+    const to = AUDIT_DATE_RE.test(toRaw) ? toRaw : '';
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 300);
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
 
@@ -3836,19 +3846,28 @@ router.get('/audit-log', async (req, res) => {
     const P = (v) => { params.push(v); return '$' + params.length; };
 
     if (action) where.push(`al.action = ${P(action)}`);
+    // Category → the set of action codes in it (server-side, so pagination is
+    // correct). 'other' = any code not in the known map.
+    else if (category) {
+      if (category === 'other') where.push(`al.action <> ALL(${P(AUDIT_KNOWN_CODES)}::text[])`);
+      else where.push(`al.action = ANY(${P(AUDIT_CATEGORY_CODES[category] || [])}::text[])`);
+    }
     if (actorKind) where.push(`al.actor_kind = ${P(actorKind)}`);
     if (actorId) where.push(`al.actor_id = ${P(actorId)}::uuid`);
     if (entityType) where.push(`al.entity_type = ${P(entityType)}`);
-    if (from) where.push(`al.created_at >= ${P(from)}::timestamptz`);
+    if (from) where.push(`al.created_at >= ${P(from)}::date`);
     if (to) where.push(`al.created_at < (${P(to)}::date + 1)`); // inclusive of the whole "to" day
     if (q) {
-      // Free-text across who did it, what they did, and which borrower / property.
+      // Free-text across who did it (actor OR the file's loan officer), what
+      // they did (action code AND human label), and which borrower / property.
       const like = P('%' + q + '%');
+      const codes = P(auditCodesMatchingText(q)); // action codes whose label matches
       where.push(`(
         s.full_name ILIKE ${like} OR ab.first_name ILIKE ${like} OR ab.last_name ILIKE ${like}
-        OR al.action ILIKE ${like}
+        OR al.action ILIKE ${like} OR al.action = ANY(${codes}::text[])
         OR appb.first_name ILIKE ${like} OR appb.last_name ILIKE ${like}
         OR eb.first_name ILIKE ${like} OR eb.last_name ILIKE ${like}
+        OR lo.full_name ILIKE ${like}
         OR app.property_address::text ILIKE ${like}
       )`);
     }
@@ -3872,7 +3891,7 @@ router.get('/audit-log', async (req, res) => {
         FROM audit_log al
         LEFT JOIN staff_users s ON al.actor_kind='staff' AND s.id = al.actor_id
         LEFT JOIN borrowers ab ON al.actor_kind='borrower' AND ab.id = al.actor_id
-        LEFT JOIN applications app ON al.entity_type='application' AND app.id = al.entity_id
+        LEFT JOIN applications app ON al.entity_type IN ('application','clickup') AND app.id = al.entity_id
         LEFT JOIN borrowers appb ON appb.id = app.borrower_id
         LEFT JOIN staff_users lo ON lo.id = app.loan_officer_id
         LEFT JOIN borrowers eb ON al.entity_type='borrower' AND eb.id = al.entity_id

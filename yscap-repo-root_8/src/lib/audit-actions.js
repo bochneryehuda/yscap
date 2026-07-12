@@ -162,4 +162,21 @@ function describeAction(code) {
   return { label: titleize(code), cat: 'other' };
 }
 
-module.exports = { ACTIONS, CATEGORIES, describeAction };
+// Every known action code, and the codes grouped by category — so the audit-log
+// route can filter by category server-side (correct pagination) instead of
+// post-filtering a fetched page. 'other' has no fixed list: it is any code NOT
+// in ACTIONS, expressed as "action <> ALL(KNOWN_CODES)".
+const KNOWN_CODES = Object.keys(ACTIONS);
+const CATEGORY_CODES = {};
+for (const [code, meta] of Object.entries(ACTIONS)) {
+  (CATEGORY_CODES[meta.cat] = CATEGORY_CODES[meta.cat] || []).push(code);
+}
+
+/** Action codes whose human label OR raw code matches a free-text query. */
+function codesMatchingText(q) {
+  const s = String(q || '').toLowerCase().trim();
+  if (!s) return [];
+  return KNOWN_CODES.filter((c) => c.includes(s) || ACTIONS[c].label.toLowerCase().includes(s));
+}
+
+module.exports = { ACTIONS, CATEGORIES, describeAction, KNOWN_CODES, CATEGORY_CODES, codesMatchingText };

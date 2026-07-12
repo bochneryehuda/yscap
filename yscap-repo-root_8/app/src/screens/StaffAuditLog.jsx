@@ -80,11 +80,11 @@ export default function StaffAuditLog() {
   }, [facets, category]);
 
   const params = useMemo(() => ({
-    q, action, actorKind, actorId, from, to,
-    // The server derives category from action; when only a category is chosen we
-    // filter client-side after fetch (below), so it isn't sent as a param.
+    // When a specific action is chosen it wins; otherwise the category filters
+    // server-side (correct pagination across the whole log, not just page 1).
+    q, action, category: action ? '' : category, actorKind, actorId, from, to,
     limit: PAGE,
-  }), [q, action, actorKind, actorId, from, to]);
+  }), [q, action, category, actorKind, actorId, from, to]);
 
   // Fetch page 0 whenever a filter changes.
   useEffect(() => {
@@ -118,9 +118,8 @@ export default function StaffAuditLog() {
     return <div className="panel muted">You don’t have access to the system audit log. Ask an admin to grant the “View the system audit log” permission.</div>;
   }
 
-  // When a category (but no specific action) is selected, filter the fetched
-  // rows to that category — the server already returns category on each row.
-  const shown = (rows || []).filter(r => !category || action || r.category === category);
+  // Category is filtered server-side now, so the fetched rows are already scoped.
+  const shown = rows || [];
   const staffList = (facets && facets.staff) || [];
   const anyFilter = q || category || action || actorKind || actorId || from || to;
 
@@ -200,15 +199,10 @@ export default function StaffAuditLog() {
             </div>
           )}
 
-      {hasMore && !category && (
+      {hasMore && (
         <div className="row" style={{ justifyContent: 'center', marginTop: 14 }}>
           <button className="btn ghost" disabled={loading} onClick={loadMore}>{loading ? 'Loading…' : 'Load more'}</button>
         </div>
-      )}
-      {category && hasMore && (
-        <p className="muted small" style={{ textAlign: 'center', marginTop: 12 }}>
-          Showing the latest {PAGE} events — narrow by action or search to see more within this category.
-        </p>
       )}
     </>
   );
