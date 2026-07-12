@@ -274,7 +274,7 @@ export const api = {
   staffSaveLlcMembers: (id, members) => req('PUT', `/api/staff/llcs/${id}/members`, { members }),
   staffUploadLlcDoc: (llcId, b) => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b)),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
-  staffVerifyTrackRecord:    (id) => req('POST', `/api/staff/track-records/${id}/verify`),
+  staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
   // Raise an issue/request against a track-record line item or a vesting LLC — it
   // becomes a named internal+external condition on the file (applicationId).
   staffRaiseTrackRecordIssue: (id, applicationId, reason) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason }),
@@ -331,6 +331,9 @@ export const api = {
   staffEditMessage: (msgId, body) => req('PATCH', `/api/staff/messages/${msgId}`, { body }),
   staffDeleteMessage:(msgId) => req('DELETE', `/api/staff/messages/${msgId}`),
   staffMentionables:(appId) => req('GET', `/api/staff/applications/${appId}/mentionables`),
+  // System-wide audit log (#145) — the company-wide compliance trail.
+  auditLog:         (params) => req('GET', '/api/staff/audit-log' + qs(params)),
+  auditLogFacets:   () => req('GET', '/api/staff/audit-log/facets'),
   adminWelcome:     (id) => req('POST', `/api/admin/staff/${id}/welcome`),
   adminResetStaffEmail: (id) => req('POST', `/api/admin/staff/${id}/reset-email`),
   adminWelcomeAll:  (all) => req('POST', '/api/admin/staff/welcome-all', { onlyWithoutLogin: !all }),

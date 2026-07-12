@@ -50,6 +50,7 @@ export default function StaffLayout({ children }) {
   const canManageVendors = can('manage_vendors');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
+  const canViewAudit = can('view_audit_log');
   return (
     <div className="shell">
       <header className="header">
@@ -68,6 +69,7 @@ export default function StaffLayout({ children }) {
             {canManageVendors && <NavLink to="/internal/vendors" title="Title & insurance vendor directory">Vendors</NavLink>}
             {canDeleteFiles && <NavLink to="/internal/archived" title="Archived files — restore or delete permanently">Archived</NavLink>}
             {canPlatformSetup && <NavLink to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill">ClickUp</NavLink>}
+            {canViewAudit && <NavLink to="/internal/audit" title="System audit log — every action across every file & borrower">Audit log</NavLink>}
             <span className="pill" title="Your role">{ROLE_LABEL[role] || role || 'Internal'}</span>
             <button className="btn ghost small" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
           </nav>

@@ -2084,7 +2084,7 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-internal-conds" title="Internal conditions"
-        info="Staff-only document conditions (e.g. Insurance binder + invoice, Title). They sync with ClickUp and appear in the TPR export like any condition, but are NEVER shared with the borrower — separate from the phase-by-phase internal checklist below.">
+        info="Staff-only document conditions (e.g. Insurance binder + invoice, Title). They sync with ClickUp and appear in the DPR export like any condition, but are NEVER shared with the borrower — separate from the phase-by-phase internal checklist below.">
       <div className="panel" style={{ marginTop: 0 }}>
         {(() => {
           const sorted = [...internalConds].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
@@ -2151,7 +2151,7 @@ export default function StaffApplication() {
       </Section>
 
       <Section id="sec-documents" title="Documents & exports"
-        info="Every document on the file, titled by condition — with the working set on top, rejected/replaced versions in the trash, and the TPR clean-file export."
+        info="Every document on the file, titled by condition — with the working set on top, rejected/replaced versions in the trash, and the DPR clean-file export."
         badge={docs.length ? `${docs.length} files` : ''}>
       <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6 }}>
@@ -2164,7 +2164,7 @@ export default function StaffApplication() {
           : (() => {
             // Rejected / superseded documents live in the file's TRASH: kept
             // for the record (named by their condition) but out of the working
-            // set and never part of the TPR / clean-file export.
+            // set and never part of the DPR / clean-file export.
             const inTrash = (d) => d.review_status === 'rejected' || d.review_status === 'superseded' || d.is_current === false;
             const working = docs.filter(d => !inTrash(d));
             const trash = docs.filter(inTrash);
@@ -2209,7 +2209,7 @@ export default function StaffApplication() {
                 {trash.length > 0 && (
                   <details style={{ marginTop: 10 }}>
                     <summary className="muted small" style={{ cursor: 'pointer' }}>
-                      🗑 Trash — {trash.length} rejected / replaced document{trash.length === 1 ? '' : 's'} (kept for the record, excluded from the TPR export)
+                      🗑 Trash — {trash.length} rejected / replaced document{trash.length === 1 ? '' : 's'} (kept for the record, excluded from the DPR export)
                     </summary>
                     {trash.map(row)}
                   </details>
@@ -2383,14 +2383,14 @@ function TprExport({ appId }) {
   useEffect(() => { api.staffTprPreview(appId).then(setPrev).catch(() => setPrev({ includedCount: 0, missing: [] })); }, [appId]);
   async function download() {
     setBusy(true);
-    try { const { blob, filename } = await api.staffTprExport(appId); saveBlob(blob, filename || 'TPR_export.zip'); }
+    try { const { blob, filename } = await api.staffTprExport(appId); saveBlob(blob, filename || 'DPR_export.zip'); }
     catch (e) { alert(e.message || 'Export failed'); }
     finally { setBusy(false); }
   }
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="row" style={{ marginBottom: 6 }}>
-        <h3>TPR / clean-file export</h3>
+        <h3>DPR / clean-file export</h3>
         <div className="spacer" />
         <button className="btn primary" onClick={download} disabled={busy || !prev || prev.includedCount === 0}>
           {busy ? 'Building…' : 'Export clean file (ZIP)'}
@@ -2398,7 +2398,12 @@ function TprExport({ appId }) {
       </div>
       {!prev ? <p className="muted small">Checking readiness…</p> : (
         <>
-          <p className="muted small">{prev.includedCount} accepted document{prev.includedCount === 1 ? '' : 's'} will be included (rejected & superseded files are excluded).</p>
+          <p className="muted small">
+            Packaged by subject property: the accepted loan documents (by category), the signed term sheet on its own,
+            and the borrower’s operating track record as HTML + Excel with each project’s verification documents in an
+            address-named folder. {prev.includedCount} accepted loan document{prev.includedCount === 1 ? '' : 's'}
+            {prev.trackDocs > 0 ? ` plus ${prev.trackDocs} track-record verification file${prev.trackDocs === 1 ? '' : 's'}` : ''} will be included (rejected & superseded files are excluded).
+          </p>
           {prev.missing.length > 0 && (
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
               <span className="muted small">Not yet accepted:</span>
