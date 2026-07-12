@@ -12,6 +12,7 @@ const email = require('./email');
 const tpl = require('./email/template');
 const { link: portalLink } = require('./email/catalog');
 const cfg = require('../config');
+const { scrubText } = require('./borrower-safe');
 
 /* Turn a notification's opts into a branded {subject,html,text}. */
 function buildEmail(opts, audience) {
@@ -90,13 +91,27 @@ async function notifyBorrower(borrowerId, opts) {
   // Muted in-app and not a must-see? Drop it entirely — this is the borrower
   // choosing to quiet a nervous-making category.
   if (!pref.in_app && !ALWAYS_IN_APP.has(opts.type)) return null;
+  // SECURITY (frozen rule): a capital-partner / note-buyer name must never reach
+  // a borrower. Scrub every borrower-facing text field once here at the single
+  // chokepoint, so BOTH the stored in-app row and the branded email are clean no
+  // matter who assembled `opts` (e.g. a staff-typed condition label). Staff
+  // notifications (notifyStaff) are intentionally NOT scrubbed.
+  const sopts = {
+    ...opts,
+    title: scrubText(opts.title),
+    body: scrubText(opts.body),
+    note: scrubText(opts.note),
+    greeting: scrubText(opts.greeting),
+    ctaLabel: scrubText(opts.ctaLabel),
+    lines: Array.isArray(opts.lines) ? opts.lines.map(scrubText) : opts.lines,
+  };
   const { rows } = await db.query(
     `INSERT INTO notifications (recipient_kind,borrower_id,type,title,body,application_id,link)
      VALUES ('borrower',$1,$2,$3,$4,$5,$6) RETURNING id`,
-    [borrowerId, opts.type, opts.title, opts.body || null, opts.applicationId || null, opts.link || null]);
+    [borrowerId, opts.type, sopts.title, sopts.body || null, opts.applicationId || null, opts.link || null]);
   const id = rows[0].id;
   const to = pref.email ? (opts.emailTo ? [].concat(opts.emailTo) : await _borrowerEmail(borrowerId)) : [];
-  _emailRow(id, to, opts, 'borrower');
+  _emailRow(id, to, sopts, 'borrower');
   return id;
 }
 

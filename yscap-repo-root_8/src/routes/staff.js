@@ -7,6 +7,7 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const { scrubText } = require('../lib/borrower-safe');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
@@ -1244,7 +1245,7 @@ router.post('/applications/:id/checklist', async (req, res) => {
   // portal would show the generic "An item your loan team needs" (#78).
   const audience = b.audience || 'borrower';
   const borrowerLabel = (audience === 'borrower' || audience === 'both')
-    ? String(b.borrowerLabel || b.label).trim().slice(0, 300) : null;
+    ? scrubText(String(b.borrowerLabel || b.label).trim().slice(0, 300)) : null;
   const r = await db.query(
     `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
      VALUES ('application',$1,$2,$3,$4,'document',$5,$6,'staff',$7) RETURNING id`,

@@ -7,6 +7,7 @@
 const express = require('express');
 const router = require('../lib/safe-router')();
 const db = require('../db');
+const { scrubText } = require('../lib/borrower-safe');
 const cfg = require('../config');
 const C = require('../lib/crypto');
 const storage = require('../lib/storage');
@@ -559,7 +560,10 @@ router.get('/applications/:id/conditions', async (req, res) => {
        FROM conditions
       WHERE application_id=$1 AND audience IN ('borrower','both') AND status IN ('open','borrower_responded')
       ORDER BY created_at`, [req.params.id]);
-  res.json(r.rows);
+  // Scrub any capital-partner name out of borrower-facing wording on the way out
+  // — covers already-stored data (e.g. a borrower_title defaulted from an
+  // internal title). Staff surfaces are never scrubbed.
+  res.json(r.rows.map((row) => ({ ...row, title: scrubText(row.title), detail: scrubText(row.detail) })));
 });
 
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
@@ -589,6 +593,10 @@ router.get('/applications/:id/checklist', async (req, res) => {
   // Info-field conditions carry their field definition (type/options/labels)
   // and the field's current value so the portal can render a typed input.
   const rows = r.rows;
+  // Scrub capital-partner names from borrower-facing wording (label/hint/reason)
+  // before anything else uses `rows` — covers data where borrower_label was
+  // defaulted from the internal label.
+  for (const it of rows) { it.label = scrubText(it.label); it.hint = scrubText(it.hint); it.rejection_reason = scrubText(it.rejection_reason); }
   if (rows.some((it) => it.tool_key === 'info_field' && it.field_key)) {
     let ctx = null;
     try { const loaded = await conditionEngine.loadRuleContext(req.params.id); ctx = loaded && loaded.ctx; } catch (_) {}
