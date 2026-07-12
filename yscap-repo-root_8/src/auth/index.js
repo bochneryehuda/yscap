@@ -437,11 +437,15 @@ router.post('/staff', requireAuth, requireRole('admin'), async (req, res) => {
   if (!ASSIGNABLE_ROLES.includes(role))
     return res.status(400).json({ error: 'bad role' });
   // The ON CONFLICT upsert can overwrite an existing user's role — never let a
-  // non-super-admin demote/alter a super_admin by targeting their email.
+  // non-super-admin demote/alter a super_admin (or admin) by targeting their
+  // email, and never let a non-super mint an admin (which carries every
+  // platform-wide power). Mirrors the admin-console roleGuard (S1-05).
   if (req.actor.role !== 'super_admin') {
+    if (role === 'admin')
+      return res.status(403).json({ error: 'only a super admin can grant the admin role' });
     const ex = await db.query(`SELECT role FROM staff_users WHERE email=$1`, [email]);
-    if (ex.rows[0] && ex.rows[0].role === 'super_admin')
-      return res.status(403).json({ error: 'only a super admin can modify a super admin' });
+    if (ex.rows[0] && (ex.rows[0].role === 'super_admin' || ex.rows[0].role === 'admin'))
+      return res.status(403).json({ error: 'only a super admin can modify a super admin or admin account' });
   }
   try {
     const r = await db.query(
@@ -464,17 +468,22 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
     inviteRole = role || 'loan_officer';
     if (inviteRole === 'super_admin') {
       if (req.actor.role !== 'super_admin') return res.status(403).json({ error: 'only a super admin can grant super_admin' });
+    } else if (inviteRole === 'admin') {
+      // admin carries every platform-wide power, so granting it via invite is
+      // super-admin-only too (S1-05 — mirrors the console roleGuard).
+      if (req.actor.role !== 'super_admin') return res.status(403).json({ error: 'only a super admin can grant the admin role' });
     } else if (!ASSIGNABLE_ROLES.includes(inviteRole)) {
       return res.status(400).json({ error: 'bad role' });
     }
-    // SECURITY: an invite to an existing super_admin's email would, via accept()'s
-    // ON CONFLICT DO UPDATE, overwrite that account's password AND return its
-    // unchanged super_admin role — a takeover. Never let a non-super-admin invite
-    // (and thereby seize) an existing super_admin. Mirrors the /auth/staff guard.
+    // SECURITY: an invite to an existing super_admin's (or admin's) email would,
+    // via accept()'s ON CONFLICT DO UPDATE, overwrite that account's password AND
+    // return its unchanged privileged role — a takeover. Never let a
+    // non-super-admin invite (and thereby seize) an existing super_admin or admin.
+    // Mirrors the /auth/staff guard.
     if (email) {
       const ex = await db.query(`SELECT role FROM staff_users WHERE lower(email)=lower($1)`, [email]);
-      if (ex.rows[0] && ex.rows[0].role === 'super_admin' && req.actor.role !== 'super_admin') {
-        return res.status(403).json({ error: 'only a super admin can invite or modify a super admin account' });
+      if (ex.rows[0] && (ex.rows[0].role === 'super_admin' || ex.rows[0].role === 'admin') && req.actor.role !== 'super_admin') {
+        return res.status(403).json({ error: 'only a super admin can invite or modify a super admin or admin account' });
       }
     }
   }

@@ -74,8 +74,26 @@ function roleGuard(req, currentRole, newRole) {
     return { code: 403, error: 'only a super admin can modify a super admin account' };
   if (newRole === 'super_admin' && !isSuper(req))
     return { code: 403, error: 'only a super admin can grant the super admin role' };
+  // The `admin` role carries EVERY platform-wide power by default, so GRANTING it
+  // — minting a new admin via create, or promoting an existing account — is
+  // super-admin-only too. Without this, a non-super manage_team holder could hand
+  // out the whole platform through the role channel instead of the permissions
+  // channel, sidestepping the powerful-cap gate below (audit RESIDUAL 1).
+  if (newRole === 'admin' && !isSuper(req))
+    return { code: 403, error: 'only a super admin can grant the admin role' };
   return null;
 }
+
+// Platform-wide capabilities that ONLY a super admin may grant (through either the
+// role or the permissions channel). These are the "keys to the whole platform" —
+// granting any of them is exactly how "manage team" could become a path to every
+// power, so they are gated ABOVE the manage_team capability itself. view_audit_log
+// is included because it exposes the company-wide PII trail across every file.
+const POWERFUL_CAPS = ['manage_team', 'platform_setup', 'delete_files', 'see_all_files', 'manage_conditions', 'view_audit_log'];
+// UUIDs are case-insensitive/canonicalizing in Postgres, so a self-vs-target id
+// compare MUST be case-folded — otherwise the same actor's own id in a different
+// case slips past the self-escalation block (audit DEFECT 1).
+const sameId = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 
 // Roles + capability catalog + each role's default grants, for the Team UI.
 router.get('/permissions-meta', (req, res) => {
@@ -124,6 +142,11 @@ router.post('/staff', async (req, res) => {
 
     const dept = b.department || (['processor', 'underwriter', 'loan_coordinator', 'software_setup'].includes(role) ? 'operations' : 'sales');
     const permOverrides = sanitizeOverrides(b.permissions);
+    // S1-05: the create path must apply the SAME powerful-cap gate as the edit
+    // path — otherwise a non-super manage_team holder could mint a brand-new
+    // account pre-loaded with platform-wide overrides (audit RESIDUAL 1).
+    if (permOverrides && !isSuper(req) && POWERFUL_CAPS.some((c) => permOverrides[c] === true))
+      return res.status(403).json({ error: 'Only a super admin can grant platform-wide permissions (manage team, platform setup, delete files, see all files, manage conditions, view audit log).' });
     const r = await db.query(
       `INSERT INTO staff_users
          (email,full_name,role,title,department,phone,cell,ext,
@@ -166,21 +189,32 @@ router.patch('/staff/:id', async (req, res) => {
   const b = req.body || {};
   if (b.role && !ROLES.includes(b.role)) return res.status(400).json({ error: 'bad role' });
   if (b.department && !DEPTS.includes(b.department)) return res.status(400).json({ error: 'bad department' });
-  const g = roleGuard(req, await targetRole(req.params.id), b.role);
+  const tRole = await targetRole(req.params.id);
+  const g = roleGuard(req, tRole, b.role);
   if (g) return res.status(g.code).json({ error: g.error });
   // S1-05: a staffer cannot escalate THEMSELVES — no editing your own role,
   // permissions, or shared-file access (that's how "manage team" became a path
-  // to self-granting every power).
-  if (String(req.params.id) === String(req.actor.id) &&
+  // to self-granting every power). The id compare is case-folded because a
+  // Postgres uuid matches case-insensitively — a raw === would let the actor's
+  // own id in a different case slip past this block (audit DEFECT 1).
+  if (sameId(req.params.id, req.actor.id) &&
       (b.role !== undefined || b.permissions !== undefined || b.visibleOfficerIds !== undefined)) {
     return res.status(403).json({ error: 'You cannot change your own role, permissions, or file access.' });
+  }
+  // S1-05: an existing admin account holds every platform-wide power, so only a
+  // super admin may change ANOTHER admin's role / permissions / file access /
+  // active state (mirrors the password-reset guard below). A non-super can still
+  // edit their OWN profile above and freely manage the lower roles.
+  if (!isSuper(req) && tRole === 'admin' && !sameId(req.params.id, req.actor.id) &&
+      (b.role !== undefined || b.permissions !== undefined ||
+       b.visibleOfficerIds !== undefined || b.isActive !== undefined)) {
+    return res.status(403).json({ error: "Only a super admin can change another admin's role, permissions, access, or active status." });
   }
   // S1-05: only a SUPER admin may grant the powerful, platform-wide capabilities.
   if (b.permissions !== undefined && !isSuper(req)) {
     const _ov = sanitizeOverrides(b.permissions) || {};
-    const POWERFUL = ['manage_team', 'platform_setup', 'delete_files', 'see_all_files', 'manage_conditions'];
-    if (POWERFUL.some((c) => _ov[c] === true))
-      return res.status(403).json({ error: 'Only a super admin can grant platform-wide permissions (manage team, platform setup, delete files, see all files, manage conditions).' });
+    if (POWERFUL_CAPS.some((c) => _ov[c] === true))
+      return res.status(403).json({ error: 'Only a super admin can grant platform-wide permissions (manage team, platform setup, delete files, see all files, manage conditions, view audit log).' });
   }
   const map = {
     full_name: b.fullName, role: b.role, title: b.title, department: b.department,
