@@ -274,6 +274,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           {it.assignee_name && <div className="muted small">Assigned to {it.assignee_name}</div>}
           {signed && <div className="muted small">Signed off by {it.signed_off_name || 'the internal team'} · {new Date(it.signed_off_at).toLocaleDateString()}</div>}
           {it.reviewed_at && <div className="muted small">Reviewed by {it.reviewed_by_name || 'the loan officer'} · {new Date(it.reviewed_at).toLocaleDateString()}</div>}
+          {(it.issue_reason || it.rejection_reason) && (
+            <div className="small" style={{ marginTop: 4, color: 'var(--danger)' }}>Sent back to the borrower: {it.issue_reason || it.rejection_reason}</div>
+          )}
           {it.tool_key && it.tool_submitted && (
             <button className="btn link small" onClick={() => setOpen(o => !o)}>{open ? 'Hide' : 'View'} submission</button>
           )}
@@ -371,6 +374,16 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
         {completer && (signed
           ? <button className="btn ghost" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
           : <button className="btn primary" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}
+        {it.audience !== 'staff' && (
+          <button className="btn ghost" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
+            onClick={() => {
+              const reason = window.prompt(signed || it.status === 'satisfied'
+                ? 'Reopen and send this back to the borrower — what needs to change? (they will see this)'
+                : 'Send this back to the borrower — what needs to change? (they will see this)');
+              if (reason == null || !reason.trim()) return;
+              onPatch(it.id, { pushBack: true, issueReason: reason.trim() });
+            }}>{signed || it.status === 'satisfied' ? 'Reopen / send back' : 'Send back'}</button>
+        )}
         {!completer && <span className="muted small" style={{ alignSelf: 'center' }}>Completion is the processor's sign-off.</span>}
       </div>
       <div className="row" style={{ width: '100%', gap: 8 }}>
@@ -744,6 +757,18 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                     {!l.is_verified && (l.missing || []).length > 0 && (
                       <span className="muted small">Outstanding: {l.missing.slice(0, 4).join(' · ')}{l.missing.length > 4 ? ` · +${l.missing.length - 4} more` : ''}</span>
                     )}
+                    {appId && (
+                      <button className="btn ghost small" disabled={busy === l.id}
+                        title="Post a request/issue about this entity — it becomes a named condition on this file that the borrower can respond to"
+                        onClick={async () => {
+                          const reason = window.prompt(`Raise an issue on "${l.llc_name}" — what do you need? (the borrower will see this)`);
+                          if (reason == null || !reason.trim()) return;
+                          setBusy(l.id); setErr(''); setMsg('');
+                          try { await api.staffRaiseLlcIssue(l.id, appId, reason.trim()); setMsg(`Issue raised on ${l.llc_name} — added as a condition on this file.`); onChanged && onChanged(); }
+                          catch (e) { setErr(e.message || 'Could not raise the issue'); }
+                          finally { setBusy(''); }
+                        }}>Raise an issue</button>
+                    )}
                   </div>
                 </div>
               )}
@@ -797,10 +822,18 @@ function StaffTrackRecordPanel({ app }) {
   const [dl, setDl] = useState(false);
   const [preview, setPreview] = useState(false);
   const [full, setFull] = useState(false);   // full-screen tool sheet (same UX as the Scope of Work)
+  // Per-line-item list so staff can raise an issue/request against a SPECIFIC
+  // past project — it becomes a named condition on this file the borrower answers.
+  const [trs, setTrs] = useState([]);
+  const [trBusy, setTrBusy] = useState('');
+  const [trMsg, setTrMsg] = useState('');
+  const refreshTrs = useCallback(() => {
+    api.staffBorrowerTrackRecords(borrowerId).then(rows => setTrs(Array.isArray(rows) ? rows : [])).catch(() => setTrs([]));
+  }, [borrowerId]);
   const refreshSnap = useCallback(() => {
     api.staffTrackRecordSnapshot(borrowerId).then(setSnap).catch(() => {});
   }, [borrowerId]);
-  useEffect(() => { refreshSnap(); }, [refreshSnap]);
+  useEffect(() => { refreshSnap(); refreshTrs(); }, [refreshSnap, refreshTrs]);
   useEffect(() => {
     // the embedded tool announces every sync — the saved-copy link stays fresh
     const onMsg = (e) => {
@@ -858,6 +891,34 @@ function StaffTrackRecordPanel({ app }) {
         <DocPreview title="Track record — saved copy" filename={snap.filename} contentType="text/html"
           load={() => api.staffDownloadDoc(snap.documentId)}
           onDownload={download} onClose={() => setPreview(false)} />
+      )}
+      {trs.length > 0 && (
+        <div className="panel" style={{ marginBottom: 12, padding: 10 }}>
+          <div className="muted small" style={{ marginBottom: 6 }}>
+            Raise a request against a specific past project — it becomes a named condition on this file the borrower can respond to.
+          </div>
+          {trMsg && <div className="small" style={{ color: 'var(--ok)', marginBottom: 6 }}>{trMsg}</div>}
+          {trs.map((t) => {
+            const pa = t.property_address || {};
+            const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
+            return (
+              <div className="row" key={t.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '3px 0' }}>
+                <span className="small" style={{ flex: 1, minWidth: 160 }}>{addr}</span>
+                {t.verification_status && <span className="pill small">{t.verification_status}</span>}
+                <button className="btn ghost small" disabled={trBusy === t.id}
+                  title="Post a request/issue about this past project — it becomes a condition on this file"
+                  onClick={async () => {
+                    const reason = window.prompt(`Raise an issue on "${addr}" — what do you need? (the borrower will see this)`);
+                    if (reason == null || !reason.trim()) return;
+                    setTrBusy(t.id); setTrMsg('');
+                    try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); }
+                    catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
+                    finally { setTrBusy(''); }
+                  }}>Raise an issue</button>
+              </div>
+            );
+          })}
+        </div>
       )}
       <StaticToolFrame
         key={borrowerId}
@@ -1273,7 +1334,18 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
               {completer && (signed
                 ? <button className="btn ghost small" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
                 : <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}
+              <button className="btn ghost small" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
+                onClick={() => {
+                  const reason = window.prompt(signed || it.status === 'satisfied'
+                    ? 'Reopen and send this back to the borrower — what needs to change? (they will see this)'
+                    : 'Send this back to the borrower — what needs to change? (they will see this)');
+                  if (reason == null || !reason.trim()) return;
+                  onPatch(it.id, { pushBack: true, issueReason: reason.trim() });
+                }}>{signed || it.status === 'satisfied' ? 'Reopen' : 'Send back'}</button>
             </div>
+            {(it.issue_reason || it.rejection_reason) && (
+              <div className="small" style={{ color: 'var(--danger)', paddingLeft: 20 }}>Sent back: {it.issue_reason || it.rejection_reason}</div>
+            )}
             {itemDocs.length > 0 && (
               <div style={{ width: '100%', paddingLeft: 20 }}>
                 {itemDocs.map((d, i) => {
@@ -1513,7 +1585,7 @@ export default function StaffApplication() {
     if (action === 'accept_more') {
       // Accept the PDF, keep the condition open, ask for one more document.
       const note = window.prompt('This document is accepted ✓ — what ELSE is needed to satisfy the condition? The borrower sees this note.');
-      if (note == null) return;
+      if (note == null || !note.trim()) return;   // the note is required — the borrower must be told what else is needed
       action = 'accept';
       opts = { requestMore: true, note: note.trim() };
     }

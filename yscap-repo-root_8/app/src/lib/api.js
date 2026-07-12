@@ -270,6 +270,10 @@ export const api = {
   staffUploadLlcDoc: (llcId, b) => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b)),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id) => req('POST', `/api/staff/track-records/${id}/verify`),
+  // Raise an issue/request against a track-record line item or a vesting LLC — it
+  // becomes a named internal+external condition on the file (applicationId).
+  staffRaiseTrackRecordIssue: (id, applicationId, reason) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason }),
+  staffRaiseLlcIssue:         (id, applicationId, reason) => req('POST', `/api/staff/llcs/${id}/raise-issue`, { applicationId, reason }),
   staffPatchItem:   (itemId, b) => req('PATCH', `/api/staff/checklist/${itemId}`, b),
   staffRequestDoc:  (appId, b) => req('POST', `/api/staff/applications/${appId}/checklist`, b),
   staffAddCondition:(appId, b) => req('POST', `/api/staff/applications/${appId}/conditions`, b),
