@@ -53,6 +53,8 @@ async function main() {
            role      = EXCLUDED.role,
            password_hash = EXCLUDED.password_hash,
            is_active = true,
+           failed_attempts = 0,
+           locked_until = NULL,
            updated_at = now()
      RETURNING id, email, role, (xmax = 0) AS created`,
     [email, fullName, role, hash]);

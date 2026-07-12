@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import AuthShell from '../components/AuthShell.jsx';
 import PasswordInput from '../components/PasswordInput.jsx';
+import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 
 export default function Reset() {
   const [params] = useSearchParams();
@@ -17,7 +18,7 @@ export default function Reset() {
 
   async function submit() {
     setErr('');
-    if (pw.length < 8) return setErr('Password must be at least 8 characters.');
+    { const w = passwordProblem(pw); if (w) return setErr(w); }
     if (pw !== pw2) return setErr('Passwords do not match.');
     setBusy(true);
     try { await api.resetPassword(token, pw); setDone(true); }
@@ -49,7 +50,8 @@ export default function Reset() {
     <AuthShell title="Choose a new password" subtitle="Enter and confirm your new password below.">
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
       <div className="field"><label>New password</label>
-        <PasswordInput autoComplete="new-password" value={pw} autoFocus onChange={e => setPw(e.target.value)} /></div>
+        <PasswordInput autoComplete="new-password" value={pw} autoFocus onChange={e => setPw(e.target.value)} />
+        <div className="hint" style={{ marginTop: 6 }}>{PASSWORD_HINT}</div></div>
       <div className="field"><label>Confirm password</label>
         <PasswordInput autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && submit()} /></div>

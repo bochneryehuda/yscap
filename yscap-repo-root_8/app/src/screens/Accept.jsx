@@ -4,6 +4,7 @@ import { api, setToken } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import AuthShell from '../components/AuthShell.jsx';
 import PasswordInput from '../components/PasswordInput.jsx';
+import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 
 export default function Accept() {
   const [params] = useSearchParams();
@@ -19,7 +20,7 @@ export default function Accept() {
 
   async function submit() {
     setErr('');
-    if (pw.length < 8) return setErr('Password must be at least 8 characters.');
+    { const w = passwordProblem(pw); if (w) return setErr(w); }
     if (pw !== pw2) return setErr('Passwords do not match.');
     setBusy(true);
     try {

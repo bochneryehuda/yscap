@@ -128,7 +128,7 @@ const staffToken    = (id, role, tv) => C.signJwt({ sub: id, kind: 'staff', role
 router.post('/borrower/register', async (req, res) => {
   const { email, password, firstName, lastName, cellPhone } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'email + password required' });
-  if (String(password).length < 8) return res.status(400).json({ error: 'password too short' });
+  { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
   let client;
   try {
     client = await db.getClient();
@@ -336,7 +336,7 @@ router.post('/borrower/forgot', async (req, res) => {
 router.post('/borrower/reset', async (req, res) => {
   const { token, password } = req.body || {};
   if (!token || !password) return res.status(400).json({ error: 'token + password required' });
-  if (String(password).length < 8) return res.status(400).json({ error: 'password too short' });
+  { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
   try {
     const r = await db.query(
       `SELECT * FROM email_tokens
@@ -436,6 +436,7 @@ router.post('/staff', requireAuth, requireRole('admin'), async (req, res) => {
   const { email, fullName, role, password } = req.body || {};
   if (!ASSIGNABLE_ROLES.includes(role))
     return res.status(400).json({ error: 'bad role' });
+  if (password) { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
   // The ON CONFLICT upsert can overwrite an existing user's role — never let a
   // non-super-admin demote/alter a super_admin (or admin) by targeting their
   // email, and never let a non-super mint an admin (which carries every
@@ -512,6 +513,7 @@ router.post('/invite', requireAuth, requireRole('admin'), async (req, res) => {
 router.post('/accept', async (req, res, next) => {
   const { token, password, firstName, lastName, fullName } = req.body || {};
   if (!token || !password) return res.status(400).json({ error: 'token + password required' });
+  { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
   const inv = await db.query(
     `SELECT * FROM invite_tokens WHERE token_hash=$1 AND accepted_at IS NULL AND expires_at > now()`,
     [C.sha256(token)]);
@@ -520,17 +522,21 @@ router.post('/accept', async (req, res, next) => {
   try {
     if (row.kind === 'staff') {
       // SECURITY (defense in depth): never let accept() silently seize a
-      // pre-existing super_admin account (overwriting its password + returning its
-      // role) unless the invite itself was for super_admin — which only a
-      // super_admin can create. Blocks the invite→accept takeover even if a bad
-      // invite slipped through.
+      // pre-existing privileged account (overwriting its password + returning its
+      // role) unless the invite role MATCHES that account's role — which, for
+      // admin/super_admin, only a super_admin can create. Blocks the
+      // invite→accept takeover even if a bad invite slipped through (post-fix
+      // audit HIGH: a non-super minted a loan_officer invite for an existing
+      // admin's email and accepted it to overwrite that admin's password).
       const existing = await db.query(`SELECT role FROM staff_users WHERE lower(email)=lower($1)`, [row.email]);
-      if (existing.rows[0] && existing.rows[0].role === 'super_admin' && row.role !== 'super_admin') {
-        return res.status(403).json({ error: 'cannot take over an existing super admin account' });
+      if (existing.rows[0] && (existing.rows[0].role === 'super_admin' || existing.rows[0].role === 'admin')
+          && row.role !== existing.rows[0].role) {
+        return res.status(403).json({ error: 'cannot take over an existing admin account' });
       }
       const s = await db.query(
         `INSERT INTO staff_users (email,full_name,role,password_hash) VALUES ($1,$2,$3,$4)
-         ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash RETURNING id,role,token_version`,
+         ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash,
+           failed_attempts=0, locked_until=NULL RETURNING id,role,token_version`,
         [row.email, fullName || row.email, row.role || 'loan_officer', await C.hashPassword(password)]);
       await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
       return res.json({ token: staffToken(s.rows[0].id, s.rows[0].role, s.rows[0].token_version) });

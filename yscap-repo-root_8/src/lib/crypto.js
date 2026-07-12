@@ -128,10 +128,31 @@ function decryptSSN(buf) {
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 const randomToken = (n = 32) => crypto.randomBytes(n).toString('base64url');
 
+// ---------- password strength (S1-02) ----------
+// One shared rule applied at EVERY interactive password-set point (staff +
+// borrower registration, self-change, admin reset, invite accept). Returns a
+// plain-language reason the password is too weak, or null if it passes. Kept
+// modest so it hardens accounts without frustrating borrowers: at least 8
+// characters, with a lowercase letter, an uppercase letter, and a number. This
+// only gates NEW password sets — it never re-checks existing stored passwords,
+// so nobody is locked out of an account they already have.
+const PASSWORD_MIN = 8;
+const PASSWORD_MAX = 200; // guard scrypt against absurd inputs; well above any real password
+function passwordProblem(pw) {
+  const s = String(pw == null ? '' : pw);
+  if (s.length < PASSWORD_MIN) return `Password must be at least ${PASSWORD_MIN} characters.`;
+  if (s.length > PASSWORD_MAX) return `Password must be ${PASSWORD_MAX} characters or fewer.`;
+  if (!/[a-z]/.test(s)) return 'Password must include a lowercase letter.';
+  if (!/[A-Z]/.test(s)) return 'Password must include an uppercase letter.';
+  if (!/[0-9]/.test(s)) return 'Password must include a number.';
+  return null;
+}
+
 module.exports = {
   hashPassword, verifyPassword,
   signJwt, verifyJwt,
   newTotpSecret, verifyTotp, totpUri,
   encryptSSN, decryptSSN,
   sha256, randomToken,
+  passwordProblem, PASSWORD_MIN, PASSWORD_MAX,
 };

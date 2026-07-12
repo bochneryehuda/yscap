@@ -130,7 +130,7 @@ router.post('/staff', async (req, res) => {
   if (!email || !fullName) return res.status(400).json({ error: 'email and fullName required' });
   if (!ROLES.includes(role)) return res.status(400).json({ error: 'bad role' });
   if (b.department && !DEPTS.includes(b.department)) return res.status(400).json({ error: 'bad department' });
-  if (b.password && String(b.password).length < 8) return res.status(400).json({ error: 'password too short' });
+  if (b.password) { const w = C.passwordProblem(b.password); if (w) return res.status(400).json({ error: w }); }
   try {
     // Guard against granting super_admin, or silently touching an existing
     // super_admin (e.g. re-adding the president's email would otherwise
@@ -139,6 +139,13 @@ router.post('/staff', async (req, res) => {
     const existing = await db.query(`SELECT role FROM staff_users WHERE email=$1`, [email]);
     const g = roleGuard(req, existing.rows[0] && existing.rows[0].role, role);
     if (g) return res.status(g.code).json({ error: g.error });
+    // S1-05: a non-super must not touch (or mint an invite for) an EXISTING admin
+    // account. Without this, re-inviting an admin's email returns a raw invite
+    // token that /auth/accept would use to overwrite that admin's password and
+    // hand back an admin session — an admin-account takeover (post-fix audit
+    // HIGH). super_admin targets are already blocked by roleGuard above.
+    if (!isSuper(req) && existing.rows[0] && existing.rows[0].role === 'admin')
+      return res.status(403).json({ error: 'only a super admin can modify an admin account' });
 
     const dept = b.department || (['processor', 'underwriter', 'loan_coordinator', 'software_setup'].includes(role) ? 'operations' : 'sales');
     const permOverrides = sanitizeOverrides(b.permissions);
@@ -255,7 +262,7 @@ router.patch('/staff/:id', async (req, res) => {
 // Set / reset a staff password (admin-driven provisioning or lockout recovery).
 router.post('/staff/:id/password', async (req, res) => {
   const pw = (req.body || {}).password || '';
-  if (String(pw).length < 8) return res.status(400).json({ error: 'password too short (min 8)' });
+  { const w = C.passwordProblem(pw); if (w) return res.status(400).json({ error: w }); }
   const tRole = await targetRole(req.params.id);
   const g = roleGuard(req, tRole);
   if (g) return res.status(g.code).json({ error: g.error });
@@ -264,7 +271,8 @@ router.post('/staff/:id/password', async (req, res) => {
   if (tRole === 'admin' && !isSuper(req))
     return res.status(403).json({ error: "Only a super admin can reset another admin's password." });
   const r = await db.query(
-    `UPDATE staff_users SET password_hash=$2, token_version=token_version+1, updated_at=now()
+    `UPDATE staff_users SET password_hash=$2, token_version=token_version+1,
+        failed_attempts=0, locked_until=NULL, updated_at=now()
       WHERE id=$1 RETURNING email`, [req.params.id, await C.hashPassword(pw)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'staff not found' });
   res.json({ ok: true, email: r.rows[0].email });
@@ -299,8 +307,14 @@ router.post('/staff/:id/welcome', async (req, res) => {
 // already have a login — accepting the token resets their password (the /accept
 // staff path does ON CONFLICT DO UPDATE password_hash). super_admin-protected.
 router.post('/staff/:id/reset-email', async (req, res) => {
-  const g = roleGuard(req, await targetRole(req.params.id));
+  const tRole = await targetRole(req.params.id);
+  const g = roleGuard(req, tRole);
   if (g) return res.status(g.code).json({ error: g.error });
+  // S1-05: sending a password-reset email for another ADMIN is super-admin-only,
+  // mirroring the /staff/:id/password guard — keeps the whole admin-account
+  // surface consistent (an admin is otherwise a takeover target).
+  if (tRole === 'admin' && !isSuper(req))
+    return res.status(403).json({ error: "Only a super admin can reset another admin's password." });
   const r = await db.query(`SELECT email, full_name, role FROM staff_users WHERE id=$1 AND is_active=true`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'staff not found' });
   try {

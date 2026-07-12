@@ -2060,7 +2060,7 @@ router.post('/borrowers/:id/set-password', async (req, res) => {
   try {
     if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
     const pw = String((req.body || {}).password || '');
-    if (pw.length < 8) return res.status(400).json({ error: 'password must be at least 8 characters' });
+    { const w = C.passwordProblem(pw); if (w) return res.status(400).json({ error: w }); }
     const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
     if (!b) return res.status(404).json({ error: 'not found' });
     const hash = await C.hashPassword(pw);

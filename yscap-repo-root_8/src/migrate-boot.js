@@ -124,7 +124,8 @@ async function bootstrapAdmin() {
        VALUES ($1,$2,$3,$4,true)
        ON CONFLICT (email) DO UPDATE
          SET full_name=EXCLUDED.full_name, role=EXCLUDED.role,
-             password_hash=EXCLUDED.password_hash, is_active=true, updated_at=now()
+             password_hash=EXCLUDED.password_hash, is_active=true,
+             failed_attempts=0, locked_until=NULL, updated_at=now()
        RETURNING (xmax = 0) AS created`,
       [email, fullName, role, await C.hashPassword(password)]);
     console.log(`[admin] ${r.rows[0]?.created ? 'created' : 'updated'} staff admin ${email} (${role}). ` +
