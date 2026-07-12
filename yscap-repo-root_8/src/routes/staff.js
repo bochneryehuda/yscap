@@ -1016,6 +1016,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // repopulating the track-record condition is handled inside
     // persistProductRegistration above.)
     try { await require('../lib/liquidity').syncLiquidityCondition(appId, quote); } catch (_) {}
+    // Gold Standard Program requires a 5% SOW contingency: if the file just
+    // registered Gold and the saved Scope of Work doesn't carry it, REOPEN the
+    // rehab-budget condition (even if it was already signed off) with a FATAL note.
+    try { await require('../lib/rehab-budget').enforceGoldSowContingency(appId); } catch (_) {}
 
     // Register committed the priced scenario onto the file (loan amount, rate,
     // rehab budget, term, IR months, ARV / as-is / purchase, assignment split,
@@ -1074,18 +1078,22 @@ router.post('/applications/:id/rehab-budget', async (req, res) => {
     // exact-match rule is a CONDITION gate only — the condition stays open with a
     // plain-language note until the line items total the budget exactly.
     const total = Number(payload.total);
-    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, total);
+    const chk = await require('../lib/rehab-budget').checkSowBudget(appId, payload);
     const mismatch = chk.ok ? null : { required: chk.required, total, message: chk.message };
-    const st = mismatch ? (isFinite(total) && total > 0 ? 'issue' : null) : 'received';
+    const goldSow = await require('../lib/rehab-budget').checkGoldSow(appId, payload);
+    const st = (mismatch || !goldSow.ok) ? (isFinite(total) && total > 0 ? 'issue' : null) : 'received';
     await db.query(`UPDATE checklist_items SET tool_payload=$2, status=COALESCE($3,status), updated_at=now() WHERE id=$1`, [itemId, JSON.stringify(payload), st]);
     const rbMoney = require('../lib/rehab-budget').money;
     const note = mismatch
-      ? `[auto] Scope of Work total ${rbMoney(total)} does not match the file's rehab budget ${rbMoney(mismatch.required)} — this condition stays open for all parties until the line items total exactly ${rbMoney(mismatch.required)}.`
-      : `[auto] Scope of Work totals ${rbMoney(total)} and matches the file's rehab budget — ready to clear.`;
+      ? `[auto] Scope of Work (line items ${rbMoney(total)}) does not match the file's rehab budget ${rbMoney(mismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(mismatch.required)}.`
+      : (!goldSow.ok
+        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
+        : `[auto] Scope of Work totals ${rbMoney(total)} and matches the file's rehab budget — ready to clear.`);
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [itemId, note]); } catch (_) {}
     await audit(req, 'save_rehab_budget', 'application', appId, { total: isFinite(total) ? total : null });
     try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
-    res.json({ ok: true, itemId, mismatch: mismatch || undefined });
+    const notice = mismatch || (!goldSow.ok ? { gold: true, message: require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG } : undefined);
+    res.json({ ok: true, itemId, mismatch: notice });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1139,13 +1147,14 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // (never refused) and NEVER changes the file's rehab budget (frozen). The
   // exact-match rule is a CONDITION gate only — the condition stays open with a
   // plain-language note until the line items total the budget exactly.
-  let sowMismatch = null;
+  let sowMismatch = null, goldSow = { ok: true };
   if (toolKey === 'rehab_budget') {
-    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, Number(payload && payload.total));
+    const chk = await require('../lib/rehab-budget').checkSowBudget(req.params.id, payload);
     if (!chk.ok) sowMismatch = { required: chk.required, total: Number(payload && payload.total), message: chk.message };
+    goldSow = await require('../lib/rehab-budget').checkGoldSow(req.params.id, payload);
   }
   const rbTotal = Number(payload && payload.total);
-  const toolStatus = sowMismatch ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
+  const toolStatus = (sowMismatch || !goldSow.ok) ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
     `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now() WHERE id=$1`,
     [req.params.itemId, JSON.stringify(payload),
@@ -1153,8 +1162,10 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   if (toolKey === 'rehab_budget') {
     const rbMoney = require('../lib/rehab-budget').money;
     const note = sowMismatch
-      ? `[auto] Scope of Work total ${rbMoney(rbTotal)} does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the line items total exactly ${rbMoney(sowMismatch.required)}.`
-      : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`;
+      ? `[auto] Scope of Work (line items ${rbMoney(rbTotal)}) does not match the file's rehab budget ${rbMoney(sowMismatch.required)} — this condition stays open for all parties until the first-page construction budget AND the line items each total exactly ${rbMoney(sowMismatch.required)}.`
+      : (!goldSow.ok
+        ? `[auto] ${require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG}`
+        : `[auto] Scope of Work totals ${rbMoney(rbTotal)} and matches the file's rehab budget — ready to clear.`);
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
@@ -1180,7 +1191,8 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     out.push({ id: r.rows[0].id, filename: a.filename });
   }
   await audit(req, 'staff_tool_submit', 'checklist_item', req.params.itemId, { toolKey, files: out.map((x) => x.filename) });
-  res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowMismatch || undefined, exports: out });
+  const sowNotice = sowMismatch || (!goldSow.ok ? { gold: true, message: require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG } : undefined);
+  res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowNotice, exports: out });
 });
 
 router.get('/applications/:id/checklist', async (req, res) => {
@@ -1582,7 +1594,7 @@ async function signOffGate(itemId, actor) {
   // Experience for the FILE counts BOTH borrowers on it (#80).
   const expBorrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
   const reg = (await db.query(
-    `SELECT inputs, quote FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
+    `SELECT inputs, quote, program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`,
     [item.application_id])).rows[0] || null;
   const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
   // Exact match to the cent (owner-directed): the Scope of Work must equal the
@@ -1599,8 +1611,21 @@ async function signOffGate(itemId, actor) {
     if (sowTotal == null) return 'The Scope of Work / rehab budget has not been submitted yet.';
     const appBudget = Number(app.rehab_budget) || 0;
     const regBudget = reg.inputs && reg.inputs.rehabBudget != null ? Number(reg.inputs.rehabBudget) : null;
-    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget))) {
-      return `Budgets do not match — Scope of Work total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must all agree before sign-off: update the Scope of Work or re-register the product so the numbers match.`;
+    // The FIRST-PAGE construction budget on the SOW (state.target) — prefilled
+    // from the application ("the total you start at originally"). When set it must
+    // ALSO equal the budget exactly, so the number you start at, the line-item
+    // total, the file budget and the product budget all agree (owner-directed
+    // 2026-07-10 belt-and-suspenders).
+    const fpTarget = require('../lib/rehab-budget').firstPageBudget(item.tool_payload);
+    const fpSet = fpTarget != null && fpTarget > 0;
+    if (!eq(sowTotal, appBudget) || (regBudget != null && !eq(appBudget, regBudget)) || (fpSet && !eq(fpTarget, appBudget))) {
+      return `Budgets do not match — first-page construction budget ${fpSet ? money(fpTarget) : '—'}, Scope of Work line-item total ${money(sowTotal)}, file budget ${money(appBudget)}${regBudget != null ? `, registered product budget ${money(regBudget)}` : ''}. They must ALL agree to the cent before sign-off: adjust the Scope of Work (start total + line items) or re-register the product so the numbers match.`;
+    }
+    // Gold Standard Program: the Scope of Work must carry a >= 5% construction
+    // contingency (owner-directed 2026-07-12). The budget still matches exactly
+    // above — this is a composition requirement on top of it.
+    if (/gold/i.test(String(reg.program || '')) && !require('../lib/rehab-budget').goldContingencyOk(item.tool_payload)) {
+      return require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG;
     }
     return null;
   }

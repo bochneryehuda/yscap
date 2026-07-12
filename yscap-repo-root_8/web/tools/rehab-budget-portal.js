@@ -279,6 +279,10 @@
         body: JSON.stringify({ payload: {
           state: state,
           total: RB.grandTotal(),
+          // Construction subtotal + contingency amount so the server can verify the
+          // Gold Standard Program's >=5% contingency rule without the frozen engine.
+          subtotal: (RB.subtotal ? RB.subtotal() : undefined),
+          contingency: (RB.contingency ? RB.contingency() : undefined),
           address: state.address || "",
           submittedAt: new Date().toISOString(),
           attachments: attachments,

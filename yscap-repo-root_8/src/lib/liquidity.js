@@ -19,10 +19,38 @@ const db = require('../db');
 
 const money = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US');
 
+// How many months of bank statements the file requires, driven by the REGISTERED
+// program (owner-directed 2026-07-12). Before a product is registered the file
+// carries a generic "assets & bank statements" ask (no month count); once
+// registered, the Gold Standard Program requires TWO months and the Standard
+// Program requires ONE. Borrower-facing — never names a capital partner.
+function bankStatementMonths(program) {
+  return /gold/i.test(String(program || '')) ? 2 : 1;
+}
+function bankStatementLine(program) {
+  const m = bankStatementMonths(program);
+  return m === 2
+    ? 'Provide 2 months of recent bank statements — the Gold Standard Program requires two months.'
+    : 'Provide 1 month of a recent bank statement — the Standard Program requires one month.';
+}
+const GENERIC_BANK_STMT_HINT =
+  'Provide recent bank statements showing your liquid assets. The exact number of months required is set once your product is registered in Products & Pricing.';
+
+// The program registered on a file right now ('gold' | 'standard' | null).
+async function currentProgram(appId, client = db) {
+  try {
+    const r = await client.query(
+      `SELECT program FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId]);
+    return r.rows[0] ? r.rows[0].program : null;
+  } catch (_) { return null; }
+}
+
 async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
   try {
     const required = Number(quote && (quote.liquidityRequired != null ? quote.liquidityRequired : quote.liquidity));
     if (!Number.isFinite(required) || required <= 0) return;
+    // Bank-statement count is program-driven: read the just-registered program.
+    const program = opts.program != null ? opts.program : await currentProgram(appId, client);
     const sizing = (quote && quote.sizing) || {};
     const cc = (quote && quote.closingCosts) || {};
     const breakdown = {
@@ -35,6 +63,7 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       computedAt: new Date().toISOString(),
     };
     const hint =
+      `${bankStatementLine(program)} ` +
       `Required liquidity: ${money(required)} — the borrower's bank statements must show at least this in liquid assets. ` +
       `Down payment ${money(breakdown.downPayment)} + closing costs due at closing ${money(breakdown.closingCosts)} ` +
       `= cash to close ${money(breakdown.cashToClose)}; plus reserves ${money(breakdown.reserveRequirement)}` +
@@ -50,7 +79,8 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
 
     const prevRequired = (item.tool_payload && item.tool_payload.liquidity && item.tool_payload.liquidity.required != null)
       ? Number(item.tool_payload.liquidity.required) : null;
-    const payload = { ...(item.tool_payload || {}), liquidity: breakdown };
+    const payload = { ...(item.tool_payload || {}), liquidity: breakdown,
+      bankStatements: { months: bankStatementMonths(program), program: program || null } };
 
     // The generic "bank statements" condition is REPLACED by this detailed
     // liquidity requirement the moment a product is registered, and must be
@@ -106,4 +136,7 @@ async function backfillLiquidityConditions(client = db) {
   return updated;
 }
 
-module.exports = { syncLiquidityCondition, backfillLiquidityConditions };
+module.exports = {
+  syncLiquidityCondition, backfillLiquidityConditions,
+  bankStatementMonths, bankStatementLine, GENERIC_BANK_STMT_HINT, currentProgram,
+};

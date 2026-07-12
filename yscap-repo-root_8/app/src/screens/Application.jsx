@@ -51,6 +51,8 @@ function sowUrl(appId, item, app) {
   else if (/moderate/i.test(rt)) p.set('projType', 'moderate');
   else if (/cosmetic/i.test(rt)) p.set('projType', 'cosmetic');
   if (Number(app.rehab_budget) > 0) p.set('target', String(Math.round(Number(app.rehab_budget))));
+  // Gold Standard files auto-fill a 5% construction contingency in the builder.
+  if (/gold/i.test(String(app.registered_program || ''))) p.set('program', 'gold');
   return `/tools/rehab-budget.html?${p.toString()}`;
 }
 

@@ -32,12 +32,11 @@ export default function StaticToolFrame({ src, title, fill = false, minHeight = 
       catch (_) { setLoaded(true); return; }   // cross-origin/failed: show as-is
       try {
         // The tools carry the marketing site's light/dark switch (theme.js) and
-        // may boot in LIGHT mode (saved site preference / no system signal).
-        // Inside the always-dark portal + a transparent frame that meant dark
-        // ink text on the dark portal — the "washed out, unreadable" embed.
-        // Force the dark tokens and hide the toggle: the embed always matches
-        // the portal around it.
-        win.document.documentElement.setAttribute('data-theme', 'dark');
+        // may boot from a stale saved 'dark' preference. The portal is white-first
+        // now, so force the LIGHT tokens and hide the toggle: the embed always
+        // matches the white portal around it (owner-directed 2026-07-10 — every
+        // embedded tool follows the portal's white coloring).
+        win.document.documentElement.setAttribute('data-theme', 'light');
         const style = win.document.createElement('style');
         style.textContent = 'html,body{height:auto!important;min-height:0!important;background:transparent}'
           + '.ys-theme-toggle{display:none!important}';
@@ -68,8 +67,8 @@ export default function StaticToolFrame({ src, title, fill = false, minHeight = 
       if (!doc || (doc.location && doc.location.href === 'about:blank')) return false;
       // Theme the tool the moment its real document exists — even mid-parse
       // (a hung stylesheet keeps readyState at 'loading' for a long time, and
-      // the embed must never sit there in the wrong theme).
-      try { if (doc.documentElement) doc.documentElement.setAttribute('data-theme', 'dark'); } catch (_) { /* cosmetic */ }
+      // the embed must never sit there in the wrong theme). White-first.
+      try { if (doc.documentElement) doc.documentElement.setAttribute('data-theme', 'light'); } catch (_) { /* cosmetic */ }
       // full boot needs the parsed body
       if (doc.readyState === 'loading' || !doc.body) return false;
       boot();

@@ -192,7 +192,7 @@ const RB = (function(){
          layout:null, layoutNotes:"", adu:null, aduNotes:"", curb:null, curbNotes:"", other:"" },
     cats:{}, items:{}, custom:[], cont:{ mode:"pct", value:"" }, gcFee:{ mode:"pct", value:"" }
   };}
-  let S=blank(); let step=0; let scopeNote="";
+  let S=blank(); let step=0; let scopeNote=""; let goldMode=false;
 
   /* ---------- helpers ---------- */
   const $=s=>document.querySelector(s);
@@ -1087,7 +1087,23 @@ const RB = (function(){
       if(target>0 && !S.target) S.target=String(Math.round(target));
       var pj=q.get("projType");
       if(pj && !S.projType && /^(cosmetic|moderate|heavy|ground)$/.test(pj)) S.projType=pj;
+      // Gold Standard Program requires a >=5% construction contingency on the SOW
+      // (owner-directed 2026-07-12). When the file is registered Gold, auto-fill a
+      // 5% contingency if the current one is short — every time the tool opens.
+      goldMode = /gold/i.test(String(q.get("program")||""));
+      ensureGoldContingency();
     }catch(e){}
+  }
+
+  // Force a >=5% contingency for a Gold file when the current one is short. A
+  // pct-mode value >= 5 already satisfies it; otherwise (amount mode below 5% of
+  // subtotal, or nothing set) snap it to 5% pct. Never DOWNGRADES a larger reserve.
+  function ensureGoldContingency(){
+    if(!goldMode) return;
+    var sub=subtotal();
+    var okPct=(S.cont && S.cont.mode==="pct" && num(S.cont.value)>=5);
+    var okAmt=(sub>0 && contingency()>=0.05*sub-0.5);
+    if(!okPct && !okAmt){ S.cont={mode:"pct", value:"5"}; }
   }
 
   /* ---------- portal bridge state accessors ----------
@@ -1101,6 +1117,7 @@ const RB = (function(){
     S.cont=Object.assign(blank().cont,o.cont||{});
     S.gcFee=Object.assign(blank().gcFee,o.gcFee||{});
     S.custom=o.custom||[];
+    ensureGoldContingency();   // Gold files always carry a >=5% contingency
     render();
   }
 
@@ -1108,6 +1125,7 @@ const RB = (function(){
   function init(){ restore(); prefillFromQuery(); render(); document.addEventListener("click",()=>{ document.querySelectorAll(".rb-tip.show").forEach(t=>t.classList.remove("show")); }); }
   document.addEventListener("DOMContentLoaded", init);
   return { share, exportXlsx, importXlsx, exportPdf, emailLO,
-           getState:()=>snap(), setState, grandTotal:()=>grand(), commit };
+           getState:()=>snap(), setState, grandTotal:()=>grand(),
+           subtotal:()=>subtotal(), contingency:()=>contingency(), commit };
 })();
 if(typeof window!=="undefined") window.RB = RB;

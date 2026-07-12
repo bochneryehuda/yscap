@@ -339,13 +339,14 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
 
     // Safety net: never leave the studio permanently hidden. If the engines are
     // slow (or the ready-poll is still spinning), reveal the frame anyway after
-    // a beat — earlyStamp has already made it dark + de-chromed, so revealing it
+    // a beat — earlyStamp has already made it light + de-chromed, so revealing it
     // shows the real tool loading, not the raw marketing page.
     const revealFallback = setTimeout(() => { if (!disposed) setLoaded(true); }, 2500);
 
-    // Belt-and-braces: stamp dark theme + chrome-hiding CSS the moment the
-    // frame's document exists (even mid-parse), so the FIRST paint is already
-    // dark and de-chromed — the fade-in below then reveals nothing wrong.
+    // Belt-and-braces: stamp the WHITE (light) theme + chrome-hiding CSS the
+    // moment the frame's document exists (even mid-parse), so the FIRST paint is
+    // already white and de-chromed — the fade-in below then reveals nothing
+    // wrong. The portal is white-first now, so every embedded tool is light.
     let earlyStamp = null;
     let stamped = false;
     const stampEarly = () => {
@@ -356,7 +357,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         // about:blank has no real URL yet; wait for the tool document.
         const href = frame.contentWindow.location && frame.contentWindow.location.href;
         if (!href || href === 'about:blank') return;
-        doc.documentElement.setAttribute('data-theme', 'dark');
+        doc.documentElement.setAttribute('data-theme', 'light');
         if (doc.head) {
           const s = doc.createElement('style');
           s.textContent = HIDE_CSS + '\n.ys-theme-toggle{display:none!important}';
@@ -404,9 +405,9 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
           const style = doc.createElement('style');
           style.textContent = HIDE_CSS;
           doc.head.appendChild(style);
-          // Match the always-dark portal regardless of the visitor's saved
+          // Match the white-first portal regardless of the visitor's saved
           // marketing-site theme; the embed hides the tool's own toggle.
-          doc.documentElement.setAttribute('data-theme', 'dark');
+          doc.documentElement.setAttribute('data-theme', 'light');
           const themeStyle = doc.createElement('style');
           themeStyle.textContent = '.ys-theme-toggle{display:none!important}';
           doc.head.appendChild(themeStyle);
@@ -433,7 +434,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
           if (f) f.dispatchEvent(new win.Event('input', { bubbles: true }));
         } catch (_) { /* studio still renders on its own next input */ }
 
-        // Everything above is applied — the frame is dark, de-chromed and
+        // Everything above is applied — the frame is white, de-chromed and
         // prefilled — so it is now safe to fade it into view.
         if (earlyStamp) { clearInterval(earlyStamp); earlyStamp = null; }
         setLoaded(true);
