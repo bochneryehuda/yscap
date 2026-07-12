@@ -1652,9 +1652,9 @@ router.get('/documents', async (req, res) => {
         AND visibility='borrower' AND source_type <> 'chat_attachment'
       ORDER BY is_current DESC, created_at DESC`,
     [me(req), req.query.applicationId || null]);
-  // rejection_reason is staff free-text shown to the borrower — scrub any
-  // capital-partner name out of it.
-  res.json(r.rows.map((row) => scrubFields(row, ['rejection_reason'])));
+  // rejection_reason AND slot_label are staff free-text shown to the borrower —
+  // scrub any capital-partner name out of both.
+  res.json(r.rows.map((row) => scrubFields(row, ['rejection_reason', 'slot_label'])));
 });
 
 // Download a document the borrower may see: their own uploads plus staff files
