@@ -197,6 +197,13 @@ async function buildTprExport(appId) {
        FROM product_registrations
       WHERE application_id=$1 AND is_current
       ORDER BY created_at DESC LIMIT 1`, [appId])).rows[0] || null;
+  // S4-04: the registered quote embeds our internal margin/cost build-up
+  // (`adminPricing`: markup, spread, fee breakdown). Strip it before it can ride
+  // into the note-buyer package — the buyer sees the loan terms, never our margin.
+  if (registration && registration.quote && typeof registration.quote === 'object') {
+    const { adminPricing, ...rest } = registration.quote;
+    registration.quote = rest;
+  }
 
   // The subject file's clean set: accepted + current, never chat attachments,
   // plus the vesting LLC's accepted docs (stored on the entity, not the file).
@@ -212,6 +219,11 @@ async function buildTprExport(appId) {
         AND d.review_status='accepted' AND d.is_current=true
         AND d.source_type <> 'chat_attachment'
         AND (ci.tpr_exclude IS NOT TRUE)
+        -- S4-03: default to borrower-visible documents only; a staff_only /
+        -- internal document rides along ONLY if its item is deliberately opted in
+        -- (tpr_include). Default visibility is 'borrower', so this drops just the
+        -- documents a staffer explicitly marked internal.
+        AND (d.visibility = 'borrower' OR ci.tpr_include IS TRUE)
       ORDER BY ci.sort_order NULLS LAST, d.created_at`, [appId])).rows;
 
   // Required document items still missing an accepted doc — the pre-flight list.
@@ -239,6 +251,7 @@ async function buildTprExport(appId) {
        FROM documents
       WHERE track_record_id = ANY($1::uuid[]) AND is_current=true AND source_type <> 'chat_attachment'
         AND review_status <> 'rejected'
+        AND visibility = 'borrower'   -- S4-03: never ship a staff_only/internal doc to the note buyer
       ORDER BY created_at`, [records.map(r => r.id)])).rows : [];
   const docsByTr = {};
   for (const d of trDocs) (docsByTr[d.track_record_id] = docsByTr[d.track_record_id] || []).push(d);

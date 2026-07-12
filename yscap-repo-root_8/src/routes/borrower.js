@@ -341,13 +341,45 @@ function stripInternalAppFields(row) {
   return row;
 }
 
+// Remove our internal lender pricing from anything sent to a borrower (S2-08).
+// `adminPricing` is the cost/margin build-up (markup, spread, fee breakdown); the
+// stored inputs also carry the markup knobs and the PRIMARY borrower's FICO (which
+// a co-borrower must not read). A borrower may see their loan STRUCTURE (rate,
+// loan amount, values) but never the markup. Staff pricing is a separate endpoint.
+function stripQuoteInternal(q) {
+  if (!q || typeof q !== 'object') return q;
+  const { adminPricing, ...rest } = q;
+  return rest;
+}
+function stripInputsInternal(inp) {
+  if (!inp || typeof inp !== 'object') return inp;
+  const { markupStdPct, markupGoldPct, fico, ...rest } = inp;
+  return rest;
+}
+// Make a full quoteAll bundle ({inputs, standard, gold}) borrower-safe.
+function borrowerSafeQuoteBundle(out) {
+  if (!out || typeof out !== 'object') return out;
+  return { ...out, inputs: stripInputsInternal(out.inputs),
+    standard: stripQuoteInternal(out.standard), gold: stripQuoteInternal(out.gold) };
+}
+
 // Scrub capital-partner names out of an LLC bundle's document slots before it
 // reaches a borrower: label/hint COALESCE to the INTERNAL wording (llc.js) and
 // rejection_reason is staff free-text. Mutates + returns the bundle (a fresh
 // object from getLlcBundle).
 function scrubLlcSlots(bundle) {
-  if (bundle && Array.isArray(bundle.slots)) {
-    bundle.slots = bundle.slots.map((s) => scrubFields(s, ['label', 'hint', 'rejection_reason']));
+  if (!bundle) return bundle;
+  // S2-11: staff identity is internal — the borrower must not see WHICH staffer
+  // verified the entity or reviewed each document. Drop verified_by (staff uuid)
+  // from the bundle and reviewed_by_name from every slot. (getLlcBundle is shared
+  // with the staff panel, which keeps these — this scrub is the borrower path.)
+  delete bundle.verified_by;
+  if (Array.isArray(bundle.slots)) {
+    bundle.slots = bundle.slots.map((s) => {
+      const out = scrubFields(s, ['label', 'hint', 'rejection_reason']);
+      delete out.reviewed_by_name;
+      return out;
+    });
   }
   return bundle;
 }
@@ -422,20 +454,12 @@ router.get('/applications/:id/pricing', async (req, res) => {
     // rest of `inputs` is the borrower's own registered scenario (price, values,
     // budget, FICO, experience, term, reserve) — that's what the "Scenario as
     // registered" panel renders from.
-    const stripInternal = (q) => { if (q && typeof q === 'object') { const { adminPricing, ...rest } = q; return rest; } return q; };
-    const stripInternalInputs = (inp) => {
-      if (!inp || typeof inp !== 'object') return inp;
-      // Co-borrower privacy (#82): the stored inputs carry the PRIMARY borrower's
-      // FICO, which the co-borrower must never read. Strip it from the borrower
-      // channel entirely (staff pricing is a separate endpoint, unaffected).
-      const { markupStdPct, markupGoldPct, fico, ...rest } = inp;
-      return rest;
-    };
-    const redactRow = (row) => row ? { ...row, quote: stripInternal(row.quote), inputs: stripInternalInputs(row.inputs) } : row;
+    const redactRow = (row) => row ? { ...row, quote: stripQuoteInternal(row.quote), inputs: stripInputsInternal(row.inputs) } : row;
     const history = hist.rows.map(redactRow);
     const current = history.find((x) => x.is_current) || null;
     let quote = null;
-    if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
+    // The live what-if quote embeds adminPricing too — strip it before it leaves.
+    if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
     res.json({ current, history, quote, enginesReady: pricing.enginesReady() });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
@@ -446,7 +470,7 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     const f = await loadFileForPricing(req.params.id, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
-    const out = pricing.quoteAll(f.app, f.exp, overrides);
+    const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides));
     res.json({ ...out, experience: f.exp });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
@@ -473,9 +497,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
     if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
-    if (quote.status === 'INELIGIBLE') return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
+    if (quote.status === 'INELIGIBLE') return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote: stripQuoteInternal(quote) });
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
-    if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote });
+    if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote: stripQuoteInternal(quote) });
 
     // Superseded terms, captured before the new registration lands — so the
     // audit trail / Activity feed can say exactly what the reprice changed.
@@ -549,7 +573,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       }
     } catch (_) {}
 
-    res.status(201).json({ ok: true, registrationId: regId, quote });
+    res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote) });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
@@ -749,7 +773,10 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const rawPayload = (req.body && typeof req.body.payload === 'object') ? req.body.payload : { submitted: true };
   const stripped = stripToolAttachments(rawPayload);
   const payload = stripped.payload;
-  const notes = (req.body && req.body.notes) ? String(req.body.notes).slice(0, 2000) : null;
+  // S2-07: `checklist_items.notes` is the INTERNAL staff/underwriting note — the
+  // borrower must never write it. (A borrower-typed `notes` used to overwrite it
+  // here.) The borrower's tool data lives in `tool_payload`; the '[auto]' SOW note
+  // below is written separately.
   // Scope-of-Work condition logic (owner-directed 2026-07-09). Saving a SOW NEVER
   // changes the file's rehab budget (frozen) and NEVER refuses on a mismatch — the
   // SOW saves as a DRAFT so it can be reopened + adjusted. The exact-match rule is
@@ -772,9 +799,9 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   const sowOpen = !!sowMismatch || !goldSow.ok;
   const toolStatus = sowOpen ? (isFinite(rbTotal) && rbTotal > 0 ? 'issue' : null) : 'received';
   await db.query(
-    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($4,tool_state), status=COALESCE($5,status), notes=COALESCE($3,notes), updated_at=now()
+    `UPDATE checklist_items SET tool_payload=$2, tool_state=COALESCE($3,tool_state), status=COALESCE($4,status), updated_at=now()
       WHERE id=$1`,
-    [req.params.itemId, JSON.stringify(payload), notes,
+    [req.params.itemId, JSON.stringify(payload),
      payload && typeof payload.state === 'object' ? JSON.stringify(payload.state) : null, toolStatus]);
   // Populate the condition with a plain-language note about the match state, on
   // BOTH a mismatch and a match — visible to every party. '[auto]' notes are ours
@@ -1385,8 +1412,17 @@ router.upsertPartner = upsertPartner;
 // A borrower's track record is one general dataset — never tied to a single
 // file. Loan-file experience conditions link here automatically.
 router.get('/track-records', async (req, res) => {
+  // Explicit borrower-safe allowlist — NEVER `t.*`. The row carries internal-only
+  // columns the borrower must not see: `lo_notes`/`notes` (candid staff notes on
+  // the deal, S2-06), `verified_by` (which staffer verified it, S2-11), plus the
+  // internal verification_status and ClickUp sync fields. Send only the borrower's
+  // own factual deal data + the plain "verified" boolean and their doc status.
   const r = await db.query(
-    `SELECT t.*, COALESCE(t.entity_name, l.llc_name) AS entity_name,
+    `SELECT t.id, t.borrower_id, t.llc_id, t.property_address, t.deal_type,
+            t.purchase_price, t.sale_price, t.rehab_amount, t.purchase_date, t.sale_date,
+            t.rent_amount, t.rent_date, t.refi_amount, t.refi_date, t.current_value,
+            t.is_verified, t.docs_status, t.created_at, t.updated_at,
+            COALESCE(t.entity_name, l.llc_name) AS entity_name,
             (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count
        FROM track_records t
        LEFT JOIN llcs l ON l.id = t.llc_id
