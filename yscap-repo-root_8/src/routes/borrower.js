@@ -23,6 +23,7 @@ const llcLib = require('../lib/llc');
 const apprCard = require('../lib/appraisal-card');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
+const changeRequests = require('../lib/change-requests');
 const { enqueueChecklistStatusPush } = require('../clickup/enqueue');
 
 router.use(requireAuth, requireBorrower);
@@ -659,6 +660,19 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
   if (!item.field_key) return res.status(400).json({ error: 'this item is not linked to a field' });
   if ((req.body || {}).value === undefined || req.body.value === null || req.body.value === '')
     return res.status(400).json({ error: 'a value is required' });
+  // S5-03: on a REGISTERED file, an economics field answered here is a change to
+  // authoritative terms — route it through the approval sandbox instead of writing
+  // the live record. Personal/verification fields (FICO, DOB, …) are unaffected.
+  if (changeRequests.isGovernedField(item.field_key) && await changeRequests.isBorrowerLocked(req.params.id)) {
+    try {
+      const cr = await changeRequests.openRequest(req.params.id, item.field_key, req.body.value,
+        { reason: req.body.reason || null, requesterKind: 'borrower', requesterId: me(req) });
+      if (!cr.unchanged) await notifyTeamOfChangeRequests(req.params.id, [cr]);
+      return res.json({ ok: true, locked: true, changeRequested: !cr.unchanged, field: item.field_key });
+    } catch (e) {
+      return res.status(e.status || 400).json({ error: e.message });
+    }
+  }
   let saved;
   try {
     // Co-borrower privacy (#82): a borrower-scoped field (e.g. FICO) is written to
@@ -1131,11 +1145,25 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
   const bid = own.rows[0].borrower_id;
   const b = req.body || {};
   try {
+    // S5-03: once a product is registered, the borrower can no longer write the
+    // deal economics straight onto the live record — each proposed change becomes
+    // an approval-gated change request that the loan officer + processor rule on.
+    // Personal fields (below) stay directly editable either way.
+    const locked = await changeRequests.isBorrowerLocked(req.params.id);
+    const requested = [];
     const appVals = [req.params.id], appSets = [], appKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_APP)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
       if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      if (locked) {
+        try {
+          const cr = await changeRequests.openRequest(req.params.id, k, b[k],
+            { reason: b.reason || null, requesterKind: 'borrower', requesterId: me(req) });
+          if (!cr.unchanged) requested.push(cr);
+        } catch (_) { /* skip a bad field, keep going with the rest */ }
+        continue;   // never a live write for a governed field on a locked file
+      }
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     if (appSets.length) {
@@ -1143,6 +1171,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, appKeys); } catch (_) {}
     }
+    if (requested.length) await notifyTeamOfChangeRequests(req.params.id, requested);
     // Personal fields update the actor's OWN profile only — a co-borrower must
     // not overwrite the primary borrower's DOB / phone / FICO / citizenship
     // (their own values differ). App/deal fields above are file-level and either
@@ -1155,8 +1184,55 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
     }
     if (brSets.length) { brSets.push('updated_at=now()'); await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals); }
-    res.json({ ok: true });
+    res.json({
+      ok: true,
+      locked,
+      // When the file is locked, tell the UI which economics edits were turned
+      // into pending change requests (so it can show "sent to your loan team").
+      changeRequests: requested.map((r) => ({ field: r.field, label: r.field_label, newValue: r.new_value })),
+    });
   } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+});
+
+// Tell the loan officer + processor a borrower has proposed an economics change
+// on a registered file (S5-03). Best-effort; mirrors the info-condition notice.
+async function notifyTeamOfChangeRequests(appId, requested) {
+  try {
+    const a = await db.query(
+      `SELECT a.loan_officer_id, a.processor_id, b.first_name, b.last_name
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId]);
+    const row = a.rows[0]; if (!row) return;
+    const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
+    const fields = requested.map((r) => r.field_label).join(', ');
+    const ctx = await notify.fileContext(appId);
+    for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
+      await notify.notifyStaff(sid, {
+        type: 'change_request',
+        title: `${who} requested a change to ${fields}`,
+        body: `${ctx ? ctx.label : 'A file'} — review the requested change and approve or reject it.`,
+        meta: (ctx && ctx.meta) || undefined,
+        applicationId: appId, link: `/internal/app/${appId}`, ctaLabel: 'Review the change' });
+    }
+  } catch (_) { /* best-effort */ }
+}
+
+// The borrower's own change requests for a file (pending first). `locked` tells
+// the UI whether the file is past registration (so it shows the sandbox instead
+// of directly-editable economics fields). Decision notes are scrubbed like every
+// other borrower-facing text so no capital-partner name can slip through.
+router.get('/applications/:id/change-requests', async (req, res) => {
+  const own = await db.query(
+    `SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+    [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const r = await db.query(
+    `SELECT id, field, field_label, old_value, new_value, reason, status, decision_note, created_at, decided_at
+       FROM change_requests WHERE application_id=$1
+      ORDER BY (status='pending') DESC, created_at DESC LIMIT 50`, [req.params.id]);
+  res.json({
+    locked: await changeRequests.isBorrowerLocked(req.params.id),
+    requests: r.rows.map((row) => ({ ...row, decision_note: scrubText(row.decision_note) })),
+  });
 });
 
 // ---------------- SERVICE CONTACTS (title company / insurance agent) ----------------

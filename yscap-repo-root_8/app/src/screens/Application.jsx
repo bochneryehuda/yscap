@@ -14,6 +14,7 @@ import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import { MoneyInput } from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import FileContacts from '../components/FileContacts.jsx';
+import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
@@ -749,6 +750,7 @@ export default function Application() {
       <Section id="sec-application" title="Application details"
         info="What you told us on your application — the borrower, the property and the transaction. Ask your loan team to correct anything here.">
       <BorrowerCompleteness app={app} profile={profile} appId={id} onSaved={load} />
+      <ChangeRequestPanel appId={id} />
       <div className="grid cols-2">
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>

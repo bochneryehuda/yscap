@@ -163,6 +163,10 @@ export const api = {
   borrowerRegisterProduct: (appId, program, overrides, adminKey) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey }),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   conditions:   (id) => req('GET', `/api/borrower/applications/${id}/conditions`),
+  // Borrower change-request sandbox (S5-03) — borrower side. List their requests,
+  // and open one (a single economics field + reason) via the complete-fields path.
+  changeRequests: (id) => req('GET', `/api/borrower/applications/${id}/change-requests`),
+  requestChange:  (id, field, value, reason) => req('POST', `/api/borrower/applications/${id}/complete-fields`, { [field]: value, reason }),
   activity:     (id) => req('GET', `/api/borrower/applications/${id}/activity`),
   statusHistory:(id) => req('GET', `/api/borrower/applications/${id}/status-history`),
   notifications:() => req('GET', '/api/borrower/notifications'),
@@ -299,6 +303,10 @@ export const api = {
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
   staffWaiveCondition:   (cid, reason) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason }),
   staffReviewCondition:  (cid, reviewed) => req('POST', `/api/staff/loan-conditions/${cid}/review`, { reviewed }),
+  // Borrower change-request sandbox (S5-03) — staff review side.
+  staffChangeRequests:       (appId) => req('GET', `/api/staff/applications/${appId}/change-requests`),
+  staffApproveChangeRequest: (cid, note) => req('POST', `/api/staff/change-requests/${cid}/approve`, { note }),
+  staffRejectChangeRequest:  (cid, note) => req('POST', `/api/staff/change-requests/${cid}/reject`, { note }),
   staffAssign:      (appId, b) => req('POST', `/api/staff/applications/${appId}/assign`, b),
   staffSetStatus:   (appId, status, force) => req('PATCH', `/api/staff/applications/${appId}`, force ? { status, force: true } : { status }),
   // Internal (ClickUp) status — the exact 38-status task workflow. The list feeds

@@ -10,6 +10,7 @@ const db = require('../db');
 const { scrubText } = require('../lib/borrower-safe');
 const C = require('../lib/crypto');
 const notify = require('../lib/notify');
+const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
 const cfg = require('../config');
@@ -1575,6 +1576,76 @@ router.post('/loan-conditions/:cid/waive', async (req, res) => {
     const r = await db.query(`UPDATE conditions SET status='waived', waive_reason=$2, cleared_by=$3, cleared_at=now(), updated_at=now() WHERE id=$1 RETURNING id`, [req.params.cid, reason.slice(0, 500), req.actor.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     await audit(req, 'waive_condition', 'condition', req.params.cid, { reason });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ---------------- borrower change requests (S5-03 sandbox) ----------------
+// On a REGISTERED file, a borrower can no longer edit the deal economics
+// directly; each proposed change is a `change_requests` row the assigned loan
+// officer / processor approves or rejects here. Approving applies the value in an
+// audited write (which re-fires the economics-reopen trigger); rejecting closes
+// it and the live record never changed.
+router.get('/applications/:id/change-requests', async (req, res) => {
+  const r = await db.query(
+    `SELECT cr.id, cr.field, cr.field_label, cr.old_value, cr.new_value, cr.reason, cr.status,
+            cr.decision_note, cr.created_at, cr.decided_at, cr.requested_by_kind,
+            db_.full_name AS decided_by_name
+       FROM change_requests cr
+       LEFT JOIN staff_users db_ ON db_.id=cr.decided_by
+      WHERE cr.application_id=$1
+      ORDER BY (cr.status='pending') DESC, cr.created_at DESC`, [req.params.id]);
+  res.json(r.rows);
+});
+
+// Approve a pending change request → apply the value to the live record.
+router.post('/change-requests/:cid/approve', async (req, res) => {
+  const note = String((req.body || {}).note || '').trim() || null;
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    // Lock the row so two reviewers can't both apply it.
+    const cr = (await client.query(
+      `SELECT * FROM change_requests WHERE id=$1 FOR UPDATE`, [req.params.cid])).rows[0];
+    if (!cr) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'not found' }); }
+    if (!(await canTouchApp(req, cr.application_id))) { await client.query('ROLLBACK'); return res.status(403).json({ error: 'forbidden' }); }
+    if (cr.status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: `this request is already ${cr.status}` }); }
+    const applied = await changeRequests.applyRequest(client, cr, req.actor.id, note);
+    await client.query('COMMIT');
+    await audit(req, 'approve_change_request', 'application', cr.application_id,
+      { field: applied.field, from: applied.oldValue, to: applied.newValue });
+    // Tell the borrower their requested change was accepted (borrower-safe copy).
+    try {
+      await notify.notifyAppBorrowers(cr.application_id, {
+        type: 'change_request', title: 'Your requested change was approved',
+        body: `Your loan team approved your update to ${cr.field_label}.`,
+        applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
+    } catch (_) {}
+    res.json({ ok: true, applied });
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    res.status(500).json({ error: 'server error' });
+  } finally { client.release(); }
+});
+
+// Reject a pending change request → it closes and the live record is untouched.
+router.post('/change-requests/:cid/reject', async (req, res) => {
+  const note = String((req.body || {}).note || '').trim() || null;
+  try {
+    const cr = (await db.query(`SELECT application_id, field_label, status FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
+    if (!cr) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
+    if (cr.status !== 'pending') return res.status(409).json({ error: `this request is already ${cr.status}` });
+    await db.query(
+      `UPDATE change_requests SET status='rejected', decided_by=$2, decided_at=now(), decision_note=$3, updated_at=now()
+        WHERE id=$1`, [req.params.cid, req.actor.id, note]);
+    await audit(req, 'reject_change_request', 'application', cr.application_id, { field: cr.field_label });
+    try {
+      await notify.notifyAppBorrowers(cr.application_id, {
+        type: 'change_request', title: 'Update on your requested change',
+        body: `Your loan team reviewed your requested change to ${cr.field_label}.`,
+        applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
+    } catch (_) {}
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
