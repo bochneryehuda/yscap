@@ -2236,7 +2236,7 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
 });
 // Staff manage the borrower's general track record on their behalf: add,
 // edit, remove entries, and attach/read the per-entry supporting documents.
-const { trackRecordErrors, trackRecordCols } = require('./borrower');
+const { trackRecordErrors, trackRecordCols, trackRecordMissing } = require('./borrower');
 router.post('/borrowers/:id/track-records', async (req, res) => {
   const b = req.body || {};
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
@@ -2255,7 +2255,7 @@ router.post('/borrowers/:id/track-records', async (req, res) => {
     [req.params.id, ...vals]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(req.params.id); } catch (_) {}
   await audit(req, 'staff_add_track_record', 'track_record', r.rows[0].id);
-  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id });
+  res.status(201).json({ ok: true, trackRecordId: r.rows[0].id, missing: trackRecordMissing(b) });
 });
 router.put('/track-records/:id', async (req, res) => {
   const b = req.body || {};
@@ -2279,7 +2279,7 @@ router.put('/track-records/:id', async (req, res) => {
     [req.params.id, ...vals]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   await audit(req, 'staff_edit_track_record', 'track_record', req.params.id);
-  res.json({ ok: true });
+  res.json({ ok: true, missing: trackRecordMissing(b) });
 });
 router.delete('/track-records/:id', async (req, res) => {
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
