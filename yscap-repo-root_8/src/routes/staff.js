@@ -1486,10 +1486,12 @@ router.get('/applications/:id/activity', async (req, res) => {
 // ---- first-class conditions (object model) ----
 router.get('/applications/:id/conditions', async (req, res) => {
   const r = await db.query(
-    `SELECT c.*, cb.full_name AS created_by_name, xb.full_name AS cleared_by_name
+    `SELECT c.*, cb.full_name AS created_by_name, xb.full_name AS cleared_by_name,
+            rb.full_name AS reviewed_by_name
        FROM conditions c
        LEFT JOIN staff_users cb ON cb.id=c.created_by
        LEFT JOIN staff_users xb ON xb.id=c.cleared_by
+       LEFT JOIN staff_users rb ON rb.id=c.reviewed_by
       WHERE c.application_id=$1 ORDER BY (c.status='open') DESC, c.created_at DESC`, [req.params.id]);
   res.json(r.rows);
 });
@@ -1521,7 +1523,12 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
     res.status(201).json({ ok: true, conditionId: r.rows[0].id });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+// Clearing (signing off) a first-class condition is the PROCESSOR/underwriter's
+// call (audit S3-01) — a loan officer marks it REVIEWED instead (below), never
+// cleared. Mirrors the checklist sign-off gate + the sibling /waive gate.
 router.post('/loan-conditions/:cid/clear', async (req, res) => {
+  if (!can(req.actor, 'sign_off_conditions'))
+    return res.status(403).json({ error: 'Only a processor or underwriter can clear (sign off) a condition — mark it reviewed instead.' });
   try {
     const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
     if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -1529,6 +1536,27 @@ router.post('/loan-conditions/:cid/clear', async (req, res) => {
     await db.query(`UPDATE conditions SET status='cleared', cleared_by=$2, cleared_at=now(), updated_at=now() WHERE id=$1`, [req.params.cid, req.actor.id]);
     await audit(req, 'clear_condition', 'condition', req.params.cid);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+// The lighter "reviewed" stamp — a loan officer's "I looked at it / I believe
+// it's done". It NEVER changes the condition's status (still open until a
+// sign-off holder clears/waives it); it just records who reviewed it and when.
+// Sign-off holders may review too. `{reviewed:false}` clears the stamp.
+router.post('/loan-conditions/:cid/review', async (req, res) => {
+  if (!can(req.actor, 'review_conditions') && !can(req.actor, 'sign_off_conditions'))
+    return res.status(403).json({ error: 'You do not have permission to review conditions on this file.' });
+  const reviewed = !(req.body && req.body.reviewed === false);
+  try {
+    const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
+    if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!(await canTouchApp(req, c.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+    await db.query(
+      reviewed
+        ? `UPDATE conditions SET reviewed_by=$2, reviewed_at=now(), updated_at=now() WHERE id=$1`
+        : `UPDATE conditions SET reviewed_by=NULL, reviewed_at=NULL, updated_at=now() WHERE id=$1`,
+      [req.params.cid, reviewed ? req.actor.id : null]);
+    await audit(req, reviewed ? 'review_condition' : 'unreview_condition', 'condition', req.params.cid);
+    res.json({ ok: true, reviewed });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 router.post('/loan-conditions/:cid/waive', async (req, res) => {
