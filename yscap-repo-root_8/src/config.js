@@ -129,6 +129,22 @@ module.exports = {
   storageDir:      process.env.STORAGE_DIR || 'uploads',
   maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '20', 10),   // per-file cap
 
+  // --- SharePoint document backup (append-only mirror) ---
+  // Reuses the Microsoft Graph app credentials above (MS_TENANT_ID/CLIENT_ID/
+  // CLIENT_SECRET). APPEND-ONLY by policy: the integration NEVER deletes, moves,
+  // renames, or overwrites anything in SharePoint (see docs/SHAREPOINT-POLICY.md
+  // and CLAUDE.md). Master switch defaults OFF — nothing touches SharePoint until
+  // SHAREPOINT_BACKUP_ENABLED=1 and the MS_* creds are set.
+  sharepointBackupEnabled: process.env.SHAREPOINT_BACKUP_ENABLED === '1',
+  sharepointSiteHost:  process.env.SHAREPOINT_SITE_HOST || 'yscapgroup.sharepoint.com',
+  sharepointSitePath:  process.env.SHAREPOINT_SITE_PATH || '/sites/SharedData',
+  sharepointDriveName: process.env.SHAREPOINT_DRIVE_NAME || 'Documents', // document library
+  // Dedicated, clearly-labeled backup root — the mirror writes ONLY under here,
+  // never into the human-curated "Pipeline Drive" folders.
+  sharepointBackupRoot: (process.env.SHAREPOINT_BACKUP_ROOT || 'Portal Document Backup')
+                          .replace(/^\/+|\/+$/g, ''),
+  sharepointBackupPollSec: parseInt(process.env.SHAREPOINT_BACKUP_POLL_SEC || '300', 10),
+
   // --- ClickUp bidirectional sync (server-side token only) ---
   clickupToken:         process.env.CLICKUP_API_TOKEN,
   clickupTeamId:        process.env.CLICKUP_TEAM_ID || '9011888435',

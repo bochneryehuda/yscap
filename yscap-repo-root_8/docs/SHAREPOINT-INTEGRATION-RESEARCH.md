@@ -164,7 +164,7 @@ running app; nothing is deployed:
 | Read the file back | ✅ **byte-identical** round-trip |
 | `stat()` size | ✅ |
 | `remove()` (delete guardrail) | ✅ **refuses** — throws "SharePoint is append-only" |
-| DB migration `083` + reconciler query | ✅ all 83 migrations apply on a fresh Postgres; backup-tracking columns added; reconciler joins officer/borrower/address and selects un-backed-up docs |
+| DB migration `091` + reconciler query | ✅ all migrations apply on a fresh Postgres; backup-tracking columns added; reconciler joins officer/borrower/address and selects un-backed-up docs |
 
 **Conclusion:** the credentials + app registration genuinely work for read **and** append-only write
 to `SharedData` today. Open questions are about *shape* (§10–11), not *whether it can work*.
