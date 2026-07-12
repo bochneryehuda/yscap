@@ -6,6 +6,7 @@ import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
 import Entities from '../components/Entities.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
+import TwoFactorPanel from '../components/TwoFactorPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
 import { Link } from 'react-router-dom';
 
@@ -154,6 +155,9 @@ export default function Profile() {
             <PhoneInput value={p.cell_phone || ''} onChange={v => set('cell_phone', v)} /></div>
         </div>
       </div>
+
+      {/* Account security — optional self-service two-factor. */}
+      <TwoFactorPanel />
 
       {/* Personal (required on applications) */}
       <div className="panel">

@@ -17,6 +17,7 @@ export default function Login() {
   const [last, setLast] = useState('');
   const [code, setCode] = useState('');
   const [challenge, setChallenge] = useState('');
+  const [useBackup, setUseBackup] = useState(false);   // 2FA: type a backup code instead
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -103,9 +104,18 @@ export default function Login() {
             </>
           )}
           {mode === 'mfa' && (
-            <div className="field"><label>6-digit code</label>
-              <input className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code}
-                onChange={e => setCode(e.target.value.replace(/\D/g, ''))} onKeyDown={onKey(submitMfa)} autoFocus /></div>
+            <div className="field">
+              <label>{useBackup ? 'Backup code' : '6-digit code'}</label>
+              {useBackup
+                ? <input className="input" autoComplete="one-time-code" placeholder="xxxxx-xxxxx" value={code}
+                    onChange={e => setCode(e.target.value)} onKeyDown={onKey(submitMfa)} autoFocus />
+                : <input className="input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code}
+                    onChange={e => setCode(e.target.value.replace(/\D/g, ''))} onKeyDown={onKey(submitMfa)} autoFocus />}
+              <button type="button" className="btn link small" style={{ marginTop: 4 }}
+                onClick={() => { setUseBackup(v => !v); setCode(''); setErr(''); }}>
+                {useBackup ? 'Use your authenticator code instead' : 'Lost your device? Use a backup code'}
+              </button>
+            </div>
           )}
         </div>
 

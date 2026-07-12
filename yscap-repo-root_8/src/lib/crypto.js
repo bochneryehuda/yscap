@@ -128,6 +128,22 @@ function decryptSSN(buf) {
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 const randomToken = (n = 32) => crypto.randomBytes(n).toString('base64url');
 
+// ---------- MFA backup (recovery) codes ----------
+// One-time codes a user saves when they enable 2FA, so a lost authenticator app
+// doesn't lock them out. Format xxxxx-xxxxx (easy to read/type). Stored HASHED;
+// the plaintext is returned exactly once. `normalizeBackupCode` makes entry
+// forgiving (case + separators) so the hash matches what the user types back.
+const normalizeBackupCode = (c) => String(c == null ? '' : c).toLowerCase().replace(/[^a-z0-9]/g, '');
+const hashBackupCode = (c) => sha256(normalizeBackupCode(c));
+function newBackupCodes(n = 10) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const raw = crypto.randomBytes(5).toString('hex'); // 10 hex chars
+    out.push(`${raw.slice(0, 5)}-${raw.slice(5)}`);
+  }
+  return out;
+}
+
 // ---------- password strength (S1-02) ----------
 // One shared rule applied at EVERY interactive password-set point (staff +
 // borrower registration, self-change, admin reset, invite accept). Returns a
@@ -155,4 +171,5 @@ module.exports = {
   encryptSSN, decryptSSN,
   sha256, randomToken,
   passwordProblem, PASSWORD_MIN, PASSWORD_MAX,
+  newBackupCodes, hashBackupCode, normalizeBackupCode,
 };
