@@ -223,9 +223,14 @@ if (require.main === module) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }
     }
-    if (cfg.env === 'production' || process.env.RUN_SYNC === '1') {
-      try { require('./sync/queue').start(); } catch (e) { console.warn('sync queue not started:', e.message); }
-    }
+    // NOTE (2026-07-12 audit): the legacy `sync/queue.js` worker is intentionally
+    // NOT started. It was superseded by the ClickUp sync worker below (outbound =
+    // orchestrator.createForNewFile at file-start + the scoped `pushOutboxOnce`
+    // drain; nothing enqueues the legacy `op='create'` job it handled). Left
+    // running, its unfiltered `SELECT ... WHERE status='queued'` would grab the
+    // modern `op='update'` ClickUp push jobs and mark them `done` WITHOUT pushing
+    // — silently dropping outbound edits (and letting the next inbound pull revert
+    // them). The ClickUp queue is now owned solely by `pushOutboxOnce`.
     // ClickUp bidirectional sync worker (self-gated by CLICKUP_SYNC_ENABLED;
     // a no-op until the master switch is on, so it's safe to wire now).
     try { require('./sync/clickup-sync').start(); } catch (e) { console.warn('clickup sync not started:', e.message); }

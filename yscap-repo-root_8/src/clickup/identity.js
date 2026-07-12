@@ -82,6 +82,30 @@ function isMatch(a, b, threshold = 2) { return countMatches(a, b) >= threshold; 
 function canMaterialize(idObj, threshold = 2) { return populatedCount(idObj) >= threshold; }
 
 /**
+ * Corroboration gate for an EMAIL match (blueprint §3.4 — "one field is never
+ * enough"). An email shared by two people (spouse / broker / attorney) must not
+ * collapse them into one borrower, so before merging two records that share an
+ * email we require a SECOND identity field to agree. Compares last name
+ * (case-insensitive), phone (last 10 digits), and DOB (YYYY-MM-DD). Returns true
+ * iff at least one of those is present on BOTH sides and equal.
+ *   a / b: { lastName, phone, dob }
+ */
+function emailMatchCorroborated(a = {}, b = {}) {
+  const lc = (v) => { const s = String(v == null ? '' : v).trim().toLowerCase(); return s || null; };
+  const ph = (v) => { const d = digits(v).slice(-10); return d || null; };
+  const dobK = (v) => {
+    if (!v) return null;
+    const s = v instanceof Date ? (isNaN(v) ? '' : v.toISOString().slice(0, 10)) : String(v).slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  };
+  return !!(
+    (lc(a.lastName) && lc(a.lastName) === lc(b.lastName)) ||
+    (ph(a.phone)    && ph(a.phone)    === ph(b.phone)) ||
+    (dobK(a.dob)    && dobK(a.dob)     === dobK(b.dob))
+  );
+}
+
+/**
  * Given a candidate identity and a list of existing records ({id, identity}),
  * return the best match (>= threshold) or null. Highest match count wins.
  */
@@ -96,4 +120,5 @@ function bestMatch(candidate, existing, threshold = 2) {
 
 module.exports = {
   IDENTITY_KEYS, normalizeIdentity, populatedCount, countMatches, isMatch, canMaterialize, bestMatch, ssnHash,
+  emailMatchCorroborated,
 };

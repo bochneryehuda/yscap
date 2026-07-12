@@ -109,6 +109,35 @@ eq('ssnHash same value diff format', id.ssnHash('066-88-9965', 'k'), id.ssnHash(
 eq('ssnHash diff key differs', id.ssnHash('066889965', 'k1') === id.ssnHash('066889965', 'k2'), false);
 eq('ssnHash short -> null', id.ssnHash('123', 'k'), null);
 
+// email-match corroboration gate (§3.4 — email alone is never enough to merge)
+eq('corrob last name',
+  id.emailMatchCorroborated({ lastName: 'Steiner', phone: null, dob: null }, { lastName: 'STEINER', phone: null, dob: null }), true);
+eq('corrob phone last10',
+  id.emailMatchCorroborated({ phone: '+1 (917) 538-1594' }, { phone: '9175381594' }), true);
+eq('corrob dob (Date vs string)',
+  id.emailMatchCorroborated({ dob: new Date('1998-07-31T00:00:00Z') }, { dob: '1998-07-31' }), true);
+// shared email, DIFFERENT people (nothing else agrees) -> NOT corroborated -> no merge
+eq('corrob two different people',
+  id.emailMatchCorroborated({ lastName: 'Cohen', phone: '2125551111', dob: '1980-01-01' },
+                            { lastName: 'Weiss', phone: '9175552222', dob: '1975-05-05' }), false);
+// a field present on only ONE side never corroborates
+eq('corrob one-sided last name', id.emailMatchCorroborated({ lastName: 'Katz' }, { lastName: null }), false);
+eq('corrob both empty', id.emailMatchCorroborated({}, {}), false);
+eq('corrob blank strings', id.emailMatchCorroborated({ lastName: '  ' }, { lastName: '' }), false);
+
+// RTL descope gate (I-A) — ONLY positively non-RTL labels may descope a live file
+eq('nonRtl dscr label', x.isNonRtlProgramLabel('Non-QM - DSCR Ratio'), true);
+eq('nonRtl heloc keyword', x.isNonRtlProgramLabel('HELOC Line of Credit'), true);
+eq('nonRtl rental keyword', x.isNonRtlProgramLabel('Rental Portfolio 30 year'), true);
+eq('rtl fix&flip not nonRtl', x.isNonRtlProgramLabel('Fix & Flip With Construction'), false);
+eq('rtl bridge not nonRtl', x.isNonRtlProgramLabel('bridge Without Construction'), false);
+eq('rtl groundup not nonRtl', x.isNonRtlProgramLabel('Ground-Up'), false);
+// the catastrophe guard: a RENAMED / new RTL-ish option must NOT read as non-RTL
+eq('renamed rtl label not nonRtl', x.isNonRtlProgramLabel('Fix & Flip - Heavy Reno'), false);
+eq('blank not nonRtl', x.isNonRtlProgramLabel(''), false);
+eq('null not nonRtl', x.isNonRtlProgramLabel(null), false);
+eq('unset not nonRtl', x.isNonRtlProgramLabel('Not sure yet'), false);
+
 // echo suppression
 echo._clear();
 echo.markPushed('task1', 'fieldX', 'hello');

@@ -47,10 +47,18 @@ async function optionMap() {
 
 // ---- outbound (portal → ClickUp) -----------------------------------------
 async function pushOutboxOnce() {
+  // Also RECLAIM jobs stranded in 'processing' — if the process crashed between
+  // marking a job 'processing' and finalizing it, it would otherwise be lost
+  // forever (a silently-dropped outbound push). updated_at is stamped to now() on
+  // claim, so a 5-minute floor only catches genuine crash orphans, never a live
+  // in-flight push (which finishes in well under a second). Re-running a push is
+  // idempotent (setField writes the same values), so reclaim is safe.
   const r = await db.query(
     `UPDATE sync_queue SET status='processing', updated_at=now()
       WHERE id = (SELECT id FROM sync_queue WHERE target='clickup' AND direction='push'
-                   AND status='queued' AND run_after <= now() ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+                   AND run_after <= now()
+                   AND (status='queued' OR (status='processing' AND updated_at < now() - interval '5 minutes'))
+                   ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
       RETURNING *`);
   const job = r.rows[0];
   if (!job) return false;
@@ -90,9 +98,16 @@ async function sweepDirtyOnce() {
 
 // ---- inbound (ClickUp → portal) ------------------------------------------
 async function processInboxOnce() {
+  // Also RECLAIM inbox rows stranded in 'processing' by a crash mid-ingest (they'd
+  // otherwise never be re-driven). ingestTask is fully idempotent (COALESCE
+  // upserts, no-downgrade checklist, ON CONFLICT task/borrower keys), so a
+  // re-ingest is safe; the 15-minute floor keeps normal fast processing (seconds)
+  // from ever self-reclaiming.
   const r = await db.query(
     `UPDATE clickup_webhook_inbox SET status='processing'
-      WHERE id = (SELECT id FROM clickup_webhook_inbox WHERE status='received'
+      WHERE id = (SELECT id FROM clickup_webhook_inbox
+                   WHERE status='received'
+                      OR (status='processing' AND received_at < now() - interval '15 minutes')
                    ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`);
   const row = r.rows[0];
   if (!row) return false;

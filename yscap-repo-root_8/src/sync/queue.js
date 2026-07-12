@@ -32,10 +32,17 @@ async function handleApplicationCreate(row) {
 }
 
 async function tick() {
+  // DEFENSIVE SCOPING (2026-07-12 audit): only ever claim the `op='create'` jobs
+  // this legacy worker actually handles. Without the `op='create'` filter this
+  // SELECT would grab the modern ClickUp scoped-push jobs (`op='update'`, drained
+  // by src/sync/clickup-sync.js `pushOutboxOnce`), find no matching branch below,
+  // and mark them `done` WITHOUT pushing — silently dropping outbound edits. This
+  // worker is not started anymore (see src/server.js), but the filter guarantees
+  // it can never steal another worker's jobs even if it is ever re-wired.
   const r = await db.query(
     `UPDATE sync_queue SET status='processing', updated_at=now()
       WHERE id = (SELECT id FROM sync_queue
-                   WHERE status='queued' AND run_after <= now()
+                   WHERE status='queued' AND op='create' AND run_after <= now()
                    ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
       RETURNING *`);
   if (!r.rows[0]) return;
