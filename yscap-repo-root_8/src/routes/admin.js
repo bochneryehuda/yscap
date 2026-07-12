@@ -168,6 +168,20 @@ router.patch('/staff/:id', async (req, res) => {
   if (b.department && !DEPTS.includes(b.department)) return res.status(400).json({ error: 'bad department' });
   const g = roleGuard(req, await targetRole(req.params.id), b.role);
   if (g) return res.status(g.code).json({ error: g.error });
+  // S1-05: a staffer cannot escalate THEMSELVES — no editing your own role,
+  // permissions, or shared-file access (that's how "manage team" became a path
+  // to self-granting every power).
+  if (String(req.params.id) === String(req.actor.id) &&
+      (b.role !== undefined || b.permissions !== undefined || b.visibleOfficerIds !== undefined)) {
+    return res.status(403).json({ error: 'You cannot change your own role, permissions, or file access.' });
+  }
+  // S1-05: only a SUPER admin may grant the powerful, platform-wide capabilities.
+  if (b.permissions !== undefined && !isSuper(req)) {
+    const _ov = sanitizeOverrides(b.permissions) || {};
+    const POWERFUL = ['manage_team', 'platform_setup', 'delete_files', 'see_all_files', 'manage_conditions'];
+    if (POWERFUL.some((c) => _ov[c] === true))
+      return res.status(403).json({ error: 'Only a super admin can grant platform-wide permissions (manage team, platform setup, delete files, see all files, manage conditions).' });
+  }
   const map = {
     full_name: b.fullName, role: b.role, title: b.title, department: b.department,
     phone: b.phone, cell: b.cell, ext: b.ext,
@@ -208,8 +222,13 @@ router.patch('/staff/:id', async (req, res) => {
 router.post('/staff/:id/password', async (req, res) => {
   const pw = (req.body || {}).password || '';
   if (String(pw).length < 8) return res.status(400).json({ error: 'password too short (min 8)' });
-  const g = roleGuard(req, await targetRole(req.params.id));
+  const tRole = await targetRole(req.params.id);
+  const g = roleGuard(req, tRole);
   if (g) return res.status(g.code).json({ error: g.error });
+  // S1-05: resetting an ADMIN's password (a peer-admin takeover vector) is
+  // super-admin-only; roleGuard already blocks resetting a super_admin.
+  if (tRole === 'admin' && !isSuper(req))
+    return res.status(403).json({ error: "Only a super admin can reset another admin's password." });
   const r = await db.query(
     `UPDATE staff_users SET password_hash=$2, token_version=token_version+1, updated_at=now()
       WHERE id=$1 RETURNING email`, [req.params.id, await C.hashPassword(pw)]);
