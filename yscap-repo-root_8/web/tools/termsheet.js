@@ -1096,6 +1096,7 @@
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(sub), x, y + 51);
         doc.line(x, y + 70, x + scolW - 90, y + 70); doc.text("Date", x, y + 81);
       }
+      var coBorrowerName = pdfSafe((val("coBorrowerName") || "").trim());
       if (d.status === "INELIGIBLE") {
         // Not eligible as entered → no signable terms (unprofitable / ineligible deals get no term sheet).
         var inelWhy = (d.reasons || []).filter(function (r) { return r.level === "INELIGIBLE"; }).map(function (r) { return r.msg; }).filter(Boolean);
@@ -1105,10 +1106,19 @@
         doc.text(pdfSafe("Because this scenario is not eligible as entered" + (inelWhy.length ? " (" + shortMsg(inelWhy[0]) + ")" : "") + ", there is no acceptance or signature block. Adjust the inputs above to see whether an eligible structure is available, or submit it to our team for a manual review."), M, y + 15, { maxWidth: W - 2 * M });
         y += 44; footer();
       } else {
-        para("5.  Validity & acceptance.  This term sheet is valid through " + fmtD(exp) + (d.inp.state ? (" for a property located in " + d.inp.state) : "") + ". It is not binding unless and until it is accepted in writing by the borrower below and countersigned by an authorized representative of " + LENDER.name + ".", 7.5);
-        brk(110); band("Acceptance & signatures"); brk(86);
+        para("5.  Validity & acceptance.  This term sheet is valid through " + fmtD(exp) + (d.inp.state ? (" for a property located in " + d.inp.state) : "") + ". It is not binding unless and until it is accepted in writing by the borrower" + (coBorrowerName ? " and co-borrower" : "") + " below and countersigned by an authorized representative of " + LENDER.name + ".", 7.5);
+        brk(coBorrowerName ? 200 : 110); band("Acceptance & signatures"); brk(86);
         sigBlock(sx1, val("borrowerName") || "Borrower", "Borrower / authorized signatory");
-        sigBlock(sx2, LENDER.name, "Authorized representative \u2014 required to validate");
+        // When the file has TWO borrowers, the term sheet carries a second
+        // signature line for the co-borrower (owner-directed #137) side-by-side
+        // with the borrower; the lender line drops to the next row.
+        if (coBorrowerName) {
+          sigBlock(sx2, coBorrowerName, "Co-borrower / authorized signatory");
+          y += 92; brk(86);
+          sigBlock(sx1, LENDER.name, "Authorized representative \u2014 required to validate");
+        } else {
+          sigBlock(sx2, LENDER.name, "Authorized representative \u2014 required to validate");
+        }
         y += 92; footer();
       }
 

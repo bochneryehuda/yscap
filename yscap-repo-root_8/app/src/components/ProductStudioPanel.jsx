@@ -324,10 +324,15 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const name = isStaff
       ? ([app.first_name, app.last_name].filter(Boolean).join(' ') || app.entity_name || '')
       : ([profile && profile.first_name, profile && profile.last_name].filter(Boolean).join(' ') || '');
+    // Co-borrower name (staff view has it on the app) → prefills the term
+    // sheet's second signature line (#137).
+    const coName = (isStaff && app.co_borrower_id)
+      ? ([app.co_first_name, app.co_last_name].filter(Boolean).join(' ') || '')
+      : '';
     let st;
     if (cur && cur.inputs) {
       const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : cur.inputs;
-      st = buildStudioState(scenarioFromEngineInputs(inp, { borrowerName: name, address: inp.address || addrLine(app.property_address) }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address) }));
       if (isStaff) {
         const adm = adminStateFromEngineInputs(inp);
         st = { v: { ...st.v, ...adm.v }, c: { ...st.c, ...adm.c } };
@@ -338,7 +343,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // over the verified track-record counts for the what-if display.
       const inp = data.quote.inputs;
       st = buildStudioState(scenarioFromEngineInputs(inp, {
-        borrowerName: name,
+        borrowerName: name, coBorrowerName: coName,
         address: inp.address || addrLine(app.property_address),
         expFlips: app.requested_exp_flips ?? inp.expFlips,
         expHolds: app.requested_exp_holds ?? inp.expHolds,
@@ -347,7 +352,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       }));
     } else {
       st = buildStudioState({
-        borrowerName: name,
+        borrowerName: name, coBorrowerName: coName,
         address: addrLine(app.property_address),
         state: (app.property_address && app.property_address.state) || '',
         loanType: app.loan_type,
