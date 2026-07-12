@@ -95,6 +95,7 @@ export function buildStudioState(x) {
     expGround: rawNum(x.expGround) || '0',
     tsTerm: termDigits(x.termMonths || x.term),
     irMonths: rawNum(x.irMonths) || '',
+    irAmount: rawNum(x.irAmount) || '',
   };
   const c = {
     isAssign,
@@ -130,7 +131,7 @@ function readSnapshot(win) {
       asIs: val('asIs'), arv: val('arv'), construction: val('construction'),
       rehabScope: val('rehabScope'), sqft: chk('sqft'),
       fico: val('fico'), expFlips: val('expFlips'), expBrrrr: val('expBrrrr'), expGround: val('expGround'),
-      tsTerm: val('tsTerm'), irMonths: val('irMonths'),
+      tsTerm: val('tsTerm'), irMonths: val('irMonths'), irAmount: val('irAmount'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'),
       tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'),
@@ -165,7 +166,7 @@ export function scenarioFromEngineInputs(inp, extra = {}) {
     rehabType: inp.heavyRehab ? 'Heavy / gut rehab' : (inp.sqftAddition ? 'Adding square footage' : ''),
     fico: inp.fico,
     expFlips: inp.expFlips, expHolds: inp.expHolds, expGround: inp.expGround,
-    termMonths: inp.term, irMonths: inp.irMonths,
+    termMonths: inp.term, irMonths: inp.irMonths, irAmount: inp.irAmount,
     ...extra,
   };
 }
@@ -202,6 +203,7 @@ export function selectionFromSnapshot(snap) {
     noteRatePct: d.rate || 0,
     termMonths: d.term || null,
     irMonths: d.irMonths || 0,
+    irAmount: d.irAmount || 0,
     initialAdvance: d.initialAdvance || 0,
     rehabHoldback: d.rehabHoldback || 0,
     financedInterestReserve: d.financedIR || 0,

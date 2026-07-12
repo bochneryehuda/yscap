@@ -2577,7 +2577,7 @@ router.patch('/applications/:id/details', async (req, res) => {
   const NUM = { units: 'units', purchasePrice: 'purchase_price', asIsValue: 'as_is_value',
     arv: 'arv', rehabBudget: 'rehab_budget', sqftPre: 'sqft_pre', sqftPost: 'sqft_post',
     requestedExpFlips: 'requested_exp_flips', requestedExpHolds: 'requested_exp_holds', requestedExpGround: 'requested_exp_ground',
-    requestedExpReo: 'requested_exp_reo', requestedIrMonths: 'requested_ir_months',
+    requestedExpReo: 'requested_exp_reo', requestedIrMonths: 'requested_ir_months', requestedIrAmount: 'requested_ir_amount',
     payoffAmount: 'payoff_amount', originalPurchasePrice: 'original_purchase_price',
     underlyingContractPrice: 'underlying_contract_price', assignmentFee: 'assignment_fee' };
   const STR = { propertyType: 'property_type', loanType: 'loan_type', program: 'program', occupancy: 'occupancy',
