@@ -95,7 +95,17 @@ function emailMatchCorroborated(a = {}, b = {}) {
   const ph = (v) => { const d = digits(v).slice(-10); return d || null; };
   const dobK = (v) => {
     if (!v) return null;
-    const s = v instanceof Date ? (isNaN(v) ? '' : v.toISOString().slice(0, 10)) : String(v).slice(0, 10);
+    let s;
+    if (v instanceof Date) {
+      if (isNaN(v)) return null;
+      // pg returns a `date` column as LOCAL midnight; use local components so the
+      // calendar date is preserved on ANY server timezone (toISOString() is UTC
+      // and would roll a local-midnight date back a day on a UTC+ host).
+      const p = (n) => String(n).padStart(2, '0');
+      s = `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`;
+    } else {
+      s = String(v).slice(0, 10);
+    }
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
   };
   return !!(

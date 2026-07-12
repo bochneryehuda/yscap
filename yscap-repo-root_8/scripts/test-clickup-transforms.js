@@ -116,6 +116,9 @@ eq('corrob phone last10',
   id.emailMatchCorroborated({ phone: '+1 (917) 538-1594' }, { phone: '9175381594' }), true);
 eq('corrob dob (Date vs string)',
   id.emailMatchCorroborated({ dob: new Date('1998-07-31T00:00:00Z') }, { dob: '1998-07-31' }), true);
+// pg `date` -> LOCAL-midnight Date: compares by calendar date on ANY server TZ
+eq('corrob dob (local-midnight pg Date)',
+  id.emailMatchCorroborated({ dob: new Date(1998, 6, 31) }, { dob: '1998-07-31' }), true);
 // shared email, DIFFERENT people (nothing else agrees) -> NOT corroborated -> no merge
 eq('corrob two different people',
   id.emailMatchCorroborated({ lastName: 'Cohen', phone: '2125551111', dob: '1980-01-01' },
