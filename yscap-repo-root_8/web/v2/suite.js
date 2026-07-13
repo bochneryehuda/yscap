@@ -294,13 +294,13 @@ window.YS = (function () {
       const pfTable  = pf ? readTable(pf, true) : null;
 
       // ---- styles ----
-      const INK="0B1014", IVORY="F3EFE6", GOLD="C9A86A", LIGHT="EAF1F1", HERO="E1ECEC",
-            LINE="DCE1E2", GRAY="5B6770", DARK="1F2A30", DEEP="1F3A40";
+      const INK="141B22", IVORY="F4F0E7", GOLD="AE8746", LIGHT="EAF1F1", HERO="E1ECEC",
+            LINE="DCE1E2", GRAY="4B585C", DARK="1F2A30", DEEP="1F3A40";
       const A = function (h, v) { return { horizontal: h, vertical: v || "center", wrapText: true }; };
       const titleStyle   = { font:{name:"Georgia",sz:18,bold:true,color:{rgb:IVORY}}, fill:{fgColor:{rgb:INK}}, alignment:A("left") };
       const tagStyle     = { font:{name:"Georgia",sz:11,italic:true,color:{rgb:GOLD}}, fill:{fgColor:{rgb:INK}}, alignment:A("left") };
       const metaStyle    = { font:{name:"Arial",sz:9,color:{rgb:GRAY}}, alignment:A("left") };
-      const sectionStyle = { font:{name:"Arial",sz:11,bold:true,color:{rgb:DEEP}}, fill:{fgColor:{rgb:LIGHT}}, alignment:A("left"), border:{bottom:{style:"thin",color:{rgb:"4E777F"}}} };
+      const sectionStyle = { font:{name:"Arial",sz:11,bold:true,color:{rgb:DEEP}}, fill:{fgColor:{rgb:LIGHT}}, alignment:A("left"), border:{bottom:{style:"thin",color:{rgb:"2F7F86"}}} };
       const labelStyle   = { font:{name:"Arial",sz:10,color:{rgb:"333333"}}, alignment:A("left"), border:{bottom:{style:"hair",color:{rgb:LINE}}} };
       const valueStyle   = { font:{name:"Arial",sz:10,bold:true,color:{rgb:INK}}, alignment:A("right"), border:{bottom:{style:"hair",color:{rgb:LINE}}} };
       const noteStyle    = { font:{name:"Arial",sz:9,italic:true,color:{rgb:GRAY}}, alignment:A("left"), border:{bottom:{style:"hair",color:{rgb:LINE}}} };
@@ -311,7 +311,7 @@ window.YS = (function () {
       const thStyleL     = { font:{name:"Arial",sz:9,bold:true,color:{rgb:IVORY}}, fill:{fgColor:{rgb:DARK}}, alignment:A("left") };
       const tdStyle      = { font:{name:"Arial",sz:9,color:{rgb:"333333"}}, alignment:A("right"), border:{bottom:{style:"hair",color:{rgb:LINE}}} };
       const tdStyleL     = { font:{name:"Arial",sz:9,color:{rgb:"333333"}}, alignment:A("left"), border:{bottom:{style:"hair",color:{rgb:LINE}}} };
-      const totStyle     = { font:{name:"Arial",sz:9,bold:true,color:{rgb:INK}}, alignment:A("right"), border:{top:{style:"thin",color:{rgb:"4E777F"}}} };
+      const totStyle     = { font:{name:"Arial",sz:9,bold:true,color:{rgb:INK}}, alignment:A("right"), border:{top:{style:"thin",color:{rgb:"2F7F86"}}} };
       const discStyle    = { font:{name:"Arial",sz:8,italic:true,color:{rgb:GRAY}}, alignment:A("left","top") };
       const footStyle    = { font:{name:"Arial",sz:9,bold:true,color:{rgb:DEEP}}, alignment:A("left") };
 
