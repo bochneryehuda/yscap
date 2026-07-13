@@ -2438,6 +2438,9 @@ router.post('/borrowers/:id/track-records', async (req, res) => {
     const l = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, req.params.id]);
     if (l.rows[0]) cols.llc_id = b.llcId;
   }
+  // Personal-name lines carry no entity — clear it in the upsert's update set
+  // too, so a retried create can't leave a stale llc_id on the conflicted row.
+  if (b.ownedPersonally) cols.llc_id = null;
   const names = Object.keys(cols);
   const vals = Object.values(cols);
   // Idempotent create: a stable clientRowId per line collapses a repeated POST
@@ -2892,7 +2895,8 @@ router.post('/track-records/:id/request-doc', async (req, res) => {
       appId, entityKind: 'track_record', entityId: req.params.id, entityName: name,
       reason: ask, actorId: req.actor.id, requestKind: 'doc_request',
     });
-    await db.query(`UPDATE track_records SET docs_status='requested', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding')`, [req.params.id]);
+    // A fresh ask reopens the line's doc state (an open 'issue' stays issue).
+    await db.query(`UPDATE track_records SET docs_status='requested', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','received','satisfied')`, [req.params.id]);
     await audit(req, 'request_track_record_doc', 'track_record', req.params.id, { applicationId: appId, label: ask.slice(0, 500) });
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
@@ -3759,6 +3763,7 @@ router.post('/applications/:id/documents', async (req, res) => {
       `UPDATE documents SET is_current=false,
           review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
         WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
+          AND COALESCE(doc_kind,'') <> 'track_record_doc'
           AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
           AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
       [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);

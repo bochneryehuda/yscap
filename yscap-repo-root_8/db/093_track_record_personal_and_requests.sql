@@ -15,21 +15,25 @@
 ALTER TABLE track_records
   ADD COLUMN IF NOT EXISTS owned_personally boolean NOT NULL DEFAULT false;
 
+-- ON DELETE SET NULL, NOT CASCADE: the condition is a STAFF ask on a loan
+-- file — a borrower deleting the (unverified) line item must never delete the
+-- condition out from under the file; it just loses the line-item tag.
 ALTER TABLE checklist_items
-  ADD COLUMN IF NOT EXISTS track_record_id uuid REFERENCES track_records(id) ON DELETE CASCADE;
+  ADD COLUMN IF NOT EXISTS track_record_id uuid REFERENCES track_records(id) ON DELETE SET NULL;
 
 CREATE INDEX IF NOT EXISTS idx_checklist_items_track_record
   ON checklist_items(track_record_id) WHERE track_record_id IS NOT NULL;
 
 -- Backfill: raised-against-track-record conditions link to their line item.
--- raised_entity = {kind:'track_record', id, name} (db/075). Guarded so a
--- deleted line item can't break the cast/FK.
+-- raised_entity = {kind:'track_record', id, name} (db/075). The join compares
+-- AS TEXT (t.id::text) so a malformed stored id can never abort the boot
+-- migration on a uuid cast.
 UPDATE checklist_items ci
-   SET track_record_id = (ci.raised_entity->>'id')::uuid
+   SET track_record_id = t.id
+  FROM track_records t
  WHERE ci.track_record_id IS NULL
    AND ci.raised_entity->>'kind' = 'track_record'
-   AND (ci.raised_entity->>'id') ~ '^[0-9a-fA-F-]{36}$'
-   AND EXISTS (SELECT 1 FROM track_records t WHERE t.id = (ci.raised_entity->>'id')::uuid);
+   AND t.id::text = ci.raised_entity->>'id';
 
 -- Backfill: documents uploaded to a line-item condition inherit the link.
 UPDATE documents d

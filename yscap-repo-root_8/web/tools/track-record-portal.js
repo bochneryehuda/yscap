@@ -497,7 +497,7 @@
       '<button type="button" class="tr-doc-add" title="Closing statement, deed, lease… — or drag files onto this card">+ Add document</button>' +
       '<span style="font-size:.72rem;color:var(--muted-2)">or drag &amp; drop onto the card</span></div>';
     reqs.forEach(function (rq) {
-      html += '<div class="tr-doc-req">⚠ Requested by your loan team: ' + escA(rq.label || "a document") + '</div>';
+      html += '<div class="tr-doc-req">⚠ ' + (staffMode ? "Requested from the borrower: " : "Requested by your loan team: ") + escA(rq.label || "a document") + '</div>';
     });
     if (docs.length) {
       html += '<div class="tr-doc-chips">' + docs.map(function (d) {

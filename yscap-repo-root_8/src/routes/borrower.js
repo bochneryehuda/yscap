@@ -1776,7 +1776,10 @@ router.post('/documents', async (req, res) => {
     // A re-upload supersedes the borrower's prior versions so a rejected/old
     // document never stays part of the file. With a slot (or an explicit
     // replaceDocumentId), only THAT slot's versions are superseded — the
-    // condition's other documents coexist.
+    // condition's other documents coexist. Documents dropped STRAIGHT on a
+    // track-record card (doc_kind='track_record_doc') attach to the same
+    // request condition but are line-item evidence — a condition-row upload
+    // must never supersede them off the card.
     if (b.replaceDocumentId) {
       await db.query(
         `UPDATE documents SET is_current=false,
@@ -1788,6 +1791,7 @@ router.post('/documents', async (req, res) => {
       `UPDATE documents SET is_current=false,
           review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
         WHERE checklist_item_id=$1 AND borrower_id=$2 AND id<>$3 AND is_current=true
+          AND COALESCE(doc_kind,'') <> 'track_record_doc'
           AND ($4::text IS NOT NULL OR $5::uuid IS NULL)
           AND ($4::text IS NULL OR slot_label IS NOT DISTINCT FROM $4)`,
       [b.checklistItemId, me(req), r.rows[0].id, slot, b.replaceDocumentId || null]);
