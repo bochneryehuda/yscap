@@ -50,8 +50,8 @@ export default function Verify() {
 
   if (phase === 'ok')
     return (
-      <AuthShell title="Email confirmed" subtitle="Your borrower portal access is active.">
-        <div className="notice ok">You're all set. You can now sign in to YS Capital Group.</div>
+      <AuthShell title="Email confirmed" subtitle="Your PILOT access is active.">
+        <div className="notice ok">You're all set. You can now sign in to PILOT.</div>
         <div className="row" style={{ marginTop: 16 }}>
           <button className="btn primary" onClick={() => nav('/login')}>Continue to sign in</button>
         </div>

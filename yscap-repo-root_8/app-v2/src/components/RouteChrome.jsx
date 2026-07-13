@@ -35,7 +35,7 @@ export default function RouteChrome() {
   useEffect(() => {
     window.scrollTo(0, 0);
     const hit = TITLES.find(([re]) => re.test(pathname));
-    document.title = hit ? `${hit[1]} — YS Capital Group` : 'YS Capital Group — Portal';
+    document.title = hit ? `${hit[1]} — PILOT` : 'PILOT by YS Capital';
   }, [pathname]);
   return null;
 }

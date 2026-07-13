@@ -690,7 +690,7 @@ export default function Apply() {
                   </div>
                 )}
                 <p className="muted small" style={{ marginBottom: 12 }}>
-                  We'll email them an invitation to the portal to join this loan — they can add their own
+                  We'll email them an invitation to join this loan in PILOT — they can add their own
                   personal information and upload their documents themselves.
                 </p>
                 <div className="grid cols-2">
@@ -701,7 +701,7 @@ export default function Apply() {
                 </div>
                 <div className="grid cols-2">
                   <div className="field"><label>Email</label>
-                    <input className="input" autoComplete="off" value={c.email || ''} onChange={e => setCo('email', e.target.value)} placeholder="They'll receive a portal invitation" /></div>
+                    <input className="input" autoComplete="off" value={c.email || ''} onChange={e => setCo('email', e.target.value)} placeholder="They'll receive a PILOT invitation" /></div>
                   <div className="field"><label>Phone</label>
                     <PhoneInput value={c.phone || ''} onChange={v => setCo('phone', v)} /></div>
                 </div>

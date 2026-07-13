@@ -1647,7 +1647,7 @@ export default function StaffApplication() {
     try {
       const r = await api.staffInviteBorrower(id);
       flash(r.hasAccount
-        ? 'That borrower already has portal access — a sign-in link was emailed to them.'
+        ? 'That borrower already has PILOT access — a sign-in link was emailed to them.'
         : 'Invitation emailed. When the borrower sets up access they will see this file immediately.');
     } catch (e) { setErr(e.message || 'Could not send the invite.'); }
     finally { setInviteBusy(false); }
@@ -2005,7 +2005,7 @@ export default function StaffApplication() {
         <button className="btn ghost" onClick={() => setChatOpen(true)}>💬 Message</button>
         <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says">🔔 Remind</button>
         <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
-          title="Email the borrower an invite to join this file in the portal">
+          title="Email the borrower an invite to join this file in PILOT">
           {inviteBusy ? 'Sending…' : 'Invite borrower'}
         </button>
       </div>

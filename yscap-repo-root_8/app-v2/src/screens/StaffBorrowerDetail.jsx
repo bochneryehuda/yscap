@@ -88,7 +88,7 @@ function Header({ b, name, onChanged }) {
   async function act(kind) {
     setBusy(kind); setErr('');
     try {
-      if (kind === 'invite') { await api.staffBorrowerInvite(b.id); flash(`Portal invite sent to ${b.email}.`); onChanged(); }
+      if (kind === 'invite') { await api.staffBorrowerInvite(b.id); flash(`PILOT invite sent to ${b.email}.`); onChanged(); }
       else if (kind === 'reset') { await api.staffBorrowerResetPassword(b.id); flash(`Reset link emailed to ${b.email}.`); }
       else if (kind === 'ssn') { const r = await api.staffBorrowerSsn(b.id); setSsn(r.ssn); }
       else if (kind === 'photo') { const { blob, filename } = await api.staffDownloadDoc(b.photo_id_document_id); saveBlob(blob, filename || 'government-id'); }
@@ -115,8 +115,8 @@ function Header({ b, name, onChanged }) {
             {b.primary_officer_name ? ` · Officer: ${b.primary_officer_name}` : ''}
           </div>
           <div className="small" style={{ marginTop: 6 }}>
-            {b.has_account === false ? <span className="pill">No portal account</span>
-              : <span className="pill ok">Portal active{b.last_login_at ? ` · ${ago(b.last_login_at)}` : ''}</span>}
+            {b.has_account === false ? <span className="pill">No PILOT account</span>
+              : <span className="pill ok">PILOT active{b.last_login_at ? ` · ${ago(b.last_login_at)}` : ''}</span>}
             {b.fico ? <span className="pill" style={{ marginLeft: 6 }}>FICO {b.fico}</span> : null}
             {b.has_ssn ? <span className="pill" style={{ marginLeft: 6 }}>SSN on file</span> : null}
           </div>
@@ -124,7 +124,7 @@ function Header({ b, name, onChanged }) {
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {b.has_account
             ? <button className="btn ghost small" disabled={busy === 'reset' || !b.email} onClick={() => act('reset')}>Reset password</button>
-            : <button className="btn primary small" disabled={busy === 'invite' || !b.email} onClick={() => act('invite')}>Invite to portal</button>}
+            : <button className="btn primary small" disabled={busy === 'invite' || !b.email} onClick={() => act('invite')}>Invite to PILOT</button>}
           <button className="btn ghost small" onClick={() => setPw(pw == null ? '' : null)}>{pw == null ? 'Set password' : 'Cancel'}</button>
           <button className="btn ghost small" disabled={busy === 'ssn'} onClick={() => act('ssn')} title="Revealing the SSN is audited">
             {ssn ? `SSN ${ssn}` : 'Reveal SSN'}</button>

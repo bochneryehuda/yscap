@@ -94,7 +94,7 @@ export default function StaffClickup() {
 
   async function reSync(dir) {
     const id = appId.trim();
-    if (!id) { setErr('Enter a portal file (application) ID first.'); return; }
+    if (!id) { setErr('Enter a PILOT file (application) ID first.'); return; }
     setBusy(dir); setErr('');
     try {
       const r = dir === 'repush' ? await api.clickupRepush(id) : await api.clickupRepull(id);
@@ -111,7 +111,7 @@ export default function StaffClickup() {
       <div className="row" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
         <div>
           <h1>ClickUp Control Center</h1>
-          <p className="muted small">Validate and operate the ClickUp ⇄ portal sync. Start with a dry-run — it reads only, writes nothing.</p>
+          <p className="muted small">Validate and operate the ClickUp ⇄ PILOT sync. Start with a dry-run — it reads only, writes nothing.</p>
         </div>
         <div className="spacer" />
         <button className="btn ghost small" onClick={() => { loadHealth(); loadActivity(); loadReview(); flash('Refreshed'); }}>Refresh</button>
@@ -242,7 +242,7 @@ export default function StaffClickup() {
         <h3 style={{ marginTop: 0 }}>Re-sync a single file</h3>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div className="field" style={{ margin: 0 }}>
-            <label>Portal file (application) ID</label>
+            <label>PILOT file (application) ID</label>
             <input className="input" style={{ minWidth: 320 }} value={appId} onChange={e => setAppId(e.target.value)} placeholder="application UUID" />
           </div>
           <button className="btn" disabled={!!busy} onClick={() => reSync('repush')}>{busy === 'repush' ? 'Pushing…' : 'Push → ClickUp'}</button>

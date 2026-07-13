@@ -38,7 +38,7 @@ export default function StaffBorrowers() {
 
   async function invite(b) {
     setBusy('invite:' + b.id);
-    try { await api.staffBorrowerInvite(b.id); flash(`Portal invite sent to ${b.email}.`); await load(); }
+    try { await api.staffBorrowerInvite(b.id); flash(`PILOT invite sent to ${b.email}.`); await load(); }
     catch (e) { fail(e.message || 'Invite failed'); }
     finally { setBusy(''); }
   }
@@ -103,13 +103,13 @@ export default function StaffBorrowers() {
           <option value="name">Name (A–Z)</option>
           <option value="officer">Loan officer</option>
           <option value="files"># of files</option>
-          <option value="portal">Portal status</option>
+          <option value="portal">PILOT status</option>
           <option value="created">Newest added</option>
         </select>
         <input className="input" placeholder="Search name, email, phone, officer…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 280, marginLeft: 8 }} />
       </div>
       <p className="muted small" style={{ marginTop: 0 }}>
-        Your borrowers — open a borrower to see their full CRM profile, or invite them to the portal, email a password reset, or set a password. Last login shows their most recent portal sign-in.
+        Your borrowers — open a borrower to see their full CRM profile, or invite them to PILOT, email a password reset, or set a password. Last login shows their most recent PILOT sign-in.
       </p>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
@@ -125,7 +125,7 @@ export default function StaffBorrowers() {
                 <th style={{ padding: '10px 12px' }}>Contact</th>
                 <th style={{ padding: '10px 12px' }}>Loan officer</th>
                 <th style={{ padding: '10px 12px' }}>Files</th>
-                <th style={{ padding: '10px 12px' }}>Portal</th>
+                <th style={{ padding: '10px 12px' }}>PILOT</th>
                 <th style={{ padding: '10px 12px' }}>Last login</th>
                 <th style={{ padding: '10px 12px', textAlign: 'right' }}>Actions</th>
               </tr>

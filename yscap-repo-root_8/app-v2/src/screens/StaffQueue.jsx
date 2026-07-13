@@ -427,7 +427,7 @@ export default function StaffQueue() {
             Lead Capture{leads ? ` (${leads.length})` : ''}
           </button>
           <button className="btn ghost" onClick={syncMine} disabled={syncing}
-            title="Pull your files from your ClickUp folder into the portal">
+            title="Pull your files from your ClickUp folder into PILOT">
             {syncing ? 'Syncing…' : '⟳ Sync my files from ClickUp'}
           </button>
           <button className="btn primary" onClick={() => nav('/internal/new')} title="Open a new loan file — the borrower doesn't need an account">
