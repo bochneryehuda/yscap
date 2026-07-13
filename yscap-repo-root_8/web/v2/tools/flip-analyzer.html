@@ -15,7 +15,7 @@
 </script>
 <script src="../brand.js?v=n1"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>YS Flip Analyzer — Fix &amp; Flip Calculator</title>
+<title>YS Flip Analyzer &mdash; Fix &amp; Flip Calculator</title>
 <meta name="description" content="All-in cost, net profit, ROI, return on cash, and bank LTC / Loan-to-ARV for a fix and flip project.">
 <link rel="icon" type="image/png" sizes="32x32" href="../assets/images/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="../assets/images/favicon-16.png">
@@ -24,136 +24,364 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../suite.css?v=pilot1">
+<style>
+/* =====================================================================
+   Flip Analyzer — editorial reskin to the approved blueprint.
+   All design tokens are namespaced (--fa-*) and every rule is scoped
+   under #fa so this page's palette never collides with suite.css
+   (whose --ink/--ivory are inverted) or the float-actions/theme chrome.
+   ===================================================================== */
+#fa{
+  --fa-paper:#F4F0E7; --fa-card:#FBF9F3; --fa-panel:#FFFFFF;
+  --fa-ink:#141B22; --fa-ink-1:#1D2830; --fa-ink-soft:#4B585C;
+  --fa-gold:#AE8746; --fa-gold-soft:#C9A86A;
+  --fa-teal:#2F7F86; --fa-teal-deep:#1F5A60;
+  --fa-line:rgba(20,27,34,.16); --fa-line-soft:rgba(20,27,34,.08);
+  --fa-ivory:#F4F0E7;
+  --fa-ok:#2E7A5E; --fa-ok-bg:#E6F0EA;
+  --fa-info:#2F7F86; --fa-info-bg:#E4EFF0;
+  --fa-warn:#8A5E12; --fa-warn-bg:#F6EEDD;
+  --fa-bad:#B4522A; --fa-bad-bg:#F6E7DE;
+  --fa-serif:'Fraunces',Georgia,'Times New Roman',serif;
+  --fa-sans:'Hanken Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --fa-r:6px; --fa-ease:cubic-bezier(.22,.61,.36,1);
+  background:var(--fa-paper); color:var(--fa-ink);
+  font-family:var(--fa-sans); line-height:1.6;
+}
+#fa .num{font-variant-numeric:tabular-nums;}
+#fa .wrap{max-width:1240px;margin:0 auto;padding:0 40px;}
+#fa .eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:700;color:var(--fa-gold);margin:0;}
+#fa .chip{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;letter-spacing:.02em;background:var(--fa-card);border:1px solid var(--fa-line);border-radius:100px;padding:7px 14px;color:var(--fa-ink-1);}
+
+/* buttons */
+#fa .btn{display:inline-flex;align-items:center;justify-content:center;gap:.5em;font-family:var(--fa-sans);font-weight:600;font-size:15px;line-height:1;padding:13px 22px;border-radius:var(--fa-r);border:1px solid transparent;cursor:pointer;text-decoration:none;transition:transform .18s var(--fa-ease),background .2s,color .2s,border-color .2s,box-shadow .2s;}
+#fa .btn:hover{transform:translateY(-1px);}
+#fa .btn:active{transform:translateY(0);}
+#fa .btn-gold{background:var(--fa-gold);color:#fff;box-shadow:0 8px 22px -12px rgba(174,135,70,.9);}
+#fa .btn-gold:hover{background:#96702f;box-shadow:0 12px 26px -12px rgba(174,135,70,.95);}
+#fa .btn-ghost{background:transparent;color:var(--fa-ink);border-color:var(--fa-line);}
+#fa .btn-ghost:hover{border-color:var(--fa-ink);background:rgba(20,27,34,.03);}
+#fa .btn-sm{padding:10px 15px;font-size:13.5px;}
+
+/* tool bar */
+#fa .tool-bar{position:sticky;top:0;z-index:50;background:rgba(251,249,243,.92);backdrop-filter:blur(10px) saturate(120%);-webkit-backdrop-filter:blur(10px) saturate(120%);border-bottom:1px solid var(--fa-line-soft);}
+#fa .tool-bar .inner{display:flex;align-items:center;justify-content:space-between;height:60px;gap:24px;}
+#fa .crumb{display:flex;align-items:center;gap:12px;min-width:0;}
+#fa .crumb .logo-nav{height:34px;width:auto;}
+#fa .crumb .cdiv{width:1px;height:24px;background:var(--fa-line);flex:none;}
+#fa .crumb .trail{font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--fa-ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+#fa .crumb .trail a{color:var(--fa-ink-soft);}
+#fa .crumb .trail a:hover{color:var(--fa-teal);}
+#fa .crumb .trail .sep{opacity:.4;padding:0 .5em;}
+#fa .crumb .trail .here{color:var(--fa-ink);}
+#fa .tool-actions{display:flex;align-items:center;gap:10px;flex:none;}
+
+/* page head */
+#fa .an-head{padding:44px 0 26px;}
+#fa .an-head .eyebrow{margin-bottom:14px;}
+#fa .an-head .eyebrow .idx{color:var(--fa-ink);opacity:.35;margin:0 .5em;font-weight:600;}
+#fa .an-head h1{font-family:var(--fa-serif);font-weight:500;font-size:clamp(34px,4.4vw,52px);line-height:1.04;letter-spacing:-.015em;color:var(--fa-ink);margin:.1em 0 .2em;}
+#fa .an-head h1 em{font-style:italic;color:var(--fa-teal);}
+#fa .an-head .tag{font-family:var(--fa-serif);font-style:italic;font-size:19px;line-height:1.45;color:var(--fa-ink-soft);max-width:56ch;}
+#fa .an-head .chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px;}
+
+/* working grid */
+#fa .analyzer{display:grid;grid-template-columns:1.02fr .98fr;gap:40px;align-items:start;padding-bottom:24px;}
+#fa .form-col{display:flex;flex-direction:column;gap:20px;}
+#fa .out-col{position:sticky;top:78px;display:flex;flex-direction:column;gap:18px;}
+
+/* panels */
+#fa .panel{background:var(--fa-panel);border:1px solid var(--fa-line);border-radius:var(--fa-r);transition:border-color .25s var(--fa-ease),box-shadow .25s var(--fa-ease),transform .25s var(--fa-ease);}
+#fa .panel:hover{border-color:rgba(20,27,34,.22);box-shadow:0 18px 40px -30px rgba(20,27,34,.55);}
+#fa .panel-h{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:17px 22px;border-bottom:1px solid var(--fa-line-soft);}
+#fa .panel-h h3{font-family:var(--fa-serif);font-weight:500;font-size:19px;letter-spacing:-.01em;color:var(--fa-ink);margin:0;}
+#fa .panel-h .eyebrow{font-weight:600;}
+#fa .panel-b{padding:20px 22px;}
+#fa .hint{font-size:11.5px;font-weight:500;line-height:1.5;color:var(--fa-ink-soft);opacity:.85;margin:2px 0 0;}
+
+/* fields */
+#fa .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;}
+#fa .form-grid .span2{grid-column:1 / -1;}
+#fa .field{display:flex;flex-direction:column;gap:7px;margin-bottom:16px;}
+#fa .field label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--fa-ink-soft);}
+#fa .field label em{font-style:normal;text-transform:none;letter-spacing:0;font-weight:500;opacity:.7;}
+#fa .input{display:flex;align-items:center;background:var(--fa-panel);border:1px solid var(--fa-line);border-radius:var(--fa-r);padding:0 12px;transition:border-color .18s var(--fa-ease),box-shadow .18s var(--fa-ease);}
+#fa .input:focus-within{border-color:var(--fa-teal);box-shadow:0 0 0 3px rgba(47,127,134,.14);}
+#fa .input .adorn{flex:none;font-size:14px;font-weight:600;color:var(--fa-ink-soft);}
+#fa .input input{flex:1;min-width:0;border:0;outline:none;background:transparent;font-family:var(--fa-sans);font-size:15px;color:var(--fa-ink);padding:12px 8px;font-variant-numeric:tabular-nums;}
+#fa .input input::placeholder{color:var(--fa-ink-soft);opacity:.5;}
+#fa .input input[type=number]::-webkit-outer-spin-button,#fa .input input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+#fa .input input[type=number]{-moz-appearance:textfield;}
+
+/* result hero card */
+#fa .result{background:var(--fa-card);border:1px solid var(--fa-line);border-radius:var(--fa-r);overflow:hidden;box-shadow:0 24px 60px -40px rgba(20,27,34,.55);}
+#fa .result-top{display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--fa-line-soft);}
+#fa .result-top .t{font-size:11px;letter-spacing:.2em;text-transform:uppercase;font-weight:700;color:var(--fa-ink-soft);}
+#fa .result-top .est{font-size:11px;font-weight:700;color:var(--fa-teal);letter-spacing:.12em;text-transform:uppercase;display:flex;align-items:center;gap:6px;}
+#fa .result-top .est::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--fa-teal);}
+#fa .result-hero{padding:26px 22px 22px;display:flex;align-items:flex-end;justify-content:space-between;gap:20px;}
+#fa .result-hero .lab{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--fa-ink-soft);font-weight:600;}
+#fa .result-hero .fig{font-family:var(--fa-serif);font-weight:500;font-variant-numeric:tabular-nums;font-size:clamp(42px,6vw,58px);letter-spacing:-.02em;line-height:1;color:var(--fa-gold);margin-top:8px;}
+#fa .result-hero .fig.neg{color:var(--fa-bad);}
+#fa .result-hero .per{font-size:14px;color:var(--fa-ink-soft);font-weight:500;margin-top:10px;}
+#fa .verdict-col{display:flex;flex-direction:column;align-items:flex-end;gap:10px;text-align:right;}
+#fa .verdict{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;letter-spacing:.02em;padding:6px 13px;border-radius:100px;border:1px solid transparent;white-space:nowrap;}
+#fa .verdict::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;}
+#fa .verdict.good{color:var(--fa-ok);background:var(--fa-ok-bg);}
+#fa .verdict.ok{color:var(--fa-info);background:var(--fa-info-bg);}
+#fa .verdict.warn{color:var(--fa-warn);background:var(--fa-warn-bg);}
+#fa .verdict.bad{color:var(--fa-bad);background:var(--fa-bad-bg);}
+#fa .result-mini{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--fa-line-soft);}
+#fa .result-mini .m{padding:15px 22px;border-right:1px solid var(--fa-line-soft);}
+#fa .result-mini .m:last-child{border-right:0;}
+#fa .result-mini .mk{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--fa-ink-soft);font-weight:600;}
+#fa .result-mini .mv{font-family:var(--fa-serif);font-size:22px;font-weight:500;font-variant-numeric:tabular-nums;margin-top:5px;color:var(--fa-ink);}
+#fa .an-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:16px 22px 18px;border-top:1px solid var(--fa-line-soft);}
+#fa .an-actions .btn{width:100%;}
+
+/* KPI tiles */
+#fa .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--fa-line-soft);border:1px solid var(--fa-line-soft);border-radius:var(--fa-r);overflow:hidden;}
+#fa .kpi{background:var(--fa-panel);padding:18px 20px;transition:background .2s var(--fa-ease);}
+#fa .kpi:hover{background:var(--fa-card);}
+#fa .kpi .v{font-family:var(--fa-serif);font-size:26px;font-weight:500;letter-spacing:-.02em;line-height:1;font-variant-numeric:tabular-nums;color:var(--fa-ink);}
+#fa .kpi .v .u{color:var(--fa-gold);font-size:.62em;}
+#fa .kpi .v.pos{color:var(--fa-ok);}
+#fa .kpi .v.neg{color:var(--fa-bad);}
+#fa .kpi .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--fa-ink-soft);margin-top:9px;font-weight:600;}
+#fa .kpi .d{font-size:11.5px;color:var(--fa-ink-soft);margin-top:6px;}
+#fa .kpi .est-flag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--fa-ink-soft);opacity:.55;font-weight:700;margin-top:7px;}
+
+/* disclosure */
+#fa .disc{font-size:11.5px;line-height:1.55;color:var(--fa-ink-soft);max-width:70ch;margin-top:2px;}
+#fa .disc b{color:var(--fa-ink-1);font-weight:600;}
+
+/* footer (dark band — all text light) */
+#fa .site-foot{background:var(--fa-ink);color:var(--fa-ivory);margin-top:48px;}
+#fa .site-foot .foot-legal{display:flex;justify-content:space-between;align-items:flex-start;gap:30px;flex-wrap:wrap;border-top:1px solid rgba(255,255,255,.12);padding:28px 0 34px;}
+#fa .site-foot .foot-legal p{color:rgba(244,240,231,.58);font-size:12px;line-height:1.7;max-width:74ch;margin:0;}
+#fa .site-foot .foot-badges{display:flex;gap:12px;align-items:center;flex-wrap:wrap;flex:none;}
+#fa .site-foot .foot-badges .chip{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.18);color:rgba(244,240,231,.82);}
+
+/* animated underline utility */
+#fa .link-anim{position:relative;}
+#fa .link-anim::after{content:"";position:absolute;left:0;bottom:-2px;height:1px;width:100%;background:var(--fa-gold);transform:scaleX(0);transform-origin:left;transition:transform .28s var(--fa-ease);}
+#fa .link-anim:hover::after{transform:scaleX(1);}
+
+/* --- ADVANCED POLISH: one-way reveal below the fold only --- */
+#fa .reveal{opacity:1;}
+@media (prefers-reduced-motion:no-preference){
+  @supports (animation-timeline:view()){
+    #fa .reveal{animation:faReveal linear both;animation-timeline:view();animation-range:entry 0% entry 100%;}
+  }
+  #fa .result-top .est::before{animation:faPulse 2.4s var(--fa-ease) infinite;}
+}
+@keyframes faReveal{from{opacity:0;transform:translateY(18px);}to{opacity:1;transform:none;}}
+@keyframes faPulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.35;transform:scale(.82);}}
+
+/* honor reduced-motion everywhere in this subtree */
+@media (prefers-reduced-motion:reduce){
+  #fa *,#fa *::before,#fa *::after{animation:none !important;transition:none !important;}
+  #fa .reveal{opacity:1 !important;transform:none !important;}
+}
+
+/* responsive */
+@media (max-width:980px){
+  #fa .analyzer{grid-template-columns:1fr;gap:32px;}
+  #fa .out-col{position:static;top:auto;}
+  #fa .tool-bar .inner{height:auto;padding:12px 0;flex-wrap:wrap;gap:12px;}
+}
+@media (max-width:560px){
+  #fa .wrap{padding:0 18px;}
+  #fa .an-head{padding:30px 0 20px;}
+  #fa .form-grid{grid-template-columns:1fr;}
+  #fa .an-actions{grid-template-columns:1fr;}
+  #fa .result-hero{flex-direction:column;align-items:flex-start;}
+  #fa .verdict-col{align-items:flex-start;text-align:left;}
+  #fa .tool-actions{width:100%;gap:8px;flex-wrap:wrap;}
+  #fa .tool-actions .btn{flex:1;}
+  #fa .input input{font-size:16px;}
+  #fa .btn{min-height:44px;}
+  #fa .btn-sm{min-height:44px;}
+}
+</style>
 </head>
 <body>
+<div id="fa" class="fa-page">
 
-<header class="topbar">
-    <div class="topbar-inner">
-        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
-        <span class="topbar-sep"></span>
-        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Flip Analyzer</span></div>
-        <div class="topbar-actions">
-            <a class="back" href="../suite.html">← All tools</a>
-            <button class="btn btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
-            <button class="btn btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
-            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
-        </div>
+<header class="tool-bar">
+  <div class="wrap inner">
+    <div class="crumb">
+      <a href="../index.html"><img class="logo-nav" src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+      <span class="cdiv"></span>
+      <span class="trail"><a class="link-anim" href="../suite.html">Investor Suite</a><span class="sep">/</span><span class="here">Flip Analyzer</span></span>
     </div>
+    <div class="tool-actions topbar-actions">
+      <button class="btn btn-ghost btn-sm" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link</button>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="YS.exportXLSX(this)">Export</button>
+      <a class="btn btn-gold btn-sm" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
+    </div>
+  </div>
 </header>
 
 <main>
-<section class="tool-hero">
-    <div class="suite-eyebrow">Fix &amp; Flip</div>
-    <h1>YS Flip Analyzer<span class="tm">™</span></h1>
-    <p class="tool-tagline">The tool serious investors say YES to.</p>
-    <p class="tool-intro">Enter your purchase, rehab budget, holding details, risk costs and exit. We total your true all-in cost and project net profit, ROI, return on cash and the leverage metrics lenders care about.</p>
-    <span class="fill-hint"><span class="swatch"></span> Fill the input fields — every result updates automatically.</span>
-</section>
+  <div class="wrap an-head tool-hero">
+    <p class="eyebrow">Investor Suite <span class="idx">/</span> Flip Analyzer</p>
+    <h1>Fix &amp; Flip <em>Analyzer</em></h1>
+    <p class="tool-tagline tag">Model an entire flip in real time &mdash; all-in project cost, net profit, ROI and the leverage lenders underwrite to, from your own numbers.</p>
+    <div class="chips">
+      <span class="chip">Fix &amp; Flip</span>
+      <span class="chip">No credit pull</span>
+      <span class="chip">Estimates only</span>
+    </div>
+  </div>
 
-<div class="tool-grid">
-    <div class="inputs-col">
-        <div class="panel">
-            <h2><span class="panel-num">1</span> Purchase costs</h2>
-            <div class="field-rows two-col">
-                <div class="field"><label for="price">Purchase price</label><div class="input"><span class="adorn">$</span><input id="price" type="number" value="300000"></div></div>
-                <div class="field"><label for="wholesale">Wholesale fee</label><div class="input"><span class="adorn">$</span><input id="wholesale" type="number" value="0"></div></div>
-                <div class="field"><label for="broker">Broker fee</label><div class="input"><span class="adorn">$</span><input id="broker" type="number" value="0"></div></div>
-                <div class="field"><label for="closing">Closing costs</label><div class="input"><span class="adorn">$</span><input id="closing" type="number" value="9000"></div></div>
-                <div class="field"><label for="inspect">Inspection / appraisal</label><div class="input"><span class="adorn">$</span><input id="inspect" type="number" value="1000"></div></div>
-                <div class="field"><label for="mortgageFees">Mortgage / lender fees</label><div class="input"><span class="adorn">$</span><input id="mortgageFees" type="number" value="6000"></div></div>
-            </div>
-        </div>
+  <div class="wrap analyzer">
+    <!-- ============ LEFT: INPUTS ============ -->
+    <div class="form-col inputs-col">
 
-        <div class="panel">
-            <h2><span class="panel-num">2</span> Renovation budget</h2>
-            <p class="panel-note">Leave the override blank to auto-sum the line items below.</p>
-            <div class="field-rows two-col">
-                <div class="field"><label for="interior">Interior</label><div class="input"><span class="adorn">$</span><input id="interior" type="number" value="25000"></div></div>
-                <div class="field"><label for="exterior">Exterior</label><div class="input"><span class="adorn">$</span><input id="exterior" type="number" value="15000"></div></div>
-                <div class="field"><label for="systems">Systems (HVAC/plumb/elec)</label><div class="input"><span class="adorn">$</span><input id="systems" type="number" value="10000"></div></div>
-                <div class="field"><label for="permits">Permits &amp; approvals</label><div class="input"><span class="adorn">$</span><input id="permits" type="number" value="2000"></div></div>
-                <div class="field"><label for="architect">Architect / engineer</label><div class="input"><span class="adorn">$</span><input id="architect" type="number" value="0"></div></div>
-                <div class="field"><label for="demo">Demolition / trash</label><div class="input"><span class="adorn">$</span><input id="demo" type="number" value="3000"></div></div>
-                <div class="field"><label for="overage">Material overages</label><div class="input"><span class="adorn">$</span><input id="overage" type="number" value="3000"></div></div>
-                <div class="field"><label for="misc">Miscellaneous</label><div class="input"><span class="adorn">$</span><input id="misc" type="number" value="2000"></div></div>
-                <div class="field"><label for="contingency">Contingency reserve</label><div class="input"><span class="adorn">$</span><input id="contingency" type="number" value="5000"></div></div>
-                <div class="field"><label for="constrOverride">Override total <em>(optional)</em></label><div class="input"><span class="adorn">$</span><input id="constrOverride" type="number" placeholder="auto"></div></div>
-            </div>
+      <section class="panel">
+        <div class="panel-h"><h3>Purchase</h3><span class="eyebrow">Acquisition</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field"><label for="price">Purchase price</label><div class="input"><span class="adorn">$</span><input id="price" type="number" value="300000"></div></div>
+            <div class="field"><label for="wholesale">Wholesale fee</label><div class="input"><span class="adorn">$</span><input id="wholesale" type="number" value="0"></div></div>
+            <div class="field"><label for="broker">Broker fee</label><div class="input"><span class="adorn">$</span><input id="broker" type="number" value="0"></div></div>
+            <div class="field"><label for="closing">Closing costs</label><div class="input"><span class="adorn">$</span><input id="closing" type="number" value="9000"></div></div>
+            <div class="field"><label for="inspect">Inspection / appraisal</label><div class="input"><span class="adorn">$</span><input id="inspect" type="number" value="1000"></div></div>
+            <div class="field"><label for="mortgageFees">Mortgage / lender fees</label><div class="input"><span class="adorn">$</span><input id="mortgageFees" type="number" value="6000"></div></div>
+          </div>
         </div>
+      </section>
 
-        <div class="panel">
-            <h2><span class="panel-num">3</span> Financing &amp; holding</h2>
-            <p class="panel-note">Interest is modeled interest-only over the holding period.</p>
-            <div class="field-rows two-col">
-                <div class="field"><label for="loan">Loan amount</label><div class="input"><span class="adorn">$</span><input id="loan" type="number" value="280000"></div></div>
-                <div class="field"><label for="rate">Interest rate <em>(%)</em></label><div class="input"><input id="rate" type="number" value="10.5"><span class="adorn suffix">%</span></div></div>
-                <div class="field"><label for="months">Holding period <em>(months)</em></label><div class="input"><input id="months" type="number" value="6"></div></div>
-                <div class="field"><label for="hTax">Property taxes <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hTax" type="number" value="400"></div></div>
-                <div class="field"><label for="hIns">Insurance <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hIns" type="number" value="150"></div></div>
-                <div class="field"><label for="hUtil">Utilities <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hUtil" type="number" value="150"></div></div>
-                <div class="field"><label for="hMaint">Maintenance <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hMaint" type="number" value="100"></div></div>
-                <div class="field"><label for="hHoa">HOA <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hHoa" type="number" value="0"></div></div>
-            </div>
+      <section class="panel reveal">
+        <div class="panel-h"><h3>Renovation budget</h3><span class="eyebrow">Construction</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field"><label for="interior">Interior</label><div class="input"><span class="adorn">$</span><input id="interior" type="number" value="25000"></div></div>
+            <div class="field"><label for="exterior">Exterior</label><div class="input"><span class="adorn">$</span><input id="exterior" type="number" value="15000"></div></div>
+            <div class="field"><label for="systems">Systems (HVAC/plumb/elec)</label><div class="input"><span class="adorn">$</span><input id="systems" type="number" value="10000"></div></div>
+            <div class="field"><label for="permits">Permits &amp; approvals</label><div class="input"><span class="adorn">$</span><input id="permits" type="number" value="2000"></div></div>
+            <div class="field"><label for="architect">Architect / engineer</label><div class="input"><span class="adorn">$</span><input id="architect" type="number" value="0"></div></div>
+            <div class="field"><label for="demo">Demolition / trash</label><div class="input"><span class="adorn">$</span><input id="demo" type="number" value="3000"></div></div>
+            <div class="field"><label for="overage">Material overages</label><div class="input"><span class="adorn">$</span><input id="overage" type="number" value="3000"></div></div>
+            <div class="field"><label for="misc">Miscellaneous</label><div class="input"><span class="adorn">$</span><input id="misc" type="number" value="2000"></div></div>
+            <div class="field"><label for="contingency">Contingency reserve</label><div class="input"><span class="adorn">$</span><input id="contingency" type="number" value="5000"></div></div>
+            <div class="field"><label for="constrOverride">Override total <em>(optional)</em></label><div class="input"><span class="adorn">$</span><input id="constrOverride" type="number" placeholder="auto"></div></div>
+          </div>
+          <p class="hint">Leave the override blank to auto-sum the line items above.</p>
         </div>
+      </section>
 
-        <div class="panel">
-            <h2><span class="panel-num">4</span> Risk &amp; selling costs</h2>
-            <div class="field-rows two-col">
-                <div class="field"><label for="risk">Unexpected / risk costs <em>(total)</em></label><div class="input"><span class="adorn">$</span><input id="risk" type="number" value="3000"></div></div>
-                <div class="field"><label for="commission">Realtor commission <em>(% of ARV)</em></label><div class="input"><input id="commission" type="number" value="5"><span class="adorn suffix">%</span></div></div>
-                <div class="field"><label for="attorney">Attorney fees</label><div class="input"><span class="adorn">$</span><input id="attorney" type="number" value="1500"></div></div>
-                <div class="field"><label for="transfer">Transfer taxes</label><div class="input"><span class="adorn">$</span><input id="transfer" type="number" value="2000"></div></div>
-                <div class="field"><label for="staging">Staging</label><div class="input"><span class="adorn">$</span><input id="staging" type="number" value="1500"></div></div>
-                <div class="field"><label for="concessions">Seller concessions</label><div class="input"><span class="adorn">$</span><input id="concessions" type="number" value="0"></div></div>
-                <div class="field"><label for="arv">After-repair value (ARV)</label><div class="input"><span class="adorn">$</span><input id="arv" type="number" value="500000"></div></div>
-            </div>
+      <section class="panel reveal">
+        <div class="panel-h"><h3>Financing</h3><span class="eyebrow">Bridge loan</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field"><label for="loan">Loan amount</label><div class="input"><span class="adorn">$</span><input id="loan" type="number" value="280000"></div></div>
+            <div class="field"><label for="rate">Interest rate <em>(%)</em></label><div class="input"><input id="rate" type="number" value="10.5"><span class="adorn suffix">%</span></div></div>
+            <div class="field span2"><label for="months">Holding period <em>(months)</em></label><div class="input"><input id="months" type="number" value="6"></div></div>
+          </div>
+          <p class="hint">Interest is modeled interest-only over the holding period.</p>
         </div>
+      </section>
+
+      <section class="panel reveal">
+        <div class="panel-h"><h3>Holding</h3><span class="eyebrow">Monthly carry</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field"><label for="hTax">Property taxes <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hTax" type="number" value="400"></div></div>
+            <div class="field"><label for="hIns">Insurance <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hIns" type="number" value="150"></div></div>
+            <div class="field"><label for="hUtil">Utilities <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hUtil" type="number" value="150"></div></div>
+            <div class="field"><label for="hMaint">Maintenance <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hMaint" type="number" value="100"></div></div>
+            <div class="field span2"><label for="hHoa">HOA <em>(monthly)</em></label><div class="input"><span class="adorn">$</span><input id="hHoa" type="number" value="0"></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel reveal">
+        <div class="panel-h"><h3>Selling &amp; risk</h3><span class="eyebrow">Exit costs</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field span2"><label for="risk">Unexpected / risk costs <em>(total)</em></label><div class="input"><span class="adorn">$</span><input id="risk" type="number" value="3000"></div></div>
+            <div class="field"><label for="commission">Realtor commission <em>(% of ARV)</em></label><div class="input"><input id="commission" type="number" value="5"><span class="adorn suffix">%</span></div></div>
+            <div class="field"><label for="attorney">Attorney fees</label><div class="input"><span class="adorn">$</span><input id="attorney" type="number" value="1500"></div></div>
+            <div class="field"><label for="transfer">Transfer taxes</label><div class="input"><span class="adorn">$</span><input id="transfer" type="number" value="2000"></div></div>
+            <div class="field"><label for="staging">Staging</label><div class="input"><span class="adorn">$</span><input id="staging" type="number" value="1500"></div></div>
+            <div class="field span2"><label for="concessions">Seller concessions</label><div class="input"><span class="adorn">$</span><input id="concessions" type="number" value="0"></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel reveal">
+        <div class="panel-h"><h3>After-repair value</h3><span class="eyebrow">Exit</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field span2"><label for="arv">ARV &mdash; projected resale price</label><div class="input"><span class="adorn">$</span><input id="arv" type="number" value="500000"></div></div>
+          </div>
+          <p class="hint">Support ARV with comparable sales before you commit capital.</p>
+        </div>
+      </section>
+
     </div>
 
-    <div class="results-col">
+    <!-- ============ RIGHT: RESULTS (sticky) ============ -->
+    <div class="out-col results-col">
+      <aside class="result result-hero-wrap">
+        <div class="result-top">
+          <span class="t">Flip result &middot; Estimate</span>
+          <span class="est">Live</span>
+        </div>
         <div class="result-hero">
-            <div class="rh-label">Net profit</div>
-            <div class="rh-value" id="profit">$0</div>
-            <div class="rh-sub" id="roiLine">ROI 0% · annualized 0%</div>
-            <span class="verdict ok" id="profitVerdict">—</span>
+          <div>
+            <div class="lab rh-label">Est. net profit</div>
+            <div class="fig rh-value num" id="profit">$0</div>
+            <div class="per rh-sub" id="roiLine">ROI 0% &middot; annualized 0%</div>
+          </div>
+          <div class="verdict-col">
+            <span class="verdict ok" id="profitVerdict">&mdash;</span>
+          </div>
         </div>
+        <div class="result-mini">
+          <div class="m"><div class="mk">Total project cost</div><div class="mv num" id="totalCost">$0</div></div>
+          <div class="m"><div class="mk">Cash in deal</div><div class="mv num" id="cashIn">$0</div></div>
+        </div>
+        <div class="an-actions">
+          <button class="btn btn-ghost btn-sm" type="button" onclick="YS.shareLink(this)">Share link</button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="YS.exportXLSX(this)">Export</button>
+          <a class="btn btn-gold btn-sm" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
+        </div>
+      </aside>
 
-        <div class="result-grid">
-            <div class="result"><div class="r-label">Total project cost</div><div class="r-value" id="totalCost">$0</div><div class="r-hint">purchase + rehab + holding + risk</div></div>
-            <div class="result"><div class="r-label">Cash in deal</div><div class="r-value" id="cashIn">$0</div><div class="r-hint">cost − loan</div></div>
-            <div class="result"><div class="r-label">Sale proceeds</div><div class="r-value" id="proceeds">$0</div><div class="r-hint">ARV − selling costs</div></div>
-            <div class="result"><div class="r-label">Return on cash</div><div class="r-value" id="roc">0%</div><div class="r-hint" id="rocAnn">annualized 0%</div></div>
-            <div class="result"><div class="r-label">Total purchase costs</div><div class="r-value" id="totPurchase">$0</div></div>
-            <div class="result"><div class="r-label">Total renovation</div><div class="r-value" id="totConstr">$0</div></div>
-            <div class="result"><div class="r-label">Total holding costs</div><div class="r-value" id="totHold">$0</div><div class="r-hint" id="ioLine">interest-only $0/mo</div></div>
-            <div class="result"><div class="r-label">Total selling costs</div><div class="r-value" id="totSell">$0</div></div>
-            <div class="result"><div class="r-label">Bank LTC <em style="font-style:normal;color:var(--muted-2)">(price+rehab)</em></div><div class="r-value" id="bankLtc">0%</div></div>
-            <div class="result"><div class="r-label">LTC (all costs)</div><div class="r-value" id="ltcAll">0%</div></div>
-            <div class="result"><div class="r-label">Loan-to-ARV</div><div class="r-value" id="ltArv">0%</div></div>
-            <div class="result"><div class="r-label">Total interest paid</div><div class="r-value" id="totInt">$0</div></div>
-        </div>
+      <div class="kpi-grid">
+        <div class="kpi"><div class="v num" id="proceeds">$0</div><div class="k">Sale proceeds</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num" id="roc">0%</div><div class="k">Return on cash</div><div class="d" id="rocAnn">annualized 0%</div></div>
+        <div class="kpi"><div class="v num" id="totPurchase">$0</div><div class="k">Total purchase costs</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num" id="totConstr">$0</div><div class="k">Total renovation</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num" id="totHold">$0</div><div class="k">Total holding costs</div><div class="d" id="ioLine">interest-only $0/mo</div></div>
+        <div class="kpi"><div class="v num" id="totSell">$0</div><div class="k">Total selling costs</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num" id="bankLtc">0%</div><div class="k">Bank LTC</div><div class="est-flag">price + rehab</div></div>
+        <div class="kpi"><div class="v num" id="ltcAll">0%</div><div class="k">LTC (all costs)</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num" id="ltArv">0%</div><div class="k">Loan-to-ARV</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num" id="totInt">$0</div><div class="k">Total interest paid</div><div class="est-flag">Estimate</div></div>
+      </div>
 
-        <div class="apply-strip" style="margin-top:1.2rem">
-            <p>Fund up to 95% of purchase and 100% of rehab on qualifying flips.</p>
-            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
-            <a class="btn btn-line" href="mailto:sales@yscapgroup.com">Get a quote</a>
-        </div>
+      <p class="disc"><b>For estimation &amp; education only.</b> Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Final terms depend on full underwriting. Sample figures shown are illustrative.</p>
     </div>
-</div>
+  </div>
 </main>
 
-<footer class="suite-footer">
-    <div class="sf-inner">
-        <div class="sf-top">
-            <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">
-            <span class="sf-tag">The answer is yes.™</span>
-            <div class="sf-marks"><img src="../assets/images/eho-lender.png" alt="Equal Housing Lender"><img src="../assets/images/nmls.svg" alt="NMLS ID 2609746"></div>
-        </div>
-        <div class="sf-meta">YS Capital Group · <a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">NMLS ID 2609746</a> · <a href="tel:7188312168">718-831-2168</a> · <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a></div>
-        <p class="sf-disc"><strong>For estimation &amp; education only.</strong> Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Use is at your own risk.</p>
-        <p class="sf-copy">© 2026 YS Capital Group. All rights reserved. Equal Housing Lender.</p>
+<footer class="site-foot suite-footer reveal">
+  <div class="wrap">
+    <div class="foot-legal">
+      <p>Business-purpose, investment (non-owner-occupied) loans only. Metrics shown are estimates from your inputs, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend. &copy; 2026 YS Capital Group. NMLS ID 2609746.</p>
+      <div class="foot-badges">
+        <span class="chip">NMLS 2609746</span>
+        <span class="chip">Equal Housing Lender</span>
+      </div>
     </div>
+  </div>
 </footer>
+
+</div>
 
 <script src="../suite.js"></script>
 <script>

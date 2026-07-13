@@ -24,10 +24,260 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../suite.css?v=pilot1">
+<style>
+/* =====================================================================
+   YS DEAL ANALYZER — editorial reskin (blueprint: /preview/deal-analyzer)
+   Layered ON TOP of suite.css. All page rules are scoped under #da / #daBar /
+   #daFoot so they win on ID specificity WITHOUT !important and never fight the
+   shared chrome (topbar/loBar/theme-toggle/float-actions all keep working).
+   Every calculator hook (ids, .inputs-col/.field/.result*/.verdict, export
+   selectors) is preserved verbatim — this file only restyles.
+   ===================================================================== */
+
+/* ---------- topbar: crumb bar with animated underlines ---------- */
+#daBar .topbar-inner{ max-width:1240px; }
+#daBar .topbar-brand img{ height:38px; }
+#daBar .topbar-crumb .crumb-suite,
+#daBar .topbar-crumb a{ position:relative; }
+#daBar .topbar-crumb a::after,
+#daBar .topbar-actions .back::after{
+  content:""; position:absolute; left:0; right:0; bottom:-3px; height:1px;
+  background:var(--gold); transform:scaleX(0); transform-origin:left;
+  transition:transform .32s var(--ease);
+}
+#daBar .topbar-crumb a:hover::after,
+#daBar .topbar-actions .back:hover::after{ transform:scaleX(1); }
+#daBar .topbar-crumb .here{ color:var(--ivory); font-weight:600; }
+#daBar .topbar-actions .btn{ font-size:.86rem; padding:.6rem 1.15rem; }
+#daBar .topbar-actions .btn-line:hover{ border-color:var(--gold); color:var(--gold); }
+
+/* ---------- hero ---------- */
+#da{ position:relative; z-index:2; }
+#da .tool-hero{
+  max-width:1240px; margin:0 auto; padding:4rem 1.5rem 2rem; text-align:left;
+}
+#da .suite-eyebrow{
+  color:var(--gold); font-size:.72rem; letter-spacing:.24em; font-weight:700;
+  text-transform:uppercase; margin-bottom:1rem;
+}
+#da .tool-hero h1{
+  font-family:var(--font-d); font-weight:500; letter-spacing:-.018em; line-height:1.02;
+  font-size:clamp(2.7rem,5.4vw,4.25rem); color:var(--ivory); margin:.1em 0 .18em;
+}
+#da .tool-hero h1 .tm{ font-size:.32em; color:var(--gold); vertical-align:super; font-weight:600; }
+#da .tool-tagline{
+  font-family:var(--font-d); font-style:italic; color:var(--muted);
+  font-size:clamp(1.1rem,2vw,1.4rem); margin:0;
+}
+#da .tool-intro{
+  color:var(--muted); max-width:62ch; margin:1rem 0 0; font-size:1.04rem; line-height:1.62;
+}
+#da .hero-chips{ display:flex; gap:.55rem; flex-wrap:wrap; margin-top:1.5rem; }
+#da .da-chip{
+  display:inline-flex; align-items:center; gap:.5rem; font-size:.76rem; font-weight:600;
+  letter-spacing:.02em; color:var(--ivory-soft); background:var(--ink-1);
+  border:1px solid var(--line); border-radius:100px; padding:.42rem .9rem;
+}
+#da .da-chip::before{ content:""; width:6px; height:6px; border-radius:50%; background:var(--gold); }
+#da .fill-hint{
+  display:inline-flex; align-items:center; gap:.55rem; margin-top:1.35rem;
+  font-size:.86rem; color:var(--muted); border:1px solid var(--line);
+  border-radius:100px; padding:.5rem 1rem; background:var(--ink-1);
+}
+#da .fill-hint .swatch{ width:13px; height:13px; border-radius:3px; background:var(--ink-2); border:1px solid var(--teal); flex:none; }
+
+/* ---------- working grid ---------- */
+#da .tool-grid{
+  max-width:1240px; margin:0 auto; padding:.5rem 1.5rem 3.5rem;
+  display:grid; grid-template-columns:1.04fr .96fr; gap:2.6rem; align-items:start;
+}
+#da .inputs-col{ display:flex; flex-direction:column; gap:1.4rem; }
+#da .results-col{ position:sticky; top:5.2rem; display:flex; flex-direction:column; gap:1.2rem; }
+
+/* ---------- input panels ---------- */
+#da .panel{
+  background:var(--ink-1); border:1px solid var(--line); border-radius:var(--r);
+  padding:0; overflow:hidden; transition:border-color .25s, box-shadow .3s, transform .25s var(--ease);
+}
+#da .inputs-col .panel:hover{ box-shadow:0 18px 44px -30px rgba(20,27,34,.5); border-color:var(--line); }
+#da .panel .panel-head{
+  display:flex; align-items:center; justify-content:space-between; gap:1rem;
+  padding:1.25rem 1.5rem; border-bottom:1px solid var(--line-2);
+}
+#da .panel h2{
+  font-family:var(--font-d); font-weight:500; font-size:1.32rem; letter-spacing:-.01em;
+  color:var(--ivory); display:flex; align-items:center; gap:.7rem; margin:0;
+}
+#da .panel h2 em{ font-style:italic; color:var(--muted-2); font-weight:400; }
+#da .panel .panel-num{
+  display:inline-grid; place-items:center; width:26px; height:26px; flex:none;
+  font-family:var(--font-d); font-size:.85rem; font-weight:600; color:var(--gold);
+  border:1px solid rgba(174,135,70,.4); border-radius:8px; background:rgba(174,135,70,.07);
+}
+#da .panel .panel-tag{
+  font-size:.66rem; letter-spacing:.18em; text-transform:uppercase; font-weight:700;
+  color:var(--muted-2);
+}
+#da .panel .panel-note{
+  color:var(--muted); font-size:.86rem; line-height:1.5; margin:0;
+  padding:1rem 1.5rem 0;
+}
+#da .panel .field-rows{ padding:1.25rem 1.5rem 1.4rem; }
+#da .panel .panel-note + .field-rows{ padding-top:1rem; }
+#da .field-rows.two-col{ display:grid; grid-template-columns:1fr 1fr; gap:1.1rem 1.15rem; }
+
+/* ---------- fields ---------- */
+#da .field{ display:flex; flex-direction:column; gap:.5rem; margin:0; }
+#da .field label{
+  font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; font-weight:700;
+  color:var(--muted); display:block;
+}
+#da .field label em{ font-style:normal; color:var(--muted-2); font-weight:600; text-transform:none; letter-spacing:0; }
+#da .field .input{
+  display:flex; align-items:center; gap:.15rem; background:var(--ink); border:1px solid var(--line);
+  border-radius:11px; padding:0 .85rem; transition:border-color .2s, box-shadow .2s, background .2s;
+}
+#da .field .input:focus-within{ border-color:var(--teal); box-shadow:0 0 0 3px rgba(47,127,134,.14); background:var(--ink-1); }
+#da .field .input .adorn{ color:var(--muted-2); font-size:.98rem; font-weight:600; flex:none; }
+#da .field .input .adorn.suffix{ order:2; }
+#da .field .input input{
+  flex:1; width:100%; min-width:0; background:none; border:0; outline:none; color:var(--ivory);
+  font-family:var(--font-b); font-size:1.04rem; font-weight:500; padding:.7rem .35rem;
+  font-variant-numeric:tabular-nums;
+}
+#da .field .input input::placeholder{ color:var(--muted-2); font-weight:400; }
+
+/* ---------- result hero ---------- */
+#da .result-hero{
+  background:var(--ink-1); border:1px solid var(--line); border-top:2px solid var(--gold);
+  border-radius:var(--r); padding:0; overflow:hidden;
+}
+#da .result-hero .rh-top{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:.95rem 1.5rem; border-bottom:1px solid var(--line-2);
+}
+#da .result-hero .rh-top .rh-ey{
+  font-size:.68rem; letter-spacing:.18em; text-transform:uppercase; font-weight:700; color:var(--muted-2);
+}
+#da .result-hero .rh-top .rh-live{
+  display:inline-flex; align-items:center; gap:.45rem; font-size:.68rem; letter-spacing:.14em;
+  text-transform:uppercase; font-weight:700; color:var(--teal);
+}
+#da .result-hero .rh-top .rh-live::before{
+  content:""; width:7px; height:7px; border-radius:50%; background:var(--teal);
+  box-shadow:0 0 0 0 rgba(47,127,134,.5); animation:daPulse 2.4s ease-out infinite;
+}
+#da .result-hero .rh-label{
+  font-size:.74rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); font-weight:700;
+  padding:1.45rem 1.5rem 0;
+}
+#da .result-hero .rh-value{
+  font-family:var(--font-d); font-weight:500; font-variant-numeric:tabular-nums;
+  font-size:clamp(2.9rem,6vw,3.7rem); line-height:1; letter-spacing:-.02em;
+  color:var(--gold); margin:.4rem 0 0; padding:0 1.5rem;
+}
+#da .result-hero .rh-value.pos{ color:var(--teal-br); }
+#da .result-hero .rh-value.neg{ color:var(--bad); }
+#da .result-hero .rh-sub{
+  color:var(--muted); font-size:.92rem; margin-top:.55rem; padding:0 1.5rem; line-height:1.5;
+}
+#da .result-hero .verdict{
+  display:inline-flex; align-items:center; gap:.5rem; margin:1.1rem 1.5rem 1.5rem;
+  font-size:.82rem; font-weight:700; letter-spacing:.01em; padding:.5rem 1rem;
+  border-radius:100px; border:1px solid transparent;
+}
+#da .result-hero .verdict::before{ content:""; width:7px; height:7px; border-radius:50%; background:currentColor; }
+#da .verdict.good{ color:var(--good); background:rgba(46,122,94,.1); border-color:rgba(46,122,94,.28); }
+#da .verdict.ok{ color:var(--teal-br); background:rgba(47,127,134,.1); border-color:rgba(47,127,134,.28); }
+#da .verdict.warn{ color:var(--warn); background:rgba(176,122,30,.1); border-color:rgba(176,122,30,.3); }
+#da .verdict.bad{ color:var(--bad); background:rgba(180,82,42,.1); border-color:rgba(180,82,42,.3); }
+
+/* ---------- result grid: seamless hairline KPI tiles ---------- */
+#da .result-grid{
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px; background:var(--line-2); border:1px solid var(--line);
+  border-radius:var(--r); overflow:hidden;
+}
+#da .result{
+  background:var(--ink-1); border:0; border-radius:0; margin:0; padding:1.05rem 1.15rem 1.15rem;
+  transition:background .25s, color .25s;
+}
+#da .result:hover{ background:var(--ink); }
+#da .result .r-label{
+  font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:700;
+  line-height:1.3;
+}
+#da .result .r-label em{ font-style:normal; color:var(--muted-2); }
+#da .result .r-value{
+  font-family:var(--font-d); font-weight:500; font-size:1.55rem; margin-top:.35rem;
+  color:var(--ivory); font-variant-numeric:tabular-nums; letter-spacing:-.01em; line-height:1.05;
+}
+#da .result .r-value.pos{ color:var(--teal-br); }
+#da .result .r-value.neg{ color:var(--bad); }
+#da .result .r-hint{ font-size:.72rem; color:var(--muted-2); margin-top:.35rem; line-height:1.4; }
+
+/* ---------- apply strip ---------- */
+#da .apply-strip{
+  background:var(--ink-1); border:1px solid var(--line); border-radius:var(--r);
+  padding:1.35rem 1.5rem; display:flex; flex-wrap:wrap; align-items:center; gap:.8rem;
+}
+#da .apply-strip p{ font-family:var(--font-d); font-size:1.08rem; color:var(--ivory); margin:0 auto 0 0; flex:1 1 12rem; line-height:1.3; }
+#da .apply-strip .btn{ font-size:.88rem; }
+#da .apply-strip .btn-line:hover{ border-color:var(--gold); color:var(--gold); }
+
+/* ---------- dark footer band (explicit light text — invariant b) ---------- */
+#daFoot{
+  background:#141B22; border-top:1px solid rgba(174,135,70,.28);
+  padding:3.4rem 1.5rem 2.6rem; margin-top:0;
+}
+#daFoot .sf-inner{ max-width:1240px; margin:0 auto; }
+#daFoot .sf-top{ display:flex; align-items:center; gap:1.1rem; flex-wrap:wrap; padding-bottom:1.4rem; border-bottom:1px solid rgba(244,240,231,.12); }
+#daFoot .sf-top .logo{ height:52px; width:auto; }
+#daFoot .sf-tag{ font-family:var(--font-d); font-style:italic; color:var(--gold); font-size:1.05rem; }
+#daFoot .sf-marks{ margin-left:auto; display:flex; align-items:center; gap:1.1rem; }
+#daFoot .sf-marks img{ height:38px; width:auto; opacity:.9; }
+#daFoot .sf-meta{ color:rgba(244,240,231,.72); font-size:.86rem; margin-top:1.4rem; line-height:1.7; }
+#daFoot .sf-meta a{ color:rgba(244,240,231,.82); }
+#daFoot .sf-meta a:hover{ color:#fff; }
+#daFoot .nmls-link{ text-decoration:underline; text-underline-offset:2px; }
+#daFoot .sf-disc{ color:rgba(244,240,231,.56); font-size:.78rem; line-height:1.65; margin-top:1rem; max-width:78ch; }
+#daFoot .sf-disc strong{ color:rgba(244,240,231,.82); font-weight:600; }
+#daFoot .sf-copy{ color:rgba(244,240,231,.42); font-size:.76rem; margin-top:.7rem; }
+
+/* ---------- polish: below-the-fold one-way reveals (reduced-motion safe) ---------- */
+@media (prefers-reduced-motion: no-preference){
+  @supports (animation-timeline: view()){
+    #da .da-reveal{
+      animation:daRise linear both;
+      animation-timeline:view();
+      animation-range:entry 2% cover 22%;
+    }
+    @keyframes daRise{ from{ opacity:0; transform:translateY(28px); } to{ opacity:1; transform:none; } }
+  }
+}
+@keyframes daPulse{ 0%{ box-shadow:0 0 0 0 rgba(47,127,134,.45);} 70%{ box-shadow:0 0 0 7px rgba(47,127,134,0);} 100%{ box-shadow:0 0 0 0 rgba(47,127,134,0);} }
+@media (prefers-reduced-motion: reduce){
+  #da .result-hero .rh-top .rh-live::before{ animation:none; }
+}
+
+/* ---------- responsive ---------- */
+@media (max-width:980px){
+  #da .tool-grid{ grid-template-columns:1fr; gap:1.6rem; }
+  #da .results-col{ position:static; top:auto; }
+}
+@media (max-width:560px){
+  #da .tool-hero{ padding:2.6rem 1.2rem 1.4rem; }
+  #da .tool-grid{ padding:.5rem 1.2rem 2.6rem; }
+  #da .field-rows.two-col{ grid-template-columns:1fr; }
+  #da .apply-strip{ flex-direction:column; align-items:stretch; }
+  #da .apply-strip .btn{ width:100%; }
+  #daFoot .sf-marks{ margin-left:0; }
+}
+</style>
 </head>
 <body>
 
-<header class="topbar">
+<header class="topbar" id="daBar">
     <div class="topbar-inner">
         <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
         <span class="topbar-sep"></span>
@@ -41,19 +291,27 @@
     </div>
 </header>
 
-<main>
+<main id="da">
 <section class="tool-hero">
     <div class="suite-eyebrow">Rental underwriting</div>
     <h1>YS Deal Analyzer<span class="tm">™</span></h1>
     <p class="tool-tagline">The tool serious investors say YES to.</p>
     <p class="tool-intro">Plug in the property, loan, income and expenses to see whether a rental deal cash-flows and how it scores on the same metrics lenders and professional investors use.</p>
+    <div class="hero-chips">
+        <span class="da-chip">Rental / DSCR</span>
+        <span class="da-chip">No credit pull</span>
+        <span class="da-chip">Estimates only</span>
+    </div>
     <span class="fill-hint"><span class="swatch"></span> Fill the input fields — every metric updates automatically.</span>
 </section>
 
 <div class="tool-grid">
     <div class="inputs-col">
         <div class="panel">
-            <h2><span class="panel-num">1</span> Property &amp; loan</h2>
+            <div class="panel-head">
+                <h2><span class="panel-num">1</span> Property &amp; loan</h2>
+                <span class="panel-tag">Inputs</span>
+            </div>
             <p class="panel-note">Use LTV to size the loan, or type a loan amount to override it.</p>
             <div class="field-rows two-col">
                 <div class="field"><label for="price">Purchase price</label><div class="input"><span class="adorn">$</span><input id="price" type="number" value="400000"></div></div>
@@ -65,8 +323,11 @@
             </div>
         </div>
 
-        <div class="panel">
-            <h2><span class="panel-num">2</span> Income</h2>
+        <div class="panel da-reveal">
+            <div class="panel-head">
+                <h2><span class="panel-num">2</span> Income</h2>
+                <span class="panel-tag">Revenue</span>
+            </div>
             <div class="field-rows two-col">
                 <div class="field"><label for="rent">Gross monthly rent <em>(all units)</em></label><div class="input"><span class="adorn">$</span><input id="rent" type="number" value="4000"></div></div>
                 <div class="field"><label for="vac">Vacancy loss <em>(%)</em></label><div class="input"><input id="vac" type="number" value="5"><span class="adorn suffix">%</span></div></div>
@@ -74,8 +335,11 @@
             </div>
         </div>
 
-        <div class="panel">
-            <h2><span class="panel-num">3</span> Operating expenses <em style="font-weight:400;color:var(--muted-2);font-size:.8rem">— annual</em></h2>
+        <div class="panel da-reveal">
+            <div class="panel-head">
+                <h2><span class="panel-num">3</span> Operating expenses <em style="font-weight:400;color:var(--muted-2);font-size:.8rem">— annual</em></h2>
+                <span class="panel-tag">Expenses</span>
+            </div>
             <div class="field-rows two-col">
                 <div class="field"><label for="oTax">Property taxes</label><div class="input"><span class="adorn">$</span><input id="oTax" type="number" value="1000"></div></div>
                 <div class="field"><label for="oIns">Insurance</label><div class="input"><span class="adorn">$</span><input id="oIns" type="number" value="1000"></div></div>
@@ -87,8 +351,11 @@
             </div>
         </div>
 
-        <div class="panel">
-            <h2><span class="panel-num">4</span> Acquisition &amp; setup costs</h2>
+        <div class="panel da-reveal">
+            <div class="panel-head">
+                <h2><span class="panel-num">4</span> Acquisition &amp; setup costs</h2>
+                <span class="panel-tag">One-time</span>
+            </div>
             <p class="panel-note">One-time cash costs to acquire and stabilize, on top of the down payment.</p>
             <div class="field-rows two-col">
                 <div class="field"><label for="aClose">Closing costs</label><div class="input"><span class="adorn">$</span><input id="aClose" type="number" value="1000"></div></div>
@@ -104,6 +371,7 @@
 
     <div class="results-col">
         <div class="result-hero">
+            <div class="rh-top"><span class="rh-ey">Deal result · Estimate</span><span class="rh-live">Live</span></div>
             <div class="rh-label">Monthly cash flow</div>
             <div class="rh-value" id="cfMo">$864</div>
             <div class="rh-sub" id="cfYr">$10,366 per year after debt &amp; all expenses</div>
@@ -129,7 +397,7 @@
             <div class="result"><div class="r-label">Total cash to close</div><div class="r-value" id="cashIn">$107,000</div><div class="r-hint">down + setup costs</div></div>
         </div>
 
-        <div class="apply-strip" style="margin-top:1.2rem">
+        <div class="apply-strip da-reveal">
             <p>Like the numbers? Let's structure the financing.</p>
             <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
             <a class="btn btn-line" href="mailto:sales@yscapgroup.com">Get a quote</a>
@@ -138,7 +406,7 @@
 </div>
 </main>
 
-<footer class="suite-footer">
+<footer class="suite-footer" id="daFoot">
     <div class="sf-inner">
         <div class="sf-top">
             <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">
