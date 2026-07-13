@@ -22,7 +22,92 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=pilot1">
+<link rel="stylesheet" href="style.css?v=pilot2">
+<style>
+/* ============================================================
+   v2/sms-terms.html — legal reskin (design only)
+   Blueprint: web/preview/legal.html · self-contained, scoped to .ysl
+   Legal copy is preserved VERBATIM; this layer is presentation only.
+   ============================================================ */
+.ysl{
+  --paper:#F4F0E7; --paper-2:#EDE6D7; --card:#FBF9F3;
+  --ink:#141B22; --ink-1:#1D2830; --ink-soft:#4B585C;
+  --gold:#AE8746; --gold-soft:#C9A86A; --teal:#2F7F86;
+  --line:rgba(20,27,34,.16); --line-soft:rgba(20,27,34,.08);
+  --serif:'Fraunces',Georgia,'Times New Roman',serif;
+  --sans:'Hanken Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --r:4px; --ease:cubic-bezier(.22,.61,.36,1);
+  color:var(--ink); font-family:var(--sans);
+}
+.ysl *{box-sizing:border-box;}
+.ysl-wrap{max-width:1240px;margin:0 auto;padding:0 40px;}
+@media(max-width:980px){.ysl-wrap{padding:0 24px;}}
+
+/* ---- hero ---- */
+.ysl-hero{padding:9.5rem 0 2.4rem;}
+.ysl-eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:600;color:var(--gold);margin:0 0 1rem;}
+.ysl-hero h1{font-family:var(--serif);font-weight:500;letter-spacing:-.01em;line-height:1.04;font-size:clamp(38px,5vw,64px);margin:.1em 0 .5em;color:var(--ink);}
+.ysl-eff{display:inline-flex;align-items:center;gap:9px;font-size:12.5px;font-weight:600;letter-spacing:.02em;background:var(--card);border:1px solid var(--line);border-radius:100px;padding:7px 15px;color:var(--ink-soft);}
+.ysl-eff .dot{width:6px;height:6px;border-radius:50%;background:var(--teal);}
+
+/* ---- two-column layout: section index + document ---- */
+.ysl-grid{display:grid;grid-template-columns:236px 1fr;gap:64px;align-items:start;padding-top:8px;padding-bottom:96px;}
+@media(max-width:860px){.ysl-grid{grid-template-columns:1fr;gap:0;padding-bottom:64px;}}
+
+/* ---- sticky section index ---- */
+.ysl-toc{position:sticky;top:104px;}
+.ysl-toc .lab{font-size:12px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);margin:0 0 16px;}
+.ysl-toc ol{list-style:none;margin:0;padding:0;counter-reset:t;}
+.ysl-toc li{counter-increment:t;}
+.ysl-toc a{display:flex;gap:12px;align-items:baseline;padding:11px 0 11px 16px;border-left:2px solid var(--line);color:var(--ink-soft);font-size:14px;font-weight:600;line-height:1.35;transition:color .15s,border-color .15s;}
+.ysl-toc a::before{content:counter(t,decimal-leading-zero);font-family:var(--serif);font-size:12.5px;color:var(--gold);font-variant-numeric:tabular-nums;flex:none;}
+.ysl-toc a:hover{color:var(--gold);border-left-color:var(--gold);}
+@media(max-width:860px){
+  .ysl-toc{position:sticky;top:60px;z-index:30;background:var(--paper);margin:0 -24px;padding:12px 24px;border-bottom:1px solid var(--line-soft);}
+  .ysl-toc .lab{display:none;}
+  .ysl-toc ol{display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+  .ysl-toc ol::-webkit-scrollbar{display:none;}
+  .ysl-toc a{white-space:nowrap;border-left:0;border:1px solid var(--line);border-radius:100px;padding:0 15px;min-height:44px;align-items:center;}
+}
+
+/* ---- document body ---- */
+.ysl-doc{min-width:0;}
+.ysl-clause{max-width:70ch;scroll-margin-top:112px;padding:26px 0;border-top:1px solid var(--line-soft);position:relative;}
+.ysl-clause:first-child{border-top:0;padding-top:6px;}
+.ysl-clause p{color:var(--ink-1);line-height:1.72;font-size:17px;}
+.ysl-clause p + p{margin-top:14px;}
+.ysl-clause p strong{color:var(--ink);font-weight:700;letter-spacing:-.005em;}
+/* nested notes (Example / Additional Options) read as secondary within a clause */
+.ysl-clause .ysl-note{margin-top:14px;padding-left:16px;border-left:2px solid var(--line-soft);color:var(--ink-soft);}
+.ysl-clause .ysl-note strong{color:var(--ink-1);}
+/* animated, always-visible underline on links (gold at rest, teal wipe on hover) */
+.ysl-clause a{
+  color:var(--ink);font-weight:600;text-decoration:none;
+  background-image:linear-gradient(var(--teal),var(--teal)),linear-gradient(var(--gold),var(--gold));
+  background-size:0% 1px,100% 1px;background-position:0 100%,0 100%;background-repeat:no-repeat;
+  transition:background-size .35s var(--ease),color .2s var(--ease);
+}
+.ysl-clause a:hover{color:var(--teal);background-size:100% 1px,100% 1px;}
+
+/* ---- polish: one-way reveals (resting state is fully visible → never blank) ---- */
+@media(prefers-reduced-motion:no-preference){
+  @keyframes ysl-rise{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+  .ysl-anim{animation:ysl-rise .55s var(--ease) both;}
+  .ysl-hero .ysl-anim{animation-delay:.04s;}
+  .ysl-hero h1.ysl-anim{animation-delay:.10s;}
+  .ysl-hero .ysl-eff.ysl-anim{animation-delay:.16s;}
+  .ysl-doc .ysl-clause{animation:ysl-rise .55s var(--ease) both;}
+  .ysl-doc .ysl-clause:nth-child(1){animation-delay:.06s;}
+  .ysl-doc .ysl-clause:nth-child(2){animation-delay:.12s;}
+  .ysl-doc .ysl-clause:nth-child(3){animation-delay:.18s;}
+  .ysl-doc .ysl-clause:nth-child(4){animation-delay:.22s;}
+  .ysl-doc .ysl-clause:nth-child(5){animation-delay:.26s;}
+  .ysl-doc .ysl-clause:nth-child(n+6){animation-delay:.30s;}
+}
+@media(prefers-reduced-motion:reduce){
+  .ysl-clause a{transition:color .2s;}
+}
+</style>
 </head>
 <body>
 <header class="nav scrolled" id="nav">
@@ -40,28 +125,59 @@
         </div>
     </div>
 </header>
-<main id="top">
-<section class="brand" style="padding-top:10rem">
-    <div class="brand-inner" style="display:block;max-width:78rem">
-        <div class="brand-left">
-            <div class="eyebrow">Compliance</div>
-            <h1 class="section-title">SMS Terms &amp; Conditions</h1>
-            <p class="brand-lede">Effective date: January 01, 2026</p>
+<main id="top" class="ysl">
+    <section class="ysl-hero">
+        <div class="ysl-wrap">
+            <p class="eyebrow ysl-eyebrow ysl-anim">Compliance</p>
+            <h1 class="ysl-anim">SMS Terms &amp; Conditions</h1>
+            <span class="ysl-eff ysl-anim"><span class="dot"></span>Effective date: January 01, 2026</span>
         </div>
-        <div class="disc-grid" style="margin-top:2rem">
-            <p><strong>1- SMS Consent Communication:</strong> The information (Phone Numbers) obtained as part of the SMS consent process will not be shared with third parties for marketing purposes.</p>
-            <p><strong>2- Types of SMS Communications:</strong> If you have consented to receive text messages from YS CAPITAL GROUP, you may receive messages related to the following: Customer Care SMS.</p>
-            <p><strong>Example:</strong> "Hello, We received a call from John Smith at (555) 123-4567. This customer has been assigned to you for follow-up.. You can reply STOP to opt out of SMS messaging from YS CAPITAL GROUP at any time."</p>
-            <p><strong>3- Message Frequency:</strong> "Message frequency may vary. You may receive up to 5 SMS messages per week regarding your customer care SMS."</p>
-            <p><strong>4- Potential Fees for SMS Messaging:</strong> Please note that standard message and data rates may apply, depending on your carrier's pricing plan. These fees may vary if the message is sent domestically or internationally.</p>
-            <p><strong>5- Opt-In Method:</strong> You may opt-in to receive SMS messages from YS CAPITAL GROUP in the following way: Verbally, during a conversation.</p>
-            <p><strong>6- Opt-Out Method:</strong> You can opt out of receiving SMS messages at any time. To do so, simply reply "STOP" to any SMS message you receive. Alternatively, you can contact us directly to request removal from our messaging list.</p>
-            <p><strong>7- Help:</strong> If you are experiencing any issues, you can reply with the keyword HELP. Or, you can get help directly from us at <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a>.</p>
-            <p><strong>Additional Options:</strong> If you do not wish to receive SMS messages, you can choose not to check the SMS consent box on our forms.</p>
-            <p><strong>8- Standard Messaging Disclosures:</strong> Message and data rates may apply. You can opt out at any time by texting "STOP." For assistance, text "HELP" or visit our <a href="privacy.html">Privacy Policy</a> and <a href="sms-terms.html">Terms and Conditions</a> pages. Message frequency may vary.</p>
+    </section>
+
+    <div class="ysl-wrap ysl-grid">
+        <nav class="ysl-toc" aria-label="On this page">
+            <p class="lab">On this page</p>
+            <ol>
+                <li><a href="#s-consent">SMS Consent Communication</a></li>
+                <li><a href="#s-types">Types of SMS Communications</a></li>
+                <li><a href="#s-frequency">Message Frequency</a></li>
+                <li><a href="#s-fees">Potential Fees for SMS Messaging</a></li>
+                <li><a href="#s-optin">Opt-In Method</a></li>
+                <li><a href="#s-optout">Opt-Out Method</a></li>
+                <li><a href="#s-help">Help</a></li>
+                <li><a href="#s-disclosures">Standard Messaging Disclosures</a></li>
+            </ol>
+        </nav>
+
+        <div class="ysl-doc">
+            <section class="ysl-clause" id="s-consent">
+                <p><strong>1- SMS Consent Communication:</strong> The information (Phone Numbers) obtained as part of the SMS consent process will not be shared with third parties for marketing purposes.</p>
+            </section>
+            <section class="ysl-clause" id="s-types">
+                <p><strong>2- Types of SMS Communications:</strong> If you have consented to receive text messages from YS CAPITAL GROUP, you may receive messages related to the following: Customer Care SMS.</p>
+                <p class="ysl-note"><strong>Example:</strong> "Hello, We received a call from John Smith at (555) 123-4567. This customer has been assigned to you for follow-up.. You can reply STOP to opt out of SMS messaging from YS CAPITAL GROUP at any time."</p>
+            </section>
+            <section class="ysl-clause" id="s-frequency">
+                <p><strong>3- Message Frequency:</strong> "Message frequency may vary. You may receive up to 5 SMS messages per week regarding your customer care SMS."</p>
+            </section>
+            <section class="ysl-clause" id="s-fees">
+                <p><strong>4- Potential Fees for SMS Messaging:</strong> Please note that standard message and data rates may apply, depending on your carrier's pricing plan. These fees may vary if the message is sent domestically or internationally.</p>
+            </section>
+            <section class="ysl-clause" id="s-optin">
+                <p><strong>5- Opt-In Method:</strong> You may opt-in to receive SMS messages from YS CAPITAL GROUP in the following way: Verbally, during a conversation.</p>
+            </section>
+            <section class="ysl-clause" id="s-optout">
+                <p><strong>6- Opt-Out Method:</strong> You can opt out of receiving SMS messages at any time. To do so, simply reply "STOP" to any SMS message you receive. Alternatively, you can contact us directly to request removal from our messaging list.</p>
+            </section>
+            <section class="ysl-clause" id="s-help">
+                <p><strong>7- Help:</strong> If you are experiencing any issues, you can reply with the keyword HELP. Or, you can get help directly from us at <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a>.</p>
+                <p class="ysl-note"><strong>Additional Options:</strong> If you do not wish to receive SMS messages, you can choose not to check the SMS consent box on our forms.</p>
+            </section>
+            <section class="ysl-clause" id="s-disclosures">
+                <p><strong>8- Standard Messaging Disclosures:</strong> Message and data rates may apply. You can opt out at any time by texting "STOP." For assistance, text "HELP" or visit our <a href="privacy.html">Privacy Policy</a> and <a href="sms-terms.html">Terms and Conditions</a> pages. Message frequency may vary.</p>
+            </section>
         </div>
     </div>
-</section>
 </main>
 <footer class="footer">
     <div class="disclosures">
