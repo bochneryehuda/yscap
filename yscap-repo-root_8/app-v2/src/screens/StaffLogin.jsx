@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth, useAuthNotice } from '../lib/auth.jsx';
-import { BrandLockup } from '../components/Layout.jsx';
+import AuthShell from '../components/AuthShell.jsx';
 import PasswordInput from '../components/PasswordInput.jsx';
 
 export default function StaffLogin() {
@@ -41,17 +41,12 @@ export default function StaffLogin() {
   const submit = mode === 'login' ? submitLogin : submitMfa;
 
   return (
-    <div className="authbg">
-      <div className="authcard panel">
-        <BrandLockup />
-        <div className="gold-rule" />
-        <h1>{mode === 'mfa' ? 'Enter your code' : 'Staff sign in'}</h1>
-        <p className="muted small" style={{ marginTop: 6 }}>
-          {mode === 'mfa'
-            ? 'Open your authenticator app and enter the 6-digit code.'
-            : 'For loan officers, processors, underwriters and administrators.'}
-        </p>
-
+    <AuthShell
+      variant="staff"
+      title={mode === 'mfa' ? 'Enter your code' : 'Staff sign in'}
+      subtitle={mode === 'mfa'
+        ? 'Open your authenticator app and enter the 6-digit code.'
+        : 'For loan officers, processors, underwriters and administrators.'}>
         {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
         {err && <div role="alert" className="notice err" style={{ marginTop: 16 }}>{err}</div>}
 
@@ -103,7 +98,6 @@ export default function StaffLogin() {
         <div className="auth-foot">
           <button className="btn link small muted" onClick={() => nav('/login')}>← Borrower sign in</button>
         </div>
-      </div>
-    </div>
+    </AuthShell>
   );
 }
