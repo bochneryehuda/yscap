@@ -824,12 +824,21 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
             </div>
           );
           };
-          // Vesting entity first; the rest are the file's track-record entities.
+          // Vesting entity first, then its LAYERED owning entities (always
+          // visible — verification is bottom-up, so staff must see the owners
+          // they have to verify FIRST); the rest are track-record entities.
           const vesting = llcs.filter(l => l.vesting || l.id === app.llc_id);
-          const others = llcs.filter(l => !(l.vesting || l.id === app.llc_id));
+          const layered = llcs.filter(l => l.layered && !(l.vesting || l.id === app.llc_id));
+          const others = llcs.filter(l => !(l.vesting || l.id === app.llc_id) && !l.layered);
           return (
             <>
               {vesting.map(renderLlc)}
+              {layered.length > 0 && (
+                <p className="muted small" style={{ margin: '6px 0 2px' }}>
+                  Ownership chain — these entities own (part of) an entity on this file and must be verified first:
+                </p>
+              )}
+              {layered.map(renderLlc)}
               {app.llc_id && vesting.length === 0 &&
                 <p className="muted small">The entity linked to this file isn't loading — refresh the page.</p>}
               {!app.llc_id && others.length > 0 &&

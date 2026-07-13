@@ -2781,13 +2781,30 @@ router.post('/llcs/:id/verify', async (req, res) => {
     [req.params.id]);
   await llcLib.syncLlcConditions(req.params.id, { reopen: true });
   await audit(req, 'unverify_llc', 'llc', req.params.id, reason ? { reason } : null);
+  // Layered entities verify BOTTOM-UP, so a revoked owner invalidates every
+  // verified entity it (transitively) owns — revoke them too, with a derived
+  // reason, or the chain invariant silently breaks (a verified child would sit
+  // on an unverified owner and its file condition would stay signed off).
+  const revokedChildren = [];
+  try {
+    for (const childId of await llcLib.getDescendantEntityIds(req.params.id)) {
+      const c = (await db.query(`SELECT id, llc_name, is_verified FROM llcs WHERE id=$1`, [childId])).rows[0];
+      if (!c || !c.is_verified) continue;
+      await db.query(`UPDATE llcs SET is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now() WHERE id=$1`, [childId]);
+      await llcLib.syncLlcConditions(childId, { reopen: true });
+      await audit(req, 'unverify_llc', 'llc', childId, { reason: `owning entity "${own.rows[0].llc_name}" verification was revoked` });
+      revokedChildren.push(c.llc_name);
+    }
+  } catch (e) { console.warn('[llc-revoke] chain revoke failed:', e.message); }
   try {
     await notify.notifyBorrower(own.rows[0].borrower_id, {
       type: 'llc_unverified', title: 'Your LLC needs attention',
-      body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}. Please review its details and documents on your profile.`,
+      body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}.`
+        + (revokedChildren.length ? ` Because it owns ${revokedChildren.map(n => `"${n}"`).join(', ')}, verification there was reopened too.` : '')
+        + ' Please review the details and documents on your profile.',
       link: '/profile', ctaLabel: 'Review your LLC' });
   } catch (_) { /* best-effort */ }
-  res.json({ ok: true, verified: false });
+  res.json({ ok: true, verified: false, revokedChildren });
 });
 // Verification statuses mirror the static Track Record tool: pending review,
 // documentation required, verified (with docs), limited (public record only).

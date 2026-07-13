@@ -64,66 +64,61 @@ async function getOwnerLlcIds(llcId) {
   return r.rows.map((x) => String(x.owner_llc_id));
 }
 
-/* Every entity that (transitively) OWNS this LLC — breadth-first up the
-   chain, cycle-safe, depth-capped. Order: nearest layer first. */
-async function getAncestorEntityIds(llcId, { maxDepth = MAX_ENTITY_DEPTH } = {}) {
+/* One BFS walker for both directions. Returns { ids, depth }: `ids` is the
+   transitive SET of related entities (nearest layer first) and `depth` is the
+   number of LEVELS walked (the longest ownership PATH in edges) — NOT the
+   node count. A holding company owning five property LLCs is depth 1 with
+   five ids; the cap must compare depth, never ids.length. */
+async function walkChain(llcId, dir, { maxDepth = MAX_ENTITY_DEPTH } = {}) {
   const seen = new Set([String(llcId)]);
-  const out = [];
+  const ids = [];
+  let depth = 0;
   let frontier = [String(llcId)];
-  for (let depth = 0; depth < maxDepth && frontier.length; depth++) {
+  for (let level = 0; level < maxDepth && frontier.length; level++) {
     const next = [];
     for (const id of frontier) {
-      for (const owner of await getOwnerLlcIds(id)) {
-        if (seen.has(owner)) continue;
-        seen.add(owner);
-        out.push(owner);
-        next.push(owner);
+      const related = dir === 'up'
+        ? await getOwnerLlcIds(id)
+        : (await db.query(`SELECT DISTINCT llc_id FROM llc_members WHERE owner_llc_id=$1`, [id])).rows.map((x) => String(x.llc_id));
+      for (const rel of related) {
+        if (seen.has(rel)) continue;
+        seen.add(rel);
+        ids.push(rel);
+        next.push(rel);
       }
     }
+    if (next.length) depth = level + 1;
     frontier = next;
   }
-  return out;
+  return { ids, depth };
+}
+
+/* Every entity that (transitively) OWNS this LLC — nearest layer first. */
+async function getAncestorEntityIds(llcId, opts) {
+  return (await walkChain(llcId, 'up', opts)).ids;
 }
 
 /* Every entity this LLC (transitively) OWNS — used to re-sync child
    conditions when a parent's documents/verification change. */
-async function getDescendantEntityIds(llcId, { maxDepth = MAX_ENTITY_DEPTH } = {}) {
-  const seen = new Set([String(llcId)]);
-  const out = [];
-  let frontier = [String(llcId)];
-  for (let depth = 0; depth < maxDepth && frontier.length; depth++) {
-    const next = [];
-    for (const id of frontier) {
-      const r = await db.query(
-        `SELECT DISTINCT llc_id FROM llc_members WHERE owner_llc_id=$1`, [id]);
-      for (const row of r.rows) {
-        const child = String(row.llc_id);
-        if (seen.has(child)) continue;
-        seen.add(child);
-        out.push(child);
-        next.push(child);
-      }
-    }
-    frontier = next;
-  }
-  return out;
+async function getDescendantEntityIds(llcId, opts) {
+  return (await walkChain(llcId, 'down', opts)).ids;
 }
 
 /* Would making `ownerLlcId` an owner of `llcId` create an ownership cycle
    (A owns B owns … owns A) or exceed the depth cap? Returns a human error
-   string, or null when the link is fine. */
+   string, or null when the link is fine. The cap measures the longest
+   ownership PATH through the new link (layers above the owner + the link +
+   layers below this LLC) — breadth (how MANY entities a layer holds) is
+   never limited. */
 async function ownershipLinkError(llcId, ownerLlcId) {
   if (String(ownerLlcId) === String(llcId)) return 'an entity cannot own itself';
   // Cycle: the proposed owner is (transitively) owned by this LLC already.
-  const ownersOfOwner = await getAncestorEntityIds(ownerLlcId, { maxDepth: MAX_ENTITY_DEPTH + 1 });
-  if (ownersOfOwner.includes(String(llcId))) {
+  const up = await walkChain(ownerLlcId, 'up', { maxDepth: MAX_ENTITY_DEPTH + 1 });
+  if (up.ids.includes(String(llcId))) {
     return 'that would create an ownership loop — this entity already (indirectly) owns the one you picked';
   }
-  // Depth: layers above the owner + this new link + layers below this LLC.
-  const above = await getAncestorEntityIds(ownerLlcId);
-  const below = await getDescendantEntityIds(llcId);
-  const chain = above.length + 1 + below.length;
-  if (chain > MAX_ENTITY_DEPTH) return `ownership chains are limited to ${MAX_ENTITY_DEPTH} layers`;
+  const down = await walkChain(llcId, 'down', { maxDepth: MAX_ENTITY_DEPTH + 1 });
+  if (up.depth + 1 + down.depth > MAX_ENTITY_DEPTH) return `ownership chains are limited to ${MAX_ENTITY_DEPTH} layers`;
   return null;
 }
 
@@ -377,7 +372,11 @@ async function cascadeToOwnedEntities(llcId, opts) {
     for (const childId of children) {
       await syncLlcConditions(childId, { reopen: !!opts.reopen, _cascaded: true });
     }
-  } catch (_) { /* best-effort — a chain hiccup must never break the trigger action */ }
+  } catch (e) {
+    // Best-effort — a chain hiccup must never break the triggering action —
+    // but never silently: a stale child condition is invisible otherwise.
+    console.warn('[llc-cascade] condition re-sync for owned entities failed:', e.message);
+  }
 }
 
 // ---------------- entity-detail validators (shared write path) ----------------
@@ -450,9 +449,9 @@ async function replaceMembers(llcId, members, opts = {}) {
       if (linkErr) { const e = new Error(linkErr); e.status = 400; throw e; }
     } else {
       // Brand-new owning entity: no cycle is possible (nothing links to it yet);
-      // only the depth of the chain hanging under this LLC can overflow.
-      const below = await getDescendantEntityIds(llcId);
-      if (1 + below.length > MAX_ENTITY_DEPTH) {
+      // only the PATH DEPTH of the chain hanging under this LLC can overflow.
+      const down = await walkChain(llcId, 'down', { maxDepth: MAX_ENTITY_DEPTH + 1 });
+      if (1 + down.depth > MAX_ENTITY_DEPTH) {
         const e = new Error(`ownership chains are limited to ${MAX_ENTITY_DEPTH} layers`); e.status = 400; throw e;
       }
       const made = await findOrCreateLlc(opts.borrowerId, { llcName: m.ownerLlcName || m.fullName });

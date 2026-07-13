@@ -910,7 +910,19 @@ router.get('/llcs/:id', async (req, res) => {
     const linked = await db.query(
       `SELECT 1 FROM applications WHERE llc_id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL LIMIT 1`,
       [req.params.id, me(req)]);
-    if (!linked.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (!linked.rows[0]) {
+      // Layered entities: the vesting LLC's OWNING entities render nested
+      // inside its read-only view, so a co-borrower's read grant extends up
+      // the ownership chain of any LLC vesting on their files.
+      const vested = await db.query(
+        `SELECT DISTINCT llc_id FROM applications
+          WHERE llc_id IS NOT NULL AND (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL`, [me(req)]);
+      let inChain = false;
+      for (const row of vested.rows) {
+        if ((await llcLib.getAncestorEntityIds(row.llc_id)).includes(String(req.params.id))) { inChain = true; break; }
+      }
+      if (!inChain) return res.status(404).json({ error: 'not found' });
+    }
   }
   const bundle = scrubLlcSlots(await llcLib.getLlcBundle(req.params.id));
   res.json({ ...bundle, read_only: !mine });
