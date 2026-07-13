@@ -49,8 +49,17 @@ const STATE_ABBR = new Set(['al','ak','az','ar','ca','co','ct','de','fl','ga','h
 const NOISE_TAIL = new Set(['usa', 'us', 'unitedstates', 'america']);
 const UNIT_MARKERS = new Set(['apt', 'apartment', 'unit', 'ste', 'suite', 'fl', 'floor', 'rm', 'room', 'bsmt', 'basement']);
 
+// Auto-created folders carry this marker (owner-directed 2026-07-13): every
+// folder the AUTOMATION creates at the officer/borrower/address level is named
+// "<name>, YS portal sync" so staff can always tell API-created folders from
+// human-created ones. Matched (pre-existing) folders are never renamed. The
+// marker is stripped during matching so a previously-created folder still
+// matches its borrower/address next time.
+const AUTO_MARKER = ', YS portal sync';
+
 const norm = (s) => String(s || '')
   .toLowerCase()
+  .replace(/\bys portal sync(ing)?\b/g, ' ')   // marker never participates in matching
   .replace(/[.,'’"()‘’“”]/g, ' ')
   .replace(/\s+/g, ' ')
   .trim();
@@ -59,10 +68,11 @@ const nameTokens = (s) => norm(s).split(' ').filter(Boolean);
 
 // Address → { num, street[], unit } core, computed from the PRE-COMMA segment
 // only (the street portion — everything after the first comma is city/state/
-// zip tail and is ignorable). Returns null when there is no leading house
-// number (which is what keeps stage/category folders out of address matching).
-// `unit` captures the first token after an apt/unit/#-marker so two different
-// units at the same street address never collapse into one folder.
+// zip tail and is ignorable; the auto-created ", YS portal sync" marker lands
+// after a comma too, so it is structurally ignorable). Returns null when there
+// is no leading house number (which is what keeps stage/category folders out
+// of address matching). `unit` captures the first token after an apt/unit/
+// #-marker so two different units never collapse into one folder.
 function addressCore(s) {
   const streetPart = String(s || '').split(',')[0];   // comma captured BEFORE norm strips it
   let toks = norm(streetPart).replace(/#/g, ' # ').split(' ').filter(Boolean);
@@ -183,30 +193,34 @@ async function resolveSyncFolder(ctx) {
 
   const borrowerName = [ctx.borrowerFirst, ctx.borrowerLast].filter(Boolean).join(' ').trim() || 'Unknown Borrower';
 
+  // Every folder the automation CREATES is named "<name>, YS portal sync"
+  // (AUTO_MARKER) so humans can tell it apart; matched folders keep their name.
+  const createMarked = async (pid, name) => sp.ensureChildFolder(driveId, pid, `${name}${AUTO_MARKER}`);
+
   if (!ctx.officerName) {
     // No officer at all → clearly-labeled unfiled area, never guessing.
     const unfiled = await sp.ensureChildFolder(driveId, parentId, cfg.sharepointUnfiledRoot);
     parentId = unfiled.id; pathParts.push(cfg.sharepointUnfiledRoot);
     details.flags.push('no-officer:unfiled');
-    const bf = await sp.ensureChildFolder(driveId, parentId, borrowerName);
-    parentId = bf.id; pathParts.push(borrowerName);
+    const bf = await createMarked(parentId, borrowerName);
+    parentId = bf.id; pathParts.push(bf.name);
     if (bf.created) details.created.push('borrower');
     // Keep the address level for application scopes here too — without it, a
     // lead-capture borrower's multiple loans would commingle in one folder.
     if (ctx.hasApplication) {
       const addressName = ctx.addressOneLine || (ctx.ysLoanNumber ? `Loan ${ctx.ysLoanNumber}` : 'Property');
-      const af = await sp.ensureChildFolder(driveId, parentId, addressName);
-      parentId = af.id; pathParts.push(addressName);
+      const af = await createMarked(parentId, addressName);
+      parentId = af.id; pathParts.push(af.name);
       if (af.created) details.created.push('address');
     }
   } else {
-    // 1) Officer folder (fuzzy; created if genuinely missing).
+    // 1) Officer folder (fuzzy; created — with the marker — if genuinely missing).
     const officers = await sp.listChildren(driveId, parentId);
     const om = pickMatch(officers, (n) => officerMatches(n, ctx.officerName), ctx.officerName);
     let officerFolder = om.hit;
     if (om.ambiguous) details.flags.push('officer-ambiguous');
     if (!officerFolder) {
-      officerFolder = await sp.ensureChildFolder(driveId, parentId, ctx.officerName);
+      officerFolder = await createMarked(parentId, ctx.officerName);
       details.created.push('officer');
     }
     details.matches.officer = officerFolder.name;
@@ -218,7 +232,7 @@ async function resolveSyncFolder(ctx) {
     let borrowerFolder = bm.hit;
     if (bm.ambiguous) details.flags.push('borrower-ambiguous');
     if (!borrowerFolder) {
-      borrowerFolder = await sp.ensureChildFolder(driveId, parentId, borrowerName);
+      borrowerFolder = await createMarked(parentId, borrowerName);
       details.created.push('borrower');
     }
     details.matches.borrower = borrowerFolder.name;
@@ -235,7 +249,7 @@ async function resolveSyncFolder(ctx) {
       let addressFolder = am.hit;
       if (am.ambiguous) details.flags.push('address-ambiguous');
       if (!addressFolder) {
-        addressFolder = await sp.ensureChildFolder(driveId, parentId, addressName);
+        addressFolder = await createMarked(parentId, addressName);
         details.created.push('address');
       }
       details.matches.address = addressFolder.name;
@@ -261,12 +275,21 @@ async function resolveSyncFolder(ctx) {
   return out;
 }
 
-// Find-or-create a condition/category folder inside a sync folder.
-async function resolveConditionFolder(driveId, syncFolderId, name) {
-  const key = `${syncFolderId}:${norm(name)}`;
+// Find-or-create a condition/category folder inside a sync folder. `nameOrPath`
+// may be a single name or an ARRAY of nested segments (e.g. an LLC's name with
+// a document-type subfolder, or Term Sheet/Unsigned) — each level is
+// find-or-create, never renamed.
+async function resolveConditionFolder(driveId, syncFolderId, nameOrPath) {
+  const segments = Array.isArray(nameOrPath) ? nameOrPath : [nameOrPath];
+  const key = `${syncFolderId}:${segments.map(norm).join('/')}`;
   if (_conditionFolderCache.has(key)) return _conditionFolderCache.get(key);
-  const folder = await sp.ensureChildFolder(driveId, syncFolderId, name);
-  const out = { id: folder.id, webUrl: folder.webUrl, name: folder.name };
+  let parentId = syncFolderId;
+  let folder = null;
+  for (const seg of segments) {
+    folder = await sp.ensureChildFolder(driveId, parentId, seg);
+    parentId = folder.id;
+  }
+  const out = { id: folder.id, webUrl: folder.webUrl, name: segments.join('/') };
   _conditionFolderCache.set(key, out);
   return out;
 }

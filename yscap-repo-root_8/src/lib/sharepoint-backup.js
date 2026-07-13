@@ -55,34 +55,63 @@ function enabled() {
 }
 
 // ---------------------------------------------------------------- categorizing
-// The folder a document belongs in, inside YS portal syncing. Condition-attached
-// documents use the condition's label; everything else maps by kind.
-function categoryFor(row) {
-  if (row.item_label) return row.item_label;
-  if (row.doc_kind === 'term_sheet') return 'Term Sheet';
-  if (row.doc_kind === 'photo_id') return 'Photo ID';
-  if (row.doc_kind === 'tpr_export') return 'TPR Exports';
+// LLC document-type subfolders by slot template code (owner-directed
+// 2026-07-13: each LLC gets a folder named with the LLC NAME, containing
+// EIN letter / formation documents / operating agreement subfolders).
+function llcSubfolder(row) {
+  const code = row.template_code || '';
+  if (/formation/.test(code)) return 'Formation Documents';
+  if (/ein/.test(code)) return 'EIN Letter';
+  if (/opagmt|operating/.test(code)) return 'Operating Agreement';
+  if (/goodstanding/.test(code)) return 'Certificate of Good Standing';
+  const label = (row.item_label || '').toLowerCase();
+  if (/formation|articles|certificate of formation/.test(label)) return 'Formation Documents';
+  if (/ein|ss-4/.test(label)) return 'EIN Letter';
+  if (/operating/.test(label)) return 'Operating Agreement';
+  if (/good standing/.test(label)) return 'Certificate of Good Standing';
+  return row.item_label || 'Other Documents';
+}
+
+// The folder PATH a document belongs in, inside YS portal syncing — an array
+// of nested segments. Condition-attached documents use the condition's label;
+// LLC documents nest under the LLC's NAME; track-record verification docs nest
+// under their project's address; term sheets split Unsigned/Signed (the Signed
+// side arrives with the DocuSign integration).
+function categoryPathFor(row) {
+  if (row.llc_resolved_id) return [row.llc_name || 'LLC', llcSubfolder(row)];
+  if (row.doc_kind === 'photo_id') return ['Photo ID'];               // always profile-level
+  if (row.doc_kind === 'term_sheet') return ['Term Sheet', 'Unsigned'];
+  if (row.doc_kind === 'term_sheet_signed') return ['Term Sheet', 'Signed'];
+  if (row.doc_kind === 'tpr_export') return ['TPR Exports'];
   // The autosaved track-record HTML gets its own category so its frequent
   // supersede-driven versions never shuffle the per-project verification docs.
-  if (row.doc_kind === 'track_record_html') return 'Track Record Saved Copy';
-  if (row.track_record_id || row.doc_kind === 'track_record_doc') return 'Track Record';
-  if (row.source_type === 'chat_attachment') return 'Chat Attachments';
-  if (row.llc_id) return 'LLC Documents';
-  return 'General Documents';
+  if (row.doc_kind === 'track_record_html') return ['Track Record Saved Copy'];
+  if (row.track_record_id || row.doc_kind === 'track_record_doc') {
+    return ['Track Record', row.tr_address || (row.track_record_id ? `Project ${String(row.track_record_id).slice(0, 8)}` : 'General')];
+  }
+  if (row.item_label) return [row.item_label];
+  if (row.source_type === 'chat_attachment') return ['Chat Attachments'];
+  return ['General Documents'];
 }
+// Back-compat name used by tests/health.
+const categoryFor = (row) => categoryPathFor(row).join('/');
 
 const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'x';
 
 // Scope: which YS portal syncing folder the document belongs to. Applications
 // get the full officer/borrower/address chain; borrower-profile documents live
-// under the borrower folder directly.
+// under the borrower folder directly. Photo IDs are ALWAYS profile-level
+// (owner-directed: the government ID lives directly in the borrower's profile
+// folder, like the profile itself) even when uploaded from a file context.
 function scopeKeyFor(row) {
+  if (row.doc_kind === 'photo_id' && row.borrower_id) return `borrower:${row.borrower_id}`;
   if (row.app_id) return `app:${row.app_id}`;
   if (row.borrower_id) return `borrower:${row.borrower_id}`;
   return null;
 }
 
 function stateKeyFor(row, scopeKey) {
+  if (row.doc_kind === 'photo_id') return `kind:${scopeKey}:photo-id`;   // one stream across files
   return row.checklist_item_id ? `item:${row.checklist_item_id}` : `kind:${scopeKey}:${slug(categoryFor(row))}`;
 }
 
@@ -99,6 +128,11 @@ async function pendingBatch(limit) {
             COALESCE(d.application_id, ci.application_id)                        AS app_id,
             COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
             ci.label                                                            AS item_label,
+            ct.code                                                             AS template_code,
+            l.id                                                                AS llc_resolved_id,
+            l.llc_name,
+            COALESCE(tr.property_address->>'oneLine',
+                     tr.property_address->>'street', tr.property_address->>'line1') AS tr_address,
             a.ys_loan_number,
             COALESCE(a.property_address->>'oneLine',
                      NULLIF(TRIM(CONCAT_WS(', ',
@@ -109,6 +143,8 @@ async function pendingBatch(limit) {
             b.last_name   AS borrower_last
        FROM documents d
        LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+       LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+       LEFT JOIN track_records tr   ON tr.id = d.track_record_id
        LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
        LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
        LEFT JOIN staff_users su     ON su.id = a.loan_officer_id
@@ -298,8 +334,9 @@ async function mirrorRowInner(row, scopeKey) {
   });
   const driveId = target.driveId;
 
-  const category = categoryFor(row);
-  const conditionFolder = await map.resolveConditionFolder(driveId, target.syncFolderId, category);
+  const categoryPath = categoryPathFor(row);
+  const category = categoryPath.join('/');
+  const conditionFolder = await map.resolveConditionFolder(driveId, target.syncFolderId, categoryPath);
   const stateKey = stateKeyFor(row, scopeKey);
 
   let state = await getConditionState(stateKey);
@@ -431,6 +468,14 @@ function start() {
     console.log('[sp-sync] disabled (set SHAREPOINT_BACKUP_ENABLED=1 + MS_* creds to enable)');
     return;
   }
+  // Boot reset: rows that exhausted their retry budget get a fresh chance on
+  // every deploy — deploys are exactly when fixes arrive (learned in prod:
+  // the first backfill burned all 8 attempts on a bug that the next deploy
+  // fixed, and the daily reset alone would have stalled the mirror for a day).
+  db.query(
+    `UPDATE documents SET sharepoint_backup_attempts = 0
+      WHERE sharepoint_backed_up_at IS NULL AND sharepoint_backup_attempts >= $1`,
+    [MAX_ATTEMPTS]).catch(() => {});
   const sec = Number.isFinite(cfg.sharepointBackupPollSec) ? cfg.sharepointBackupPollSec : 300;
   const ms = Math.max(60, sec) * 1000;
   console.log(`[sp-sync] enabled — mirroring into "${cfg.sharepointPipelineRoot}/**/${cfg.sharepointSyncFolderName}" (sweep every ${ms / 1000}s)`);
