@@ -234,7 +234,7 @@ async function uploadNew(driveId, parentId, filename, buf, contentType) {
         body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'fail', name } }),
       },
     );
-    let start = 0, last = null;
+    let start = 0, last = null, throttled = 0;
     while (start < buf.length) {
       const end = Math.min(start + CHUNK, buf.length);
       const chunk = buf.subarray(start, end);
@@ -244,6 +244,7 @@ async function uploadNew(driveId, parentId, filename, buf, contentType) {
         body: chunk,
       }, 180000);
       if (r.status === 429 || r.status === 503) {
+        if (++throttled > 20) throw new Error('SharePoint upload session throttled persistently — giving up (will retry later)');
         const ra = parseInt(r.headers.get('retry-after') || '5', 10);
         await sleep(Math.min(ra * 1000, 120000));
         continue; // retry the same range
@@ -274,13 +275,16 @@ async function uploadNew(driveId, parentId, filename, buf, contentType) {
  */
 async function moveOwnItem(driveId, itemId, newParentId, { expectedParentId }) {
   if (!expectedParentId) throw new Error('moveOwnItem: expectedParentId is required');
-  const cur = await graph(`/drives/${driveId}/items/${itemId}?$select=id,name,parentReference`);
+  const cur = await graph(`/drives/${driveId}/items/${itemId}?$select=id,name,parentReference,eTag`);
   if (!cur.parentReference || cur.parentReference.id !== expectedParentId) {
     throw new Error(`moveOwnItem refused: item is not in the expected portal-managed folder (found parent ${cur.parentReference && cur.parentReference.id})`);
   }
+  // If-Match pins the item to the state we just verified: if a human moves or
+  // edits it between our check and this PATCH, Graph answers 412 and we touch
+  // nothing (the caller treats that as human intervention).
   return graph(`/drives/${driveId}/items/${itemId}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(cur.eTag ? { 'If-Match': cur.eTag } : {}) },
     body: JSON.stringify({ parentReference: { id: newParentId } }),
   });
 }

@@ -40,6 +40,7 @@ const KICK_DEBOUNCE_MS = 1500;     // collapse a burst of uploads into one pass
 const MAX_DRAIN_LOOPS = 200;       // backfill safety valve per drain (200*25 docs)
 
 let _running = false;              // single-flight: kick + interval never overlap
+let _rekick = false;               // an upload arrived mid-drain — drain again after
 let _kickTimer = null;
 let _interval = null;
 let _lastPass = null;              // stats for /api/health
@@ -58,7 +59,10 @@ function categoryFor(row) {
   if (row.doc_kind === 'term_sheet') return 'Term Sheet';
   if (row.doc_kind === 'photo_id') return 'Photo ID';
   if (row.doc_kind === 'tpr_export') return 'TPR Exports';
-  if (row.track_record_id || row.doc_kind === 'track_record_doc' || row.doc_kind === 'track_record_snapshot') return 'Track Record';
+  // The autosaved track-record HTML gets its own category so its frequent
+  // supersede-driven versions never shuffle the per-project verification docs.
+  if (row.doc_kind === 'track_record_html') return 'Track Record Saved Copy';
+  if (row.track_record_id || row.doc_kind === 'track_record_doc') return 'Track Record';
   if (row.source_type === 'chat_attachment') return 'Chat Attachments';
   if (row.llc_id) return 'LLC Documents';
   return 'General Documents';
@@ -90,10 +94,13 @@ async function pendingBatch(limit) {
             d.slot_label, d.doc_kind, d.source_type, d.is_current,
             d.checklist_item_id, d.track_record_id, d.llc_id, d.created_at,
             COALESCE(d.application_id, ci.application_id)                        AS app_id,
-            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id)              AS borrower_id,
+            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
             ci.label                                                            AS item_label,
             a.ys_loan_number,
-            a.property_address->>'oneLine'                                      AS address_one_line,
+            COALESCE(a.property_address->>'oneLine',
+                     NULLIF(TRIM(CONCAT_WS(', ',
+                       COALESCE(a.property_address->>'street', a.property_address->>'line1'),
+                       a.property_address->>'city', a.property_address->>'state')), '')) AS address_one_line,
             COALESCE(su.full_name, a.loan_officer_name, recent.officer_name)    AS officer_name,
             b.first_name  AS borrower_first,
             b.last_name   AS borrower_last
@@ -102,7 +109,7 @@ async function pendingBatch(limit) {
        LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
        LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
        LEFT JOIN staff_users su     ON su.id = a.loan_officer_id
-       LEFT JOIN borrowers b        ON b.id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id)
+       LEFT JOIN borrowers b        ON b.id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id)
        LEFT JOIN LATERAL (
          SELECT COALESCE(su2.full_name, a2.loan_officer_name) AS officer_name
            FROM applications a2
@@ -115,7 +122,10 @@ async function pendingBatch(limit) {
         AND d.storage_ref IS NOT NULL
         AND COALESCE(d.storage_provider, 'local') = 'local'
         AND d.sharepoint_backup_attempts < $2
-      ORDER BY d.created_at ASC
+      -- attempts ASC first: fresh uploads are never starved behind a head-of-
+      -- queue clump of repeatedly-failing rows; created_at ASC within a tier
+      -- keeps the backfill's version replay chronological.
+      ORDER BY d.sharepoint_backup_attempts ASC, d.created_at ASC
       LIMIT $1`,
     [limit, MAX_ATTEMPTS],
   );
@@ -149,13 +159,17 @@ async function isSupersedeEvent(row, stateKey, currentVersion) {
     params.push(row.checklist_item_id);
     where = 'm.checklist_item_id = $3';
   } else {
-    // kind-scoped (term sheet / track record / …): same scope + same category
+    // kind-scoped (term sheet / track record / …): same scope + same category.
+    // llc/track-record NULL-ness participates so an LLC doc and a general doc
+    // (both doc_kind NULL) can never trip each other's version counter.
     params.push(row.app_id, row.borrower_id, row.doc_kind || '', row.source_type || '');
     where = `m.checklist_item_id IS NULL
              AND COALESCE(m.application_id::text,'') = COALESCE($3::text,'')
              AND COALESCE(m.borrower_id::text,'')   = COALESCE($4::text,'')
              AND COALESCE(m.doc_kind,'')            = $5
-             AND COALESCE(m.source_type,'')         = $6`;
+             AND COALESCE(m.source_type,'')         = $6
+             AND (m.llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
+             AND (m.track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
   }
   params.push(row.slot_label);
   const { rows } = await db.query(
@@ -185,7 +199,9 @@ async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) 
              AND COALESCE(application_id::text,'') = COALESCE($1::text,'')
              AND COALESCE(borrower_id::text,'')    = COALESCE($2::text,'')
              AND COALESCE(doc_kind,'')             = $3
-             AND COALESCE(source_type,'')          = $4`;
+             AND COALESCE(source_type,'')          = $4
+             AND (llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
+             AND (track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
     params = [row.app_id, row.borrower_id, row.doc_kind || '', row.source_type || ''];
   }
   const olds = (await db.query(
@@ -199,9 +215,14 @@ async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) 
       await sp.moveOwnItem(driveId, itemId, v1.id, { expectedParentId: conditionFolder.id });
       await db.query('UPDATE documents SET sharepoint_version=1, sharepoint_parent_id=$2 WHERE id=$1', [old.id, v1.id]);
     } catch (e) {
-      // A human already moved/removed it — leave it alone (never force), but
-      // record the version so we don't retry the move forever.
-      console.warn(`[sp-sync] version shuffle skipped for doc ${old.id}: ${e.message}`);
+      // Distinguish "a human intervened" (item gone, or no longer where our
+      // records say — leave it alone forever, never force) from a TRANSIENT
+      // failure (throttle/network — rethrow so this document's pass fails and
+      // the whole shuffle retries later with consistent bookkeeping).
+      const humanIntervened = e.status === 404 || e.status === 412 || e.graphCode === 'itemNotFound'
+        || /moveOwnItem refused/.test(e.message || '');
+      if (!humanIntervened) throw e;
+      console.warn(`[sp-sync] version shuffle skipped for doc ${old.id} (human intervention): ${e.message}`);
       await db.query('UPDATE documents SET sharepoint_version=1 WHERE id=$1', [old.id]);
     }
     await sleep(PACING_MS);
@@ -229,6 +250,9 @@ async function mirrorRow(row, retried = false) {
 }
 
 async function mirrorRowInner(row, scopeKey) {
+  // Read the bytes FIRST: a missing/corrupt local file must fail the row
+  // before any folder is created or a version counter is bumped.
+  const bytes = await storage.read(row.storage_ref);
 
   const target = await map.resolveSyncFolder({
     scopeKey,
@@ -269,7 +293,6 @@ async function mirrorRowInner(row, scopeKey) {
 
   // Upload with the clean original filename; uniquify only on a real conflict
   // (append-only — never overwrite an existing item).
-  const bytes = await storage.read(row.storage_ref);
   const cleanName = sp.seg(row.filename || 'document');
   let up = await sp.uploadNew(driveId, parentId, cleanName, bytes, row.content_type);
   if (up.conflict) {
@@ -329,6 +352,13 @@ async function drain() {
   if (_running) return;
   _running = true;
   try {
+    // Documents that exhausted their attempts get one fresh chance per day —
+    // a persistent outage (or a bug fixed by a deploy) must not orphan them.
+    await db.query(
+      `UPDATE documents SET sharepoint_backup_attempts = 0
+        WHERE sharepoint_backed_up_at IS NULL AND sharepoint_backup_attempts >= $1
+          AND sharepoint_backup_attempted_at < now() - interval '1 day'`,
+      [MAX_ATTEMPTS]).catch(() => {});
     for (let i = 0; i < MAX_DRAIN_LOOPS; i++) {
       const res = await runOnce({});
       if (res.skipped || res.scanned === 0) break;
@@ -340,6 +370,9 @@ async function drain() {
     console.warn('[sp-sync] drain error:', e.message);
   } finally {
     _running = false;
+    // Lost-wakeup guard: an upload that arrived while this drain was running
+    // re-queues one more pass instead of waiting for the interval sweep.
+    if (_rekick) { _rekick = false; kick(); }
   }
 }
 
@@ -350,6 +383,7 @@ async function drain() {
  */
 function kick() {
   if (!enabled()) return;
+  if (_running) { _rekick = true; return; }   // drain in flight — run again after
   if (_kickTimer) return;
   _kickTimer = setTimeout(() => {
     _kickTimer = null;
@@ -364,7 +398,8 @@ function start() {
     console.log('[sp-sync] disabled (set SHAREPOINT_BACKUP_ENABLED=1 + MS_* creds to enable)');
     return;
   }
-  const ms = Math.max(60, cfg.sharepointBackupPollSec) * 1000;
+  const sec = Number.isFinite(cfg.sharepointBackupPollSec) ? cfg.sharepointBackupPollSec : 300;
+  const ms = Math.max(60, sec) * 1000;
   console.log(`[sp-sync] enabled — mirroring into "${cfg.sharepointPipelineRoot}/**/${cfg.sharepointSyncFolderName}" (sweep every ${ms / 1000}s)`);
   _interval = setInterval(() => drain(), ms);
   if (_interval.unref) _interval.unref();

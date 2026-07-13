@@ -57,16 +57,20 @@ const norm = (s) => String(s || '')
 
 const nameTokens = (s) => norm(s).split(' ').filter(Boolean);
 
-// Address → { num, street[] } core. Returns null when there is no leading house
-// number (which is what keeps stage/category folders out of address matching).
+// Address → { num, street[], unit } core. Returns null when there is no leading
+// house number (which is what keeps stage/category folders out of address
+// matching). `unit` captures the first token after an apt/unit/#-marker so two
+// different units at the same street address never collapse into one folder.
 function addressCore(s) {
   let toks = norm(s).replace(/#/g, ' # ').split(' ').filter(Boolean);
   if (!toks.length || !/^\d+[a-z]?$/.test(toks[0])) return null;
   const num = toks[0];
   toks = toks.slice(1);
   const street = [];
-  for (const t of toks) {
-    if (t === '#' || UNIT_MARKERS.has(t)) break;           // unit/apt tail starts
+  let unit = null;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (t === '#' || UNIT_MARKERS.has(t)) { unit = toks[i + 1] || null; break; }  // unit/apt tail
     const mapped = SUFFIX[t] || DIRECTION[t] || t;
     street.push(mapped);
   }
@@ -76,15 +80,17 @@ function addressCore(s) {
     if (/^\d{5}(-\d{4})?$/.test(last) || STATE_ABBR.has(last) || NOISE_TAIL.has(last)) street.pop();
     else break;
   }
-  return street.length ? { num, street } : null;
+  return street.length ? { num, street, unit } : null;
 }
 
 // Does candidate address folder match the target address? House number must be
 // identical; then the shorter street-token list must be a prefix of the longer
-// (tolerates a city/state tail on either side after noise-stripping).
+// (tolerates a city/state tail on either side after noise-stripping). When BOTH
+// sides carry a unit/apt number, the units must be identical too.
 function addressMatches(candidate, target) {
   const c = addressCore(candidate), t = addressCore(target);
   if (!c || !t || c.num !== t.num) return false;
+  if (c.unit && t.unit && c.unit !== t.unit) return false;
   const [short, long] = c.street.length <= t.street.length ? [c.street, t.street] : [t.street, c.street];
   if (!short.length) return false;
   for (let i = 0; i < short.length; i++) if (short[i] !== long[i]) return false;
@@ -117,14 +123,17 @@ function officerMatches(candidate, officerName) {
   return cand.length >= 2 && want.length >= 2 && cand[0] === want[0] && cand[cand.length - 1] === want[want.length - 1];
 }
 
-// Pick the single best match; exact normalized equality wins ties. Returns
-// { hit, ambiguous } — ambiguity is recorded for manual review, first hit used.
+// Pick the single best match; exact normalized equality wins ties. On a
+// genuinely AMBIGUOUS fuzzy match (2+ hits, none exact) we return no hit —
+// the caller then CREATES an exact-named folder rather than guessing into
+// possibly the wrong person's/property's folder (owner rule: can't link
+// confidently => new folder + manual review).
 function pickMatch(candidates, matchFn, exactName) {
   const hits = candidates.filter((c) => c.isFolder && matchFn(c.name));
   if (!hits.length) return { hit: null, ambiguous: false };
   if (hits.length === 1) return { hit: hits[0], ambiguous: false };
   const exact = hits.find((h) => norm(h.name) === norm(exactName));
-  return { hit: exact || hits[0], ambiguous: !exact };
+  return { hit: exact || null, ambiguous: !exact };
 }
 
 // ------------------------------------------------------------------ resolution
@@ -152,7 +161,12 @@ async function resolveSyncFolder(ctx) {
     'SELECT sync_folder_id, web_url, full_path, details FROM sharepoint_folder_cache WHERE scope_key=$1',
     [ctx.scopeKey])).rows[0];
   const { driveId, rootId } = await pipelineRoot();
-  if (cached) {
+  // Upgrade path: a scope that resolved to the Unfiled area while no officer
+  // existed re-resolves once an officer is known — new docs then file into the
+  // real officer tree (the old Unfiled copies stay put; we never move them).
+  const wasUnfiled = cached && Array.isArray(cached.details && cached.details.flags)
+    && cached.details.flags.includes('no-officer:unfiled');
+  if (cached && !(wasUnfiled && ctx.officerName)) {
     const out = { driveId, syncFolderId: cached.sync_folder_id, webUrl: cached.web_url, fullPath: cached.full_path, details: cached.details };
     _memCache.set(ctx.scopeKey, out);
     return out;
@@ -251,6 +265,7 @@ async function resolveConditionFolder(driveId, syncFolderId, name) {
 async function invalidateScope(scopeKey) {
   _memCache.delete(scopeKey);
   _conditionFolderCache.clear();          // keyed by sync folder id — cheap to rebuild
+  _pipelineRoot = null;                   // heal a stale Pipeline Drive root id too
   try { await db.query('DELETE FROM sharepoint_folder_cache WHERE scope_key=$1', [scopeKey]); }
   catch (_) { /* best-effort */ }
 }
