@@ -336,7 +336,7 @@ function TrackRecord({ id }) {
             <tr key={t.id} style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
               <td style={{ padding: '10px 12px' }}>{(t.property_address && t.property_address.oneLine) || addr(t.property_address)}</td>
               <td style={{ padding: '10px 12px' }} className="small">{(t.deal_type || '').replace(/_/g, ' ') || '—'}</td>
-              <td style={{ padding: '10px 12px' }} className="small">{t.entity_name || '—'}</td>
+              <td style={{ padding: '10px 12px' }} className="small">{t.owned_personally ? 'Personal name' : (t.entity_name || '—')}</td>
               <td style={{ padding: '10px 12px' }}>{money(t.purchase_price)}</td>
               <td style={{ padding: '10px 12px' }}>{money(t.sale_price || t.current_value)}</td>
               <td style={{ padding: '10px 12px' }}>{t.is_verified ? <span className="pill ok">✓</span> : <span className="pill">no</span>}</td>

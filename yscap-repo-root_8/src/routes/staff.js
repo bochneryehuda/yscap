@@ -807,12 +807,23 @@ router.get('/applications/:id/verify-llcs', async (req, res) => {
             )
        ) x`, [req.params.id]);
     const app = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+    // Layered entities: every entity that (transitively) OWNS one of the
+    // file's entities belongs on the verify surface too — a child can only be
+    // verified bottom-up, so staff need its owners in front of them.
+    const ids = idsRes.rows.map((r) => String(r.id));
+    const layered = new Set();
+    for (const id of [...ids]) {
+      for (const anc of await llcLib.getAncestorEntityIds(id)) {
+        if (!ids.includes(anc)) { ids.push(anc); layered.add(anc); }
+      }
+    }
     const out = [];
-    for (const row of idsRes.rows) {
-      const bundle = await llcLib.getLlcBundle(row.id);
+    for (const id of ids) {
+      const bundle = await llcLib.getLlcBundle(id);
       if (bundle) out.push({
         ...bundle,
-        vesting: app.llc_id === row.id,
+        vesting: app.llc_id === id,
+        layered: layered.has(id),   // present because it owns another entity on the file
         missing: llcLib.missingForVerification(bundle, bundle.members, bundle.slots),
       });
     }
@@ -2393,9 +2404,19 @@ router.get('/borrowers/:id/track-records', async (req, res) => {
       `SELECT t.id, t.deal_type, t.property_address, t.purchase_price, t.sale_price, t.rehab_amount,
               t.purchase_date, t.sale_date, t.rent_amount, t.rent_date, t.refi_amount, t.refi_date,
               t.current_value, t.notes, t.is_verified, t.verified_at, t.docs_status,
-              t.property_type, t.verification_status, t.lo_notes,
+              t.property_type, t.verification_status, t.lo_notes, t.owned_personally,
               COALESCE(t.entity_name, l.llc_name) AS entity_name, v.full_name AS verified_by_name,
-              (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count
+              (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count,
+              (SELECT COALESCE(json_agg(json_build_object(
+                      'id', d.id, 'filename', d.filename, 'review_status', d.review_status,
+                      'created_at', d.created_at) ORDER BY d.created_at), '[]'::json)
+                 FROM documents d
+                WHERE d.track_record_id=t.id AND d.is_current) AS docs,
+              (SELECT COALESCE(json_agg(json_build_object(
+                      'id', ci.id, 'label', ci.label, 'hint', ci.hint, 'status', ci.status,
+                      'application_id', ci.application_id) ORDER BY ci.created_at), '[]'::json)
+                 FROM checklist_items ci
+                WHERE ci.track_record_id=t.id AND ci.status NOT IN ('satisfied')) AS doc_requests
          FROM track_records t
          LEFT JOIN llcs l ON l.id = t.llc_id
          LEFT JOIN staff_users v ON v.id = t.verified_by
@@ -2409,6 +2430,7 @@ const { trackRecordErrors, trackRecordCols, trackRecordMissing } = require('./bo
 router.post('/borrowers/:id/track-records', async (req, res) => {
   const b = req.body || {};
   if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+  if (b.ownedPersonally) b.llcId = null;   // personal-name line carries no entity
   const bad = trackRecordErrors(b);
   if (bad) return res.status(400).json({ error: bad });
   const cols = trackRecordCols(b);
@@ -2416,6 +2438,9 @@ router.post('/borrowers/:id/track-records', async (req, res) => {
     const l = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, req.params.id]);
     if (l.rows[0]) cols.llc_id = b.llcId;
   }
+  // Personal-name lines carry no entity — clear it in the upsert's update set
+  // too, so a retried create can't leave a stale llc_id on the conflicted row.
+  if (b.ownedPersonally) cols.llc_id = null;
   const names = Object.keys(cols);
   const vals = Object.values(cols);
   // Idempotent create: a stable clientRowId per line collapses a repeated POST
@@ -2440,6 +2465,7 @@ router.post('/borrowers/:id/track-records', async (req, res) => {
 });
 router.put('/track-records/:id', async (req, res) => {
   const b = req.body || {};
+  if (b.ownedPersonally) b.llcId = null;   // personal-name line carries no entity
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
@@ -2512,11 +2538,25 @@ router.post('/track-records/:id/documents', async (req, res) => {
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  // Same contract as the borrower path: an upload straight to the line item
+  // also lands on the oldest open document-request condition for that line.
+  const openReq = await db.query(
+    `SELECT id FROM checklist_items
+      WHERE track_record_id=$1 AND item_kind='document'
+        AND status IN ('outstanding','requested','issue')
+      ORDER BY created_at LIMIT 1`, [req.params.id]);
+  const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
   const r = await db.query(
-    `INSERT INTO documents (borrower_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'staff',$8,'track_record_doc') RETURNING id`,
-    [tr.rows[0].borrower_id, req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
+    `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'track_record_doc') RETURNING id`,
+    [tr.rows[0].borrower_id, req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
+  if (reqItemId) {
+    await db.query(
+      `UPDATE checklist_items SET status='received', updated_at=now()
+        WHERE id=$1 AND status IN ('outstanding','requested','issue')`, [reqItemId]);
+    try { await enqueueChecklistStatusPush(reqItemId); } catch (_) {}
+  }
   await audit(req, 'staff_upload_track_record_doc', 'track_record', req.params.id, { filename: b.filename });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
@@ -2572,7 +2612,10 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
   // Only a brand-new entity gets members + its document checklist; an existing
   // one keeps its own (never clobbered by a re-create).
   if (!existed) {
-    if (parsed.members && parsed.members.length) await llcLib.replaceMembers(llcId, parsed.members);
+    if (parsed.members && parsed.members.length) {
+      try { await llcLib.replaceMembers(llcId, parsed.members, { borrowerId }); }
+      catch (e) { return res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the members' }); }
+    }
     try { await require('./borrower').generateLlcChecklist(llcId); } catch (_) { /* best-effort */ }
   }
   await audit(req, existed ? 'reuse_llc' : 'create_llc', 'llc', llcId, { borrowerId, existed });
@@ -2686,7 +2729,10 @@ router.put('/llcs/:id/members', async (req, res) => {
   if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before making changes' });
   const parsed = llcLib.parseMembers((req.body || {}).members || [], own.rows[0].ownership_pct);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  await llcLib.replaceMembers(req.params.id, parsed.members || []);
+  try { await llcLib.replaceMembers(req.params.id, parsed.members || [], { borrowerId: own.rows[0].borrower_id }); }
+  catch (e) { return res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the members' }); }
+  // Ownership feeds the entity condition (chain-aware) — recompute right away.
+  try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
   await audit(req, 'update_llc_members', 'llc', req.params.id, { count: (parsed.members || []).length });
   res.json({ ok: true });
 });
@@ -2735,13 +2781,30 @@ router.post('/llcs/:id/verify', async (req, res) => {
     [req.params.id]);
   await llcLib.syncLlcConditions(req.params.id, { reopen: true });
   await audit(req, 'unverify_llc', 'llc', req.params.id, reason ? { reason } : null);
+  // Layered entities verify BOTTOM-UP, so a revoked owner invalidates every
+  // verified entity it (transitively) owns — revoke them too, with a derived
+  // reason, or the chain invariant silently breaks (a verified child would sit
+  // on an unverified owner and its file condition would stay signed off).
+  const revokedChildren = [];
+  try {
+    for (const childId of await llcLib.getDescendantEntityIds(req.params.id)) {
+      const c = (await db.query(`SELECT id, llc_name, is_verified FROM llcs WHERE id=$1`, [childId])).rows[0];
+      if (!c || !c.is_verified) continue;
+      await db.query(`UPDATE llcs SET is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now() WHERE id=$1`, [childId]);
+      await llcLib.syncLlcConditions(childId, { reopen: true });
+      await audit(req, 'unverify_llc', 'llc', childId, { reason: `owning entity "${own.rows[0].llc_name}" verification was revoked` });
+      revokedChildren.push(c.llc_name);
+    }
+  } catch (e) { console.warn('[llc-revoke] chain revoke failed:', e.message); }
   try {
     await notify.notifyBorrower(own.rows[0].borrower_id, {
       type: 'llc_unverified', title: 'Your LLC needs attention',
-      body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}. Please review its details and documents on your profile.`,
+      body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}.`
+        + (revokedChildren.length ? ` Because it owns ${revokedChildren.map(n => `"${n}"`).join(', ')}, verification there was reopened too.` : '')
+        + ' Please review the details and documents on your profile.',
       link: '/profile', ctaLabel: 'Review your LLC' });
   } catch (_) { /* best-effort */ }
-  res.json({ ok: true, verified: false });
+  res.json({ ok: true, verified: false, revokedChildren });
 });
 // Verification statuses mirror the static Track Record tool: pending review,
 // documentation required, verified (with docs), limited (public record only).
@@ -2825,6 +2888,33 @@ router.post('/track-records/:id/raise-issue', async (req, res) => {
     const name = addressLabel(tr.rows[0].property_address) || 'a past project';
     const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id });
     await audit(req, 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
+});
+// Request a DOCUMENT for one track-record line item (owner-directed): the back
+// office asks for a specific document on a specific past project. Same
+// chokepoint as raise-issue (one condition tagged with the line item), but the
+// wording/notification is a document request, and the borrower can satisfy it
+// by uploading either on the condition or straight on the line item.
+router.post('/track-records/:id/request-doc', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const appId = b.applicationId;
+    if (!appId) return res.status(400).json({ error: 'applicationId is required — request the document from within a loan file' });
+    const ask = String(b.label || b.reason || '').trim();
+    if (!ask) return res.status(400).json({ error: 'say which document you need' });
+    const tr = await db.query(`SELECT borrower_id, property_address FROM track_records WHERE id=$1`, [req.params.id]);
+    if (!tr.rows[0]) return res.status(404).json({ error: 'track record not found' });
+    if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
+    if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+    const name = addressLabel(tr.rows[0].property_address) || 'a past project';
+    const out = await raiseEntityIssue({
+      appId, entityKind: 'track_record', entityId: req.params.id, entityName: name,
+      reason: ask, actorId: req.actor.id, requestKind: 'doc_request',
+    });
+    // A fresh ask reopens the line's doc state (an open 'issue' stays issue).
+    await db.query(`UPDATE track_records SET docs_status='requested', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','received','satisfied')`, [req.params.id]);
+    await audit(req, 'request_track_record_doc', 'track_record', req.params.id, { applicationId: appId, label: ask.slice(0, 500) });
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
@@ -3632,14 +3722,18 @@ router.post('/applications/:id/documents', async (req, res) => {
   }
   let itemLabel = '';
   let itemAudience = null;
+  let itemTrackRecordId = null;
   if (b.checklistItemId) {
     // An LLC slot item has application_id NULL — look it up by llc_id instead.
     const it = llcId
-      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
-      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
+      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
+      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
     if (!it.rows[0]) return res.status(404).json({ error: 'checklist item not found on this file' });
     itemLabel = it.rows[0].label;
     itemAudience = it.rows[0].audience;
+    // A condition raised FOR one track-record line item: the upload belongs to
+    // that line too (same contract as the borrower path).
+    itemTrackRecordId = it.rows[0].track_record_id || null;
   }
   // Internal (staff-audience) conditions like Insurance / Title never leak to the
   // borrower: store the document staff-only and skip the borrower notification.
@@ -3653,13 +3747,18 @@ router.post('/applications/:id/documents', async (req, res) => {
   const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
-    `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,filename,content_type,size_bytes,storage_provider,storage_ref,
+    `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,
                             uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'staff',$10,$11,$12,$13) RETURNING id`,
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'staff',$11,$12,$13,$14) RETURNING id`,
     [llcId ? null : req.params.id, b.checklistItemId || null,
-     (b.checklistItemId || llcId) ? borrowerId : null, llcId,
+     (b.checklistItemId || llcId) ? borrowerId : null, llcId, itemTrackRecordId,
      b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
      req.actor.id, docKind, slot, docVisibility]);
+  if (itemTrackRecordId) {
+    await db.query(
+      `UPDATE track_records SET docs_status='received', updated_at=now()
+        WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [itemTrackRecordId]);
+  }
   if (docKind === 'term_sheet') {
     await db.query(
       `UPDATE documents SET is_current=false,
@@ -3681,6 +3780,7 @@ router.post('/applications/:id/documents', async (req, res) => {
       `UPDATE documents SET is_current=false,
           review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
         WHERE checklist_item_id=$1 AND id<>$2 AND is_current=true
+          AND COALESCE(doc_kind,'') <> 'track_record_doc'
           AND ($3::text IS NOT NULL OR $4::uuid IS NULL)
           AND ($3::text IS NULL OR slot_label IS NOT DISTINCT FROM $3)`,
       [b.checklistItemId, r.rows[0].id, slot, b.replaceDocumentId || null]);

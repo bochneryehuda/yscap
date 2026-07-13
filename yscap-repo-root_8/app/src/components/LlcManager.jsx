@@ -69,7 +69,11 @@ function SlotRow({ llc, slot, onPick, onDownload, onPreview, dlBusy, uploading, 
   );
 }
 
-export default function LlcManager({ llcId, onChanged, compactHeader, staff = false }) {
+// Ownership chains (layered entities) are capped server-side at 5 layers;
+// the UI stops offering deeper nesting one step earlier.
+const MAX_NESTED_DEPTH = 4;
+
+export default function LlcManager({ llcId, onChanged, compactHeader, staff = false, depth = 0 }) {
   // Staff and borrower hit different route namespaces for the SAME entity actions.
   // This component was hard-wired to the borrower endpoints, so rendering it in a
   // staff surface (the CRM entity section) 403'd ("borrower only"). The `staff`
@@ -111,7 +115,11 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
         formationDate: l.formation_date ? String(l.formation_date).slice(0, 10) : '',
         ownershipPct: l.ownership_pct == null ? '' : String(l.ownership_pct),
       });
-      setMembers((l.members || []).map(m => ({ fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '' })));
+      setMembers((l.members || []).map(m => ({
+        fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '',
+        memberKind: m.member_kind === 'entity' ? 'entity' : 'person',
+        ownerLlcId: m.owner_llc_id || null,
+      })));
     }).catch(e => { if (idRef.current === forId) setErr(e.message || 'Could not load this LLC'); });
   };
   useEffect(() => { setLlc(null); setF(null); setMembers(null); setErr(''); load(); /* eslint-disable-next-line */ }, [llcId]);
@@ -131,7 +139,13 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
       // the members so "Save ownership" never reverts an unsaved percentage.
       await A.update(llcId, f);
       await A.members(llcId, members.filter(m => m.fullName.trim()).map(m => ({
-        fullName: m.fullName.trim(), ownershipPct: Number(m.ownershipPct), email: m.email.trim() || undefined,
+        fullName: m.fullName.trim(), ownershipPct: Number(m.ownershipPct),
+        email: m.memberKind === 'entity' ? undefined : (m.email.trim() || undefined),
+        memberKind: m.memberKind === 'entity' ? 'entity' : 'person',
+        // An id pins the exact entity; a name alone finds-or-creates it in
+        // this borrower's library (renaming the row re-resolves by name).
+        ownerLlcId: m.memberKind === 'entity' ? (m.ownerLlcId || undefined) : undefined,
+        ownerLlcName: m.memberKind === 'entity' ? m.fullName.trim() : undefined,
       })));
       flash('Ownership saved ✓'); await load(); onChanged && onChanged();
     } catch (e) { setErr(e.message || 'Could not save the members'); }
@@ -226,23 +240,62 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
             Every member and their percentage, until the total is 100%.
           </p>
           {(members || []).map((m, i) => (
-            <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-              <input className="input" style={{ flex: 2, minWidth: 160 }} placeholder="Member full name" value={m.fullName} disabled={locked}
-                onChange={e => setMembers(ms => ms.map((x, j) => j === i ? { ...x, fullName: e.target.value } : x))} />
-              <input className="input" style={{ width: 110 }} type="number" min="0.01" max="99.99" placeholder="%" value={m.ownershipPct} disabled={locked}
+            <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
+              <input className="input" style={{ flex: 2, minWidth: 160 }}
+                placeholder={m.memberKind === 'entity' ? 'Owning LLC name — e.g. Holdings Group LLC' : 'Member full name'}
+                value={m.fullName} disabled={locked}
+                onChange={e => setMembers(ms => ms.map((x, j) => j === i
+                  // Renaming an entity member re-resolves by name — drop the pin.
+                  ? { ...x, fullName: e.target.value, ...(x.memberKind === 'entity' ? { ownerLlcId: null } : {}) }
+                  : x))} />
+              <input className="input" style={{ width: 110 }} type="number" min="0.01" max={m.memberKind === 'entity' ? 100 : 99.99} placeholder="%" value={m.ownershipPct} disabled={locked}
                 onChange={e => setMembers(ms => ms.map((x, j) => j === i ? { ...x, ownershipPct: e.target.value } : x))} />
-              <input className="input" style={{ flex: 2, minWidth: 160 }} type="email" placeholder="Email (optional)" value={m.email} disabled={locked}
-                onChange={e => setMembers(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+              {m.memberKind !== 'entity' && (
+                <input className="input" style={{ flex: 2, minWidth: 160 }} type="email" placeholder="Email (optional)" value={m.email} disabled={locked}
+                  onChange={e => setMembers(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+              )}
+              <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: locked || depth >= MAX_NESTED_DEPTH ? 'default' : 'pointer', whiteSpace: 'nowrap' }}
+                title="Layered entity: this slice is owned by ANOTHER LLC, not a person. Saving opens a full entity section for that LLC — its details, its owners, and its three documents.">
+                <input type="checkbox" checked={m.memberKind === 'entity'} disabled={locked || (m.memberKind !== 'entity' && depth >= MAX_NESTED_DEPTH)}
+                  onChange={e => setMembers(ms => ms.map((x, j) => j === i
+                    ? { ...x, memberKind: e.target.checked ? 'entity' : 'person', ownerLlcId: null, email: '' }
+                    : x))} />
+                This owner is an entity (LLC)
+              </label>
               {!locked && <button className="btn link small" onClick={() => setMembers(ms => ms.filter((_, j) => j !== i))}>Remove</button>}
             </div>
           ))}
           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {!locked && <button className="btn ghost small" onClick={() => setMembers(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '' }])}>+ Add a member</button>}
+            {!locked && <button className="btn ghost small" onClick={() => setMembers(ms => [...(ms || []), { fullName: '', ownershipPct: '', email: '', memberKind: 'person', ownerLlcId: null }])}>+ Add a member</button>}
             {!locked && <button className="btn primary small" disabled={busy === 'members'} onClick={saveMembers}>{busy === 'members' ? 'Saving…' : 'Save ownership'}</button>}
             <span className={`ts-badge ${Math.abs(total - 100) <= 0.01 ? 'ok' : 'warn'}`}>
               {Math.abs(total - 100) <= 0.01 ? 'Ownership totals 100% ✓' : total > 100 ? `Over 100% by ${Math.round((total - 100) * 100) / 100}%` : `${remaining}% still unaccounted for`}
             </span>
           </div>
+        </div>
+      )}
+
+      {/* ---- layered entities: each SAVED entity member opens its owning LLC
+           as a full nested entity section — details, ownership (which can
+           itself contain entity members, recursively) and the three document
+           slots. Verification is bottom-up: owners verify before this one. ---- */}
+      {depth < MAX_NESTED_DEPTH && (llc.members || []).some(m => m.member_kind === 'entity' && m.owner_llc_id) && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 600 }}>Owning entities (layered)</div>
+          <p className="muted small" style={{ marginBottom: 8 }}>
+            {llc.llc_name} is partly owned by the entit{(llc.members || []).filter(m => m.member_kind === 'entity' && m.owner_llc_id).length === 1 ? 'y' : 'ies'} below.
+            Complete each one exactly like any entity — details, full ownership, and its three documents. An owning entity must be verified before {llc.llc_name} can be.
+          </p>
+          {(llc.members || []).filter(m => m.member_kind === 'entity' && m.owner_llc_id).map(m => (
+            <div key={m.id} style={{ marginBottom: 12, padding: '12px 14px', border: '1px solid var(--line, rgba(127,169,176,.25))', borderLeft: '3px solid var(--teal, #4E777F)', borderRadius: 10 }}>
+              <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                <span style={{ fontWeight: 600 }}>{m.owner_llc_name || m.full_name}</span>
+                <span className="pill small">owns {m.ownership_pct}% of {llc.llc_name}</span>
+              </div>
+              <LlcManager llcId={m.owner_llc_id} staff={staff} depth={depth + 1} compactHeader
+                onChanged={() => { load(); onChanged && onChanged(); }} />
+            </div>
+          ))}
         </div>
       )}
 

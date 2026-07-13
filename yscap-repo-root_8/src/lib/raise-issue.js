@@ -22,7 +22,7 @@ const notify = require('./notify');
 
 function clean(s) { return String(s == null ? '' : s).trim(); }
 
-async function raiseEntityIssue({ appId, entityKind, entityId, entityName, reason, actorId }, client) {
+async function raiseEntityIssue({ appId, entityKind, entityId, entityName, reason, actorId, requestKind }, client) {
   client = client || require('../db');
   const kind = entityKind === 'llc' ? 'llc' : 'track_record';
   const marker = `issue:${kind === 'llc' ? 'llc' : 'tr'}:${entityId}`;
@@ -33,6 +33,9 @@ async function raiseEntityIssue({ appId, entityKind, entityId, entityName, reaso
   // The condition NAME is the entity + the reason (owner-directed wording).
   const label = `${kindLabel} — ${name}: ${cleanReason}`.slice(0, 300);
   const raised = JSON.stringify({ kind, id: String(entityId), name });
+  // A track-record condition links straight to its line item (093): uploads to
+  // the condition land on the line too, and vice versa.
+  const trackRecordId = kind === 'track_record' ? String(entityId) : null;
 
   const app = (await client.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
   if (!app) { const e = new Error('application not found'); e.status = 404; throw e; }
@@ -48,9 +51,9 @@ async function raiseEntityIssue({ appId, entityKind, entityId, entityName, reaso
     await client.query(
       `UPDATE checklist_items
           SET label=$2, borrower_label=$2, hint=$3, borrower_hint=$3,
-              issue_reason=$3, raised_entity=$4::jsonb, status='outstanding', updated_at=now()
+              issue_reason=$3, raised_entity=$4::jsonb, track_record_id=$5, status='outstanding', updated_at=now()
         WHERE id=$1`,
-      [existing.id, label, cleanReason, raised]);
+      [existing.id, label, cleanReason, raised, trackRecordId]);
     itemId = existing.id;
   } else {
     // origin_detail is a jsonb column (037) — store the raise provenance as JSON.
@@ -59,11 +62,11 @@ async function raiseEntityIssue({ appId, entityKind, entityId, entityName, reaso
       `INSERT INTO checklist_items
          (scope, application_id, label, borrower_label, hint, borrower_hint, audience, item_kind,
           is_required, category, field_key, status, created_by_kind, created_by_id,
-          origin_kind, origin_detail, issue_reason, raised_entity, sort_order)
+          origin_kind, origin_detail, issue_reason, raised_entity, track_record_id, sort_order)
        VALUES ('application',$1,$2,$2,$3,$3,'both','document',true,'prior_to_docs',$4,'outstanding','staff',$5,
-               'manual_custom',$6::jsonb,$3,$7::jsonb, 500)
+               'manual_custom',$6::jsonb,$3,$7::jsonb,$8, 500)
        RETURNING id`,
-      [appId, label, cleanReason, marker, actorId || null, originDetail, raised]);
+      [appId, label, cleanReason, marker, actorId || null, originDetail, raised, trackRecordId]);
     itemId = ins.rows[0].id;
   }
 
@@ -71,14 +74,15 @@ async function raiseEntityIssue({ appId, entityKind, entityId, entityName, reaso
   if (app.borrower_id) {
     try {
       const ctx = await notify.fileContext(appId);
+      const asksDoc = requestKind === 'doc_request';
       await notify.notifyBorrower(app.borrower_id, {
         type: 'doc_requested',
-        title: `${name} — a new item needs your attention`,
-        body: `Your loan team added a condition on ${kind === 'llc' ? `entity "${name}"` : `property "${name}"`}: ${cleanReason}${ctx ? ` (${ctx.label})` : ''}`,
+        title: asksDoc ? `${name} — a document was requested` : `${name} — a new item needs your attention`,
+        body: `Your loan team ${asksDoc ? 'requested a document' : 'added a condition'} on ${kind === 'llc' ? `entity "${name}"` : `property "${name}"`}: ${cleanReason}${ctx ? ` (${ctx.label})` : ''}`,
         meta: (ctx && ctx.meta) || undefined,
         applicationId: appId,
         link: `/app/${appId}`,
-        ctaLabel: 'View the condition' });
+        ctaLabel: asksDoc ? 'Upload the document' : 'View the condition' });
     } catch (_) { /* best-effort */ }
   }
   return { itemId, reused: !!existing };

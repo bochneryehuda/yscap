@@ -74,9 +74,10 @@ function llcSubfolder(row) {
 
 // The folder PATH a document belongs in, inside YS portal syncing — an array
 // of nested segments. Condition-attached documents use the condition's label;
-// LLC documents nest under the LLC's NAME; track-record verification docs nest
-// under their project's address; term sheets split Unsigned/Signed (the Signed
-// side arrives with the DocuSign integration).
+// LLC documents nest under the LLC's NAME; track-record (REO / experience)
+// docs nest under REO/<project address> — one folder per line item, holding
+// every document uploaded to that experience (owner-directed 2026-07-13);
+// term sheets split Unsigned/Signed (the Signed side arrives with DocuSign).
 function categoryPathFor(row) {
   if (row.llc_resolved_id) return [row.llc_name || 'LLC', llcSubfolder(row)];
   if (row.doc_kind === 'photo_id') return ['Photo ID'];               // always profile-level
@@ -85,9 +86,9 @@ function categoryPathFor(row) {
   if (row.doc_kind === 'tpr_export') return ['TPR Exports'];
   // The autosaved track-record HTML gets its own category so its frequent
   // supersede-driven versions never shuffle the per-project verification docs.
-  if (row.doc_kind === 'track_record_html') return ['Track Record Saved Copy'];
+  if (row.doc_kind === 'track_record_html') return ['REO', 'Track Record Saved Copy'];
   if (row.track_record_id || row.doc_kind === 'track_record_doc') {
-    return ['Track Record', row.tr_address || (row.track_record_id ? `Project ${String(row.track_record_id).slice(0, 8)}` : 'General')];
+    return ['REO', row.tr_address || (row.track_record_id ? `Project ${String(row.track_record_id).slice(0, 8)}` : 'General')];
   }
   if (row.item_label) return [row.item_label];
   if (row.source_type === 'chat_attachment') return ['Chat Attachments'];
@@ -105,6 +106,13 @@ const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').re
 // folder, like the profile itself) even when uploaded from a file context.
 function scopeKeyFor(row) {
   if (row.doc_kind === 'photo_id' && row.borrower_id) return `borrower:${row.borrower_id}`;
+  // The track record (REO / experience) is a BORROWER-level dataset shared by
+  // every loan file, so its documents always file into ONE REO tree at the
+  // borrower profile level — even when the upload came in through a per-file
+  // request condition (which carries an app id).
+  if ((row.track_record_id || row.doc_kind === 'track_record_doc' || row.doc_kind === 'track_record_html') && row.borrower_id) {
+    return `borrower:${row.borrower_id}`;
+  }
   if (row.app_id) return `app:${row.app_id}`;
   if (row.borrower_id) return `borrower:${row.borrower_id}`;
   return null;
@@ -131,7 +139,8 @@ async function pendingBatch(limit) {
   const { rows } = await db.query(
     `SELECT d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider,
             d.slot_label, d.doc_kind, d.source_type, d.is_current,
-            d.checklist_item_id, d.track_record_id, d.llc_id, d.created_at,
+            d.checklist_item_id, d.llc_id, d.created_at,
+            COALESCE(d.track_record_id, ci.track_record_id)                     AS track_record_id,
             COALESCE(d.application_id, ci.application_id)                        AS app_id,
             COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
             ci.label                                                            AS item_label,
@@ -151,7 +160,7 @@ async function pendingBatch(limit) {
        FROM documents d
        LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
        LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
-       LEFT JOIN track_records tr   ON tr.id = d.track_record_id
+       LEFT JOIN track_records tr   ON tr.id = COALESCE(d.track_record_id, ci.track_record_id)
        LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
        LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
        LEFT JOIN staff_users su     ON su.id = a.loan_officer_id

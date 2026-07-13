@@ -439,14 +439,24 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     setEf({ llcName: l.llc_name || '', ein: l.ein || '', formationState: l.formation_state || '',
       formationDate: l.formation_date ? String(l.formation_date).slice(0, 10) : '',
       ownershipPct: l.ownership_pct == null ? '' : String(l.ownership_pct) });
-    setEm((l.members || []).map(m => ({ fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '' })));
+    setEm((l.members || []).map(m => ({
+      fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '',
+      memberKind: m.member_kind === 'entity' ? 'entity' : 'person',
+      ownerLlcId: m.owner_llc_id || null,
+    })));
   }
   async function saveEdit(l) {
     setBusy('edit-' + l.id); setErr('');
     try {
       await api.staffUpdateLlc(l.id, ef);
+      // memberKind/ownerLlc round-trip so an entity member (layered entity)
+      // survives a staff edit instead of silently becoming a person.
       await api.staffSaveLlcMembers(l.id, (em || []).filter(m => m.fullName.trim()).map(m => ({
-        fullName: m.fullName.trim(), ownershipPct: Number(m.ownershipPct), email: m.email.trim() || undefined })));
+        fullName: m.fullName.trim(), ownershipPct: Number(m.ownershipPct),
+        email: m.memberKind === 'entity' ? undefined : (m.email.trim() || undefined),
+        memberKind: m.memberKind === 'entity' ? 'entity' : 'person',
+        ownerLlcId: m.memberKind === 'entity' ? (m.ownerLlcId || undefined) : undefined,
+        ownerLlcName: m.memberKind === 'entity' ? m.fullName.trim() : undefined })));
       flash('Entity saved ✓ — the borrower sees the same details.');
       setEditId(null); await load(); onChanged && await onChanged();
     } catch (e) { setErr(e.message || 'Could not save the entity'); }
@@ -599,6 +609,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                   <div style={{ fontWeight: 600 }}>
                     {l.llc_name}
                     {linked && <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--teal)', color: 'var(--teal)' }}>Vesting entity for this file</span>}
+                    {l.layered && <span className="pill" style={{ marginLeft: 8 }} title="A layered entity — it owns (part of) another entity on this file. It must be verified before the entity it owns can be.">Owning entity (layered)</span>}
                   </div>
                   <div className="muted small">
                     {l.formation_state || 'state —'} · EIN {l.ein || '—'} · {c.docs_accepted || 0}/{c.docs_required || 3} docs accepted
@@ -639,13 +650,26 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                           <div style={{ fontWeight: 600, marginTop: 12 }}>Other members</div>
                           <p className="muted small" style={{ marginBottom: 6 }}>Everyone besides the borrower, until ownership totals 100%.</p>
                           {(em || []).map((m, i) => (
-                            <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                              <input className="input" style={{ flex: 2, minWidth: 150 }} placeholder="Member full name" value={m.fullName}
-                                onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, fullName: e.target.value } : x))} />
-                              <input className="input" style={{ width: 90 }} type="number" min="0.01" max="99.99" placeholder="%" value={m.ownershipPct}
+                            <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
+                              <input className="input" style={{ flex: 2, minWidth: 150 }}
+                                placeholder={m.memberKind === 'entity' ? 'Owning LLC name' : 'Member full name'} value={m.fullName}
+                                onChange={e => setEm(ms => ms.map((x, j) => j === i
+                                  ? { ...x, fullName: e.target.value, ...(x.memberKind === 'entity' ? { ownerLlcId: null } : {}) }
+                                  : x))} />
+                              <input className="input" style={{ width: 90 }} type="number" min="0.01" max={m.memberKind === 'entity' ? 100 : 99.99} placeholder="%" value={m.ownershipPct}
                                 onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, ownershipPct: e.target.value } : x))} />
-                              <input className="input" style={{ flex: 2, minWidth: 150 }} type="email" placeholder="Email (optional)" value={m.email}
-                                onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+                              {m.memberKind !== 'entity' && (
+                                <input className="input" style={{ flex: 2, minWidth: 150 }} type="email" placeholder="Email (optional)" value={m.email}
+                                  onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+                              )}
+                              <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                                title="Layered entity: this slice is owned by ANOTHER LLC, not a person. It gets its own full entity section (details, ownership, three documents) and must verify before this one.">
+                                <input type="checkbox" checked={m.memberKind === 'entity'}
+                                  onChange={e => setEm(ms => ms.map((x, j) => j === i
+                                    ? { ...x, memberKind: e.target.checked ? 'entity' : 'person', ownerLlcId: null, email: '' }
+                                    : x))} />
+                                Entity (LLC)
+                              </label>
                               <button className="btn link small" onClick={() => setEm(ms => ms.filter((_, j) => j !== i))}>Remove</button>
                             </div>
                           ))}
@@ -682,7 +706,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                     {(l.members || []).map(m => (
                       <span key={m.id} className="muted small">
                         {m.full_name}: {m.ownership_pct}%
-                        {Number(m.ownership_pct) >= 20 && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--gold)', color: 'var(--gold)' }}>≥20% — guarantor likely required</span>}
+                        {m.member_kind === 'entity' && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--teal)', color: 'var(--teal)' }} title={`Layered entity${m.owner_is_verified ? ' — verified' : ' — must be verified before this one'}`}>entity{m.owner_is_verified ? ' ✓' : ''}</span>}
+                        {m.member_kind !== 'entity' && Number(m.ownership_pct) >= 20 && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--gold)', color: 'var(--gold)' }}>≥20% — guarantor likely required</span>}
                       </span>
                     ))}
                     <span className={`ts-badge ${Math.abs(total - 100) <= 0.01 ? 'ok' : 'warn'}`}>
@@ -799,12 +824,21 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
             </div>
           );
           };
-          // Vesting entity first; the rest are the file's track-record entities.
+          // Vesting entity first, then its LAYERED owning entities (always
+          // visible — verification is bottom-up, so staff must see the owners
+          // they have to verify FIRST); the rest are track-record entities.
           const vesting = llcs.filter(l => l.vesting || l.id === app.llc_id);
-          const others = llcs.filter(l => !(l.vesting || l.id === app.llc_id));
+          const layered = llcs.filter(l => l.layered && !(l.vesting || l.id === app.llc_id));
+          const others = llcs.filter(l => !(l.vesting || l.id === app.llc_id) && !l.layered);
           return (
             <>
               {vesting.map(renderLlc)}
+              {layered.length > 0 && (
+                <p className="muted small" style={{ margin: '6px 0 2px' }}>
+                  Ownership chain — these entities own (part of) an entity on this file and must be verified first:
+                </p>
+              )}
+              {layered.map(renderLlc)}
               {app.llc_id && vesting.length === 0 &&
                 <p className="muted small">The entity linked to this file isn't loading — refresh the page.</p>}
               {!app.llc_id && others.length > 0 &&
@@ -951,22 +985,42 @@ function StaffTrackRecordPanel({ app, role }) {
             const pa = t.property_address || {};
             const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
             const itemDocs = trDocs[t.id] || [];
+            const openReqs = (t.doc_requests || []).filter(rq => rq && rq.status !== 'satisfied');
             return (
               <div key={t.id} style={{ padding: '4px 0', borderTop: '1px solid rgba(127,169,176,.15)' }}>
                 <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span className="small" style={{ flex: 1, minWidth: 160 }}>{addr}</span>
+                  {t.owned_personally
+                    ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
+                    : (t.entity_name ? <span className="pill small" title="Entity on record">{t.entity_name}</span> : null)}
                   {t.verification_status && <span className="pill small">{t.verification_status}</span>}
+                  <button className="btn ghost small" disabled={trBusy === t.id}
+                    title="Ask the borrower for a specific document on this past project — it becomes a condition on this file and files into the project's REO folder"
+                    onClick={async () => {
+                      const label = window.prompt(`Request a document for "${addr}" — which document do you need? (the borrower will see this)`);
+                      if (label == null || !label.trim()) return;
+                      setTrBusy(t.id); setTrMsg('');
+                      try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); refreshTrs(); }
+                      catch (e) { setTrMsg(e.message || 'Could not request the document'); }
+                      finally { setTrBusy(''); }
+                    }}>Request a document</button>
                   <button className="btn ghost small" disabled={trBusy === t.id}
                     title="Post a request/issue about this past project — it becomes a condition on this file"
                     onClick={async () => {
                       const reason = window.prompt(`Raise an issue on "${addr}" — what do you need? (the borrower will see this)`);
                       if (reason == null || !reason.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); }
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); refreshTrs(); }
                       catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
                       finally { setTrBusy(''); }
                     }}>Raise an issue</button>
                 </div>
+                {openReqs.map(rq => (
+                  <div className="row" key={rq.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
+                    <span className="small muted" style={{ flex: 1, minWidth: 140 }}>↳ {rq.label}</span>
+                    <span className="pill small">{rq.status}</span>
+                  </div>
+                ))}
                 {/* Per-line-item documents: accept / reject each with a reason (#126). */}
                 {itemDocs.map((d) => {
                   const rs = d.review_status || 'pending';

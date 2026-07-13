@@ -35,12 +35,91 @@ const OPEN_APP_STATUSES = `('new','in_review','processing','underwriting','appro
 const EPS = 0.01;
 const pct = (v) => (v == null ? null : Number(v));
 
-/* The members of an LLC (the borrower's own stake lives on llcs.ownership_pct). */
+// Layered entities (094): how deep an ownership chain may go. Five layers of
+// holding companies is beyond anything underwriting sees in practice; the cap
+// exists to bound recursion, not to constrain real structures.
+const MAX_ENTITY_DEPTH = 5;
+
+/* The members of an LLC (the borrower's own stake lives on llcs.ownership_pct).
+   A member is a natural person OR another entity (member_kind='entity' with
+   owner_llc_id → the owning LLC's own row); entity members carry the owning
+   LLC's live name/verification so UIs and the verification gate can reason
+   about the chain without extra queries. */
 async function getMembers(llcId) {
   const r = await db.query(
-    `SELECT id, full_name, ownership_pct, email, phone
-       FROM llc_members WHERE llc_id=$1 ORDER BY created_at`, [llcId]);
+    `SELECT m.id, m.full_name, m.ownership_pct, m.email, m.phone,
+            m.member_kind, m.owner_llc_id,
+            o.llc_name AS owner_llc_name, o.is_verified AS owner_is_verified
+       FROM llc_members m
+       LEFT JOIN llcs o ON o.id = m.owner_llc_id
+      WHERE m.llc_id=$1 ORDER BY m.created_at`, [llcId]);
   return r.rows;
+}
+
+/* Direct owning entities of an LLC (the parents one layer up). */
+async function getOwnerLlcIds(llcId) {
+  const r = await db.query(
+    `SELECT DISTINCT owner_llc_id FROM llc_members
+      WHERE llc_id=$1 AND owner_llc_id IS NOT NULL`, [llcId]);
+  return r.rows.map((x) => String(x.owner_llc_id));
+}
+
+/* One BFS walker for both directions. Returns { ids, depth }: `ids` is the
+   transitive SET of related entities (nearest layer first) and `depth` is the
+   number of LEVELS walked (the longest ownership PATH in edges) — NOT the
+   node count. A holding company owning five property LLCs is depth 1 with
+   five ids; the cap must compare depth, never ids.length. */
+async function walkChain(llcId, dir, { maxDepth = MAX_ENTITY_DEPTH } = {}) {
+  const seen = new Set([String(llcId)]);
+  const ids = [];
+  let depth = 0;
+  let frontier = [String(llcId)];
+  for (let level = 0; level < maxDepth && frontier.length; level++) {
+    const next = [];
+    for (const id of frontier) {
+      const related = dir === 'up'
+        ? await getOwnerLlcIds(id)
+        : (await db.query(`SELECT DISTINCT llc_id FROM llc_members WHERE owner_llc_id=$1`, [id])).rows.map((x) => String(x.llc_id));
+      for (const rel of related) {
+        if (seen.has(rel)) continue;
+        seen.add(rel);
+        ids.push(rel);
+        next.push(rel);
+      }
+    }
+    if (next.length) depth = level + 1;
+    frontier = next;
+  }
+  return { ids, depth };
+}
+
+/* Every entity that (transitively) OWNS this LLC — nearest layer first. */
+async function getAncestorEntityIds(llcId, opts) {
+  return (await walkChain(llcId, 'up', opts)).ids;
+}
+
+/* Every entity this LLC (transitively) OWNS — used to re-sync child
+   conditions when a parent's documents/verification change. */
+async function getDescendantEntityIds(llcId, opts) {
+  return (await walkChain(llcId, 'down', opts)).ids;
+}
+
+/* Would making `ownerLlcId` an owner of `llcId` create an ownership cycle
+   (A owns B owns … owns A) or exceed the depth cap? Returns a human error
+   string, or null when the link is fine. The cap measures the longest
+   ownership PATH through the new link (layers above the owner + the link +
+   layers below this LLC) — breadth (how MANY entities a layer holds) is
+   never limited. */
+async function ownershipLinkError(llcId, ownerLlcId) {
+  if (String(ownerLlcId) === String(llcId)) return 'an entity cannot own itself';
+  // Cycle: the proposed owner is (transitively) owned by this LLC already.
+  const up = await walkChain(ownerLlcId, 'up', { maxDepth: MAX_ENTITY_DEPTH + 1 });
+  if (up.ids.includes(String(llcId))) {
+    return 'that would create an ownership loop — this entity already (indirectly) owns the one you picked';
+  }
+  const down = await walkChain(llcId, 'down', { maxDepth: MAX_ENTITY_DEPTH + 1 });
+  if (up.depth + 1 + down.depth > MAX_ENTITY_DEPTH) return `ownership chains are limited to ${MAX_ENTITY_DEPTH} layers`;
+  return null;
 }
 
 /* The three document slots with each slot's CURRENT document (one per slot —
@@ -122,6 +201,14 @@ function missingForVerification(llc, members, slots) {
     else if (s.review_status !== 'accepted') missing.push(`${s.label} not yet accepted`);
   }
   if (slots.filter(isRequiredSlot).length < LLC_SLOT_CODES.length) missing.push('document requirements not generated');
+  // Layered entities verify BOTTOM-UP: every entity that owns a slice of this
+  // one must itself be verified (its own info, ownership and three documents)
+  // before this one can be. getMembers carries the owner's live state.
+  for (const m of members) {
+    if (m.member_kind !== 'entity') continue;
+    if (!m.owner_llc_id) missing.push(`owning entity "${m.full_name}" is not linked`);
+    else if (!m.owner_is_verified) missing.push(`owning entity "${m.owner_llc_name || m.full_name}" is not yet verified`);
+  }
   return missing;
 }
 
@@ -209,8 +296,21 @@ async function syncLlcConditions(llcId, opts = {}) {
   // flips the condition to needs-attention.
   const required = slots.filter(isRequiredSlot);
   const uploaded = required.filter((s) => s.document_id && s.review_status !== 'rejected').length;
-  const rejected = slots.some((s) => s.document_id && s.review_status === 'rejected');
-  const allIn = required.length >= LLC_SLOT_CODES.length && uploaded >= required.length;
+  let rejected = slots.some((s) => s.document_id && s.review_status === 'rejected');
+  let allIn = required.length >= LLC_SLOT_CODES.length && uploaded >= required.length;
+
+  // Layered entities: the umbrella condition reflects the WHOLE ownership
+  // chain — "documents in review" only once every owning entity's required
+  // slots are in too, and a rejected document anywhere in the chain flags the
+  // condition. (Verification is already chain-gated bottom-up, so the
+  // 'satisfied' arm needs no extra check.)
+  for (const ancestorId of await getAncestorEntityIds(llcId)) {
+    const aSlots = await getSlots(ancestorId);
+    const aRequired = aSlots.filter(isRequiredSlot);
+    const aUploaded = aRequired.filter((s) => s.document_id && s.review_status !== 'rejected').length;
+    if (aSlots.some((s) => s.document_id && s.review_status === 'rejected')) rejected = true;
+    if (!(aRequired.length >= LLC_SLOT_CODES.length && aUploaded >= aRequired.length)) allIn = false;
+  }
 
   const target = llc.is_verified ? 'satisfied' : rejected ? 'issue' : allIn ? 'received' : 'outstanding';
   // '[auto]'-prefixed notes are ours to overwrite; a note a staffer typed by
@@ -237,6 +337,7 @@ async function syncLlcConditions(llcId, opts = {}) {
           AND (ci.status <> 'satisfied' OR ci.signed_off_at IS NULL
                OR (ci.notes LIKE '[auto]%' AND ci.notes IS DISTINCT FROM $3))`,
       [llcId, opts.verifiedBy || llc.verified_by || null, note, appId]);
+    await cascadeToOwnedEntities(llcId, opts);
     return;
   }
 
@@ -257,6 +358,25 @@ async function syncLlcConditions(llcId, opts = {}) {
         AND a.deleted_at IS NULL AND a.status IN ${OPEN_APP_STATUSES}
         AND (ci.status IS DISTINCT FROM $2 OR ci.signed_off_at IS NOT NULL) ${guard}`,
     [llcId, target, note, appId]);
+  await cascadeToOwnedEntities(llcId, opts);
+}
+
+/* A parent (owning) entity's documents/verification feed into every entity it
+   owns — chain-aware allIn/rejected above — so a change on the parent re-syncs
+   each owned entity's own vesting-file conditions. One level per call;
+   recursion bottoms out via the _cascaded guard + the ownership depth cap. */
+async function cascadeToOwnedEntities(llcId, opts) {
+  if (opts._cascaded) return;
+  try {
+    const children = await getDescendantEntityIds(llcId);
+    for (const childId of children) {
+      await syncLlcConditions(childId, { reopen: !!opts.reopen, _cascaded: true });
+    }
+  } catch (e) {
+    // Best-effort — a chain hiccup must never break the triggering action —
+    // but never silently: a stale child condition is invisible otherwise.
+    console.warn('[llc-cascade] condition re-sync for owned entities failed:', e.message);
+  }
 }
 
 // ---------------- entity-detail validators (shared write path) ----------------
@@ -264,24 +384,37 @@ async function syncLlcConditions(llcId, opts = {}) {
 // same rules (member shape, ownership ceiling, EIN normalization) apply no
 // matter which portal made the edit.
 
-// Validate a members payload: [{fullName, ownershipPct, email?, phone?}].
+// Validate a members payload:
+//   [{fullName, ownershipPct, email?, phone?,                     — a person
+//     memberKind?: 'person'|'entity', ownerLlcId?, ownerLlcName?}] — an entity
 // Returns {members, error}. Completion to exactly 100% is a VERIFICATION
 // requirement, not a save requirement — partial saves are allowed, but the
-// total (borrower + members) may never exceed 100%.
+// total (borrower + members) may never exceed 100%. An ENTITY member (a
+// layered entity — another LLC owning a slice of this one) names the owning
+// LLC (by id from the picker, or by name to find-or-create) and may own up to
+// the full 100% (a pure holding-company structure has borrower stake 0).
 function parseMembers(raw, borrowerPct) {
   if (raw === undefined) return { members: undefined };
   if (!Array.isArray(raw)) return { error: 'members must be an array' };
   if (raw.length > 20) return { error: 'a maximum of 20 members is supported' };
   const members = [];
   for (const m of raw) {
-    const fullName = String((m && m.fullName) || '').trim().slice(0, 160);
+    const isEntity = (m && m.memberKind) === 'entity';
+    const fullName = String((m && (m.fullName || m.ownerLlcName)) || '').trim().slice(0, 160);
     const p = Number(m && m.ownershipPct);
-    if (!fullName) return { error: 'each member needs a full name' };
-    if (!isFinite(p) || p <= 0 || p >= 100) return { error: 'each member needs an ownership % between 0 and 100' };
+    if (!fullName) return { error: isEntity ? 'each entity member needs the owning LLC name' : 'each member needs a full name' };
+    if (isEntity) {
+      if (!isFinite(p) || p <= 0 || p > 100) return { error: 'each entity member needs an ownership % between 0 and 100' };
+    } else if (!isFinite(p) || p <= 0 || p >= 100) {
+      return { error: 'each member needs an ownership % between 0 and 100' };
+    }
     members.push({
       fullName, ownershipPct: Math.round(p * 100) / 100,
-      email: m.email ? String(m.email).trim().slice(0, 160) : null,
-      phone: m.phone ? String(m.phone).trim().slice(0, 40) : null,
+      email: !isEntity && m.email ? String(m.email).trim().slice(0, 160) : null,
+      phone: !isEntity && m.phone ? String(m.phone).trim().slice(0, 40) : null,
+      memberKind: isEntity ? 'entity' : 'person',
+      ownerLlcId: isEntity && m.ownerLlcId ? String(m.ownerLlcId) : null,
+      ownerLlcName: isEntity ? (String(m.ownerLlcName || m.fullName || '').trim().slice(0, 160) || null) : null,
     });
   }
   const own = borrowerPct == null ? 0 : Number(borrowerPct) || 0;
@@ -290,12 +423,56 @@ function parseMembers(raw, borrowerPct) {
   return { members };
 }
 
-async function replaceMembers(llcId, members) {
-  await db.query(`DELETE FROM llc_members WHERE llc_id=$1`, [llcId]);
+/* Replace an LLC's members. `opts.borrowerId` is REQUIRED when any member is
+   an entity: the owning LLC is resolved within that borrower's own library —
+   by id (must belong to them) or by name via findOrCreateLlc — and a
+   freshly-created owner immediately gets its own three document slots, so a
+   layered entity opens up as a full entity section of its own. Throws (with
+   .status) on cycle / depth / foreign-entity errors. */
+async function replaceMembers(llcId, members, opts = {}) {
+  const resolved = [];
   for (const m of members) {
+    if (m.memberKind !== 'entity') { resolved.push({ ...m, ownerLlcId: null }); continue; }
+    if (!opts.borrowerId) { const e = new Error('entity members need a borrower context'); e.status = 400; throw e; }
+    let ownerId = m.ownerLlcId;
+    if (ownerId) {
+      const own = await db.query(`SELECT id, llc_name FROM llcs WHERE id=$1 AND borrower_id=$2`, [ownerId, opts.borrowerId]);
+      if (!own.rows[0]) { const e = new Error('owning entity not found'); e.status = 404; throw e; }
+      m.fullName = own.rows[0].llc_name;   // display name follows the entity
+    } else {
+      // Resolve by name BEFORE creating anything, and validate the link first —
+      // a rejected link (cycle / depth) must not leave an orphan LLC behind.
+      ownerId = await findLlcByName(opts.borrowerId, m.ownerLlcName || m.fullName);
+    }
+    if (ownerId) {
+      const linkErr = await ownershipLinkError(llcId, ownerId);
+      if (linkErr) { const e = new Error(linkErr); e.status = 400; throw e; }
+    } else {
+      // Brand-new owning entity: no cycle is possible (nothing links to it yet);
+      // only the PATH DEPTH of the chain hanging under this LLC can overflow.
+      const down = await walkChain(llcId, 'down', { maxDepth: MAX_ENTITY_DEPTH + 1 });
+      if (1 + down.depth > MAX_ENTITY_DEPTH) {
+        const e = new Error(`ownership chains are limited to ${MAX_ENTITY_DEPTH} layers`); e.status = 400; throw e;
+      }
+      const made = await findOrCreateLlc(opts.borrowerId, { llcName: m.ownerLlcName || m.fullName });
+      ownerId = made.id;
+    }
+    resolved.push({ ...m, ownerLlcId: ownerId });
+  }
+  await db.query(`DELETE FROM llc_members WHERE llc_id=$1`, [llcId]);
+  for (const m of resolved) {
     await db.query(
-      `INSERT INTO llc_members (llc_id, full_name, ownership_pct, email, phone) VALUES ($1,$2,$3,$4,$5)`,
-      [llcId, m.fullName, m.ownershipPct, m.email, m.phone]);
+      `INSERT INTO llc_members (llc_id, full_name, ownership_pct, email, phone, member_kind, owner_llc_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [llcId, m.fullName, m.ownershipPct, m.email, m.phone, m.memberKind || 'person', m.ownerLlcId]);
+  }
+  // Every owning entity gets (or already has) its own document requirements —
+  // the layered entity is a full entity: info + formation docs + EIN letter +
+  // operating agreement, recursively. Lazy require avoids a module cycle.
+  for (const m of resolved) {
+    if (m.ownerLlcId) {
+      try { await require('../routes/borrower').generateLlcChecklist(m.ownerLlcId); } catch (_) { /* best-effort */ }
+    }
   }
 }
 
@@ -356,6 +533,7 @@ async function findOrCreateLlc(borrowerId, fields) {
 
 module.exports = {
   LLC_SLOT_CODES,
+  MAX_ENTITY_DEPTH,
   getMembers,
   getSlots,
   getLlcBundle,
@@ -367,4 +545,8 @@ module.exports = {
   normalizeEin,
   findLlcByName,
   findOrCreateLlc,
+  getOwnerLlcIds,
+  getAncestorEntityIds,
+  getDescendantEntityIds,
+  ownershipLinkError,
 };
