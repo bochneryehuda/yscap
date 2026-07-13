@@ -160,26 +160,34 @@ async function upsertConditionState(stateKey, scopeKey, folderId, folderName, ve
 // slot semantics: a slotted upload supersedes its slot; an unslotted one
 // supersedes across the condition.
 async function isSupersedeEvent(row, stateKey, currentVersion) {
+  // NOTE: every param pushed MUST be referenced in the SQL — Postgres rejects
+  // a statement with an unreferenced parameter ("could not determine data type
+  // of parameter $N"), so each branch builds its own exact parameter list.
   const params = [row.id, currentVersion];
   let where;
   if (row.checklist_item_id) {
     params.push(row.checklist_item_id);
     where = 'm.checklist_item_id = $3';
-  } else {
-    // kind-scoped (term sheet / track record / …): same scope + same category.
-    // App-scoped docs match on the APP alone (a borrower-uploaded and a staff-
-    // saved term sheet on the same file must share one version stream even
-    // though their raw borrower_id differs); borrower_id anchors the match only
-    // when there is no application. llc/track-record NULL-ness participates so
-    // an LLC doc and a general doc (both doc_kind NULL) can never trip each
-    // other's version counter.
-    params.push(row.app_id, row.borrower_id, row.doc_kind || '', row.source_type || '');
+  } else if (row.app_id) {
+    // kind-scoped on a file: match on the APP alone (a borrower-uploaded and a
+    // staff-saved term sheet on the same file share one version stream even
+    // though their raw borrower_id differs). llc/track-record NULL-ness
+    // participates so unrelated categories never trip each other's counter.
+    params.push(row.app_id, row.doc_kind || '', row.source_type || '');
     where = `m.checklist_item_id IS NULL
-             AND ${row.app_id
-               ? `m.application_id::text = $3::text`
-               : `m.application_id IS NULL AND $3::text IS NULL AND COALESCE(m.borrower_id::text,'') = COALESCE($4::text,'')`}
-             AND COALESCE(m.doc_kind,'')            = $5
-             AND COALESCE(m.source_type,'')         = $6
+             AND m.application_id::text = $3::text
+             AND COALESCE(m.doc_kind,'')    = $4
+             AND COALESCE(m.source_type,'') = $5
+             AND (m.llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
+             AND (m.track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
+  } else {
+    // kind-scoped with no file: the borrower anchors the match.
+    params.push(row.borrower_id, row.doc_kind || '', row.source_type || '');
+    where = `m.checklist_item_id IS NULL
+             AND m.application_id IS NULL
+             AND COALESCE(m.borrower_id::text,'') = COALESCE($3::text,'')
+             AND COALESCE(m.doc_kind,'')    = $4
+             AND COALESCE(m.source_type,'') = $5
              AND (m.llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
              AND (m.track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
   }
@@ -206,20 +214,28 @@ async function isSupersedeEvent(row, stateKey, currentVersion) {
 // folder; a still-current doc parked in Version 1 simply hasn't changed since.
 async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) {
   const v1 = await sp.ensureChildFolder(driveId, conditionFolder.id, 'Version 1');
+  // Same rule as isSupersedeEvent: every pushed param must be referenced.
   let where, params;
   if (row.checklist_item_id) {
     where = 'checklist_item_id = $1';
     params = [row.checklist_item_id];
-  } else {
+  } else if (row.app_id) {
     where = `checklist_item_id IS NULL
-             AND ${row.app_id
-               ? `application_id::text = $1::text`
-               : `application_id IS NULL AND $1::text IS NULL AND COALESCE(borrower_id::text,'') = COALESCE($2::text,'')`}
-             AND COALESCE(doc_kind,'')             = $3
-             AND COALESCE(source_type,'')          = $4
+             AND application_id::text = $1::text
+             AND COALESCE(doc_kind,'')    = $2
+             AND COALESCE(source_type,'') = $3
              AND (llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
              AND (track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
-    params = [row.app_id, row.borrower_id, row.doc_kind || '', row.source_type || ''];
+    params = [row.app_id, row.doc_kind || '', row.source_type || ''];
+  } else {
+    where = `checklist_item_id IS NULL
+             AND application_id IS NULL
+             AND COALESCE(borrower_id::text,'') = COALESCE($1::text,'')
+             AND COALESCE(doc_kind,'')    = $2
+             AND COALESCE(source_type,'') = $3
+             AND (llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
+             AND (track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
+    params = [row.borrower_id, row.doc_kind || '', row.source_type || ''];
   }
   const olds = (await db.query(
     `SELECT id, sharepoint_backup_ref FROM documents
