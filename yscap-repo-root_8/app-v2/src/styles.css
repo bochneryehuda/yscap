@@ -193,6 +193,86 @@ textarea{min-height:90px;resize:vertical}
   color:var(--teal-br);font:inherit;font-size:12px;font-weight:600;letter-spacing:.04em;
   text-transform:uppercase;cursor:pointer;padding:6px 8px;border-radius:6px}
 .pw-toggle:hover{color:var(--ivory);background:var(--ink-3)}
+
+/* ===== PILOT public auth — split-screen shell (presentation only) =====
+   A deep-ink EDITORIAL left panel (dark surface → light text) beside a WHITE
+   right panel that holds the actual form. Mirrors the approved blueprints in
+   web/preview/pilot-login.html / pilot-staff-login.html / pilot-auth.html.
+   Colours key to the portal tokens: --ivory (#141B22) is the deep ink surface,
+   --ink / --ink-1 are the paper/white surfaces. No animation (reduced-motion
+   safe); left panel is dark so all its text is light, right panel is white so
+   its text stays dark. */
+/* min-width:0 on both tracks is LOAD-BEARING: grid items default to
+   min-width:auto and refuse to shrink below their content's min-content width,
+   so a wide left-panel row (e.g. the staff "Internal console" badge beside the
+   lockup) would push the whole grid past the viewport and shove the right form
+   panel off-screen. Pinning both columns to min-width:0 lets the fr tracks size
+   correctly and keeps the right panel identical for every variant. */
+.auth-split{min-height:100vh;display:grid;grid-template-columns:1.15fr 1fr}
+
+/* LEFT — deep ink editorial brand panel */
+.auth-brand{background:var(--ivory);color:#F4F0E7;min-width:0;display:flex;flex-direction:column;
+  justify-content:space-between;gap:30px;padding:48px 60px 40px}
+.auth-brand-top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px}
+/* lockup sits on the dark surface → force the wordmark light (mark stays gold) */
+.auth-brand .pilot-word{color:#FFFFFF}
+.auth-brand .pilot-by{color:rgba(244,240,231,.6)}
+.auth-brand-badge{font-size:11px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--teal-dp);border:1px solid rgba(174,207,209,.4);border-radius:100px;padding:6px 13px;
+  white-space:nowrap}
+.auth-brand-core{max-width:32ch}
+.auth-eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:600;
+  color:var(--gold-soft);margin-bottom:22px}
+.auth-headline{font-family:var(--serif);font-weight:500;font-size:clamp(38px,4.4vw,58px);
+  line-height:1.03;letter-spacing:-.01em;color:#FFFFFF;margin:0}
+.auth-headline em{font-style:italic;color:#D9BC85}
+.auth-support{margin-top:20px;font-size:16px;line-height:1.6;color:rgba(244,240,231,.7);max-width:36ch}
+.auth-ticks{list-style:none;margin:30px 0 0;padding:0;display:flex;flex-direction:column;gap:15px}
+.auth-ticks li{display:flex;align-items:center;gap:13px;font-size:15px;font-weight:500;
+  color:rgba(244,240,231,.9)}
+.auth-tick-ic{width:22px;height:22px;flex:none;border-radius:50%;border:1px solid rgba(174,135,70,.55);
+  display:inline-flex;align-items:center;justify-content:center}
+.auth-tick-ic svg{width:11px;height:11px}
+.auth-brand-foot{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;
+  border-top:1px solid rgba(255,255,255,.12);padding-top:22px}
+.auth-tag{font-family:var(--serif);font-style:italic;font-size:16px;color:rgba(244,240,231,.72)}
+.auth-legal{text-align:right;font-size:11.5px;line-height:1.6;color:rgba(244,240,231,.5)}
+.auth-legal b{display:block;font-weight:600;color:rgba(244,240,231,.72);letter-spacing:.02em}
+
+/* RIGHT — white form panel (identical for every variant; centered, no overflow) */
+.auth-form-panel{background:var(--ink-1);min-width:0;display:flex;flex-direction:column;padding:34px 48px 40px}
+.auth-form-top{display:flex;align-items:center;justify-content:space-between;gap:16px;min-width:0}
+.auth-help{font-size:13.5px;font-weight:600;color:var(--muted);white-space:nowrap}
+.auth-form-mid{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
+.auth-card{width:100%;max-width:400px;min-width:0;margin:0 auto;padding:26px 0}
+.auth-card > h1{font-size:32px;letter-spacing:-.01em;margin-bottom:2px}
+/* Belt-and-suspenders: NOTHING inside the form card may ever force horizontal
+   overflow, on any auth screen/variant, at any width. This closes the whole
+   class (grid-track / flex-item min-content resisting shrink), scoped to
+   .auth-card so authenticated screens are untouched:
+   - action rows wrap instead of overflowing (primary button + secondary link);
+   - flex/grid children (incl. the register name columns + the .spacer) may
+     shrink below their content's intrinsic width;
+   - controls/notices cap at the card width; long link/button text wraps. */
+.auth-card .row{flex-wrap:wrap}
+.auth-card .row>*,.auth-card .grid>*{min-width:0}
+.auth-card .input,.auth-card .pw-wrap,.auth-card .btn,.auth-card .notice{max-width:100%}
+.auth-card .btn{overflow-wrap:anywhere}
+
+@media(max-width:900px){
+  .auth-split{grid-template-columns:1fr}
+  .auth-brand{padding:30px 26px 28px;gap:20px}
+  .auth-brand-core{max-width:none}
+  .auth-headline{font-size:clamp(30px,8vw,40px)}
+  .auth-ticks{margin-top:22px;flex-flow:row wrap;gap:10px 22px}
+  .auth-ticks li{font-size:13.5px}
+  .auth-form-panel{padding:30px 26px 34px}
+  .auth-card{padding:12px 0;max-width:440px}
+}
+@media(max-width:560px){
+  .auth-brand-foot{flex-direction:column;align-items:flex-start;gap:14px}
+  .auth-legal{text-align:left}
+}
 .notice{padding:11px 14px;border-radius:var(--radius-sm);font-size:14px;margin-bottom:14px}
 .notice.err{background:rgba(224,115,107,.12);border:1px solid rgba(224,115,107,.4);color:#F3C4BF}
 .notice.ok{background:rgba(143,199,160,.12);border:1px solid rgba(143,199,160,.4);color:#CDE9D5}

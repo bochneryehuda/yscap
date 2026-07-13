@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth, useAuthNotice } from '../lib/auth.jsx';
-import { BrandLockup } from '../components/Layout.jsx';
+import AuthShell from '../components/AuthShell.jsx';
 import PasswordInput from '../components/PasswordInput.jsx';
 import { PASSWORD_HINT, passwordProblem } from '../lib/password.js';
 
@@ -63,13 +63,7 @@ export default function Login() {
       : 'Access your loan files, documents and status with YS Capital Group.';
 
   return (
-    <div className="authbg">
-      <div className="authcard panel">
-        <BrandLockup />
-        <div className="gold-rule" />
-        <h1>{heading}</h1>
-        <p className="muted small" style={{ marginTop: 6 }}>{subtitle}</p>
-
+    <AuthShell title={heading} subtitle={subtitle}>
         {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
         {err && <div role="alert" className="notice err" style={{ marginTop: 16 }}>{err}</div>}
 
@@ -136,7 +130,6 @@ export default function Login() {
             <button className="btn link small muted" onClick={() => nav('/internal/login')}>Staff sign in</button>
           </div>
         )}
-      </div>
-    </div>
+    </AuthShell>
   );
 }
