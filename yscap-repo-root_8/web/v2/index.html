@@ -32,7 +32,272 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=pilot1">
+<link rel="stylesheet" href="style.css?v=pilot2">
+<!-- ============================================================
+     PILOT × YS — editorial homepage architecture (v2).
+     Scoped, self-contained layout system for the rebuilt sections
+     (hero grid + live term-sheet card, dark proof band, flagship
+     program split + grid, dark tool suite, editorial process).
+     Base palette / type / all interactive-component CSS come from
+     style.css (already the PILOT system); this only restructures.
+     Every rule is scoped under .m-* so nothing leaks to other pages.
+     ============================================================ -->
+<style>
+:root{
+  --mk-paper:#F4F0E7; --mk-paper2:#EDE6D7; --mk-card:#FBF9F3;
+  --mk-ink:#141B22; --mk-ink1:#1D2830; --mk-inksoft:#4B585C;
+  --mk-gold:#AE8746; --mk-goldsoft:#C9A86A; --mk-teal:#2F7F86;
+  --mk-line:rgba(20,27,34,.16); --mk-linesoft:rgba(20,27,34,.08);
+  --mk-serif:'Fraunces',Georgia,'Times New Roman',serif;
+  --mk-sans:'Hanken Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
+}
+.m-wrap{max-width:1240px;margin:0 auto;padding:0 40px;}
+.m-band{padding:94px 0;}
+.m-num{font-variant-numeric:tabular-nums;}
+.m-eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:600;color:var(--mk-gold);font-family:var(--mk-sans);}
+.m-eyebrow .idx{color:var(--mk-ink);opacity:.35;margin-right:.6em;}
+.m-sechead{display:flex;justify-content:space-between;align-items:flex-end;gap:44px;margin-bottom:50px;}
+.m-sechead h2{font-family:var(--mk-serif);font-weight:500;font-size:clamp(30px,3.4vw,46px);line-height:1.05;letter-spacing:-.01em;max-width:17ch;margin:16px 0 0;color:var(--mk-ink);}
+.m-sechead .meta{max-width:34ch;color:var(--mk-inksoft);font-size:16px;line-height:1.55;}
+
+/* ---- HERO ---- */
+.m-hero{background:var(--mk-paper);padding:70px 0 44px;overflow:hidden;}
+.m-hero .hero-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:60px;align-items:center;}
+.m-hero .kicker{display:inline-flex;align-items:center;gap:14px;margin-bottom:22px;flex-wrap:wrap;}
+.m-hero .chip{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;background:var(--mk-card);border:1px solid var(--mk-line);border-radius:100px;padding:7px 14px;color:var(--mk-ink);text-decoration:none;}
+.m-hero .chip .stars{color:var(--mk-gold);letter-spacing:2px;}
+.m-hero .chip .hr-on{color:var(--mk-inksoft);}
+.m-hero .kicker .tag{font-size:12px;letter-spacing:.2em;text-transform:uppercase;font-weight:600;color:var(--mk-inksoft);}
+.m-hero h1{font-family:var(--mk-serif);font-weight:500;font-size:clamp(44px,5.4vw,76px);line-height:1.03;letter-spacing:-.015em;color:var(--mk-ink);margin:0;}
+.m-hero h1 em{font-style:italic;color:var(--mk-teal);}
+.m-hero h1 span{display:block;}
+.m-hero .lede{font-size:20px;line-height:1.55;color:var(--mk-inksoft);max-width:48ch;margin:24px 0 30px;}
+.m-hero .hero-cta{display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:24px;}
+.m-hero .micro{display:flex;gap:22px;color:var(--mk-inksoft);font-size:13.5px;font-weight:500;flex-wrap:wrap;}
+.m-hero .micro span{display:flex;align-items:center;gap:7px;}
+.m-hero .micro i{width:5px;height:5px;border-radius:50%;background:var(--mk-gold);display:inline-block;font-style:normal;}
+/* term-sheet card */
+.m-hero .ts{background:var(--mk-card);border:1px solid var(--mk-line);border-radius:6px;overflow:hidden;box-shadow:0 24px 60px -30px rgba(20,27,34,.4),0 1px 0 rgba(20,27,34,.04);}
+.m-hero .ts-top{display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--mk-linesoft);}
+.m-hero .ts-top .t{font-size:11px;letter-spacing:.2em;text-transform:uppercase;font-weight:700;color:var(--mk-inksoft);}
+.m-hero .ts-top .live{font-size:11px;font-weight:700;color:var(--mk-teal);letter-spacing:.12em;text-transform:uppercase;display:flex;align-items:center;gap:6px;}
+.m-hero .ts-top .live::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--mk-teal);}
+.m-hero .ts-tabs{display:flex;border-bottom:1px solid var(--mk-linesoft);}
+.m-hero .ts-tabs button{flex:1;background:transparent;border:0;border-bottom:2px solid transparent;font-family:var(--mk-sans);font-weight:600;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--mk-inksoft);padding:13px 0;cursor:pointer;}
+.m-hero .ts-tabs button.on{color:var(--mk-ink);border-bottom-color:var(--mk-gold);}
+.m-hero .ts-body{padding:18px 22px 6px;}
+.m-hero .ts-prop{font-size:13px;color:var(--mk-inksoft);letter-spacing:.01em;margin-bottom:14px;}
+.m-hero .ts-prop b{color:var(--mk-ink);font-weight:600;}
+.m-hero .ts-row{display:flex;align-items:baseline;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--mk-linesoft);}
+.m-hero .ts-row .k{font-size:14px;color:var(--mk-inksoft);}
+.m-hero .ts-row .v{font-family:var(--mk-serif);font-weight:500;font-size:19px;color:var(--mk-ink);}
+.m-hero .ts-row.big .v{font-size:26px;}
+.m-hero .ts-row .v.acc{color:var(--mk-gold);}
+.m-hero .ts-foot{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:15px 22px 20px;}
+.m-hero .ts-foot .note{font-size:11px;color:var(--mk-inksoft);max-width:22ch;line-height:1.4;}
+.m-hero .ts-foot .link-u{border-bottom:1px solid var(--mk-gold);padding-bottom:2px;font-weight:600;font-size:13.5px;color:var(--mk-ink);text-decoration:none;white-space:nowrap;}
+.m-hero .ts-foot .link-u:hover{color:var(--mk-gold);}
+
+/* ---- PROOF BAND ---- */
+.m-proof{background:var(--mk-ink);color:var(--mk-paper);}
+.m-proof .proof-grid{display:grid;grid-template-columns:repeat(4,1fr);}
+.m-proof .stat{padding:46px 30px;border-left:1px solid rgba(255,255,255,.1);display:flex;flex-direction:column;gap:0;}
+.m-proof .stat:first-child{border-left:0;}
+.m-proof .stat-tag{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--mk-goldsoft);font-weight:700;margin-bottom:16px;order:-1;}
+.m-proof .stat-num{font-family:var(--mk-serif);font-size:clamp(34px,3.6vw,46px);font-weight:500;letter-spacing:-.02em;color:#fff;line-height:1;}
+.m-proof .stat-label{font-size:12.5px;letter-spacing:.02em;color:rgba(244,240,231,.6);margin-top:12px;line-height:1.5;font-weight:500;}
+.m-proof .proof-note{font-size:11px;color:rgba(244,240,231,.4);padding:0 30px 26px;line-height:1.6;max-width:none;}
+
+/* ---- PROGRAMS ---- */
+.m-programs{background:var(--mk-paper);}
+.m-programs .flagship{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--mk-line);border-radius:5px;overflow:hidden;background:var(--mk-card);margin-bottom:26px;}
+.m-programs .flagship .l{padding:44px;border-right:1px solid var(--mk-linesoft);}
+.m-programs .flagship .r{padding:44px;background:var(--mk-paper2);display:flex;flex-direction:column;justify-content:center;gap:2px;}
+.m-programs .flag-tag{font-size:11px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--mk-teal);}
+.m-programs .flagship h3{font-family:var(--mk-serif);font-weight:500;font-size:33px;line-height:1.06;color:var(--mk-ink);margin:14px 0 14px;}
+.m-programs .flagship .l p{color:var(--mk-inksoft);max-width:40ch;font-size:16px;line-height:1.6;}
+.m-programs .flagship .l .link-u{display:inline-block;margin-top:24px;border-bottom:1px solid var(--mk-gold);padding-bottom:2px;font-weight:600;font-size:14px;color:var(--mk-ink);text-decoration:none;}
+.m-programs .flagship .l .link-u:hover{color:var(--mk-gold);}
+.m-programs .spec{display:flex;align-items:baseline;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--mk-linesoft);}
+.m-programs .spec:last-child{border-bottom:0;}
+.m-programs .spec .k{font-size:14px;color:var(--mk-inksoft);}
+.m-programs .spec .v{font-family:var(--mk-serif);font-size:22px;font-weight:500;color:var(--mk-ink);}
+.m-programs .spec .v small{font-size:13px;color:var(--mk-inksoft);font-family:var(--mk-sans);}
+.m-programs .prog-grid{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--mk-line);border-left:1px solid var(--mk-line);}
+.m-programs .prog{padding:28px 24px 30px;border-right:1px solid var(--mk-line);border-bottom:1px solid var(--mk-line);background:transparent;transition:background .2s ease;text-decoration:none;color:inherit;display:block;}
+.m-programs .prog:hover{background:var(--mk-card);}
+.m-programs .prog .pnum{font-size:12px;color:var(--mk-gold);font-weight:700;letter-spacing:.1em;}
+.m-programs .prog h4{font-family:var(--mk-serif);font-weight:500;font-size:21px;color:var(--mk-ink);margin:16px 0 10px;}
+.m-programs .prog p{font-size:14px;color:var(--mk-inksoft);line-height:1.5;}
+.m-programs .prog .kv{margin-top:16px;font-size:12.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--mk-ink);border-top:1px solid var(--mk-linesoft);padding-top:12px;}
+
+/* ---- SUITE (dark) ---- */
+.m-suite{background:var(--mk-ink);color:var(--mk-paper);}
+.m-suite .m-sechead h2{color:#fff;}
+.m-suite .m-sechead .meta{color:rgba(244,240,231,.62);}
+.m-suite .m-eyebrow .idx{color:#fff;opacity:.4;}
+.m-suite .tool-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.1);}
+.m-suite .tool{background:var(--mk-ink);padding:30px 28px;transition:background .2s ease;text-decoration:none;color:inherit;display:block;}
+.m-suite .tool:hover{background:var(--mk-ink1);}
+.m-suite .tool .tn{font-size:12px;color:var(--mk-goldsoft);font-weight:700;letter-spacing:.08em;}
+.m-suite .tool h4{font-family:var(--mk-serif);font-weight:500;color:#fff;font-size:20px;margin:14px 0 8px;}
+.m-suite .tool p{font-size:14px;color:rgba(244,240,231,.6);line-height:1.5;}
+.m-suite .suite-foot{margin-top:34px;}
+
+/* ---- PROCESS ---- */
+.m-process{background:var(--mk-paper);}
+.m-process .steps{display:grid;grid-template-columns:repeat(5,1fr);border-top:1px solid var(--mk-line);}
+.m-process .step{padding:32px 22px 14px;border-right:1px solid var(--mk-linesoft);}
+.m-process .step:last-child{border-right:0;}
+.m-process .step .sn{font-family:var(--mk-serif);font-size:40px;color:var(--mk-gold);font-weight:500;line-height:1;}
+.m-process .step h4{font-family:var(--mk-serif);font-weight:500;font-size:19px;color:var(--mk-ink);margin:18px 0 10px;}
+.m-process .step p{font-size:13.5px;color:var(--mk-inksoft);line-height:1.5;}
+.m-process .step p a{color:var(--mk-ink);border-bottom:1px solid var(--mk-gold);text-decoration:none;}
+
+@media(max-width:980px){
+  .m-wrap{padding:0 24px;}
+  .m-hero .hero-grid{grid-template-columns:1fr;gap:40px;}
+  .m-proof .proof-grid{grid-template-columns:1fr 1fr;}
+  .m-proof .stat:nth-child(3),.m-proof .stat:nth-child(4){border-top:1px solid rgba(255,255,255,.1);}
+  .m-proof .stat:nth-child(odd){border-left:0;}
+  .m-programs .flagship{grid-template-columns:1fr;}
+  .m-programs .flagship .l{border-right:0;border-bottom:1px solid var(--mk-linesoft);}
+  .m-programs .prog-grid{grid-template-columns:1fr 1fr;}
+  .m-suite .tool-grid{grid-template-columns:1fr;}
+  .m-process .steps{grid-template-columns:1fr 1fr;}
+  .m-process .step{border-bottom:1px solid var(--mk-linesoft);}
+  .m-sechead{flex-direction:column;align-items:flex-start;gap:16px;}
+}
+@media(max-width:560px){
+  .m-band{padding:64px 0;}
+  .m-proof .proof-grid{grid-template-columns:1fr;}
+  .m-proof .stat{border-left:0!important;border-top:1px solid rgba(255,255,255,.1);}
+  .m-proof .stat:first-child{border-top:0;}
+  .m-programs .prog-grid{grid-template-columns:1fr;}
+  .m-process .steps{grid-template-columns:1fr;}
+  .m-hero h1{font-size:40px;}
+  .m-hero .hero-cta .btn{width:100%;justify-content:center;}
+}
+</style>
+<style id="m-elevate">
+/* ============================================================
+   PILOT × YS — ELEVATION LAYER (motion + micro-interaction +
+   lower-section refinement). Presentation-only, additive; every
+   rule targets existing classes on THIS page only (inline scope).
+   Every scroll entrance degrades to fully-visible; ALL motion is
+   disabled under prefers-reduced-motion. No JS, no markup hooks
+   touched — nothing the page's scripts read/write is changed.
+   ============================================================ */
+:root{ --mk-ease:cubic-bezier(.2,.8,.2,1); --mk-ease-out:cubic-bezier(.16,1,.3,1); }
+
+/* anchored nav: smooth scroll + offset so sticky nav never covers a target */
+html{ scroll-behavior:smooth; }
+section[id], main[id]{ scroll-margin-top:96px; }
+
+/* nav — animated gold underline */
+#nav .nav-links a{ position:relative; }
+#nav .nav-links a::after{ content:""; position:absolute; left:0; right:0; bottom:-5px; height:1.5px; background:var(--mk-gold); border-radius:2px; transform:scaleX(0); transform-origin:left center; transition:transform .34s var(--mk-ease); }
+#nav .nav-links a:hover::after{ transform:scaleX(1); }
+
+/* buttons — tactile lift + spark flourish */
+.btn{ transition:transform .18s var(--mk-ease), box-shadow .28s ease, background .2s ease, color .2s ease, border-color .2s ease; }
+.btn-solid:hover, .btn-gold:hover{ transform:translateY(-2px); box-shadow:0 16px 32px -14px rgba(20,27,34,.55); }
+.btn-line:hover, .btn-ghost:hover{ transform:translateY(-1px); }
+.btn:active{ transform:translateY(0); }
+.btn-spark{ display:inline-block; transition:transform .3s var(--mk-ease); }
+.btn-gold:hover .btn-spark{ transform:scale(1.25) rotate(-8deg); }
+
+/* hero term-sheet card — float on hover, live pulse, row highlight */
+.m-hero .ts{ transition:transform .45s var(--mk-ease-out), box-shadow .45s ease; }
+.m-hero .ts:hover{ transform:translateY(-5px); box-shadow:0 44px 90px -40px rgba(20,27,34,.55), 0 1px 0 rgba(20,27,34,.05); }
+.m-hero .ts-tabs button{ transition:color .25s ease, border-color .25s ease; }
+.m-hero .ts-tabs button:hover{ color:var(--mk-ink); }
+.m-hero .ts-row{ transition:background .2s ease; }
+.m-hero .ts-row:hover{ background:rgba(174,135,70,.055); }
+.m-hero .ts-top .live::before{ animation:mkPulse 2.4s ease-in-out infinite; }
+@keyframes mkPulse{ 0%,100%{ box-shadow:0 0 0 0 rgba(47,127,134,.5); } 50%{ box-shadow:0 0 0 5px rgba(47,127,134,0); } }
+
+/* programs — gold edge reveal, lift, title accent */
+.m-programs .prog{ position:relative; transition:background .25s ease, transform .25s var(--mk-ease); overflow:hidden; }
+.m-programs .prog::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--mk-gold); transform:scaleY(0); transform-origin:top; transition:transform .34s var(--mk-ease); }
+.m-programs .prog:hover{ transform:translateY(-2px); }
+.m-programs .prog:hover::before{ transform:scaleY(1); }
+.m-programs .prog h4{ transition:color .2s ease; }
+.m-programs .prog:hover h4{ color:var(--mk-gold); }
+.m-programs .flagship{ transition:box-shadow .4s ease; }
+.m-programs .flagship:hover{ box-shadow:0 30px 70px -44px rgba(20,27,34,.5); }
+.m-programs .link-u:hover, .m-hero .ts-foot .link-u:hover{ color:var(--mk-gold); }
+
+/* suite — arrow reveal + title accent */
+.m-suite .tool{ position:relative; transition:background .25s ease, transform .25s var(--mk-ease); }
+.m-suite .tool:hover{ transform:translateY(-2px); }
+.m-suite .tool::after{ content:"→"; position:absolute; top:28px; right:26px; color:var(--mk-goldsoft); font-size:18px; opacity:0; transform:translateX(-6px); transition:opacity .25s ease, transform .25s var(--mk-ease); }
+.m-suite .tool:hover::after{ opacity:1; transform:translateX(0); }
+.m-suite .tool h4{ transition:color .2s ease; }
+.m-suite .tool:hover h4{ color:var(--mk-goldsoft); }
+
+/* process — number lift */
+.m-process .step .sn{ display:inline-block; transition:transform .3s var(--mk-ease); }
+.m-process .step:hover .sn{ transform:translateY(-3px); }
+
+/* value + highlight cards — lift */
+.value-card, .hl-card{ transition:transform .28s var(--mk-ease), box-shadow .32s ease, border-color .25s ease; }
+.value-card:hover, .hl-card:hover{ transform:translateY(-3px); box-shadow:0 22px 48px -28px rgba(20,27,34,.4); }
+
+/* team — refined roster: hover lift, role accent, president leads */
+.team-grid .member{ position:relative; transition:transform .26s var(--mk-ease), box-shadow .32s ease, border-color .25s ease; }
+.team-grid .member:hover{ transform:translateY(-3px); box-shadow:0 20px 44px -26px rgba(20,27,34,.42); }
+.team-grid .member .role{ transition:color .2s ease; }
+.team-grid .member:hover .role{ color:var(--mk-gold); }
+.team > .team-grid:first-of-type .member:first-child{ box-shadow:inset 0 2px 0 var(--mk-gold); }
+
+/* reviews — edge-faded running wall + featured pull-quote */
+.review-viewport{ position:relative; -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 7%,#000 93%,transparent 100%); mask-image:linear-gradient(90deg,transparent 0,#000 7%,#000 93%,transparent 100%); }
+.review .rv-avatar{ transition:transform .25s var(--mk-ease); }
+.review:hover .rv-avatar{ transform:scale(1.06); }
+.rv-feature{ max-width:920px; margin:0 auto 46px; text-align:center; }
+.rv-feature .qm{ font-family:var(--mk-serif); font-size:64px; line-height:.5; color:var(--mk-gold); opacity:.3; display:block; }
+.rv-feature blockquote{ font-family:var(--mk-serif); font-weight:500; font-size:clamp(23px,3vw,34px); line-height:1.28; letter-spacing:-.01em; color:var(--mk-ink); margin:6px 0 18px; }
+.rv-feature figcaption{ font-size:14px; color:var(--mk-inksoft); font-weight:500; letter-spacing:.02em; }
+.rv-feature figcaption b{ color:var(--mk-ink); font-weight:600; }
+
+/* FAQ — smooth accordion reveal (content only; icon logic untouched) */
+.faq-item summary{ cursor:pointer; }
+.faq-item{ transition:border-color .25s ease, background .25s ease; }
+@media (prefers-reduced-motion:no-preference){
+  .faq-item[open] .faq-a{ animation:mkFaq .36s var(--mk-ease-out); }
+  @keyframes mkFaq{ from{ opacity:0; transform:translateY(-8px); } to{ opacity:1; transform:none; } }
+}
+
+/* contact cards — lift + arrow glide */
+.contact-card{ transition:transform .26s var(--mk-ease), box-shadow .32s ease, border-color .25s ease; }
+.contact-card:hover{ transform:translateY(-3px); box-shadow:0 22px 48px -26px rgba(20,27,34,.45); }
+.contact-card .cc-go{ transition:transform .25s var(--mk-ease); }
+.contact-card:hover .cc-go{ transform:translateX(5px); }
+
+/* footer — link underline */
+.footer-nav a{ position:relative; transition:color .2s ease; }
+.footer-nav a::after{ content:""; position:absolute; left:0; bottom:-2px; width:100%; height:1px; background:var(--mk-goldsoft); transform:scaleX(0); transform-origin:left; transition:transform .3s var(--mk-ease); }
+.footer-nav a:hover::after{ transform:scaleX(1); }
+
+/* Entrance animations for lower-section cards are handled by the site's
+   EXISTING one-way reveal system (.reveal-up on .prog-grid / .tool-grid /
+   .hl-card / .contact-grid / .faq-grid + script.js .in) — proven one-way:
+   an element fades in once as it enters, reaches opacity:1, and HOLDS at
+   full forever (.in is never removed). Team members carry no entrance and
+   are always fully visible.
+   A scroll-driven animation-timeline:view() layer was intentionally REMOVED:
+   view() maps opacity to scroll POSITION bidirectionally, so cards faded back
+   out near the top of the viewport and anchor-jumps (#team etc.) could land on
+   faint/blank content. No element's opacity is tied to scroll position now. */
+
+/* reduced-motion master guard — everything static & fully visible */
+@media (prefers-reduced-motion:reduce){
+  html{ scroll-behavior:auto; }
+  .team-grid .member,.hl-card,.contact-card,.faq-item,.m-programs .prog,.m-suite .tool,.value-card{ animation:none!important; opacity:1!important; transform:none!important; }
+  .m-hero .ts-top .live::before{ animation:none!important; }
+}
+</style>
 </head>
 <body>
 
@@ -76,34 +341,72 @@
 <main id="top">
 
 <!-- HERO -->
-<section class="hero">
-    <div class="hero-inner">
-        <a class="hero-rating reveal" href="https://www.google.com/search?q=YS+Capital+Group#lrd=0x27294937c5642be3:0xcf6c0a344b1a67d3,1,,,," target="_blank" rel="noopener" aria-label="Rated 5.0 out of 5 on Google — read our verified reviews">
-            <span class="hr-stars" aria-hidden="true">★★★★★</span>
-            <span class="hr-score">5.0</span>
-            <span class="hr-on">on Google</span>
-            <span class="hr-dot" aria-hidden="true"></span>
-            <span class="hr-verified">verified reviews</span>
-            <span class="hr-arrow" aria-hidden="true">→</span>
-        </a>
-        <div class="hero-eyebrow reveal" style="--d:.04s">Private mortgage banking · For real estate investors</div>
-        <h1 class="hero-title">
-            <span class="reveal" style="--d:.05s">Capital that moves</span>
-            <span class="reveal" style="--d:.13s">at the speed of <em>the deal.</em></span>
-        </h1>
-        <p class="hero-sub reveal" style="--d:.22s">
-            Rental (DSCR), fix &amp; flip, bridge and ground-up construction — qualified on the
-            property, not your tax returns, and built to close fast. One partner from purchase to permanent.
-        </p>
-        <div class="hero-cta reveal" style="--d:.3s">
-            <a data-apply onclick="return YSApply.open(event)" class="btn btn-solid btn-lg" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Start your application</a>
-            <a class="btn btn-gold btn-lg" href="tools/term-sheet.html"><span class="btn-spark" aria-hidden="true">⚡</span> Generate your term sheet in seconds</a>
-            <a class="btn btn-line btn-lg" href="suite.html">Open the Investor Suite</a>
+<section class="m-hero hero">
+    <div class="m-wrap hero-grid">
+        <div>
+            <div class="kicker reveal">
+                <a class="chip" href="https://www.google.com/search?q=YS+Capital+Group#lrd=0x27294937c5642be3:0xcf6c0a344b1a67d3,1,,,," target="_blank" rel="noopener" aria-label="Rated 5.0 out of 5 on Google — read our verified reviews"><span class="stars" aria-hidden="true">★★★★★</span> <span class="hr-on">5.0 on Google</span></a>
+                <span class="tag">Private mortgage banking · For real estate investors</span>
+            </div>
+            <h1 class="hero-title">
+                <span class="reveal" style="--d:.05s">Capital that moves</span>
+                <span class="reveal" style="--d:.13s">at the speed of <em>the deal.</em></span>
+            </h1>
+            <p class="lede reveal" style="--d:.22s">
+                Rental (DSCR), fix &amp; flip, bridge and ground-up construction — qualified on the
+                property, not your tax returns, and built to close fast. One partner from purchase to permanent.
+            </p>
+            <div class="hero-cta reveal" style="--d:.3s">
+                <a data-apply onclick="return YSApply.open(event)" class="btn btn-solid btn-lg" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Start your application</a>
+                <a class="btn btn-gold btn-lg" href="tools/term-sheet.html"><span class="btn-spark" aria-hidden="true">⚡</span> Generate your term sheet in seconds</a>
+                <a class="btn btn-line btn-lg" href="suite.html">Open the Investor Suite</a>
+            </div>
+            <div class="micro reveal" style="--d:.36s" aria-label="How the term sheet tool works">
+                <span><i aria-hidden="true"></i> Instant terms</span><span><i aria-hidden="true"></i> No credit pull to check your rate</span><span><i aria-hidden="true"></i> Nothing to sign</span>
+            </div>
         </div>
-        <div class="hero-trust reveal" style="--d:.36s" aria-label="How the term sheet tool works">
-            <span>⚡ Instant terms</span><i></i><span>🔒 No credit pull to check your rate</span><i></i><span>✍️ Nothing to sign</span>
+        <div class="reveal" style="--d:.2s">
+            <div class="ts">
+                <div class="ts-top">
+                    <span class="t">Term Sheet · Indicative</span>
+                    <span class="live">Live</span>
+                </div>
+                <div class="ts-tabs">
+                    <button class="on" type="button">Standard</button>
+                    <button type="button">Gold Standard</button>
+                </div>
+                <div class="ts-body">
+                    <div class="ts-prop">SUBJECT · <b>Fix &amp; Flip</b> · Purchase $300,000 · Rehab $75,000 · ARV $500,000</div>
+                    <div class="ts-row big"><span class="k">Loan amount</span><span class="v acc m-num">$345,000</span></div>
+                    <div class="ts-row"><span class="k">Note rate</span><span class="v m-num">9.50%</span></div>
+                    <div class="ts-row"><span class="k">Origination</span><span class="v m-num">1.25 pts</span></div>
+                    <div class="ts-row"><span class="k">Loan-to-cost</span><span class="v m-num">92.5%</span></div>
+                    <div class="ts-row"><span class="k">Est. monthly (IO)</span><span class="v m-num">$2,731</span></div>
+                </div>
+                <div class="ts-foot">
+                    <span class="note">Illustrative example — indicative only, not a commitment to lend.</span>
+                    <a class="link-u" href="tools/term-sheet.html">Open the full studio →</a>
+                </div>
+            </div>
         </div>
-        <div class="hero-stats reveal" style="--d:.4s">
+    </div>
+</section>
+
+<!-- OFFER MARQUEE -->
+<section class="offer-bar" aria-label="Current offers">
+    <div class="offer-track" id="offer-track">
+        <div class="offer-pill"><span class="dot"></span>Ask about <strong>no closing cost</strong> options</div>
+        <div class="offer-pill"><span class="dot"></span><strong>Zero points</strong> on eligible Fix &amp; Hold renovation loans</div>
+        <div class="offer-pill"><span class="dot"></span><strong>Deferred origination fees</strong> on Fix &amp; Flip — less cash upfront</div>
+        <div class="offer-pill"><span class="dot"></span><strong>Sharp pricing</strong> across Non-QM programs</div>
+        <div class="offer-pill"><span class="dot"></span>Prepay as low as <strong>1% fixed</strong> on eligible scenarios</div>
+    </div>
+</section>
+
+<!-- PROOF BAND (hero stats) -->
+<section class="m-proof" aria-label="Program highlights at a glance">
+    <div class="m-wrap">
+        <div class="proof-grid">
             <div class="stat">
                 <span class="stat-tag">DSCR rental</span>
                 <span class="stat-num" data-count="5.875" data-prefix="from " data-suffix="%">0</span>
@@ -125,18 +428,7 @@
                 <span class="stat-label">+ 100% of renovation financed in draws*</span>
             </div>
         </div>
-        <p class="hero-stats-note reveal" style="--d:.46s">*Business-purpose, investment (non-owner-occupied) loans only. The figure shown is a representative interest rate — not an APR — for a 30-year fixed DSCR loan to a well-qualified borrower, as of Q3 2026. Your rate, and any $0-closing-cost or zero-point option, depend on loan type, credit (FICO), LTV/LTC, DSCR, property type, occupancy, loan amount, points elected, prepayment structure and state, and may be higher. Leverage shown is a maximum, set by experience and credit and capped by property value/ARV. Funding timelines vary by deal, title and third-party turnaround. Indicative only — subject to full underwriting; not a rate lock, offer, or commitment to lend.</p>
-    </div>
-</section>
-
-<!-- OFFER MARQUEE -->
-<section class="offer-bar" aria-label="Current offers">
-    <div class="offer-track" id="offer-track">
-        <div class="offer-pill"><span class="dot"></span>Ask about <strong>no closing cost</strong> options</div>
-        <div class="offer-pill"><span class="dot"></span><strong>Zero points</strong> on eligible Fix &amp; Hold renovation loans</div>
-        <div class="offer-pill"><span class="dot"></span><strong>Deferred origination fees</strong> on Fix &amp; Flip — less cash upfront</div>
-        <div class="offer-pill"><span class="dot"></span><strong>Sharp pricing</strong> across Non-QM programs</div>
-        <div class="offer-pill"><span class="dot"></span>Prepay as low as <strong>1% fixed</strong> on eligible scenarios</div>
+        <p class="proof-note">*Business-purpose, investment (non-owner-occupied) loans only. The figure shown is a representative interest rate — not an APR — for a 30-year fixed DSCR loan to a well-qualified borrower, as of Q3 2026. Your rate, and any $0-closing-cost or zero-point option, depend on loan type, credit (FICO), LTV/LTC, DSCR, property type, occupancy, loan amount, points elected, prepayment structure and state, and may be higher. Leverage shown is a maximum, set by experience and credit and capped by property value/ARV. Funding timelines vary by deal, title and third-party turnaround. Indicative only — subject to full underwriting; not a rate lock, offer, or commitment to lend.</p>
     </div>
 </section>
 
@@ -172,67 +464,63 @@
 </section>
 
 <!-- PROGRAMS -->
-<section class="programs" id="programs">
-    <div class="section-head reveal-up">
-        <div class="eyebrow">What we fund</div>
-        <h2 class="section-title">Financing for every stage of the deal</h2>
-        <p class="section-sub">Rental (DSCR) is our core — and we finance the full lifecycle around it: acquire, renovate, build and hold. One partner from purchase to permanent.</p>
+<section class="m-programs m-band" id="programs">
+    <div class="m-wrap">
+        <div class="m-sechead reveal-up">
+            <div>
+                <div class="m-eyebrow"><span class="idx">01</span>Financing</div>
+                <h2>One partner, from purchase to permanent.</h2>
+            </div>
+            <p class="meta">Rental (DSCR) is our core — and we finance the full lifecycle around it: acquire, renovate, build and hold, structured on the property and closed on your timeline.</p>
+        </div>
+
+        <div class="flagship reveal-up">
+            <div class="l">
+                <span class="flag-tag">Flagship · DSCR Rental</span>
+                <h3>Qualify on the property's cash flow.</h3>
+                <p>No tax returns, no W-2s. 30-year fixed, ARM and interest-only — on purchases, refinances and cash-out. 1–4 units, LLC-friendly, single property or portfolio.</p>
+                <a class="link-u" href="tools/term-sheet.html">Price a DSCR deal →</a>
+            </div>
+            <div class="r">
+                <div class="spec"><span class="k">Purchase &amp; R/T</span><span class="v m-num">85% <small>LTV</small></span></div>
+                <div class="spec"><span class="k">Cash-out</span><span class="v m-num">80% <small>LTV</small></span></div>
+                <div class="spec"><span class="k">Structure</span><span class="v">30-yr fixed · ARM · IO</span></div>
+                <div class="spec"><span class="k">Docs</span><span class="v">No income docs</span></div>
+            </div>
+        </div>
+
+        <div class="prog-grid reveal-up">
+            <div class="prog"><div class="pnum">02</div><h4>Fix &amp; Flip</h4><p>Up to 95% of purchase and 100% of renovation, released in draws as work is verified. Built to buy, renovate and resell.</p><div class="kv">Up to 95% LTC</div></div>
+            <div class="prog"><div class="pnum">03</div><h4>Bridge</h4><p>Fast, asset-based financing to acquire or stabilize now and refinance or sell later. Limited docs — compete with cash.</p><div class="kv">Close fast</div></div>
+            <div class="prog"><div class="pnum">04</div><h4>Ground-Up Construction</h4><p>Land and vertical financing for residential and small-multifamily builds, with flexible draw schedules.</p><div class="kv">Ground-up</div></div>
+            <div class="prog"><div class="pnum">05</div><h4>Multifamily</h4><p>Financing for 5+ unit properties — structured as bridge, DSCR or term to match your business plan.</p><div class="kv">5+ units</div></div>
+            <div class="prog"><div class="pnum">06</div><h4>No-Ratio DSCR</h4><p>No cash-flow test required — a fit for lease-up, value-add or short-term vacancy on non-owner-occupied property.</p><div class="kv">No ratio</div></div>
+            <div class="prog"><div class="pnum">07</div><h4>Home Equity &amp; HELOC</h4><p>Tap investment-property equity — a fixed closed-end second or a revolving line — while keeping your existing first in place.</p><div class="kv">Keep your 1st</div></div>
+            <div class="prog"><div class="pnum">08</div><h4>Bank Statement</h4><p>Qualify on 12–24 months of bank deposits instead of tax returns — built for self-employed investors.</p><div class="kv">12–24 mo</div></div>
+            <div class="prog"><div class="pnum">09</div><h4>Conventional Investment</h4><p>Conforming Fannie / Freddie financing for qualified investors with verifiable income — competitive fixed rates.</p><div class="kv">Agency terms</div></div>
+        </div>
     </div>
-    <div class="prog-grid">
-        <article class="prog-card feature">
-            <div class="prog-chip">30-yr · No income docs</div>
-            <h3>DSCR Rental Loans</h3>
-            <p>Qualify on the property's cash flow — no tax returns, no W-2s. 30-year fixed, ARM and interest-only, on purchases, refinances and cash-out.</p>
-            <span class="prog-note">Our flagship. 1–4 units, LLC-friendly, single property or portfolio.</span>
-        </article>
-        <article class="prog-card">
-            <div class="prog-chip">Up to 95% LTC</div>
-            <h3>Fix &amp; Flip</h3>
-            <p>Up to 95% of purchase and 100% of renovation, released in draws as work is verified. Built to buy, renovate and resell.</p>
-            <span class="prog-note">Short-term rehab capital, 1 pt origination.</span>
-        </article>
-        <article class="prog-card">
-            <div class="prog-chip">Close fast</div>
-            <h3>Bridge</h3>
-            <p>Fast, asset-based financing to acquire or stabilize now and refinance or sell later. Limited docs — compete with cash.</p>
-            <span class="prog-note">Time-sensitive and transitional deals.</span>
-        </article>
-        <article class="prog-card">
-            <div class="prog-chip">Ground-up</div>
-            <h3>Ground-Up Construction</h3>
-            <p>Land and vertical financing for residential and small-multifamily builds, with flexible draw schedules.</p>
-            <span class="prog-note">Create new inventory in growing markets.</span>
-        </article>
-        <article class="prog-card">
-            <div class="prog-chip">5+ units</div>
-            <h3>Multifamily</h3>
-            <p>Financing for 5+ unit properties — structured as bridge, DSCR or term to match your business plan.</p>
-            <span class="prog-note">Scale rental cash flow with economies of scale.</span>
-        </article>
-        <article class="prog-card">
-            <div class="prog-chip">No ratio</div>
-            <h3>No-Ratio DSCR</h3>
-            <p>No cash-flow test required — a fit for lease-up, value-add or short-term vacancy on non-owner-occupied property.</p>
-            <span class="prog-note">Acquire transitional or repositioning assets.</span>
-        </article>
-        <article class="prog-card">
-            <div class="prog-chip">Keep your 1st</div>
-            <h3>Home Equity &amp; HELOC</h3>
-            <p>Tap investment-property equity — a fixed closed-end second or a revolving line — while keeping your existing first mortgage in place.</p>
-            <span class="prog-note">Liquidity for your next deal without a full refi.</span>
-        </article>
-        <article class="prog-card">
-            <div class="prog-chip">12–24 mo</div>
-            <h3>Bank Statement</h3>
-            <p>Qualify on 12–24 months of bank deposits instead of tax returns — built for self-employed investors.</p>
-            <span class="prog-note">Alternative documentation, competitive leverage.</span>
-        </article>
-        <article class="prog-card">
-            <div class="prog-chip">Agency terms</div>
-            <h3>Conventional Investment</h3>
-            <p>Conforming Fannie / Freddie financing for qualified investors with verifiable income — competitive fixed rates.</p>
-            <span class="prog-note">For standard guideline files.</span>
-        </article>
+</section>
+
+<!-- SUITE -->
+<section class="m-suite m-band" id="suite">
+    <div class="m-wrap">
+        <div class="m-sechead reveal-up">
+            <div>
+                <div class="m-eyebrow"><span class="idx">02</span>The Investor Suite</div>
+                <h2>Price the deal before you call anyone.</h2>
+            </div>
+            <p class="meta">A working desk of investor tools — instant term sheets, deal analysis and scenario comparison. No credit pull, nothing to sign.</p>
+        </div>
+        <div class="tool-grid reveal-up">
+            <a class="tool" href="tools/term-sheet.html"><div class="tn">01</div><h4>Term Sheet Studio</h4><p>A signable, dual-program term sheet — structure, pricing and cash-to-close — in about a minute.</p></a>
+            <a class="tool" href="tools/deal-analyzer.html"><div class="tn">02</div><h4>Deal Analyzer</h4><p>Full rental underwriting — cap rate, cash-on-cash, DSCR, debt yield and break-even.</p></a>
+            <a class="tool" href="tools/flip-analyzer.html"><div class="tn">03</div><h4>Flip Analyzer</h4><p>Project cost, holding, profit and annualized ROI on a fix &amp; flip — line by line.</p></a>
+            <a class="tool" href="tools/rehab-budget.html"><div class="tn">04</div><h4>Rehab Budget</h4><p>Build a lender-ready scope of work with category templates and a live contingency.</p></a>
+            <a class="tool" href="tools/portfolio-tracker.html"><div class="tn">05</div><h4>Portfolio Tracker</h4><p>Equity, cash flow, LTV and DSCR across every property on one dashboard.</p></a>
+            <a class="tool" href="tools/track-record.html"><div class="tn">06</div><h4>Track Record</h4><p>Turn completed deals into a verified experience record that lifts your leverage tier.</p></a>
+        </div>
+        <div class="suite-foot reveal-up"><a class="btn btn-gold btn-lg" href="suite.html">Open the full Investor Suite →</a></div>
     </div>
 </section>
 
@@ -284,40 +572,21 @@
 </section>
 
 <!-- PROCESS -->
-<section class="process" id="process">
-    <div class="section-head reveal-up">
-        <div class="eyebrow">Simple process</div>
-        <h2 class="section-title">Quote in seconds, approved fast, funded through close</h2>
-    </div>
-    <div class="proc-row proc-row-5">
-        <div class="proc-step reveal-up">
-            <div class="proc-num">1</div>
-            <h3>Price it instantly</h3>
-            <p>Run the <a href="tools/term-sheet.html">Term Sheet tool</a> — leverage, rate and cash-to-close in seconds. No credit pull.</p>
+<section class="m-process m-band" id="process">
+    <div class="m-wrap">
+        <div class="m-sechead reveal-up">
+            <div>
+                <div class="m-eyebrow"><span class="idx">03</span>How it works</div>
+                <h2>Quote in seconds, approved fast, funded through close.</h2>
+            </div>
+            <p class="meta">Asset-based underwriting means no tax returns or W-2s — and a path measured in weeks, not months.</p>
         </div>
-        <div class="proc-line" aria-hidden="true"></div>
-        <div class="proc-step reveal-up" style="--d:.08s">
-            <div class="proc-num">2</div>
-            <h3>Apply &amp; get terms</h3>
-            <p>Submit the property and your goal. We issue a signable term sheet matched to your scenario — fast.</p>
-        </div>
-        <div class="proc-line" aria-hidden="true"></div>
-        <div class="proc-step reveal-up" style="--d:.16s">
-            <div class="proc-num">3</div>
-            <h3>Underwrite &amp; appraise</h3>
-            <p>Asset-based review of the deal and your scope of work — no tax returns or W-2s required.</p>
-        </div>
-        <div class="proc-line" aria-hidden="true"></div>
-        <div class="proc-step reveal-up" style="--d:.24s">
-            <div class="proc-num">4</div>
-            <h3>Close with confidence</h3>
-            <p>Clear docs, responsive comms, and funding in as little as two weeks from a signed application on eligible deals; timelines vary by title and third parties.</p>
-        </div>
-        <div class="proc-line" aria-hidden="true"></div>
-        <div class="proc-step reveal-up" style="--d:.32s">
-            <div class="proc-num">5</div>
-            <h3>Draw &amp; build</h3>
-            <p>100% of rehab is financed and released in draws as work is verified — managed by a dedicated draw coordinator.</p>
+        <div class="steps reveal-up">
+            <div class="step"><div class="sn">1</div><h4>Price it instantly</h4><p>Run the <a href="tools/term-sheet.html">Term Sheet tool</a> — leverage, rate and cash-to-close in seconds. No credit pull.</p></div>
+            <div class="step"><div class="sn">2</div><h4>Apply &amp; get terms</h4><p>Submit the property and your goal. We issue a signable term sheet matched to your scenario — fast.</p></div>
+            <div class="step"><div class="sn">3</div><h4>Underwrite &amp; appraise</h4><p>Asset-based review of the deal and your scope of work — no tax returns or W-2s required.</p></div>
+            <div class="step"><div class="sn">4</div><h4>Close with confidence</h4><p>Clear docs, responsive comms, and funding in as little as two weeks from a signed application on eligible deals; timelines vary by title and third parties.</p></div>
+            <div class="step"><div class="sn">5</div><h4>Draw &amp; build</h4><p>100% of rehab is financed and released in draws as work is verified — managed by a dedicated draw coordinator.</p></div>
         </div>
     </div>
 </section>
@@ -379,6 +648,11 @@
             <a class="rb-link" id="reviewsGoogleLink" href="https://www.google.com/search?q=YS+Capital+Group#lrd=0x27294937c5642be3:0xcf6c0a344b1a67d3,1,,,," target="_blank" rel="noopener">Read them on Google →</a>
         </div>
     </div>
+    <figure class="rv-feature reveal-up">
+        <span class="qm" aria-hidden="true">&ldquo;</span>
+        <blockquote>YS Capital is the best direct lender I've ever dealt with! Fast and efficient — it's worth the try, you won't regret it!</blockquote>
+        <figcaption><b>Dov Steiner</b> · Verified Google review</figcaption>
+    </figure>
     <div class="review-viewport" aria-label="Client reviews">
         <div class="review-track" id="reviewTrack"><!-- populated from real reviews via script --></div>
     </div>
