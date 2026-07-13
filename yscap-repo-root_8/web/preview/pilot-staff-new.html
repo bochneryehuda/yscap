@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — New file</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .form-grid{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start;}
+  .form-col{display:flex;flex-direction:column;gap:20px;}
+  .grp-h{display:flex;align-items:baseline;gap:12px;}
+  .grp-h .n{font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--gold);font-variant-numeric:tabular-nums;}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:0 16px;}
+  .three{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 16px;}
+  .field.wide{grid-column:1 / -1;}
+  .input:focus{outline:none;border-color:var(--teal);box-shadow:0 0 0 3px var(--info-bg);}
+  select.input{appearance:none;-webkit-appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--ink-soft) 50%),linear-gradient(135deg,var(--ink-soft) 50%,transparent 50%);background-position:calc(100% - 18px) 55%,calc(100% - 13px) 55%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:38px;cursor:pointer;}
+  .in-wrap{position:relative;display:flex;align-items:center;}
+  .in-wrap .pre{position:absolute;left:14px;font-size:15px;color:var(--ink-soft);font-weight:600;pointer-events:none;}
+  .in-wrap .input{width:100%;padding-left:26px;}
+  .hint-x{font-size:12px;color:var(--ink-soft);margin-top:-8px;margin-bottom:16px;}
+  .summary{position:sticky;top:88px;}
+  .sum-echo{padding:2px 22px 4px;}
+  .ts-row .v.mut{color:var(--ink-soft);font-style:italic;font-size:15px;font-family:var(--sans);}
+  .sum-prog{font-size:13px;color:var(--ink-soft);padding:16px 22px 4px;line-height:1.5;}
+  .sum-prog b{color:var(--ink);font-weight:600;font-style:normal;}
+  .sum-actions{display:flex;flex-direction:column;gap:10px;padding:18px 22px 22px;}
+  .sum-actions .btn{width:100%;justify-content:center;}
+  .sum-note{font-size:12px;color:var(--ink-soft);text-align:center;padding:0 22px 20px;line-height:1.5;}
+  .req{color:var(--alert);font-weight:700;}
+  .form-foot{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding-top:4px;}
+  .assign-card{display:flex;align-items:center;gap:11px;padding:12px 14px;background:var(--panel-2);border:1px solid var(--app-line-soft);border-radius:var(--r);margin-top:4px;}
+  .assign-card .mono{width:30px;height:30px;font-size:12px;}
+  .assign-card .who{font-size:13.5px;font-weight:600;}
+  .assign-card .role{font-size:11.5px;color:var(--ink-soft);}
+  @media(max-width:1080px){
+    .form-grid{grid-template-columns:1fr;}
+    .summary{position:static;}
+    .app-topbar .search{display:none;}
+  }
+  @media(max-width:560px){
+    .two,.three{grid-template-columns:1fr;}
+  }
+  @media(max-width:400px){
+    .input{font-size:16px;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search loans, borrowers, LLCs…</div>
+    <div class="user-pill">
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>New file</h1>
+        <div class="sub">Open a loan file for a borrower.</div>
+      </div>
+      <button class="btn btn-ghost btn-sm">Cancel</button>
+    </div>
+
+    <div class="form-grid">
+
+      <!-- LEFT: grouped input panels -->
+      <div class="form-col">
+
+        <!-- BORROWER -->
+        <div class="panel">
+          <div class="panel-h"><div class="grp-h"><span class="n">01</span><h3>Borrower</h3></div><span class="pill mut">Primary contact</span></div>
+          <div class="panel-b">
+            <div class="two">
+              <div class="field"><label>Full name <span class="req">*</span></label><input class="input" value="Daniel Rosenberg"></div>
+              <div class="field"><label>Entity / LLC</label><input class="input" value="Maple Ridge Holdings LLC"></div>
+              <div class="field"><label>Email <span class="req">*</span></label><input class="input" type="email" value="daniel@mapleridgeholdings.com"></div>
+              <div class="field"><label>Phone</label><input class="input" type="tel" value="(973) 555-0148"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- PROPERTY -->
+        <div class="panel">
+          <div class="panel-h"><div class="grp-h"><span class="n">02</span><h3>Property</h3></div><span class="pill mut">Subject collateral</span></div>
+          <div class="panel-b">
+            <div class="field wide"><label>Street address <span class="req">*</span></label><input class="input" value="128 Vernon Ave, Newark, NJ 07106"></div>
+            <div class="three">
+              <div class="field"><label>Property type</label>
+                <select class="input">
+                  <option>Single-family</option>
+                  <option>2–4 unit</option>
+                  <option selected>Multifamily (5+)</option>
+                  <option>Mixed-use</option>
+                  <option>Condo</option>
+                  <option>Townhome</option>
+                </select>
+              </div>
+              <div class="field"><label>Units</label><input class="input num" value="6"></div>
+              <div class="field"><label>Year built</label><input class="input num" value="1962"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- DEAL -->
+        <div class="panel">
+          <div class="panel-h"><div class="grp-h"><span class="n">03</span><h3>Deal</h3></div><span class="pill info">Fix &amp; Flip</span></div>
+          <div class="panel-b">
+            <div class="field wide"><label>Loan program <span class="req">*</span></label>
+              <select class="input">
+                <option>DSCR Rental</option>
+                <option selected>Fix &amp; Flip</option>
+                <option>Bridge</option>
+                <option>Ground-Up Construction</option>
+                <option>Multifamily</option>
+              </select>
+            </div>
+            <div class="two">
+              <div class="field"><label>Purchase price</label><div class="in-wrap"><span class="pre">$</span><input class="input num" value="285,000"></div></div>
+              <div class="field"><label>Rehab budget</label><div class="in-wrap"><span class="pre">$</span><input class="input num" value="92,000"></div></div>
+              <div class="field"><label>After-repair value (ARV)</label><div class="in-wrap"><span class="pre">$</span><input class="input num" value="495,000"></div></div>
+              <div class="field"><label>Requested loan amount <span class="req">*</span></label><div class="in-wrap"><span class="pre">$</span><input class="input num" value="345,000"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ASSIGNMENT -->
+        <div class="panel">
+          <div class="panel-h"><div class="grp-h"><span class="n">04</span><h3>Assignment</h3></div><span class="pill mut">Desk routing</span></div>
+          <div class="panel-b">
+            <div class="two">
+              <div class="field"><label>Loan officer <span class="req">*</span></label>
+                <select class="input">
+                  <option selected>M. Bochner</option>
+                  <option>D. Feldman</option>
+                  <option>R. Stein</option>
+                  <option>S. Klein</option>
+                </select>
+              </div>
+              <div class="field"><label>Processor</label>
+                <select class="input">
+                  <option>Unassigned</option>
+                  <option selected>A. Weiss</option>
+                  <option>L. Gordon</option>
+                  <option>T. Marks</option>
+                </select>
+              </div>
+            </div>
+            <div class="assign-card">
+              <span class="mono">MB</span>
+              <div><div class="who">M. Bochner</div><div class="role">Loan officer · 42 active files</div></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- RIGHT: sticky summary -->
+      <div class="summary">
+        <div class="panel ts">
+          <div class="ts-top">
+            <span class="t">File summary</span>
+            <span class="live">Draft</span>
+          </div>
+          <div class="sum-echo">
+            <div class="ts-row"><span class="k">Borrower</span><span class="v mut" style="font-style:normal;font-size:16px;color:var(--ink);">Daniel Rosenberg</span></div>
+            <div class="ts-row"><span class="k">Entity</span><span class="v" style="font-size:15px;">Maple Ridge Holdings LLC</span></div>
+            <div class="ts-row"><span class="k">Property</span><span class="v" style="font-size:15px;text-align:right;">128 Vernon Ave, Newark</span></div>
+            <div class="ts-row"><span class="k">Program</span><span class="v acc" style="font-size:17px;">Fix &amp; Flip</span></div>
+            <div class="ts-row"><span class="k">ARV</span><span class="v num">$495,000</span></div>
+            <div class="ts-row big"><span class="k">Loan amount</span><span class="v num">$345,000</span></div>
+          </div>
+          <div class="sum-prog">Est. LTV <b>69.7%</b> · LTC <b>91.5%</b> · Officer <b>M. Bochner</b></div>
+          <div class="sum-actions">
+            <button class="btn btn-gold">Create file</button>
+            <button class="btn btn-ghost">Save draft</button>
+          </div>
+          <div class="sum-note">A file number is issued on creation and the borrower is invited to the portal.</div>
+        </div>
+      </div>
+
+    </div>
+
+  </main>
+</div>
+</body>
+</html>

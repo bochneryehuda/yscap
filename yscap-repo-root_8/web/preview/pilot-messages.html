@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Messages</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .app-nav{display:flex;align-items:center;gap:22px;}
+  .app-nav a{font-size:14.5px;font-weight:500;color:var(--ink-soft);}
+  .app-nav a.on{color:var(--ink);font-weight:600;}
+  .app-nav a:hover{color:var(--gold);}
+  .app-nav .sep{color:var(--app-line);font-size:13px;}
+  @media(max-width:820px){.app-nav{display:none;}}
+
+  /* two-pane: slim thread list + conversation, centered */
+  .mwrap{max-width:1000px;margin:0 auto;display:grid;grid-template-columns:264px 1fr;gap:16px;height:calc(100vh - 214px);min-height:520px;}
+  .cpane{background:var(--panel);border:1px solid var(--app-line);border-radius:var(--r);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+
+  /* ---- LEFT: thread list ---- */
+  .tl-h{padding:16px 16px 12px;border-bottom:1px solid var(--app-line-soft);}
+  .tl-h .row{display:flex;align-items:center;justify-content:space-between;}
+  .tl-h h3{font-size:16px;}
+  .tlist{overflow-y:auto;flex:1;min-height:0;}
+  .tconv{display:flex;gap:12px;padding:15px 16px;border-bottom:1px solid var(--app-line-soft);cursor:pointer;transition:background .15s;min-height:44px;}
+  .tconv:hover{background:var(--panel-2);}
+  .tconv.on{background:var(--panel-2);box-shadow:inset 3px 0 0 var(--gold);}
+  .tconv .body{flex:1;min-width:0;}
+  .tconv .top{display:flex;align-items:baseline;justify-content:space-between;gap:8px;}
+  .tconv .nm{font-weight:600;font-size:14px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .tconv .ts{font-size:11px;color:var(--ink-soft);flex:none;font-variant-numeric:tabular-nums;}
+  .tconv .prev{font-size:13px;color:var(--ink-soft);line-height:1.4;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .tconv .tag{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);margin-top:6px;display:inline-flex;align-items:center;gap:6px;}
+  .tconv .tag .d{width:5px;height:5px;border-radius:50%;background:var(--gold);}
+
+  /* ---- CENTER: conversation ---- */
+  .thread{min-width:0;}
+  .th-h{display:flex;align-items:center;gap:13px;padding:15px 20px;border-bottom:1px solid var(--app-line-soft);}
+  .th-back{display:none;flex:none;width:40px;height:40px;border-radius:8px;border:1px solid var(--app-line);background:var(--panel);color:var(--ink);align-items:center;justify-content:center;font-size:18px;cursor:pointer;}
+  .th-team{display:flex;align-items:center;flex:none;}
+  .th-team .mono{width:38px;height:38px;font-size:13px;}
+  .th-team .mono:nth-child(2){margin-left:-11px;}
+  .th-h .who{flex:1;min-width:0;}
+  .th-h .who .nm{font-family:var(--serif);font-weight:500;font-size:18px;letter-spacing:-.01em;}
+  .th-h .who .sub{display:flex;align-items:center;gap:9px;margin-top:4px;flex-wrap:wrap;}
+  .th-h .who .on{font-size:12.5px;color:var(--ink-soft);}
+  .th-h .who .on b{color:var(--ink);font-weight:600;}
+
+  .msgs{flex:1;min-height:0;overflow-y:auto;padding:22px 20px;display:flex;flex-direction:column;gap:16px;background:var(--app);}
+  .daydot{align-self:center;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);background:var(--panel);border:1px solid var(--app-line-soft);border-radius:100px;padding:4px 13px;}
+  .msg{display:flex;gap:10px;max-width:78%;}
+  .msg .mono{width:30px;height:30px;font-size:11px;align-self:flex-end;}
+  .msg .stack{display:flex;flex-direction:column;gap:4px;min-width:0;}
+  .msg .who{font-size:11px;font-weight:700;letter-spacing:.02em;color:var(--ink-soft);}
+  .bubble{padding:11px 14px;font-size:14.5px;line-height:1.5;border-radius:13px;}
+  /* incoming (team) — plain white */
+  .msg.in .bubble{background:var(--panel);border:1px solid var(--app-line);border-bottom-left-radius:4px;color:var(--ink);}
+  /* outgoing (borrower) — teal-tinted */
+  .msg.out{margin-left:auto;flex-direction:row-reverse;}
+  .msg.out .stack{align-items:flex-end;}
+  .msg.out .bubble{background:rgba(47,127,134,.11);border:1px solid rgba(47,127,134,.26);border-bottom-right-radius:4px;color:var(--ink);}
+  .msg .time{font-size:10.5px;color:var(--ink-soft);font-variant-numeric:tabular-nums;}
+  .sys{align-self:center;display:inline-flex;align-items:center;gap:9px;font-size:12px;color:var(--ink-soft);background:var(--panel);border:1px solid var(--app-line-soft);border-radius:100px;padding:6px 14px;text-align:center;}
+  .sys .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none;}
+  .sys b{color:var(--ink);font-weight:600;}
+
+  .composer{border-top:1px solid var(--app-line-soft);padding:12px 14px;display:flex;align-items:flex-end;gap:10px;background:var(--panel);}
+  .composer .attach{flex:none;width:44px;height:44px;border-radius:10px;border:1px solid var(--app-line);background:var(--panel);color:var(--ink-soft);font-size:19px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
+  .composer .attach:hover{border-color:var(--ink);color:var(--ink);}
+  .composer .box{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--panel-2);border:1px solid var(--app-line-soft);border-radius:12px;padding:6px 8px 6px 14px;}
+  .composer .box:focus-within{border-color:var(--teal);}
+  .composer textarea{border:0;background:transparent;resize:none;font-family:var(--sans);font-size:16px;line-height:1.5;color:var(--ink);padding:6px 0;min-height:24px;max-height:110px;outline:none;width:100%;}
+  .composer textarea::placeholder{color:var(--ink-soft);}
+  .composer .send{flex:none;height:44px;padding:0 18px;}
+  .cnote{font-size:11px;color:var(--ink-soft);padding:0 8px;margin-top:2px;}
+
+  @media(max-width:820px){
+    .mwrap{grid-template-columns:1fr;height:calc(100vh - 176px);}
+    .m-list{display:flex;}
+    .m-thread{display:none;}
+    .mwrap.show-thread .m-list{display:none;}
+    .mwrap.show-thread .m-thread{display:flex;}
+    .th-back{display:inline-flex;}
+  }
+</style>
+</head>
+<body>
+<div class="app no-side">
+
+  <header class="app-topbar">
+    <span class="cobrand"><span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span><span class="div"></span><span class="ys">YS Capital</span></span>
+    <nav class="app-nav">
+      <a>Dashboard</a><span class="sep">·</span>
+      <a>My loan</a><span class="sep">·</span>
+      <a>Documents</a><span class="sep">·</span>
+      <a>Profile</a><span class="sep">·</span>
+      <a class="on">Messages</a>
+    </nav>
+    <span class="user-pill"><span class="mono">DR</span></span>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>Messages</h1>
+        <div class="sub">Secure messaging with your loan team.</div>
+      </div>
+      <span class="pill ok">Secure</span>
+    </div>
+
+    <div class="mwrap show-thread">
+
+      <!-- ============ LEFT: SLIM THREAD LIST ============ -->
+      <section class="cpane m-list">
+        <div class="tl-h">
+          <div class="row">
+            <h3>Conversations</h3>
+            <span class="pill info">1 new</span>
+          </div>
+        </div>
+        <div class="tlist">
+          <div class="tconv on">
+            <div class="body">
+              <div class="top"><span class="nm">Your YS Capital team</span><span class="ts">9:41a</span></div>
+              <div class="prev">Sofia: Nothing needed from you right now.</div>
+              <div class="tag"><span class="d"></span>Loan · 128 Vernon Ave</div>
+            </div>
+          </div>
+          <div class="tconv">
+            <div class="body">
+              <div class="top"><span class="nm">Closing coordination</span><span class="ts">Mon</span></div>
+              <div class="prev">Theo: We'll share the closing checklist soon.</div>
+              <div class="tag"><span class="d"></span>Loan · 128 Vernon Ave</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ CENTER: CONVERSATION ============ -->
+      <section class="cpane thread m-thread">
+        <div class="th-h">
+          <button class="th-back" aria-label="Back to conversations">‹</button>
+          <div class="th-team">
+            <span class="mono">SM</span>
+            <span class="mono">TE</span>
+          </div>
+          <div class="who">
+            <div class="nm">Your YS Capital team</div>
+            <div class="sub">
+              <span class="on">Sofia Marlowe · Theo Ellison</span>
+              <span class="on">on: <b>128 Vernon Ave</b></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="msgs">
+          <span class="daydot">Today · Jul 13</span>
+
+          <div class="msg in">
+            <span class="mono">SM</span>
+            <div class="stack">
+              <span class="who">Sofia Marlowe · Loan Officer</span>
+              <div class="bubble">Good morning, Daniel. We received the revised insurance binder for 128 Vernon Ave — thank you. Everything on it looks correct.</div>
+              <span class="time">9:08 AM</span>
+            </div>
+          </div>
+
+          <div class="sys"><span class="dot"></span>Document received · <b>Insurance binder</b></div>
+
+          <div class="msg out">
+            <span class="mono">DR</span>
+            <div class="stack">
+              <span class="who">You</span>
+              <div class="bubble">That's great to hear. Is there anything else you need from me this week?</div>
+              <span class="time">9:16 AM · Read</span>
+            </div>
+          </div>
+
+          <div class="msg in">
+            <span class="mono">TE</span>
+            <div class="stack">
+              <span class="who">Theo Ellison · Loan Processor</span>
+              <div class="bubble">Just the two months of bank statements for the Gold Standard program. You can upload them straight from your Documents tab whenever it's convenient.</div>
+              <span class="time">9:22 AM</span>
+            </div>
+          </div>
+
+          <div class="msg out">
+            <span class="mono">DR</span>
+            <div class="stack">
+              <span class="who">You</span>
+              <div class="bubble">Perfect — just uploaded both statements a minute ago.</div>
+              <span class="time">9:34 AM · Read</span>
+            </div>
+          </div>
+
+          <div class="sys"><span class="dot" style="background:var(--teal);"></span>Condition cleared · <b>Proof of insurance</b></div>
+
+          <div class="msg in">
+            <span class="mono">SM</span>
+            <div class="stack">
+              <span class="who">Sofia Marlowe · Loan Officer</span>
+              <div class="bubble">Got them, thank you. That clears another condition. Your appraisal is scheduled for Thursday morning, and once it's back underwriting does the final review. Nothing needed from you right now — we'll keep you posted here.</div>
+              <span class="time">9:41 AM</span>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="composer">
+          <button class="attach" aria-label="Attach file">+</button>
+          <div class="box">
+            <textarea rows="1" placeholder="Message your team…"></textarea>
+            <div class="cnote">Encrypted · visible only to your YS Capital loan team</div>
+          </div>
+          <button class="btn btn-gold send">Send</button>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

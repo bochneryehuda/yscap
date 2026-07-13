@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — My tasks</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .stack{display:flex;flex-direction:column;gap:22px;}
+  .panel-h .cnt{font-family:var(--serif);font-weight:500;font-size:15px;color:var(--ink-soft);font-variant-numeric:tabular-nums;}
+  .panel-h .lead-l{display:flex;align-items:center;gap:12px;}
+  .grp-b{padding:4px 22px 8px;}
+  .task{display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid var(--app-line-soft);}
+  .task:last-child{border-bottom:0;}
+  .task .who-wrap{flex:1;min-width:0;display:flex;align-items:flex-start;gap:13px;}
+  .task .mono{margin-top:1px;}
+  .task .who{font-weight:600;font-size:15px;color:var(--ink);line-height:1.25;}
+  .task .what{font-size:13.5px;color:var(--ink-soft);margin-top:3px;line-height:1.35;}
+  .task-meta{display:flex;align-items:center;gap:12px;flex:none;}
+  .due{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;letter-spacing:.01em;color:var(--ink-soft);white-space:nowrap;font-variant-numeric:tabular-nums;}
+  .due::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--ink-soft);opacity:.5;}
+  .due.over{color:var(--crit);}
+  .due.over::before{background:var(--crit);opacity:1;}
+  .due.today{color:var(--gold);}
+  .due.today::before{background:var(--gold);opacity:1;}
+  .pill{min-width:64px;justify-content:center;}
+  .task-meta .btn{white-space:nowrap;}
+  @media(max-width:780px){
+    .task{flex-direction:column;align-items:stretch;gap:13px;padding:18px 0;}
+    .task-meta{flex-wrap:wrap;gap:10px;padding-left:47px;}
+    .task-meta .btn{margin-left:auto;min-height:44px;}
+  }
+  @media(max-width:420px){
+    .task-meta{padding-left:0;}
+    .task .who-wrap{gap:11px;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search loans, borrowers, LLCs…</div>
+    <div class="user-pill">
+      <button class="btn btn-gold btn-sm">+ New file</button>
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>My tasks</h1>
+        <div class="sub">What needs you today.</div>
+      </div>
+      <div class="user-pill">
+        <span class="chip">Mon · Jul 13</span>
+      </div>
+    </div>
+
+    <div class="stack">
+
+      <!-- KPI STRIP -->
+      <div class="kpi-grid">
+        <div class="kpi">
+          <div class="v">5</div>
+          <div class="k">Due today</div>
+          <div class="d">Across 4 open files</div>
+        </div>
+        <div class="kpi">
+          <div class="v">2</div>
+          <div class="k">Overdue</div>
+          <div class="d">Oldest 2 days past</div>
+        </div>
+        <div class="kpi">
+          <div class="v">4</div>
+          <div class="k">Awaiting your review</div>
+          <div class="d">Conditions &amp; docs</div>
+        </div>
+        <div class="kpi">
+          <div class="v">18</div>
+          <div class="k">Completed this week</div>
+          <div class="d">6 more than last week</div>
+        </div>
+      </div>
+
+      <!-- CONDITIONS TO REVIEW -->
+      <div class="panel">
+        <div class="panel-h">
+          <div class="lead-l"><h3>Conditions to review</h3><span class="pill info">3</span></div>
+          <span class="cnt">1 due today</span>
+        </div>
+        <div class="grp-b">
+          <div class="task">
+            <div class="who-wrap"><span class="mono">HC</span><div><div class="who">Harborview Capital LLC</div><div class="what">Review updated hazard insurance binder — condition #4</div></div></div>
+            <div class="task-meta"><span class="due today">Today</span><span class="pill crit">Critical</span><button class="btn btn-ink btn-sm">Review</button></div>
+          </div>
+          <div class="task">
+            <div class="who-wrap"><span class="mono">OR</span><div><div class="who">Oakmont Ridge LLC</div><div class="what">Review revised purchase contract addendum</div></div></div>
+            <div class="task-meta"><span class="due today">Today</span><span class="pill warn">Warning</span><button class="btn btn-ink btn-sm">Review</button></div>
+          </div>
+          <div class="task">
+            <div class="who-wrap"><span class="mono">SH</span><div><div class="who">Silverleaf Holdings LLC</div><div class="what">Review entity operating agreement &amp; signatures</div></div></div>
+            <div class="task-meta"><span class="due">Tomorrow</span><span class="pill info">Info</span><button class="btn btn-ink btn-sm">Review</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- DOCUMENTS TO VERIFY -->
+      <div class="panel">
+        <div class="panel-h">
+          <div class="lead-l"><h3>Documents to verify</h3><span class="pill info">3</span></div>
+          <span class="cnt">1 overdue</span>
+        </div>
+        <div class="grp-b">
+          <div class="task">
+            <div class="who-wrap"><span class="mono">BL</span><div><div class="who">Brookfield Lane LLC</div><div class="what">Verify 2 months of business bank statements</div></div></div>
+            <div class="task-meta"><span class="due over">Overdue 1d</span><span class="pill crit">Critical</span><button class="btn btn-ink btn-sm">Verify</button></div>
+          </div>
+          <div class="task">
+            <div class="who-wrap"><span class="mono">PE</span><div><div class="who">Pinecrest Equity LLC</div><div class="what">Verify appraisal report against ARV schedule</div></div></div>
+            <div class="task-meta"><span class="due today">Today</span><span class="pill warn">Warning</span><button class="btn btn-ink btn-sm">Verify</button></div>
+          </div>
+          <div class="task">
+            <div class="who-wrap"><span class="mono">MV</span><div><div class="who">Maple &amp; Vine Partners LLC</div><div class="what">Verify contractor W-9 and license number</div></div></div>
+            <div class="task-meta"><span class="due">Jul 15</span><span class="pill info">Info</span><button class="btn btn-ink btn-sm">Verify</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FILES AWAITING ACTION -->
+      <div class="panel">
+        <div class="panel-h">
+          <div class="lead-l"><h3>Files awaiting action</h3><span class="pill info">2</span></div>
+          <span class="cnt">1 overdue</span>
+        </div>
+        <div class="grp-b">
+          <div class="task">
+            <div class="who-wrap"><span class="mono">CH</span><div><div class="who">Cobblestone Holdings LLC</div><div class="what">Order title commitment from vendor</div></div></div>
+            <div class="task-meta"><span class="due over">Overdue 2d</span><span class="pill crit">Critical</span><button class="btn btn-ink btn-sm">Open</button></div>
+          </div>
+          <div class="task">
+            <div class="who-wrap"><span class="mono">NV</span><div><div class="who">Northgate Ventures LLC</div><div class="what">Send conditional approval letter to borrower</div></div></div>
+            <div class="task-meta"><span class="due today">Today</span><span class="pill warn">Warning</span><button class="btn btn-ink btn-sm">Open</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FOLLOW-UPS / NUDGES DUE -->
+      <div class="panel">
+        <div class="panel-h">
+          <div class="lead-l"><h3>Follow-ups / nudges due</h3><span class="pill info">2</span></div>
+          <span class="cnt">1 due today</span>
+        </div>
+        <div class="grp-b">
+          <div class="task">
+            <div class="who-wrap"><span class="mono">RC</span><div><div class="who">Redwood Crossing LLC</div><div class="what">Nudge borrower for voided check — 2nd reminder</div></div></div>
+            <div class="task-meta"><span class="due today">Today</span><span class="pill info">Info</span><button class="btn btn-ghost btn-sm">Open</button></div>
+          </div>
+          <div class="task">
+            <div class="who-wrap"><span class="mono">KP</span><div><div class="who">Kestrel Point LLC</div><div class="what">Follow up with vendor on appraisal scheduling</div></div></div>
+            <div class="task-meta"><span class="due">Jul 16</span><span class="pill info">Info</span><button class="btn btn-ghost btn-sm">Open</button></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

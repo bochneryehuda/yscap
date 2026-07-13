@@ -1,0 +1,174 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* Page-local layout only — no token redefinitions */
+  .auth-page { min-height: 100vh; padding: 48px 24px 72px; box-sizing: border-box; }
+  .auth-head { max-width: 1120px; margin: 0 auto 40px; }
+  .auth-eyebrow { font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: #2F7F86; margin: 0 0 12px; }
+  .auth-title { font-family: 'Fraunces', Georgia, serif; font-size: clamp(28px, 4vw, 40px); line-height: 1.1; color: #1B1A17; margin: 0 0 10px; font-weight: 500; }
+  .auth-sub { font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 15px; line-height: 1.55; color: #6B6862; max-width: 560px; margin: 0; }
+  .auth-rule { max-width: 1120px; margin: 24px auto 0; border: 0; border-top: 1px solid rgba(27,26,23,.12); }
+
+  .auth-grid { max-width: 1120px; margin: 40px auto 0; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 28px; }
+
+  /* Framed screen mock on a soft app bg */
+  .screen { background: #EFEBE3; border: 1px solid rgba(27,26,23,.10); border-radius: 18px; padding: 28px; display: flex; flex-direction: column; box-sizing: border-box; }
+  .screen-label { font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #8A867E; margin: 0 0 16px; display: flex; align-items: center; gap: 10px; }
+  .screen-label::after { content: ""; flex: 1; height: 1px; background: rgba(27,26,23,.12); }
+
+  /* Inner card = the actual auth surface */
+  .card { background: #FFFDFA; border: 1px solid rgba(27,26,23,.09); border-radius: 14px; padding: 32px 30px; box-shadow: 0 1px 0 rgba(27,26,23,.04); flex: 1; display: flex; flex-direction: column; }
+
+  .pilot-lockup { display: inline-flex; align-items: center; gap: 12px; }
+  .pilot-mark { width: 26px; height: 26px; border-radius: 7px; background: #AE8746; display: inline-block; position: relative; flex: none; }
+  .pilot-mark::after { content: ""; position: absolute; inset: 8px; border: 1.5px solid #FFFDFA; border-radius: 2px; }
+  .pilot-stack { display: inline-flex; flex-direction: column; line-height: 1; }
+  .pilot-word { font-family: 'Fraunces', Georgia, serif; font-size: 17px; letter-spacing: .18em; color: #1B1A17; font-weight: 600; }
+  .pilot-by { font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: #8A867E; margin-top: 3px; }
+
+  .card-head { font-family: 'Fraunces', Georgia, serif; font-size: 22px; line-height: 1.2; color: #1B1A17; margin: 24px 0 8px; font-weight: 500; }
+  .card-lede { font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 14px; line-height: 1.55; color: #6B6862; margin: 0 0 22px; }
+
+  .field { margin-bottom: 16px; }
+  .field-label { display: block; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 12px; letter-spacing: .04em; color: #4A4842; margin-bottom: 7px; font-weight: 600; }
+  .input { width: 100%; box-sizing: border-box; min-height: 46px; padding: 12px 14px; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 16px; color: #1B1A17; background: #FFFFFF; border: 1px solid rgba(27,26,23,.18); border-radius: 9px; outline: none; }
+  .input::placeholder { color: #A6A29A; }
+  .input:focus { border-color: #2F7F86; box-shadow: 0 0 0 3px rgba(47,127,134,.14); }
+  .input[readonly] { background: #F4F1EB; color: #4A4842; border-style: dashed; }
+
+  /* 6-box code row */
+  .code-row { display: flex; gap: 10px; margin-bottom: 22px; }
+  .code-box { flex: 1; min-width: 0; height: 54px; display: flex; align-items: center; justify-content: center; font-family: 'Fraunces', Georgia, serif; font-size: 24px; color: #1B1A17; background: #FFFFFF; border: 1px solid rgba(27,26,23,.18); border-radius: 10px; }
+  .code-box.is-filled { border-color: #2F7F86; box-shadow: inset 0 0 0 1px rgba(47,127,134,.35); }
+  .code-box.is-active { border-color: #2F7F86; box-shadow: 0 0 0 3px rgba(47,127,134,.14); }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; box-sizing: border-box; min-height: 48px; padding: 13px 20px; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 15px; font-weight: 600; letter-spacing: .01em; border-radius: 10px; border: 1px solid transparent; cursor: pointer; text-decoration: none; }
+  .btn-gold { background: #AE8746; color: #FFFDFA; }
+  .btn-gold:hover { background: #9A763B; }
+  .btn-ink { background: #1B1A17; color: #FCFBF7; }
+  .btn-ink:hover { background: #2C2A25; }
+
+  .card-foot { margin-top: 18px; text-align: center; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 13px; color: #6B6862; }
+  .link-teal { color: #2F7F86; text-decoration: none; font-weight: 600; }
+  .link-teal:hover { text-decoration: underline; }
+  .link-muted { color: #6B6862; text-decoration: none; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+  .link-muted:hover { color: #1B1A17; }
+
+  /* Strength hint */
+  .strength { margin: -6px 0 20px; }
+  .strength-bar { display: flex; gap: 6px; margin-bottom: 7px; }
+  .strength-seg { flex: 1; height: 5px; border-radius: 3px; background: rgba(27,26,23,.12); }
+  .strength-seg.on { background: #2F7F86; }
+  .strength-seg.on.gold { background: #AE8746; }
+  .strength-note { font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 12px; color: #8A867E; margin: 0; }
+
+  .spacer { flex: 1; }
+
+  @media (max-width: 720px) {
+    .auth-page { padding: 32px 16px 56px; }
+    .auth-grid { grid-template-columns: 1fr; gap: 20px; }
+    .screen { padding: 20px; border-radius: 14px; }
+    .card { padding: 26px 22px; }
+    .code-box { height: 50px; font-size: 20px; }
+  }
+</style>
+
+<main class="auth-page">
+  <header class="auth-head">
+    <p class="auth-eyebrow">PILOT &middot; by YS Capital</p>
+    <h1 class="auth-title">PILOT &mdash; Auth screens</h1>
+    <p class="auth-sub">The full set of account-access screens for the PILOT staff portal &mdash; email verification, password recovery, and staff invitation. Static design mockups, consistent with the PILOT sign-in.</p>
+    <hr class="auth-rule">
+  </header>
+
+  <div class="auth-grid">
+
+    <!-- 1. Verify your email -->
+    <section class="screen">
+      <p class="screen-label">01 &nbsp; Verify your email</p>
+      <div class="card">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-stack"><span class="pilot-word">PILOT</span><span class="pilot-by">by YS Capital</span></span></span>
+        <h2 class="card-head">Verify your email</h2>
+        <p class="card-lede">We sent a 6-digit code to your email. Enter it below to continue.</p>
+        <div class="code-row" role="group" aria-label="6-digit verification code">
+          <div class="code-box is-filled">3</div>
+          <div class="code-box is-filled">9</div>
+          <div class="code-box is-filled">1</div>
+          <div class="code-box is-active">4</div>
+          <div class="code-box"></div>
+          <div class="code-box"></div>
+        </div>
+        <button type="button" class="btn btn-gold">Verify</button>
+        <p class="card-foot">Didn&rsquo;t get it? <a href="#" class="link-teal">Resend code</a></p>
+      </div>
+    </section>
+
+    <!-- 2. Forgot password -->
+    <section class="screen">
+      <p class="screen-label">02 &nbsp; Forgot password</p>
+      <div class="card">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-stack"><span class="pilot-word">PILOT</span><span class="pilot-by">by YS Capital</span></span></span>
+        <h2 class="card-head">Forgot password</h2>
+        <p class="card-lede">Enter your email and we&rsquo;ll send a reset link.</p>
+        <div class="field">
+          <label class="field-label" for="fp-email">Email address</label>
+          <input class="input" id="fp-email" type="email" placeholder="you@yscapgroup.com" value="a.reyes@yscapgroup.com">
+        </div>
+        <button type="button" class="btn btn-gold">Send reset link</button>
+        <div class="spacer"></div>
+        <p class="card-foot"><a href="#" class="link-muted">&larr; Back to sign in</a></p>
+      </div>
+    </section>
+
+    <!-- 3. Reset password -->
+    <section class="screen">
+      <p class="screen-label">03 &nbsp; Reset password</p>
+      <div class="card">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-stack"><span class="pilot-word">PILOT</span><span class="pilot-by">by YS Capital</span></span></span>
+        <h2 class="card-head">Reset password</h2>
+        <p class="card-lede">Choose a new password for your account.</p>
+        <div class="field">
+          <label class="field-label" for="rp-new">New password</label>
+          <input class="input" id="rp-new" type="password" value="************">
+        </div>
+        <div class="strength">
+          <div class="strength-bar" aria-hidden="true">
+            <span class="strength-seg on"></span>
+            <span class="strength-seg on"></span>
+            <span class="strength-seg on gold"></span>
+            <span class="strength-seg"></span>
+          </div>
+          <p class="strength-note">Strong &mdash; 12+ characters with a number and symbol.</p>
+        </div>
+        <div class="field">
+          <label class="field-label" for="rp-confirm">Confirm new password</label>
+          <input class="input" id="rp-confirm" type="password" value="************">
+        </div>
+        <button type="button" class="btn btn-gold">Update password</button>
+      </div>
+    </section>
+
+    <!-- 4. Accept invitation -->
+    <section class="screen">
+      <p class="screen-label">04 &nbsp; Accept invitation</p>
+      <div class="card">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-stack"><span class="pilot-word">PILOT</span><span class="pilot-by">by YS Capital</span></span></span>
+        <h2 class="card-head">You&rsquo;re invited to PILOT</h2>
+        <p class="card-lede">Set your password to activate your YS Capital staff account.</p>
+        <div class="field">
+          <label class="field-label" for="inv-name">Name</label>
+          <input class="input" id="inv-name" type="text" value="Adriana Reyes" readonly>
+        </div>
+        <div class="field">
+          <label class="field-label" for="inv-email">Work email</label>
+          <input class="input" id="inv-email" type="email" value="a.reyes@yscapgroup.com" readonly>
+        </div>
+        <div class="field">
+          <label class="field-label" for="inv-pass">Set password</label>
+          <input class="input" id="inv-pass" type="password" placeholder="Create a password">
+        </div>
+        <button type="button" class="btn btn-ink">Activate account</button>
+      </div>
+    </section>
+
+  </div>
+</main>

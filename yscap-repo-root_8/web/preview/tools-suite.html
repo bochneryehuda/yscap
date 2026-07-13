@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>YS Capital — The Investor Suite</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  .suite-hero{padding:74px 0 30px;}
+  .suite-hero h1{font-size:clamp(40px,5.2vw,68px);max-width:15ch;margin:22px 0 24px;}
+  .suite-hero h1 em{font-style:italic;color:var(--teal);}
+  .suite-hero .lede{font-size:20px;max-width:54ch;}
+  .group{padding:58px 0;border-top:1px solid var(--line);}
+  .group-head{display:flex;justify-content:space-between;align-items:flex-end;gap:36px;margin-bottom:30px;}
+  .group-head h2{font-size:clamp(26px,3vw,38px);max-width:18ch;margin-top:16px;}
+  .group-head .meta{max-width:32ch;color:var(--ink-soft);font-size:15px;}
+  .suite-grid{grid-template-columns:repeat(4,1fr);}
+  .suite-grid.cols-3{grid-template-columns:repeat(3,1fr);}
+  .prog{display:flex;flex-direction:column;}
+  .prog-open{margin-top:auto;padding-top:20px;display:inline-flex;align-self:flex-start;}
+  .callout .in{display:flex;align-items:center;justify-content:space-between;gap:40px;}
+  .callout .in h2{font-size:clamp(24px,2.6vw,34px);max-width:20ch;}
+  .callout .in p{color:rgba(244,240,231,.66);font-size:15px;margin-top:12px;max-width:46ch;}
+  .disclaimer{padding:36px 0 62px;}
+  .disclaimer .eyebrow{margin-bottom:12px;}
+  .disclaimer p{font-size:12.5px;color:var(--ink-soft);max-width:92ch;line-height:1.7;}
+  @media(max-width:980px){.suite-grid,.suite-grid.cols-3{grid-template-columns:1fr 1fr;}.group-head{flex-direction:column;align-items:flex-start;gap:14px;}.callout .in{flex-direction:column;align-items:flex-start;}}
+  @media(max-width:560px){.suite-grid,.suite-grid.cols-3{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+
+<header class="site-nav">
+  <div class="wrap nav-inner">
+    <a class="logo-nav-wrap" href="#" aria-label="YS Capital Group">
+      <img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+    </a>
+    <nav class="nav-links">
+      <a href="#">Financing</a>
+      <a href="#suite">Tools</a>
+      <a href="#">How it works</a>
+      <a href="#">Contact</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="#">Client login</a>
+      <a class="btn btn-ink" href="#">Get a term sheet</a>
+    </div>
+  </div>
+</header>
+
+<section class="suite-hero" id="suite">
+  <div class="wrap">
+    <div class="eyebrow"><span class="idx">—</span>The Investor Suite</div>
+    <h1>Price, analyze and compare — <em>before you call anyone.</em></h1>
+    <p class="lede">A working desk of investor tools. Instant, no credit pull, nothing to sign.</p>
+    <div class="micro">
+      <span><span class="dot"></span> Instant results</span>
+      <span><span class="dot"></span> No credit pull</span>
+      <span><span class="dot"></span> Nothing to sign</span>
+    </div>
+  </div>
+</section>
+
+<section class="group" style="border-top:0;">
+  <div class="wrap">
+    <div class="group-head">
+      <div>
+        <div class="eyebrow"><span class="idx">01</span>Price</div>
+        <h2>Know your terms and your scope.</h2>
+      </div>
+      <p class="meta">Structure, pricing and lender-ready paperwork — the numbers you bring to the table.</p>
+    </div>
+    <div class="prog-grid suite-grid cols-3">
+      <div class="prog">
+        <div class="pnum">TERM SHEET</div>
+        <h4>Term Sheet Studio</h4>
+        <p>A signable, dual-program term sheet — structure, pricing and cash-to-close in about a minute.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+      <div class="prog">
+        <div class="pnum">SCOPE OF WORK</div>
+        <h4>Rehab Budget</h4>
+        <p>Build a lender-ready scope of work with category templates and a live contingency.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+      <div class="prog">
+        <div class="pnum">EXPERIENCE</div>
+        <h4>Track Record</h4>
+        <p>Turn completed deals into verified experience that lifts your leverage tier.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="group">
+  <div class="wrap">
+    <div class="group-head">
+      <div>
+        <div class="eyebrow"><span class="idx">02</span>Analyze</div>
+        <h2>Underwrite the deal, end to end.</h2>
+      </div>
+      <p class="meta">Cash flow, returns and payments — run the property the way a lender will.</p>
+    </div>
+    <div class="prog-grid suite-grid">
+      <div class="prog">
+        <div class="pnum">RENTAL</div>
+        <h4>Deal Analyzer</h4>
+        <p>Full rental underwriting — cap rate, cash-on-cash, DSCR and debt yield.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+      <div class="prog">
+        <div class="pnum">FIX &amp; FLIP</div>
+        <h4>Flip Analyzer</h4>
+        <p>Project cost, holding, profit and ROI on a fix &amp; flip, line by line.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+      <div class="prog">
+        <div class="pnum">PAYMENT</div>
+        <h4>Qualifier Pro</h4>
+        <p>Size the mortgage and DSCR payment on any scenario in seconds.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+      <div class="prog">
+        <div class="pnum">PORTFOLIO</div>
+        <h4>Portfolio Tracker</h4>
+        <p>Equity, cash flow, LTV and DSCR across every property on one desk.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="group">
+  <div class="wrap">
+    <div class="group-head">
+      <div>
+        <div class="eyebrow"><span class="idx">03</span>Compare</div>
+        <h2>Weigh the paths side by side.</h2>
+      </div>
+      <p class="meta">Break-evens and trade-offs — see which move actually pays off, and when.</p>
+    </div>
+    <div class="prog-grid suite-grid cols-3">
+      <div class="prog">
+        <div class="pnum">EQUITY</div>
+        <h4>Equity Compare</h4>
+        <p>A HELOC or second lien versus a cash-out refinance, side by side.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+      <div class="prog">
+        <div class="pnum">BUY-DOWN</div>
+        <h4>RateSaver</h4>
+        <p>Find the break-even on a rate buy-down before you pay for points.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+      <div class="prog">
+        <div class="pnum">REFINANCE</div>
+        <h4>Refi BreakPoint</h4>
+        <p>See exactly when a refinance pays for itself before you commit.</p>
+        <a class="link-u prog-open" href="#">Open →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band dark callout">
+  <div class="wrap in">
+    <div>
+      <div class="eyebrow">The guided Loan Application</div>
+      <h2 style="color:#fff;margin-top:14px;">When the numbers work, apply in one guided flow.</h2>
+      <p>A step-by-step application that carries your scenario straight through to your loan officer — no re-keying.</p>
+    </div>
+    <a class="btn btn-gold btn-lg" href="#">Start an application →</a>
+  </div>
+</section>
+
+<section class="disclaimer">
+  <div class="wrap">
+    <div class="eyebrow">Please note</div>
+    <p>This toolset is for educational and illustrative purposes. Outputs are estimates based on your inputs and do not constitute financial, investment, legal or tax advice. Use is at your own risk.</p>
+  </div>
+</section>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <img class="logo-foot" src="https://yscap.onrender.com/assets/brand/lockup-light.png" alt="YS Capital Group">
+        <p class="foot-addr">Private mortgage banking for real estate investors. The answer is yes.™</p>
+        <p class="foot-addr" style="margin-top:14px;">718-831-2168<br>sales@yscapgroup.com</p>
+      </div>
+      <div>
+        <h5>Price</h5>
+        <ul><li><a href="#">Term Sheet Studio</a></li><li><a href="#">Rehab Budget</a></li><li><a href="#">Track Record</a></li></ul>
+      </div>
+      <div>
+        <h5>Analyze</h5>
+        <ul><li><a href="#">Deal Analyzer</a></li><li><a href="#">Flip Analyzer</a></li><li><a href="#">Qualifier Pro</a></li><li><a href="#">Portfolio Tracker</a></li></ul>
+      </div>
+      <div>
+        <h5>Compare</h5>
+        <ul><li><a href="#">Equity Compare</a></li><li><a href="#">RateSaver</a></li><li><a href="#">Refi BreakPoint</a></li></ul>
+      </div>
+    </div>
+    <div class="foot-legal">
+      <div style="max-width:74ch;">Business-purpose, investment (non-owner-occupied) loans only. Tool outputs are indicative estimates, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend. © 2026 YS Capital Group. NMLS ID 2609746.</div>
+      <div class="foot-badges"><span class="b">NMLS 2609746</span><span class="b">Equal Housing Lender</span></div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

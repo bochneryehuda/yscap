@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT · Your loan file — Maple Ridge Holdings LLC</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* Page-local layout only — tokens live in ds.css */
+  .file-hero{ display:flex; flex-wrap:wrap; align-items:flex-start; gap:16px 24px; justify-content:space-between; }
+  .file-hero .addr{ font-family:var(--font-display, "Fraunces", serif); font-size:26px; line-height:1.15; letter-spacing:-0.01em; margin:0 0 6px; }
+  .file-hero .sub{ color:var(--muted, #6b6257); font-size:14px; margin:0; display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; }
+  .file-hero .sub .dot{ opacity:.4; }
+  .amt{ text-align:right; }
+  .amt .big{ font-family:var(--font-display, "Fraunces", serif); font-size:30px; letter-spacing:-0.01em; font-variant-numeric:tabular-nums; }
+  .amt .lbl{ font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted,#6b6257); }
+
+  /* Timeline */
+  .timeline{ margin-top:22px; }
+  .tl-track{ display:flex; align-items:flex-start; gap:0; position:relative; }
+  .tl-step{ flex:1 1 0; min-width:0; text-align:center; position:relative; }
+  .tl-step .node{ width:16px; height:16px; border-radius:50%; background:#fff; border:2px solid var(--line,#e6e0d6); margin:0 auto 8px; position:relative; z-index:1; }
+  .tl-step .line{ position:absolute; top:8px; left:-50%; width:100%; height:2px; background:var(--line,#e6e0d6); z-index:0; }
+  .tl-step:first-child .line{ display:none; }
+  .tl-step.done .node{ background:var(--teal,#2f7d72); border-color:var(--teal,#2f7d72); }
+  .tl-step.done .line{ background:var(--teal,#2f7d72); }
+  .tl-step.current .node{ background:var(--gold,#c69749); border-color:var(--gold,#c69749); box-shadow:0 0 0 4px rgba(198,151,73,.18); }
+  .tl-step.current .line{ background:var(--teal,#2f7d72); }
+  .tl-step .cap{ font-size:11.5px; line-height:1.25; color:var(--muted,#6b6257); letter-spacing:.01em; }
+  .tl-step.current .cap{ color:var(--ink,#2b2620); font-weight:600; }
+  .tl-step.done .cap{ color:var(--ink,#2b2620); }
+
+  /* Tabs */
+  .tabs{ display:flex; gap:4px; border-bottom:1px solid var(--line,#e6e0d6); margin:4px 0 0; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .tabs a{ flex:0 0 auto; padding:12px 14px; min-height:44px; display:inline-flex; align-items:center; text-decoration:none; color:var(--muted,#6b6257); font-size:14px; font-weight:600; border-bottom:2px solid transparent; margin-bottom:-1px; white-space:nowrap; }
+  .tabs a.active{ color:var(--ink,#2b2620); border-bottom-color:var(--gold,#c69749); }
+
+  /* Two-column shell */
+  .file-grid{ display:grid; grid-template-columns:minmax(0,1.7fr) minmax(0,1fr); gap:20px; margin-top:20px; align-items:start; }
+  .stack{ display:flex; flex-direction:column; gap:20px; }
+
+  /* Deal figures */
+  .deal-rows{ display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line,#e6e0d6); border:1px solid var(--line,#e6e0d6); border-radius:12px; overflow:hidden; }
+  .deal-cell{ background:#fff; padding:14px 16px; }
+  .deal-cell .k{ font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted,#6b6257); margin-bottom:4px; }
+  .deal-cell .v{ font-family:var(--font-display,"Fraunces",serif); font-size:20px; font-variant-numeric:tabular-nums; letter-spacing:-0.01em; }
+  .deal-cell .v small{ font-family:var(--font-ui,"Hanken Grotesk",sans-serif); font-size:12px; color:var(--muted,#6b6257); font-weight:500; margin-left:4px; }
+  .indicative{ font-size:12px; color:var(--muted,#6b6257); margin-top:10px; display:flex; gap:6px; align-items:flex-start; }
+
+  /* Checklist upload row */
+  .cl-item{ display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid var(--line,#e6e0d6); flex-wrap:wrap; }
+  .cl-item:last-child{ border-bottom:0; }
+  .cl-item .cl-main{ flex:1 1 200px; min-width:0; }
+  .cl-item .cl-name{ font-weight:600; font-size:14px; }
+  .cl-item .cl-meta{ font-size:12px; color:var(--muted,#6b6257); margin-top:2px; }
+  .cl-item .cl-act{ display:flex; align-items:center; gap:8px; margin-left:auto; }
+  .cl-box{ width:22px; height:22px; border-radius:6px; border:2px solid var(--line,#e6e0d6); flex:0 0 auto; display:grid; place-items:center; background:#fff; }
+  .cl-box.done{ background:var(--teal,#2f7d72); border-color:var(--teal,#2f7d72); color:#fff; font-size:13px; }
+
+  /* Right rail */
+  .team-row{ display:flex; align-items:center; gap:12px; padding:10px 0; }
+  .team-row .mono{ flex:0 0 auto; }
+  .team-row .who{ min-width:0; }
+  .team-row .who .n{ font-weight:600; font-size:14px; }
+  .team-row .who .r{ font-size:12px; color:var(--muted,#6b6257); }
+  .callout{ background:var(--gold-tint,#faf4e8); border:1px solid var(--gold-line,#ecdcbb); border-radius:12px; padding:16px; }
+  .callout .lbl{ font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--gold-ink,#8a6a2a); font-weight:700; margin-bottom:6px; }
+  .callout p{ margin:0 0 12px; font-size:14px; line-height:1.5; }
+  .help-line{ display:flex; align-items:center; gap:8px; font-size:14px; }
+  .help-line a{ color:var(--ink,#2b2620); font-weight:600; text-decoration:none; font-variant-numeric:tabular-nums; }
+  .btn-full{ width:100%; justify-content:center; }
+
+  .prog-wrap{ margin-top:16px; }
+  .prog-wrap .pl{ display:flex; justify-content:space-between; font-size:12px; color:var(--muted,#6b6257); margin-bottom:6px; }
+  .prog-wrap .pl b{ color:var(--ink,#2b2620); font-variant-numeric:tabular-nums; }
+
+  .draw-note{ font-size:13px; color:var(--muted,#6b6257); line-height:1.5; margin:0 0 14px; }
+
+  /* Mobile */
+  @media (max-width:900px){
+    .file-grid{ grid-template-columns:1fr; }
+  }
+  @media (max-width:560px){
+    .file-hero .addr{ font-size:22px; }
+    .amt{ text-align:left; }
+    .amt .big{ font-size:26px; }
+    .deal-rows{ grid-template-columns:1fr 1fr; }
+    .tl-step .cap{ font-size:10.5px; }
+  }
+  @media (max-width:400px){
+    .tl-step .cap{ display:none; }
+    .tl-step.current .cap, .tl-step.done .cap{ display:block; }
+  }
+</style>
+</head>
+<body>
+<div class="app no-side">
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <nav class="topnav">
+      <a href="#">Dashboard</a>
+      <a href="#" class="active">My loan</a>
+      <a href="#">Documents</a>
+      <a href="#">Profile</a>
+      <a href="#">Messages</a>
+    </nav>
+    <span class="mono" title="Dana Whitfield">DW</span>
+  </header>
+
+  <main class="app-main">
+    <!-- FILE HEADER -->
+    <section class="panel">
+      <div class="panel-b">
+        <div class="file-hero">
+          <div>
+            <p class="addr">128 Vernon Ave, Newark NJ</p>
+            <p class="sub">
+              <span>Maple Ridge Holdings LLC</span>
+              <span class="dot">·</span>
+              <span class="chip">Fix &amp; Flip</span>
+              <span class="dot">·</span>
+              <span>Gold Standard program</span>
+              <span class="dot">·</span>
+              <span>File #FLX-20418</span>
+            </p>
+          </div>
+          <div class="amt">
+            <div class="lbl">Loan amount</div>
+            <div class="big">$345,000</div>
+            <span class="pill pill-gold">Processing</span>
+          </div>
+        </div>
+
+        <!-- STATUS TIMELINE -->
+        <div class="timeline">
+          <div class="tl-track">
+            <div class="tl-step done"><span class="line"></span><span class="node"></span><div class="cap">Applied</div></div>
+            <div class="tl-step done"><span class="line"></span><span class="node"></span><div class="cap">In review</div></div>
+            <div class="tl-step current"><span class="line"></span><span class="node"></span><div class="cap">Processing</div></div>
+            <div class="tl-step"><span class="line"></span><span class="node"></span><div class="cap">Underwriting</div></div>
+            <div class="tl-step"><span class="line"></span><span class="node"></span><div class="cap">Clear to close</div></div>
+            <div class="tl-step"><span class="line"></span><span class="node"></span><div class="cap">Funded</div></div>
+          </div>
+          <div class="prog-wrap">
+            <div class="pl"><span>Overall progress</span><b>45%</b></div>
+            <div class="prog-bar"><span style="width:45%"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TABS -->
+      <div class="tabs">
+        <a href="#" class="active">Overview</a>
+        <a href="#">Documents</a>
+        <a href="#">Conditions</a>
+        <a href="#">Messages</a>
+      </div>
+    </section>
+
+    <!-- TWO COLUMNS -->
+    <div class="file-grid">
+      <!-- LEFT -->
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-h"><h2>Your deal</h2></div>
+          <div class="panel-b">
+            <div class="deal-rows">
+              <div class="deal-cell"><div class="k">Purchase price</div><div class="v">$300,000</div></div>
+              <div class="deal-cell"><div class="k">Rehab budget</div><div class="v">$75,000 <small>financed in draws</small></div></div>
+              <div class="deal-cell"><div class="k">After-repair value</div><div class="v">$500,000</div></div>
+              <div class="deal-cell"><div class="k">Loan amount</div><div class="v">$345,000</div></div>
+              <div class="deal-cell"><div class="k">Note rate</div><div class="v">10.25% <small>indicative</small></div></div>
+              <div class="deal-cell"><div class="k">Term</div><div class="v">12 mo <small>interest-only</small></div></div>
+            </div>
+            <p class="indicative"><span>ⓘ</span><span>Figures are indicative and subject to final underwriting, appraisal, and title. Your team will confirm final terms before closing.</span></p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h"><h2>Documents &amp; conditions</h2><span class="pill">1 of 5 complete</span></div>
+          <div class="panel-b">
+            <div class="cl-item">
+              <span class="cl-box"></span>
+              <div class="cl-main"><div class="cl-name">Executed purchase contract</div><div class="cl-meta">Signed by all parties · PDF</div></div>
+              <div class="cl-act"><span class="pill">Needed</span><button class="btn btn-sm">Upload</button></div>
+            </div>
+            <div class="cl-item">
+              <span class="cl-box done">✓</span>
+              <div class="cl-main"><div class="cl-name">Photo ID</div><div class="cl-meta">Verified Jul 9, 2026</div></div>
+              <div class="cl-act"><span class="pill pill-teal">Received</span></div>
+            </div>
+            <div class="cl-item">
+              <span class="cl-box"></span>
+              <div class="cl-main"><div class="cl-name">LLC verification</div><div class="cl-meta">Articles of organization + operating agreement</div></div>
+              <div class="cl-act"><span class="pill">Needed</span><button class="btn btn-sm">Upload</button></div>
+            </div>
+            <div class="cl-item">
+              <span class="cl-box"></span>
+              <div class="cl-main"><div class="cl-name">Scope of work</div><div class="cl-meta">Itemized rehab budget for draw schedule</div></div>
+              <div class="cl-act"><span class="pill">Needed</span><button class="btn btn-sm">Upload</button></div>
+            </div>
+            <div class="cl-item">
+              <span class="cl-box"></span>
+              <div class="cl-main"><div class="cl-name">2 months bank statements</div><div class="cl-meta">Gold Standard program · reserves check</div></div>
+              <div class="cl-act"><span class="pill">Needed</span><button class="btn btn-sm">Upload</button></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h"><h2>Draw requests</h2><span class="pill">$75,000 available</span></div>
+          <div class="panel-b">
+            <p class="draw-note">Your rehab budget is released in draws as work is completed and inspected. No draws have been requested yet on this file.</p>
+            <button class="btn btn-primary">Request a draw</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- RIGHT RAIL -->
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-h"><h2>Your team</h2></div>
+          <div class="panel-b">
+            <div class="team-row">
+              <span class="mono">RA</span>
+              <div class="who"><div class="n">Renée Alvarez</div><div class="r">Loan Officer</div></div>
+            </div>
+            <div class="team-row">
+              <span class="mono">TC</span>
+              <div class="who"><div class="n">Theo Coleman</div><div class="r">Processor</div></div>
+            </div>
+            <button class="btn btn-full" style="margin-top:8px">Message your team</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-b">
+            <div class="callout">
+              <div class="lbl">Next step</div>
+              <p>Upload your <b>executed purchase contract</b> and <b>LLC verification</b> to move into underwriting. These two unlock the rest of your file.</p>
+              <button class="btn btn-primary btn-full">Upload documents</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h"><h2>Need help?</h2></div>
+          <div class="panel-b">
+            <p class="draw-note">We are here Monday–Friday, 9am–6pm ET. Reach your PILOT team anytime.</p>
+            <div class="help-line"><span class="mono" style="width:28px;height:28px;font-size:12px">☎</span><a href="tel:+17188312168">718-831-2168</a></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

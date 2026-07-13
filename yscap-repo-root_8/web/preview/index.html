@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YS Capital × PILOT — Mega Redesign</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  .gwrap{max-width:1280px;margin:0 auto;padding:48px 40px 90px;}
+  .ghead{display:flex;justify-content:space-between;align-items:flex-end;gap:30px;border-bottom:1px solid var(--line);padding-bottom:26px;margin-bottom:12px;}
+  .ghead h1{font-size:clamp(30px,4vw,50px);}
+  .ghead .note{max-width:42ch;color:var(--ink-soft);font-size:14px;}
+  .gsec{margin-top:44px;}
+  .gsec-h{display:flex;align-items:baseline;gap:14px;margin-bottom:20px;}
+  .gsec-h .t{font-size:13px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--gold);}
+  .gsec-h .c{font-size:13px;color:var(--ink-soft);}
+  .gsec-h .rule{flex:1;height:1px;background:var(--line-soft);}
+  .gal-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(288px,1fr));gap:20px;}
+  .gcard{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--card);transition:box-shadow .2s,transform .2s;}
+  .gcard:hover{box-shadow:0 8px 30px rgba(20,27,34,.10);transform:translateY(-2px);}
+  .gthumb{height:188px;overflow:hidden;position:relative;background:#fff;border-bottom:1px solid var(--line-soft);}
+  .gthumb iframe{width:1366px;height:840px;border:0;transform:scale(.225);transform-origin:top left;pointer-events:none;}
+  .gthumb .tag{position:absolute;top:10px;left:10px;z-index:2;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:4px 9px;border-radius:3px;background:rgba(20,27,34,.82);color:#fff;}
+  .gthumb .tag.pilot{background:var(--gold);}
+  .meta{padding:13px 15px;display:flex;justify-content:space-between;align-items:center;gap:10px;}
+  .meta .gt{font-family:var(--serif);font-size:16px;font-weight:500;}
+  .meta .go{font-size:12.5px;font-weight:600;color:var(--gold);white-space:nowrap;}
+  .meta a:hover .go{color:#8a6a2c;}
+  @media(max-width:560px){.gwrap{padding:28px 18px 60px;}.gal-grid{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<div class="gwrap">
+  <div class="ghead">
+    <div>
+      <div class="eyebrow" style="margin-bottom:12px;">Design System · Draft Concepts · ~42 screens</div>
+      <h1>YS Capital <span style="color:var(--teal)">×</span> PILOT</h1>
+    </div>
+    <p class="note">The full site &amp; portal redesign on one system — marketing on the YS brand, the portal co-branded as <b>PILOT by YS Capital</b>. Click any card to open it. Design mockups only; no backend, logic, or guidelines changed; sample data is illustrative.</p>
+  </div>
+
+  <div class="gsec">
+    <div class="gsec-h"><span class="t">Marketing Site</span><span class="rule"></span><span class="c">YS Capital brand</span></div>
+    <div class="gal-grid">
+      <div class="gcard"><div class="gthumb"><span class="tag">Marketing</span><iframe src="./homepage-v1.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Homepage</span><a href="./homepage-v1.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Marketing</span><iframe src="./dscr-program.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">DSCR Rental — flagship</span><a href="./dscr-program.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Marketing</span><iframe src="./fix-flip-program.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Fix &amp; Flip + Bridge</span><a href="./fix-flip-program.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Marketing</span><iframe src="./ground-up-program.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Ground-Up Construction</span><a href="./ground-up-program.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Marketing</span><iframe src="./multifamily-program.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Multifamily &amp; Mixed-Use</span><a href="./multifamily-program.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Marketing</span><iframe src="./specialty-programs.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Other Programs</span><a href="./specialty-programs.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Marketing</span><iframe src="./tools-suite.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Investor Suite (hub)</span><a href="./tools-suite.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Marketing</span><iframe src="./about-team.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">About / Team</span><a href="./about-team.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Marketing</span><iframe src="./legal.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Legal &amp; Compliance</span><a href="./legal.html" target="_blank"><span class="go">Open →</span></a></div></div>
+    </div>
+  </div>
+
+  <div class="gsec">
+    <div class="gsec-h"><span class="t">Investor Tools</span><span class="rule"></span><span class="c">YS Capital brand</span></div>
+    <div class="gal-grid">
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./term-sheet-studio.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Term Sheet Studio</span><a href="./term-sheet-studio.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./deal-analyzer.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Deal Analyzer</span><a href="./deal-analyzer.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./flip-analyzer.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Flip Analyzer</span><a href="./flip-analyzer.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./qualifier-pro.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Qualifier Pro</span><a href="./qualifier-pro.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./portfolio-tracker.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Portfolio Tracker</span><a href="./portfolio-tracker.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./rehab-budget.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Rehab Budget</span><a href="./rehab-budget.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./track-record.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Track Record</span><a href="./track-record.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./equity-compare.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Equity Compare</span><a href="./equity-compare.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./ratesaver.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">RateSaver</span><a href="./ratesaver.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./refi-breakpoint.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Refi BreakPoint</span><a href="./refi-breakpoint.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag">Tool</span><iframe src="./loan-application.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Loan Application</span><a href="./loan-application.html" target="_blank"><span class="go">Open →</span></a></div></div>
+    </div>
+  </div>
+
+  <div class="gsec">
+    <div class="gsec-h"><span class="t">PILOT — Borrower</span><span class="rule"></span><span class="c">PILOT by YS Capital</span></div>
+    <div class="gal-grid">
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-login.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Borrower login</span><a href="./pilot-login.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-borrower-dashboard.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Borrower dashboard</span><a href="./pilot-borrower-dashboard.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-borrower-file.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Borrower loan file</span><a href="./pilot-borrower-file.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-borrower-profile.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Profile &amp; entities</span><a href="./pilot-borrower-profile.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-messages.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Messages</span><a href="./pilot-messages.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-notifications.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Notification settings</span><a href="./pilot-notifications.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-auth.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Auth screens (verify/reset)</span><a href="./pilot-auth.html" target="_blank"><span class="go">Open →</span></a></div></div>
+    </div>
+  </div>
+
+  <div class="gsec">
+    <div class="gsec-h"><span class="t">PILOT — Staff Console</span><span class="rule"></span><span class="c">PILOT by YS Capital</span></div>
+    <div class="gal-grid">
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-login.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Staff / LO login</span><a href="./pilot-staff-login.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-pipeline.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Pipeline console</span><a href="./pilot-staff-pipeline.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-file.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Loan file (staff)</span><a href="./pilot-staff-file.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-new.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">New file intake</span><a href="./pilot-staff-new.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-conditions.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Condition Center</span><a href="./pilot-conditions.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-borrowers.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Borrowers directory</span><a href="./pilot-borrowers.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-tasks.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">My tasks</span><a href="./pilot-staff-tasks.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-leads.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Leads / Lead Capture</span><a href="./pilot-staff-leads.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-vendors.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Vendors</span><a href="./pilot-staff-vendors.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-archived.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Archived files</span><a href="./pilot-staff-archived.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-team.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Team &amp; roles</span><a href="./pilot-staff-team.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-audit.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Audit log</span><a href="./pilot-staff-audit.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-chat.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">Chat / messages</span><a href="./pilot-staff-chat.html" target="_blank"><span class="go">Open →</span></a></div></div>
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">PILOT</span><iframe src="./pilot-staff-clickup.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">ClickUp sync</span><a href="./pilot-staff-clickup.html" target="_blank"><span class="go">Open →</span></a></div></div>
+    </div>
+  </div>
+
+  <div class="gsec">
+    <div class="gsec-h"><span class="t">Foundation</span><span class="rule"></span><span class="c">shared system</span></div>
+    <div class="gal-grid">
+      <div class="gcard"><div class="gthumb"><span class="tag pilot">Brand</span><iframe src="./pilot-brand.html" loading="lazy"></iframe></div><div class="meta"><span class="gt">PILOT brand &amp; system sheet</span><a href="./pilot-brand.html" target="_blank"><span class="go">Open →</span></a></div></div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Vendors</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .ph-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+  .ph-search{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--app-line);border-radius:100px;padding:9px 16px;font-size:14px;color:var(--ink-soft);min-width:220px;}
+  .ph-search .mag{width:14px;height:14px;border-radius:50%;border:1.6px solid var(--ink-soft);position:relative;flex:none;opacity:.7;}
+  .ph-search .mag::after{content:"";position:absolute;width:6px;height:1.6px;background:var(--ink-soft);transform:rotate(45deg);right:-4px;bottom:0;}
+
+  /* filter chips */
+  .fbar{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:20px;}
+  .fchip{cursor:pointer;background:var(--panel);border:1px solid var(--app-line);color:var(--ink-1);border-radius:100px;font-family:var(--sans);font-weight:600;font-size:13px;letter-spacing:.01em;padding:8px 15px;min-height:38px;display:inline-flex;align-items:center;gap:8px;transition:border-color .15s,background .15s,color .15s;}
+  .fchip:hover{border-color:var(--ink);}
+  .fchip.on{background:var(--ink);color:var(--paper);border-color:var(--ink);}
+  .fchip .ct{font-variant-numeric:tabular-nums;opacity:.6;font-weight:700;}
+  .fchip.on .ct{opacity:.7;}
+  .fchip .sw{width:8px;height:8px;border-radius:2px;flex:none;}
+
+  /* type swatch chips */
+  .tchip{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;letter-spacing:.01em;color:var(--ink-1);white-space:nowrap;}
+  .tchip .sw{width:8px;height:8px;border-radius:2px;flex:none;}
+  .sw-title{background:var(--teal);}
+  .sw-insurance{background:var(--gold);}
+  .sw-appraisal{background:var(--teal-deep);}
+  .sw-attorney{background:var(--ink-1);}
+  .sw-inspector{background:var(--gold-soft);}
+
+  /* preferred pill */
+  .pill.pref{color:#8a6a2b;background:var(--warn-bg);}
+  .pill.pref::before{background:var(--gold);}
+
+  .co{display:flex;align-items:center;gap:12px;min-width:0;}
+  .co .nm{font-weight:600;color:var(--ink);line-height:1.25;}
+  .co .id{display:block;font-size:11px;letter-spacing:.06em;color:var(--ink-soft);font-variant-numeric:tabular-nums;margin-top:2px;}
+  .ct-nm{font-weight:600;color:var(--ink);}
+  .ct-em{display:block;font-size:12.5px;color:var(--ink-soft);margin-top:2px;}
+  .cov{display:flex;gap:6px;flex-wrap:wrap;}
+  .cov .a{font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:100px;border:1px solid var(--app-line);color:var(--ink-soft);font-variant-numeric:tabular-nums;}
+
+  .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .tbl-wrap .tbl{min-width:860px;}
+  .tbl .files-c{font-variant-numeric:tabular-nums;}
+  .tbl td.actc{text-align:right;}
+  .rowbtn{background:transparent;border:1px solid var(--app-line);border-radius:100px;font-family:var(--sans);font-weight:600;font-size:12px;color:var(--ink-1);padding:6px 13px;cursor:pointer;min-height:34px;}
+  .rowbtn:hover{border-color:var(--teal);color:var(--teal-deep);}
+
+  /* mobile: reflow table rows into cards */
+  @media(max-width:820px){
+    .tbl-wrap{overflow:visible;}
+    .tbl-wrap .tbl{min-width:0;}
+    .tbl thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;}
+    .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%;}
+    .tbl tr{background:var(--panel);border:1px solid var(--app-line);border-radius:var(--r);padding:6px 4px 8px;margin-bottom:12px;}
+    .tbl tr:hover td{background:transparent;}
+    .tbl td{border-bottom:1px solid var(--app-line-soft);padding:11px 16px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;text-align:right;}
+    .tbl td:last-child{border-bottom:0;}
+    .tbl td::before{content:attr(data-label);text-align:left;flex:none;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);padding-top:3px;}
+    .tbl td.actc{justify-content:flex-end;}
+    .tbl td.actc::before{content:"";}
+    .co,.cov{justify-content:flex-end;flex-wrap:wrap;}
+    .co{align-items:flex-start;text-align:right;}
+    .ct-em,.co .id{text-align:right;}
+  }
+  @media(max-width:560px){
+    .page-head{flex-direction:column;align-items:flex-start;}
+    .ph-search{min-width:0;flex:1;}
+    .ph-actions{width:100%;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search vendors, contacts, coverage…</div>
+    <div class="user-pill">
+      <button class="btn btn-gold btn-sm">+ New file</button>
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>Vendors</h1>
+        <div class="sub">Title, insurance, appraisal and closing partners.</div>
+      </div>
+      <div class="ph-actions">
+        <span class="ph-search"><span class="mag"></span>Search vendors…</span>
+        <button class="btn btn-ink btn-sm">+ Add vendor</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid" style="margin-bottom:22px;">
+      <div class="kpi"><div class="v num">32</div><div class="k">Active vendors</div></div>
+      <div class="kpi"><div class="v num">4</div><div class="k">Preferred</div></div>
+      <div class="kpi"><div class="v num">5</div><div class="k">Service types</div></div>
+      <div class="kpi"><div class="v num">18</div><div class="k">States covered</div></div>
+    </div>
+
+    <div class="fbar">
+      <button class="fchip on">All <span class="ct">8</span></button>
+      <button class="fchip"><span class="sw sw-title"></span>Title <span class="ct">2</span></button>
+      <button class="fchip"><span class="sw sw-insurance"></span>Insurance <span class="ct">2</span></button>
+      <button class="fchip"><span class="sw sw-appraisal"></span>Appraisal <span class="ct">2</span></button>
+      <button class="fchip"><span class="sw sw-attorney"></span>Attorney <span class="ct">1</span></button>
+      <button class="fchip"><span class="sw sw-inspector"></span>Inspector <span class="ct">1</span></button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">
+        <h3>Directory</h3>
+        <span class="pill mut">8 of 32</span>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Company</th>
+              <th>Type</th>
+              <th>Contact</th>
+              <th>Phone</th>
+              <th>Coverage</th>
+              <th class="num">Files</th>
+              <th>Preferred</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td data-label="Company"><div class="co"><span class="mono">MT</span><span><span class="nm">Meridian Title &amp; Escrow</span><span class="id">VND-1042</span></span></div></td>
+              <td data-label="Type"><span class="tchip"><span class="sw sw-title"></span>Title</span></td>
+              <td data-label="Contact"><span class="ct-nm">Karen Alcott</span><span class="ct-em">k.alcott@meridian.test</span></td>
+              <td data-label="Phone"><span class="num">(212) 555‑0143</span></td>
+              <td data-label="Coverage"><div class="cov"><span class="a">NY</span><span class="a">NJ</span><span class="a">CT</span></div></td>
+              <td class="num files-c" data-label="Files">24</td>
+              <td data-label="Preferred"><span class="pill pref">Preferred</span></td>
+              <td class="actc"><button class="rowbtn">View</button></td>
+            </tr>
+            <tr>
+              <td data-label="Company"><div class="co"><span class="mono">KL</span><span><span class="nm">Keystone Land Title</span><span class="id">VND-1058</span></span></div></td>
+              <td data-label="Type"><span class="tchip"><span class="sw sw-title"></span>Title</span></td>
+              <td data-label="Contact"><span class="ct-nm">Marcus Feld</span><span class="ct-em">m.feld@keystonelt.test</span></td>
+              <td data-label="Phone"><span class="num">(610) 555‑0199</span></td>
+              <td data-label="Coverage"><div class="cov"><span class="a">PA</span><span class="a">DE</span></div></td>
+              <td class="num files-c" data-label="Files">11</td>
+              <td data-label="Preferred"><span class="pill mut">Standard</span></td>
+              <td class="actc"><button class="rowbtn">View</button></td>
+            </tr>
+            <tr>
+              <td data-label="Company"><div class="co"><span class="mono">HI</span><span><span class="nm">Harborline Insurance Group</span><span class="id">VND-1071</span></span></div></td>
+              <td data-label="Type"><span class="tchip"><span class="sw sw-insurance"></span>Insurance</span></td>
+              <td data-label="Contact"><span class="ct-nm">Dana Whitley</span><span class="ct-em">d.whitley@harborline.test</span></td>
+              <td data-label="Phone"><span class="num">(305) 555‑0166</span></td>
+              <td data-label="Coverage"><div class="cov"><span class="a">FL</span><span class="a">GA</span></div></td>
+              <td class="num files-c" data-label="Files">18</td>
+              <td data-label="Preferred"><span class="pill pref">Preferred</span></td>
+              <td class="actc"><button class="rowbtn">View</button></td>
+            </tr>
+            <tr>
+              <td data-label="Company"><div class="co"><span class="mono">SP</span><span><span class="nm">Sentinel Property &amp; Casualty</span><span class="id">VND-1090</span></span></div></td>
+              <td data-label="Type"><span class="tchip"><span class="sw sw-insurance"></span>Insurance</span></td>
+              <td data-label="Contact"><span class="ct-nm">Omar Reyes</span><span class="ct-em">o.reyes@sentinelpc.test</span></td>
+              <td data-label="Phone"><span class="num">(312) 555‑0121</span></td>
+              <td data-label="Coverage"><div class="cov"><span class="a">IL</span><span class="a">IN</span><span class="a">WI</span></div></td>
+              <td class="num files-c" data-label="Files">9</td>
+              <td data-label="Preferred"><span class="pill mut">Standard</span></td>
+              <td class="actc"><button class="rowbtn">View</button></td>
+            </tr>
+            <tr>
+              <td data-label="Company"><div class="co"><span class="mono">CA</span><span><span class="nm">Cornerstone Appraisal Partners</span><span class="id">VND-1103</span></span></div></td>
+              <td data-label="Type"><span class="tchip"><span class="sw sw-appraisal"></span>Appraisal</span></td>
+              <td data-label="Contact"><span class="ct-nm">Beth Nyland</span><span class="ct-em">b.nyland@cornerstone-ap.test</span></td>
+              <td data-label="Phone"><span class="num">(480) 555‑0188</span></td>
+              <td data-label="Coverage"><div class="cov"><span class="a">AZ</span><span class="a">NV</span></div></td>
+              <td class="num files-c" data-label="Files">15</td>
+              <td data-label="Preferred"><span class="pill pref">Preferred</span></td>
+              <td class="actc"><button class="rowbtn">View</button></td>
+            </tr>
+            <tr>
+              <td data-label="Company"><div class="co"><span class="mono">VV</span><span><span class="nm">Vega Valuation Services</span><span class="id">VND-1118</span></span></div></td>
+              <td data-label="Type"><span class="tchip"><span class="sw sw-appraisal"></span>Appraisal</span></td>
+              <td data-label="Contact"><span class="ct-nm">Luis Vega</span><span class="ct-em">l.vega@vegaval.test</span></td>
+              <td data-label="Phone"><span class="num">(713) 555‑0134</span></td>
+              <td data-label="Coverage"><div class="cov"><span class="a">TX</span></div></td>
+              <td class="num files-c" data-label="Files">7</td>
+              <td data-label="Preferred"><span class="pill mut">Standard</span></td>
+              <td class="actc"><button class="rowbtn">View</button></td>
+            </tr>
+            <tr>
+              <td data-label="Company"><div class="co"><span class="mono">BC</span><span><span class="nm">Blackwell &amp; Croft LLP</span><span class="id">VND-1126</span></span></div></td>
+              <td data-label="Type"><span class="tchip"><span class="sw sw-attorney"></span>Attorney</span></td>
+              <td data-label="Contact"><span class="ct-nm">Priya Anand</span><span class="ct-em">p.anand@blackwellcroft.test</span></td>
+              <td data-label="Phone"><span class="num">(617) 555‑0177</span></td>
+              <td data-label="Coverage"><div class="cov"><span class="a">MA</span><span class="a">RI</span><span class="a">NH</span></div></td>
+              <td class="num files-c" data-label="Files">21</td>
+              <td data-label="Preferred"><span class="pill pref">Preferred</span></td>
+              <td class="actc"><button class="rowbtn">View</button></td>
+            </tr>
+            <tr>
+              <td data-label="Company"><div class="co"><span class="mono">RH</span><span><span class="nm">Ridgeway Home Inspections</span><span class="id">VND-1140</span></span></div></td>
+              <td data-label="Type"><span class="tchip"><span class="sw sw-inspector"></span>Inspector</span></td>
+              <td data-label="Contact"><span class="ct-nm">Tom Rourke</span><span class="ct-em">t.rourke@ridgewayhi.test</span></td>
+              <td data-label="Phone"><span class="num">(704) 555‑0155</span></td>
+              <td data-label="Coverage"><div class="cov"><span class="a">NC</span><span class="a">SC</span></div></td>
+              <td class="num files-c" data-label="Files">6</td>
+              <td data-label="Preferred"><span class="pill mut">Standard</span></td>
+              <td class="actc"><button class="rowbtn">View</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT by YS Capital — Brand & System Sheet</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  .sheet{max-width:1100px;margin:0 auto;padding:56px 40px 80px;}
+  .h-eyebrow{margin-bottom:14px;}
+  .display{font-size:clamp(40px,6vw,68px);font-family:var(--serif);line-height:1.02;margin-bottom:14px;}
+  .display em{font-style:italic;color:var(--teal);}
+  .sub{font-size:19px;color:var(--ink-soft);max-width:52ch;margin-bottom:44px;}
+  .block{margin:54px 0;}
+  .block > .lbl{font-size:12px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:var(--gold);border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:26px;}
+  .logo-tiles{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+  .lt{border:1px solid var(--line);border-radius:6px;padding:40px;display:flex;align-items:center;justify-content:center;min-height:150px;}
+  .lt.dark{background:var(--ink);border-color:transparent;}
+  .lt.paper{background:var(--paper-2);}
+  .swatches{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:14px;}
+  .sw{border:1px solid var(--line-soft);border-radius:6px;overflow:hidden;}
+  .sw .chip-c{height:74px;}
+  .sw .meta{padding:10px 12px;font-size:12px;}
+  .sw .meta b{display:block;font-size:13px;margin-bottom:2px;}
+  .sw .meta span{color:var(--ink-soft);font-variant-numeric:tabular-nums;}
+  .type-row{display:flex;align-items:baseline;gap:20px;border-bottom:1px solid var(--line-soft);padding:16px 0;}
+  .type-row .tag{width:130px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;flex:none;}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;}
+  .demo-topbar{border:1px solid var(--app-line);border-radius:8px;overflow:hidden;}
+</style>
+</head>
+<body>
+<div class="sheet">
+  <div class="eyebrow h-eyebrow">Platform Brand</div>
+  <div class="display">PILOT <em>by YS Capital</em></div>
+  <p class="sub">The borrower &amp; staff operating platform. You are in control; PILOT navigates the deal. Tagline: <em style="font-family:var(--serif);color:var(--ink)">“Navigate every deal.”</em></p>
+
+  <div class="block">
+    <div class="lbl">Logo — primary lockup</div>
+    <div class="logo-tiles">
+      <div class="lt paper">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-stack"><span class="pilot-word">PILOT</span><span class="pilot-by">by YS Capital</span></span></span>
+      </div>
+      <div class="lt dark">
+        <span class="pilot-lockup on-dark"><span class="pilot-mark"></span><span class="pilot-stack"><span class="pilot-word">PILOT</span><span class="pilot-by">by YS Capital</span></span></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="block">
+    <div class="lbl">Co-brand lockup — app top-left</div>
+    <div class="lt paper" style="justify-content:flex-start;min-height:0;padding:26px 30px;">
+      <span class="cobrand"><span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span><span class="div"></span><span class="ys">YS Capital</span></span>
+    </div>
+  </div>
+
+  <div class="block">
+    <div class="lbl">Palette</div>
+    <div class="swatches">
+      <div class="sw"><div class="chip-c" style="background:#141B22"></div><div class="meta"><b>Ink</b><span>#141B22</span></div></div>
+      <div class="sw"><div class="chip-c" style="background:#AE8746"></div><div class="meta"><b>Gold</b><span>#AE8746</span></div></div>
+      <div class="sw"><div class="chip-c" style="background:#2F7F86"></div><div class="meta"><b>Teal</b><span>#2F7F86</span></div></div>
+      <div class="sw"><div class="chip-c" style="background:#F4F0E7"></div><div class="meta"><b>Ivory</b><span>#F4F0E7</span></div></div>
+      <div class="sw"><div class="chip-c" style="background:#FFFFFF;border-bottom:1px solid var(--line-soft)"></div><div class="meta"><b>Panel</b><span>#FFFFFF</span></div></div>
+    </div>
+  </div>
+
+  <div class="block">
+    <div class="lbl">Type</div>
+    <div class="type-row"><span class="tag">Display · Fraunces</span><span style="font-family:var(--serif);font-size:38px;">Capital that moves.</span></div>
+    <div class="type-row"><span class="tag">Body · Hanken</span><span style="font-size:18px;">Qualified on the property, not your tax returns.</span></div>
+    <div class="type-row"><span class="tag">Wordmark · Hanken 800</span><span class="pilot-word" style="font-size:26px;">PILOT</span></div>
+    <div class="type-row"><span class="tag">Figures · tabular</span><span class="mono-fig" style="font-size:30px;">$345,000 · 9.50% · 92.5%</span></div>
+  </div>
+
+  <div class="block">
+    <div class="lbl">Buttons &amp; status</div>
+    <div class="row" style="margin-bottom:22px;">
+      <a class="btn btn-gold">Generate term sheet</a>
+      <a class="btn btn-ink">Open PILOT</a>
+      <a class="btn btn-ghost">Talk to a loan officer</a>
+      <a class="link-u">Open the full studio →</a>
+    </div>
+    <div class="row">
+      <span class="pill ok">Funded</span>
+      <span class="pill info">In underwriting</span>
+      <span class="pill warn">Awaiting borrower</span>
+      <span class="pill alert">Needs correction</span>
+      <span class="pill crit">Declined</span>
+      <span class="pill mut">On hold</span>
+    </div>
+  </div>
+
+  <div class="block">
+    <div class="lbl">PILOT app chrome — top bar &amp; KPIs</div>
+    <div class="demo-topbar">
+      <div class="app-topbar" style="position:static;">
+        <span class="cobrand"><span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span><span class="div"></span><span class="ys">YS Capital</span></span>
+        <span class="search">Search loans, borrowers, LLCs…</span>
+        <span class="user-pill"><span class="mono">YB</span></span>
+      </div>
+      <div class="kpi-grid" style="border:0;border-radius:0;">
+        <div class="kpi"><div class="v num">$22.4<span class="u">M</span></div><div class="k">Active pipeline</div><div class="d">45 open · 32 processing</div></div>
+        <div class="kpi"><div class="v num">63</div><div class="k">Funded YTD</div><div class="d">$23.2M</div></div>
+        <div class="kpi"><div class="v num">87<span class="u">%</span></div><div class="k">Pull-through</div><div class="d">funded of terminal</div></div>
+        <div class="kpi"><div class="v num">153</div><div class="k">Awaiting borrower</div><div class="d">across active files</div></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notification settings · PILOT by YS Capital</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local only — no token redefinition */
+  .note-list { list-style:none; margin:0; padding:0; }
+  .note-row {
+    display:flex; align-items:center; justify-content:space-between;
+    gap:16px; padding:14px 0; border-top:1px solid var(--hairline, rgba(20,20,20,.08));
+  }
+  .note-row:first-child { border-top:0; }
+  .note-row .lbl { font-weight:600; }
+  .note-channels { display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center; }
+  .note-ch { display:inline-flex; align-items:center; gap:10px; min-height:44px; }
+  .note-ch .ch-name { font-size:.9rem; color:var(--ink-soft, #5b5750); font-weight:600; }
+  /* iOS-style switch */
+  .sw { position:relative; display:inline-flex; align-items:center; }
+  .sw input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
+  .sw .track {
+    width:46px; height:28px; border-radius:999px;
+    background:var(--track-off, #e3ded4); border:1px solid rgba(20,20,20,.10);
+    transition:background .18s ease, border-color .18s ease; flex:none;
+  }
+  .sw .knob {
+    position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%;
+    background:#fff; box-shadow:0 1px 2px rgba(20,20,20,.25);
+    transition:transform .18s ease;
+  }
+  .sw input:checked + .track { background:var(--gold, #c79a3a); border-color:var(--gold, #c79a3a); }
+  .sw input:checked + .track + .knob { transform:translateX(18px); }
+  .sw input:focus-visible + .track { outline:2px solid var(--teal, #1f8a80); outline-offset:2px; }
+  /* touch target */
+  .sw { min-width:44px; min-height:44px; justify-content:center; }
+  .contact-list { list-style:none; margin:0; padding:0; }
+  .contact-item { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:12px 0; border-top:1px solid var(--hairline, rgba(20,20,20,.08)); }
+  .contact-item:first-child { border-top:0; }
+  .contact-item .ci-k { font-size:.8rem; letter-spacing:.02em; text-transform:uppercase; color:var(--ink-soft,#5b5750); font-weight:700; }
+  .contact-item .ci-v { font-weight:600; }
+  .note-foot { font-size:.85rem; color:var(--ink-soft,#5b5750); margin-top:12px; line-height:1.5; }
+  .save-bar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:24px; }
+  .save-bar .hint { font-size:.85rem; color:var(--ink-soft,#5b5750); }
+  @media (max-width:520px){
+    .note-row { flex-direction:column; align-items:stretch; gap:12px; }
+    .note-channels { justify-content:space-between; }
+    .contact-item { flex-direction:column; gap:4px; }
+  }
+</style>
+</head>
+<body>
+<div class="app no-side">
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <nav class="topnav">
+      <a href="#">Dashboard</a>
+      <a href="#">My loan</a>
+      <a href="#">Documents</a>
+      <a href="#">Profile</a>
+      <a href="#">Messages</a>
+    </nav>
+    <span class="mono avatar">RM</span>
+  </header>
+
+  <main class="app-main">
+    <div class="page-head">
+      <h1>Notification settings</h1>
+      <p class="sub">Choose how PILOT keeps you posted.</p>
+    </div>
+
+    <section class="panel">
+      <div class="panel-h">
+        <h2>Loan status updates</h2>
+        <span class="pill">Recommended</span>
+      </div>
+      <div class="panel-b">
+        <ul class="note-list">
+          <li class="note-row">
+            <span class="lbl">Milestone &amp; status changes</span>
+            <span class="note-channels">
+              <span class="note-ch"><span class="sw"><input type="checkbox" checked aria-label="Loan status updates by email"><span class="track"></span><span class="knob"></span></span><span class="ch-name">Email</span></span>
+              <span class="note-ch"><span class="sw"><input type="checkbox" checked aria-label="Loan status updates in-app"><span class="track"></span><span class="knob"></span></span><span class="ch-name">In-app</span></span>
+            </span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-h">
+        <h2>Document requests</h2>
+      </div>
+      <div class="panel-b">
+        <ul class="note-list">
+          <li class="note-row">
+            <span class="lbl">New &amp; outstanding document requests</span>
+            <span class="note-channels">
+              <span class="note-ch"><span class="sw"><input type="checkbox" checked aria-label="Document requests by email"><span class="track"></span><span class="knob"></span></span><span class="ch-name">Email</span></span>
+              <span class="note-ch"><span class="sw"><input type="checkbox" checked aria-label="Document requests in-app"><span class="track"></span><span class="knob"></span></span><span class="ch-name">In-app</span></span>
+              <span class="note-ch"><span class="sw"><input type="checkbox" aria-label="Document requests by SMS"><span class="track"></span><span class="knob"></span></span><span class="ch-name">SMS</span></span>
+            </span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-h">
+        <h2>Messages from your team</h2>
+      </div>
+      <div class="panel-b">
+        <ul class="note-list">
+          <li class="note-row">
+            <span class="lbl">Replies from your loan specialist</span>
+            <span class="note-channels">
+              <span class="note-ch"><span class="sw"><input type="checkbox" checked aria-label="Messages by email"><span class="track"></span><span class="knob"></span></span><span class="ch-name">Email</span></span>
+              <span class="note-ch"><span class="sw"><input type="checkbox" checked aria-label="Messages in-app"><span class="track"></span><span class="knob"></span></span><span class="ch-name">In-app</span></span>
+            </span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-h">
+        <h2>Reminders &amp; due dates</h2>
+      </div>
+      <div class="panel-b">
+        <ul class="note-list">
+          <li class="note-row">
+            <span class="lbl">Upcoming deadlines &amp; payment reminders</span>
+            <span class="note-channels">
+              <span class="note-ch"><span class="sw"><input type="checkbox" checked aria-label="Reminders by email"><span class="track"></span><span class="knob"></span></span><span class="ch-name">Email</span></span>
+              <span class="note-ch"><span class="sw"><input type="checkbox" checked aria-label="Reminders in-app"><span class="track"></span><span class="knob"></span></span><span class="ch-name">In-app</span></span>
+              <span class="note-ch"><span class="sw"><input type="checkbox" aria-label="Reminders by SMS"><span class="track"></span><span class="knob"></span></span><span class="ch-name">SMS</span></span>
+            </span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-h">
+        <h2>Marketing &amp; tips</h2>
+        <span class="pill">Optional</span>
+      </div>
+      <div class="panel-b">
+        <ul class="note-list">
+          <li class="note-row">
+            <span class="lbl">Product news, offers &amp; borrowing tips</span>
+            <span class="note-channels">
+              <span class="note-ch"><span class="sw"><input type="checkbox" aria-label="Marketing by email"><span class="track"></span><span class="knob"></span></span><span class="ch-name">Email</span></span>
+            </span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-h">
+        <h2>Contact channels</h2>
+      </div>
+      <div class="panel-b">
+        <ul class="contact-list">
+          <li class="contact-item">
+            <span class="ci-k">Email</span>
+            <span class="ci-v">r•••••@maplewoodholdings.com</span>
+          </li>
+          <li class="contact-item">
+            <span class="ci-k">Mobile</span>
+            <span class="ci-v">(•••) •••-4417 <span class="chip">Verified</span></span>
+          </li>
+        </ul>
+        <p class="note-foot">SMS is only used for the channels you turn on above. By enabling SMS you agree to the <a href="#">SMS Terms</a>; message and data rates may apply. Reply STOP anytime to opt out.</p>
+      </div>
+    </section>
+
+    <div class="save-bar">
+      <button class="btn" type="button">Save preferences</button>
+      <span class="hint">Changes apply the next time PILOT reaches out.</span>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,275 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* ---- tool top bar (lighter than marketing nav) ---- */
+  .tool-bar{position:sticky;top:0;z-index:50;background:rgba(251,249,243,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line-soft);}
+  .tool-bar .inner{display:flex;align-items:center;justify-content:space-between;height:60px;gap:24px;}
+  .crumb{display:flex;align-items:center;gap:12px;min-width:0;}
+  .crumb .logo-nav{height:34px;}
+  .crumb .cdiv{width:1px;height:24px;background:var(--line);}
+  .crumb .trail{font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .crumb .trail .sep{opacity:.4;padding:0 .5em;}
+  .crumb .trail .here{color:var(--ink);}
+  .tool-actions{display:flex;align-items:center;gap:10px;flex:none;}
+
+  /* ---- page header ---- */
+  .an-head{padding:36px 0 22px;}
+  .an-head h1{font-size:clamp(32px,4.2vw,50px);margin:.12em 0 .18em;}
+  .an-head h1 em{font-style:italic;color:var(--teal);}
+  .an-head .tag{font-family:var(--serif);font-style:italic;font-size:18px;color:var(--ink-soft);max-width:58ch;}
+
+  /* ---- property & scope bar ---- */
+  .scope{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;margin:20px 0 4px;padding:16px 20px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);}
+  .scope .addr{display:flex;flex-direction:column;gap:4px;}
+  .scope .addr .who{font-family:var(--serif);font-size:20px;font-weight:500;letter-spacing:-.01em;}
+  .scope .addr .meta{font-size:12.5px;letter-spacing:.02em;color:var(--ink-soft);}
+  .scope .chips{display:flex;gap:8px;flex-wrap:wrap;}
+
+  /* ---- working grid ---- */
+  .builder{display:grid;grid-template-columns:1.42fr .58fr;gap:36px;align-items:start;padding:24px 0 8px;}
+  .build-col{display:flex;flex-direction:column;gap:0;}
+
+  /* ---- line-item table ---- */
+  .tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:var(--r);}
+  table.budget{width:100%;min-width:560px;border-collapse:collapse;font-size:14px;}
+  table.budget th{text-align:left;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;padding:12px 16px;border-bottom:1px solid var(--app-line);}
+  table.budget th.num,table.budget td.num{text-align:right;font-variant-numeric:tabular-nums;}
+  table.budget td{padding:13px 16px;border-bottom:1px solid var(--app-line-soft);vertical-align:middle;}
+  table.budget tr.item:hover td{background:var(--panel-2);}
+  table.budget .lead{font-weight:600;color:var(--ink);}
+  table.budget .mut{color:var(--ink-soft);font-size:12.5px;}
+  /* category header rows */
+  tr.cat td{background:var(--panel-2);border-bottom:1px solid var(--app-line);padding-top:12px;padding-bottom:12px;}
+  tr.cat .cn{display:flex;align-items:baseline;gap:12px;}
+  tr.cat .cn b{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);font-weight:700;}
+  tr.cat .cn span{font-size:12px;color:var(--ink-soft);}
+  /* subtotal-per-category row */
+  tr.sub td{border-bottom:1px solid var(--app-line);padding-top:11px;padding-bottom:11px;}
+  tr.sub .sk{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;}
+  tr.sub .sv{font-family:var(--serif);font-weight:500;font-size:16px;font-variant-numeric:tabular-nums;}
+  /* add-line affordance */
+  tr.add td{padding:0;}
+  .add-line{display:inline-flex;align-items:center;gap:8px;width:100%;background:transparent;border:0;border-bottom:1px solid var(--app-line-soft);color:var(--teal);font-family:var(--sans);font-weight:600;font-size:13px;padding:12px 16px;cursor:pointer;text-align:left;}
+  .add-line:hover{background:var(--panel-2);}
+  .add-line .pl{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:1px solid var(--teal);border-radius:4px;font-size:14px;line-height:1;}
+
+  /* ---- sticky summary ---- */
+  .sum-col{position:sticky;top:78px;display:flex;flex-direction:column;gap:16px;}
+  .sum-row{display:flex;align-items:baseline;justify-content:space-between;gap:16px;padding:13px 0;border-bottom:1px solid var(--app-line-soft);}
+  .sum-row .k{font-size:13.5px;color:var(--ink-soft);}
+  .sum-row .k b{color:var(--ink);font-weight:600;}
+  .sum-row .v{font-family:var(--serif);font-weight:500;font-size:19px;font-variant-numeric:tabular-nums;}
+  .pct-field{display:inline-flex;align-items:center;gap:8px;}
+  .pct-field select{font-family:var(--sans);font-size:16px;font-weight:600;color:var(--ink);background:var(--panel);border:1px solid var(--app-line);border-radius:var(--r);padding:6px 10px;min-height:40px;}
+  .pct-field select:focus{outline:none;border-color:var(--teal);}
+  .grand{padding:20px 0 4px;border-top:1px solid var(--app-line);}
+  .grand .gk{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;}
+  .grand .gv{font-family:var(--serif);font-weight:500;font-variant-numeric:tabular-nums;font-size:clamp(40px,5.4vw,52px);letter-spacing:-.02em;line-height:1;color:var(--gold);margin-top:8px;}
+  .grand .formula{font-size:12px;color:var(--ink-soft);margin-top:12px;line-height:1.5;}
+  .grand .prog-bar{margin-top:12px;}
+  .sum-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px;}
+  .sum-actions .btn{width:100%;justify-content:center;}
+  .sum-actions .span2{grid-column:1 / -1;}
+
+  .disc{font-size:11.5px;line-height:1.55;color:var(--ink-soft);max-width:74ch;margin:20px 0 4px;}
+  .disc b{color:var(--ink-1);font-weight:600;}
+
+  @media(max-width:980px){
+    .builder{grid-template-columns:1fr;gap:26px;}
+    .sum-col{position:static;top:auto;}
+    .tool-bar .inner{height:auto;padding:12px 0;flex-wrap:wrap;gap:12px;}
+  }
+  /* mobile-first priority: great at 390px */
+  @media(max-width:560px){
+    .wrap{padding:0 18px;}
+    .an-head{padding:24px 0 16px;}
+    .scope{flex-direction:column;align-items:flex-start;gap:14px;}
+    .sum-actions{grid-template-columns:1fr;}
+    .tool-actions{width:100%;gap:8px;}
+    .tool-actions .btn{flex:1;justify-content:center;}
+    /* iOS: inputs >=16px prevents focus zoom; tap targets >=44px */
+    .pct-field select{font-size:16px;min-height:44px;}
+    .btn{min-height:44px;}
+    .btn-sm{padding:12px 15px;font-size:14px;}
+    .add-line{padding:14px 16px;}
+  }
+</style>
+
+<header class="tool-bar">
+  <div class="wrap inner">
+    <div class="crumb">
+      <img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+      <span class="cdiv"></span>
+      <span class="trail">Investor Suite <span class="sep">/</span> <span class="here">Rehab Budget</span></span>
+    </div>
+    <div class="tool-actions">
+      <button class="btn btn-ghost btn-sm">Save</button>
+      <button class="btn btn-ghost btn-sm">Share</button>
+      <button class="btn btn-gold btn-sm">Export</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap an-head">
+    <p class="eyebrow">Investor Suite <span style="color:var(--ink);opacity:.35">/</span> Rehab Budget</p>
+    <h1>Scope of Work &amp; <em>Rehab Budget</em></h1>
+    <p class="tag">Build a lender-ready renovation budget line by line &mdash; grouped by trade, with contingency and GC fee rolled into one grand total.</p>
+
+    <div class="scope">
+      <div class="addr">
+        <span class="who">128 Vernon Ave, Newark NJ</span>
+        <span class="meta">Fix &amp; Flip &middot; 3 bed / 2 bath &middot; 1,450 sf &middot; Sample scope</span>
+      </div>
+      <div class="chips">
+        <span class="chip">Fix &amp; Flip</span>
+        <span class="chip">19 line items</span>
+        <span class="chip">Illustrative figures</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap builder">
+    <!-- ============ LEFT: LINE-ITEM BUILDER ============ -->
+    <div class="build-col">
+      <section class="panel">
+        <div class="panel-h">
+          <h3>Line-item builder</h3>
+          <button class="btn btn-ghost btn-sm"><span style="font-size:15px;line-height:1">+</span> Add line</button>
+        </div>
+        <div class="panel-b" style="padding:0">
+          <div class="tbl-scroll">
+            <table class="budget">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th class="num">Qty</th>
+                  <th class="num">Unit cost</th>
+                  <th class="num">Line total</th>
+                </tr>
+              </thead>
+
+              <!-- INTERIOR -->
+              <tbody>
+                <tr class="cat"><td colspan="4"><div class="cn"><b>Interior</b> <span>Demo, drywall, flooring, trim</span></div></td></tr>
+                <tr class="item"><td class="lead">Demolition &amp; haul-off</td><td class="num">1</td><td class="num">$3,200</td><td class="num">$3,200</td></tr>
+                <tr class="item"><td class="lead">Drywall repair &amp; whole-home paint</td><td class="num">1</td><td class="num">$8,400</td><td class="num">$8,400</td></tr>
+                <tr class="item"><td class="lead">Flooring &mdash; LVP + tile <span class="mut">(sf)</span></td><td class="num">1,450</td><td class="num">$4.20</td><td class="num">$6,090</td></tr>
+                <tr class="item"><td class="lead">Interior doors &amp; trim</td><td class="num">9</td><td class="num">$340</td><td class="num">$3,060</td></tr>
+                <tr class="add"><td colspan="4"><button class="add-line"><span class="pl">+</span> Add line to Interior</button></td></tr>
+                <tr class="sub"><td class="sk">Interior subtotal</td><td></td><td></td><td class="num sv">$20,750</td></tr>
+              </tbody>
+
+              <!-- EXTERIOR -->
+              <tbody>
+                <tr class="cat"><td colspan="4"><div class="cn"><b>Exterior</b> <span>Roof, siding, windows, curb appeal</span></div></td></tr>
+                <tr class="item"><td class="lead">Roof &mdash; architectural shingle</td><td class="num">1</td><td class="num">$9,800</td><td class="num">$9,800</td></tr>
+                <tr class="item"><td class="lead">Siding repair &amp; exterior paint</td><td class="num">1</td><td class="num">$4,600</td><td class="num">$4,600</td></tr>
+                <tr class="item"><td class="lead">Windows &mdash; vinyl double-hung</td><td class="num">12</td><td class="num">$415</td><td class="num">$4,980</td></tr>
+                <tr class="item"><td class="lead">Landscaping &amp; curb appeal</td><td class="num">1</td><td class="num">$2,400</td><td class="num">$2,400</td></tr>
+                <tr class="add"><td colspan="4"><button class="add-line"><span class="pl">+</span> Add line to Exterior</button></td></tr>
+                <tr class="sub"><td class="sk">Exterior subtotal</td><td></td><td></td><td class="num sv">$21,780</td></tr>
+              </tbody>
+
+              <!-- SYSTEMS -->
+              <tbody>
+                <tr class="cat"><td colspan="4"><div class="cn"><b>Systems</b> <span>HVAC, electrical, plumbing</span></div></td></tr>
+                <tr class="item"><td class="lead">HVAC &mdash; condenser + air handler</td><td class="num">1</td><td class="num">$7,200</td><td class="num">$7,200</td></tr>
+                <tr class="item"><td class="lead">Electrical &mdash; panel + partial rewire</td><td class="num">1</td><td class="num">$5,400</td><td class="num">$5,400</td></tr>
+                <tr class="item"><td class="lead">Plumbing &mdash; partial repipe + fixtures</td><td class="num">1</td><td class="num">$4,800</td><td class="num">$4,800</td></tr>
+                <tr class="item"><td class="lead">Water heater &mdash; tankless</td><td class="num">1</td><td class="num">$1,900</td><td class="num">$1,900</td></tr>
+                <tr class="add"><td colspan="4"><button class="add-line"><span class="pl">+</span> Add line to Systems</button></td></tr>
+                <tr class="sub"><td class="sk">Systems subtotal</td><td></td><td></td><td class="num sv">$19,300</td></tr>
+              </tbody>
+
+              <!-- KITCHEN / BATH -->
+              <tbody>
+                <tr class="cat"><td colspan="4"><div class="cn"><b>Kitchen / Bath</b> <span>Cabinets, counters, baths, appliances</span></div></td></tr>
+                <tr class="item"><td class="lead">Kitchen cabinets &amp; counters</td><td class="num">1</td><td class="num">$9,600</td><td class="num">$9,600</td></tr>
+                <tr class="item"><td class="lead">Appliance package &mdash; stainless</td><td class="num">1</td><td class="num">$3,800</td><td class="num">$3,800</td></tr>
+                <tr class="item"><td class="lead">Primary bath remodel</td><td class="num">1</td><td class="num">$6,200</td><td class="num">$6,200</td></tr>
+                <tr class="item"><td class="lead">Hall bath remodel</td><td class="num">1</td><td class="num">$4,100</td><td class="num">$4,100</td></tr>
+                <tr class="add"><td colspan="4"><button class="add-line"><span class="pl">+</span> Add line to Kitchen / Bath</button></td></tr>
+                <tr class="sub"><td class="sk">Kitchen / Bath subtotal</td><td></td><td></td><td class="num sv">$23,700</td></tr>
+              </tbody>
+
+              <!-- SITE -->
+              <tbody>
+                <tr class="cat"><td colspan="4"><div class="cn"><b>Site</b> <span>Permits, debris, concrete</span></div></td></tr>
+                <tr class="item"><td class="lead">Dumpster &amp; debris removal</td><td class="num">2</td><td class="num">$650</td><td class="num">$1,300</td></tr>
+                <tr class="item"><td class="lead">Permits &amp; inspections</td><td class="num">1</td><td class="num">$2,800</td><td class="num">$2,800</td></tr>
+                <tr class="item"><td class="lead">Concrete &mdash; driveway &amp; walk</td><td class="num">1</td><td class="num">$3,400</td><td class="num">$3,400</td></tr>
+                <tr class="add"><td colspan="4"><button class="add-line"><span class="pl">+</span> Add line to Site</button></td></tr>
+                <tr class="sub"><td class="sk">Site subtotal</td><td></td><td></td><td class="num sv">$7,500</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <p class="disc"><b>For estimation &amp; education only.</b> This scope-of-work budget is a planning tool. Line items and figures shown are illustrative samples, not a quote, an approval, or a commitment to lend, and not construction, financial, legal or tax advice. Final rehab budgets are subject to third-party inspection and full underwriting.</p>
+    </div>
+
+    <!-- ============ RIGHT: STICKY SUMMARY ============ -->
+    <div class="sum-col">
+      <section class="panel">
+        <div class="panel-h"><h3>Budget summary</h3><span class="pill mut">Estimate</span></div>
+        <div class="panel-b">
+          <div class="sum-row">
+            <span class="k">Subtotal <b>(19 items)</b></span>
+            <span class="v num">$93,030</span>
+          </div>
+          <div class="sum-row">
+            <span class="k">
+              Contingency
+              <span class="pct-field">
+                <label for="cont" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Contingency percent</label>
+                <select id="cont">
+                  <option>0%</option>
+                  <option selected>5%</option>
+                  <option>10%</option>
+                  <option>15%</option>
+                </select>
+              </span>
+            </span>
+            <span class="v num">$4,652</span>
+          </div>
+          <div class="sum-row">
+            <span class="k">GC fee <b>(10%)</b></span>
+            <span class="v num">$9,303</span>
+          </div>
+
+          <div class="grand">
+            <div class="gk">Grand total</div>
+            <div class="gv">$106,985</div>
+            <div class="prog-bar"><i style="width:87%"></i></div>
+            <p class="formula">Grand total = subtotal + contingency + GC fee. Bar shows the base scope share of the total.</p>
+          </div>
+
+          <div class="sum-actions">
+            <button class="btn btn-ghost btn-sm">Save</button>
+            <button class="btn btn-ghost btn-sm">Share</button>
+            <button class="btn btn-ghost btn-sm">Export PDF</button>
+            <button class="btn btn-ghost btn-sm">Export Excel</button>
+            <button class="btn btn-gold btn-sm span2">Attach to application</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="kpi-grid">
+        <div class="kpi"><div class="v num">$93,030</div><div class="k">Base scope</div></div>
+        <div class="kpi"><div class="v num">$73<span class="u">/sf</span></div><div class="k">Cost per square foot</div></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="site-foot" style="margin-top:44px;padding:34px 0">
+  <div class="wrap">
+    <div class="foot-legal" style="padding-top:0">
+      <p>Business-purpose, investment (non-owner-occupied) loans only. Budget figures are illustrative samples from your inputs, subject to change, and contingent on inspection and full underwriting. Not a commitment to lend. &copy; 2026 YS Capital Group. NMLS ID 2609746.</p>
+      <div class="foot-badges">
+        <span class="chip">NMLS 2609746</span>
+        <span class="chip">Equal Housing Lender</span>
+      </div>
+    </div>
+  </div>
+</footer>

@@ -1,0 +1,248 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  .fh{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:22px 24px;flex-wrap:wrap;}
+  .fh .crumb{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);font-weight:600;margin-bottom:12px;}
+  .fh .crumb a:hover{color:var(--gold);}
+  .fh h1{font-size:27px;line-height:1.08;}
+  .fh .subline{color:var(--ink-soft);font-size:14px;margin-top:8px;display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;}
+  .fh .subline .sep{opacity:.4;}
+  .fh .subline .mono-fig{font-size:14px;color:var(--ink);}
+  .fh .assign{margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;}
+  .fh-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;}
+  .tabs{display:flex;gap:2px;margin:22px 0 24px;border-bottom:1px solid var(--app-line);overflow-x:auto;}
+  .tabs a{font-size:14px;font-weight:600;color:var(--ink-soft);padding:12px 16px;border-bottom:2px solid transparent;white-space:nowrap;cursor:pointer;transition:color .15s;}
+  .tabs a:hover{color:var(--ink);}
+  .tabs a.on{color:var(--ink);border-bottom-color:var(--gold);}
+  .of-grid{display:grid;grid-template-columns:1fr 340px;gap:22px;align-items:start;}
+  @media(max-width:1080px){.of-grid{grid-template-columns:1fr;}}
+  .stack{display:flex;flex-direction:column;gap:22px;}
+  .spec{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--app-line-soft);border:1px solid var(--app-line-soft);border-radius:var(--r);overflow:hidden;}
+  .spec .c{background:var(--panel);padding:14px 18px;}
+  .spec .c.wide{grid-column:1 / -1;}
+  .spec .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;}
+  .spec .v{font-family:var(--serif);font-size:21px;font-weight:500;font-variant-numeric:tabular-nums;margin-top:5px;letter-spacing:-.01em;}
+  .spec .v .u{color:var(--gold);font-size:.72em;}
+  .spec .v small{font-family:var(--sans);font-weight:400;font-size:11.5px;color:var(--ink-soft);letter-spacing:0;font-variant-numeric:normal;display:block;margin-top:2px;}
+  .spec .c.hi .v{color:var(--gold);}
+  .cl-sum{display:flex;align-items:center;gap:16px;padding:16px 22px;border-bottom:1px solid var(--app-line-soft);}
+  .cl-sum .lab{font-size:13px;color:var(--ink-soft);font-weight:600;white-space:nowrap;}
+  .cl-sum .prog-bar{flex:1;}
+  .cl-sum .pct{font-family:var(--serif);font-size:16px;font-variant-numeric:tabular-nums;}
+  .cl-list{padding:2px 22px 8px;}
+  .cl-list .cl-item:last-child{border-bottom:0;}
+  .cl-item .grow{flex:1;}
+  .cl-box.rev{background:var(--info-bg);border-color:var(--info);}
+  .tl{list-style:none;margin:0;padding:4px 22px 10px;}
+  .tl li{position:relative;padding:14px 0 14px 26px;border-bottom:1px solid var(--app-line-soft);}
+  .tl li:last-child{border-bottom:0;}
+  .tl li::before{content:"";position:absolute;left:3px;top:19px;width:8px;height:8px;border-radius:50%;background:var(--teal);}
+  .tl li:first-child::before{background:var(--gold);}
+  .tl li::after{content:"";position:absolute;left:6.5px;top:27px;bottom:-1px;width:1px;background:var(--app-line);}
+  .tl li:last-child::after{display:none;}
+  .tl .ev{font-weight:600;font-size:14px;}
+  .tl .meta{font-size:12.5px;color:var(--ink-soft);margin-top:2px;}
+  .kf{margin:0;}
+  .kf .r{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:12px 0;border-bottom:1px solid var(--app-line-soft);}
+  .kf .r:last-child{border-bottom:0;}
+  .kf .k{font-size:12.5px;color:var(--ink-soft);}
+  .kf .v{font-weight:600;font-size:14px;text-align:right;font-variant-numeric:tabular-nums;}
+  .kf .v.mono-fig{font-family:var(--serif);font-size:16px;}
+  .team-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--app-line-soft);}
+  .team-row:last-child{border-bottom:0;}
+  .team-row .nm{font-weight:600;font-size:14px;}
+  .team-row .rl{font-size:12px;color:var(--ink-soft);margin-top:1px;}
+  .team-row .mono.gold{background:#F2E6CE;color:var(--gold);}
+  .team-row .mono.teal{background:#DDEBEC;color:var(--teal-deep);}
+  .doc-sum{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px;}
+  .doc-sum .big{font-family:var(--serif);font-size:30px;font-variant-numeric:tabular-nums;}
+  .doc-sum .big .u{color:var(--ink-soft);font-size:.6em;}
+  .doc-sum .lab{font-size:12px;color:var(--ink-soft);}
+</style>
+
+<div class="app">
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand"><span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span><span class="div"></span><span class="ys">YS Capital</span></span>
+    </div>
+    <div class="sb-sec">Main</div>
+    <a class="sb-link on">Pipeline</a>
+    <a class="sb-link">My tasks</a>
+    <a class="sb-link">Chat</a>
+    <a class="sb-link">Leads</a>
+    <div class="sb-sec">Files</div>
+    <a class="sb-link">Borrowers</a>
+    <a class="sb-link">Conditions</a>
+    <a class="sb-link">Vendors</a>
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link">Team</a>
+    <a class="sb-link">Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand"><span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span><span class="div"></span><span class="ys">Staff console</span></span>
+    <span class="search">Search loans, borrowers, LLCs…</span>
+    <span class="user-pill"><span class="mono">YB</span></span>
+  </header>
+
+  <main class="app-main">
+    <div class="panel">
+      <div class="fh">
+        <div>
+          <div class="crumb"><a>Pipeline</a> &rsaquo; <a>Fix &amp; Flip</a> &rsaquo; Maple Ridge Holdings LLC</div>
+          <h1>Maple Ridge Holdings LLC</h1>
+          <div class="subline">
+            <span>Borrower: Daniel R.</span><span class="sep">&middot;</span>
+            <span>128 Vernon Ave, Newark NJ</span><span class="sep">&middot;</span>
+            <span>Fix &amp; Flip</span><span class="sep">&middot;</span>
+            <span class="mono-fig">YSCAP258134759</span><span class="sep">&middot;</span>
+            <span class="mono-fig">$345,000</span>
+            <span class="pill info">Processing</span>
+          </div>
+          <div class="assign">
+            <span class="chip">LO &middot; M. Bochner</span>
+            <span class="chip">Processor &middot; G. Rosenberg</span>
+          </div>
+        </div>
+        <div class="fh-actions">
+          <a class="btn btn-ghost btn-sm">Assign</a>
+          <a class="btn btn-ghost btn-sm">Message</a>
+          <a class="btn btn-gold btn-sm">Request docs</a>
+        </div>
+      </div>
+    </div>
+
+    <nav class="tabs">
+      <a class="on">Overview</a>
+      <a>Conditions</a>
+      <a>Documents</a>
+      <a>Pricing</a>
+      <a>Activity</a>
+      <a>Messages</a>
+    </nav>
+
+    <div class="of-grid">
+      <!-- LEFT -->
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-h">
+            <h3>Deal snapshot</h3>
+            <span class="pill mut">Indicative</span>
+          </div>
+          <div class="panel-b" style="padding:0;">
+            <div class="spec">
+              <div class="c"><div class="k">Purchase price</div><div class="v mono-fig">$300,000</div></div>
+              <div class="c"><div class="k">Rehab budget</div><div class="v mono-fig">$75,000<small>100% financed &middot; in draws</small></div></div>
+              <div class="c"><div class="k">As-is value</div><div class="v mono-fig">$260,000</div></div>
+              <div class="c"><div class="k">ARV</div><div class="v mono-fig">$500,000</div></div>
+              <div class="c hi"><div class="k">Loan amount</div><div class="v mono-fig">$345,000</div></div>
+              <div class="c"><div class="k">Note rate</div><div class="v mono-fig">9.50<span class="u">%</span></div></div>
+              <div class="c"><div class="k">Origination</div><div class="v mono-fig">1.25<span class="u"> pts</span></div></div>
+              <div class="c"><div class="k">LTC</div><div class="v mono-fig">92.5<span class="u">%</span></div></div>
+              <div class="c"><div class="k">Term</div><div class="v mono-fig">12<span class="u"> mo</span></div></div>
+              <div class="c"><div class="k">Loan-to-ARV</div><div class="v mono-fig">69<span class="u">%</span></div></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h">
+            <h3>Conditions</h3>
+            <a class="link-u" style="font-size:13px;">View all 12 &rarr;</a>
+          </div>
+          <div class="cl-sum">
+            <span class="lab">5 of 12 satisfied</span>
+            <span class="prog-bar"><i style="width:41.6%"></i></span>
+            <span class="pct">42%</span>
+          </div>
+          <div class="cl-list">
+            <div class="cl-item">
+              <span class="cl-box rev"></span>
+              <span class="grow"><span class="ttl">Executed purchase contract</span><span class="hint">Received &middot; awaiting reviewer sign-off</span></span>
+              <span class="pill info">Received</span>
+            </div>
+            <div class="cl-item">
+              <span class="cl-box done"></span>
+              <span class="grow"><span class="ttl">Photo ID — guarantor</span><span class="hint">Verified against LLC signer</span></span>
+              <span class="pill ok">Satisfied</span>
+            </div>
+            <div class="cl-item">
+              <span class="cl-box"></span>
+              <span class="grow"><span class="ttl">LLC verification</span><span class="hint">Articles + operating agreement outstanding</span></span>
+              <span class="pill warn">Outstanding</span>
+            </div>
+            <div class="cl-item">
+              <span class="cl-box rev"></span>
+              <span class="grow"><span class="ttl">Rehab budget / Scope of Work</span><span class="hint">Line items under processor review</span></span>
+              <span class="pill info">In review</span>
+            </div>
+            <div class="cl-item">
+              <span class="cl-box"></span>
+              <span class="grow"><span class="ttl">2 months bank statements</span><span class="hint">Gold Standard program — liquidity proof</span></span>
+              <span class="pill warn">Outstanding</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h"><h3>Activity</h3><a class="link-u" style="font-size:13px;">Full log &rarr;</a></div>
+          <ul class="tl">
+            <li><div class="ev">Borrower uploaded purchase contract</div><div class="meta">Today, 10:42 AM &middot; via borrower portal</div></li>
+            <li><div class="ev">Appraisal ordered</div><div class="meta">Jul 11 &middot; G. Rosenberg &middot; Vendor: Summit Valuation</div></li>
+            <li><div class="ev">Rehab budget requested from borrower</div><div class="meta">Jul 10 &middot; M. Bochner</div></li>
+            <li><div class="ev">Product registered</div><div class="meta">Jul 9 &middot; Fix &amp; Flip &middot; YSCAP258134759 created</div></li>
+          </ul>
+        </section>
+      </div>
+
+      <!-- RIGHT RAIL -->
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-h"><h3>Key facts</h3></div>
+          <div class="panel-b">
+            <div class="kf">
+              <div class="r"><span class="k">Internal status</span><span class="v">Self processing</span></div>
+              <div class="r"><span class="k">Target closing</span><span class="v"><span class="pill warn">Confirm</span></span></div>
+              <div class="r"><span class="k">FICO</span><span class="v mono-fig">712</span></div>
+              <div class="r"><span class="k">Experience</span><span class="v">3 flips</span></div>
+              <div class="r"><span class="k">Liquidity required</span><span class="v mono-fig">$61,750</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h"><h3>Team</h3></div>
+          <div class="panel-b">
+            <div class="team-row">
+              <span class="mono gold">MB</span>
+              <span class="grow"><div class="nm">M. Bochner</div><div class="rl">Loan officer</div></span>
+            </div>
+            <div class="team-row">
+              <span class="mono teal">GR</span>
+              <span class="grow"><div class="nm">G. Rosenberg</div><div class="rl">Processor</div></span>
+            </div>
+            <div class="team-row">
+              <span class="mono">DK</span>
+              <span class="grow"><div class="nm">D. Klein</div><div class="rl">Draw coordinator</div></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h"><h3>Documents</h3></div>
+          <div class="panel-b">
+            <div class="doc-sum">
+              <span class="big mono-fig">14<span class="u">/23</span></span>
+              <span class="lab">received of expected</span>
+            </div>
+            <span class="prog-bar"><i style="width:61%"></i></span>
+            <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;">
+              <span class="pill ok">9 accepted</span>
+              <span class="pill info">5 in review</span>
+              <span class="pill warn">9 outstanding</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>

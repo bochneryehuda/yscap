@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Archived</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .stack{display:flex;flex-direction:column;gap:22px;}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;}
+  .fchip{font-size:13px;font-weight:600;letter-spacing:.02em;padding:7px 15px;border-radius:100px;border:1px solid var(--app-line);color:var(--ink-soft);background:var(--panel);cursor:pointer;transition:background .15s,color .15s,border-color .15s;}
+  .fchip:hover{border-color:var(--ink);color:var(--ink);}
+  .fchip.on{background:var(--ink);border-color:var(--ink);color:var(--paper);}
+  .fchip .ct{opacity:.55;margin-left:6px;font-variant-numeric:tabular-nums;}
+  .fchip.on .ct{opacity:.8;}
+  .tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .tbl-scroll .tbl{min-width:860px;}
+  .cell-deal .addr{font-size:13px;color:var(--ink-soft);margin-top:3px;}
+  .off{display:inline-flex;align-items:center;gap:9px;white-space:nowrap;}
+  .off .mono{width:28px;height:28px;font-size:11px;}
+  .whenn{white-space:nowrap;font-variant-numeric:tabular-nums;}
+  .btn-restore{padding:7px 14px;font-size:13px;white-space:nowrap;}
+  /* muted, inactive feel */
+  .arch .tbl td{color:var(--ink-1);}
+  .arch .tbl tbody tr td .lead{color:var(--ink-1);}
+  @media(max-width:1080px){.page-head{flex-direction:column;align-items:flex-start;}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>Archived</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search archived loans, borrowers, LLCs…</div>
+    <div class="user-pill">
+      <button class="btn btn-gold btn-sm">+ New file</button>
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main arch">
+
+    <div class="page-head">
+      <div>
+        <h1>Archived</h1>
+        <div class="sub">Closed, funded, cancelled and withdrawn files.</div>
+      </div>
+      <div class="chips">
+        <button class="fchip on">All <span class="ct">70</span></button>
+        <button class="fchip">Funded <span class="ct">51</span></button>
+        <button class="fchip">Cancelled <span class="ct">12</span></button>
+        <button class="fchip">Withdrawn <span class="ct">7</span></button>
+      </div>
+    </div>
+
+    <div class="stack">
+
+      <!-- KPI STRIP -->
+      <div class="kpi-grid">
+        <div class="kpi">
+          <div class="v">51</div>
+          <div class="k">Funded · all-time</div>
+          <div class="d">$34.8M closed volume</div>
+        </div>
+        <div class="kpi">
+          <div class="v">12</div>
+          <div class="k">Cancelled</div>
+          <div class="d">Dead after term sheet</div>
+        </div>
+        <div class="kpi">
+          <div class="v">7</div>
+          <div class="k">Withdrawn</div>
+          <div class="d">Borrower-initiated exit</div>
+        </div>
+        <div class="kpi">
+          <div class="v">70</div>
+          <div class="k">Total archived</div>
+          <div class="d">Inactive files on record</div>
+        </div>
+      </div>
+
+      <!-- ARCHIVED TABLE -->
+      <div class="panel">
+        <div class="panel-h">
+          <h3>Archived files</h3>
+          <span class="pill mut">Read-only</span>
+        </div>
+        <div class="tbl-scroll">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Deal / Borrower · Address</th>
+                <th>Program</th>
+                <th class="num">Amount</th>
+                <th>Outcome</th>
+                <th>Closed</th>
+                <th>Officer</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="cell-deal"><div class="lead">Willow Creek Partners LLC</div><div class="addr">62 Grove St, Montclair NJ</div></td>
+                <td>DSCR Rental</td>
+                <td class="num">$430,000</td>
+                <td><span class="pill ok">Funded</span></td>
+                <td class="whenn">May 28, 2026</td>
+                <td><span class="off"><span class="mono">DF</span>D. Feldman</span></td>
+                <td><button class="btn btn-ghost btn-restore">Restore</button></td>
+              </tr>
+              <tr>
+                <td class="cell-deal"><div class="lead">Maple Ridge Holdings LLC</div><div class="addr">128 Vernon Ave, Newark NJ</div></td>
+                <td>Fix &amp; Flip</td>
+                <td class="num">$345,000</td>
+                <td><span class="pill ok">Funded</span></td>
+                <td class="whenn">May 14, 2026</td>
+                <td><span class="off"><span class="mono">MB</span>M. Bochner</span></td>
+                <td><button class="btn btn-ghost btn-restore">Restore</button></td>
+              </tr>
+              <tr>
+                <td class="cell-deal"><div class="lead">Cedar Hollow Capital LLC</div><div class="addr">44 Sycamore St, Trenton NJ</div></td>
+                <td>DSCR Rental</td>
+                <td class="num">$512,000</td>
+                <td><span class="pill mut">Cancelled</span></td>
+                <td class="whenn">Apr 30, 2026</td>
+                <td><span class="off"><span class="mono">DF</span>D. Feldman</span></td>
+                <td><button class="btn btn-ghost btn-restore">Restore</button></td>
+              </tr>
+              <tr>
+                <td class="cell-deal"><div class="lead">Granite Peak Holdings LLC</div><div class="addr">88 Market St, New Brunswick NJ</div></td>
+                <td>Rental Portfolio</td>
+                <td class="num">$2,150,000</td>
+                <td><span class="pill ok">Funded</span></td>
+                <td class="whenn">Apr 22, 2026</td>
+                <td><span class="off"><span class="mono">RS</span>R. Stein</span></td>
+                <td><button class="btn btn-ghost btn-restore">Restore</button></td>
+              </tr>
+              <tr>
+                <td class="cell-deal"><div class="lead">Ironbound Ventures LLC</div><div class="addr">903 Ferry St, Jersey City NJ</div></td>
+                <td>Bridge</td>
+                <td class="num">$780,000</td>
+                <td><span class="pill warn">Withdrawn</span></td>
+                <td class="whenn">Apr 09, 2026</td>
+                <td><span class="off"><span class="mono">MB</span>M. Bochner</span></td>
+                <td><button class="btn btn-ghost btn-restore">Restore</button></td>
+              </tr>
+              <tr>
+                <td class="cell-deal"><div class="lead">Summit Crossing LLC</div><div class="addr">17 Highland Rd, Paterson NJ</div></td>
+                <td>Fix &amp; Flip</td>
+                <td class="num">$268,500</td>
+                <td><span class="pill ok">Funded</span></td>
+                <td class="whenn">Mar 27, 2026</td>
+                <td><span class="off"><span class="mono">RS</span>R. Stein</span></td>
+                <td><button class="btn btn-ghost btn-restore">Restore</button></td>
+              </tr>
+              <tr>
+                <td class="cell-deal"><div class="lead">Blue Harbor Estates LLC</div><div class="addr">250 Bergen Blvd, Elizabeth NJ</div></td>
+                <td>Ground-Up Construction</td>
+                <td class="num">$1,240,000</td>
+                <td><span class="pill mut">Cancelled</span></td>
+                <td class="whenn">Mar 15, 2026</td>
+                <td><span class="off"><span class="mono">SK</span>S. Klein</span></td>
+                <td><button class="btn btn-ghost btn-restore">Restore</button></td>
+              </tr>
+              <tr>
+                <td class="cell-deal"><div class="lead">Riverstone Equity LLC</div><div class="addr">311 Central Ave, Hoboken NJ</div></td>
+                <td>Bridge</td>
+                <td class="num">$655,000</td>
+                <td><span class="pill ok">Funded</span></td>
+                <td class="whenn">Feb 26, 2026</td>
+                <td><span class="off"><span class="mono">SK</span>S. Klein</span></td>
+                <td><button class="btn btn-ghost btn-restore">Restore</button></td>
+              </tr>
+              <tr>
+                <td class="cell-deal"><div class="lead">Fox Run Capital LLC</div><div class="addr">76 Chestnut St, Passaic NJ</div></td>
+                <td>DSCR Rental</td>
+                <td class="num">$392,000</td>
+                <td><span class="pill warn">Withdrawn</span></td>
+                <td class="whenn">Feb 11, 2026</td>
+                <td><span class="off"><span class="mono">DF</span>D. Feldman</span></td>
+                <td><button class="btn btn-ghost btn-restore">Restore</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

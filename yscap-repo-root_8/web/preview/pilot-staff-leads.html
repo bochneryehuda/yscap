@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Leads</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .stack{display:flex;flex-direction:column;gap:22px;}
+  .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  .fchip{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;letter-spacing:.02em;padding:8px 14px;border-radius:100px;border:1px solid var(--app-line);color:var(--ink-soft);background:var(--panel);cursor:pointer;min-height:38px;}
+  .fchip.on{background:var(--ink);border-color:var(--ink);color:var(--paper);}
+  .fchip .ct{opacity:.6;margin-left:2px;font-variant-numeric:tabular-nums;}
+  .fchip.on .ct{opacity:.85;}
+  .kpi .v .dn{color:var(--teal);font-size:.7em;}
+  /* source chips — calm, hairline, dot-coded */
+  .src{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;letter-spacing:.01em;padding:5px 11px;border-radius:100px;border:1px solid var(--app-line);background:var(--panel-2);color:var(--ink-1);white-space:nowrap;}
+  .src::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ink-soft);flex:none;}
+  .src.ts::before{background:var(--gold);}
+  .src.app::before{background:var(--teal);}
+  .src.contact::before{background:var(--ink-soft);}
+  .src.officer::before{background:var(--gold-soft);}
+  /* name cell */
+  .who{display:inline-flex;align-items:center;gap:11px;white-space:nowrap;}
+  .who .mono{width:30px;height:30px;font-size:11px;}
+  .who .nm{font-weight:600;color:var(--ink);}
+  .off{display:inline-flex;align-items:center;gap:9px;white-space:nowrap;}
+  .off .mono{width:28px;height:28px;font-size:11px;}
+  .off.un{color:var(--ink-soft);font-weight:500;}
+  .off.un .dot{width:28px;height:28px;border-radius:50%;border:1px dashed var(--app-line);flex:none;}
+  /* row actions */
+  .row-act{display:flex;gap:8px;justify-content:flex-end;white-space:nowrap;}
+  .row-act .btn{min-height:40px;}
+  /* table scroll container */
+  .tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .tbl-scroll .tbl{min-width:940px;}
+  .tbl td.act,.tbl th.act{text-align:right;}
+  .rec{color:var(--ink-soft);font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .rec b{color:var(--ink);font-weight:600;}
+  @media(max-width:980px){.filters{width:100%;}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search leads, borrowers, LLCs…</div>
+    <div class="user-pill">
+      <button class="btn btn-gold btn-sm">+ New lead</button>
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>Leads</h1>
+        <div class="sub">Inbound from the site and investor tools.</div>
+      </div>
+      <div class="filters">
+        <button class="fchip on">Lead Capture <span class="pill mut" style="padding:2px 8px">unassigned</span> <span class="ct">4</span></button>
+        <button class="fchip">All leads <span class="ct">42</span></button>
+      </div>
+    </div>
+
+    <div class="stack">
+
+      <!-- KPI STRIP -->
+      <div class="kpi-grid">
+        <div class="kpi">
+          <div class="v">4</div>
+          <div class="k">New leads</div>
+          <div class="d">Unassigned · awaiting triage</div>
+        </div>
+        <div class="kpi">
+          <div class="v">7</div>
+          <div class="k">This week</div>
+          <div class="d">Captured in last 7 days</div>
+        </div>
+        <div class="kpi">
+          <div class="v">3</div>
+          <div class="k">Converted (30d)</div>
+          <div class="d">Promoted to a live file</div>
+        </div>
+        <div class="kpi">
+          <div class="v">34<span class="u">%</span></div>
+          <div class="k">Conversion rate</div>
+          <div class="d">Trailing 90 days</div>
+        </div>
+      </div>
+
+      <!-- LEADS TABLE -->
+      <div class="panel">
+        <div class="panel-h">
+          <h3>Captured leads</h3>
+          <span class="pill mut">9 shown</span>
+        </div>
+        <div class="tbl-scroll">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Source</th>
+                <th>Program interest</th>
+                <th class="num">Amount</th>
+                <th>Status</th>
+                <th>Assigned officer</th>
+                <th>Received</th>
+                <th class="act">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="who"><span class="mono">NC</span><span class="nm">Northgate Capital LLC</span></span></td>
+                <td><span class="src ts">Term Sheet Studio</span></td>
+                <td>DSCR Rental</td>
+                <td class="num">$420,000</td>
+                <td><span class="pill info">New</span></td>
+                <td><span class="off un"><span class="dot"></span>Unassigned</span></td>
+                <td class="rec"><b>Jul 13</b> · 09:14</td>
+                <td class="act"><div class="row-act"><button class="btn btn-gold btn-sm">Convert to file</button><button class="btn btn-ghost btn-sm">Assign</button></div></td>
+              </tr>
+              <tr>
+                <td><span class="who"><span class="mono">LH</span><span class="nm">Lakeshore Holdings LLC</span></span></td>
+                <td><span class="src ts">Term Sheet Studio</span></td>
+                <td>Multifamily</td>
+                <td class="num">$1,750,000</td>
+                <td><span class="pill info">New</span></td>
+                <td><span class="off un"><span class="dot"></span>Unassigned</span></td>
+                <td class="rec"><b>Jul 13</b> · 08:02</td>
+                <td class="act"><div class="row-act"><button class="btn btn-gold btn-sm">Convert to file</button><button class="btn btn-ghost btn-sm">Assign</button></div></td>
+              </tr>
+              <tr>
+                <td><span class="who"><span class="mono">HH</span><span class="nm">Harborview Holdings</span></span></td>
+                <td><span class="src app">Loan Application</span></td>
+                <td>Fix &amp; Flip</td>
+                <td class="num">$315,000</td>
+                <td><span class="pill info">New</span></td>
+                <td><span class="off un"><span class="dot"></span>Unassigned</span></td>
+                <td class="rec"><b>Jul 12</b> · 16:41</td>
+                <td class="act"><div class="row-act"><button class="btn btn-gold btn-sm">Convert to file</button><button class="btn btn-ghost btn-sm">Assign</button></div></td>
+              </tr>
+              <tr>
+                <td><span class="who"><span class="mono">ME</span><span class="nm">Meadowbrook Estates LLC</span></span></td>
+                <td><span class="src ts">Term Sheet Studio</span></td>
+                <td>Rental Portfolio</td>
+                <td class="num">$2,300,000</td>
+                <td><span class="pill info">New</span></td>
+                <td><span class="off un"><span class="dot"></span>Unassigned</span></td>
+                <td class="rec"><b>Jul 09</b> · 11:27</td>
+                <td class="act"><div class="row-act"><button class="btn btn-gold btn-sm">Convert to file</button><button class="btn btn-ghost btn-sm">Assign</button></div></td>
+              </tr>
+              <tr>
+                <td><span class="who"><span class="mono">AW</span><span class="nm">Aaron Weiss</span></span></td>
+                <td><span class="src contact">Contact</span></td>
+                <td>Bridge</td>
+                <td class="num">$600,000</td>
+                <td><span class="pill warn">Contacted</span></td>
+                <td><span class="off"><span class="mono">DF</span>D. Feldman</span></td>
+                <td class="rec"><b>Jul 11</b> · 14:05</td>
+                <td class="act"><div class="row-act"><button class="btn btn-ink btn-sm">Convert to file</button></div></td>
+              </tr>
+              <tr>
+                <td><span class="who"><span class="mono">SO</span><span class="nm">Silver Oak Partners LLC</span></span></td>
+                <td><span class="src officer">Officer link</span></td>
+                <td>Ground-Up Construction</td>
+                <td class="num">$1,100,000</td>
+                <td><span class="pill warn">Contacted</span></td>
+                <td><span class="off"><span class="mono">MB</span>M. Bochner</span></td>
+                <td class="rec"><b>Jul 10</b> · 10:33</td>
+                <td class="act"><div class="row-act"><button class="btn btn-ink btn-sm">Convert to file</button></div></td>
+              </tr>
+              <tr>
+                <td><span class="who"><span class="mono">RE</span><span class="nm">Redwood Equity LLC</span></span></td>
+                <td><span class="src app">Loan Application</span></td>
+                <td>Fix &amp; Flip</td>
+                <td class="num">$272,500</td>
+                <td><span class="pill warn">Contacted</span></td>
+                <td><span class="off"><span class="mono">SK</span>S. Klein</span></td>
+                <td class="rec"><b>Jul 06</b> · 15:52</td>
+                <td class="act"><div class="row-act"><button class="btn btn-ink btn-sm">Convert to file</button></div></td>
+              </tr>
+              <tr>
+                <td><span class="who"><span class="mono">DK</span><span class="nm">Devorah Katz</span></span></td>
+                <td><span class="src contact">Contact</span></td>
+                <td>DSCR Rental</td>
+                <td class="num">$385,000</td>
+                <td><span class="pill ok">Converted</span></td>
+                <td><span class="off"><span class="mono">RS</span>R. Stein</span></td>
+                <td class="rec"><b>Jul 07</b> · 12:18</td>
+                <td class="act"><div class="row-act"><button class="btn btn-ghost btn-sm">View file</button></div></td>
+              </tr>
+              <tr>
+                <td><span class="who"><span class="mono">PV</span><span class="nm">Pinecrest Ventures LLC</span></span></td>
+                <td><span class="src officer">Officer link</span></td>
+                <td>Bridge</td>
+                <td class="num">$540,000</td>
+                <td><span class="pill mut">Lost</span></td>
+                <td><span class="off"><span class="mono">RS</span>R. Stein</span></td>
+                <td class="rec"><b>Jul 02</b> · 09:40</td>
+                <td class="act"><div class="row-act"><button class="btn btn-ghost btn-sm">Reopen</button></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

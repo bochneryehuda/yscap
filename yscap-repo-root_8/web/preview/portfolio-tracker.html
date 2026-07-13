@@ -1,0 +1,318 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* ---- tool top bar (lighter than marketing nav) ---- */
+  .tool-bar{position:sticky;top:0;z-index:50;background:rgba(251,249,243,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line-soft);}
+  .tool-bar .inner{display:flex;align-items:center;justify-content:space-between;height:60px;gap:20px;}
+  .crumb{display:flex;align-items:center;gap:12px;min-width:0;}
+  .crumb .logo-nav{height:34px;}
+  .crumb .cdiv{width:1px;height:24px;background:var(--line);flex:none;}
+  .crumb .trail{font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .crumb .trail .sep{opacity:.4;padding:0 .5em;}
+  .crumb .trail .here{color:var(--ink);}
+  .tool-actions{display:flex;align-items:center;gap:10px;flex:none;}
+
+  /* ---- page header ---- */
+  .pt-head{padding:36px 0 22px;}
+  .pt-head .toprow{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap;}
+  .pt-head h1{font-size:clamp(32px,4.2vw,50px);margin:.12em 0 .16em;}
+  .pt-head .tag{font-family:var(--serif);font-style:italic;font-size:18px;color:var(--ink-soft);max-width:52ch;}
+  .pt-head .chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px;}
+  .asof{font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;color:var(--ink-soft);white-space:nowrap;}
+
+  /* KPI accents */
+  .kpi .v .pos{color:var(--teal-deep);}
+  .kpi .est-flag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);opacity:.6;font-weight:700;margin-top:6px;}
+  .kpi.feature{box-shadow:inset 3px 0 0 var(--gold);}
+
+  /* ---- portfolio layout ---- */
+  .pt-grid{display:grid;grid-template-columns:1fr;gap:22px;padding-bottom:8px;}
+
+  .panel-h .h-actions{display:flex;gap:10px;align-items:center;}
+
+  /* table scroll container so the page never overflows */
+  .tbl-scroll{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .pt-tbl{min-width:860px;}
+  .pt-tbl th{white-space:nowrap;}
+  .pt-tbl td{vertical-align:middle;}
+  .pt-tbl .addr{font-size:12.5px;color:var(--ink-soft);margin-top:2px;}
+  .type-tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--ink-soft);border:1px solid var(--app-line);border-radius:100px;padding:3px 10px;white-space:nowrap;}
+
+  /* editable-look cell inputs */
+  .cell-in{width:110px;max-width:100%;text-align:right;background:var(--panel);border:1px solid var(--app-line-soft);border-radius:var(--r);padding:9px 11px;font-family:var(--serif);font-size:16px;font-variant-numeric:tabular-nums;color:var(--ink);}
+  .cell-in:hover{border-color:var(--app-line);}
+  .cell-in:focus{outline:none;border-color:var(--teal);background:#fff;}
+  .calc{font-family:var(--serif);font-size:17px;font-variant-numeric:tabular-nums;font-weight:500;}
+  .calc.gold{color:var(--gold);}
+  .cf{font-family:var(--serif);font-size:17px;font-variant-numeric:tabular-nums;font-weight:500;}
+  .cf.up{color:var(--teal-deep);}
+  .cf.down{color:var(--alert);}
+
+  .pt-tbl tfoot td{border-top:2px solid var(--app-line);border-bottom:0;padding-top:16px;font-weight:600;}
+  .pt-tbl tfoot .tlabel{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;}
+  .pt-tbl tfoot .calc.gold{font-size:19px;}
+  .rownum{color:var(--ink-soft);font-size:12px;font-variant-numeric:tabular-nums;}
+
+  .add-row{display:flex;align-items:center;gap:10px;width:100%;justify-content:center;margin-top:2px;padding:14px;border:1px dashed var(--app-line);border-radius:var(--r);background:transparent;color:var(--ink-soft);font-family:var(--sans);font-weight:600;font-size:14px;letter-spacing:.02em;cursor:pointer;transition:border-color .2s,color .2s,background .2s;}
+  .add-row:hover{border-color:var(--gold);color:var(--gold);background:var(--card);}
+  .add-row .plus{font-family:var(--serif);font-size:18px;line-height:1;}
+
+  /* breakdown panel rows */
+  .bd-row{padding:14px 0;border-bottom:1px solid var(--app-line-soft);}
+  .bd-row:last-child{border-bottom:0;}
+  .bd-top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:9px;}
+  .bd-top .lab{font-size:13.5px;font-weight:500;color:var(--ink-1);}
+  .bd-top .val{font-family:var(--serif);font-size:15px;font-variant-numeric:tabular-nums;color:var(--ink-soft);}
+  .bd-top .val b{color:var(--ink);font-weight:600;}
+  .lower-grid{display:grid;grid-template-columns:1.6fr 1fr;gap:22px;align-items:start;}
+
+  .mini-stat{display:flex;align-items:baseline;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--app-line-soft);}
+  .mini-stat:last-child{border-bottom:0;}
+  .mini-stat .mk{font-size:13px;color:var(--ink-soft);}
+  .mini-stat .mv{font-family:var(--serif);font-size:18px;font-variant-numeric:tabular-nums;font-weight:500;}
+  .mini-stat .mv.gold{color:var(--gold);}
+
+  .disc{font-size:11.5px;line-height:1.55;color:var(--ink-soft);max-width:76ch;margin-top:6px;}
+  .disc b{color:var(--ink-1);font-weight:600;}
+
+  @media(max-width:980px){
+    .lower-grid{grid-template-columns:1fr;gap:18px;}
+    .tool-bar .inner{height:auto;padding:11px 0;flex-wrap:wrap;gap:12px;}
+  }
+  @media(max-width:560px){
+    .pt-head .toprow{align-items:flex-start;}
+    .tool-actions{width:100%;}
+    .tool-actions .btn{flex:1;justify-content:center;min-height:44px;}
+    .tool-actions .lbl-hide{display:none;}
+    .btn-sm{min-height:44px;}
+    .add-row{min-height:52px;}
+    .cell-in{width:96px;font-size:16px;min-height:44px;}
+  }
+</style>
+
+<header class="tool-bar">
+  <div class="wrap inner">
+    <div class="crumb">
+      <img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+      <span class="cdiv"></span>
+      <span class="trail">Investor Suite <span class="sep">/</span> <span class="here">Portfolio Tracker</span></span>
+    </div>
+    <div class="tool-actions">
+      <button class="btn btn-ghost btn-sm">Share link</button>
+      <button class="btn btn-ghost btn-sm">Export</button>
+      <button class="btn btn-gold btn-sm"><span class="plus" style="font-family:var(--serif);font-size:16px">+</span> Add property</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap pt-head">
+    <div class="toprow">
+      <div>
+        <p class="eyebrow">Investor Suite <span style="color:var(--ink);opacity:.35">/</span> Portfolio Tracker</p>
+        <h1>Portfolio Tracker</h1>
+        <p class="tag">Every rental in one ledger &mdash; value, debt, equity and cash flow across the whole book, kept current as you edit.</p>
+        <div class="chips">
+          <span class="chip">5 properties</span>
+          <span class="chip">Rental / DSCR</span>
+          <span class="chip">Illustrative sample</span>
+        </div>
+      </div>
+      <span class="asof">As of 13 Jul 2026</span>
+    </div>
+  </div>
+
+  <div class="wrap pt-grid">
+    <!-- ============ PORTFOLIO KPI SUMMARY ============ -->
+    <section class="kpi-grid">
+      <div class="kpi feature">
+        <div class="v num"><span class="u">$</span>791,000</div>
+        <div class="k">Net worth &middot; &Sigma; equity</div>
+        <div class="est-flag">Illustrative</div>
+      </div>
+      <div class="kpi">
+        <div class="v num"><span class="u">$</span>2,672,000</div>
+        <div class="k">Total value</div>
+        <div class="est-flag">Illustrative</div>
+      </div>
+      <div class="kpi">
+        <div class="v num"><span class="u">$</span>1,881,000</div>
+        <div class="k">Total debt</div>
+        <div class="est-flag">Illustrative</div>
+      </div>
+      <div class="kpi">
+        <div class="v num">70.4<span class="u">%</span></div>
+        <div class="k">Portfolio LTV</div>
+        <div class="est-flag">Illustrative</div>
+      </div>
+      <div class="kpi">
+        <div class="v num">8.4<span class="u">%</span></div>
+        <div class="k">Cash-on-cash</div>
+        <div class="est-flag">Illustrative</div>
+      </div>
+      <div class="kpi">
+        <div class="v num">1.34<span class="u">x</span></div>
+        <div class="k">Blended DSCR</div>
+        <div class="est-flag">Illustrative</div>
+      </div>
+      <div class="kpi">
+        <div class="v num"><span class="u">$</span>6,375<span class="u" style="font-size:.5em">/mo</span></div>
+        <div class="k">Monthly cash flow</div>
+        <div class="est-flag">Illustrative</div>
+      </div>
+    </section>
+
+    <!-- ============ PROPERTY TABLE ============ -->
+    <section class="panel">
+      <div class="panel-h">
+        <h3>Properties</h3>
+        <div class="h-actions">
+          <span class="eyebrow" style="color:var(--ink-soft)">Editable</span>
+        </div>
+      </div>
+      <div class="panel-b" style="padding:12px 16px 18px">
+        <div class="tbl-scroll">
+          <table class="tbl pt-tbl">
+            <thead>
+              <tr>
+                <th style="width:26px">#</th>
+                <th>Property</th>
+                <th>Type</th>
+                <th class="num">Value</th>
+                <th class="num">Mortgage</th>
+                <th class="num">Equity</th>
+                <th class="num">Rent</th>
+                <th class="num">Payment</th>
+                <th class="num">Cash flow</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="rownum">1</td>
+                <td><div class="lead">Maple Grove Rental</div><div class="addr">1420 Maple Grove Ln, Austin, TX</div></td>
+                <td><span class="type-tag">Single-family</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$465,000" aria-label="Value"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$312,000" aria-label="Mortgage"></td>
+                <td class="num"><span class="calc gold">$153,000</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$3,150" aria-label="Rent"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$2,180" aria-label="Payment"></td>
+                <td class="num"><span class="cf up">+$970</span></td>
+              </tr>
+              <tr>
+                <td class="rownum">2</td>
+                <td><div class="lead">Harborview Duplex</div><div class="addr">88 Harborview Ct, Tampa, FL</div></td>
+                <td><span class="type-tag">Duplex</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$612,000" aria-label="Value"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$438,000" aria-label="Mortgage"></td>
+                <td class="num"><span class="calc gold">$174,000</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$4,600" aria-label="Rent"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$3,020" aria-label="Payment"></td>
+                <td class="num"><span class="cf up">+$1,580</span></td>
+              </tr>
+              <tr>
+                <td class="rownum">3</td>
+                <td><div class="lead">Cedar Hollow SFR</div><div class="addr">305 Cedar Hollow Rd, Charlotte, NC</div></td>
+                <td><span class="type-tag">Single-family</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$358,000" aria-label="Value"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$241,000" aria-label="Mortgage"></td>
+                <td class="num"><span class="calc gold">$117,000</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$2,475" aria-label="Rent"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$1,690" aria-label="Payment"></td>
+                <td class="num"><span class="cf up">+$785</span></td>
+              </tr>
+              <tr>
+                <td class="rownum">4</td>
+                <td><div class="lead">Ironwood 4-Plex</div><div class="addr">2210 Ironwood Ave, Columbus, OH</div></td>
+                <td><span class="type-tag">4-unit</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$845,000" aria-label="Value"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$604,000" aria-label="Mortgage"></td>
+                <td class="num"><span class="calc gold">$241,000</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$6,850" aria-label="Rent"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$4,560" aria-label="Payment"></td>
+                <td class="num"><span class="cf up">+$2,290</span></td>
+              </tr>
+              <tr>
+                <td class="rownum">5</td>
+                <td><div class="lead">Wren Street BRRRR</div><div class="addr">74 Wren St, Boise, ID</div></td>
+                <td><span class="type-tag">Single-family</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$392,000" aria-label="Value"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$286,000" aria-label="Mortgage"></td>
+                <td class="num"><span class="calc gold">$106,000</span></td>
+                <td class="num"><input class="cell-in num" type="text" value="$2,690" aria-label="Rent"></td>
+                <td class="num"><input class="cell-in num" type="text" value="$1,940" aria-label="Payment"></td>
+                <td class="num"><span class="cf up">+$750</span></td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr>
+                <td></td>
+                <td class="tlabel">Portfolio total</td>
+                <td class="tlabel">5 properties</td>
+                <td class="num"><span class="calc">$2,672,000</span></td>
+                <td class="num"><span class="calc">$1,881,000</span></td>
+                <td class="num"><span class="calc gold">$791,000</span></td>
+                <td class="num"><span class="calc">$19,765</span></td>
+                <td class="num"><span class="calc">$13,390</span></td>
+                <td class="num"><span class="cf up" style="font-size:19px">+$6,375</span></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <button class="add-row" type="button"><span class="plus">+</span> Add property</button>
+      </div>
+    </section>
+
+    <!-- ============ LOWER: BREAKDOWN + SNAPSHOT ============ -->
+    <div class="lower-grid">
+      <section class="panel">
+        <div class="panel-h"><h3>Equity by property</h3><span class="eyebrow" style="color:var(--ink-soft)">Share of $791k</span></div>
+        <div class="panel-b">
+          <div class="bd-row">
+            <div class="bd-top"><span class="lab">Ironwood 4-Plex</span><span class="val"><b>$241,000</b> &middot; 30%</span></div>
+            <div class="prog-bar"><i style="width:30%"></i></div>
+          </div>
+          <div class="bd-row">
+            <div class="bd-top"><span class="lab">Harborview Duplex</span><span class="val"><b>$174,000</b> &middot; 22%</span></div>
+            <div class="prog-bar"><i style="width:22%"></i></div>
+          </div>
+          <div class="bd-row">
+            <div class="bd-top"><span class="lab">Maple Grove Rental</span><span class="val"><b>$153,000</b> &middot; 19%</span></div>
+            <div class="prog-bar"><i style="width:19%"></i></div>
+          </div>
+          <div class="bd-row">
+            <div class="bd-top"><span class="lab">Cedar Hollow SFR</span><span class="val"><b>$117,000</b> &middot; 15%</span></div>
+            <div class="prog-bar"><i style="width:15%"></i></div>
+          </div>
+          <div class="bd-row">
+            <div class="bd-top"><span class="lab">Wren Street BRRRR</span><span class="val"><b>$106,000</b> &middot; 14%</span></div>
+            <div class="prog-bar"><i style="width:14%"></i></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><h3>Snapshot</h3><span class="pill ok">Cash-flow positive</span></div>
+        <div class="panel-b">
+          <div class="mini-stat"><span class="mk">Annual cash flow</span><span class="mv gold">$76,500</span></div>
+          <div class="mini-stat"><span class="mk">Gross monthly rent</span><span class="mv">$19,765</span></div>
+          <div class="mini-stat"><span class="mk">Monthly debt service</span><span class="mv">$13,390</span></div>
+          <div class="mini-stat"><span class="mk">Equity share of value</span><span class="mv">29.6%</span></div>
+          <div class="mini-stat"><span class="mk">Units under management</span><span class="mv">8</span></div>
+        </div>
+      </section>
+    </div>
+
+    <p class="disc"><b>For tracking &amp; education only.</b> Values, balances and cash-flow figures are self-entered and illustrative; they are estimates, not appraisals, statements of account, or a quote, approval, or commitment to lend, nor financial, legal or tax advice. Properties and figures shown are fictitious samples. Verify balances with your servicer and value with a licensed appraisal.</p>
+  </div>
+</main>
+
+<footer class="site-foot" style="margin-top:40px">
+  <div class="wrap">
+    <div class="foot-legal" style="border-top:1px solid rgba(255,255,255,.12);padding-top:26px">
+      <p>Business-purpose, investment (non-owner-occupied) properties. Portfolio metrics are estimates from self-entered figures and are for tracking and educational use only &mdash; not a commitment to lend. &copy; 2026 YS Capital Group. NMLS ID 2609746.</p>
+      <div class="foot-badges">
+        <span class="chip">NMLS 2609746</span>
+        <span class="chip">Equal Housing Lender</span>
+      </div>
+    </div>
+  </div>
+</footer>

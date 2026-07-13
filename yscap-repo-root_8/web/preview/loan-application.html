@@ -1,0 +1,437 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* ---- tool top bar (lighter than marketing nav) ---- */
+  .tool-bar{position:sticky;top:0;z-index:50;background:rgba(251,249,243,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line-soft);}
+  .tool-bar .inner{display:flex;align-items:center;justify-content:space-between;height:60px;gap:24px;}
+  .crumb{display:flex;align-items:center;gap:12px;min-width:0;}
+  .crumb .logo-nav{height:34px;}
+  .crumb .cdiv{width:1px;height:24px;background:var(--line);flex:none;}
+  .crumb .trail{font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .crumb .trail .sep{opacity:.4;padding:0 .5em;}
+  .crumb .trail .here{color:var(--ink);}
+  .tool-actions{display:flex;align-items:center;gap:8px;flex:none;}
+  .tool-actions .saved{font-size:12px;font-weight:600;color:var(--teal);display:flex;align-items:center;gap:6px;margin-right:6px;white-space:nowrap;}
+  .tool-actions .saved::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--teal);}
+
+  /* ---- page header ---- */
+  .la-head{padding:34px 0 8px;}
+  .la-head h1{font-size:clamp(30px,4vw,46px);margin:.1em 0 .16em;}
+  .la-head .tag{font-family:var(--serif);font-style:italic;font-size:18px;color:var(--ink-soft);max-width:56ch;}
+
+  /* ---- step progress ---- */
+  .stepper{padding:22px 0 8px;}
+  .stepper .meta{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;}
+  .stepper .meta .lbl{font-size:12px;letter-spacing:.16em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .stepper .meta .pct{font-size:12px;font-weight:600;color:var(--teal);letter-spacing:.02em;}
+  .steps{display:flex;gap:20px;list-style:none;margin:0;padding:0;}
+  .step{flex:1;display:flex;flex-direction:column;gap:12px;min-width:0;}
+  .step .bar{height:3px;border-radius:2px;background:var(--line-soft);}
+  .step.done .bar,.step.now .bar{background:var(--gold);}
+  .step .row{display:flex;align-items:center;gap:12px;min-width:0;}
+  .step .num{width:30px;height:30px;border-radius:50%;border:1.5px solid var(--line);background:var(--card);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:var(--ink-soft);flex:none;font-variant-numeric:tabular-nums;}
+  .step.done .num{background:var(--teal);border-color:var(--teal);color:#fff;}
+  .step.now .num{background:var(--ink);border-color:var(--ink);color:var(--paper);}
+  .step .lab{min-width:0;}
+  .step .lab .t{font-weight:600;font-size:14.5px;color:var(--ink-soft);line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .step.done .lab .t,.step.now .lab .t{color:var(--ink);}
+  .step .lab .s{font-size:11.5px;color:var(--ink-soft);margin-top:2px;}
+
+  /* ---- working grid ---- */
+  .la-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:40px;align-items:start;padding:26px 0 16px;}
+  .form-col{display:flex;flex-direction:column;gap:18px;}
+
+  /* wizard cards */
+  .wz{background:var(--panel);border:1px solid var(--app-line);border-radius:var(--r);overflow:hidden;}
+  .wz.now{border-top:2px solid var(--gold);}
+  .wz-h{display:flex;align-items:center;gap:14px;padding:16px 22px;border-bottom:1px solid var(--app-line-soft);}
+  .wz.collapsed .wz-h{border-bottom:0;}
+  .wz-n{width:28px;height:28px;border-radius:50%;border:1.5px solid var(--line);background:var(--card);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:var(--ink-soft);flex:none;}
+  .wz.done .wz-n{background:var(--teal);border-color:var(--teal);color:#fff;}
+  .wz.now .wz-n{background:var(--ink);border-color:var(--ink);color:var(--paper);}
+  .wz-h .tt{display:flex;flex-direction:column;gap:2px;min-width:0;}
+  .wz-h .tt h3{font-size:18px;}
+  .wz-h .tt .k{font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .wz-h .end{margin-left:auto;display:flex;align-items:center;gap:12px;flex:none;}
+  .wz-b{padding:20px 22px 22px;}
+
+  /* completed summary */
+  .sum-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 28px;}
+  .sum{display:flex;flex-direction:column;gap:3px;padding:11px 0;border-bottom:1px solid var(--app-line-soft);}
+  .sum .k{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .sum .v{font-size:14.5px;font-weight:500;}
+  .sum.span2{grid-column:1 / -1;}
+
+  /* form */
+  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;}
+  .form-grid .field{margin-bottom:16px;}
+  .form-grid .span2{grid-column:1 / -1;}
+  .field .hint{font-size:11px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--ink-soft);opacity:.8;}
+  .grp{margin-bottom:20px;}
+  .grp > .glab{font-size:11px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--gold);margin-bottom:12px;display:block;}
+  select.input{appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%234B585C' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:36px;cursor:pointer;}
+  textarea.input{resize:vertical;min-height:88px;line-height:1.5;}
+
+  /* segmented pill control */
+  .seg{display:flex;gap:8px;flex-wrap:wrap;}
+  .seg .opt{border:1px solid var(--line);background:var(--card);border-radius:100px;padding:10px 16px;font-family:var(--sans);font-weight:600;font-size:13.5px;color:var(--ink-soft);cursor:pointer;transition:background .15s,color .15s,border-color .15s;min-height:44px;}
+  .seg .opt:hover{border-color:var(--ink);}
+  .seg .opt.on{background:var(--ink);color:var(--paper);border-color:var(--ink);}
+  .seg.sm .opt{padding:8px 15px;font-size:13px;}
+
+  /* actions */
+  .wz-actions{display:flex;align-items:center;gap:12px;padding-top:4px;}
+  .wz-actions .grow{flex:1;}
+  .wz-actions .btn{min-height:48px;}
+
+  /* legal callout */
+  .legal{border:1px solid var(--line);background:var(--card);border-radius:var(--r);padding:16px 18px;display:flex;gap:13px;align-items:flex-start;}
+  .legal .ic{width:18px;height:18px;flex:none;margin-top:2px;color:var(--gold);}
+  .legal p{font-size:12px;line-height:1.55;color:var(--ink-soft);}
+  .legal p b{color:var(--ink-1);font-weight:600;}
+
+  /* upcoming preview */
+  .up-list{list-style:none;margin:0;padding:0;}
+  .up-list li{display:flex;align-items:center;gap:11px;font-size:14px;color:var(--ink-soft);padding:9px 0;border-bottom:1px solid var(--app-line-soft);}
+  .up-list li:last-child{border-bottom:0;}
+  .up-list li::before{content:"";width:16px;height:16px;border-radius:4px;border:1.5px solid var(--line);flex:none;}
+  .consent{display:flex;gap:12px;align-items:flex-start;padding:12px 0;}
+  .consent .box{width:20px;height:20px;border-radius:5px;border:1.5px solid var(--line);flex:none;margin-top:1px;background:var(--card);}
+  .consent .box.on{background:var(--teal);border-color:var(--teal);}
+  .consent p{font-size:12.5px;line-height:1.5;color:var(--ink-soft);}
+
+  /* ---- sticky snapshot rail ---- */
+  .out-col{position:sticky;top:78px;display:flex;flex-direction:column;gap:16px;}
+  .snap .ts-prop .dt{color:var(--teal);font-weight:600;}
+  .snap-note{font-size:11.5px;line-height:1.5;color:var(--ink-soft);text-align:center;}
+  .snap-note b{color:var(--ink-1);font-weight:600;}
+  .rail-kpi{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--app-line-soft);border:1px solid var(--app-line-soft);border-radius:var(--r);overflow:hidden;}
+  .rail-kpi .kpi{padding:16px 18px;}
+  .rail-kpi .kpi .v{font-size:24px;}
+  .rail-kpi .kpi .k{margin-top:6px;}
+
+  @media(max-width:980px){
+    .la-grid{grid-template-columns:1fr;gap:26px;padding-top:20px;}
+    .out-col{position:static;top:auto;order:-1;}
+    .tool-bar .inner{height:auto;padding:11px 0;flex-wrap:wrap;gap:10px;}
+    .steps{gap:12px;}
+    .step .lab .s{display:none;}
+  }
+  @media(max-width:560px){
+    .form-grid,.sum-grid{grid-template-columns:1fr;}
+    .rail-kpi{grid-template-columns:1fr;}
+    .input,select.input,textarea.input{font-size:16px;}
+    .step .lab .t{font-size:12.5px;}
+    .step .num{width:26px;height:26px;font-size:12px;}
+    .wz-actions{flex-direction:column-reverse;align-items:stretch;}
+    .wz-actions .btn{width:100%;justify-content:center;}
+    .tool-actions .lbl-hide{display:none;}
+  }
+</style>
+
+<header class="tool-bar">
+  <div class="wrap inner">
+    <div class="crumb">
+      <img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+      <span class="cdiv"></span>
+      <span class="trail">Investor Suite <span class="sep">/</span> <span class="here">Loan Application</span></span>
+    </div>
+    <div class="tool-actions">
+      <span class="saved lbl-hide">Saved &middot; 2 min ago</span>
+      <button class="btn btn-ghost btn-sm">Save</button>
+      <button class="btn btn-ghost btn-sm">Share</button>
+      <button class="btn btn-ghost btn-sm">Help</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap la-head">
+    <p class="eyebrow">Investor Suite <span style="color:var(--ink);opacity:.35">/</span> Residential Transition Loan</p>
+    <h1>Loan Application</h1>
+    <p class="tag">A guided application for Fix &amp; Flip, Fix &amp; Hold, Bridge and Ground-Up financing &mdash; a few minutes, saved as you go.</p>
+  </div>
+
+  <!-- ============ STEP PROGRESS ============ -->
+  <div class="wrap stepper">
+    <div class="meta">
+      <span class="lbl">Step 2 of 3</span>
+      <span class="pct">Property &amp; project</span>
+    </div>
+    <ol class="steps">
+      <li class="step done">
+        <span class="bar"></span>
+        <div class="row">
+          <span class="num">&#10003;</span>
+          <span class="lab"><span class="t">Borrower(s)</span><span class="s">Sponsor &amp; contact details</span></span>
+        </div>
+      </li>
+      <li class="step now">
+        <span class="bar"></span>
+        <div class="row">
+          <span class="num">2</span>
+          <span class="lab"><span class="t">Property &amp; project</span><span class="s">Deal, budget &amp; experience</span></span>
+        </div>
+      </li>
+      <li class="step next">
+        <span class="bar"></span>
+        <div class="row">
+          <span class="num">3</span>
+          <span class="lab"><span class="t">Review &amp; submit</span><span class="s">Confirm &amp; consent</span></span>
+        </div>
+      </li>
+    </ol>
+  </div>
+
+  <!-- ============ WORKING GRID ============ -->
+  <div class="wrap la-grid">
+
+    <!-- LEFT: step forms -->
+    <div class="form-col">
+
+      <!-- STEP 1 — completed -->
+      <section class="wz done">
+        <div class="wz-h">
+          <span class="wz-n">&#10003;</span>
+          <div class="tt"><span class="k">Step 01</span><h3>Borrower(s)</h3></div>
+          <div class="end"><span class="pill ok">Completed</span><a class="link-u" style="font-size:13px">Edit</a></div>
+        </div>
+        <div class="wz-b">
+          <div class="sum-grid">
+            <div class="sum"><span class="k">Loan officer</span><span class="v">Daniel Roth</span></div>
+            <div class="sum"><span class="k">Sponsor</span><span class="v">Michael A. Stern</span></div>
+            <div class="sum"><span class="k">Date of birth</span><span class="v num">04 / 18 / 1985</span></div>
+            <div class="sum"><span class="k">SSN</span><span class="v num">&bull;&bull;&bull;&ndash;&bull;&bull;&ndash;4821</span></div>
+            <div class="sum"><span class="k">Citizenship</span><span class="v">U.S. Citizen</span></div>
+            <div class="sum"><span class="k">Ownership</span><span class="v num">100%</span></div>
+            <div class="sum"><span class="k">Phone</span><span class="v num">(609) 555&ndash;0142</span></div>
+            <div class="sum"><span class="k">Email</span><span class="v">m.stern@sterncap.com</span></div>
+            <div class="sum span2"><span class="k">Mailing address</span><span class="v">44 Riverside Dr, Princeton, NJ 08540</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 2 — active -->
+      <section class="wz now">
+        <div class="wz-h">
+          <span class="wz-n">2</span>
+          <div class="tt"><span class="k">Step 02 &middot; In progress</span><h3>Property &amp; project</h3></div>
+          <div class="end"><span class="pill info">Editing</span></div>
+        </div>
+        <div class="wz-b">
+
+          <!-- deal & rehab type -->
+          <div class="grp">
+            <span class="glab">Deal type</span>
+            <div class="seg">
+              <button type="button" class="opt on">Fix &amp; Flip</button>
+              <button type="button" class="opt">Fix &amp; Hold</button>
+              <button type="button" class="opt">Bridge</button>
+              <button type="button" class="opt">Ground-Up</button>
+            </div>
+          </div>
+
+          <div class="grp">
+            <span class="glab">Rehab type</span>
+            <div class="seg sm">
+              <button type="button" class="opt">Light</button>
+              <button type="button" class="opt on">Moderate</button>
+              <button type="button" class="opt">Heavy</button>
+              <button type="button" class="opt">Gut / full</button>
+            </div>
+          </div>
+
+          <!-- entity & subject -->
+          <div class="grp">
+            <span class="glab">Vesting &amp; subject property</span>
+            <div class="form-grid">
+              <div class="field">
+                <label>Loan purpose</label>
+                <select class="input">
+                  <option>Purchase + rehab</option>
+                  <option>Refinance + rehab</option>
+                  <option>Delayed purchase</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Vesting entity (LLC)</label>
+                <input class="input" type="text" value="Stern Capital Holdings LLC">
+              </div>
+              <div class="field span2">
+                <label>Subject property address</label>
+                <input class="input" type="text" value="128 Maple Ave, Trenton, NJ 08611">
+              </div>
+              <div class="field">
+                <label>Property type</label>
+                <select class="input">
+                  <option>Single-family (SFR)</option>
+                  <option>2&ndash;4 unit</option>
+                  <option>Condominium</option>
+                  <option>Townhome</option>
+                  <option>Mixed-use</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Units</label>
+                <input class="input num" type="text" inputmode="numeric" value="1">
+              </div>
+              <div class="field span2">
+                <label>Is this an assignment of contract?</label>
+                <div class="seg sm">
+                  <button type="button" class="opt">Yes</button>
+                  <button type="button" class="opt on">No</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- economics -->
+          <div class="grp">
+            <span class="glab">Project economics</span>
+            <div class="form-grid">
+              <div class="field">
+                <label>Purchase price</label>
+                <input class="input num" type="text" inputmode="numeric" value="$420,000">
+              </div>
+              <div class="field">
+                <label>As-is value</label>
+                <input class="input num" type="text" inputmode="numeric" value="$430,000">
+              </div>
+              <div class="field">
+                <label>After-repair value (ARV)</label>
+                <input class="input num" type="text" inputmode="numeric" value="$640,000">
+              </div>
+              <div class="field">
+                <label>Rehab budget</label>
+                <input class="input num" type="text" inputmode="numeric" value="$85,000">
+              </div>
+              <div class="field">
+                <label>Interest reserve</label>
+                <select class="input">
+                  <option>3 months</option>
+                  <option>6 months</option>
+                  <option>None</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Requested term</label>
+                <select class="input">
+                  <option>12 months</option>
+                  <option>18 months</option>
+                  <option>24 months</option>
+                </select>
+              </div>
+            </div>
+            <p class="field hint" style="margin:2px 0 0">Business-purpose, non-owner-occupied. Figures are self-reported and used for an indicative snapshot only.</p>
+          </div>
+
+          <!-- experience -->
+          <div class="grp">
+            <span class="glab">Experience &amp; credit</span>
+            <div class="form-grid">
+              <div class="field">
+                <label>Completed flips &middot; last 36 mo</label>
+                <input class="input num" type="text" inputmode="numeric" value="7">
+              </div>
+              <div class="field">
+                <label>Rentals currently owned</label>
+                <input class="input num" type="text" inputmode="numeric" value="4">
+              </div>
+              <div class="field span2">
+                <label>Estimated FICO</label>
+                <select class="input">
+                  <option>760+</option>
+                  <option>720&ndash;759</option>
+                  <option>680&ndash;719</option>
+                  <option>640&ndash;679</option>
+                </select>
+              </div>
+              <div class="field span2">
+                <label>Scope of work</label>
+                <textarea class="input">Full interior renovation: kitchen &amp; two baths, refinished flooring, HVAC replacement, roof repair, exterior paint and landscaping. Permitted work; GC engaged.</textarea>
+              </div>
+            </div>
+          </div>
+
+          <div class="wz-actions">
+            <button type="button" class="btn btn-ghost btn-lg">Back</button>
+            <span class="grow"></span>
+            <button type="button" class="btn btn-gold btn-lg">Continue</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- STEP 3 — upcoming -->
+      <section class="wz next collapsed">
+        <div class="wz-h">
+          <span class="wz-n">3</span>
+          <div class="tt"><span class="k">Step 03 &middot; Up next</span><h3>Review &amp; submit</h3></div>
+          <div class="end"><span class="pill mut">Locked</span></div>
+        </div>
+        <div class="wz-b" style="padding-top:16px">
+          <ul class="up-list">
+            <li>Review borrower &amp; property summary</li>
+            <li>Confirm indicative figures</li>
+          </ul>
+          <div class="consent">
+            <span class="box on"></span>
+            <p>I confirm the information provided is accurate and authorize YS Capital Group to review this inquiry. <b>This is an application inquiry only.</b></p>
+          </div>
+          <div class="consent">
+            <span class="box"></span>
+            <p>Optional: I consent to receive status updates by SMS. Message &amp; data rates may apply; reply STOP to opt out.</p>
+          </div>
+          <p class="field hint" style="margin-top:4px">Submit becomes available on this step.</p>
+        </div>
+      </section>
+
+      <!-- legal note -->
+      <div class="legal">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"></circle><path d="M12 8h.01M11 12h1v4h1" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        <p><b>This application is an inquiry, not an offer, approval, or commitment to lend.</b> Business-purpose financing only; all figures are indicative and subject to underwriting, appraisal, and final credit approval.</p>
+      </div>
+    </div>
+
+    <!-- RIGHT: sticky Deal Snapshot -->
+    <div class="out-col">
+      <aside class="ts snap">
+        <div class="ts-top">
+          <span class="t">Deal snapshot</span>
+          <span class="live">Indicative</span>
+        </div>
+        <div class="ts-body">
+          <p class="ts-prop"><span class="dt">Fix &amp; Flip</span> &middot; <b>128 Maple Ave, Trenton NJ</b></p>
+          <div class="ts-row"><span class="k">Purchase price</span><span class="v num">$420,000</span></div>
+          <div class="ts-row"><span class="k">Rehab budget</span><span class="v num">$85,000</span></div>
+          <div class="ts-row"><span class="k">After-repair value</span><span class="v num">$640,000</span></div>
+          <div class="ts-row big"><span class="k">Indicative loan amount</span><span class="v num acc">$431,250</span></div>
+          <div class="ts-row"><span class="k">Indicative rate</span><span class="v num">10.25%</span></div>
+          <div class="ts-row"><span class="k">Loan-to-cost (LTC)</span><span class="v num">85%</span></div>
+        </div>
+        <div class="ts-foot">
+          <span class="note">Indicative only &mdash; subject to underwriting.</span>
+          <a class="link-u" style="font-size:13px">Details</a>
+        </div>
+      </aside>
+
+      <div class="rail-kpi">
+        <div class="kpi"><div class="v num">75<span class="u">%</span></div><div class="k">ARV coverage</div></div>
+        <div class="kpi"><div class="v num">12<span class="u">mo</span></div><div class="k">Requested term</div></div>
+      </div>
+
+      <p class="snap-note"><b>All figures indicative.</b> Not a quote, approval, or commitment to lend. Final terms depend on full underwriting.</p>
+    </div>
+
+  </div>
+</main>
+
+<footer class="site-foot" style="margin-top:44px">
+  <div class="wrap">
+    <div class="foot-legal" style="border-top:0;padding-top:0">
+      <p>Business-purpose, investment (non-owner-occupied) loans only. This application is an inquiry, not an offer, approval, or commitment to lend. All figures are indicative and subject to underwriting, appraisal, and final credit approval. &copy; 2026 YS Capital Group. NMLS ID 2609746.</p>
+      <div class="foot-badges">
+        <span class="chip">NMLS 2609746</span>
+        <span class="chip">Equal Housing Lender</span>
+      </div>
+    </div>
+  </div>
+</footer>

@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Chat</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .chat{display:grid;grid-template-columns:322px 1fr 296px;gap:16px;height:calc(100vh - 160px);min-height:540px;}
+  .cpane{background:var(--panel);border:1px solid var(--app-line);border-radius:var(--r);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+
+  /* ---- LEFT: conversation list ---- */
+  .clist-h{padding:16px 16px 12px;border-bottom:1px solid var(--app-line-soft);}
+  .clist-h .row{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+  .clist-h h3{font-size:18px;}
+  .csearch{width:100%;background:var(--panel-2);border:1px solid var(--app-line-soft);border-radius:100px;padding:11px 16px;font-size:14px;color:var(--ink-soft);}
+  .cfilters{display:flex;gap:7px;padding:12px 16px;border-bottom:1px solid var(--app-line-soft);}
+  .cf{font-size:12px;font-weight:600;padding:6px 12px;border-radius:100px;border:1px solid var(--app-line);color:var(--ink-soft);background:var(--panel);cursor:pointer;}
+  .cf.on{background:var(--ink);border-color:var(--ink);color:var(--paper);}
+  .cf .ct{opacity:.6;margin-left:5px;font-variant-numeric:tabular-nums;}
+  .clist{overflow-y:auto;flex:1;min-height:0;}
+  .conv{display:flex;gap:12px;padding:14px 16px;border-bottom:1px solid var(--app-line-soft);cursor:pointer;transition:background .15s;min-height:44px;}
+  .conv:hover{background:var(--panel-2);}
+  .conv.on{background:var(--panel-2);box-shadow:inset 3px 0 0 var(--gold);}
+  .conv .av{position:relative;flex:none;}
+  .conv .chan{width:34px;height:34px;border-radius:8px;background:var(--info-bg);color:var(--teal-deep);display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;border:1px solid var(--app-line-soft);}
+  .conv .body{flex:1;min-width:0;}
+  .conv .top{display:flex;align-items:baseline;justify-content:space-between;gap:8px;}
+  .conv .nm{font-weight:600;font-size:14px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .conv .ts{font-size:11px;color:var(--ink-soft);flex:none;font-variant-numeric:tabular-nums;}
+  .conv .prev{font-size:13px;color:var(--ink-soft);line-height:1.4;margin-top:3px;display:flex;align-items:center;justify-content:space-between;gap:8px;}
+  .conv .prev .tx{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .conv.unread .nm,.conv.unread .prev .tx{color:var(--ink);font-weight:600;}
+  .conv .tag{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);margin-top:5px;display:inline-flex;align-items:center;gap:6px;}
+  .conv .tag .d{width:5px;height:5px;border-radius:50%;background:var(--gold);}
+  .conv .tag.int .d{background:var(--teal);}
+  .unpill{flex:none;min-width:20px;height:20px;padding:0 6px;border-radius:100px;background:var(--teal);color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;}
+
+  /* ---- CENTER: thread ---- */
+  .thread{min-width:0;}
+  .th-h{display:flex;align-items:center;gap:13px;padding:15px 20px;border-bottom:1px solid var(--app-line-soft);}
+  .th-h .who{flex:1;min-width:0;}
+  .th-h .who .nm{font-family:var(--serif);font-weight:500;font-size:19px;letter-spacing:-.01em;}
+  .th-h .who .sub{display:flex;align-items:center;gap:9px;margin-top:4px;flex-wrap:wrap;}
+  .th-h .who .on{font-size:12.5px;color:var(--ink-soft);}
+  .th-h .who .on b{color:var(--ink);font-weight:600;}
+  .th-back{display:none;flex:none;width:40px;height:40px;border-radius:8px;border:1px solid var(--app-line);background:var(--panel);color:var(--ink);align-items:center;justify-content:center;font-size:18px;cursor:pointer;}
+  .th-tools{display:flex;gap:8px;flex:none;}
+  .icbtn{width:40px;height:40px;border-radius:8px;border:1px solid var(--app-line);background:var(--panel);color:var(--ink-soft);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;}
+  .icbtn:hover{border-color:var(--ink);color:var(--ink);}
+
+  .msgs{flex:1;min-height:0;overflow-y:auto;padding:22px 20px;display:flex;flex-direction:column;gap:16px;background:var(--app);}
+  .daydot{align-self:center;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);background:var(--panel);border:1px solid var(--app-line-soft);border-radius:100px;padding:4px 13px;}
+  .msg{display:flex;gap:10px;max-width:76%;}
+  .msg .mono{width:30px;height:30px;font-size:11px;align-self:flex-end;}
+  .msg .stack{display:flex;flex-direction:column;gap:4px;min-width:0;}
+  .msg .who{font-size:11px;font-weight:700;letter-spacing:.02em;color:var(--ink-soft);}
+  .bubble{padding:11px 14px;font-size:14.5px;line-height:1.5;border-radius:13px;}
+  .msg.in .bubble{background:var(--panel);border:1px solid var(--app-line);border-bottom-left-radius:4px;color:var(--ink);}
+  .msg.out{margin-left:auto;flex-direction:row-reverse;}
+  .msg.out .stack{align-items:flex-end;}
+  .msg.out .bubble{background:rgba(47,127,134,.11);border:1px solid rgba(47,127,134,.26);border-bottom-right-radius:4px;color:var(--ink);}
+  .msg .time{font-size:10.5px;color:var(--ink-soft);font-variant-numeric:tabular-nums;}
+  .sys{align-self:center;display:inline-flex;align-items:center;gap:9px;font-size:12px;color:var(--ink-soft);background:var(--panel);border:1px solid var(--app-line-soft);border-radius:100px;padding:6px 14px;}
+  .sys .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);}
+  .sys b{color:var(--ink);font-weight:600;}
+
+  .composer{border-top:1px solid var(--app-line-soft);padding:12px 14px;display:flex;align-items:flex-end;gap:10px;background:var(--panel);}
+  .composer .attach{flex:none;width:44px;height:44px;border-radius:10px;border:1px solid var(--app-line);background:var(--panel);color:var(--ink-soft);font-size:19px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;}
+  .composer .attach:hover{border-color:var(--ink);color:var(--ink);}
+  .composer .box{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--panel-2);border:1px solid var(--app-line-soft);border-radius:12px;padding:6px 8px 6px 14px;}
+  .composer .box:focus-within{border-color:var(--teal);}
+  .composer textarea{border:0;background:transparent;resize:none;font-family:var(--sans);font-size:16px;line-height:1.5;color:var(--ink);padding:6px 0;min-height:24px;max-height:110px;outline:none;}
+  .composer textarea::placeholder{color:var(--ink-soft);}
+  .composer .send{flex:none;height:44px;padding:0 18px;}
+  .cnote{font-size:11px;color:var(--ink-soft);padding:0 8px;margin-top:2px;}
+
+  /* ---- RIGHT: context rail ---- */
+  .rail{padding:0;}
+  .rail .rh{padding:16px 18px 14px;border-bottom:1px solid var(--app-line-soft);}
+  .rail .rh h3{font-size:15px;}
+  .rail .rb{padding:16px 18px;overflow-y:auto;}
+  .rsec{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;opacity:.75;margin:18px 0 10px;}
+  .rsec:first-child{margin-top:0;}
+  .kv2{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--app-line-soft);font-size:13.5px;}
+  .kv2 .k{color:var(--ink-soft);}
+  .kv2 .v{font-weight:600;text-align:right;}
+  .kv2 .v.mono-fig{font-family:var(--serif);font-weight:500;}
+  .party{display:flex;align-items:center;gap:11px;padding:9px 0;}
+  .party .mono{width:32px;height:32px;font-size:12px;}
+  .party .pn{font-size:13.5px;font-weight:600;line-height:1.2;}
+  .party .pr{font-size:11.5px;color:var(--ink-soft);margin-top:2px;}
+  .party .rolechip{margin-left:auto;font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--teal-deep);}
+
+  @media(max-width:1180px){
+    .chat{grid-template-columns:300px 1fr;}
+    .rail{display:none;}
+  }
+  @media(max-width:820px){
+    .chat{grid-template-columns:1fr;height:calc(100vh - 132px);}
+    .chat-list{display:flex;}
+    .chat-thread{display:none;}
+    .chat.show-thread .chat-list{display:none;}
+    .chat.show-thread .chat-thread{display:flex;}
+    .th-back{display:inline-flex;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search loans, borrowers, LLCs…</div>
+    <div class="user-pill">
+      <button class="btn btn-gold btn-sm">+ New file</button>
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>Chat</h1>
+        <div class="sub">Borrower &amp; internal messaging · 4 unread across 3 threads</div>
+      </div>
+      <button class="btn btn-ghost btn-sm">New message</button>
+    </div>
+
+    <div class="chat">
+
+      <!-- ================= LEFT: CONVERSATION LIST ================= -->
+      <section class="cpane chat-list">
+        <div class="clist-h">
+          <div class="row">
+            <h3>Inbox</h3>
+            <span class="pill info">4 unread</span>
+          </div>
+          <div class="csearch">Search messages &amp; people…</div>
+        </div>
+        <div class="cfilters">
+          <button class="cf on">All <span class="ct">6</span></button>
+          <button class="cf">Borrowers <span class="ct">4</span></button>
+          <button class="cf">Internal <span class="ct">2</span></button>
+        </div>
+        <div class="clist">
+
+          <div class="conv on unread">
+            <div class="av"><span class="mono">MR</span></div>
+            <div class="body">
+              <div class="top"><span class="nm">Maple Ridge Holdings LLC</span><span class="ts">9:41a</span></div>
+              <div class="prev"><span class="tx">Talia: Uploaded the revised insurance binder.</span></div>
+              <div class="tag"><span class="d"></span>Borrower · 128 Vernon Ave</div>
+            </div>
+          </div>
+
+          <div class="conv unread">
+            <div class="av"><span class="chan">#</span></div>
+            <div class="body">
+              <div class="top"><span class="nm">#uw-desk</span><span class="ts">9:12a</span></div>
+              <div class="prev"><span class="tx">R. Stein: Cleared the appraisal condition on Summit.</span><span class="unpill">2</span></div>
+              <div class="tag int"><span class="d"></span>Internal channel</div>
+            </div>
+          </div>
+
+          <div class="conv unread">
+            <div class="av"><span class="mono">CH</span></div>
+            <div class="body">
+              <div class="top"><span class="nm">Cedar Hollow Capital LLC</span><span class="ts">8:57a</span></div>
+              <div class="prev"><span class="tx">Marcus: When can we schedule the appraisal?</span><span class="unpill">1</span></div>
+              <div class="tag"><span class="d"></span>Borrower · 44 Sycamore St</div>
+            </div>
+          </div>
+
+          <div class="conv">
+            <div class="av"><span class="chan">#</span></div>
+            <div class="body">
+              <div class="top"><span class="nm">#processing</span><span class="ts">Yest</span></div>
+              <div class="prev"><span class="tx">D. Feldman: Binder looks good — moving to CTC.</span></div>
+              <div class="tag int"><span class="d"></span>Internal channel</div>
+            </div>
+          </div>
+
+          <div class="conv">
+            <div class="av"><span class="mono">IV</span></div>
+            <div class="body">
+              <div class="top"><span class="nm">Ironbound Ventures LLC</span><span class="ts">Yest</span></div>
+              <div class="prev"><span class="tx">Priya: Thanks — I'll send the bank statements today.</span></div>
+              <div class="tag"><span class="d"></span>Borrower · 903 Ferry St</div>
+            </div>
+          </div>
+
+          <div class="conv unread">
+            <div class="av"><span class="mono">BH</span></div>
+            <div class="body">
+              <div class="top"><span class="nm">Blue Harbor Estates LLC</span><span class="ts">Mon</span></div>
+              <div class="prev"><span class="tx">Devin: Can you confirm the draw schedule?</span><span class="unpill">3</span></div>
+              <div class="tag"><span class="d"></span>Borrower · 250 Bergen Blvd</div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ================= CENTER: ACTIVE THREAD ================= -->
+      <section class="cpane thread chat-thread">
+        <div class="th-h">
+          <button class="th-back" aria-label="Back to inbox">‹</button>
+          <span class="mono">MR</span>
+          <div class="who">
+            <div class="nm">Maple Ridge Holdings LLC</div>
+            <div class="sub">
+              <span class="pill info">Processing</span>
+              <span class="on">on: <b>128 Vernon Ave, Newark NJ</b></span>
+            </div>
+          </div>
+          <div class="th-tools">
+            <button class="icbtn" aria-label="Open file">↗</button>
+            <button class="icbtn" aria-label="More">⋯</button>
+          </div>
+        </div>
+
+        <div class="msgs">
+          <span class="daydot">Today · Jul 13</span>
+
+          <div class="msg in">
+            <span class="mono">TW</span>
+            <div class="stack">
+              <span class="who">Talia Weiss · Borrower</span>
+              <div class="bubble">Hi — I just uploaded the revised insurance binder. Coverage is now $360k with YS Capital listed as mortgagee. Let me know if that works.</div>
+              <span class="time">9:12 AM</span>
+            </div>
+          </div>
+
+          <div class="sys"><span class="dot"></span>Condition cleared · <b>Insurance binder</b> by D. Feldman</div>
+
+          <div class="msg out">
+            <span class="mono">YB</span>
+            <div class="stack">
+              <span class="who">You</span>
+              <div class="bubble">Got it, thanks Talia. The binder looks good — coverage meets the program requirement and the mortgagee clause is correct. Marking that condition cleared.</div>
+              <span class="time">9:20 AM · Read</span>
+            </div>
+          </div>
+
+          <div class="msg in">
+            <span class="mono">TW</span>
+            <div class="stack">
+              <span class="who">Talia Weiss · Borrower</span>
+              <div class="bubble">Great, that's a relief. What's next on my end?</div>
+              <span class="time">9:24 AM</span>
+            </div>
+          </div>
+
+          <div class="msg out">
+            <span class="mono">YB</span>
+            <div class="stack">
+              <span class="who">You</span>
+              <div class="bubble">We're waiting on the appraisal — it's scheduled for Thursday morning. Once it's back, underwriting does a final review. Nothing needed from you right now.</div>
+              <span class="time">9:31 AM · Read</span>
+            </div>
+          </div>
+
+          <div class="sys"><span class="dot" style="background:var(--teal);"></span><b>R. Stein</b> (Underwriter) joined the conversation</div>
+
+          <div class="msg in">
+            <span class="mono">TW</span>
+            <div class="stack">
+              <span class="who">Talia Weiss · Borrower</span>
+              <div class="bubble">Perfect. One more thing — could closing be the following Monday instead of Friday? Traveling that week.</div>
+              <span class="time">9:41 AM</span>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="composer">
+          <button class="attach" aria-label="Attach file">+</button>
+          <div class="box">
+            <textarea rows="1" placeholder="Message Maple Ridge Holdings…"></textarea>
+            <div class="cnote">Visible to borrower &amp; assigned team · Enter to send</div>
+          </div>
+          <button class="btn btn-gold send">Send</button>
+        </div>
+      </section>
+
+      <!-- ================= RIGHT: CONTEXT RAIL ================= -->
+      <aside class="cpane rail">
+        <div class="rh"><h3>File summary</h3></div>
+        <div class="rb">
+          <div class="rsec">Deal</div>
+          <div class="kv2"><span class="k">Borrower</span><span class="v">Maple Ridge Holdings LLC</span></div>
+          <div class="kv2"><span class="k">Property</span><span class="v">128 Vernon Ave</span></div>
+          <div class="kv2"><span class="k">Program</span><span class="v">Fix &amp; Flip</span></div>
+          <div class="kv2"><span class="k">Loan amount</span><span class="v mono-fig">$345,000</span></div>
+          <div class="kv2"><span class="k">Status</span><span class="v"><span class="pill info">Processing</span></span></div>
+
+          <div class="rsec">Conditions</div>
+          <div class="kv2"><span class="k">Open</span><span class="v">6</span></div>
+          <div class="kv2"><span class="k">Cleared</span><span class="v">11</span></div>
+          <div style="margin-top:12px;"><div class="prog-bar"><i style="width:64%"></i></div></div>
+
+          <div class="rsec">Participants</div>
+          <div class="party">
+            <span class="mono">TW</span>
+            <div><div class="pn">Talia Weiss</div><div class="pr">Borrower · Guarantor</div></div>
+          </div>
+          <div class="party">
+            <span class="mono">YB</span>
+            <div><div class="pn">You</div><div class="pr">Loan officer</div></div>
+            <span class="rolechip">You</span>
+          </div>
+          <div class="party">
+            <span class="mono">DF</span>
+            <div><div class="pn">D. Feldman</div><div class="pr">Processor</div></div>
+          </div>
+          <div class="party">
+            <span class="mono">RS</span>
+            <div><div class="pn">R. Stein</div><div class="pr">Underwriter</div></div>
+          </div>
+        </div>
+      </aside>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>
