@@ -30,6 +30,7 @@ async function saveSnapshot(borrowerId, { html, filename, uploadedByKind, upload
     `UPDATE documents SET is_current=false, review_status='superseded'
       WHERE borrower_id=$1 AND doc_kind=$2 AND id<>$3 AND is_current`,
     [borrowerId, DOC_KIND, r.rows[0].id]);
+  try { require('./sharepoint-backup').kick(); } catch (_) { /* mirror is best-effort */ }
   return { documentId: r.rows[0].id, filename: name, updatedAt: r.rows[0].created_at };
 }
 

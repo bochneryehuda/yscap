@@ -1210,6 +1210,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     out.push({ id: r.rows[0].id, filename: a.filename });
   }
   await audit(req, 'staff_tool_submit', 'checklist_item', req.params.itemId, { toolKey, files: out.map((x) => x.filename) });
+  if (out.length) { try { require('../lib/sharepoint-backup').kick(); } catch (_) {} }
   const sowNotice = sowMismatch || (!goldSow.ok ? { gold: true, message: require('../lib/rehab-budget').GOLD_CONTINGENCY_MSG } : undefined);
   res.json({ ok: true, status: toolStatus || 'outstanding', mismatch: sowNotice, exports: out });
 });
@@ -1458,6 +1459,11 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
   try {
     const { zip, filename } = await require('../lib/tpr-export').buildTprExport(req.params.id);
     await audit(req, 'export_tpr', 'application', req.params.id, { bytes: zip.length });
+    // Owner-directed (2026-07-13): every export is also kept on the file and
+    // mirrored into SharePoint ("YS portal syncing/TPR Exports", versioned on
+    // re-export). Best-effort — a save failure never blocks the download.
+    try { await require('../lib/tpr-export').saveTprExportDocument(req.params.id, zip, filename, req.actor.id); }
+    catch (e2) { console.warn('[tpr-export] save-to-file failed:', e2.message); }
     res.set('Content-Type', 'application/zip');
     res.set('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(zip);
@@ -2512,6 +2518,7 @@ router.post('/track-records/:id/documents', async (req, res) => {
     [tr.rows[0].borrower_id, req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
   await audit(req, 'staff_upload_track_record_doc', 'track_record', req.params.id, { filename: b.filename });
+  try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 router.get('/borrowers/:id/ssn', async (req, res) => {
@@ -2634,6 +2641,7 @@ router.post('/llcs/:id/documents', async (req, res) => {
       await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`, [b.checklistItemId]);
       enqueueChecklistStatusPush(b.checklistItemId).catch(() => {});
     }
+    try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
     try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
     await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, llcId: req.params.id });
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
@@ -3695,6 +3703,7 @@ router.post('/applications/:id/documents', async (req, res) => {
   // vesting in the entity (all slots present → received; etc).
   if (llcId) { try { await llcLib.syncLlcConditions(llcId); } catch (_) { /* best-effort */ } }
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
+  try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 
