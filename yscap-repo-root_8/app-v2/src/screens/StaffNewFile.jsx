@@ -1,0 +1,453 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { api } from '../lib/api.js';
+import { useAuth } from '../lib/auth.jsx';
+import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
+import { MoneyInput } from '../components/FormattedInputs.jsx';
+
+/* Staff-side file origination. An admin, loan officer, or operations user opens
+   a mortgage file from their end — the borrower does NOT need to be signed up.
+   We match-or-create the borrower by email, create the application + checklist,
+   assign the team, and (optionally) invite the borrower to the portal for this
+   specific file right away. */
+
+const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground Up Construction', 'DSCR Rental', 'Not sure yet'];
+const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Ground up'];
+const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
+
+const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
+const needsSqft = (rehabType) => /square|adding|ground/i.test(rehabType || '');
+
+const numOrNull = (v) => (v === '' || v == null) ? null : Number(String(v).replace(/[^0-9.]/g, '')) || null;
+
+// This new-file form auto-saves as the officer types (no Save button): the
+// in-progress state is persisted to localStorage on every change and restored on
+// mount, so nothing typed is ever lost to a refresh or navigation. It is cleared
+// the moment the file is successfully created.
+const DRAFT_KEY = 'ys-staff-newfile-draft';
+function readNewFileDraft() {
+  try { const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); return (d && typeof d === 'object') ? d : null; }
+  catch (_) { return null; }
+}
+
+/* Optional co-borrower at file creation (#98). Internal-only borrower-name
+   typeahead (same guarded endpoint as elsewhere) so a co-borrower on record
+   links to the existing person instead of duplicating. Reports the resolved
+   payload up via onChange; renders nothing that reaches a borrower surface. */
+function CoBorrowerPicker({ value, onChange }) {
+  const [co, setCo] = useState(value || { firstName: '', lastName: '', email: '', phone: '', borrowerId: null });
+  const [matches, setMatches] = useState([]);
+  const [show, setShow] = useState(false);
+  const seq = useRef(0);
+  const box = useRef(null);
+
+  const push = (next) => { setCo(next); onChange(next); };
+  const setField = (k, v) => push({ ...co, [k]: v, ...(co.borrowerId ? { borrowerId: null } : {}) });
+
+  useEffect(() => {
+    if (co.borrowerId) { setMatches([]); return; }
+    const q = `${co.firstName} ${co.lastName}`.trim();
+    if (q.length < 2) { setMatches([]); setShow(false); return; }
+    const mine = ++seq.current;
+    const t = setTimeout(() => {
+      api.staffBorrowerSearch(q)
+        .then(rows => { if (mine === seq.current) { setMatches(rows || []); setShow(true); } })
+        .catch(() => { if (mine === seq.current) setMatches([]); });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [co.firstName, co.lastName, co.borrowerId]);
+
+  useEffect(() => {
+    function onDoc(e) { if (box.current && !box.current.contains(e.target)) setShow(false); }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  function pick(bo) {
+    push({ firstName: bo.first_name || co.firstName, lastName: bo.last_name || co.lastName,
+      email: bo.email || co.email, phone: bo.cell_phone || co.phone, borrowerId: bo.id });
+    setShow(false); setMatches([]);
+  }
+
+  return (
+    <>
+      <div className="grid cols-2">
+        <div className="field" ref={box} style={{ position: 'relative' }}>
+          <label>Co-borrower first name</label>
+          <input className="input" value={co.firstName} autoComplete="off"
+            onChange={e => setField('firstName', e.target.value)}
+            onFocus={() => { if (matches.length) setShow(true); }} />
+          {show && matches.length > 0 && (
+            <div className="addr-menu" role="listbox">
+              {matches.map(bo => {
+                const n = bo.prior_files || 0;
+                return (
+                  <div key={bo.id} role="option" className="addr-item"
+                    onMouseDown={e => { e.preventDefault(); pick(bo); }}>
+                    <span className="addr-pin">●</span>
+                    <span>
+                      <strong>{[bo.first_name, bo.last_name].filter(Boolean).join(' ') || '—'}</strong>
+                      {bo.email ? ' · ' + bo.email : ''}
+                      {' · ' + n + ' prior file' + (n === 1 ? '' : 's')}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <div className="field"><label>Co-borrower last name</label>
+          <input className="input" value={co.lastName} autoComplete="off" onChange={e => setField('lastName', e.target.value)} /></div>
+        <div className="field"><label>Co-borrower email</label>
+          <input className="input" type="email" value={co.email} onChange={e => setField('email', e.target.value)} placeholder="coborrower@email.com" /></div>
+        <div className="field"><label>Co-borrower cell phone</label>
+          <input className="input" value={co.phone} onChange={e => setField('phone', e.target.value)} placeholder="Optional" /></div>
+      </div>
+      {co.borrowerId && (
+        <p className="muted small" style={{ marginTop: 6 }}>
+          Linking to an existing borrower on record — no duplicate will be created.{' '}
+          <button type="button" className="btn link" style={{ padding: 0 }}
+            onClick={() => push({ ...co, borrowerId: null })}>Add as new instead</button>
+        </p>
+      )}
+      <p className="muted small" style={{ marginTop: 6 }}>
+        Both borrowers' experience counts toward the file; each keeps their own track record and government-ID condition.
+      </p>
+    </>
+  );
+}
+
+export default function StaffNewFile() {
+  const nav = useNavigate();
+  const { role } = useAuth();
+  const seesAll = ['admin', 'super_admin', 'underwriter'].includes(role);
+  const [team, setTeam] = useState([]);
+  const _d = readNewFileDraft();   // restore any in-progress draft (lazy, once, pre-persist)
+  const [f, setF] = useState({
+    firstName: '', lastName: '', email: '', phone: '',
+    program: '', loanType: '', propertyType: '', units: '',
+    purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
+    requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '',
+    loanOfficerId: '', processorId: '', inviteBorrower: true,
+    ...(_d && _d.f ? _d.f : {}),
+  });
+  const [addr, setAddr] = useState({ street: '', unit: '', city: '', state: '', zip: '', ...(_d && _d.addr ? _d.addr : {}) });
+  const [busy, setBusy] = useState(false);
+  // Synchronous re-entry guard: `disabled={busy}` alone can't stop a second
+  // Enter-submit or double-click landing before React re-renders, which would
+  // create TWO loan files. A ref flips instantly, before the first await.
+  const submittingRef = useRef(false);
+  const [err, setErr] = useState('');
+  const [savedAt, setSavedAt] = useState(_d ? true : false);
+
+  // Borrower-name typeahead: match prior borrowers so a new file links to the
+  // existing record (no duplicate) and known contact info pre-fills. `borrowerId`
+  // holds the linked borrower; any manual edit to a borrower field unlinks it.
+  const [matches, setMatches] = useState([]);
+  const [showMatches, setShowMatches] = useState(false);
+  const [borrowerId, setBorrowerId] = useState(_d && _d.borrowerId ? _d.borrowerId : null);
+  const searchSeq = useRef(0);
+  const nameBox = useRef(null);
+  // Optional co-borrower added right at creation (#98).
+  const [addCo, setAddCo] = useState(_d && _d.addCo ? true : false);
+  const [co, setCo] = useState(_d && _d.co ? _d.co : { firstName: '', lastName: '', email: '', phone: '', borrowerId: null });
+
+  useEffect(() => { api.staffTeam().then(setTeam).catch(() => {}); }, []);
+
+  // Auto-save the in-progress form to localStorage on every change (no Save
+  // button). Restored on mount via the lazy initializers above.
+  useEffect(() => {
+    try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ f, addr, borrowerId, addCo, co })); setSavedAt(true); } catch (_) {}
+  }, [f, addr, borrowerId, addCo, co]);
+
+  // Debounced search on the borrower's name (first + last combined). Once a
+  // borrower is linked we stop searching until the staffer edits the name again.
+  useEffect(() => {
+    if (borrowerId) { setMatches([]); return; }
+    const q = `${f.firstName} ${f.lastName}`.trim();
+    if (q.length < 2) { setMatches([]); setShowMatches(false); return; }
+    const mine = ++searchSeq.current;
+    const t = setTimeout(() => {
+      api.staffBorrowerSearch(q)
+        .then(rows => { if (mine === searchSeq.current) { setMatches(rows || []); setShowMatches(true); } })
+        // Degrade gracefully: on any failure just show no dropdown (plain input).
+        .catch(() => { if (mine === searchSeq.current) setMatches([]); });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [f.firstName, f.lastName, borrowerId]);
+
+  // Close the dropdown on an outside click (matches AddressAutocomplete).
+  useEffect(() => {
+    function onDoc(e) { if (nameBox.current && !nameBox.current.contains(e.target)) setShowMatches(false); }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  // Borrower identity fields: a manual edit unlinks any picked borrower so the
+  // name search re-enables and the file won't force-link the wrong record.
+  const setBorrowerField = (k, v) => { if (borrowerId) setBorrowerId(null); setF(s => ({ ...s, [k]: v })); };
+  function pickBorrower(bo) {
+    setF(s => ({
+      ...s,
+      firstName: bo.first_name || s.firstName,
+      lastName: bo.last_name || s.lastName,
+      email: bo.email || s.email,
+      phone: bo.cell_phone || s.phone,
+    }));
+    setBorrowerId(bo.id);
+    setShowMatches(false);
+    setMatches([]);
+  }
+  const setA = (k, v) => setAddr(s => ({ ...s, [k]: v }));
+  const pickAddr = (a) => setAddr(s => ({
+    ...s, street: a.line1 || s.street, unit: a.unit || s.unit,
+    city: a.city || s.city, state: a.state || s.state, zip: a.zip || s.zip,
+  }));
+
+  const officers = team.filter(m => ['loan_officer', 'admin', 'super_admin'].includes(m.role));
+  const processors = team.filter(m => m.role === 'processor');
+
+  function buildAddress() {
+    const oneLine = [
+      [addr.street, addr.unit].filter(Boolean).join(' '),
+      addr.city,
+      [addr.state, addr.zip].filter(Boolean).join(' '),
+    ].filter(Boolean).join(', ');
+    return { line1: addr.street || '', street: addr.street || '', unit: addr.unit || '',
+             city: addr.city || '', state: addr.state || '', zip: addr.zip || '', oneLine };
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr('');
+    if (!f.firstName.trim()) return setErr('Borrower first name is required.');
+    if (!f.email.trim()) return setErr('Borrower email is required.');
+    if (!addr.street.trim() && !addr.city.trim()) return setErr('Enter the property address.');
+    if (submittingRef.current) return;      // a second submit is already creating the file
+    submittingRef.current = true;
+    setBusy(true);
+    try {
+      const body = {
+        borrower: { firstName: f.firstName.trim(), lastName: f.lastName.trim(), email: f.email.trim(), phone: f.phone.trim() || undefined },
+        // Link to the picked prior borrower; the backend also match-or-creates by
+        // email (the auto-filled address), so either way no duplicate is created.
+        borrowerId: borrowerId || undefined,
+        propertyAddress: buildAddress(),
+        propertyType: f.propertyType || undefined,
+        units: f.units ? Number(f.units) : undefined,
+        program: f.program || undefined,
+        loanType: f.loanType || undefined,
+        purchasePrice: numOrNull(f.purchasePrice),
+        asIsValue: numOrNull(f.asIsValue),
+        arv: numOrNull(f.arv),
+        rehabBudget: numOrNull(f.rehabBudget),
+        rehabType: f.rehabType || undefined,
+        sqftPre: f.sqftPre ? Number(f.sqftPre) : undefined,
+        sqftPost: f.sqftPost ? Number(f.sqftPost) : undefined,
+        requestedExpFlips: f.requestedExpFlips ? Number(f.requestedExpFlips) : 0,
+        requestedExpHolds: f.requestedExpHolds ? Number(f.requestedExpHolds) : 0,
+        requestedExpGround: f.requestedExpGround ? Number(f.requestedExpGround) : 0,
+        loanOfficerId: f.loanOfficerId || undefined,
+        processorId: f.processorId || undefined,
+        inviteBorrower: !!f.inviteBorrower,
+      };
+      // Co-borrower at creation (#98): send only when the section is open and has
+      // an existing link or at least a name/email. The backend match-or-creates.
+      if (addCo && (co.borrowerId || co.firstName.trim() || co.email.trim())) {
+        body.coBorrower = {
+          borrowerId: co.borrowerId || undefined,
+          firstName: co.firstName.trim() || undefined,
+          lastName: co.lastName.trim() || undefined,
+          email: co.email.trim() || undefined,
+          phone: co.phone.trim() || undefined,
+        };
+      }
+      const r = await api.staffCreateFile(body);
+      if (r && r.coBorrowerWarning) console.warn('[new-file] co-borrower:', r.coBorrowerWarning);
+      try { localStorage.removeItem(DRAFT_KEY); } catch (_) {}   // draft consumed — file created
+      nav(`/internal/app/${r.applicationId}`);
+    } catch (e2) {
+      setErr(e2.message || 'Could not create the file.');
+      setBusy(false);
+      submittingRef.current = false;        // let them retry after a real failure
+    }
+  }
+
+  return (
+    <>
+      <div className="row" style={{ marginBottom: 16 }}>
+        <Link to="/internal" className="btn link">← Pipeline</Link>
+        <div className="spacer" />
+        {savedAt && <span className="savechip"><span className="dot done" />Draft saved — nothing you type is lost</span>}
+      </div>
+      <h1 style={{ marginBottom: 4 }}>New loan file</h1>
+      <p className="muted small" style={{ marginBottom: 18 }}>
+        Open a file from your side — the borrower doesn't need an account. You can invite them
+        to this file at any time; once they join they'll see everything and can message you.
+      </p>
+
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+
+      <form onSubmit={submit}>
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 12 }}>Borrower</h3>
+          <div className="grid cols-2">
+            <div className="field" ref={nameBox} style={{ position: 'relative' }}>
+              <label>First name *</label>
+              <input className="input" value={f.firstName} autoComplete="off"
+                onChange={e => setBorrowerField('firstName', e.target.value)}
+                onFocus={() => { if (matches.length) setShowMatches(true); }} required />
+              {showMatches && matches.length > 0 && (
+                <div className="addr-menu" role="listbox">
+                  {matches.map(bo => {
+                    const n = bo.prior_files || 0;
+                    return (
+                      <div key={bo.id} role="option" className="addr-item"
+                        onMouseDown={e => { e.preventDefault(); pickBorrower(bo); }}>
+                        <span className="addr-pin">●</span>
+                        <span>
+                          <strong>{[bo.first_name, bo.last_name].filter(Boolean).join(' ') || '—'}</strong>
+                          {bo.email ? ' · ' + bo.email : ''}
+                          {' · ' + n + ' prior file' + (n === 1 ? '' : 's')}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="field"><label>Last name</label>
+              <input className="input" value={f.lastName} autoComplete="off" onChange={e => setBorrowerField('lastName', e.target.value)} /></div>
+            <div className="field"><label>Email *</label>
+              <input className="input" type="email" value={f.email} onChange={e => setBorrowerField('email', e.target.value)} required
+                placeholder="borrower@email.com" /></div>
+            <div className="field"><label>Cell phone</label>
+              <input className="input" value={f.phone} onChange={e => setBorrowerField('phone', e.target.value)} placeholder="Optional" /></div>
+          </div>
+          {borrowerId && (
+            <p className="muted small" style={{ marginTop: 6 }}>
+              Linking to an existing borrower — this file won't create a duplicate.{' '}
+              <button type="button" className="btn link" style={{ padding: 0 }}
+                onClick={() => setBorrowerId(null)}>Create as new instead</button>
+            </p>
+          )}
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', marginTop: 4 }}>
+            <input type="checkbox" checked={f.inviteBorrower} onChange={e => set('inviteBorrower', e.target.checked)} />
+            <span>Email the borrower an invite to join this file now</span>
+          </label>
+          <p className="muted small" style={{ marginTop: 6 }}>
+            If unchecked, you can invite them later from the file. Nothing is sent to them until you do.
+          </p>
+
+          {!addCo ? (
+            <button type="button" className="btn ghost small" style={{ marginTop: 10 }} onClick={() => setAddCo(true)}>
+              + Add a co-borrower
+            </button>
+          ) : (
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+              <div className="row" style={{ alignItems: 'center', marginBottom: 8 }}>
+                <h4 style={{ margin: 0 }}>Co-borrower</h4>
+                <div className="spacer" />
+                <button type="button" className="btn link small"
+                  onClick={() => { setAddCo(false); setCo({ firstName: '', lastName: '', email: '', phone: '', borrowerId: null }); }}>
+                  Remove
+                </button>
+              </div>
+              <CoBorrowerPicker value={co} onChange={setCo} />
+            </div>
+          )}
+        </div>
+
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 12 }}>Property</h3>
+          <div className="field"><label>Street address</label>
+            <AddressAutocomplete value={addr.street} onChange={v => setA('street', v)} onPick={pickAddr}
+              placeholder="Start typing the property address…" /></div>
+          <div className="grid cols-2">
+            <div className="field"><label>Unit / Apt</label>
+              <input className="input" value={addr.unit} onChange={e => setA('unit', e.target.value)} placeholder="Optional" /></div>
+            <div className="field"><label>City</label>
+              <input className="input" value={addr.city} onChange={e => setA('city', e.target.value)} /></div>
+            <div className="field"><label>State</label>
+              <input className="input" maxLength={2} value={addr.state} onChange={e => setA('state', e.target.value.toUpperCase())} placeholder="NY" /></div>
+            <div className="field"><label>ZIP</label>
+              <input className="input" value={addr.zip} onChange={e => setA('zip', e.target.value)} /></div>
+          </div>
+          <div className="grid cols-2">
+            <div className="field"><label>Property type</label>
+              <select className="input" value={f.propertyType} onChange={e => set('propertyType', e.target.value)}>
+                <option value="">Select…</option>{PROP_TYPES.map(p => <option key={p}>{p}</option>)}
+              </select></div>
+            <div className="field"><label>Units</label>
+              <input className="input" type="number" min="1" value={f.units} onChange={e => set('units', e.target.value)} /></div>
+          </div>
+        </div>
+
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 12 }}>Loan</h3>
+          <div className="grid cols-2">
+            <div className="field"><label>Program</label>
+              <select className="input" value={f.program} onChange={e => set('program', e.target.value)}>
+                <option value="">Select…</option>{PROGRAMS.map(p => <option key={p}>{p}</option>)}
+              </select></div>
+            <div className="field"><label>Loan type</label>
+              <select className="input" value={f.loanType} onChange={e => set('loanType', e.target.value)}>
+                <option value="">Select…</option>{LOAN_TYPES.map(p => <option key={p}>{p}</option>)}
+              </select></div>
+            <div className="field"><label>Purchase price</label>
+              <MoneyInput value={f.purchasePrice} onChange={v => set('purchasePrice', v)} /></div>
+            <div className="field"><label>As-is value</label>
+              <MoneyInput value={f.asIsValue} onChange={v => set('asIsValue', v)} /></div>
+            <div className="field"><label>ARV</label>
+              <MoneyInput value={f.arv} onChange={v => set('arv', v)} /></div>
+            <div className="field"><label>Rehab budget</label>
+              <MoneyInput value={f.rehabBudget} onChange={v => set('rehabBudget', v)} /></div>
+            <div className="field"><label>Rehab type</label>
+              <select className="input" value={f.rehabType} onChange={e => set('rehabType', e.target.value)}>
+                <option value="">Select...</option>{REHAB_TYPES.map(x => <option key={x}>{x}</option>)}
+              </select></div>
+            {needsSqft(f.rehabType) && <>
+              <div className="field"><label>Existing sq ft</label>
+                <input className="input" type="number" min="0" value={f.sqftPre} onChange={e => set('sqftPre', e.target.value)} /></div>
+              <div className="field"><label>Completed sq ft</label>
+                <input className="input" type="number" min="0" value={f.sqftPost} onChange={e => set('sqftPost', e.target.value)} /></div>
+            </>}
+          </div>
+          <h3 style={{ margin: '12px 0 8px' }}>Experience used for this request</h3>
+          <div className="grid cols-3">
+            <div className="field"><label>Fix &amp; flip deals</label>
+              <input className="input" type="number" min="0" value={f.requestedExpFlips} onChange={e => set('requestedExpFlips', e.target.value)} /></div>
+            <div className="field"><label>Fix &amp; hold deals</label>
+              <input className="input" type="number" min="0" value={f.requestedExpHolds} onChange={e => set('requestedExpHolds', e.target.value)} /></div>
+            <div className="field"><label>Ground-up deals</label>
+              <input className="input" type="number" min="0" value={f.requestedExpGround} onChange={e => set('requestedExpGround', e.target.value)} /></div>
+          </div>
+          <p className="muted small">Final pricing and leverage are confirmed against program guidelines — these figures start the file.</p>
+        </div>
+
+        <div className="panel" style={{ marginBottom: 16 }}>
+          <h3 style={{ marginBottom: 12 }}>Assignment</h3>
+          <div className="grid cols-2">
+            <div className="field"><label>Loan officer</label>
+              <select className="input" value={f.loanOfficerId} onChange={e => set('loanOfficerId', e.target.value)}>
+                <option value="">{seesAll ? '— Lead Capture (unassigned) —' : 'Me'}</option>
+                {officers.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
+              </select></div>
+            <div className="field"><label>Processor</label>
+              <select className="input" value={f.processorId} onChange={e => set('processorId', e.target.value)}>
+                <option value="">— none yet —</option>
+                {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+              </select></div>
+          </div>
+          {!seesAll && <p className="muted small">Left unassigned, this file lands on your pipeline.</p>}
+        </div>
+
+        <div className="row" style={{ gap: 10 }}>
+          <button className="btn primary" disabled={busy}>{busy ? 'Creating…' : 'Create file'}</button>
+          <Link to="/internal" className="btn ghost">Cancel</Link>
+        </div>
+      </form>
+    </>
+  );
+}
