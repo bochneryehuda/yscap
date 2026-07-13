@@ -24,90 +24,279 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../suite.css?v=pilot1">
+<style>
+/* =====================================================================
+   YS Equity Compare — blueprint chrome (self-contained, ds.css-derived).
+   Design tokens are namespaced --ds-* so they never collide with suite.css
+   (which uses --ink as a near-white surface and --ivory as dark text).
+   Calculator logic + every bound id/name is untouched; this is chrome only.
+   ===================================================================== */
+:root{
+  --ds-paper:#F4F0E7; --ds-paper-2:#EDE6D7; --ds-card:#FBF9F3;
+  --ds-ink:#141B22; --ds-ink-1:#1D2830; --ds-ink-soft:#4B585C;
+  --ds-gold:#AE8746; --ds-teal:#2F7F86; --ds-teal-deep:#1F5A60;
+  --ds-line:rgba(20,27,34,.16); --ds-line-soft:rgba(20,27,34,.08);
+  --ds-ok:#2E7A5E; --ds-serif:'Fraunces',Georgia,serif; --ds-sans:'Hanken Grotesk',system-ui,sans-serif;
+  --ds-maxw:1180px; --ds-r:8px;
+}
+:root[data-theme="light"] body{ background:var(--ds-paper); color:var(--ds-ink); }
+/* Hard visibility guard: beat suite.css's light-theme h1/h2/h3 -> --ivory rule
+   so headings are never near-white on the ivory page. */
+:root[data-theme="light"] .an-head h1,
+:root[data-theme="light"] .panel-h h2{ color:var(--ds-ink); }
+
+/* ---- tool top bar ---- */
+.tool-bar{ position:sticky; top:0; z-index:50; background:rgba(251,249,243,.92); backdrop-filter:blur(8px); border-bottom:1px solid var(--ds-line-soft); }
+.tool-bar .inner{ display:flex; align-items:center; justify-content:space-between; height:62px; gap:24px; max-width:var(--ds-maxw); margin:0 auto; padding:0 40px; }
+.tool-bar .crumb{ display:flex; align-items:center; gap:13px; min-width:0; }
+.tool-bar .logo-nav{ height:32px; width:auto; }
+.tool-bar .cdiv{ width:1px; height:24px; background:var(--ds-line); flex:none; }
+.tool-bar .trail{ display:flex; align-items:center; font-size:13px; font-weight:600; letter-spacing:.02em; color:var(--ds-ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tool-bar .trail a{ color:var(--ds-ink-soft); }
+.tool-bar .trail .sep{ opacity:.4; padding:0 .55em; }
+.tool-bar .trail .here{ color:var(--ds-ink); }
+.tool-bar .tool-actions{ display:flex; align-items:center; gap:10px; flex:none; }
+.tool-bar .back{ font-size:13px; font-weight:600; color:var(--ds-ink-soft); }
+.tb-under{ position:relative; }
+.tb-under::after{ content:""; position:absolute; left:0; bottom:-3px; height:1.5px; width:100%; background:var(--ds-gold); transform:scaleX(0); transform-origin:left; transition:transform .28s cubic-bezier(.22,.61,.36,1); }
+.tb-under:hover::after{ transform:scaleX(1); }
+
+/* ---- page header / hero ---- */
+.an-head{ max-width:var(--ds-maxw); padding:46px 40px 26px; }
+.an-head .suite-eyebrow{ margin-bottom:.6rem; }
+.an-head h1{ font-size:clamp(32px,4.5vw,50px); letter-spacing:-.012em; margin:.12em 0 .18em; }
+.an-head h1 em{ font-style:italic; color:var(--ds-teal); position:relative; }
+.an-head h1 em::after{ content:""; position:absolute; left:0; right:0; bottom:-.04em; height:2px; background:var(--ds-gold); transform-origin:left; }
+.an-head .tool-tagline{ margin-top:.55rem; }
+.an-head .tool-intro{ margin-top:.9rem; max-width:64ch; }
+.an-head .chips{ display:flex; gap:10px; flex-wrap:wrap; margin-top:20px; }
+.an-head .fill-hint{ margin-top:16px; }
+.chips .chip{ display:inline-flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; letter-spacing:.02em; color:var(--ds-ink); background:var(--ds-card); border:1px solid var(--ds-line); border-radius:100px; padding:7px 14px; transition:border-color .2s, transform .2s; }
+.chips .chip:hover{ border-color:var(--ds-gold); transform:translateY(-1px); }
+
+/* ---- working grid ---- */
+.analyzer{ display:grid; grid-template-columns:1.04fr .96fr; gap:38px; align-items:start; max-width:var(--ds-maxw); margin:0 auto; padding:6px 40px 20px; }
+.form-col{ display:flex; flex-direction:column; gap:20px; }
+.form-col .panel{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:var(--ds-r); padding:0; margin:0; overflow:hidden; transition:border-color .25s, box-shadow .25s; }
+.form-col .panel:hover{ border-color:rgba(20,27,34,.26); box-shadow:0 12px 30px -26px rgba(22,32,29,.5); }
+.panel-h{ display:flex; align-items:center; justify-content:space-between; gap:14px; padding:15px 20px; border-bottom:1px solid var(--ds-line-soft); }
+.panel-h h2{ font-size:17px; margin:0; display:flex; align-items:center; gap:11px; color:var(--ds-ink); font-family:var(--ds-serif); font-weight:500; }
+.panel-num{ width:24px; height:24px; flex:0 0 auto; border-radius:50%; border:0; background:var(--ds-ink); color:#fff; font-family:var(--ds-sans); font-weight:700; font-size:12px; display:inline-flex; align-items:center; justify-content:center; }
+.ptag{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); opacity:.72; white-space:nowrap; }
+.panel-b{ padding:18px 20px 6px; }
+.form-col .panel-b .panel-note{ color:var(--ds-ink-soft); font-size:13px; margin:-2px 0 14px; }
+.form-col .subhead{ font-size:11px; letter-spacing:.08em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); margin:6px 0 12px; }
+.form-col .subhead em{ color:var(--ds-ink-soft); }
+.form-col .mini-hint{ font-size:11.5px; line-height:1.5; color:var(--ds-ink-soft); opacity:.9; margin:8px 0 4px; }
+.form-grid{ display:grid; grid-template-columns:1fr 1fr; gap:0 18px; }
+.form-grid .field{ margin-bottom:14px; }
+.form-grid .span2{ grid-column:1 / -1; }
+.form-col .field label{ font-size:11px; letter-spacing:.06em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); }
+.form-col .field label em{ font-style:normal; text-transform:none; letter-spacing:0; color:var(--ds-ink-soft); opacity:.6; font-weight:600; font-size:.85em; }
+.form-col .input{ border-radius:8px; background:#fff; border-color:var(--ds-line); }
+.form-col .input:focus-within{ border-color:var(--ds-teal); box-shadow:0 0 0 3px rgba(47,127,134,.12); }
+.form-col .input input{ color:var(--ds-ink); }
+.form-col .input .adorn{ color:var(--ds-ink-soft); }
+
+/* ---- sticky output ---- */
+.out-col{ position:sticky; top:80px; display:flex; flex-direction:column; gap:18px; }
+.result-card{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:var(--ds-r); overflow:hidden; box-shadow:0 1px 2px rgba(22,32,29,.04), 0 18px 40px -28px rgba(22,32,29,.4); }
+.result-top{ display:flex; align-items:center; justify-content:space-between; padding:14px 22px; border-bottom:1px solid var(--ds-line-soft); }
+.result-top .t{ font-size:11px; letter-spacing:.2em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); }
+.result-top .est{ font-size:11px; font-weight:700; color:var(--ds-teal); letter-spacing:.12em; text-transform:uppercase; display:inline-flex; align-items:center; gap:6px; }
+.result-top .est::before{ content:""; width:6px; height:6px; border-radius:50%; background:var(--ds-teal); animation:ds-pulse 2s ease-in-out infinite; }
+
+/* better-option hero */
+.result-card .result-hero{ border:0; border-radius:0; background:none; margin:0; padding:20px 22px; display:flex; align-items:flex-end; justify-content:space-between; gap:18px; }
+.result-card .rh-label{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); }
+.result-card .rh-value{ font-family:var(--ds-serif); font-weight:500; font-size:clamp(23px,3.2vw,29px); line-height:1.15; letter-spacing:-.01em; color:var(--ds-teal); margin-top:8px; }
+.result-card .rh-sub{ font-size:13px; color:var(--ds-ink-soft); margin-top:8px; }
+.verdict-col{ display:flex; flex-direction:column; align-items:flex-end; gap:10px; flex:none; }
+.verdict-col .verdict{ margin-top:0; }
+
+/* side-by-side compare */
+.vs{ display:grid; grid-template-columns:1fr 1fr; position:relative; border-top:1px solid var(--ds-line-soft); }
+.vs .opt{ padding:18px 20px; }
+.vs .opt:first-child{ border-right:1px solid var(--ds-line-soft); }
+.vs .oname{ font-size:11px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); }
+.vs .oname .lead{ color:var(--ds-gold); }
+.vs .opay{ font-family:var(--ds-serif); font-weight:500; font-variant-numeric:tabular-nums; font-size:clamp(28px,4.2vw,34px); letter-spacing:-.02em; line-height:1; margin-top:10px; color:var(--ds-ink); }
+.vs .oper{ font-size:12px; color:var(--ds-ink-soft); font-weight:500; margin-top:6px; }
+.vs .obl{ display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-top:14px; padding-top:11px; border-top:1px solid var(--ds-line-soft); }
+.vs .obl .bk{ font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ds-ink-soft); font-weight:700; }
+.vs .obl .bv{ font-family:var(--ds-serif); font-weight:500; font-variant-numeric:tabular-nums; font-size:17px; color:var(--ds-ink); }
+.vs .vsbadge{ position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:32px; height:32px; border-radius:50%; background:var(--ds-ink); color:#fff; display:flex; align-items:center; justify-content:center; font-family:var(--ds-serif); font-style:italic; font-size:12px; border:2px solid var(--ds-card); }
+
+.an-actions{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; padding:14px 22px 18px; border-top:1px solid var(--ds-line-soft); }
+.an-actions .btn{ width:100%; justify-content:center; }
+
+/* breakdown tiles */
+.out-col .result-grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:1px; }
+.result-grid .result{ transition:transform .2s ease, box-shadow .2s ease; }
+.result-grid .result:hover{ transform:translateY(-2px); box-shadow:0 10px 24px -16px rgba(22,32,29,.4); }
+
+/* ---- polish: pulse, underline draw, below-fold one-way reveal ---- */
+@keyframes ds-pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.32; } }
+@keyframes ds-reveal{ from{ opacity:0; transform:translateY(18px); } to{ opacity:1; transform:none; } }
+@keyframes ds-draw{ from{ transform:scaleX(0); } to{ transform:scaleX(1); } }
+.an-head h1 em::after{ transform:scaleX(0); }
+@media (prefers-reduced-motion: no-preference){
+  .an-head h1 em::after{ animation:ds-draw .7s .35s cubic-bezier(.22,.61,.36,1) forwards; }
+  @supports (animation-timeline: view()){
+    .reveal{ animation:ds-reveal linear both; animation-timeline:view(); animation-range:entry 4% cover 30%; }
+  }
+}
+@media (prefers-reduced-motion: reduce){
+  .result-top .est::before{ animation:none; }
+  .an-head h1 em::after{ transform:scaleX(1); }
+}
+
+/* ---- responsive ---- */
+@media(max-width:980px){
+  .tool-bar .inner{ padding:0 24px; }
+  .an-head{ padding:32px 24px 22px; }
+  .analyzer{ grid-template-columns:1fr; gap:30px; padding:6px 24px 20px; }
+  .out-col{ position:static; top:auto; }
+}
+@media(max-width:560px){
+  .tool-bar .inner{ height:auto; padding:12px 20px; flex-wrap:wrap; gap:12px; }
+  .form-grid{ grid-template-columns:1fr; }
+  .an-actions{ grid-template-columns:1fr; }
+  .out-col .result-grid{ grid-template-columns:1fr; }
+  .result-card .result-hero{ flex-direction:column; align-items:flex-start; }
+  .verdict-col{ align-items:flex-start; }
+  .vs .opt:first-child{ border-right:0; border-bottom:1px solid var(--ds-line-soft); }
+}
+</style>
 </head>
 <body>
-
-<header class="topbar">
-    <div class="topbar-inner">
-        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
-        <span class="topbar-sep"></span>
-        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Equity Compare</span></div>
-        <div class="topbar-actions">
-            <a class="back" href="../suite.html">← All tools</a>
-            <button class="btn btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
-            <button class="btn btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
-            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
+<header class="tool-bar">
+    <div class="inner">
+        <div class="crumb">
+            <a class="topbar-brand" href="../index.html"><img class="logo-nav" src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+            <span class="cdiv"></span>
+            <span class="trail"><a class="tb-under" href="../suite.html">Investor Suite</a><span class="sep">/</span><span class="here">Equity Compare</span></span>
+        </div>
+        <div class="tool-actions">
+            <a class="back tb-under" href="../suite.html">← All tools</a>
+            <button class="btn btn-sm btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
+            <button class="btn btn-sm btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
+            <a class="btn btn-sm btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
         </div>
     </div>
 </header>
 
 <main>
-<section class="tool-hero">
+<section class="tool-hero an-head">
     <div class="suite-eyebrow">Equity strategy</div>
-    <h1>YS Equity Compare<span class="tm">™</span></h1>
+    <h1>Keep &amp; add, or <em>cash-out refinance?</em></h1>
     <p class="tool-tagline">The tool serious investors say YES to.</p>
-    <p class="tool-intro">Two ways to pull equity: keep your current loan and stack a second mortgage or interest-only HELOC, or replace everything with a full cash-out refinance. See the true monthly cost of each — so you don't guess, you know.</p>
+    <p class="tool-intro">Compare keeping your low-rate first mortgage and layering a HELOC or second against replacing everything with a single cash-out refinance — monthly payment, blended rate, and the difference, side by side.</p>
+    <div class="chips">
+        <span class="chip">Second vs. refi</span>
+        <span class="chip">No credit pull</span>
+        <span class="chip">Estimates only</span>
+    </div>
     <span class="fill-hint"><span class="swatch"></span> Fill the input fields — every result updates automatically.</span>
 </section>
 
-<div class="tool-grid">
-    <div class="inputs-col">
-        <div class="panel">
-            <h2><span class="panel-num">A</span> Keep current + add equity</h2>
-            <div class="subhead">Current first mortgage</div>
-            <div class="field-rows two-col">
-                <div class="field"><label for="o1amt">Balance</label><div class="input"><span class="adorn">$</span><input id="o1amt" type="number" value="400000"></div></div>
-                <div class="field"><label for="o1rate">Rate <em>(%)</em></label><div class="input"><input id="o1rate" type="number" value="6.5"><span class="adorn suffix">%</span></div></div>
-                <div class="field"><label for="o1term">Term <em>(years)</em></label><div class="input"><input id="o1term" type="number" value="30"></div></div>
+<div class="analyzer">
+    <!-- ============ LEFT: INPUTS ============ -->
+    <div class="inputs-col form-col">
+        <section class="panel">
+            <div class="panel-h"><h2><span class="panel-num">A</span> First mortgage</h2><span class="ptag">Keep in place</span></div>
+            <div class="panel-b">
+                <div class="form-grid">
+                    <div class="field"><label for="o1amt">Current balance</label><div class="input"><span class="adorn">$</span><input id="o1amt" type="number" value="400000"></div></div>
+                    <div class="field"><label for="o1rate">Rate <em>(%)</em></label><div class="input"><input id="o1rate" type="number" value="6.5"><span class="adorn suffix">%</span></div></div>
+                    <div class="field span2"><label for="o1term">Remaining term <em>(years)</em></label><div class="input"><input id="o1term" type="number" value="30"></div></div>
+                </div>
+                <p class="mini-hint">The low-rate loan you keep in the &ldquo;keep &amp; add&rdquo; scenario.</p>
             </div>
-            <div class="subhead">Second loan — fully amortized <em style="font-weight:400;text-transform:none;letter-spacing:0">(leave blank if using HELOC below)</em></div>
-            <div class="field-rows two-col">
-                <div class="field"><label for="o2amt">Amount</label><div class="input"><span class="adorn">$</span><input id="o2amt" type="number" value="100000"></div></div>
-                <div class="field"><label for="o2rate">Rate <em>(%)</em></label><div class="input"><input id="o2rate" type="number" value="9.5"><span class="adorn suffix">%</span></div></div>
-                <div class="field"><label for="o2term">Term <em>(years)</em></label><div class="input"><input id="o2term" type="number" value="30"></div></div>
-            </div>
-            <div class="subhead">Interest-only loan / HELOC <em style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</em></div>
-            <div class="field-rows two-col">
-                <div class="field"><label for="ioamt">Amount</label><div class="input"><span class="adorn">$</span><input id="ioamt" type="number" value="0"></div></div>
-                <div class="field"><label for="iorate">Rate <em>(%)</em></label><div class="input"><input id="iorate" type="number" value="12"><span class="adorn suffix">%</span></div></div>
-            </div>
-        </div>
+        </section>
 
-        <div class="panel">
-            <h2><span class="panel-num">B</span> Cash-out refinance</h2>
-            <p class="panel-note">A single new loan that replaces everything above.</p>
-            <div class="field-rows two-col">
-                <div class="field"><label for="coamt">New loan amount</label><div class="input"><span class="adorn">$</span><input id="coamt" type="number" value="500000"></div></div>
-                <div class="field"><label for="corate">Rate <em>(%)</em></label><div class="input"><input id="corate" type="number" value="7.5"><span class="adorn suffix">%</span></div></div>
-                <div class="field"><label for="coterm">Term <em>(years)</em></label><div class="input"><input id="coterm" type="number" value="30"></div></div>
+        <section class="panel">
+            <div class="panel-h"><h2><span class="panel-num">B</span> Second / HELOC</h2><span class="ptag">New junior lien</span></div>
+            <div class="panel-b">
+                <div class="subhead">Second loan — fully amortized <em style="font-weight:400;text-transform:none;letter-spacing:0">(leave blank if using HELOC below)</em></div>
+                <div class="form-grid">
+                    <div class="field"><label for="o2amt">Amount</label><div class="input"><span class="adorn">$</span><input id="o2amt" type="number" value="100000"></div></div>
+                    <div class="field"><label for="o2rate">Rate <em>(%)</em></label><div class="input"><input id="o2rate" type="number" value="9.5"><span class="adorn suffix">%</span></div></div>
+                    <div class="field span2"><label for="o2term">Term <em>(years)</em></label><div class="input"><input id="o2term" type="number" value="30"></div></div>
+                </div>
+                <div class="subhead">Interest-only loan / HELOC <em style="font-weight:400;text-transform:none;letter-spacing:0">(optional)</em></div>
+                <div class="form-grid">
+                    <div class="field"><label for="ioamt">Amount</label><div class="input"><span class="adorn">$</span><input id="ioamt" type="number" value="0"></div></div>
+                    <div class="field"><label for="iorate">Rate <em>(%)</em></label><div class="input"><input id="iorate" type="number" value="12"><span class="adorn suffix">%</span></div></div>
+                </div>
             </div>
-        </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-h"><h2><span class="panel-num">C</span> Cash-out refinance</h2><span class="ptag">Replaces first</span></div>
+            <div class="panel-b">
+                <p class="panel-note">A single new loan that replaces everything above.</p>
+                <div class="form-grid">
+                    <div class="field"><label for="coamt">New loan amount</label><div class="input"><span class="adorn">$</span><input id="coamt" type="number" value="500000"></div></div>
+                    <div class="field"><label for="corate">Rate <em>(%)</em></label><div class="input"><input id="corate" type="number" value="7.5"><span class="adorn suffix">%</span></div></div>
+                    <div class="field span2"><label for="coterm">Term <em>(years)</em></label><div class="input"><input id="coterm" type="number" value="30"></div></div>
+                </div>
+            </div>
+        </section>
     </div>
 
-    <div class="results-col">
-        <div class="result-hero">
-            <div class="rh-label">Better option</div>
-            <div class="rh-value tealed" id="betterName" style="font-size:1.9rem;line-height:1.2">Keep current + add equity</div>
-            <div class="rh-sub" id="betterSub">$127 / month cheaper</div>
-            <span class="verdict good" id="betterVerdict">Lower monthly cost</span>
-        </div>
+    <!-- ============ RIGHT: RESULTS (sticky) ============ -->
+    <div class="results-col out-col">
+        <aside class="result-card">
+            <div class="result-top"><span class="t">Side-by-side &middot; Estimate</span><span class="est">Live</span></div>
+
+            <div class="result-hero">
+                <div class="rh-main">
+                    <div class="rh-label">Better option</div>
+                    <div class="rh-value tealed" id="betterName">Keep current + add equity</div>
+                    <div class="rh-sub" id="betterSub">$127 / month cheaper</div>
+                </div>
+                <div class="verdict-col">
+                    <span class="verdict good" id="betterVerdict">Lower monthly cost</span>
+                </div>
+            </div>
+
+            <div class="vs">
+                <div class="opt">
+                    <div class="oname"><span class="lead">Keep</span> + add</div>
+                    <div class="opay num" id="keepTotal">$3,369</div>
+                    <div class="oper">Total / mo — first + second + HELOC</div>
+                    <div class="obl"><span class="bk">Blended rate</span><span class="bv num" id="blended">7.10%</span></div>
+                </div>
+                <div class="opt">
+                    <div class="oname">Cash-out refi</div>
+                    <div class="opay num" id="coTotal">$3,496</div>
+                    <div class="oper">Total / mo — single new loan</div>
+                    <div class="obl"><span class="bk">Structure</span><span class="bv">One lien</span></div>
+                </div>
+                <span class="vsbadge">vs</span>
+            </div>
+
+            <div class="an-actions">
+                <button class="btn btn-sm btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share 🔗</button>
+                <button class="btn btn-sm btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
+                <a class="btn btn-sm btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
+            </div>
+        </aside>
 
         <div class="result-grid">
-            <div class="result"><div class="r-label">Keep + add — total / mo</div><div class="r-value" id="keepTotal">$3,369</div><div class="r-hint">first + second + HELOC</div></div>
-            <div class="result"><div class="r-label">Cash-out refi — total / mo</div><div class="r-value" id="coTotal">$3,496</div></div>
             <div class="result"><div class="r-label">First mortgage / mo</div><div class="r-value" id="o1mo">$2,528</div></div>
             <div class="result"><div class="r-label">Second loan / mo</div><div class="r-value" id="o2mo">$841</div></div>
             <div class="result"><div class="r-label">HELOC (interest-only) / mo</div><div class="r-value" id="iomo">$0</div></div>
-            <div class="result"><div class="r-label">Blended rate (keep + add)</div><div class="r-value" id="blended">7.10%</div><div class="r-hint">weighted by balance</div></div>
         </div>
 
-        <div class="apply-strip" style="margin-top:1.2rem">
+        <div class="apply-strip reveal" style="margin-top:1.2rem">
             <p>Closed-end home equity, HELOC and cash-out refi — we do all three.</p>
             <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
             <a class="btn btn-line" href="mailto:sales@yscapgroup.com">Get a quote</a>
         </div>
 
-        <div class="panel">
+        <div class="panel reveal">
             <div class="note-row"><span class="dot"></span><div>Monthly cost is only one factor — a cash-out refi resets your first mortgage rate on the whole balance, while a second lien leaves a low first-mortgage rate untouched.</div></div>
             <div class="note-row"><span class="dot"></span><div>Interest-only payments are lower but don't reduce principal. Weigh payoff goals and how long you'll hold.</div></div>
         </div>
