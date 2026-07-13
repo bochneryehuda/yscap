@@ -807,12 +807,23 @@ router.get('/applications/:id/verify-llcs', async (req, res) => {
             )
        ) x`, [req.params.id]);
     const app = (await db.query(`SELECT llc_id FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
+    // Layered entities: every entity that (transitively) OWNS one of the
+    // file's entities belongs on the verify surface too — a child can only be
+    // verified bottom-up, so staff need its owners in front of them.
+    const ids = idsRes.rows.map((r) => String(r.id));
+    const layered = new Set();
+    for (const id of [...ids]) {
+      for (const anc of await llcLib.getAncestorEntityIds(id)) {
+        if (!ids.includes(anc)) { ids.push(anc); layered.add(anc); }
+      }
+    }
     const out = [];
-    for (const row of idsRes.rows) {
-      const bundle = await llcLib.getLlcBundle(row.id);
+    for (const id of ids) {
+      const bundle = await llcLib.getLlcBundle(id);
       if (bundle) out.push({
         ...bundle,
-        vesting: app.llc_id === row.id,
+        vesting: app.llc_id === id,
+        layered: layered.has(id),   // present because it owns another entity on the file
         missing: llcLib.missingForVerification(bundle, bundle.members, bundle.slots),
       });
     }
@@ -2598,7 +2609,10 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
   // Only a brand-new entity gets members + its document checklist; an existing
   // one keeps its own (never clobbered by a re-create).
   if (!existed) {
-    if (parsed.members && parsed.members.length) await llcLib.replaceMembers(llcId, parsed.members);
+    if (parsed.members && parsed.members.length) {
+      try { await llcLib.replaceMembers(llcId, parsed.members, { borrowerId }); }
+      catch (e) { return res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the members' }); }
+    }
     try { await require('./borrower').generateLlcChecklist(llcId); } catch (_) { /* best-effort */ }
   }
   await audit(req, existed ? 'reuse_llc' : 'create_llc', 'llc', llcId, { borrowerId, existed });
@@ -2712,7 +2726,10 @@ router.put('/llcs/:id/members', async (req, res) => {
   if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before making changes' });
   const parsed = llcLib.parseMembers((req.body || {}).members || [], own.rows[0].ownership_pct);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  await llcLib.replaceMembers(req.params.id, parsed.members || []);
+  try { await llcLib.replaceMembers(req.params.id, parsed.members || [], { borrowerId: own.rows[0].borrower_id }); }
+  catch (e) { return res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the members' }); }
+  // Ownership feeds the entity condition (chain-aware) — recompute right away.
+  try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
   await audit(req, 'update_llc_members', 'llc', req.params.id, { count: (parsed.members || []).length });
   res.json({ ok: true });
 });

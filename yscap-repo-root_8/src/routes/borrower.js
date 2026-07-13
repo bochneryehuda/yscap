@@ -941,7 +941,10 @@ router.post('/llcs', async (req, res) => {
   // Only a brand-new entity gets members + its document checklist; an existing
   // one keeps its own (never clobbered by a re-create).
   if (!existed) {
-    if (parsed.members && parsed.members.length) await replaceMembers(llcId, parsed.members);
+    if (parsed.members && parsed.members.length) {
+      try { await replaceMembers(llcId, parsed.members, { borrowerId: me(req) }); }
+      catch (e) { return res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the members' }); }
+    }
     // Requesting an LLC pulls its document requirements: EIN letter, formation docs, operating agreement.
     try { await generateLlcChecklist(llcId); } catch (_) {}
   }
@@ -987,7 +990,10 @@ router.put('/llcs/:id/members', async (req, res) => {
   if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before making changes' });
   const parsed = parseMembers((req.body || {}).members || [], own.rows[0].ownership_pct);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  await replaceMembers(req.params.id, parsed.members || []);
+  try { await replaceMembers(req.params.id, parsed.members || [], { borrowerId: me(req) }); }
+  catch (e) { return res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the members' }); }
+  // Ownership feeds the entity condition (chain-aware) — recompute right away.
+  try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
   await audit(req, 'update_llc_members', 'llc', req.params.id, { count: (parsed.members || []).length });
   res.json({ ok: true });
 });

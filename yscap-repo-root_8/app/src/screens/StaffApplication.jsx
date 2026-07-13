@@ -439,14 +439,24 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
     setEf({ llcName: l.llc_name || '', ein: l.ein || '', formationState: l.formation_state || '',
       formationDate: l.formation_date ? String(l.formation_date).slice(0, 10) : '',
       ownershipPct: l.ownership_pct == null ? '' : String(l.ownership_pct) });
-    setEm((l.members || []).map(m => ({ fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '' })));
+    setEm((l.members || []).map(m => ({
+      fullName: m.full_name, ownershipPct: String(m.ownership_pct), email: m.email || '',
+      memberKind: m.member_kind === 'entity' ? 'entity' : 'person',
+      ownerLlcId: m.owner_llc_id || null,
+    })));
   }
   async function saveEdit(l) {
     setBusy('edit-' + l.id); setErr('');
     try {
       await api.staffUpdateLlc(l.id, ef);
+      // memberKind/ownerLlc round-trip so an entity member (layered entity)
+      // survives a staff edit instead of silently becoming a person.
       await api.staffSaveLlcMembers(l.id, (em || []).filter(m => m.fullName.trim()).map(m => ({
-        fullName: m.fullName.trim(), ownershipPct: Number(m.ownershipPct), email: m.email.trim() || undefined })));
+        fullName: m.fullName.trim(), ownershipPct: Number(m.ownershipPct),
+        email: m.memberKind === 'entity' ? undefined : (m.email.trim() || undefined),
+        memberKind: m.memberKind === 'entity' ? 'entity' : 'person',
+        ownerLlcId: m.memberKind === 'entity' ? (m.ownerLlcId || undefined) : undefined,
+        ownerLlcName: m.memberKind === 'entity' ? m.fullName.trim() : undefined })));
       flash('Entity saved ✓ — the borrower sees the same details.');
       setEditId(null); await load(); onChanged && await onChanged();
     } catch (e) { setErr(e.message || 'Could not save the entity'); }
@@ -599,6 +609,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                   <div style={{ fontWeight: 600 }}>
                     {l.llc_name}
                     {linked && <span className="pill" style={{ marginLeft: 8, borderColor: 'var(--teal)', color: 'var(--teal)' }}>Vesting entity for this file</span>}
+                    {l.layered && <span className="pill" style={{ marginLeft: 8 }} title="A layered entity — it owns (part of) another entity on this file. It must be verified before the entity it owns can be.">Owning entity (layered)</span>}
                   </div>
                   <div className="muted small">
                     {l.formation_state || 'state —'} · EIN {l.ein || '—'} · {c.docs_accepted || 0}/{c.docs_required || 3} docs accepted
@@ -639,13 +650,26 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                           <div style={{ fontWeight: 600, marginTop: 12 }}>Other members</div>
                           <p className="muted small" style={{ marginBottom: 6 }}>Everyone besides the borrower, until ownership totals 100%.</p>
                           {(em || []).map((m, i) => (
-                            <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                              <input className="input" style={{ flex: 2, minWidth: 150 }} placeholder="Member full name" value={m.fullName}
-                                onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, fullName: e.target.value } : x))} />
-                              <input className="input" style={{ width: 90 }} type="number" min="0.01" max="99.99" placeholder="%" value={m.ownershipPct}
+                            <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
+                              <input className="input" style={{ flex: 2, minWidth: 150 }}
+                                placeholder={m.memberKind === 'entity' ? 'Owning LLC name' : 'Member full name'} value={m.fullName}
+                                onChange={e => setEm(ms => ms.map((x, j) => j === i
+                                  ? { ...x, fullName: e.target.value, ...(x.memberKind === 'entity' ? { ownerLlcId: null } : {}) }
+                                  : x))} />
+                              <input className="input" style={{ width: 90 }} type="number" min="0.01" max={m.memberKind === 'entity' ? 100 : 99.99} placeholder="%" value={m.ownershipPct}
                                 onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, ownershipPct: e.target.value } : x))} />
-                              <input className="input" style={{ flex: 2, minWidth: 150 }} type="email" placeholder="Email (optional)" value={m.email}
-                                onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+                              {m.memberKind !== 'entity' && (
+                                <input className="input" style={{ flex: 2, minWidth: 150 }} type="email" placeholder="Email (optional)" value={m.email}
+                                  onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+                              )}
+                              <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                                title="Layered entity: this slice is owned by ANOTHER LLC, not a person. It gets its own full entity section (details, ownership, three documents) and must verify before this one.">
+                                <input type="checkbox" checked={m.memberKind === 'entity'}
+                                  onChange={e => setEm(ms => ms.map((x, j) => j === i
+                                    ? { ...x, memberKind: e.target.checked ? 'entity' : 'person', ownerLlcId: null, email: '' }
+                                    : x))} />
+                                Entity (LLC)
+                              </label>
                               <button className="btn link small" onClick={() => setEm(ms => ms.filter((_, j) => j !== i))}>Remove</button>
                             </div>
                           ))}
@@ -682,7 +706,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                     {(l.members || []).map(m => (
                       <span key={m.id} className="muted small">
                         {m.full_name}: {m.ownership_pct}%
-                        {Number(m.ownership_pct) >= 20 && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--gold)', color: 'var(--gold)' }}>≥20% — guarantor likely required</span>}
+                        {m.member_kind === 'entity' && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--teal)', color: 'var(--teal)' }} title={`Layered entity${m.owner_is_verified ? ' — verified' : ' — must be verified before this one'}`}>entity{m.owner_is_verified ? ' ✓' : ''}</span>}
+                        {m.member_kind !== 'entity' && Number(m.ownership_pct) >= 20 && <span className="pill" style={{ marginLeft: 4, borderColor: 'var(--gold)', color: 'var(--gold)' }}>≥20% — guarantor likely required</span>}
                       </span>
                     ))}
                     <span className={`ts-badge ${Math.abs(total - 100) <= 0.01 ? 'ok' : 'warn'}`}>
