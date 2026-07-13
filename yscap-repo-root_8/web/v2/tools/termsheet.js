@@ -927,7 +927,7 @@
       var jsPDF = window.jspdf.jsPDF;
       var doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
       var W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 40;
-      var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [91, 103, 112], DARK = [19, 32, 28], LINE = [228, 224, 214];
+      var INK = [20, 27, 34], TEAL = [47, 127, 134], GOLD = [174, 135, 70], GRAY = [75, 88, 92], DARK = [20, 27, 34], LINE = [223, 216, 203];
       var today = new Date(), exp = new Date(today.getTime() + 14 * 864e5);
       var fmtD = function (dt) { return dt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }); };
       var money = function (n) { return YS.fmtUSD(n); };
@@ -940,9 +940,9 @@
         doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 76, "F");
         doc.setFillColor.apply(doc, GOLD); doc.rect(0, 76, W, 2.2, "F");
         var lg = logoData(); if (lg) { var h = 30, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 23, w, h); } catch (e) {} }
-        doc.setTextColor(243, 239, 230); doc.setFont("times", "bold"); doc.setFontSize(18); doc.text("Preliminary Term Sheet", W - M, 35, { align: "right" });
-        doc.setFont("times", "italic"); doc.setFontSize(9.5); doc.setTextColor(201, 168, 106); doc.text(progName + " \u00b7 business-purpose bridge financing", W - M, 51, { align: "right" });
-        doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(170, 178, 182);
+        doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(18); doc.text("Preliminary Term Sheet", W - M, 35, { align: "right" });
+        doc.setFont("times", "italic"); doc.setFontSize(9.5); doc.setTextColor(174, 135, 70); doc.text(progName + " \u00b7 business-purpose bridge financing", W - M, 51, { align: "right" });
+        doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
         doc.text(LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Issued " + fmtD(today), W - M, 65, { align: "right" });
       }
       function footer() {
@@ -1006,13 +1006,13 @@
       var heroH = 60;
       doc.setFillColor.apply(doc, DARK); doc.roundedRect(M, y, W - 2 * M, heroH, 4, 4, "F");
       doc.setFillColor.apply(doc, GOLD); doc.rect(M, y + 4, 3.5, heroH - 8, "F");
-      doc.setFont("helvetica", "normal"); doc.setFontSize(7.8); doc.setTextColor(188, 194, 188); doc.text("ESTIMATED TOTAL LOAN AMOUNT", M + 16, y + 16);
-      doc.setFont("times", "bold"); doc.setFontSize(25); doc.setTextColor(247, 244, 236); doc.text(sized ? money(d.totalLoan) : "\u2014", M + 16, y + 40);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.8); doc.setTextColor(176, 184, 186); doc.text("ESTIMATED TOTAL LOAN AMOUNT", M + 16, y + 16);
+      doc.setFont("times", "bold"); doc.setFontSize(25); doc.setTextColor(244, 240, 231); doc.text(sized ? money(d.totalLoan) : "\u2014", M + 16, y + 40);
       doc.setFont("helvetica", "bold"); doc.setFontSize(8.4); doc.setTextColor.apply(doc, d.pricingReady ? pillC : [150, 156, 150]); doc.text(pdfSafe(d.pricingReady ? stTxt : "Awaiting FICO score"), M + 16, y + 53);
       var rx = W - M - 16;
-      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(188, 194, 188); doc.text("NOTE RATE (INTEREST-ONLY)", rx, y + 16, { align: "right" });
-      doc.setFont("times", "bold"); doc.setFontSize(16); doc.setTextColor(247, 244, 236); doc.text((d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : "\u2014", rx, y + 36, { align: "right" });
-      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(188, 194, 188); doc.text(d.term + "-month term \u00b7 " + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + " origination", rx, y + 51, { align: "right" });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186); doc.text("NOTE RATE (INTEREST-ONLY)", rx, y + 16, { align: "right" });
+      doc.setFont("times", "bold"); doc.setFontSize(16); doc.setTextColor(244, 240, 231); doc.text((d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : "\u2014", rx, y + 36, { align: "right" });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(176, 184, 186); doc.text(d.term + "-month term \u00b7 " + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + " origination", rx, y + 51, { align: "right" });
       y += heroH + 14;
 
       // TWO COLUMNS
@@ -1142,7 +1142,7 @@
         brk(30 + lad.rows.length * 20);
         var hy = y;
         doc.setFillColor.apply(doc, INK); doc.rect(M, hy, tW, 22, "F");
-        doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); doc.setTextColor(243, 239, 230);
+        doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); doc.setTextColor(244, 240, 231);
         var cx = M;
         cols.forEach(function (c) { var w = c.w * tW; doc.text(c.t, c.a === "r" ? cx + w - 7 : cx + 7, hy + 14, { align: c.a === "r" ? "right" : "left" }); cx += w; });
         var ry = hy + 22;
@@ -1150,9 +1150,9 @@
         lad.rows.forEach(function (r, i) {
           var rowH = 20, isSel = Math.abs(r.ltc - selLtc) < 1e-9;
           if (isSel) { doc.setFillColor.apply(doc, GOLD); doc.rect(M, ry, tW, rowH, "F"); }
-          else if (i % 2) { doc.setFillColor(244, 242, 236); doc.rect(M, ry, tW, rowH, "F"); }
+          else if (i % 2) { doc.setFillColor(244, 240, 231); doc.rect(M, ry, tW, rowH, "F"); }
           doc.setFont("helvetica", isSel ? "bold" : "normal"); doc.setFontSize(8.6);
-          doc.setTextColor.apply(doc, isSel ? [28, 24, 16] : DARK);
+          doc.setTextColor.apply(doc, isSel ? [20, 27, 34] : DARK);
           var vals = [
             pc(r.targetLtcPct) + (r.isMax ? "  (maximum)" : ""),
             money(r.totalLoan), money(r.downPayment), money(r.monthlyPayment) + "/mo",
@@ -1214,7 +1214,7 @@
       var jsPDF = window.jspdf.jsPDF;
       var doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
       var W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 54;
-      var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [95, 103, 110], DARK = [19, 32, 28], LINE = [223, 219, 209], SOFT = [247, 245, 239], BODY = [40, 46, 52];
+      var INK = [20, 27, 34], TEAL = [47, 127, 134], GOLD = [174, 135, 70], GRAY = [75, 88, 92], DARK = [20, 27, 34], LINE = [223, 216, 203], SOFT = [244, 240, 231], BODY = [40, 46, 52];
       var today = new Date(), exp = new Date(today.getTime() + 30 * 864e5);
       var fmtD = function (dt) { return dt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }); };
       var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); };
@@ -1234,11 +1234,11 @@
       doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 92, "F");
       doc.setFillColor.apply(doc, GOLD); doc.rect(0, 92, W, 2.4, "F");
       var lg = logoData(); if (lg) { var h = 34, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 30, w, h); } catch (e) {} }
-      doc.setTextColor(243, 239, 230); doc.setFont("times", "bold"); doc.setFontSize(11.5);
+      doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(11.5);
       doc.text("PRIVATE MORTGAGE BANKING", W - M, 41, { align: "right" });
-      doc.setFont("times", "italic"); doc.setFontSize(9); doc.setTextColor(201, 168, 106);
+      doc.setFont("times", "italic"); doc.setFontSize(9); doc.setTextColor(174, 135, 70);
       doc.text("Business-purpose real estate finance", W - M, 56, { align: "right" });
-      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(178, 185, 190);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
       doc.text("NMLS " + LENDER.nmls + "   \u00b7   " + LENDER.phone + "   \u00b7   " + LENDER.email, W - M, 73, { align: "right" });
 
       var y = 126;
@@ -1374,7 +1374,7 @@
   function drawDerivationPage(doc, d, title, intro) {
     doc.addPage();
     var W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 56;
-    var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [95, 103, 110], DARK = [19, 32, 28], LINE = [223, 219, 209], BODY = [40, 46, 52];
+    var INK = [20, 27, 34], TEAL = [47, 127, 134], GOLD = [174, 135, 70], GRAY = [75, 88, 92], DARK = [20, 27, 34], LINE = [223, 216, 203], BODY = [40, 46, 52];
     var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); };
     var pc = function (x) { return (Math.round((x || 0) * 1000) / 10) + "%"; };
     var inp = d.inp || {}, isRefi = inp.loanType === "Refinance";
@@ -1384,9 +1384,9 @@
     doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 66, "F");
     doc.setFillColor.apply(doc, GOLD); doc.rect(0, 66, W, 2, "F");
     var lg = logoData(); if (lg) { var h = 27, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 20, w, h); } catch (e) {} }
-    doc.setTextColor(243, 239, 230); doc.setFont("times", "bold"); doc.setFontSize(11.5);
+    doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(11.5);
     doc.text(pdfSafe(title), W - M, 33, { align: "right" });
-    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(178, 185, 190);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
     doc.text(LENDER.name + "  \u00b7  NMLS " + LENDER.nmls, W - M, 48, { align: "right" });
 
     var y = 92;

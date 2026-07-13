@@ -760,7 +760,7 @@ const RB = (function(){
   async function exportXlsx(btn,opts){ opts=opts||{}; const o=btn?btn.textContent:null; if(btn){ btn.textContent="Preparing…"; btn.disabled=true; }
     try{
       commit(); await ensureXLSX(); const X=window.XLSX;
-      const INK="0B1014",IVORY="F3EFE6",GOLD="9A7518",TEAL="4E777F",TEALD="1F3A40",LIGHT="EAF1F1",LINE="DCE1E2",GRAY="5B6770",DARK="1F2A30";
+      const INK="141B22",IVORY="F4F0E7",GOLD="AE8746",TEAL="2F7F86",TEALD="1F3A40",LIGHT="EAF1F1",LINE="DCE1E2",GRAY="4B585C",DARK="1F2A30";
       const secs=sections(); const colKeys=isMulti()?secs.map(s=>s.key):["all"]; const colLabels=isMulti()?secs.map(s=>s.label):["Cost"];
       const N=3+colKeys.length+1;
       const aoa=[], merges=[], rowH={}, styleMap={};
@@ -908,7 +908,7 @@ const RB = (function(){
       const useCols = isMulti() && colKeys.length<=6;     // dedicated section columns when they fit
       const doc=new jsPDF({unit:"pt",format:"letter",orientation:(useCols && colKeys.length>=3)?"landscape":"portrait"});
       const W=doc.internal.pageSize.getWidth(), M=42;
-      const INK=[11,16,20], TEAL=[78,119,127], TEALD=[31,58,64], GOLD=[150,123,68], GRAY=[91,103,112], LIGHT=[234,241,241], IV=[243,239,230];
+      const INK=[20,27,34], TEAL=[47,127,134], TEALD=[31,58,64], GOLD=[174,135,70], GRAY=[75,88,92], LIGHT=[234,241,241], IV=[244,240,231];
       // header band
       doc.setFillColor(INK[0],INK[1],INK[2]); doc.rect(0,0,W,88,"F");
       doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(0,88,W,2,"F"); // crisp gold rule under header
@@ -928,7 +928,7 @@ const RB = (function(){
         ["Target budget", S.target?money(num(S.target)):"—"]
       ];
       doc.setFontSize(9);
-      for(let i=0;i<facts.length;i++){ const col=i%3, x=M+col*((W-2*M)/3); if(col===0&&i>0)y+=32; doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.setFont("helvetica","bold"); doc.setFontSize(7.5); doc.text(pdfSafe(facts[i][0]).toUpperCase(),x,y); doc.setTextColor(18,22,26); doc.setFont("helvetica","bold"); doc.setFontSize(10.5); doc.text(pdfSafe(facts[i][1]),x,y+14); }
+      for(let i=0;i<facts.length;i++){ const col=i%3, x=M+col*((W-2*M)/3); if(col===0&&i>0)y+=32; doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.setFont("helvetica","bold"); doc.setFontSize(7.5); doc.text(pdfSafe(facts[i][0]).toUpperCase(),x,y); doc.setTextColor(20,27,34); doc.setFont("helvetica","bold"); doc.setFontSize(10.5); doc.text(pdfSafe(facts[i][1]),x,y+14); }
       y+=46;
       const vd=S.vd,vrows=[];
       const dlt=(a,b)=>{ const d=num(b)-num(a); return (num(a)||num(b))&&d!==0?("   ("+(d>0?"+":"")+d+")"):""; };

@@ -423,7 +423,7 @@ const TR=(function(){
   async function exportXlsx(btn,opts){ opts=opts||{}; const o=btn?btn.textContent:null; if(btn){ btn.textContent="Preparing…"; btn.disabled=true; }
     try{
       await ensureXLSX(); const X=window.XLSX;
-      const INK="0B1014",IVORY="F3EFE6",GOLD="9A7518",TEAL="4E777F",TEALD="1F3A40",LIGHT="EAF1F1",LINE="DCE1E2",DARK="1F2A30",FLIPBG="6E5417",HOLDBG="1F3A40";
+      const INK="141B22",IVORY="F4F0E7",GOLD="AE8746",TEAL="2F7F86",TEALD="1F3A40",LIGHT="EAF1F1",LINE="DCE1E2",DARK="1F2A30",FLIPBG="6E5417",HOLDBG="1F3A40";
       const flipCols=[
         {h:"Entity / LLC",get:p=>entityLabel(p),w:20},
         {h:"Property address",get:p=>addrLine(p),w:34,al:"left"},
@@ -563,7 +563,7 @@ const TR=(function(){
       await ensurePDF(); const { jsPDF }=window.jspdf;
       const doc=new jsPDF({unit:"pt",format:"letter",orientation:"landscape"});
       const W=doc.internal.pageSize.getWidth(), H=doc.internal.pageSize.getHeight(), M=40;
-      const INK=[11,16,20],TEAL=[78,119,127],TEALD=[31,58,64],GOLD=[150,123,68],GRAY=[91,103,112],IV=[243,239,230];
+      const INK=[20,27,34],TEAL=[47,127,134],TEALD=[31,58,64],GOLD=[174,135,70],GRAY=[75,88,92],IV=[244,240,231];
       const s=summary();
       function header(){
         doc.setFillColor(INK[0],INK[1],INK[2]); doc.rect(0,0,W,74,"F");
@@ -605,7 +605,7 @@ const TR=(function(){
         if(!list.length) body.push(["—","No "+title.toLowerCase()+" deals entered.","","","","","","","","",""]);
         doc.autoTable({ startY:y+4, head:head, body:body, theme:"grid", margin:{left:M,right:M}, tableWidth:W-2*M,
           styles:{font:"helvetica",fontSize:7.5,cellPadding:3,overflow:"linebreak",textColor:[34,38,42],lineColor:[224,228,228],lineWidth:.5},
-          headStyles:{fillColor:[31,42,48],textColor:[243,239,230],fontStyle:"bold",fontSize:7.5},
+          headStyles:{fillColor:[20,27,34],textColor:[244,240,231],fontStyle:"bold",fontSize:7.5},
           alternateRowStyles:{fillColor:[248,250,250]},
           columnStyles:sharedCols,
           didDrawPage:()=>{ header(); } });
