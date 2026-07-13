@@ -110,8 +110,15 @@ function scopeKeyFor(row) {
   return null;
 }
 
+// Doc kinds whose ROUTES supersede app/borrower-wide by doc_kind (not per
+// checklist item): these always use ONE kind-scoped version stream so the
+// stream, the folder, and the supersede matching all agree even when a copy
+// happens to be attached to a checklist item.
+const KIND_STREAM = new Set(['photo_id', 'term_sheet', 'term_sheet_signed']);
+
 function stateKeyFor(row, scopeKey) {
   if (row.doc_kind === 'photo_id') return `kind:${scopeKey}:photo-id`;   // one stream across files
+  if (KIND_STREAM.has(row.doc_kind)) return `kind:${scopeKey}:${slug(categoryFor(row))}`;
   return row.checklist_item_id ? `item:${row.checklist_item_id}` : `kind:${scopeKey}:${slug(categoryFor(row))}`;
 }
 
@@ -195,13 +202,25 @@ async function upsertConditionState(stateKey, scopeKey, folderId, folderName, ve
 // of its condition? (The trigger for a Version-N bump.) Matches the portal's
 // slot semantics: a slotted upload supersedes its slot; an unslotted one
 // supersedes across the condition.
-async function isSupersedeEvent(row, stateKey, currentVersion) {
+async function isSupersedeEvent(row, stateKey, currentVersion, conditionFolderId) {
   // NOTE: every param pushed MUST be referenced in the SQL — Postgres rejects
   // a statement with an unreferenced parameter ("could not determine data type
   // of parameter $N"), so each branch builds its own exact parameter list.
   const params = [row.id, currentVersion];
   let where;
-  if (row.checklist_item_id) {
+  if (KIND_STREAM.has(row.doc_kind)) {
+    // Streams the routes supersede by DOC KIND (app-wide term sheets,
+    // borrower-wide photo IDs) — checklist attachment is ignored on BOTH sides
+    // so an item-attached copy and a plain copy share one stream, exactly like
+    // the routes' own supersede UPDATEs.
+    if (row.app_id && row.doc_kind !== 'photo_id') {
+      params.push(row.app_id, row.doc_kind);
+      where = `m.application_id::text = $3::text AND m.doc_kind = $4`;
+    } else {
+      params.push(row.borrower_id, row.doc_kind);
+      where = `COALESCE(m.borrower_id::text,'') = COALESCE($3::text,'') AND m.doc_kind = $4`;
+    }
+  } else if (row.checklist_item_id) {
     params.push(row.checklist_item_id);
     where = 'm.checklist_item_id = $3';
   } else if (row.app_id) {
@@ -228,6 +247,17 @@ async function isSupersedeEvent(row, stateKey, currentVersion) {
              AND (m.track_record_id IS NULL) = ${row.track_record_id ? 'false' : 'true'}`;
   }
   params.push(row.slot_label);
+  const slotIdx = params.length;
+  // Same-folder guard for the version-0 case: a supersede only counts when the
+  // superseded mirror copy actually lives in THIS stream's condition folder.
+  // Without it, a pre-relocation copy sitting in an OLD category folder (e.g.
+  // 'Term Sheet' before the Unsigned split) would phantom-bump the NEW folder
+  // to Version 2 with an empty Version 1 and nothing movable.
+  let folderGuard = '';
+  if (currentVersion === 0 && conditionFolderId) {
+    params.push(conditionFolderId);
+    folderGuard = `AND m.sharepoint_parent_id = $${params.length}`;
+  }
   const { rows } = await db.query(
     `SELECT 1 FROM documents m
       WHERE m.id <> $1
@@ -235,7 +265,8 @@ async function isSupersedeEvent(row, stateKey, currentVersion) {
         AND m.sharepoint_version = $2
         AND m.is_current = false
         AND ${where}
-        AND ($${params.length}::text IS NULL OR m.slot_label IS NOT DISTINCT FROM $${params.length}::text)
+        AND ($${slotIdx}::text IS NULL OR m.slot_label IS NOT DISTINCT FROM $${slotIdx}::text)
+        ${folderGuard}
       LIMIT 1`, params);
   return rows.length > 0;
 }
@@ -249,10 +280,18 @@ async function isSupersedeEvent(row, stateKey, currentVersion) {
 // version 1 folder"). The freshest set always lives in the HIGHEST Version
 // folder; a still-current doc parked in Version 1 simply hasn't changed since.
 async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) {
-  const v1 = await sp.ensureChildFolder(driveId, conditionFolder.id, 'Version 1');
-  // Same rule as isSupersedeEvent: every pushed param must be referenced.
+  // Same rule as isSupersedeEvent: every pushed param must be referenced, and
+  // the stream (kind vs item) is selected identically.
   let where, params;
-  if (row.checklist_item_id) {
+  if (KIND_STREAM.has(row.doc_kind)) {
+    if (row.app_id && row.doc_kind !== 'photo_id') {
+      where = `application_id::text = $1::text AND doc_kind = $2`;
+      params = [row.app_id, row.doc_kind];
+    } else {
+      where = `COALESCE(borrower_id::text,'') = COALESCE($1::text,'') AND doc_kind = $2`;
+      params = [row.borrower_id, row.doc_kind];
+    }
+  } else if (row.checklist_item_id) {
     where = 'checklist_item_id = $1';
     params = [row.checklist_item_id];
   } else if (row.app_id) {
@@ -278,6 +317,10 @@ async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) 
       WHERE sharepoint_backup_ref IS NOT NULL AND sharepoint_version = 0
         AND sharepoint_parent_id = $${params.length + 1} AND ${where}`,
     [...params, conditionFolder.id])).rows;
+  // Nothing movable (e.g. a human relocated every root copy): no empty
+  // "Version 1" is created and the caller skips the bump entirely.
+  if (!olds.length) return null;
+  const v1 = await sp.ensureChildFolder(driveId, conditionFolder.id, 'Version 1');
   for (const old of olds) {
     const { itemId } = sp.parseRef(old.sharepoint_backup_ref);
     try {
@@ -330,7 +373,11 @@ async function mirrorRowInner(row, scopeKey) {
     borrowerLast: row.borrower_last || '',
     addressOneLine: row.address_one_line || null,
     ysLoanNumber: row.ys_loan_number || null,
-    hasApplication: !!row.app_id,
+    // MUST follow the SCOPE, not the raw row: a photo ID uploaded from a file
+    // context has app_id set but a borrower scope — passing !!row.app_id here
+    // would build (and permanently cache!) the ADDRESS-level chain under the
+    // borrower-profile scope key, mis-filing every future profile document.
+    hasApplication: scopeKey.startsWith('app:'),
   });
   const driveId = target.driveId;
 
@@ -347,10 +394,16 @@ async function mirrorRowInner(row, scopeKey) {
   let version = state.current_version;
 
   // Version bump on supersede (the owner's Version-1/Version-2 flow).
-  if (await isSupersedeEvent(row, stateKey, version)) {
-    if (version === 0) await shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder);
-    version = version === 0 ? 2 : version + 1;
-    await upsertConditionState(stateKey, scopeKey, conditionFolder.id, category, version);
+  if (await isSupersedeEvent(row, stateKey, version, conditionFolder.id)) {
+    let bump = true;
+    if (version === 0) {
+      const v1 = await shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder);
+      if (!v1) bump = false;   // nothing movable — don't start at a phantom Version 2
+    }
+    if (bump) {
+      version = version === 0 ? 2 : version + 1;
+      await upsertConditionState(stateKey, scopeKey, conditionFolder.id, category, version);
+    }
   }
 
   // Where this document lands: condition root before any versioning, else the
