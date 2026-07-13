@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script src="../theme.js?v=n6"></script>
+<script>
+(function () {
+  try {
+    var de = document.documentElement;
+    de.setAttribute("data-theme", "light");   // white-first — matches the portal (belt-and-suspenders vs a stale theme.js)
+    var q = new URLSearchParams(location.search);
+    if (q.get("embed") === "1") de.setAttribute("data-embed", "1");
+  } catch (e) {}
+})();
+</script>
+<script src="../brand.js?v=n1"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YS Deal Analyzer — Cap Rate, ROI &amp; Rental Performance</title>
+<meta name="description" content="Full rental property underwriting: monthly cash flow, cap rate, cash-on-cash ROI, DSCR, debt yield, GRM, OER, LTC, ROE and more.">
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/images/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../assets/images/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="../assets/images/favicon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css?v=n7">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<span class="orb orb-1" aria-hidden="true"></span>
+<span class="orb orb-2" aria-hidden="true"></span>
+
+<header class="topbar">
+    <div class="topbar-inner">
+        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+        <span class="topbar-sep"></span>
+        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Deal Analyzer</span></div>
+        <div class="topbar-actions">
+            <a class="back" href="../suite.html">← All tools</a>
+            <button class="btn btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
+            <button class="btn btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
+            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
+        </div>
+    </div>
+</header>
+
+<main>
+<section class="tool-hero">
+    <div class="suite-eyebrow">Rental underwriting</div>
+    <h1>YS Deal Analyzer<span class="tm">™</span></h1>
+    <p class="tool-tagline">The tool serious investors say YES to.</p>
+    <p class="tool-intro">Plug in the property, loan, income and expenses to see whether a rental deal cash-flows and how it scores on the same metrics lenders and professional investors use.</p>
+    <span class="fill-hint"><span class="swatch"></span> Fill the input fields — every metric updates automatically.</span>
+</section>
+
+<div class="tool-grid">
+    <div class="inputs-col">
+        <div class="panel">
+            <h2><span class="panel-num">1</span> Property &amp; loan</h2>
+            <p class="panel-note">Use LTV to size the loan, or type a loan amount to override it.</p>
+            <div class="field-rows two-col">
+                <div class="field"><label for="price">Purchase price</label><div class="input"><span class="adorn">$</span><input id="price" type="number" value="400000"></div></div>
+                <div class="field"><label for="arv">Current / ARV value <em>(if higher)</em></label><div class="input"><span class="adorn">$</span><input id="arv" type="number" value="500000"></div></div>
+                <div class="field"><label for="ltv">LTV <em>(%)</em></label><div class="input"><input id="ltv" type="number" value="75"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="loanOverride">Loan <em>(override)</em></label><div class="input"><span class="adorn">$</span><input id="loanOverride" type="number" placeholder="optional"></div></div>
+                <div class="field"><label for="rate">Interest rate <em>(%)</em></label><div class="input"><input id="rate" type="number" value="6.5"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="term">Term <em>(years)</em></label><div class="input"><input id="term" type="number" value="30"></div></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2><span class="panel-num">2</span> Income</h2>
+            <div class="field-rows two-col">
+                <div class="field"><label for="rent">Gross monthly rent <em>(all units)</em></label><div class="input"><span class="adorn">$</span><input id="rent" type="number" value="4000"></div></div>
+                <div class="field"><label for="vac">Vacancy loss <em>(%)</em></label><div class="input"><input id="vac" type="number" value="5"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="bad">Bad-debt / credit loss <em>(%)</em></label><div class="input"><input id="bad" type="number" value="1"><span class="adorn suffix">%</span></div></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2><span class="panel-num">3</span> Operating expenses <em style="font-weight:400;color:var(--muted-2);font-size:.8rem">— annual</em></h2>
+            <div class="field-rows two-col">
+                <div class="field"><label for="oTax">Property taxes</label><div class="input"><span class="adorn">$</span><input id="oTax" type="number" value="1000"></div></div>
+                <div class="field"><label for="oIns">Insurance</label><div class="input"><span class="adorn">$</span><input id="oIns" type="number" value="1000"></div></div>
+                <div class="field"><label for="oHoa">HOA</label><div class="input"><span class="adorn">$</span><input id="oHoa" type="number" value="1000"></div></div>
+                <div class="field"><label for="oMgmt">Management</label><div class="input"><span class="adorn">$</span><input id="oMgmt" type="number" value="1000"></div></div>
+                <div class="field"><label for="oMaint">Maintenance</label><div class="input"><span class="adorn">$</span><input id="oMaint" type="number" value="1000"></div></div>
+                <div class="field"><label for="oUtil">Utilities <em>(water, elec, gas, trash)</em></label><div class="input"><span class="adorn">$</span><input id="oUtil" type="number" value="6000"></div></div>
+                <div class="field"><label for="oOther">Other</label><div class="input"><span class="adorn">$</span><input id="oOther" type="number" value="1000"></div></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2><span class="panel-num">4</span> Acquisition &amp; setup costs</h2>
+            <p class="panel-note">One-time cash costs to acquire and stabilize, on top of the down payment.</p>
+            <div class="field-rows two-col">
+                <div class="field"><label for="aClose">Closing costs</label><div class="input"><span class="adorn">$</span><input id="aClose" type="number" value="1000"></div></div>
+                <div class="field"><label for="aImprove">Planned improvements</label><div class="input"><span class="adorn">$</span><input id="aImprove" type="number" value="1000"></div></div>
+                <div class="field"><label for="aHold">Holding costs</label><div class="input"><span class="adorn">$</span><input id="aHold" type="number" value="1000"></div></div>
+                <div class="field"><label for="aLease">Leasing / broker fees</label><div class="input"><span class="adorn">$</span><input id="aLease" type="number" value="1000"></div></div>
+                <div class="field"><label for="aRefi">Refinance costs</label><div class="input"><span class="adorn">$</span><input id="aRefi" type="number" value="1000"></div></div>
+                <div class="field"><label for="aInspect">Inspection / appraisal</label><div class="input"><span class="adorn">$</span><input id="aInspect" type="number" value="1000"></div></div>
+                <div class="field"><label for="aOther">Other acquisition</label><div class="input"><span class="adorn">$</span><input id="aOther" type="number" value="1000"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="results-col">
+        <div class="result-hero">
+            <div class="rh-label">Monthly cash flow</div>
+            <div class="rh-value" id="cfMo">$864</div>
+            <div class="rh-sub" id="cfYr">$10,366 per year after debt &amp; all expenses</div>
+            <span class="verdict ok" id="cfVerdict">Positive cash flow</span>
+        </div>
+
+        <div class="result-grid">
+            <div class="result"><div class="r-label">Cap rate</div><div class="r-value" id="cap">8.3%</div><div class="r-hint">NOI ÷ price · 5–8% typical</div></div>
+            <div class="result"><div class="r-label">Cash-on-cash ROI</div><div class="r-value" id="coc">9.7%</div><div class="r-hint">cash flow ÷ cash in · 7–12% great</div></div>
+            <div class="result"><div class="r-label">DSCR — residential</div><div class="r-value" id="dscrRes">1.86×</div><div class="r-hint">rent ÷ PITIA</div></div>
+            <div class="result"><div class="r-label">DSCR — all-in</div><div class="r-value" id="dscrComm">1.30×</div><div class="r-hint">EGI ÷ all-in payment</div></div>
+            <div class="result"><div class="r-label">NOI (annual)</div><div class="r-value" id="noi">$33,120</div></div>
+            <div class="result"><div class="r-label">Debt yield</div><div class="r-value" id="dy">11.0%</div><div class="r-hint">NOI ÷ loan</div></div>
+            <div class="result"><div class="r-label">Monthly P&amp;I</div><div class="r-value" id="pi">$1,896</div></div>
+            <div class="result"><div class="r-label">Monthly PITIA</div><div class="r-value" id="piti">$2,146</div></div>
+            <div class="result"><div class="r-label">All-in monthly</div><div class="r-value" id="allin">$2,896</div></div>
+            <div class="result"><div class="r-label">Break-even occupancy</div><div class="r-value" id="beo">77%</div><div class="r-hint">lower is safer</div></div>
+            <div class="result"><div class="r-label">GRM</div><div class="r-value" id="grm">8.3</div><div class="r-hint">price ÷ annual rent</div></div>
+            <div class="result"><div class="r-label">Operating expense ratio</div><div class="r-value" id="oer">27%</div><div class="r-hint">expenses ÷ EGI</div></div>
+            <div class="result"><div class="r-label">Loan-to-cost (LTC)</div><div class="r-value" id="ltc">74%</div></div>
+            <div class="result"><div class="r-label">Return on equity</div><div class="r-value" id="roe">5.2%</div></div>
+            <div class="result"><div class="r-label">Effective equity</div><div class="r-value" id="eeq">40%</div><div class="r-hint">equity ÷ value</div></div>
+            <div class="result"><div class="r-label">Total cash to close</div><div class="r-value" id="cashIn">$107,000</div><div class="r-hint">down + setup costs</div></div>
+        </div>
+
+        <div class="apply-strip" style="margin-top:1.2rem">
+            <p>Like the numbers? Let's structure the financing.</p>
+            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
+            <a class="btn btn-line" href="mailto:sales@yscapgroup.com">Get a quote</a>
+        </div>
+    </div>
+</div>
+</main>
+
+<footer class="suite-footer">
+    <div class="sf-inner">
+        <div class="sf-top">
+            <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">
+            <span class="sf-tag">The answer is yes.™</span>
+            <div class="sf-marks"><img src="../assets/images/eho-lender.png" alt="Equal Housing Lender"><img src="../assets/images/nmls.svg" alt="NMLS ID 2609746"></div>
+        </div>
+        <div class="sf-meta">YS Capital Group · <a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">NMLS ID 2609746</a> · <a href="tel:7188312168">718-831-2168</a> · <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a></div>
+        <p class="sf-disc"><strong>For estimation &amp; education only.</strong> Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Use is at your own risk.</p>
+        <p class="sf-copy">© 2026 YS Capital Group. All rights reserved. Equal Housing Lender.</p>
+    </div>
+</footer>
+
+<script src="../suite.js"></script>
+<script>
+/* ---------- YS Deal Analyzer — formulas ----------
+   loan       : LTV × price (override wins)        down = price − loan
+   P&I        : amortized monthly payment
+   PITIA      : P&I + (taxes+ins+HOA)/12
+   opexYr     : sum of annual operating expenses   allInMo = P&I + opexYr/12
+   grossYr    : monthly rent × 12
+   EGI        : grossYr − (vacancy% + baddebt%) × grossYr
+   NOI        : EGI − opexYr
+   cashFlowYr : EGI − allInMo×12
+   cashIn     : down payment + total acquisition costs
+   cap=NOI/price · coc=cashFlowYr/cashIn · dscrRes=rent/PITIA · dscrComm=(EGI/12)/allInMo
+   debtYield=NOI/loan · breakEven=allInYr/EGI · GRM=price/grossYr · OER=opexYr/EGI
+   LTC=loan/(price+acq) · ROE=cashFlowYr/(ARV−loan) · effEquity=(ARV−loan)/ARV
+--------------------------------------------------*/
+function compute() {
+  const price = YS.num("price");
+  const arv   = Math.max(YS.num("arv"), price);   // ARV defaults up to price
+  const ltv   = YS.num("ltv");
+  const over  = YS.opt("loanOverride");
+  const loanAuto = ltv > 0 ? price * ltv / 100 : null;
+  const loan  = (loanAuto != null && over == null) ? loanAuto : (over != null ? over : (loanAuto || 0));
+  const down  = price - loan;
+
+  const pi    = YS.monthlyPayment(loan, YS.num("rate"), YS.num("term"));
+  const taxMo = YS.num("oTax")/12, insMo = YS.num("oIns")/12, hoaMo = YS.num("oHoa")/12;
+  const piti  = pi + taxMo + insMo + hoaMo;
+
+  const opexYr = YS.num("oTax")+YS.num("oIns")+YS.num("oHoa")+YS.num("oMgmt")+YS.num("oMaint")+YS.num("oUtil")+YS.num("oOther");
+  const allInMo = pi + opexYr/12;
+  const allInYr = allInMo * 12;
+
+  const rent    = YS.num("rent");
+  const grossYr = rent * 12;
+  const lossPct = (YS.num("vac") + YS.num("bad")) / 100;
+  const egi     = grossYr - grossYr * lossPct;
+  const noi     = egi - opexYr;
+  const cashFlowYr = egi - allInYr;
+  const cashFlowMo = cashFlowYr / 12;
+
+  const acq    = YS.num("aClose")+YS.num("aImprove")+YS.num("aHold")+YS.num("aLease")+YS.num("aRefi")+YS.num("aInspect")+YS.num("aOther");
+  const cashIn = down + acq;
+  const arvEquity = arv - loan;
+
+  const cap = price>0 ? noi/price : 0;
+  const coc = cashIn>0 ? cashFlowYr/cashIn : 0;
+  const dscrRes  = piti>0  ? rent/piti : 0;
+  const dscrComm = allInMo>0 ? (egi/12)/allInMo : 0;
+  const dy  = loan>0 ? noi/loan : 0;
+  const beo = egi>0 ? allInYr/egi : 0;
+  const grm = grossYr>0 ? price/grossYr : 0;
+  const oer = egi>0 ? opexYr/egi : 0;
+  const ltc = (price+acq)>0 ? loan/(price+acq) : 0;
+  const roe = arvEquity>0 ? cashFlowYr/arvEquity : 0;
+  const eeq = arv>0 ? arvEquity/arv : 0;
+
+  YS.put("cfMo", YS.fmtUSD(cashFlowMo)); YS.signClass("cfMo", cashFlowMo);
+  YS.put("cfYr", YS.fmtUSD(cashFlowYr) + " per year after debt & all expenses");
+  const v = YS.el("cfVerdict"); v.className = "verdict";
+  if (cashFlowMo > 0) { v.classList.add("good"); v.textContent = "Positive cash flow"; }
+  else if (cashFlowMo === 0) { v.classList.add("ok"); v.textContent = "Breaks even"; }
+  else { v.classList.add("bad"); v.textContent = "Negative — deal loses monthly"; }
+
+  YS.put("cap", YS.fmtPct(cap));
+  YS.put("coc", YS.fmtPct(coc)); YS.signClass("coc", coc);
+  YS.put("dscrRes", YS.fmtX(dscrRes));
+  YS.put("dscrComm", YS.fmtX(dscrComm));
+  YS.put("noi", YS.fmtUSD(noi)); YS.signClass("noi", noi);
+  YS.put("dy", YS.fmtPct(dy));
+  YS.put("pi", YS.fmtUSD(pi));
+  YS.put("piti", YS.fmtUSD(piti));
+  YS.put("allin", YS.fmtUSD(allInMo));
+  YS.put("beo", YS.fmtPct(beo, 0));
+  YS.put("grm", YS.fmtNum(grm, 1));
+  YS.put("oer", YS.fmtPct(oer, 0));
+  YS.put("ltc", YS.fmtPct(ltc, 0));
+  YS.put("roe", YS.fmtPct(roe));
+  YS.put("eeq", YS.fmtPct(eeq, 0));
+  YS.put("cashIn", YS.fmtUSD(cashIn));
+}
+YS.live(compute);
+</script>
+<script src="../float-actions.js"></script>
+</body>
+</html>

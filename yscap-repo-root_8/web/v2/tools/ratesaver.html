@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script src="../theme.js?v=n6"></script>
+<script>
+(function () {
+  try {
+    var de = document.documentElement;
+    de.setAttribute("data-theme", "light");   // white-first — matches the portal (belt-and-suspenders vs a stale theme.js)
+    var q = new URLSearchParams(location.search);
+    if (q.get("embed") === "1") de.setAttribute("data-embed", "1");
+  } catch (e) {}
+})();
+</script>
+<script src="../brand.js?v=n1"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YS RateSaver — Rate Buydown vs. Lender Credit Tradeoff</title>
+<meta name="description" content="Compare rate buydown options against a free (par) rate and find the break-even on points or lender credits.">
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/images/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../assets/images/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="../assets/images/favicon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css?v=n7">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<span class="orb orb-1" aria-hidden="true"></span>
+<span class="orb orb-2" aria-hidden="true"></span>
+
+<header class="topbar">
+    <div class="topbar-inner">
+        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+        <span class="topbar-sep"></span>
+        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">RateSaver</span></div>
+        <div class="topbar-actions">
+            <a class="back" href="../suite.html">← All tools</a>
+            <button class="btn btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
+            <button class="btn btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
+            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
+        </div>
+    </div>
+</header>
+
+<main>
+<section class="tool-hero">
+    <div class="suite-eyebrow">Points &amp; credits</div>
+    <h1>YS RateSaver<span class="tm">™</span></h1>
+    <p class="tool-tagline">The tool serious investors say YES to.</p>
+    <p class="tool-intro">Set your loan and a "free" (par) rate, then compare rate options where you either pay points to buy the rate down or take a lender credit. We show the monthly payment, the up-front cost, and exactly how long it takes to break even.</p>
+    <span class="fill-hint"><span class="swatch"></span> Fill the input fields — the comparison updates automatically.</span>
+</section>
+
+<div class="tool-grid">
+    <div class="inputs-col">
+        <div class="panel">
+            <h2><span class="panel-num">1</span> Loan &amp; free rate</h2>
+            <p class="panel-note">The "free rate" is the par rate with no points and no credit — the baseline every option is measured against.</p>
+            <div class="field-rows two-col">
+                <div class="field"><label for="loan">Loan amount</label><div class="input"><span class="adorn">$</span><input id="loan" type="number" value="400000"></div></div>
+                <div class="field"><label for="term">Loan term <em>(years)</em></label><div class="input"><input id="term" type="number" value="30"></div></div>
+                <div class="field"><label for="freeRate">Free (par) rate <em>(%)</em></label><div class="input"><input id="freeRate" type="number" value="7"><span class="adorn suffix">%</span></div></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2><span class="panel-num">2</span> Rate options</h2>
+            <p class="panel-note">Points are a % of the loan. <strong>Positive</strong> = you pay to buy the rate down · <strong>negative</strong> = lender credit. Leave a row's rate blank to skip it.</p>
+            <div class="subhead">Option 1</div>
+            <div class="field-rows two-col">
+                <div class="field"><label for="r1">Interest rate <em>(%)</em></label><div class="input"><input id="r1" type="number" value="6.75"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="p1">Points <em>(%)</em></label><div class="input"><input id="p1" type="number" value="0.5"><span class="adorn suffix">%</span></div></div>
+            </div>
+            <div class="subhead">Option 2</div>
+            <div class="field-rows two-col">
+                <div class="field"><label for="r2">Interest rate <em>(%)</em></label><div class="input"><input id="r2" type="number" value="6.5"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="p2">Points <em>(%)</em></label><div class="input"><input id="p2" type="number" value="1.25"><span class="adorn suffix">%</span></div></div>
+            </div>
+            <div class="subhead">Option 3</div>
+            <div class="field-rows two-col">
+                <div class="field"><label for="r3">Interest rate <em>(%)</em></label><div class="input"><input id="r3" type="number" value="7.25"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="p3">Points <em>(%)</em></label><div class="input"><input id="p3" type="number" value="-1"><span class="adorn suffix">%</span></div></div>
+            </div>
+            <div class="subhead">Option 4</div>
+            <div class="field-rows two-col">
+                <div class="field"><label for="r4">Interest rate <em>(%)</em></label><div class="input"><input id="r4" type="number" placeholder="optional"><span class="adorn suffix">%</span></div></div>
+                <div class="field"><label for="p4">Points <em>(%)</em></label><div class="input"><input id="p4" type="number" placeholder="0"><span class="adorn suffix">%</span></div></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="results-col">
+        <div class="result-hero">
+            <div class="rh-label">Free rate payment</div>
+            <div class="rh-value" id="freeMo">$2,661</div>
+            <div class="rh-sub" id="freeSub">at 7% with no points or credit</div>
+        </div>
+
+        <div class="panel">
+            <h2>Option comparison</h2>
+            <p class="panel-note">Best monthly value is highlighted.</p>
+            <div class="tbl-wrap">
+                <table class="cmp-table">
+                    <thead>
+                        <tr><th>Option</th><th>Rate</th><th>Cost</th><th>Payment</th><th>Saves/mo</th><th>Break-even</th></tr>
+                    </thead>
+                    <tbody id="cmpBody"></tbody>
+                </table>
+            </div>
+            <div id="summary" style="margin-top:1.2rem"></div>
+        </div>
+
+        <div class="apply-strip">
+            <p>We'll quote your real options — buydown or credit.</p>
+            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
+            <a class="btn btn-line" href="mailto:sales@yscapgroup.com">Get a quote</a>
+        </div>
+    </div>
+</div>
+</main>
+
+<footer class="suite-footer">
+    <div class="sf-inner">
+        <div class="sf-top">
+            <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">
+            <span class="sf-tag">The answer is yes.™</span>
+            <div class="sf-marks"><img src="../assets/images/eho-lender.png" alt="Equal Housing Lender"><img src="../assets/images/nmls.svg" alt="NMLS ID 2609746"></div>
+        </div>
+        <div class="sf-meta">YS Capital Group · <a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">NMLS ID 2609746</a> · <a href="tel:7188312168">718-831-2168</a> · <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a></div>
+        <p class="sf-disc"><strong>For estimation &amp; education only.</strong> Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Use is at your own risk.</p>
+        <p class="sf-copy">© 2026 YS Capital Group. All rights reserved. Equal Housing Lender.</p>
+    </div>
+</footer>
+
+<script src="../suite.js"></script>
+<script>
+/* ---------- YS RateSaver — formulas ----------
+   freeMonthly  : amortized payment at the free (par) rate
+   per option:
+     cost$        = points% / 100 × loan      (negative points = lender credit)
+     payment      = amortized payment at that option's rate
+     savings/mo   = freeMonthly − payment     (positive = cheaper than par)
+     break-even   = cost$ / savings/mo  (months) ; years = months / 12
+   A buydown (cost>0) needs you to HOLD long enough to recoup the points.
+   A credit (cost<0) means you're paid up front but pay a higher rate — worth it
+   only if you REFINANCE/sell before the extra interest eats the credit.
+--------------------------------------------------*/
+function compute() {
+  const loan = YS.num("loan"), term = YS.num("term"), freeRate = YS.num("freeRate");
+  const freeMonthly = YS.monthlyPayment(loan, freeRate, term);
+  YS.put("freeMo", YS.fmtUSD2(freeMonthly));
+  YS.put("freeSub", "at " + (freeRate || 0) + "% with no points or credit");
+
+  const opts = [1,2,3,4].map(function (i) {
+    const rate = YS.opt("r" + i);
+    if (rate == null || rate <= 0) return null;
+    const pts = YS.num("p" + i);
+    const cost = pts / 100 * loan;                 // + cost, − credit
+    const payment = YS.monthlyPayment(loan, rate, term);
+    const savings = freeMonthly - payment;         // + cheaper than par
+    let beMonths = null;
+    if (Math.abs(savings) > 0.000001) beMonths = cost / savings;
+    return { i: i, rate: rate, pts: pts, cost: cost, payment: payment, savings: savings, beMonths: beMonths };
+  });
+
+  // best = lowest monthly payment among active options
+  let bestIdx = -1, bestPay = Infinity;
+  opts.forEach(function (o, idx) { if (o && o.payment < bestPay) { bestPay = o.payment; bestIdx = idx; } });
+
+  const body = YS.el("cmpBody"); body.innerHTML = "";
+  const sumParts = [];
+  opts.forEach(function (o, idx) {
+    if (!o) return;
+    const tr = document.createElement("tr");
+    if (idx === bestIdx) tr.className = "cmp-best";
+    const costStr = (o.cost < 0 ? "+" + YS.fmtUSD(-o.cost) + " credit" : YS.fmtUSD(o.cost));
+    let beStr;
+    if (o.beMonths == null) beStr = "—";
+    else if (o.beMonths < 0) beStr = "n/a";
+    else beStr = o.beMonths.toFixed(0) + " mo (" + (o.beMonths/12).toFixed(1) + " yr)";
+    const savStr = (o.savings >= 0 ? "+" : "−") + YS.fmtUSD(Math.abs(o.savings));
+    tr.innerHTML =
+      "<td>Option " + o.i + "</td>" +
+      "<td>" + o.rate.toFixed(3).replace(/0+$/,"").replace(/\.$/,"") + "%</td>" +
+      "<td>" + costStr + "</td>" +
+      "<td>" + YS.fmtUSD2(o.payment) + "</td>" +
+      "<td style='color:" + (o.savings>=0?"var(--good)":"var(--bad)") + "'>" + savStr + "</td>" +
+      "<td>" + beStr + "</td>";
+    body.appendChild(tr);
+
+    // summary text per option
+    if (o.beMonths != null && o.beMonths > 0) {
+      const yrs = (o.beMonths/12).toFixed(1);
+      if (o.cost > 0)
+        sumParts.push("<strong>Option " + o.i + ":</strong> hold the loan at least <strong>" + yrs + " years</strong> for the buydown to pay off. Refinancing sooner loses money.");
+      else if (o.cost < 0)
+        sumParts.push("<strong>Option " + o.i + ":</strong> refinance or sell within <strong>" + yrs + " years</strong> to keep the lender credit ahead. Holding longer costs more.");
+    }
+  });
+  if (body.innerHTML === "") body.innerHTML = "<tr><td colspan='6' style='color:var(--muted-2)'>Enter at least one option rate above.</td></tr>";
+  YS.el("summary").innerHTML = sumParts.map(function (s) {
+    return "<div class='note-row'><span class='dot'></span><div class='tip'>" + s + "</div></div>";
+  }).join("");
+}
+YS.live(compute);
+</script>
+<script src="../float-actions.js"></script>
+</body>
+</html>

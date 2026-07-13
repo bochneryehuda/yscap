@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150" role="img" aria-label="NMLS Nationwide Multistate Licensing System">
+  <g fill="none" stroke="#E7E2D6" stroke-width="5" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M30 60 L100 22 L170 60"/>
+  </g>
+  <text x="100" y="98" fill="#E7E2D6" font-family="Hanken Grotesk, Arial, sans-serif" font-weight="700" font-size="44" text-anchor="middle" letter-spacing="2">NMLS</text>
+  <text x="100" y="128" fill="#9CABB2" font-family="Hanken Grotesk, Arial, sans-serif" font-weight="600" font-size="13" text-anchor="middle" letter-spacing="1">ID 2609746</text>
+</svg>
