@@ -244,6 +244,17 @@ async function resolveConditionFolder(driveId, syncFolderId, name) {
   return out;
 }
 
+// A cached folder id can go stale if a human deletes/moves the folder in
+// SharePoint (their prerogative — we never re-create over their choices
+// silently; we just re-resolve from scratch, which recreates only what's
+// genuinely missing). Drops the scope from the DB + memory caches.
+async function invalidateScope(scopeKey) {
+  _memCache.delete(scopeKey);
+  _conditionFolderCache.clear();          // keyed by sync folder id — cheap to rebuild
+  try { await db.query('DELETE FROM sharepoint_folder_cache WHERE scope_key=$1', [scopeKey]); }
+  catch (_) { /* best-effort */ }
+}
+
 // Testing/maintenance: clear in-memory caches (DB cache remains).
 function _resetMemory() { _pipelineRoot = null; _memCache.clear(); _conditionFolderCache.clear(); }
 
@@ -251,6 +262,7 @@ module.exports = {
   resolveSyncFolder,
   resolveConditionFolder,
   pipelineRoot,
+  invalidateScope,
   // exported for unit tests
   addressCore, addressMatches, borrowerMatches, officerMatches, norm,
   _resetMemory,

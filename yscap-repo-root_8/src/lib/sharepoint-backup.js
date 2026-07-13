@@ -210,9 +210,25 @@ async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) 
 }
 
 // --------------------------------------------------------------------- mirror
-async function mirrorRow(row) {
+// `retried` guards the one self-heal: when a cached folder id has gone stale
+// (a human deleted/moved the folder in SharePoint → Graph itemNotFound), the
+// scope cache is invalidated and resolution re-runs once from scratch.
+async function mirrorRow(row, retried = false) {
   const scopeKey = scopeKeyFor(row);
   if (!scopeKey) throw new Error('document has no application or borrower to file under');
+  try {
+    return await mirrorRowInner(row, scopeKey);
+  } catch (e) {
+    if (!retried && (e.graphCode === 'itemNotFound' || e.status === 404)) {
+      console.warn(`[sp-sync] stale folder cache for ${scopeKey} (${e.message}) — re-resolving once`);
+      await map.invalidateScope(scopeKey);
+      return mirrorRow(row, true);
+    }
+    throw e;
+  }
+}
+
+async function mirrorRowInner(row, scopeKey) {
 
   const target = await map.resolveSyncFolder({
     scopeKey,
