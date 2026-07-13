@@ -24,61 +24,241 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../suite.css?v=pilot1">
+<style>
+/* =====================================================================
+   Portfolio Tracker — blueprint chrome (self-contained, ds.css-derived).
+   Design tokens are namespaced --ds-* and every page rule is scoped under
+   #pt / #ptBar so this page's palette never collides with suite.css
+   (which uses --ivory as DARK text in light theme). The calculator's
+   bound ids/names, dynamic-row structure and both inline JS blocks
+   are untouched — this file is chrome only.
+   ===================================================================== */
+:root{
+  --ds-paper:#F4F0E7; --ds-card:#FBF9F3; --ds-panel:#FFFFFF;
+  --ds-ink:#141B22; --ds-ink-1:#1D2830; --ds-ink-soft:#4B585C;
+  --ds-gold:#AE8746; --ds-teal:#2F7F86; --ds-teal-deep:#1F5A60;
+  --ds-up:#2E7A5E; --ds-down:#B4472E;
+  --ds-line:rgba(20,27,34,.16); --ds-line-soft:rgba(20,27,34,.08);
+  --ds-serif:'Fraunces',Georgia,serif; --ds-sans:'Hanken Grotesk',system-ui,sans-serif;
+  --ds-maxw:1180px; --ds-r:9px;
+}
+:root[data-theme="light"] body{ background:var(--ds-paper); color:var(--ds-ink); }
+
+/* Hard visibility guard: beat suite.css's light-theme h1/h2/h3 -> --ivory rule
+   so headings are never near-white on the ivory page. */
+:root[data-theme="light"] #pt .pt-head h1,
+:root[data-theme="light"] #pt .panel h2{ color:var(--ds-ink); }
+
+/* ---- tool top bar ---- */
+#ptBar.tool-bar{ position:sticky; top:0; z-index:50; background:rgba(251,249,243,.92); backdrop-filter:blur(8px); border-bottom:1px solid var(--ds-line-soft); }
+#ptBar .inner{ display:flex; align-items:center; justify-content:space-between; height:62px; gap:24px; max-width:var(--ds-maxw); margin:0 auto; padding:0 40px; }
+#ptBar .crumb{ display:flex; align-items:center; gap:13px; min-width:0; }
+#ptBar .logo-nav{ height:32px; width:auto; }
+#ptBar .cdiv{ width:1px; height:24px; background:var(--ds-line); flex:none; }
+#ptBar .trail{ display:flex; align-items:center; font-size:13px; font-weight:600; letter-spacing:.02em; color:var(--ds-ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#ptBar .trail a{ color:var(--ds-ink-soft); }
+#ptBar .trail .sep{ opacity:.4; padding:0 .55em; }
+#ptBar .trail .here{ color:var(--ds-ink); }
+#ptBar .tool-actions{ display:flex; align-items:center; gap:10px; flex:none; }
+#ptBar .back{ font-size:13px; font-weight:600; color:var(--ds-ink-soft); }
+.tb-under{ position:relative; }
+.tb-under::after{ content:""; position:absolute; left:0; bottom:-3px; height:1.5px; width:100%; background:var(--ds-gold); transform:scaleX(0); transform-origin:left; transition:transform .28s cubic-bezier(.22,.61,.36,1); }
+.tb-under:hover::after{ transform:scaleX(1); }
+
+/* ---- page header / hero ---- */
+#pt{ display:block; }
+#pt .pt-head{ max-width:var(--ds-maxw); margin:0 auto; padding:46px 40px 24px; }
+#pt .pt-head .toprow{ display:flex; align-items:flex-end; justify-content:space-between; gap:26px; flex-wrap:wrap; }
+#pt .pt-head .suite-eyebrow{ margin-bottom:.55rem; }
+#pt .pt-head h1{ font-size:clamp(33px,4.4vw,50px); letter-spacing:-.012em; margin:.12em 0 .18em; position:relative; display:inline-block; }
+#pt .pt-head h1 .tm{ font-size:.4em; color:var(--ds-gold); vertical-align:super; font-style:normal; }
+#pt .pt-head h1::after{ content:""; position:absolute; left:0; right:38%; bottom:-.04em; height:2px; background:var(--ds-gold); transform:scaleX(0); transform-origin:left; }
+#pt .pt-head .tool-tagline{ margin-top:.5rem; }
+#pt .pt-head .tool-intro{ margin-top:.85rem; max-width:64ch; }
+#pt .pt-head .chips{ display:flex; gap:10px; flex-wrap:wrap; margin-top:20px; }
+#pt .pt-head .fill-hint{ margin-top:16px; }
+#pt .asof{ font-size:12px; letter-spacing:.06em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); white-space:nowrap; }
+#pt .chip{ display:inline-flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; letter-spacing:.02em; color:var(--ds-ink); background:var(--ds-card); border:1px solid var(--ds-line); border-radius:100px; padding:7px 14px; transition:border-color .2s, transform .2s; }
+#pt .chip:hover{ border-color:var(--ds-gold); transform:translateY(-1px); }
+
+/* ---- body wrap ---- */
+#pt .pt-wrap{ max-width:var(--ds-maxw); margin:0 auto; padding:6px 40px 40px; display:flex; flex-direction:column; gap:24px; }
+
+/* ---- panels ---- */
+#pt .panel{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:var(--ds-r); padding:0; margin:0; overflow:hidden; transition:border-color .25s, box-shadow .25s; }
+#pt .panel:hover{ border-color:rgba(20,27,34,.26); }
+#pt .panel-h{ display:flex; align-items:center; justify-content:space-between; gap:14px; padding:16px 22px; border-bottom:1px solid var(--ds-line-soft); }
+#pt .panel-h h2{ font-size:18px; margin:0; color:var(--ds-ink); font-family:var(--ds-serif); font-weight:500; }
+#pt .panel-h .ptag{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); opacity:.72; }
+#pt .panel-b{ padding:16px 22px 20px; }
+#pt .panel-note{ color:var(--ds-ink-soft); font-size:13px; margin:-2px 0 14px; }
+
+/* ---- properties table ---- */
+#pt .tbl-wrap{ width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+#pt table.pf-table{ width:100%; min-width:1060px; border-collapse:collapse; background:none; border:0; color:var(--ds-ink); }
+#pt .pf-table thead th{ font-family:var(--ds-sans); font-size:10.5px; letter-spacing:.09em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); text-align:right; padding:0 .55rem 12px; white-space:nowrap; border-bottom:1px solid var(--ds-line); }
+#pt .pf-table thead th:first-child, #pt .pf-table thead th:nth-child(2){ text-align:left; }
+#pt .pf-table tbody td{ padding:7px .45rem; vertical-align:middle; border-bottom:1px solid var(--ds-line-soft); text-align:right; }
+#pt .pf-table tbody td:first-child, #pt .pf-table tbody td:nth-child(2){ text-align:left; }
+#pt .pf-table tbody tr{ transition:background .18s; }
+#pt .pf-table tbody tr:hover{ background:rgba(174,135,70,.05); }
+
+/* editable-look cell inputs (blueprint .cell-in) */
+#pt .pf-table td input{ width:104px; max-width:100%; text-align:right; background:var(--ds-panel); border:1px solid var(--ds-line-soft); border-radius:7px; padding:9px 11px; font-family:var(--ds-serif); font-size:15px; font-variant-numeric:tabular-nums; color:var(--ds-ink); transition:border-color .18s, background .18s; }
+#pt .pf-table td input:hover{ border-color:var(--ds-line); }
+#pt .pf-table td input:focus{ outline:none; border-color:var(--ds-teal); background:#fff; box-shadow:0 0 0 3px rgba(47,127,134,.12); }
+#pt .pf-table td input.txt{ width:170px; text-align:left; font-family:var(--ds-sans); font-size:14px; }
+/* calc cells: equity = gold, cash flow keeps the JS-set +/- inline color */
+#pt .pf-table td.calc{ font-family:var(--ds-serif); font-size:16px; font-variant-numeric:tabular-nums; font-weight:600; color:var(--ds-teal-deep); padding-right:.6rem; text-align:right; }
+#pt .pf-table td.calc[data-k="equity"]{ color:var(--ds-gold); }
+
+/* per-row delete button */
+#pt .pf-table td .btn{ padding:.35rem .58rem; border-radius:7px; }
+
+/* totals footer */
+#pt .pf-table tfoot td{ border-top:2px solid var(--ds-line); padding:16px .45rem 4px; font-family:var(--ds-serif); font-weight:600; font-variant-numeric:tabular-nums; color:var(--ds-ink); text-align:right; font-size:16px; }
+#pt .pf-table tfoot td[colspan]{ text-align:left; font-family:var(--ds-sans); font-size:11px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); }
+#pt .pf-table tfoot #tEquity{ color:var(--ds-gold); font-size:18px; }
+#pt .pf-table tfoot #tCf{ color:var(--ds-teal-deep); }
+
+/* actions under the table */
+#pt .pf-actions{ display:flex; align-items:center; gap:12px; margin-top:16px; }
+#pt #addRow{ flex:1; justify-content:center; gap:8px; padding:13px; border:1px dashed var(--ds-line); border-radius:var(--ds-r); background:transparent; color:var(--ds-ink-soft); font-family:var(--ds-sans); font-weight:600; font-size:14px; letter-spacing:.02em; transition:border-color .2s, color .2s, background .2s; }
+#pt #addRow:hover{ border-color:var(--ds-gold); color:var(--ds-gold); background:var(--ds-card); }
+#pt #clearRows{ flex:none; }
+
+/* ---- lower results grid ---- */
+#pt .pt-lower{ display:grid; grid-template-columns:1.05fr .95fr; gap:24px; align-items:start; }
+#pt .inputs-col{ display:flex; flex-direction:column; gap:18px; }
+#pt .results-col{ display:flex; flex-direction:column; gap:18px; }
+
+/* feature net-worth card */
+#pt .result-hero{ background:var(--ds-card); border:1px solid var(--ds-line); border-top:0; border-radius:var(--ds-r); box-shadow:inset 3px 0 0 var(--ds-gold), 0 1px 2px rgba(22,32,29,.04), 0 18px 40px -30px rgba(22,32,29,.4); padding:24px 26px; margin:0; }
+#pt .result-hero .rh-label{ font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--ds-gold); font-weight:700; }
+#pt .result-hero .rh-value{ font-family:var(--ds-serif); font-weight:500; font-variant-numeric:tabular-nums; font-size:clamp(40px,5vw,54px); line-height:1.02; letter-spacing:-.02em; margin-top:.35rem; color:var(--ds-teal-deep); }
+#pt .result-hero .rh-value.tealed{ color:var(--ds-teal-deep); }
+#pt .result-hero .rh-sub{ color:var(--ds-ink-soft); margin-top:.5rem; font-size:14px; }
+
+/* result / ratio mini cards */
+#pt .result-grid{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+#pt .result{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:var(--ds-r); padding:15px 17px; transition:transform .2s ease, box-shadow .2s ease, border-color .2s ease; }
+#pt .result:hover{ transform:translateY(-2px); border-color:rgba(20,27,34,.26); box-shadow:0 12px 26px -18px rgba(22,32,29,.45); }
+#pt .result .r-label{ font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--ds-ink-soft); font-weight:700; }
+#pt .result .r-value{ font-family:var(--ds-serif); font-size:24px; font-weight:500; font-variant-numeric:tabular-nums; margin-top:.3rem; color:var(--ds-ink); }
+#pt .result .r-value.pos{ color:var(--ds-up); }
+#pt .result .r-value.neg{ color:var(--ds-down); }
+#pt .result .r-hint{ font-size:11px; color:var(--ds-ink-soft); opacity:.75; margin-top:.32rem; }
+#pt .results-col .result-grid{ margin-top:16px; }
+#pt #rEquity{ color:var(--ds-gold); }
+
+/* apply strip — light card so suite.css's dark btn-line text stays readable */
+#pt .apply-strip{ background:var(--ds-card); color:var(--ds-ink); border:1px solid var(--ds-line); border-left:3px solid var(--ds-gold); border-radius:var(--ds-r); padding:20px 24px; display:flex; flex-wrap:wrap; align-items:center; gap:14px; }
+#pt .apply-strip p{ margin:0; flex:1 1 240px; font-family:var(--ds-serif); font-size:17px; color:var(--ds-ink); }
+
+/* disclosure */
+#pt .disc{ font-size:11.5px; line-height:1.55; color:var(--ds-ink-soft); max-width:82ch; margin:2px 0 0; }
+#pt .disc b{ color:var(--ds-ink-1); font-weight:600; }
+
+/* ---- polish: below-the-fold one-way reveals (reduced-motion safe) ---- */
+@keyframes ptDraw{ to{ transform:scaleX(1); } }
+@keyframes ptRise{ from{ opacity:0; transform:translateY(24px); } to{ opacity:1; transform:none; } }
+@media (prefers-reduced-motion: no-preference){
+  #pt .pt-head h1::after{ animation:ptDraw .7s .35s cubic-bezier(.22,.61,.36,1) forwards; }
+  @supports (animation-timeline: view()){
+    #pt .pt-reveal{ animation:ptRise linear both; animation-timeline:view(); animation-range:entry 4% cover 26%; }
+  }
+}
+
+/* ---- responsive ---- */
+@media(max-width:980px){
+  #ptBar .inner{ padding:0 24px; }
+  #pt .pt-head{ padding:32px 24px 22px; }
+  #pt .pt-wrap{ padding:6px 24px 32px; }
+  #pt .pt-lower{ grid-template-columns:1fr; gap:20px; }
+}
+@media(max-width:560px){
+  #ptBar .inner{ height:auto; padding:12px 20px; flex-wrap:wrap; gap:12px; }
+  #ptBar .tool-actions{ width:100%; }
+  #ptBar .tool-actions .btn{ flex:1; justify-content:center; }
+  #pt .pt-head .toprow{ align-items:flex-start; }
+  #pt .result-grid{ grid-template-columns:1fr; }
+  #pt .pf-actions{ flex-direction:column; align-items:stretch; }
+  #pt .pf-table td input{ width:96px; font-size:16px; }
+  #pt .pf-table td input.txt{ width:150px; }
+}
+</style>
 </head>
 <body>
 
-<header class="topbar">
-    <div class="topbar-inner">
-        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
-        <span class="topbar-sep"></span>
-        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Portfolio Tracker</span></div>
-        <div class="topbar-actions">
-            <a class="back" href="../suite.html">← All tools</a>
-            <button class="btn btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
-            <button class="btn btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
-            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
+<header class="tool-bar" id="ptBar">
+    <div class="inner">
+        <div class="crumb">
+            <a class="topbar-brand" href="../index.html"><img class="logo-nav" src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+            <span class="cdiv"></span>
+            <span class="trail"><a class="tb-under" href="../suite.html">Investor Suite</a><span class="sep">/</span><span class="here">Portfolio Tracker</span></span>
+        </div>
+        <div class="tool-actions">
+            <a class="back tb-under" href="../suite.html">← All tools</a>
+            <button class="btn btn-line btn-sm" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
+            <button class="btn btn-line btn-sm" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
+            <a class="btn btn-solid btn-sm" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
         </div>
     </div>
 </header>
 
-<main>
-<section class="tool-hero">
-    <div class="suite-eyebrow">Portfolio command center</div>
-    <h1>YS Portfolio Tracker<span class="tm">™</span></h1>
-    <p class="tool-tagline">The tool serious investors say YES to.</p>
-    <p class="tool-intro">Add a row per property. Enter price, value, mortgage, cash in the deal, rent and expenses — equity and cash flow auto-calculate per property, and the whole portfolio rolls up into equity, cash flow, LTV, DSCR and net worth.</p>
-    <span class="fill-hint"><span class="swatch"></span> Edit any cell — totals and ratios update automatically.</span>
+<main id="pt">
+<section class="tool-hero pt-head">
+    <div class="toprow">
+        <div>
+            <div class="suite-eyebrow">Portfolio command center</div>
+            <h1>YS Portfolio Tracker<span class="tm">™</span></h1>
+            <p class="tool-tagline">The tool serious investors say YES to.</p>
+            <p class="tool-intro">Add a row per property. Enter price, value, mortgage, cash in the deal, rent and expenses — equity and cash flow auto-calculate per property, and the whole portfolio rolls up into equity, cash flow, LTV, DSCR and net worth.</p>
+            <div class="chips">
+                <span class="chip">One live ledger</span>
+                <span class="chip">Rental / DSCR</span>
+                <span class="chip">Estimates only</span>
+            </div>
+            <span class="fill-hint"><span class="swatch"></span> Edit any cell — totals and ratios update automatically.</span>
+        </div>
+        <span class="asof">Live view</span>
+    </div>
 </section>
 
-<div style="max-width:var(--maxw);margin:0 auto;padding:1.5rem 1.5rem 4rem">
-    <div class="panel">
-        <h2>Properties</h2>
-        <p class="panel-note">Built-up equity (Value − Mortgage) and cash flow (Rent − Mortgage − Other) calculate for each row.</p>
-        <div class="tbl-wrap">
-            <table class="pf-table">
-                <thead>
-                    <tr>
-                        <th>Address</th><th>Type</th><th>Purchase $</th><th>Value $</th><th>Mortgage $</th>
-                        <th>Equity $</th><th>Cash in deal $</th><th>Rent /mo</th><th>Mortgage /mo</th><th>Other /mo</th><th>Cash flow /mo</th><th></th>
-                    </tr>
-                </thead>
-                <tbody id="pfBody"></tbody>
-                <tfoot>
-                    <tr class="pf-foot">
-                        <td colspan="2" style="text-align:left">Portfolio totals</td>
-                        <td id="tPrice">$0</td><td id="tValue">$0</td><td id="tMort">$0</td>
-                        <td id="tEquity">$0</td><td id="tCash">$0</td><td id="tRent">$0</td><td id="tPmt">$0</td><td id="tOther">$0</td><td id="tCf">$0</td><td></td>
-                    </tr>
-                </tfoot>
-            </table>
+<div class="pt-wrap">
+    <section class="panel">
+        <div class="panel-h">
+            <h2>Properties</h2>
+            <span class="ptag">Editable</span>
         </div>
-        <div class="pf-actions">
-            <button class="btn btn-line btn-sm" id="addRow">+ Add property</button>
-            <button class="btn btn-line btn-sm" id="clearRows">Clear all</button>
+        <div class="panel-b">
+            <p class="panel-note">Built-up equity (Value − Mortgage) and cash flow (Rent − Mortgage − Other) calculate for each row.</p>
+            <div class="tbl-wrap">
+                <table class="pf-table">
+                    <thead>
+                        <tr>
+                            <th>Address</th><th>Type</th><th>Purchase $</th><th>Value $</th><th>Mortgage $</th>
+                            <th>Equity $</th><th>Cash in deal $</th><th>Rent /mo</th><th>Mortgage /mo</th><th>Other /mo</th><th>Cash flow /mo</th><th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="pfBody"></tbody>
+                    <tfoot>
+                        <tr class="pf-foot">
+                            <td colspan="2" style="text-align:left">Portfolio totals</td>
+                            <td id="tPrice">$0</td><td id="tValue">$0</td><td id="tMort">$0</td>
+                            <td id="tEquity">$0</td><td id="tCash">$0</td><td id="tRent">$0</td><td id="tPmt">$0</td><td id="tOther">$0</td><td id="tCf">$0</td><td></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+            <div class="pf-actions">
+                <button class="btn btn-line btn-sm" id="addRow">+ Add property</button>
+                <button class="btn btn-line btn-sm" id="clearRows">Clear all</button>
+            </div>
         </div>
-    </div>
+    </section>
 
-    <div class="tool-grid" style="padding:0;max-width:none">
+    <div class="pt-lower">
         <div class="inputs-col">
             <div class="result-hero">
                 <div class="rh-label">Net worth from REO</div>
@@ -94,23 +274,27 @@
         </div>
         <div class="results-col">
             <div class="panel">
-                <h2>Performance ratios</h2>
-                <div class="result-grid" style="margin-top:1rem">
-                    <div class="result"><div class="r-label">Portfolio LTV</div><div class="r-value" id="rLtv">0%</div><div class="r-hint">mortgage ÷ value</div></div>
-                    <div class="result"><div class="r-label">Cash-on-cash return</div><div class="r-value" id="rCoc">0%</div><div class="r-hint">annual CF ÷ cash in deal</div></div>
-                    <div class="result"><div class="r-label">Gross rent multiplier</div><div class="r-value" id="rGrm">0</div><div class="r-hint">price ÷ annual rent</div></div>
-                    <div class="result"><div class="r-label">Expense ratio</div><div class="r-value" id="rExp">0%</div><div class="r-hint">annual exp ÷ gross rent</div></div>
-                    <div class="result"><div class="r-label">Portfolio DSCR</div><div class="r-value" id="rDscr">0×</div><div class="r-hint">rent ÷ mortgage</div></div>
-                    <div class="result"><div class="r-label">Total equity</div><div class="r-value" id="rEquity">$0</div></div>
+                <div class="panel-h"><h2>Performance ratios</h2></div>
+                <div class="panel-b">
+                    <div class="result-grid">
+                        <div class="result"><div class="r-label">Portfolio LTV</div><div class="r-value" id="rLtv">0%</div><div class="r-hint">mortgage ÷ value</div></div>
+                        <div class="result"><div class="r-label">Cash-on-cash return</div><div class="r-value" id="rCoc">0%</div><div class="r-hint">annual CF ÷ cash in deal</div></div>
+                        <div class="result"><div class="r-label">Gross rent multiplier</div><div class="r-value" id="rGrm">0</div><div class="r-hint">price ÷ annual rent</div></div>
+                        <div class="result"><div class="r-label">Expense ratio</div><div class="r-value" id="rExp">0%</div><div class="r-hint">annual exp ÷ gross rent</div></div>
+                        <div class="result"><div class="r-label">Portfolio DSCR</div><div class="r-value" id="rDscr">0×</div><div class="r-hint">rent ÷ mortgage</div></div>
+                        <div class="result"><div class="r-label">Total equity</div><div class="r-value" id="rEquity">$0</div></div>
+                    </div>
                 </div>
             </div>
-            <div class="apply-strip">
+            <div class="apply-strip pt-reveal">
                 <p>Ready to refinance, scale, or pull equity? Let's talk.</p>
                 <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
                 <a class="btn btn-line" href="mailto:sales@yscapgroup.com">Get a quote</a>
             </div>
         </div>
     </div>
+
+    <p class="disc pt-reveal"><b>For tracking &amp; education only.</b> Values, balances and cash-flow figures are self-entered and illustrative; they are estimates, not appraisals, statements of account, or a quote, approval, or commitment to lend, nor financial, legal or tax advice. Verify balances with your servicer and value with a licensed appraisal.</p>
 </div>
 </main>
 

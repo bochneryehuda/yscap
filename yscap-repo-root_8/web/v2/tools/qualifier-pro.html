@@ -24,10 +24,271 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../suite.css?v=pilot1">
+<style>
+/* =====================================================================
+   YS QUALIFIER PRO — editorial reskin (blueprint: /preview/qualifier-pro)
+   Layered ON TOP of suite.css. All page rules are scoped under #qp / #qpBar /
+   #qpFoot so they win on ID specificity WITHOUT !important and never fight the
+   shared chrome (topbar / theme-toggle / float-actions all keep working).
+   Every calculator hook (ids price…rent, loanOut…dscrAll, dscrMeter,
+   dscrVerdict, the .inputs-col/.field/.result*/.verdict export selectors) is
+   preserved verbatim — this file only restyles and rearranges containers.
+   ===================================================================== */
+
+/* ---------- topbar: crumb bar with animated underlines ---------- */
+#qpBar .topbar-inner{ max-width:1240px; }
+#qpBar .topbar-brand img{ height:38px; }
+#qpBar .topbar-crumb .crumb-suite,
+#qpBar .topbar-crumb a{ position:relative; }
+#qpBar .topbar-crumb a::after,
+#qpBar .topbar-actions .back::after{
+  content:""; position:absolute; left:0; right:0; bottom:-3px; height:1px;
+  background:var(--gold); transform:scaleX(0); transform-origin:left;
+  transition:transform .32s var(--ease);
+}
+#qpBar .topbar-crumb a:hover::after,
+#qpBar .topbar-actions .back:hover::after{ transform:scaleX(1); }
+#qpBar .topbar-crumb .here{ color:var(--ivory); font-weight:600; }
+#qpBar .topbar-actions .btn{ font-size:.86rem; padding:.6rem 1.15rem; }
+#qpBar .topbar-actions .btn-line:hover{ border-color:var(--gold); color:var(--gold); }
+
+/* ---------- hero (above the fold — always fully visible, opacity:1) ---------- */
+#qp{ position:relative; z-index:2; }
+#qp .tool-hero{
+  max-width:1240px; margin:0 auto; padding:4rem 1.5rem 2rem; text-align:left;
+}
+#qp .suite-eyebrow{
+  color:var(--gold); font-size:.72rem; letter-spacing:.24em; font-weight:700;
+  text-transform:uppercase; margin-bottom:1rem;
+}
+#qp .tool-hero h1{
+  font-family:var(--font-d); font-weight:500; letter-spacing:-.018em; line-height:1.02;
+  font-size:clamp(2.7rem,5.4vw,4.25rem); color:var(--ivory); margin:.1em 0 .18em;
+}
+#qp .tool-hero h1 .tm{ font-size:.32em; color:var(--gold); vertical-align:super; font-weight:600; }
+#qp .tool-tagline{
+  font-family:var(--font-d); font-style:italic; color:var(--muted);
+  font-size:clamp(1.1rem,2vw,1.4rem); margin:0;
+}
+#qp .tool-intro{
+  color:var(--muted); max-width:64ch; margin:1rem 0 0; font-size:1.04rem; line-height:1.62;
+}
+#qp .hero-chips{ display:flex; gap:.55rem; flex-wrap:wrap; margin-top:1.5rem; }
+#qp .qp-chip{
+  display:inline-flex; align-items:center; gap:.5rem; font-size:.76rem; font-weight:600;
+  letter-spacing:.02em; color:var(--ivory-soft); background:var(--ink-1);
+  border:1px solid var(--line); border-radius:100px; padding:.42rem .9rem;
+}
+#qp .qp-chip::before{ content:""; width:6px; height:6px; border-radius:50%; background:var(--gold); }
+#qp .fill-hint{
+  display:inline-flex; align-items:center; gap:.55rem; margin-top:1.35rem;
+  font-size:.86rem; color:var(--muted); border:1px solid var(--line);
+  border-radius:100px; padding:.5rem 1rem; background:var(--ink-1);
+}
+#qp .fill-hint .swatch{ width:13px; height:13px; border-radius:3px; background:var(--ink-2); border:1px solid var(--teal); flex:none; }
+
+/* ---------- working grid ---------- */
+#qp .tool-grid{
+  max-width:1240px; margin:0 auto; padding:.5rem 1.5rem 3.5rem;
+  display:grid; grid-template-columns:1.02fr .98fr; gap:2.6rem; align-items:start;
+}
+#qp .inputs-col{ display:flex; flex-direction:column; gap:1.4rem; }
+#qp .results-col{ position:sticky; top:5.2rem; display:flex; flex-direction:column; gap:1.2rem; }
+
+/* ---------- input panels ---------- */
+#qp .inputs-col .panel{
+  background:var(--ink-1); border:1px solid var(--line); border-radius:var(--r);
+  padding:0; overflow:hidden; margin:0;
+  transition:border-color .25s, box-shadow .3s, transform .25s var(--ease);
+}
+#qp .inputs-col .panel:hover{ box-shadow:0 18px 44px -30px rgba(20,27,34,.5); }
+#qp .panel .panel-head{
+  display:flex; align-items:center; justify-content:space-between; gap:1rem;
+  padding:1.25rem 1.5rem; border-bottom:1px solid var(--line-2);
+}
+#qp .panel h2{
+  font-family:var(--font-d); font-weight:500; font-size:1.32rem; letter-spacing:-.01em;
+  color:var(--ivory); display:flex; align-items:center; gap:.7rem; margin:0;
+}
+#qp .panel .panel-num{
+  display:inline-grid; place-items:center; width:26px; height:26px; flex:none;
+  font-family:var(--font-d); font-size:.85rem; font-weight:600; color:var(--gold);
+  border:1px solid rgba(174,135,70,.4); border-radius:8px; background:rgba(174,135,70,.07);
+}
+#qp .panel .panel-tag{
+  font-size:.66rem; letter-spacing:.18em; text-transform:uppercase; font-weight:700;
+  color:var(--muted-2);
+}
+#qp .panel .panel-note{
+  color:var(--muted); font-size:.86rem; line-height:1.5; margin:0;
+  padding:1rem 1.5rem 0;
+}
+#qp .panel .field-rows{ padding:1.25rem 1.5rem 1.4rem; }
+#qp .panel .panel-note + .field-rows{ padding-top:1rem; }
+#qp .field-rows.two-col{ display:grid; grid-template-columns:1fr 1fr; gap:1.1rem 1.15rem; }
+
+/* ---------- fields ---------- */
+#qp .field{ display:flex; flex-direction:column; gap:.5rem; margin:0; }
+#qp .field label{
+  font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; font-weight:700;
+  color:var(--muted); display:block;
+}
+#qp .field label em{ font-style:normal; color:var(--muted-2); font-weight:600; text-transform:none; letter-spacing:0; }
+#qp .field .input{
+  display:flex; align-items:center; gap:.15rem; background:var(--ink); border:1px solid var(--line);
+  border-radius:11px; padding:0 .85rem; transition:border-color .2s, box-shadow .2s, background .2s;
+}
+#qp .field .input:focus-within{ border-color:var(--teal); box-shadow:0 0 0 3px rgba(47,127,134,.14); background:var(--ink-1); }
+#qp .field .input .adorn{ color:var(--muted-2); font-size:.98rem; font-weight:600; flex:none; }
+#qp .field .input .adorn.suffix{ order:2; }
+#qp .field .input input{
+  flex:1; width:100%; min-width:0; background:none; border:0; outline:none; color:var(--ivory);
+  font-family:var(--font-b); font-size:1.04rem; font-weight:500; padding:.7rem .35rem;
+  font-variant-numeric:tabular-nums;
+}
+#qp .field .input input::placeholder{ color:var(--muted-2); font-weight:400; }
+
+/* ---------- result hero ---------- */
+#qp .result-hero{
+  background:var(--ink-1); border:1px solid var(--line); border-top:2px solid var(--gold);
+  border-radius:var(--r); padding:0; overflow:hidden;
+}
+#qp .result-hero .rh-top{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:.95rem 1.5rem; border-bottom:1px solid var(--line-2);
+}
+#qp .result-hero .rh-top .rh-ey{
+  font-size:.68rem; letter-spacing:.18em; text-transform:uppercase; font-weight:700; color:var(--muted-2);
+}
+#qp .result-hero .rh-top .rh-live{
+  display:inline-flex; align-items:center; gap:.45rem; font-size:.68rem; letter-spacing:.14em;
+  text-transform:uppercase; font-weight:700; color:var(--teal);
+}
+#qp .result-hero .rh-top .rh-live::before{
+  content:""; width:7px; height:7px; border-radius:50%; background:var(--teal);
+  box-shadow:0 0 0 0 rgba(47,127,134,.5); animation:qpPulse 2.4s ease-out infinite;
+}
+#qp .result-hero .rh-label{
+  font-size:.74rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); font-weight:700;
+  padding:1.45rem 1.5rem 0;
+}
+#qp .result-hero .rh-value{
+  font-family:var(--font-d); font-weight:500; font-variant-numeric:tabular-nums;
+  font-size:clamp(3rem,6.4vw,3.9rem); line-height:1; letter-spacing:-.02em;
+  color:var(--gold); margin:.4rem 0 0; padding:0 1.5rem;
+}
+#qp .result-hero .rh-sub{
+  color:var(--muted); font-size:.92rem; margin-top:.55rem; padding:0 1.5rem; line-height:1.5;
+}
+#qp .result-hero .meter{
+  height:8px; border-radius:100px; background:var(--ink-3); overflow:hidden;
+  margin:1.2rem 1.5rem .2rem;
+}
+#qp .result-hero .verdict{
+  display:inline-flex; align-items:center; gap:.5rem; margin:1rem 1.5rem 1.5rem;
+  font-size:.82rem; font-weight:700; letter-spacing:.01em; padding:.5rem 1rem;
+  border-radius:100px; border:1px solid transparent;
+}
+#qp .result-hero .verdict::before{ content:""; width:7px; height:7px; border-radius:50%; background:currentColor; }
+#qp .verdict.good{ color:var(--good); background:rgba(46,122,94,.1); border-color:rgba(46,122,94,.28); }
+#qp .verdict.ok{ color:var(--teal-br); background:rgba(47,127,134,.1); border-color:rgba(47,127,134,.28); }
+#qp .verdict.warn{ color:var(--warn); background:rgba(176,122,30,.1); border-color:rgba(176,122,30,.3); }
+#qp .verdict.bad{ color:var(--bad); background:rgba(180,82,42,.1); border-color:rgba(180,82,42,.3); }
+
+/* ---------- result grid: seamless hairline KPI tiles ---------- */
+#qp .result-grid{
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px; background:var(--line-2); border:1px solid var(--line);
+  border-radius:var(--r); overflow:hidden;
+}
+#qp .result{
+  background:var(--ink-1); border:0; border-radius:0; margin:0; padding:1.05rem 1.15rem 1.15rem;
+  transition:background .25s, color .25s;
+}
+#qp .result:hover{ background:var(--ink); }
+#qp .result .r-label{
+  font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:700;
+  line-height:1.3;
+}
+#qp .result .r-value{
+  font-family:var(--font-d); font-weight:500; font-size:1.55rem; margin-top:.35rem;
+  color:var(--ivory); font-variant-numeric:tabular-nums; letter-spacing:-.01em; line-height:1.05;
+}
+#qp .result .r-hint{ font-size:.72rem; color:var(--muted-2); margin-top:.35rem; line-height:1.4; }
+
+/* ---------- apply strip ---------- */
+#qp .apply-strip{
+  background:var(--ink-1); border:1px solid var(--line); border-radius:var(--r);
+  padding:1.35rem 1.5rem; display:flex; flex-wrap:wrap; align-items:center; gap:.8rem; margin:0;
+}
+#qp .apply-strip p{ font-family:var(--font-d); font-size:1.08rem; color:var(--ivory); margin:0 auto 0 0; flex:1 1 12rem; line-height:1.3; }
+#qp .apply-strip .btn{ font-size:.88rem; }
+#qp .apply-strip .btn-line:hover{ border-color:var(--gold); color:var(--gold); }
+
+/* ---------- method notes ---------- */
+#qp .notes-panel{
+  background:var(--ink-1); border:1px solid var(--line); border-radius:var(--r);
+  padding:1.4rem 1.5rem; display:flex; flex-direction:column; gap:.95rem; margin:0;
+}
+#qp .note-row{ display:flex; gap:.7rem; align-items:flex-start; color:var(--muted); font-size:.86rem; line-height:1.55; }
+#qp .note-row strong{ color:var(--ivory-soft); font-weight:600; }
+#qp .note-row .dot{ width:7px; height:7px; border-radius:50%; background:var(--gold); flex:none; margin-top:.5rem; }
+
+/* ---------- dark footer band (explicit light text — invariant b) ---------- */
+#qpFoot{
+  background:#141B22; border-top:1px solid rgba(174,135,70,.28);
+  padding:3.4rem 1.5rem 2.6rem; margin-top:0;
+}
+#qpFoot .sf-inner{ max-width:1240px; margin:0 auto; }
+#qpFoot .sf-top{ display:flex; align-items:center; gap:1.1rem; flex-wrap:wrap; padding-bottom:1.4rem; border-bottom:1px solid rgba(244,240,231,.12); }
+#qpFoot .sf-top .logo{ height:52px; width:auto; }
+#qpFoot .sf-tag{ font-family:var(--font-d); font-style:italic; color:var(--gold); font-size:1.05rem; }
+#qpFoot .sf-marks{ margin-left:auto; display:flex; align-items:center; gap:1.1rem; }
+#qpFoot .sf-marks img{ height:38px; width:auto; opacity:.9; }
+#qpFoot .sf-meta{ color:rgba(244,240,231,.72); font-size:.86rem; margin-top:1.4rem; line-height:1.7; }
+#qpFoot .sf-meta a{ color:rgba(244,240,231,.82); }
+#qpFoot .sf-meta a:hover{ color:#fff; }
+#qpFoot .nmls-link{ text-decoration:underline; text-underline-offset:2px; }
+#qpFoot .sf-disc{ color:rgba(244,240,231,.56); font-size:.78rem; line-height:1.65; margin-top:1rem; max-width:78ch; }
+#qpFoot .sf-disc strong{ color:rgba(244,240,231,.82); font-weight:600; }
+#qpFoot .sf-copy{ color:rgba(244,240,231,.42); font-size:.76rem; margin-top:.7rem; }
+
+/* ---------- polish: below-the-fold one-way reveals (reduced-motion safe) ---------- */
+@media (prefers-reduced-motion: no-preference){
+  @supports (animation-timeline: view()){
+    #qp .qp-reveal{
+      animation:qpRise linear both;
+      animation-timeline:view();
+      animation-range:entry 2% cover 22%;
+    }
+    @keyframes qpRise{ from{ opacity:0; transform:translateY(28px); } to{ opacity:1; transform:none; } }
+  }
+}
+@keyframes qpPulse{ 0%{ box-shadow:0 0 0 0 rgba(47,127,134,.45);} 70%{ box-shadow:0 0 0 7px rgba(47,127,134,0);} 100%{ box-shadow:0 0 0 0 rgba(47,127,134,0);} }
+@media (prefers-reduced-motion: reduce){
+  #qp .result-hero .rh-top .rh-live::before{ animation:none; }
+}
+
+/* ---------- responsive ---------- */
+@media (max-width:980px){
+  #qp .tool-grid{ grid-template-columns:1fr; gap:1.6rem; }
+  #qp .results-col{ position:static; top:auto; }
+}
+@media (max-width:560px){
+  #qp .tool-hero{ padding:2.6rem 1.2rem 1.4rem; }
+  #qp .tool-grid{ padding:.5rem 1.2rem 2.6rem; }
+  #qp .field-rows.two-col{ grid-template-columns:1fr; }
+  #qp .apply-strip{ flex-direction:column; align-items:stretch; }
+  #qp .apply-strip .btn{ width:100%; }
+  #qpFoot .sf-marks{ margin-left:0; }
+  /* iOS: inputs >=16px prevents focus zoom */
+  #qp .field .input input{ font-size:16px; }
+}
+</style>
 </head>
 <body>
 
-<header class="topbar">
+<header class="topbar" id="qpBar">
     <div class="topbar-inner">
         <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
         <span class="topbar-sep"></span>
@@ -41,12 +302,17 @@
     </div>
 </header>
 
-<main>
+<main id="qp">
 <section class="tool-hero">
     <div class="suite-eyebrow">Mortgage &amp; DSCR</div>
     <h1>YS Qualifier Pro<span class="tm">™</span></h1>
     <p class="tool-tagline">The tool serious investors say YES to.</p>
     <p class="tool-intro">Enter the loan and the property's expenses and rent. We'll size the full payment stack — P&amp;I, PITIA, and all-in — and calculate both the residential and commercial DSCR lenders use to qualify rental loans.</p>
+    <div class="hero-chips">
+        <span class="qp-chip">DSCR rental</span>
+        <span class="qp-chip">No credit pull</span>
+        <span class="qp-chip">Estimates only</span>
+    </div>
     <span class="fill-hint"><span class="swatch"></span> Fill the input fields — every result updates automatically.</span>
 </section>
 
@@ -54,7 +320,10 @@
     <!-- INPUTS -->
     <div class="inputs-col">
         <div class="panel">
-            <h2><span class="panel-num">1</span> Loan</h2>
+            <div class="panel-head">
+                <h2><span class="panel-num">1</span> Loan</h2>
+                <span class="panel-tag">Sizing</span>
+            </div>
             <p class="panel-note">Use LTV to auto-size the loan, or type a loan amount directly to override it.</p>
             <div class="field-rows two-col">
                 <div class="field"><label for="price">Purchase price</label><div class="input"><span class="adorn">$</span><input id="price" type="number" inputmode="decimal" value="400000"></div></div>
@@ -65,8 +334,11 @@
             </div>
         </div>
 
-        <div class="panel">
-            <h2><span class="panel-num">2</span> Carrying costs</h2>
+        <div class="panel qp-reveal">
+            <div class="panel-head">
+                <h2><span class="panel-num">2</span> Carrying costs</h2>
+                <span class="panel-tag">Carry</span>
+            </div>
             <p class="panel-note">Taxes &amp; insurance are entered annually; everything else monthly.</p>
             <div class="field-rows two-col">
                 <div class="field"><label for="taxA">Property taxes <em>(annual)</em></label><div class="input"><span class="adorn">$</span><input id="taxA" type="number" inputmode="decimal" value="6000"></div></div>
@@ -78,8 +350,11 @@
             </div>
         </div>
 
-        <div class="panel">
-            <h2><span class="panel-num">3</span> Income</h2>
+        <div class="panel qp-reveal">
+            <div class="panel-head">
+                <h2><span class="panel-num">3</span> Income</h2>
+                <span class="panel-tag">Coverage</span>
+            </div>
             <div class="field-rows">
                 <div class="field"><label for="rent">Monthly rental income</label><div class="input"><span class="adorn">$</span><input id="rent" type="number" inputmode="decimal" value="3600"></div></div>
             </div>
@@ -89,8 +364,9 @@
     <!-- RESULTS -->
     <div class="results-col">
         <div class="result-hero">
+            <div class="rh-top"><span class="rh-ey">DSCR result · Estimate</span><span class="rh-live">Live</span></div>
             <div class="rh-label">DSCR — residential (PITIA)</div>
-            <div class="rh-value tealed" id="dscrRes">1.16×</div>
+            <div class="rh-value" id="dscrRes">1.16×</div>
             <div class="rh-sub">Rent ÷ PITIA. Most rental lenders look for 1.20×–1.25×+.</div>
             <div class="meter"><div class="meter-fill" id="dscrMeter"></div></div>
             <span class="verdict ok" id="dscrVerdict">Qualifying range</span>
@@ -105,13 +381,13 @@
             <div class="result"><div class="r-label">DSCR — all-in</div><div class="r-value" id="dscrAll">1.10×</div><div class="r-hint">commercial method</div></div>
         </div>
 
-        <div class="apply-strip" style="margin-top:1.2rem">
+        <div class="apply-strip qp-reveal">
             <p>Numbers working? Get exact terms on your scenario.</p>
             <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
             <a class="btn btn-line" href="mailto:sales@yscapgroup.com">Get a quote</a>
         </div>
 
-        <div class="panel">
+        <div class="notes-panel qp-reveal">
             <div class="note-row"><span class="dot"></span><div><strong>Residential DSCR</strong> (1–4 units) uses mortgage + taxes + insurance + HOA only — the quick qualification view.</div></div>
             <div class="note-row"><span class="dot"></span><div><strong>All-in / commercial DSCR</strong> adds utilities, maintenance and management for a realistic cash-flow picture (common on 5+ units).</div></div>
         </div>
@@ -119,7 +395,7 @@
 </div>
 </main>
 
-<footer class="suite-footer">
+<footer class="suite-footer" id="qpFoot">
     <div class="sf-inner">
         <div class="sf-top">
             <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">

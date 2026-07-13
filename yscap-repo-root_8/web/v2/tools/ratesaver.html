@@ -24,92 +24,261 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="../suite.css?v=pilot1">
+<style>
+/* =====================================================================
+   RateSaver — blueprint chrome (self-contained, ds.css-derived).
+   Design tokens are namespaced --ds-* so they never collide with suite.css
+   (which uses --ink as a near-white surface and --ivory as dark text).
+   All calculator logic + bound ids/names are untouched; this is chrome only.
+   ===================================================================== */
+:root{
+  --ds-paper:#F4F0E7; --ds-card:#FBF9F3;
+  --ds-ink:#141B22; --ds-ink-1:#1D2830; --ds-ink-soft:#4B585C;
+  --ds-gold:#AE8746; --ds-teal:#2F7F86; --ds-teal-deep:#245F65;
+  --ds-line:rgba(20,27,34,.16); --ds-line-soft:rgba(20,27,34,.08);
+  --ds-ok:#2E7A5E; --ds-serif:'Fraunces',Georgia,serif; --ds-sans:'Hanken Grotesk',system-ui,sans-serif;
+  --ds-maxw:1180px; --ds-r:8px;
+}
+:root[data-theme="light"] body{ background:var(--ds-paper); color:var(--ds-ink); }
+/* Hard visibility guard: beat suite.css's light-theme h1/h2/h3 -> --ivory rule
+   so headings are never near-white on the ivory page. */
+:root[data-theme="light"] .an-head h1,
+:root[data-theme="light"] .panel-h h2{ color:var(--ds-ink); }
+
+/* ---- tool top bar ---- */
+.tool-bar{ position:sticky; top:0; z-index:50; background:rgba(251,249,243,.92); backdrop-filter:blur(8px); border-bottom:1px solid var(--ds-line-soft); }
+.tool-bar .inner{ display:flex; align-items:center; justify-content:space-between; height:62px; gap:24px; max-width:var(--ds-maxw); margin:0 auto; padding:0 40px; }
+.tool-bar .crumb{ display:flex; align-items:center; gap:13px; min-width:0; }
+.tool-bar .logo-nav{ height:32px; width:auto; }
+.tool-bar .cdiv{ width:1px; height:24px; background:var(--ds-line); flex:none; }
+.tool-bar .trail{ display:flex; align-items:center; font-size:13px; font-weight:600; letter-spacing:.02em; color:var(--ds-ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tool-bar .trail a{ color:var(--ds-ink-soft); }
+.tool-bar .trail .sep{ opacity:.4; padding:0 .55em; }
+.tool-bar .trail .here{ color:var(--ds-ink); }
+.tool-bar .tool-actions{ display:flex; align-items:center; gap:10px; flex:none; }
+.tool-bar .back{ font-size:13px; font-weight:600; color:var(--ds-ink-soft); }
+.tb-under{ position:relative; }
+.tb-under::after{ content:""; position:absolute; left:0; bottom:-3px; height:1.5px; width:100%; background:var(--ds-gold); transform:scaleX(0); transform-origin:left; transition:transform .28s cubic-bezier(.22,.61,.36,1); }
+.tb-under:hover::after{ transform:scaleX(1); }
+
+/* ---- page header / hero ---- */
+.an-head{ max-width:var(--ds-maxw); padding:46px 40px 26px; }
+.an-head .suite-eyebrow{ margin-bottom:.6rem; }
+.an-head h1{ font-size:clamp(34px,4.6vw,50px); letter-spacing:-.012em; margin:.12em 0 .18em; }
+.an-head h1 em{ font-style:italic; color:var(--ds-teal); position:relative; }
+.an-head h1 em::after{ content:""; position:absolute; left:0; right:0; bottom:-.02em; height:2px; background:var(--ds-gold); transform-origin:left; }
+.an-head h1 .tm{ font-size:.34em; color:var(--ds-gold); vertical-align:super; font-style:normal; }
+.an-head .tool-tagline{ margin-top:.55rem; }
+.an-head .tool-intro{ margin-top:.9rem; max-width:64ch; }
+.an-head .chips{ display:flex; gap:10px; flex-wrap:wrap; margin-top:20px; }
+.an-head .fill-hint{ margin-top:16px; }
+.chip{ display:inline-flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; letter-spacing:.02em; color:var(--ds-ink); background:var(--ds-card); border:1px solid var(--ds-line); border-radius:100px; padding:7px 14px; transition:border-color .2s, transform .2s; }
+.chip:hover{ border-color:var(--ds-gold); transform:translateY(-1px); }
+
+/* ---- working grid ---- */
+.analyzer{ display:grid; grid-template-columns:.94fr 1.06fr; gap:38px; align-items:start; max-width:var(--ds-maxw); margin:0 auto; padding:6px 40px 20px; }
+.form-col{ display:flex; flex-direction:column; gap:20px; }
+.form-col .panel{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:var(--ds-r); padding:0; margin:0; overflow:hidden; transition:border-color .25s, box-shadow .25s; }
+.form-col .panel:hover{ border-color:rgba(20,27,34,.26); }
+.panel-h{ display:flex; align-items:center; justify-content:space-between; gap:14px; padding:15px 20px; border-bottom:1px solid var(--ds-line-soft); }
+.panel-h h2{ font-size:17px; margin:0; display:flex; align-items:center; gap:11px; color:var(--ds-ink); font-family:var(--ds-serif); font-weight:500; }
+.panel-num{ width:24px; height:24px; flex:0 0 auto; border-radius:50%; border:0; background:var(--ds-ink); color:#fff; font-family:var(--ds-sans); font-weight:700; font-size:12px; display:inline-flex; align-items:center; justify-content:center; }
+.ptag{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); opacity:.72; }
+.panel-b{ padding:18px 20px 8px; }
+.panel-b .panel-note{ color:var(--ds-ink-soft); font-size:13px; margin:-2px 0 14px; }
+.form-grid{ display:grid; grid-template-columns:1fr 1fr; gap:0 18px; }
+.form-grid .field{ margin-bottom:14px; }
+.form-grid .span2{ grid-column:1 / -1; }
+.form-col .field label{ font-size:11px; letter-spacing:.06em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); }
+.form-col .field label em{ font-style:normal; text-transform:none; letter-spacing:0; color:var(--ds-ink-soft); opacity:.6; font-weight:600; font-size:.85em; }
+.form-col .input{ border-radius:8px; background:#fff; border-color:var(--ds-line); }
+.form-col .input input{ color:var(--ds-ink); }
+.form-col .input .adorn{ color:var(--ds-ink-soft); }
+
+/* option blocks inside the rate-options panel */
+.opt{ border-top:1px solid var(--ds-line-soft); padding-top:15px; margin-top:2px; }
+.opt:first-of-type{ border-top:0; padding-top:0; margin-top:0; }
+.opt-h{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:11px; }
+.opt-h .otag{ font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--ds-gold); }
+.opt-h .onote{ font-size:11.5px; color:var(--ds-ink-soft); }
+
+/* ---- sticky output ---- */
+.out-col{ position:sticky; top:80px; display:flex; flex-direction:column; gap:18px; }
+.result-card{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:var(--ds-r); overflow:hidden; box-shadow:0 1px 2px rgba(22,32,29,.04), 0 18px 40px -28px rgba(22,32,29,.4); }
+.result-top{ display:flex; align-items:center; justify-content:space-between; padding:14px 22px; border-bottom:1px solid var(--ds-line-soft); }
+.result-top .t{ font-size:11px; letter-spacing:.2em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); }
+.result-top .est{ font-size:11px; font-weight:700; color:var(--ds-teal); letter-spacing:.12em; text-transform:uppercase; display:inline-flex; align-items:center; gap:6px; }
+.result-top .est::before{ content:""; width:6px; height:6px; border-radius:50%; background:var(--ds-teal); animation:ds-pulse 2s ease-in-out infinite; }
+.result-card .result-hero{ border:0; border-radius:0; background:none; margin:0; padding:24px 22px 22px; display:flex; align-items:flex-end; justify-content:space-between; gap:18px; }
+.result-card .rh-label{ font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--ds-ink-soft); font-weight:600; }
+#freeMo{ font-family:var(--ds-serif); font-weight:500; font-variant-numeric:tabular-nums; font-size:clamp(42px,6vw,58px); line-height:1; letter-spacing:-.02em; color:var(--ds-gold); margin-top:8px; }
+.result-card .rh-sub{ color:var(--ds-ink-soft); font-size:13.5px; margin-top:8px; max-width:30ch; }
+.an-actions{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; padding:14px 22px 18px; border-top:1px solid var(--ds-line-soft); }
+.an-actions .btn{ width:100%; justify-content:center; }
+
+/* comparison panel */
+.out-col .panel{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:var(--ds-r); padding:0; margin:0; overflow:hidden; }
+.out-col .panel .panel-b{ padding:16px 20px 18px; }
+.tbl-wrap{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+.out-col .cmp-table{ min-width:480px; }
+.out-col .cmp-table td:first-child, .out-col .cmp-table th:first-child{ font-weight:600; }
+.out-col .cmp-table tbody tr{ transition:background .18s; }
+.cmp-table tr.cmp-best td{ background:rgba(174,135,70,.09); }
+.cmp-table tr.cmp-best:hover td{ background:rgba(174,135,70,.13); }
+.cmp-table tr.cmp-best td:first-child{ color:var(--ds-gold); box-shadow:inset 3px 0 0 var(--ds-gold); }
+#summary{ display:flex; flex-direction:column; gap:10px; }
+#summary .note-row{ display:flex; gap:10px; align-items:flex-start; font-size:12.5px; color:var(--ds-ink-soft); line-height:1.5; }
+#summary .note-row .dot{ width:6px; height:6px; border-radius:50%; background:var(--ds-gold); margin-top:6px; flex:none; }
+#summary .note-row strong{ color:var(--ds-ink-1); }
+
+.apply-strip{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:var(--ds-r); }
+
+/* ---- polish: one-way reveal below the fold only ---- */
+@keyframes ds-pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.32; } }
+@keyframes ds-reveal{ from{ opacity:0; transform:translateY(18px); } to{ opacity:1; transform:none; } }
+@keyframes ds-draw{ to{ transform:scaleX(1); } }
+@media (prefers-reduced-motion: no-preference){
+  .an-head h1 em::after{ transform:scaleX(0); animation:ds-draw .7s .35s cubic-bezier(.22,.61,.36,1) forwards; }
+  @supports (animation-timeline: view()){
+    .reveal{ animation:ds-reveal linear both; animation-timeline:view(); animation-range:entry 4% cover 30%; }
+  }
+}
+@media (prefers-reduced-motion: reduce){
+  .result-top .est::before{ animation:none; }
+}
+
+/* ---- responsive ---- */
+@media(max-width:980px){
+  .tool-bar .inner{ padding:0 24px; }
+  .an-head{ padding:32px 24px 22px; }
+  .analyzer{ grid-template-columns:1fr; gap:30px; padding:6px 24px 20px; }
+  .out-col{ position:static; top:auto; }
+}
+@media(max-width:560px){
+  .tool-bar .inner{ height:auto; padding:12px 20px; flex-wrap:wrap; gap:12px; }
+  .form-grid{ grid-template-columns:1fr; }
+  .an-actions{ grid-template-columns:1fr; }
+  .result-card .result-hero{ flex-direction:column; align-items:flex-start; }
+}
+</style>
 </head>
 <body>
 
-<header class="topbar">
-    <div class="topbar-inner">
-        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
-        <span class="topbar-sep"></span>
-        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">RateSaver</span></div>
-        <div class="topbar-actions">
-            <a class="back" href="../suite.html">← All tools</a>
-            <button class="btn btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
-            <button class="btn btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
-            <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
+<header class="tool-bar">
+    <div class="inner">
+        <div class="crumb">
+            <a class="topbar-brand" href="../index.html"><img class="logo-nav" src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+            <span class="cdiv"></span>
+            <span class="trail"><a class="tb-under" href="../suite.html">Investor Suite</a><span class="sep">/</span><span class="here">RateSaver</span></span>
+        </div>
+        <div class="tool-actions">
+            <a class="back tb-under" href="../suite.html">← All tools</a>
+            <button class="btn btn-sm btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
+            <button class="btn btn-sm btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
+            <a class="btn btn-sm btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply Now</a>
         </div>
     </div>
 </header>
 
 <main>
-<section class="tool-hero">
+<section class="tool-hero an-head">
     <div class="suite-eyebrow">Points &amp; credits</div>
-    <h1>YS RateSaver<span class="tm">™</span></h1>
+    <h1>YS Rate<em>Saver</em><span class="tm">™</span></h1>
     <p class="tool-tagline">The tool serious investors say YES to.</p>
     <p class="tool-intro">Set your loan and a "free" (par) rate, then compare rate options where you either pay points to buy the rate down or take a lender credit. We show the monthly payment, the up-front cost, and exactly how long it takes to break even.</p>
+    <div class="chips">
+        <span class="chip">Rate buy-down</span>
+        <span class="chip">Lender credit</span>
+        <span class="chip">Estimates only</span>
+    </div>
     <span class="fill-hint"><span class="swatch"></span> Fill the input fields — the comparison updates automatically.</span>
 </section>
 
-<div class="tool-grid">
-    <div class="inputs-col">
-        <div class="panel">
-            <h2><span class="panel-num">1</span> Loan &amp; free rate</h2>
-            <p class="panel-note">The "free rate" is the par rate with no points and no credit — the baseline every option is measured against.</p>
-            <div class="field-rows two-col">
-                <div class="field"><label for="loan">Loan amount</label><div class="input"><span class="adorn">$</span><input id="loan" type="number" value="400000"></div></div>
-                <div class="field"><label for="term">Loan term <em>(years)</em></label><div class="input"><input id="term" type="number" value="30"></div></div>
-                <div class="field"><label for="freeRate">Free (par) rate <em>(%)</em></label><div class="input"><input id="freeRate" type="number" value="7"><span class="adorn suffix">%</span></div></div>
+<div class="analyzer">
+    <!-- ============ LEFT: INPUTS ============ -->
+    <div class="inputs-col form-col">
+        <section class="panel">
+            <div class="panel-h"><h2><span class="panel-num">1</span> Loan &amp; free rate</h2><span class="ptag">Baseline</span></div>
+            <div class="panel-b">
+                <p class="panel-note">The "free rate" is the par rate with no points and no credit — the baseline every option is measured against.</p>
+                <div class="form-grid">
+                    <div class="field span2"><label for="loan">Loan amount</label><div class="input"><span class="adorn">$</span><input id="loan" type="number" value="400000"></div></div>
+                    <div class="field"><label for="term">Loan term <em>(years)</em></label><div class="input"><input id="term" type="number" value="30"></div></div>
+                    <div class="field"><label for="freeRate">Free (par) rate <em>(%)</em></label><div class="input"><input id="freeRate" type="number" value="7"><span class="adorn suffix">%</span></div></div>
+                </div>
             </div>
-        </div>
+        </section>
 
-        <div class="panel">
-            <h2><span class="panel-num">2</span> Rate options</h2>
-            <p class="panel-note">Points are a % of the loan. <strong>Positive</strong> = you pay to buy the rate down · <strong>negative</strong> = lender credit. Leave a row's rate blank to skip it.</p>
-            <div class="subhead">Option 1</div>
-            <div class="field-rows two-col">
-                <div class="field"><label for="r1">Interest rate <em>(%)</em></label><div class="input"><input id="r1" type="number" value="6.75"><span class="adorn suffix">%</span></div></div>
-                <div class="field"><label for="p1">Points <em>(%)</em></label><div class="input"><input id="p1" type="number" value="0.5"><span class="adorn suffix">%</span></div></div>
+        <section class="panel">
+            <div class="panel-h"><h2><span class="panel-num">2</span> Rate options</h2><span class="ptag">Up to 4</span></div>
+            <div class="panel-b">
+                <p class="panel-note">Points are a % of the loan. <strong>Positive</strong> = you pay to buy the rate down · <strong>negative</strong> = lender credit. Leave a row's rate blank to skip it.</p>
+                <div class="opt">
+                    <div class="opt-h"><span class="otag">Option 1</span><span class="onote">Buy the rate down</span></div>
+                    <div class="form-grid">
+                        <div class="field"><label for="r1">Interest rate <em>(%)</em></label><div class="input"><input id="r1" type="number" value="6.75"><span class="adorn suffix">%</span></div></div>
+                        <div class="field"><label for="p1">Points <em>(%)</em></label><div class="input"><input id="p1" type="number" value="0.5"><span class="adorn suffix">%</span></div></div>
+                    </div>
+                </div>
+                <div class="opt">
+                    <div class="opt-h"><span class="otag">Option 2</span><span class="onote">Buy the rate down further</span></div>
+                    <div class="form-grid">
+                        <div class="field"><label for="r2">Interest rate <em>(%)</em></label><div class="input"><input id="r2" type="number" value="6.5"><span class="adorn suffix">%</span></div></div>
+                        <div class="field"><label for="p2">Points <em>(%)</em></label><div class="input"><input id="p2" type="number" value="1.25"><span class="adorn suffix">%</span></div></div>
+                    </div>
+                </div>
+                <div class="opt">
+                    <div class="opt-h"><span class="otag">Option 3</span><span class="onote">Take a lender credit</span></div>
+                    <div class="form-grid">
+                        <div class="field"><label for="r3">Interest rate <em>(%)</em></label><div class="input"><input id="r3" type="number" value="7.25"><span class="adorn suffix">%</span></div></div>
+                        <div class="field"><label for="p3">Points <em>(%)</em></label><div class="input"><input id="p3" type="number" value="-1"><span class="adorn suffix">%</span></div></div>
+                    </div>
+                </div>
+                <div class="opt">
+                    <div class="opt-h"><span class="otag">Option 4</span><span class="onote">Optional — leave blank to skip</span></div>
+                    <div class="form-grid">
+                        <div class="field"><label for="r4">Interest rate <em>(%)</em></label><div class="input"><input id="r4" type="number" placeholder="optional"><span class="adorn suffix">%</span></div></div>
+                        <div class="field"><label for="p4">Points <em>(%)</em></label><div class="input"><input id="p4" type="number" placeholder="0"><span class="adorn suffix">%</span></div></div>
+                    </div>
+                </div>
             </div>
-            <div class="subhead">Option 2</div>
-            <div class="field-rows two-col">
-                <div class="field"><label for="r2">Interest rate <em>(%)</em></label><div class="input"><input id="r2" type="number" value="6.5"><span class="adorn suffix">%</span></div></div>
-                <div class="field"><label for="p2">Points <em>(%)</em></label><div class="input"><input id="p2" type="number" value="1.25"><span class="adorn suffix">%</span></div></div>
-            </div>
-            <div class="subhead">Option 3</div>
-            <div class="field-rows two-col">
-                <div class="field"><label for="r3">Interest rate <em>(%)</em></label><div class="input"><input id="r3" type="number" value="7.25"><span class="adorn suffix">%</span></div></div>
-                <div class="field"><label for="p3">Points <em>(%)</em></label><div class="input"><input id="p3" type="number" value="-1"><span class="adorn suffix">%</span></div></div>
-            </div>
-            <div class="subhead">Option 4</div>
-            <div class="field-rows two-col">
-                <div class="field"><label for="r4">Interest rate <em>(%)</em></label><div class="input"><input id="r4" type="number" placeholder="optional"><span class="adorn suffix">%</span></div></div>
-                <div class="field"><label for="p4">Points <em>(%)</em></label><div class="input"><input id="p4" type="number" placeholder="0"><span class="adorn suffix">%</span></div></div>
-            </div>
-        </div>
+        </section>
     </div>
 
-    <div class="results-col">
-        <div class="result-hero">
-            <div class="rh-label">Free rate payment</div>
-            <div class="rh-value" id="freeMo">$2,661</div>
-            <div class="rh-sub" id="freeSub">at 7% with no points or credit</div>
-        </div>
-
-        <div class="panel">
-            <h2>Option comparison</h2>
-            <p class="panel-note">Best monthly value is highlighted.</p>
-            <div class="tbl-wrap">
-                <table class="cmp-table">
-                    <thead>
-                        <tr><th>Option</th><th>Rate</th><th>Cost</th><th>Payment</th><th>Saves/mo</th><th>Break-even</th></tr>
-                    </thead>
-                    <tbody id="cmpBody"></tbody>
-                </table>
+    <!-- ============ RIGHT: RESULTS (sticky) ============ -->
+    <div class="results-col out-col">
+        <aside class="result-card">
+            <div class="result-top"><span class="t">Free rate &middot; Estimate</span><span class="est">Live</span></div>
+            <div class="result-hero">
+                <div class="rh-main">
+                    <div class="rh-label">Free rate payment</div>
+                    <div class="rh-value" id="freeMo">$2,661</div>
+                    <div class="rh-sub" id="freeSub">at 7% with no points or credit</div>
+                </div>
             </div>
-            <div id="summary" style="margin-top:1.2rem"></div>
-        </div>
+            <div class="an-actions">
+                <button class="btn btn-sm btn-line" type="button" onclick="YS.shareLink(this)" title="Copy a link that saves these inputs">Share 🔗</button>
+                <button class="btn btn-sm btn-line" type="button" onclick="YS.exportXLSX(this)">Export ⤓</button>
+                <a class="btn btn-sm btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
+            </div>
+        </aside>
 
-        <div class="apply-strip">
+        <section class="panel">
+            <div class="panel-h"><h2>Option comparison</h2><span class="ptag">Best value highlighted</span></div>
+            <div class="panel-b">
+                <div class="tbl-wrap">
+                    <table class="cmp-table">
+                        <thead>
+                            <tr><th>Option</th><th>Rate</th><th>Cost</th><th>Payment</th><th>Saves/mo</th><th>Break-even</th></tr>
+                        </thead>
+                        <tbody id="cmpBody"></tbody>
+                    </table>
+                </div>
+                <div id="summary" style="margin-top:1.2rem"></div>
+            </div>
+        </section>
+
+        <div class="apply-strip reveal">
             <p>We'll quote your real options — buydown or credit.</p>
             <a class="btn btn-solid" href="https://yscapgroup.mymortgage-online.com/loan-app/?siteId=5722777381&lar=admin&workFlowId=241919" target="_blank" rel="noopener">Apply now</a>
             <a class="btn btn-line" href="mailto:sales@yscapgroup.com">Get a quote</a>
