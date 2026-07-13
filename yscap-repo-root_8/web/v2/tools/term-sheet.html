@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script src="../theme.js?v=n6"></script>
+<script src="../brand.js?v=n1"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YS Term Sheet Studio — A Signable Fix &amp; Flip Term Sheet in About a Minute</title>
+<meta name="description" content="Build a signable YS Capital preliminary term sheet for fix & flip, bridge, and ground-up deals in about a minute: loan structure, fees, cash to close, liquidity and eligibility — instantly.">
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/images/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../assets/images/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="../assets/images/favicon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../suite.css?v=n7">
+<!-- This tool is WHITE-FIRST always (owner-directed): it must match the portal it
+     embeds into (Products & Pricing / Term Sheet Studio), so we force the light
+     theme before first paint regardless of any stale saved 'dark' preference. The
+     portal iframe (TermSheetStudio.jsx) also re-stamps light + hides the chrome. -->
+<script>
+(function () {
+  try { document.documentElement.setAttribute("data-theme", "light"); } catch (e) {}
+})();
+</script>
+<style>
+  .hidden{ display:none !important; }
+  /* Bridge (and any conditional row): when a field in a two-column row is hidden, collapse the row to one column so there's no empty slot. */
+  .field-rows.two-col:has(> .field.hidden){ grid-template-columns:1fr; }
+  .maxlev:has(> .ml.hidden){ grid-template-columns:1fr; }
+  /* ---- toggle switch ---- */
+  .switch{ display:inline-flex; align-items:center; gap:.75rem; cursor:pointer; }
+  .switch input{ position:absolute; opacity:0; width:0; height:0; }
+  .switch .track{ width:46px; height:27px; border-radius:100px; background:var(--ink-3); border:1px solid var(--line); position:relative; flex:0 0 auto; transition:.25s; }
+  .switch .track::after{ content:""; position:absolute; top:2px; left:2px; width:21px; height:21px; border-radius:50%; background:var(--muted); transition:.25s; }
+  .switch input:checked + .track{ background:var(--teal-dp); border-color:var(--teal); }
+  .switch input:checked + .track::after{ transform:translateX(19px); background:var(--ivory); }
+  .switch input:focus-visible + .track{ box-shadow:0 0 0 3px var(--teal-glow); }
+  .toggle-card{ border:1px solid var(--line); border-radius:12px; padding:.95rem 1.1rem; background:var(--ink); display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+  .toggle-card .tc-text{ font-size:.85rem; color:var(--muted); }
+  .toggle-card .tc-text b{ color:var(--ivory-soft); font-weight:600; display:block; font-size:.92rem; }
+  .tbd-toggle{ display:inline-flex; align-items:center; gap:.5rem; margin-top:.55rem; font-size:.84rem; color:var(--muted); cursor:pointer; user-select:none; }
+  .tbd-toggle input{ width:16px; height:16px; accent-color:var(--teal-br); cursor:pointer; }
+  .tbd-note{ margin-top:.6rem; padding:.7rem .85rem; border:1px dashed var(--teal-dp); border-radius:10px; background:rgba(127,169,176,.05); font-size:.82rem; color:var(--muted); line-height:1.5; }
+  .exp-total{ display:flex; align-items:center; justify-content:space-between; gap:1rem; margin-top:1rem; padding:.7rem 1rem; border:1px solid var(--teal-dp); border-radius:12px; background:rgba(127,169,176,.06); }
+  .exp-total-lbl{ font-size:.74rem; color:var(--muted); text-transform:uppercase; letter-spacing:.09em; }
+  .exp-total-val{ font-family:var(--font-d); font-weight:600; font-size:1.05rem; color:var(--teal-br); }
+  .ts-sub{ font-family:var(--font-b); font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:1.25rem 0 .55rem; padding-top:1rem; border-top:1px solid var(--line-2); }
+  .ts-sub.first{ border-top:0; padding-top:.2rem; margin-top:.4rem; }
+  .ts-line{ display:flex; align-items:baseline; justify-content:space-between; gap:1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; }
+  .ts-line:last-child{ border-bottom:0; }
+  .ts-line .k{ color:var(--muted-2); }
+  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; white-space:nowrap; }
+  .ts-line.em{ padding:.55rem 0; }
+  .ts-line.em .k{ color:var(--ivory-soft); font-weight:600; }
+  .ts-line.em .v{ color:var(--ivory-soft); font-size:1.02rem; }
+  .ts-line.gold .v{ color:var(--teal-br); }
+  .ts-irnote{ font-size:.78rem; color:var(--warn); margin-top:.5rem; line-height:1.5; padding:.6rem .8rem; border:1px solid rgba(201,168,106,.45); background:rgba(201,168,106,.08); border-radius:10px; }
+  .ts-irnote strong{ color:var(--ivory); }
+  .ts-note{ font-size:.75rem; color:var(--muted-2); margin-top:.6rem; line-height:1.55; }
+  .ts-manual-banner{ margin:.55rem 0 .3rem; padding:.6rem .8rem; border:1px solid var(--gold, #967b44); border-radius:9px; background:rgba(150,123,68,.12); color:var(--ivory-soft, #eee); font-size:.79rem; line-height:1.45; }
+  .ts-info{ font-size:.78rem; color:var(--muted); margin-top:.5rem; line-height:1.5; padding:.6rem .8rem; border:1px solid var(--teal-dp); background:rgba(127,169,176,.06); border-radius:10px; }
+  .ts-info strong{ color:var(--ivory-soft); }
+  /* ---- "what's still missing" box ---- */
+  .ts-missing{ margin-bottom:1rem; padding:.85rem 1rem; border:1px solid rgba(201,168,106,.55); background:rgba(201,168,106,.09); border-radius:14px; }
+  .ts-missing .tm-h{ font-weight:600; color:var(--ivory); font-size:.86rem; margin-bottom:.45rem; }
+  .ts-missing .tm-list{ list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:.4rem .55rem; }
+  .ts-missing .tm-list li{ font-size:.8rem; color:var(--ivory-soft); padding:.2rem .6rem; border:1px solid rgba(201,168,106,.5); border-radius:999px; background:rgba(201,168,106,.1); }
+  /* ---- state overlay note ---- */
+  .ts-state-note{ margin-top:.7rem; padding:.6rem .85rem; border-radius:10px; font-size:.8rem; line-height:1.45; color:var(--ivory-soft); border:1px solid rgba(127,169,176,.4); background:rgba(127,169,176,.08); }
+  /* ---- manual review ---- */
+  .ts-manual{ margin-top:.8rem; }
+  .ts-manual .tmv-lead{ font-size:.8rem; color:var(--muted); line-height:1.45; margin:0 0 .55rem; }
+  .ts-manual .btn{ width:100%; justify-content:center; }
+  .ts-export-note{ font-size:.74rem; color:var(--warn); margin-top:.55rem; text-align:center; }
+  .btn.is-disabled{ opacity:.45; cursor:not-allowed; filter:grayscale(.3); }
+  @keyframes ysFieldFlag{ 0%,100%{ box-shadow:0 0 0 0 rgba(150,123,68,0); } 30%{ box-shadow:0 0 0 3px rgba(150,123,68,.35); } }
+  .field-flag input,input.field-flag{ animation:ysFieldFlag 1.2s ease 2; border-color:var(--gold,#967b44)!important; }
+  .trust-badge{ display:flex; align-items:center; gap:.7rem; flex-wrap:wrap; margin:.5rem 0 .2rem; font-size:.76rem; font-weight:600; letter-spacing:.01em; color:var(--muted,#5b6770); }
+  .trust-badge i{ width:4px; height:4px; border-radius:50%; background:var(--gold,#967b44); opacity:.6; }
+  .lead-capture{ margin-top:1.1rem; padding:.95rem 1rem 1rem; border:1px solid rgba(150,123,68,.32); background:rgba(150,123,68,.06); border-radius:12px; }
+  .lead-capture label{ display:block; font-size:.86rem; font-weight:700; color:var(--ivory,#f3efe6); margin-bottom:.45rem; }
+  .lead-row{ display:flex; gap:.5rem; }
+  .lead-row input{ flex:1; min-width:0; padding:.6rem .7rem; border:1px solid var(--line,rgba(255,255,255,.14)); border-radius:9px; font-size:.9rem; background:var(--ink-1,#0e151b); color:var(--ivory,#f3efe6); }
+  .lead-row input::placeholder{ color:var(--muted-2,#6e7e86); }
+  .lead-row input:focus{ outline:none; border-color:var(--gold,#c9a86a); box-shadow:0 0 0 3px rgba(150,123,68,.22); }
+  .lead-row .btn{ white-space:nowrap; font-size:.84rem; padding:.6rem .85rem; }
+  .lead-note{ margin:.5rem 0 0; font-size:.74rem; color:var(--muted,#9cabb2); line-height:1.45; }
+  .handoff{ margin-top:.9rem; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.5rem .9rem; padding:.7rem .9rem; border-top:1px solid var(--line,rgba(255,255,255,.12)); }
+  .handoff-q{ font-size:.8rem; color:var(--muted,#9cabb2); }
+  .handoff-links{ display:flex; gap:.9rem; flex-wrap:wrap; }
+  .handoff-links a{ font-size:.8rem; font-weight:700; color:var(--teal-br,#a8d2d7); text-decoration:none; white-space:nowrap; }
+  .handoff-links a:hover{ color:var(--teal-br,#a8d2d7); text-decoration:underline; }
+  .tier-nudge{ margin-top:.75rem; padding:.6rem .75rem; border-radius:9px; background:rgba(127,169,176,.09); border-left:3px solid var(--gold,#c9a86a); font-size:.8rem; line-height:1.45; color:var(--ivory,#f3efe6); }
+  .tier-nudge strong{ color:var(--teal-br,#a8d2d7); }
+  .v-ltv{ display:inline-block; margin-left:.4rem; font-size:.72rem; font-weight:700; color:var(--teal-br,#a8d2d7); background:rgba(127,169,176,.14); padding:.06rem .42rem; border-radius:5px; vertical-align:middle; }
+  .v-ltv:empty{ display:none; }
+  @media (max-width:460px){ .handoff{ flex-direction:column; align-items:flex-start; } }
+  /* required-field highlight */
+  .field .input.need, .field .input.select.need{ border-color:rgba(201,168,106,.7); box-shadow:0 0 0 2px rgba(201,168,106,.14); }
+  .ts-cta{ margin-top:1.4rem; }
+  .ts-cta .btn{ width:100%; justify-content:center; }
+  .ts-compliance{ font-size:.72rem; color:var(--muted-2); line-height:1.6; margin-top:1.1rem; padding-top:1rem; border-top:1px solid var(--line-2); }
+  .rate-hint{ font-size:.72rem; color:var(--muted-2); margin-top:.4rem; }
+  .ys-toast{ position:fixed; left:50%; bottom:28px; transform:translate(-50%,16px); background:var(--ink); color:var(--ivory-soft); border:1px solid var(--line); padding:.7rem 1.1rem; border-radius:12px; font-size:.85rem; opacity:0; pointer-events:none; transition:.25s; z-index:90; box-shadow:0 14px 40px rgba(0,0,0,.4); }
+  .ys-toast.show{ opacity:1; transform:translate(-50%,0); }
+  /* ---- eligibility + program max leverage ---- */
+  .elig-card{ margin-bottom:1rem; }
+  .elig-head{ display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+  .reasons{ list-style:none; margin:.7rem 0 0; padding:0; display:flex; flex-direction:column; gap:.4rem; }
+  .reasons .reason{ font-size:.82rem; line-height:1.45; padding-left:1.15rem; position:relative; color:var(--muted); }
+  .reasons .reason::before{ content:"•"; position:absolute; left:.25rem; top:-.02em; }
+  .reasons .reason.good{ color:var(--good); } .reasons .reason.good::before{ color:var(--good); }
+  .reasons .reason.warn{ color:var(--warn); } .reasons .reason.warn::before{ color:var(--warn); }
+  .reasons .reason.bad{ color:var(--bad); } .reasons .reason.bad::before{ color:var(--bad); }
+  .maxlev{ display:grid; grid-template-columns:1fr 1fr; gap:.55rem; margin-top:.2rem; }
+  .maxlev .ml{ border:1px solid var(--line-2); border-radius:11px; padding:.6rem .75rem; background:rgba(127,169,176,.04); }
+  .maxlev .ml .mlk{ font-size:.66rem; text-transform:uppercase; letter-spacing:.09em; color:var(--muted-2); }
+  .maxlev .ml .mlv{ font-family:var(--font-d); font-weight:600; color:var(--teal-br); font-size:1.06rem; margin-top:.15rem; }
+  /* compact 2-column rows for fees / snapshot */
+  .ts-grid2{ display:grid; grid-template-columns:1fr 1fr; column-gap:1.4rem; }
+  .ts-grid2 .ts-line{ font-size:.84rem; }
+  @media (max-width:520px){ .ts-grid2{ grid-template-columns:1fr; } }
+  /* read-only field */
+  .input.is-ro{ opacity:.85; background:rgba(255,255,255,.02); }
+  .input.is-ro input{ color:var(--muted); cursor:default; }
+  /* assignment note */
+  .ts-assign{ margin:.7rem 0 .2rem; padding:.65rem .85rem; border-radius:10px; font-size:.8rem; line-height:1.45; border:1px solid var(--line-2); }
+  .ts-assign.ok{ color:var(--muted); border-color:rgba(127,169,176,.35); background:rgba(127,169,176,.07); }
+  .ts-assign.warn{ color:var(--ivory-soft); border-color:rgba(201,168,106,.5); background:rgba(201,168,106,.1); }
+  .ts-assign b{ color:var(--ivory); }
+  /* leverage slider */
+  .ts-lev{ margin:1.1rem 0 .2rem; padding:.85rem 1rem 1rem; border:1px solid var(--line-2); border-left:3px solid var(--gold); border-radius:10px; background:rgba(201,168,106,.05); }
+  .ts-lev-head{ display:flex; align-items:baseline; justify-content:space-between; gap:1rem; margin-bottom:.6rem; }
+  .ts-lev-title{ font-family:var(--font-b); font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); }
+  .ts-lev-val{ font-family:var(--font-d); font-size:1rem; color:var(--ivory); }
+  .ts-lev-slider{ -webkit-appearance:none; appearance:none; width:100%; height:6px; border-radius:6px; background:linear-gradient(90deg,rgba(127,169,176,.5),var(--gold)); outline:none; margin:.2rem 0 .55rem; cursor:pointer; }
+  .ts-lev-slider::-webkit-slider-thumb{ -webkit-appearance:none; appearance:none; width:22px; height:22px; border-radius:50%; background:var(--ivory); border:3px solid var(--gold); box-shadow:0 1px 6px rgba(0,0,0,.4); cursor:pointer; }
+  .ts-lev-slider::-moz-range-thumb{ width:22px; height:22px; border-radius:50%; background:var(--ivory); border:3px solid var(--gold); cursor:pointer; }
+  .ts-lev-slider:disabled{ opacity:.5; cursor:not-allowed; }
+  .ts-lev-ends{ display:flex; justify-content:space-between; font-size:.66rem; color:var(--muted-2); line-height:1.25; }
+  .ts-lev-ends em{ font-style:normal; color:var(--gold); }
+  .ts-lev-ends span:first-child{ text-align:left; } .ts-lev-ends span:last-child{ text-align:right; align-self:flex-end; }
+  .ts-lev-hint{ margin-top:.55rem; font-size:.76rem; color:var(--muted); line-height:1.45; }
+  .ts-lev-hint b{ color:var(--ivory); }
+  /* dual-program headline cards */
+  .prog-compare{ display:grid; grid-template-columns:1fr 1fr; gap:.8rem; margin-bottom:.7rem; }
+  .pcard{ border:1px solid var(--line-2); border-radius:14px; padding:1rem 1rem .95rem; background:rgba(255,255,255,.02); display:flex; flex-direction:column; min-width:0; }
+  .pcard.gold{ border-color:rgba(201,168,106,.5); background:linear-gradient(180deg,rgba(201,168,106,.07),rgba(201,168,106,.015)); }
+  .pcard.pcard-off{ opacity:.5; }
+  .pcard-top{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.65rem; }
+  .pcard-name{ font-family:var(--font-b); font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--ivory); }
+  .pcard.gold .pcard-name{ color:var(--gold); }
+  .pcard-badge{ font-size:.62rem; font-weight:700; padding:.22rem .5rem; border-radius:100px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  .pcard-badge.good{ color:var(--good); border-color:rgba(127,176,138,.5); } .pcard-badge.warn{ color:var(--warn); border-color:rgba(201,168,106,.5); } .pcard-badge.bad{ color:var(--bad); border-color:rgba(201,138,106,.5); }
+  .pcard-loanlbl{ font-size:.64rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted-2); }
+  .pcard-loan{ font-family:var(--font-d); font-weight:600; font-size:1.95rem; line-height:1.05; color:var(--ivory); margin:.12rem 0 .7rem; word-break:break-word; }
+  .pcard-loan.tealed{ color:var(--teal-br,#7FA9B0); }
+  .pcard.gold .pcard-loan{ color:var(--gold); }
+  .pcard-headline{ display:flex; gap:.6rem; padding-top:.6rem; border-top:1px solid var(--line-2); }
+  .pcard-stat{ flex:1; min-width:0; }
+  .pcard-statnum{ font-family:var(--font-d); font-weight:600; font-size:1.5rem; line-height:1.1; color:var(--ivory); }
+  .pcard.gold .pcard-statnum{ color:var(--gold); }
+  .pcard-statlbl{ font-size:.6rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted-2); margin-top:.12rem; }
+  .pcard-sub{ margin-top:.65rem; font-size:.72rem; color:var(--muted); line-height:1.4; min-height:1em; }
+  .prog-note{ margin:0 0 .9rem; padding:.7rem .9rem; border-radius:10px; border:1px solid var(--line-2); background:rgba(127,169,176,.07); font-size:.82rem; color:var(--ivory-soft); line-height:1.5; }
+  .prog-note strong{ color:var(--ivory); }
+  .prog-detail-head{ font-family:var(--font-b); font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:.4rem 0 .65rem; padding-top:.7rem; border-top:1px solid var(--line-2); }
+  .ts-lev.top{ margin:.1rem 0 .9rem; }
+  .result-hero.compact{ padding:0; margin:0 0 .9rem; background:none; border:none; }
+  @media (max-width:560px){ .prog-compare{ grid-template-columns:1fr; } .pcard-loan{ font-size:1.7rem; } }
+  .ts-cta-row{ display:flex; gap:.6rem; margin-top:.7rem; }
+  .ts-cta-row .btn{ flex:1; font-size:.82rem; padding:.7rem .6rem; }
+  .ts-data-io{ display:flex; gap:.6rem; margin-top:1rem; }
+  .ts-data-io .btn{ flex:1; font-size:.82rem; padding:.7rem .6rem; justify-content:center; }
+  .ts-data-cap{ font-size:.72rem; color:var(--muted-2); margin:.45rem 0 .2rem; line-height:1.45; text-align:center; }
+  @media (max-width:460px){ .ts-cta-row{ flex-direction:column; } .ts-data-io{ flex-direction:column; } }
+  /* drill-down: clickable program cards + collapsible detail */
+  .pcard{ cursor:pointer; transition:border-color .15s, transform .15s, box-shadow .15s; }
+  .pcard:hover{ border-color:var(--teal,#7FA9B0); transform:translateY(-2px); }
+  .pcard.gold:hover{ border-color:var(--gold); }
+  .pcard.pcard-active{ border-color:var(--teal,#7FA9B0); box-shadow:0 0 0 2px rgba(127,169,176,.28); }
+  .pcard.gold.pcard-active{ border-color:var(--gold); box-shadow:0 0 0 2px rgba(201,168,106,.3); }
+  .pcard.pcard-off{ cursor:default; }
+  .pcard.pcard-off:hover{ transform:none; border-color:var(--line-2); }
+  .pcard-cta{ margin-top:.7rem; font-size:.72rem; font-weight:700; letter-spacing:.02em; color:var(--teal-br,#7FA9B0); }
+  .pcard.gold .pcard-cta{ color:var(--gold); }
+  .pcard.pcard-off .pcard-cta{ display:none; }
+  .prog-hint{ text-align:center; font-size:.8rem; color:var(--muted); margin:.1rem 0 .4rem; line-height:1.4; }
+  .prog-detail{ margin-top:.2rem; }
+  .prog-back{ background:none; border:1px solid var(--line-2); border-radius:8px; color:var(--muted); font-family:var(--font-b); font-size:.78rem; cursor:pointer; padding:.4rem .8rem; margin-bottom:.7rem; transition:color .15s, border-color .15s; }
+  .prog-back:hover{ color:var(--ivory); border-color:var(--muted-2); }
+  /* info tooltips ("small eyes") — plain-language explanations on hover/tap */
+  .tip{ position:relative; display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; border-radius:50%; border:1px solid var(--muted); color:var(--muted); font-size:9px; font-style:normal; font-weight:700; line-height:1; cursor:help; margin-left:5px; vertical-align:middle; user-select:none; flex:0 0 auto; transition:color .15s, border-color .15s; }
+  .tip:hover, .tip:focus-visible, .tip.tip-open{ border-color:var(--gold); color:var(--gold); outline:none; }
+  .tip-bub{ position:absolute; bottom:150%; left:50%; transform:translateX(-50%); width:min(230px,72vw); background:var(--ink-2); border:1px solid var(--line); border-radius:9px; padding:.6rem .72rem; font-size:.72rem; font-style:normal; font-weight:400; line-height:1.5; letter-spacing:.005em; color:var(--ivory); box-shadow:0 10px 30px rgba(0,0,0,.45); opacity:0; visibility:hidden; transition:opacity .14s; z-index:60; text-align:left; pointer-events:none; white-space:normal; }
+  .tip-bub::after{ content:""; position:absolute; top:100%; left:50%; transform:translateX(-50%); border:6px solid transparent; border-top-color:var(--ink-2); }
+  .tip:hover .tip-bub, .tip:focus-visible .tip-bub, .tip.tip-open .tip-bub{ opacity:1; visibility:visible; }
+  .tip.tip-r .tip-bub{ left:auto; right:-6px; transform:none; }
+  .tip.tip-r .tip-bub::after{ left:auto; right:12px; transform:none; }
+  label .tip, .ts-sub .tip, .pcard-statlbl .tip, .snap-line-lbl .tip{ }
+  /* loan-amount logic explainer */
+  .loan-logic{ margin:1rem 0 .2rem; padding:.85rem 1rem; border:1px solid var(--line-2); border-left:3px solid var(--teal); border-radius:10px; background:rgba(127,169,176,.05); }
+  .loan-logic .ll-h{ font-family:var(--font-b); font-size:.74rem; text-transform:uppercase; letter-spacing:.1em; color:var(--teal-br); font-weight:700; margin-bottom:.45rem; }
+  .loan-logic p{ font-size:.83rem; color:var(--muted); margin:.3rem 0; line-height:1.5; }
+  .loan-logic ol{ margin:.4rem 0 .4rem 1.1rem; padding:0; }
+  .loan-logic li{ font-size:.83rem; color:var(--muted); margin:.28rem 0; line-height:1.45; }
+  .loan-logic strong{ color:var(--ivory-soft); }
+  .loan-logic .ll-bind{ color:var(--teal-br); font-weight:600; }
+  .loan-logic .ll-bind:empty{ display:none; }
+  /* ---- Admin pricing controls (password-gated, same-page reveal) ---- */
+  .ts-admin-zone{ margin-top:1.5rem; padding-top:.5rem; }
+  .ts-admin-trigger{ background:none; border:0; color:var(--muted-2); font-family:var(--font-b); font-size:.72rem; letter-spacing:.02em; cursor:pointer; padding:.3rem .1rem; opacity:.45; transition:opacity .2s, color .2s; }
+  .ts-admin-trigger:hover, .ts-admin-trigger:focus-visible{ opacity:1; color:var(--teal-br); outline:none; }
+  .ts-admin-lock{ margin-top:.55rem; max-width:340px; }
+  .ts-admin-lock > label{ display:block; font-size:.78rem; color:var(--muted); margin-bottom:.35rem; }
+  .ts-admin-pwrow{ display:flex; gap:.5rem; }
+  .ts-admin-pwrow input{ flex:1; min-width:0; padding:.55rem .7rem; border:1px solid var(--line); border-radius:9px; background:var(--ink-1); color:var(--ivory); font-size:.9rem; font-family:var(--font-b); }
+  .ts-admin-pwrow input:focus{ outline:none; border-color:var(--teal); }
+  .ts-admin-pwrow .btn{ flex:none; padding:.5rem 1rem; }
+  .ts-admin-err{ color:var(--warn); font-size:.76rem; margin-top:.45rem; }
+  .ts-admin-panel{ margin-top:.75rem; border:1px solid var(--teal-dp); border-radius:14px; padding:1.05rem 1.15rem; background:linear-gradient(160deg, rgba(63,123,132,.11), rgba(63,123,132,.02)); max-width:440px; }
+  .ts-admin-head{ font-family:var(--font-d); font-weight:600; color:var(--ivory-soft); font-size:1.02rem; display:flex; align-items:center; gap:.55rem; margin-bottom:.3rem; }
+  .ts-admin-badge{ font-family:var(--font-b); font-size:.6rem; font-weight:700; text-transform:uppercase; letter-spacing:.12em; color:var(--on-accent); background:var(--teal); padding:.16rem .5rem; border-radius:100px; }
+  .ts-admin-sub{ font-size:.78rem; color:var(--muted); line-height:1.5; margin:0 0 .85rem; }
+  .ts-admin-fields{ display:flex; flex-direction:column; gap:.7rem; }
+  .ts-admin-fields .field label{ font-size:.8rem; color:var(--muted); margin-bottom:.3rem; display:block; }
+  .ts-admin-group{ font-family:var(--font-b); font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:var(--teal-br); margin:.95rem 0 .5rem; }
+  .ts-admin-group:first-of-type{ margin-top:.15rem; }
+  .ts-admin-note{ font-weight:500; text-transform:none; letter-spacing:0; color:var(--muted-2); }
+  .ts-admin-grid2{ display:grid; grid-template-columns:1fr 1fr; gap:.55rem .6rem; }
+  .ts-admin-grid2 .field label{ font-size:.75rem; color:var(--muted); margin-bottom:.28rem; display:block; }
+  .ts-admin-check{ display:flex; align-items:flex-start; gap:.5rem; font-size:.82rem; color:var(--ivory-soft); margin:.2rem 0 .1rem; cursor:pointer; line-height:1.4; }
+  .ts-admin-check input{ margin-top:.15rem; flex:0 0 auto; width:auto; }
+  .ts-admin-mnote{ font-size:.74rem; color:var(--muted-2); margin:.5rem 0 0; line-height:1.4; }
+  .ts-admin-lockbtn{ margin-top:.85rem; background:none; border:0; color:var(--muted-2); font-family:var(--font-b); font-size:.74rem; cursor:pointer; text-decoration:underline; text-underline-offset:2px; padding:0; }
+  .ts-admin-lockbtn:hover{ color:var(--teal-br); }
+  [hidden]{ display:none !important; }
+</style>
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+<span class="orb orb-1" aria-hidden="true"></span>
+<span class="orb orb-2" aria-hidden="true"></span>
+
+<header class="topbar">
+    <div class="topbar-inner">
+        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+        <span class="topbar-sep"></span>
+        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Term Sheet Studio</span></div>
+        <div class="topbar-actions">
+            <a class="back" href="../suite.html">← All tools</a>
+            <button class="btn btn-line" type="button" onclick="TS.share(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
+            <a class="btn btn-solid" href="loan-application.html">Apply Now</a>
+        </div>
+    </div>
+</header>
+
+<main>
+<section class="tool-hero">
+    <div class="suite-eyebrow">Standard Program · Fix &amp; Flip · Ground-Up · Bridge</div>
+    <h1>Term Sheet Studio<span class="tm">™</span></h1>
+    <p class="tool-tagline">A clear, signable term sheet — structure, pricing and cash to close — in about a minute.</p>
+    <div class="trust-badge" aria-label="How this tool works">
+      <span>⚡ Instant</span><i></i><span>🔒 No credit pull</span><i></i><span>✍️ Nothing to sign</span>
+    </div>
+    <p class="tool-intro">Skip the wait. Enter the deal — purchase, construction, values and the interest reserve you want — and get a polished YS Capital term sheet you can download and sign: full loan structure, fees, estimated cash to close, the liquidity you'll need, and your eligibility snapshot. Most lenders take a business day; this takes a minute.</p>
+    <span class="fill-hint"><span class="swatch"></span> Fill the deal in — your term sheet builds on the right as you type.</span>
+</section>
+
+<div class="tool-grid">
+    <form class="inputs-col" id="tsForm" autocomplete="off" onsubmit="return false;">
+
+        <div class="panel">
+            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/></svg></span> Deal &amp; property</h2>
+            <p class="panel-note">Who and where. Don't have an address yet? Mark it TBD and we'll build indicative terms now.</p>
+            <div class="field">
+                <label for="borrowerName">Borrower / entity name <em>(optional)</em></label>
+                <div class="input"><input id="borrowerName" type="text" placeholder="e.g. Klein Holdings LLC"></div>
+            </div>
+            <div class="field">
+                <label for="coBorrowerName">Co-borrower name <em>(optional — adds a second signature line)</em></label>
+                <div class="input"><input id="coBorrowerName" type="text" placeholder="e.g. Sarah Klein"></div>
+            </div>
+            <div class="field cond" data-cond="addr">
+                <label for="propAddr">Subject property address</label>
+                <div class="input"><input id="propAddr" type="text" placeholder="Street, City, State ZIP"></div>
+            </div>
+            <label class="tbd-toggle"><input type="checkbox" id="addrTBD"> Property is TBD (hide the address on this term sheet)</label>
+            <div class="tbd-note cond hidden" data-cond="addrTBDnote">No problem — we'll generate indicative terms now and the term sheet will read <strong>“Property: To be determined.”</strong> Add the address when you have it under contract.</div>
+            <div class="field-rows two-col" style="margin-top:1rem">
+                <div class="field">
+                    <label for="dealPurpose">Loan purpose</label>
+                    <div class="input select"><select id="dealPurpose">
+                        <option>Purchase</option>
+                        <option>Rate &amp; term refinance</option>
+                        <option>Cash-out refinance</option>
+                    </select></div>
+                </div>
+                <div class="field">
+                    <label for="dealType">Loan program</label>
+                    <div class="input select"><select id="dealType">
+                        <option>Fix &amp; Flip</option>
+                        <option>Fix &amp; Hold (BRRRR)</option>
+                        <option>Bridge / Stabilized</option>
+                        <option>Ground-up Construction</option>
+                    </select></div>
+                </div>
+            </div>
+            <div class="field-rows two-col">
+                <div class="field">
+                    <label for="propState">Property state <em style="font-style:normal;color:var(--gold)">• required</em></label>
+                    <div class="input select"><select id="propState">
+                        <option value="">Select state…</option>
+                        <option>AL</option><option>AK</option><option>AZ</option><option>AR</option><option>CA</option><option>CO</option><option>CT</option><option>DE</option><option>DC</option><option>FL</option><option>GA</option><option>HI</option><option>ID</option><option>IL</option><option>IN</option><option>IA</option><option>KS</option><option>KY</option><option>LA</option><option>ME</option><option>MD</option><option>MA</option><option>MI</option><option>MN</option><option>MS</option><option>MO</option><option>MT</option><option>NE</option><option>NV</option><option>NH</option><option>NJ</option><option>NM</option><option>NY</option><option>NC</option><option>ND</option><option>OH</option><option>OK</option><option>OR</option><option>PA</option><option>RI</option><option>SC</option><option>SD</option><option>TN</option><option>TX</option><option>UT</option><option>VT</option><option>VA</option><option>WA</option><option>WV</option><option>WI</option><option>WY</option>
+                    </select></div>
+                    <span class="help">Sets your state's leverage &amp; pricing.</span>
+                </div>
+                <div class="field">
+                    <label for="propType">Property type</label>
+                    <div class="input select"><select id="propType">
+                        <option value="sfr">Single-family (1 unit)</option>
+                        <option value="2-4">2-4 units</option>
+                    </select></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M3 7h18v12H3zM3 11h18M7 15h4"/></svg></span> Purchase &amp; project costs</h2>
+            <p class="panel-note">Taking over a wholesale contract? Toggle assignment and enter the seller's contract price — the fee fills in automatically and the program finances it up to 15%.</p>
+            <div class="field cond" data-cond="purchaseOnly">
+                <label for="price">Purchase price<span class="tip" tabindex="0" role="note" aria-label="The contract price you’re paying for the property. For a refinance, the as-is value is used instead.">i<span class="tip-bub">The contract price you’re paying for the property. For a refinance, the as-is value is used instead.</span></span></label>
+                <div class="input"><span class="adorn">$</span><input id="price" type="number" inputmode="numeric" placeholder="e.g. 400,000"></div>
+                <span class="help">The final total price you're buying at — including any assignment fee.</span>
+            </div>
+            <label class="toggle-card switch cond" data-cond="purchaseOnly" for="isAssign" style="cursor:pointer;margin:.2rem 0">
+                <span class="tc-text"><b>This is an assignment / wholesale contract</b>You're buying the contract from a wholesaler.</span>
+                <span style="display:inline-flex;align-items:center"><input type="checkbox" id="isAssign"><span class="track"></span></span>
+            </label>
+            <div class="field-rows two-col cond hidden" data-cond="isAssign">
+                <div class="field"><label for="origPrice">Seller's contract price</label><div class="input"><span class="adorn">$</span><input id="origPrice" type="number" inputmode="numeric" placeholder="seller's price"></div><span class="help">Before the wholesaler's fee.</span></div>
+                <div class="field"><label for="assignFee">Assignment fee <em>(auto)</em></label><div class="input is-ro"><span class="adorn">$</span><input id="assignFee" type="number" tabindex="-1" readonly placeholder="0"></div><span class="help">Purchase price − seller's price.</span></div>
+            </div>
+            <span class="field-err" id="assignErr" style="display:none">The seller's price can't be more than the purchase price.</span>
+            <div class="field-rows two-col" style="margin-top:.4rem">
+                <div class="field cond" data-cond="hasRehab"><label for="construction">Construction / rehab budget<span class="tip" tabindex="0" role="note" aria-label="Your full scope-of-work cost for the renovation. These programs finance 100% of it — released in stages (“draws”) as the work is completed and inspected, not all at once.">i<span class="tip-bub">Your full scope-of-work cost for the renovation. These programs finance 100% of it — released in stages (“draws”) as the work is completed and inspected, not all at once.</span></span></label><div class="input"><span class="adorn">$</span><input id="construction" type="number" inputmode="numeric" placeholder="e.g. 50,000"></div></div>
+                <div class="field"><label for="asIs">As-is value<span class="tip" tabindex="0" role="note" aria-label="What the property is worth today, in its current condition before any repairs. The money released at closing is based on this value.">i<span class="tip-bub">What the property is worth today, in its current condition before any repairs. The money released at closing is based on this value.</span></span></label><div class="input"><span class="adorn">$</span><input id="asIs" type="number" inputmode="numeric" placeholder="today's value"></div></div>
+            </div>
+            <div class="field cond" data-cond="hasRehab">
+                <label for="arv">After-repair value (ARV)<span class="tip" tabindex="0" role="note" aria-label="What the property is expected to be worth once all the planned renovations are done. It’s the ceiling for the deal — the total loan is capped at a share of this number.">i<span class="tip-bub">What the property is expected to be worth once all the planned renovations are done. It’s the ceiling for the deal — the total loan is capped at a share of this number.</span></span></label>
+                <div class="input"><span class="adorn">$</span><input id="arv" type="number" inputmode="numeric" placeholder="value after rehab"></div>
+            </div>
+            <div class="field cond hidden" data-cond="refiOnly">
+                <label for="payoff">Current loan payoff <em>(optional)</em><span class="tip" tabindex="0" role="note" aria-label="The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).">i<span class="tip-bub">The balance on the loan this refinance pays off. Cash to you at closing is the new loan minus this payoff and closing costs — and that cash-out is capped (see the note below the structure).</span></span></label>
+                <div class="input"><span class="adorn">$</span><input id="payoff" type="number" inputmode="numeric" placeholder="existing balance to pay off"></div>
+            </div>
+            <div class="field" id="rehabScopeWrap" data-cond="ffOnly">
+                <label for="rehabScope">Rehab scope</label>
+                <div class="input select"><select id="rehabScope">
+                    <option value="light">Light / moderate rehab</option>
+                    <option value="heavy">Heavy rehab (full gut / structural)</option>
+                </select></div>
+            </div>
+            <label class="tbd-toggle" for="sqft" data-cond="ffOnly"><input type="checkbox" id="sqft"> Adding square footage / expanding the footprint</label>
+        </div>
+
+        <div class="panel">
+            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M12 3v18M5 8h9a3 3 0 0 1 0 6H5"/></svg></span> Structure</h2>
+            <p class="panel-note cond" data-cond="hasRehab">Your rehab budget is financed 100% and held back in draws — separate from any interest reserve. Leave the reserve at 0 to keep the loan to acquisition + rehab; enter months to finance a reserve (it tracks your real rate and must fit under the leverage caps).</p>
+            <p class="panel-note cond hidden" data-cond="bridgeOnly">A bridge loan is sized against the as-is value only — there's no rehab holdback, after-repair value or interest reserve. Just set your requested term below.</p>
+            <div class="field-rows two-col">
+                <div class="field cond" data-cond="hasRehab"><label for="irMonths">Interest reserve <em>(months)</em><span class="tip" tabindex="0" role="note" aria-label="Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.">i<span class="tip-bub">Months of interest payments built into the loan so the project carries itself and you don’t pay out of pocket during construction. It’s added to the loan amount, not brought to closing.</span></span></label><div class="input"><input id="irMonths" type="number" inputmode="numeric" min="0" max="24" placeholder="e.g. 6"></div></div>
+                <div class="field cond" data-cond="hasRehab"><label for="irAmount">…or exact reserve <em>(amount $)</em><span class="tip" tabindex="0" role="note" aria-label="Enter an exact dollar interest reserve instead of a number of months. When set, this OVERRIDES the months field. It is still fit under the same leverage caps. Leave blank to size the reserve from months.">i<span class="tip-bub">Enter an exact dollar interest reserve instead of a number of months. When set, this <b>overrides</b> the months field (still fit under the same leverage caps). Leave blank to size the reserve from months.</span></span></label><div class="input"><input id="irAmount" type="number" inputmode="numeric" min="0" step="1000" placeholder="e.g. 40,000"></div></div>
+                <div class="field"><label for="tsTerm">Requested term <em>(months)</em></label><div class="input select"><select id="tsTerm">
+                    <option value="6">6 months</option>
+                    <option value="12" selected>12 months</option>
+                    <option value="18">18 months</option>
+                    <option value="24">24 months</option>
+                </select></div></div>
+            </div>
+            <p class="rate-hint" style="margin-top:.2rem">Your rate is set automatically from experience, credit, leverage and the program — it appears on the term sheet on the right. No rate to enter.</p>
+        </div>
+
+        <div class="panel">
+            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16M8 16l3-4 3 2 4-6"/></svg></span> Experience &amp; credit</h2>
+            <p class="panel-note">Completed projects in the <strong>last 36 months</strong> — your biggest pricing lever. Flips, holds and ground-ups all count toward a fix &amp; flip, fix &amp; hold or bridge deal; a <strong>ground-up loan counts ground-up projects only</strong>.</p>
+            <div class="field-rows two-col">
+                <div class="field"><label for="expFlips">Fix &amp; flips completed</label><div class="input"><input id="expFlips" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+                <div class="field"><label for="expBrrrr">BRRRR / rentals stabilized</label><div class="input"><input id="expBrrrr" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+                <div class="field"><label for="expRentals">Rentals owned now</label><div class="input"><input id="expRentals" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+                <div class="field"><label for="expGround">Ground-up builds completed</label><div class="input"><input id="expGround" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
+            </div>
+            <div class="exp-total"><span class="exp-total-lbl">Total experience</span><span class="exp-total-val" id="expTotal">0 projects · last 36 mo</span></div>
+            <div class="field" style="margin-top:.7rem">
+                <label for="fico">Estimated FICO <em>(qualifying borrower)</em></label>
+                <div class="input"><input id="fico" type="number" inputmode="numeric" min="300" max="850" placeholder="e.g. 720"></div>
+                <span class="help">Used for eligibility &amp; pricing.</span>
+            </div>
+        </div>
+
+        <!-- Admin pricing controls (hidden, password-gated, same page — no navigation) -->
+        <div class="ts-admin-zone">
+            <button type="button" class="ts-admin-trigger" id="tsAdminTrigger" aria-expanded="false">Admin mode</button>
+            <div class="ts-admin-lock" id="tsAdminLock" hidden>
+                <label for="tsAdminPw">Admin password</label>
+                <div class="ts-admin-pwrow">
+                    <input type="password" id="tsAdminPw" data-noshare autocomplete="new-password" placeholder="Enter password" aria-label="Admin password">
+                    <button type="button" class="btn btn-line" id="tsAdminGo">Unlock</button>
+                </div>
+                <div class="ts-admin-err" id="tsAdminErr" hidden>Incorrect password.</div>
+            </div>
+            <div class="ts-admin-panel" id="tsAdminPanel" hidden>
+                <div class="ts-admin-head">Pricing controls <span class="ts-admin-badge">Admin</span></div>
+                <p class="ts-admin-sub">Everything below flows into the on-screen term sheet and every export. The underlying markup is never shown — only the resulting rate, fees and cash to close change.</p>
+
+                <div class="ts-admin-group">Rate markup / YSP</div>
+                <div class="ts-admin-grid2">
+                    <div class="field"><label for="tsYspStd">Standard (%)</label><div class="input"><input id="tsYspStd" data-noshare type="number" inputmode="decimal" step="0.05" min="0" value="0.5"></div></div>
+                    <div class="field"><label for="tsYspGold">Gold (%)</label><div class="input"><input id="tsYspGold" data-noshare type="number" inputmode="decimal" step="0.05" min="0" value="0.5"></div></div>
+                </div>
+                <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — always prices at <strong>zero markup</strong>, regardless of the Gold value above. Enter <strong>0</strong> to waive the markup entirely; leave a field blank to use the 0.5% default.
+
+                <div class="ts-admin-group">Origination points</div>
+                <div class="ts-admin-grid2">
+                    <div class="field"><label for="tsOrigStd">Standard (%)</label><div class="input"><input id="tsOrigStd" data-noshare type="number" inputmode="decimal" step="0.25" min="0" value="1.25"></div></div>
+                    <div class="field"><label for="tsOrigGold">Gold (%)</label><div class="input"><input id="tsOrigGold" data-noshare type="number" inputmode="decimal" step="0.25" min="0" value="1.25"></div></div>
+                </div>
+
+                <div class="ts-admin-group">Closing-cost overrides <span class="ts-admin-note">— both programs</span></div>
+                <div class="ts-admin-grid2">
+                    <div class="field"><label for="tsFeeUW">UW / processing / legal ($)</label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" value="2195"></div></div>
+                    <div class="field"><label for="tsFeeCredit">Credit report ($)</label><div class="input"><input id="tsFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" value="150"></div></div>
+                    <div class="field"><label for="tsFeeAppr">Appraisal — POC ($)</label><div class="input"><input id="tsFeeAppr" data-noshare type="number" inputmode="numeric" step="1" min="0" value="800"></div></div>
+                    <div class="field"><label for="tsFeeTitle">Title / escrow ($)</label><div class="input"><input id="tsFeeTitle" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto-estimate"></div></div>
+                </div>
+
+                <div class="ts-admin-group">Manual scenario <span class="ts-admin-note">— set the basis yourself</span></div>
+                <label class="ts-admin-check"><input type="checkbox" id="tsManualOn" data-noshare> Price as a manual scenario (admin-set basis)</label>
+                <div class="ts-admin-grid2" id="tsManualFields" hidden>
+                    <div class="field"><label for="tsMLtv">Initial / as-is LTV (%)</label><div class="input"><input id="tsMLtv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMArv">ARV LTV (%)</label><div class="input"><input id="tsMArv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMLtc">LTC (%)</label><div class="input"><input id="tsMLtc" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMRate">Note rate (%)</label><div class="input"><input id="tsMRate" data-noshare type="number" inputmode="decimal" step="0.125" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMIr">Interest reserve (months)</label><div class="input"><input id="tsMIr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="from form"></div></div>
+                </div>
+                <p class="ts-admin-mnote" id="tsManualHint" hidden>Blank fields fall back to the program's computed value. Overrides may exceed program limits — the term sheet prices and exports on your basis and is marked <em>manually underwritten</em>.</p>
+
+                <button type="button" class="ts-admin-lockbtn" id="tsAdminHide">Lock admin mode &amp; reset to defaults</button>
+            </div>
+        </div>
+    </form>
+
+    <div class="results-col">
+        <div class="prog-compare" id="progCompare">
+            <article class="pcard" id="pcardStd" data-prog="standard">
+                <div class="pcard-top"><span class="pcard-name">Standard</span><span class="pcard-badge" id="stdBadge">—</span></div>
+                <div class="pcard-loanlbl">Loan amount</div>
+                <div class="pcard-loan tealed" id="stdLoanBig">$0</div>
+                <div class="pcard-headline">
+                    <div class="pcard-stat"><div class="pcard-statnum" id="stdRateBig">—</div><div class="pcard-statlbl">note rate<span class="tip" tabindex="0" role="note" aria-label="Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.">i<span class="tip-bub">Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.</span></span></div></div>
+                    <div class="pcard-stat"><div class="pcard-statnum" id="stdOrigBig">$0</div><div class="pcard-statlbl">origination · <span id="stdOrigPts">1.25 pts</span><span class="tip" tabindex="0" role="note" aria-label="The lender’s fee at closing. “1 point” = 1% of the loan amount.">i<span class="tip-bub">The lender’s fee at closing. “1 point” = 1% of the loan amount.</span></span></div></div>
+                </div>
+                <div class="pcard-sub" id="stdSub">Enter price, budget &amp; ARV to begin</div>
+                <div class="pcard-cta" id="stdCta">View full details &rarr;</div>
+            </article>
+            <article class="pcard gold" id="pcardGold" data-prog="gold">
+                <div class="pcard-top"><span class="pcard-name">Gold Standard</span><span class="pcard-badge" id="goldBadge">—</span></div>
+                <div class="pcard-loanlbl">Loan amount</div>
+                <div class="pcard-loan" id="goldLoanBig">$0</div>
+                <div class="pcard-headline">
+                    <div class="pcard-stat"><div class="pcard-statnum" id="goldRateBig">—</div><div class="pcard-statlbl">note rate<span class="tip" tabindex="0" role="note" aria-label="Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.">i<span class="tip-bub">Your interest rate on the loan. It’s charged interest-only during the term — you pay interest each month, not principal.</span></span></div></div>
+                    <div class="pcard-stat"><div class="pcard-statnum" id="goldOrigBig">$0</div><div class="pcard-statlbl">origination · <span id="goldOrigPts">1.25 pts</span><span class="tip" tabindex="0" role="note" aria-label="The lender’s fee at closing. “1 point” = 1% of the loan amount.">i<span class="tip-bub">The lender’s fee at closing. “1 point” = 1% of the loan amount.</span></span></div></div>
+                </div>
+                <div class="pcard-sub" id="goldSub">—</div>
+                <div class="pcard-cta" id="goldCta">View full details &rarr;</div>
+            </article>
+        </div>
+        <div class="ts-data-io">
+            <button class="btn btn-line" type="button" id="tsXlsx">Export to Excel ⤓</button>
+            <button class="btn btn-line" type="button" id="tsImportBtn">Import from Excel ⤒</button>
+            <input type="file" id="tsImport" accept=".xlsx,.xls" style="display:none">
+        </div>
+        <p class="ts-data-cap">Save your work to Excel and re-import it anytime — even before the deal is complete. This saves the data you’ve entered; the priced terms fill in once the required fields are complete.</p>
+        <div class="prog-note" id="progNote" style="display:none"></div>
+        <div class="prog-hint" id="progHint">Tap a program above to see its full structure, leverage, fees and term sheet.</div>
+
+        <div class="prog-detail" id="progDetail" style="display:none">
+            <button type="button" class="prog-back" id="progBack">&larr; Back to programs</button>
+
+            <div class="ts-lev top" id="rLevWrap" style="display:none">
+          <div class="ts-lev-head"><span class="ts-lev-title">Leverage <em id="rLevProg" style="font-style:normal;color:var(--muted-2)"></em></span><span class="ts-lev-val" id="rLevVal">—</span></div>
+          <input type="range" id="rLevSlider" class="ts-lev-slider" min="0" max="6" step="1" value="6" aria-label="Loan leverage">
+          <div class="ts-lev-ends"><span>Less leverage<br><em>lower rate</em></span><span>Max leverage</span></div>
+          <div class="ts-lev-hint" id="rLevHint"></div>
+        </div>
+
+        <div class="result-hero compact">
+            <div class="snap-constraint" id="rBind">Enter price, budget &amp; ARV to begin</div>
+            <div class="limits-row">
+                <span class="limit-chip cond" data-cond="hasRehab">LTC <strong id="rLtc">—</strong><span class="tip" tabindex="0" role="note" aria-label="Loan-to-Cost — your loan divided by the total project cost (purchase + rehab). One of the two limits that sizes the loan.">i<span class="tip-bub">Loan-to-Cost — your loan divided by the total project cost (purchase + rehab). One of the two limits that sizes the loan.</span></span></span>
+                <span class="limit-chip">LTV <strong id="rLtv">—</strong><span class="tip" tabindex="0" role="note" aria-label="Loan-to-Value — your loan divided by the property’s current as-is value.">i<span class="tip-bub">Loan-to-Value — your loan divided by the property’s current as-is value.</span></span></span>
+                <span class="limit-chip cond" data-cond="hasRehab">ARV <strong id="rArv">—</strong><span class="tip tip-r" tabindex="0" role="note" aria-label="Loan-to-ARV — your loan divided by the after-repair value. The final loan is always the lesser of the cost-based and ARV-based limits.">i<span class="tip-bub">Loan-to-ARV — your loan divided by the after-repair value. The final loan is always the lesser of the cost-based and ARV-based limits.</span></span></span>
+            </div>
+        </div>
+
+        <div class="prog-detail-head" id="progDetailHead">Standard Program — full breakdown</div>
+        <div class="ts-manual-banner" id="rManualBanner" hidden>⚑ Manually underwritten — pricing and leverage set on an admin-defined basis, not the program's automated matrix.</div>
+        <input type="hidden" id="rLoan">
+
+        <div class="ts-missing" id="rMissing" style="display:none"></div>
+
+        <div class="panel elig-card">
+            <div class="elig-head">
+                <div class="ts-sub first" style="margin:0;padding:0;border:0">Eligibility</div>
+                <span class="verdict" id="rStatus">—</span>
+            </div>
+            <ul class="reasons" id="rReasons"></ul>
+            <div class="ts-state-note" id="rStateNote" style="display:none"></div>
+            <div class="ts-manual" id="rManualWrap" style="display:none"></div>
+            <div class="ts-sub">Program maximum leverage <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— from FICO &amp; experience</em></div>
+            <div class="maxlev">
+                <div class="ml cond" data-cond="hasRehab"><div class="mlk">Max loan-to-cost</div><div class="mlv" id="rMaxLtc">—</div></div>
+                <div class="ml"><div class="mlk">Max as-is (initial)</div><div class="mlv" id="rMaxLtv">—</div></div>
+                <div class="ml cond" data-cond="hasRehab"><div class="mlk">Max loan-to-ARV</div><div class="mlv" id="rMaxArv">—</div></div>
+                <div class="ml"><div class="mlk">Max loan amount</div><div class="mlv" id="rMaxLoan">—</div></div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="ts-sub first">Loan structure</div>
+            <div class="ts-line"><span class="k" id="rEffLbl">Purchase price</span><span class="v" id="rEff">$0</span></div>
+            <div class="ts-line cond" data-cond="hasRehab"><span class="k">Construction / rehab budget</span><span class="v" id="rConstr">$0</span></div>
+            <div class="ts-line cond" data-cond="hasRehab"><span class="k">Financed interest reserve<span class="tip" tabindex="0" role="note" aria-label="Interest payments rolled into the loan so the project pays its own carrying cost during the term. You don’t bring this to closing.">i<span class="tip-bub">Interest payments rolled into the loan so the project pays its own carrying cost during the term. You don’t bring this to closing.</span></span></span><span class="v" id="rIR">—</span></div>
+            <div class="ts-line em cond" data-cond="hasRehab"><span class="k">Total project cost<span class="tip" tabindex="0" role="note" aria-label="Purchase price plus the full rehab budget (plus any financed reserve). Your loan-to-cost is measured against this number.">i<span class="tip-bub">Purchase price plus the full rehab budget (plus any financed reserve). Your loan-to-cost is measured against this number.</span></span></span><span class="v" id="rCost">$0</span></div>
+            <div class="ts-line cond" data-cond="hasRehab"><span class="k">Initial advance (at closing)<span class="tip" tabindex="0" role="note" aria-label="The part of the loan released at closing to help you buy the property. The rest of the loan is the construction holdback.">i<span class="tip-bub">The part of the loan released at closing to help you buy the property. The rest of the loan is the construction holdback.</span></span></span><span class="v" id="rAdvance">$0</span><span class="v-ltv" id="rAdvanceLtv"></span></div>
+            <div class="ts-line cond" data-cond="hasRehab"><span class="k">Construction holdback <em style="font-style:normal;color:var(--muted-2)">(= rehab, in draws)</em><span class="tip" tabindex="0" role="note" aria-label="Your renovation funds, held by the lender and released in stages (“draws”) as each phase of work is finished and inspected — not handed over up front.">i<span class="tip-bub">Your renovation funds, held by the lender and released in stages (“draws”) as each phase of work is finished and inspected — not handed over up front.</span></span></span><span class="v" id="rHoldback">$0</span></div>
+            <div class="ts-line em gold"><span class="k">Total loan amount</span><span class="v" id="rLoan2">$0</span></div>
+            <div class="ts-assign" id="rAssignNote" style="display:none"></div>
+
+            <div class="ts-sub">Pricing &amp; payments <em style="font-style:normal;color:var(--muted-2);text-transform:none;letter-spacing:0">— interest-only</em></div>
+            <div class="ts-line"><span class="k">Note rate</span><span class="v" id="rRate">—</span></div>
+            <div class="ts-line cond" data-cond="hasRehab"><span class="k">Initial payment <em style="font-style:normal;color:var(--muted-2)">— on the initial advance</em></span><span class="v" id="rPmtInit">$0/mo</span></div>
+            <div class="ts-line em"><span class="k"><span class="cond" data-cond="hasRehab">Full payment <em style="font-style:normal;color:var(--muted-2)">— after all rehab draws</em></span><span class="cond hidden" data-cond="bridgeOnly">Monthly payment</span></span><span class="v" id="rPmtFull">$0/mo</span></div>
+            <div class="ts-line"><span class="k">Loan term</span><span class="v" id="rTerm">12 mo</span></div>
+
+            <div class="loan-logic">
+                <div class="ll-h">How this loan amount is built</div>
+                <p>Your maximum is the <strong>lesser</strong> of four limits — the tightest one wins:</p>
+                <ol>
+                    <li><strong>Initial advance</strong> — up to your max as-is % of the lower of purchase price or as-is value.</li>
+                    <li><strong>Rehab</strong> — 100% financed, released in draws as work is verified and reimbursed after completion.</li>
+                    <li><strong>Loan-to-cost</strong> — total can't exceed your max LTC of purchase + rehab.</li>
+                    <li><strong>Loan-to-ARV</strong> — total can't exceed your max % of the after-repair value.</li>
+                </ol>
+                <p class="ll-bind" id="rBindNote"></p>
+            </div>
+
+            <div class="ts-sub">Estimated fees &amp; cash to close</div>
+            <div class="ts-grid2">
+                <div class="ts-line"><span class="k" id="rOrigLbl">Origination (1.25%)</span><span class="v" id="rOrig">$0</span></div>
+                <div class="ts-line"><span class="k">UW / processing / legal</span><span class="v" id="rLender">$2,195</span></div>
+                <div class="ts-line"><span class="k">Credit report</span><span class="v" id="rCredit">$150</span></div>
+                <div class="ts-line"><span class="k">Appraisal (est.)</span><span class="v" id="rAppr">$800 POC</span></div>
+                <div class="ts-line"><span class="k">Title / escrow (est.)<span class="tip" tabindex="0" role="note" aria-label="A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).">i<span class="tip-bub">A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).</span></span></span><span class="v" id="rTitle">—</span></div>
+                <div class="ts-line"><span class="k">Down payment<span class="tip" tabindex="0" role="note" aria-label="The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”">i<span class="tip-bub">The part of the purchase price the loan doesn’t cover — your cash in the deal, or “skin in the game.”</span></span></span><span class="v" id="rDown">$0</span></div>
+            </div>
+            <div class="ts-line em gold"><span class="k">Estimated cash to close<span class="tip" tabindex="0" role="note" aria-label="What you actually bring to the closing table — your down payment plus closing fees, including the estimated title and escrow charge.">i<span class="tip-bub">What you actually bring to the closing table — your down payment plus closing fees, including the estimated title and escrow charge.</span></span></span><span class="v" id="rCash">$0</span></div>
+            <div class="ts-line"><span class="k">Estimated liquidity to show<span class="tip" tabindex="0" role="note" aria-label="Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.">i<span class="tip-bub">Cash reserves you need to show you have on hand to carry the project. This is demonstrated, not money brought to closing.</span></span></span><span class="v" id="rLiquidity">$0</span></div>
+            <div class="ts-irnote" id="rIRnote" style="display:none"></div>
+            <div class="ts-irnote" id="rEscNote" style="display:none"></div>
+            <div class="ts-info" id="rRefiNote" style="display:none"></div>
+            <p class="ts-note">The title / escrow figure is a <strong>rough estimate only</strong> — your actual cost depends on your title vendor — included here to approximate your cash to close. It scales with the loan amount, your state and the transaction type; transfer and mortgage taxes are separate. Appraisal is POC (paid outside closing). <span id="rResNote">Liquidity to show ≈ cash to close plus 2 months of interest — a reserve you demonstrate, not funds brought to closing.</span></p>
+
+            <div class="ts-sub">Eligibility snapshot</div>
+            <div class="ts-grid2">
+                <div class="ts-line"><span class="k">Experience tier</span><span class="v" id="rTier">—</span></div>
+                <div class="ts-line"><span class="k">Estimated FICO</span><span class="v" id="rFico">—</span></div>
+            </div>
+
+            <div class="tier-nudge" id="tierNudge" style="display:none"></div>
+            <div class="ts-cta">
+                <button class="btn btn-solid btn-lg" type="button" id="tsPdf">Download Term Sheet (PDF) ⤓</button>
+                <button class="btn btn-line btn-lg" type="button" id="tsLetter" style="width:100%;justify-content:center;margin-top:.55rem">Proof of Funds Letter (PDF) ✎</button>
+                <p class="ts-export-note" id="tsExportNote" style="display:none"></p>
+            </div>
+
+            <div class="lead-capture" id="leadCapture">
+                <label for="leadEmail">Email me this term sheet</label>
+                <div class="lead-row">
+                    <input id="leadEmail" type="email" inputmode="email" placeholder="you@email.com" autocomplete="email">
+                    <button class="btn btn-solid" type="button" id="leadSend">Send&nbsp;it&nbsp;→</button>
+                </div>
+                <p class="lead-note" id="leadNote">No login, no credit pull — we'll send a copy and a real person will follow up.</p>
+            </div>
+
+            <div class="handoff" id="handoff">
+                <span class="handoff-q">Questions on these numbers? Talk to a real person.</span>
+                <div class="handoff-links">
+                    <a href="https://wa.me/message/SR7AK2L5DOCNJ1" target="_blank" rel="noopener">💬 WhatsApp</a>
+                    <a href="tel:+17188312168">📞 718-831-2168</a>
+                    <a href="mailto:sales@yscapgroup.com">✉️ Email</a>
+                </div>
+            </div>
+            <p class="ts-compliance"><strong>Indicative only.</strong> This is not a commitment, approval, pre-approval, rate lock, or guarantee to lend and creates no obligation. All amounts, rates, leverage and fees are preliminary and subject to a complete application, underwriting, appraisal, title, insurance and final credit approval. Business / investment-purpose financing only (non-owner-occupied) — not consumer credit; a personal guaranty and first-lien position are required. Not valid until accepted in writing by the borrower and countersigned by an authorized representative of YS Capital Group.</p>
+        </div>
+        </div>
+    </div>
+</div>
+
+<footer class="suite-footer">
+    <div class="sf-inner">
+        <div class="sf-top">
+            <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">
+            <span class="sf-tag">The answer is yes.™</span>
+            <div class="sf-marks"><img src="../assets/images/eho-lender.png" alt="Equal Housing Lender"><img src="../assets/images/nmls.svg" alt="NMLS ID 2609746"></div>
+        </div>
+        <div class="sf-meta">YS Capital Group · <a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">NMLS ID 2609746</a> · 5 New Montrose Ave, Bsmt, Brooklyn, NY 11211 · <a href="tel:7188312168">718-831-2168</a> · <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a></div>
+        <p class="sf-disc"><strong>Business-purpose financing only.</strong> This term sheet is an indication, not an offer, approval, or commitment to lend. All terms, leverage, and figures shown are indicative and subject to underwriting, appraisal, and final credit approval. Equal Housing Lender.</p>
+        <p class="sf-copy">© 2026 YS Capital Group. All rights reserved.</p>
+    </div>
+</footer>
+</main>
+
+<script src="../suite.js?v=admin8"></script>
+<script src="rb-logo.js?v=admin8"></script>
+<script src="standard-program.js?v=admin13"></script>
+<script src="gold-standard.js?v=admin13"></script>
+<script src="title-cost.js?v=admin8"></script>
+<script src="termsheet.js?v=cob1"></script>
+<script src="../float-actions.js?v=admin8"></script>
+</body>
+</html>
