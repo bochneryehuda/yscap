@@ -236,40 +236,148 @@
   .ts-admin-lockbtn{ margin-top:.85rem; background:none; border:0; color:var(--muted-2); font-family:var(--font-b); font-size:.74rem; cursor:pointer; text-decoration:underline; text-underline-offset:2px; padding:0; }
   .ts-admin-lockbtn:hover{ color:var(--teal-br); }
   [hidden]{ display:none !important; }
+
+  /* =====================================================================
+     BLUEPRINT CHROME LAYER  (ds.css-derived; --ds-* tokens are namespaced
+     so they never collide with suite.css, which uses --ink as a near-white
+     surface and --ivory as dark text). Pure chrome + polish — every bound
+     id / name / data-cond / .input / .field wrapper is untouched.
+     ===================================================================== */
+  :root{
+    --ds-paper:#F4F0E7; --ds-card:#FBF9F3; --ds-card-2:#FFFFFF;
+    --ds-ink:#141B22; --ds-ink-1:#1D2830; --ds-ink-soft:#4B585C;
+    --ds-gold:#AE8746; --ds-teal:#2F7F86; --ds-teal-dp:#245F65;
+    --ds-line:rgba(20,27,34,.14); --ds-line-soft:rgba(20,27,34,.07);
+    --ds-serif:'Fraunces',Georgia,serif; --ds-sans:'Hanken Grotesk',system-ui,sans-serif;
+    --ds-maxw:1200px;
+  }
+  :root[data-theme="light"] body{ background:var(--ds-paper); color:var(--ds-ink); }
+  .orb,.grain{ display:none !important; }   /* the paper page carries no decorative dark orbs */
+
+  /* Hard visibility guard — beat suite.css's light-theme h1/h2/h3 -> --ivory rule
+     so headings are always dark ink on the ivory page (never light-on-light). */
+  :root[data-theme="light"] .an-head h1,
+  :root[data-theme="light"] .tool-grid .inputs-col .panel > h2{ color:var(--ds-ink); }
+  :root[data-theme="light"] .an-head h1 em{ color:var(--ds-teal); }
+  :root[data-theme="light"] .an-head h1 .tm{ color:var(--ds-gold); }
+
+  /* ---- tool top bar (sticky breadcrumb) ---- */
+  .tool-bar{ position:sticky; top:0; z-index:50; background:rgba(251,249,243,.9); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); border-bottom:1px solid var(--ds-line-soft); }
+  .tool-bar .inner{ display:flex; align-items:center; justify-content:space-between; height:62px; gap:24px; max-width:var(--ds-maxw); margin:0 auto; padding:0 40px; }
+  .tool-bar .crumb{ display:flex; align-items:center; gap:13px; min-width:0; }
+  .tool-bar .topbar-brand{ display:inline-flex; align-items:center; }
+  .tool-bar .logo-nav{ height:30px; width:auto; }
+  .tool-bar .cdiv{ width:1px; height:22px; background:var(--ds-line); flex:none; }
+  .tool-bar .trail{ display:flex; align-items:center; font-size:13px; font-weight:600; letter-spacing:.02em; color:var(--ds-ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tool-bar .trail a{ color:var(--ds-ink-soft); text-decoration:none; }
+  .tool-bar .trail .sep{ opacity:.4; padding:0 .55em; }
+  .tool-bar .trail .here{ color:var(--ds-ink); }
+  .tool-bar .tool-actions{ display:flex; align-items:center; gap:10px; flex:none; }
+  .tool-bar .back{ font-size:13px; font-weight:600; color:var(--ds-ink-soft); text-decoration:none; }
+  .tb-under{ position:relative; }
+  .tb-under::after{ content:""; position:absolute; left:0; bottom:-3px; height:1.5px; width:100%; background:var(--ds-gold); transform:scaleX(0); transform-origin:left; transition:transform .28s cubic-bezier(.22,.61,.36,1); }
+  .tb-under:hover::after{ transform:scaleX(1); }
+
+  /* ---- hero ---- */
+  .an-head{ max-width:var(--ds-maxw); margin:0 auto; padding:46px 40px 20px; }
+  .an-head .suite-eyebrow{ color:var(--ds-teal); margin-bottom:.7rem; }
+  .an-head h1{ font-family:var(--ds-serif); font-weight:500; font-size:clamp(34px,4.6vw,52px); letter-spacing:-.012em; line-height:1.02; margin:.12em 0 .16em; }
+  .an-head h1 em{ font-style:italic; position:relative; }
+  .an-head h1 em::after{ content:""; position:absolute; left:0; right:0; bottom:-.05em; height:2px; background:var(--ds-gold); transform:scaleX(1); transform-origin:left; }
+  .an-head h1 .tm{ font-size:.32em; vertical-align:super; font-style:normal; font-family:var(--ds-sans); font-weight:700; }
+  .an-head .tool-tagline{ font-family:var(--ds-serif); font-style:italic; color:var(--ds-ink-soft); font-size:1.16rem; margin-top:.5rem; }
+  .an-head .tool-intro{ color:var(--ds-ink-soft); max-width:64ch; margin-top:.9rem; }
+  .an-head .chips{ display:flex; gap:10px; flex-wrap:wrap; margin-top:20px; }
+  .chip{ display:inline-flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; letter-spacing:.02em; color:var(--ds-ink); background:var(--ds-card); border:1px solid var(--ds-line); border-radius:100px; padding:7px 14px; transition:border-color .2s, transform .2s; }
+  .chip:hover{ border-color:var(--ds-gold); transform:translateY(-1px); }
+  .an-head .fill-hint{ margin-top:16px; color:var(--ds-ink-soft); }
+
+  /* ---- studio grid ---- */
+  .tool-grid{ display:grid; grid-template-columns:1.05fr .95fr; gap:38px; align-items:start; max-width:var(--ds-maxw); margin:0 auto; padding:6px 40px 24px; }
+  .tool-grid .inputs-col{ display:flex; flex-direction:column; gap:20px; }
+
+  /* ---- input panels: card + serif header row + step tag ---- */
+  .tool-grid .inputs-col .panel{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:12px; padding:0 22px 12px; margin:0; box-shadow:0 1px 2px rgba(22,32,29,.04), 0 16px 36px -30px rgba(22,32,29,.5); transition:border-color .25s, box-shadow .25s; }
+  .tool-grid .inputs-col .panel:hover{ border-color:rgba(20,27,34,.24); box-shadow:0 4px 10px rgba(22,32,29,.05), 0 22px 44px -28px rgba(22,32,29,.55); }
+  .tool-grid .inputs-col .panel > h2{ display:flex; align-items:center; gap:11px; font-family:var(--ds-serif); font-weight:500; font-size:17px; color:var(--ds-ink); margin:0 -22px 16px; padding:15px 22px; border-bottom:1px solid var(--ds-line-soft); }
+  .tool-grid .inputs-col .panel > h2 .ptag{ margin-left:auto; font-family:var(--ds-sans); font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); opacity:.7; }
+  .tool-grid .inputs-col .panel-num{ width:24px; height:24px; flex:0 0 auto; border-radius:50%; border:0; background:var(--ds-ink); color:#fff; display:inline-flex; align-items:center; justify-content:center; }
+  .tool-grid .inputs-col .panel-num svg{ width:13px; height:13px; stroke:#fff; fill:none; stroke-width:1.8; }
+  .tool-grid .inputs-col .panel > .panel-note{ color:var(--ds-ink-soft); }
+
+  /* ---- results column ---- */
+  .results-col{ display:flex; flex-direction:column; }
+  .ts-live-head{ display:flex; align-items:center; justify-content:space-between; margin:0 0 14px; }
+  .ts-live-head .t{ font-size:11px; letter-spacing:.2em; text-transform:uppercase; font-weight:700; color:var(--ds-ink-soft); }
+  .ts-live-head .est{ font-size:11px; font-weight:700; color:var(--ds-teal); letter-spacing:.12em; text-transform:uppercase; display:inline-flex; align-items:center; gap:6px; }
+  .ts-live-head .est::before{ content:""; width:6px; height:6px; border-radius:50%; background:var(--ds-teal); animation:ds-pulse 2s ease-in-out infinite; }
+  .results-col .pcard{ background:var(--ds-card); border-color:var(--ds-line); }
+  .results-col .pcard.gold{ border-color:rgba(174,135,70,.5); background:linear-gradient(180deg,rgba(174,135,70,.08),rgba(174,135,70,.02)); }
+  .results-col .panel{ background:var(--ds-card); border:1px solid var(--ds-line); border-radius:12px; }
+  .results-col .prog-detail-head{ color:var(--ds-ink-soft); }
+
+  /* ---- polish (all reduced-motion-safe; reveals never gate first paint) ---- */
+  @keyframes ds-pulse{ 0%,100%{ opacity:1; transform:scale(1); } 50%{ opacity:.32; transform:scale(.66); } }
+  @keyframes ds-reveal{ from{ opacity:0; transform:translateY(18px); } to{ opacity:1; transform:none; } }
+  @keyframes ds-draw{ from{ transform:scaleX(0); } to{ transform:scaleX(1); } }
+  @media (prefers-reduced-motion: no-preference){
+    .an-head h1 em::after{ animation:ds-draw .7s .4s cubic-bezier(.22,.61,.36,1) both; }
+    @supports (animation-timeline: view()){
+      .reveal{ animation:ds-reveal linear both; animation-timeline:view(); animation-range:entry 2% cover 26%; }
+    }
+  }
+  @media (prefers-reduced-motion: reduce){
+    .ts-live-head .est::before{ animation:none; }
+  }
+
+  /* ---- responsive ---- */
+  @media(max-width:980px){
+    .tool-bar .inner{ padding:0 22px; }
+    .an-head{ padding:32px 22px 18px; }
+    .tool-grid{ grid-template-columns:1fr; gap:28px; padding:6px 22px 22px; }
+  }
+  @media(max-width:560px){
+    .tool-bar .inner{ height:auto; flex-wrap:wrap; padding:12px 18px; gap:12px; }
+    .tool-bar .tool-actions{ width:100%; flex-wrap:wrap; }
+  }
 </style>
 </head>
 <body>
 
-<header class="topbar">
-    <div class="topbar-inner">
-        <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
-        <span class="topbar-sep"></span>
-        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Term Sheet Studio</span></div>
-        <div class="topbar-actions">
-            <a class="back" href="../suite.html">← All tools</a>
-            <button class="btn btn-line" type="button" onclick="TS.share(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
-            <a class="btn btn-solid" href="loan-application.html">Apply Now</a>
+<header class="tool-bar">
+    <div class="inner">
+        <div class="crumb">
+            <a class="topbar-brand" href="../index.html"><img class="logo-nav" src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
+            <span class="cdiv"></span>
+            <span class="trail"><a class="tb-under" href="../suite.html">Investor Suite</a><span class="sep">/</span><span class="here">Term Sheet Studio</span></span>
+        </div>
+        <div class="tool-actions">
+            <a class="back tb-under" href="../suite.html">← All tools</a>
+            <button class="btn btn-sm btn-line" type="button" onclick="TS.share(this)" title="Copy a link that saves these inputs">Share link 🔗</button>
+            <a class="btn btn-sm btn-solid" href="loan-application.html">Apply Now</a>
         </div>
     </div>
 </header>
 
 <main>
-<section class="tool-hero">
+<section class="tool-hero an-head">
     <div class="suite-eyebrow">Standard Program · Fix &amp; Flip · Ground-Up · Bridge</div>
-    <h1>Term Sheet Studio<span class="tm">™</span></h1>
+    <h1>Term Sheet <em>Studio</em><span class="tm">™</span></h1>
     <p class="tool-tagline">A clear, signable term sheet — structure, pricing and cash to close — in about a minute.</p>
-    <div class="trust-badge" aria-label="How this tool works">
-      <span>⚡ Instant</span><i></i><span>🔒 No credit pull</span><i></i><span>✍️ Nothing to sign</span>
-    </div>
     <p class="tool-intro">Skip the wait. Enter the deal — purchase, construction, values and the interest reserve you want — and get a polished YS Capital term sheet you can download and sign: full loan structure, fees, estimated cash to close, the liquidity you'll need, and your eligibility snapshot. Most lenders take a business day; this takes a minute.</p>
+    <div class="chips" aria-label="How this tool works">
+      <span class="chip">⚡ Instant</span>
+      <span class="chip">🔒 No credit pull</span>
+      <span class="chip">✍️ Nothing to sign</span>
+    </div>
     <span class="fill-hint"><span class="swatch"></span> Fill the deal in — your term sheet builds on the right as you type.</span>
 </section>
 
 <div class="tool-grid">
-    <form class="inputs-col" id="tsForm" autocomplete="off" onsubmit="return false;">
+    <form class="inputs-col form-col" id="tsForm" autocomplete="off" onsubmit="return false;">
 
         <div class="panel">
-            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/></svg></span> Deal &amp; property</h2>
+            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/></svg></span> Deal &amp; property <span class="ptag">Step 1</span></h2>
             <p class="panel-note">Who and where. Don't have an address yet? Mark it TBD and we'll build indicative terms now.</p>
             <div class="field">
                 <label for="borrowerName">Borrower / entity name <em>(optional)</em></label>
@@ -323,8 +431,8 @@
             </div>
         </div>
 
-        <div class="panel">
-            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M3 7h18v12H3zM3 11h18M7 15h4"/></svg></span> Purchase &amp; project costs</h2>
+        <div class="panel reveal">
+            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M3 7h18v12H3zM3 11h18M7 15h4"/></svg></span> Purchase &amp; project costs <span class="ptag">Step 2</span></h2>
             <p class="panel-note">Taking over a wholesale contract? Toggle assignment and enter the seller's contract price — the fee fills in automatically and the program finances it up to 15%.</p>
             <div class="field cond" data-cond="purchaseOnly">
                 <label for="price">Purchase price<span class="tip" tabindex="0" role="note" aria-label="The contract price you’re paying for the property. For a refinance, the as-is value is used instead.">i<span class="tip-bub">The contract price you’re paying for the property. For a refinance, the as-is value is used instead.</span></span></label>
@@ -362,8 +470,8 @@
             <label class="tbd-toggle" for="sqft" data-cond="ffOnly"><input type="checkbox" id="sqft"> Adding square footage / expanding the footprint</label>
         </div>
 
-        <div class="panel">
-            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M12 3v18M5 8h9a3 3 0 0 1 0 6H5"/></svg></span> Structure</h2>
+        <div class="panel reveal">
+            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M12 3v18M5 8h9a3 3 0 0 1 0 6H5"/></svg></span> Structure <span class="ptag">Step 3</span></h2>
             <p class="panel-note cond" data-cond="hasRehab">Your rehab budget is financed 100% and held back in draws — separate from any interest reserve. Leave the reserve at 0 to keep the loan to acquisition + rehab; enter months to finance a reserve (it tracks your real rate and must fit under the leverage caps).</p>
             <p class="panel-note cond hidden" data-cond="bridgeOnly">A bridge loan is sized against the as-is value only — there's no rehab holdback, after-repair value or interest reserve. Just set your requested term below.</p>
             <div class="field-rows two-col">
@@ -379,8 +487,8 @@
             <p class="rate-hint" style="margin-top:.2rem">Your rate is set automatically from experience, credit, leverage and the program — it appears on the term sheet on the right. No rate to enter.</p>
         </div>
 
-        <div class="panel">
-            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16M8 16l3-4 3 2 4-6"/></svg></span> Experience &amp; credit</h2>
+        <div class="panel reveal">
+            <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16M8 16l3-4 3 2 4-6"/></svg></span> Experience &amp; credit <span class="ptag">Step 4</span></h2>
             <p class="panel-note">Completed projects in the <strong>last 36 months</strong> — your biggest pricing lever. Flips, holds and ground-ups all count toward a fix &amp; flip, fix &amp; hold or bridge deal; a <strong>ground-up loan counts ground-up projects only</strong>.</p>
             <div class="field-rows two-col">
                 <div class="field"><label for="expFlips">Fix &amp; flips completed</label><div class="input"><input id="expFlips" type="number" inputmode="numeric" min="0" placeholder="0"></div></div>
@@ -449,6 +557,7 @@
     </form>
 
     <div class="results-col">
+        <div class="ts-live-head"><span class="t">Indicative term sheet</span><span class="est">Live</span></div>
         <div class="prog-compare" id="progCompare">
             <article class="pcard" id="pcardStd" data-prog="standard">
                 <div class="pcard-top"><span class="pcard-name">Standard</span><span class="pcard-badge" id="stdBadge">—</span></div>
@@ -605,7 +714,7 @@
     </div>
 </div>
 
-<footer class="suite-footer">
+<footer class="suite-footer reveal">
     <div class="sf-inner">
         <div class="sf-top">
             <img src="../assets/images/ys-logo-t.png" alt="YS Capital Group" class="logo">
