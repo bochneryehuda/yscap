@@ -24,7 +24,15 @@ const cfg = require('../../config');
 /* Absolute portal URL for a hash-route path, e.g. link('/verify?token=abc') ->
    https://host/portal/#/verify?token=abc . The SPA lives under cfg.portalPath
    ('/portal') with a HashRouter, so the path MUST be included or the link opens
-   the marketing site instead of the portal. Absolute URLs pass through. */
+   the marketing site instead of the portal. Absolute URLs pass through.
+
+   EXCEPTION — one-time auth links (/reset, /verify, /accept): the token they
+   carry cannot ride in the #fragment, because email click-tracking (Resend etc.)
+   rewrites the link and drops the fragment, so the token never arrives and the
+   page shows "link missing/expired". For those we emit a PLAIN path+query URL
+   (https://host/link/<kind>?token=abc) that trackers preserve; the server
+   bounces it into the hash route (see the /link/:kind route in server.js). */
+const BOUNCE_ROUTES = { '/reset': 'reset', '/verify': 'verify', '/accept': 'accept' };
 function link(path) {
   const base = (cfg.appUrl || '').replace(/\/+$/, '');
   const portal = (cfg.portalPath || '/portal').replace(/\/+$/, '');
@@ -32,6 +40,12 @@ function link(path) {
   if (/^https?:/i.test(p)) return p;
   p = p.replace(/^\/#/, '');                 // tolerate a pre-hashed input
   if (!p.startsWith('/')) p = '/' + p;
+  const qIdx = p.indexOf('?');
+  const routePath = qIdx >= 0 ? p.slice(0, qIdx) : p;
+  const kind = BOUNCE_ROUTES[routePath];
+  // Token links -> tracking-proof plain URL that the server bounces to the hash
+  // route; every other portal deep link stays a direct hash URL.
+  if (kind) return base + '/link/' + kind + (qIdx >= 0 ? p.slice(qIdx) : '');
   return base + portal + '/#' + p;
 }
 
