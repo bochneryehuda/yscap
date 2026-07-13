@@ -36,7 +36,10 @@ const map = require('./sharepoint-map');
 const MAX_ATTEMPTS = 8;            // per-document retry cap (interval sweeps retry)
 const DEFAULT_BATCH = 25;
 const PACING_MS = 300;             // between uploads — keeps Graph bursts polite
-const KICK_DEBOUNCE_MS = 1500;     // collapse a burst of uploads into one pass
+const KICK_DEBOUNCE_MS = 4000;     // collapse a burst of uploads into one pass;
+                                   // MUST exceed pendingBatch's 3s settle window
+                                   // or a kicked pass would skip the very doc
+                                   // that kicked it and wait for the sweep
 const MAX_DRAIN_LOOPS = 200;       // backfill safety valve per drain (200*25 docs)
 
 let _running = false;              // single-flight: kick + interval never overlap
@@ -122,6 +125,10 @@ async function pendingBatch(limit) {
         AND d.storage_ref IS NOT NULL
         AND COALESCE(d.storage_provider, 'local') = 'local'
         AND d.sharepoint_backup_attempts < $2
+        -- Settle window: the upload request's follow-up statements (supersede
+        -- flags on prior versions) run in separate autocommit statements right
+        -- after the INSERT; never mirror a row before they have landed.
+        AND d.created_at < now() - interval '3 seconds'
       -- attempts ASC first: fresh uploads are never starved behind a head-of-
       -- queue clump of repeatedly-failing rows; created_at ASC within a tier
       -- keeps the backfill's version replay chronological.
@@ -160,12 +167,17 @@ async function isSupersedeEvent(row, stateKey, currentVersion) {
     where = 'm.checklist_item_id = $3';
   } else {
     // kind-scoped (term sheet / track record / …): same scope + same category.
-    // llc/track-record NULL-ness participates so an LLC doc and a general doc
-    // (both doc_kind NULL) can never trip each other's version counter.
+    // App-scoped docs match on the APP alone (a borrower-uploaded and a staff-
+    // saved term sheet on the same file must share one version stream even
+    // though their raw borrower_id differs); borrower_id anchors the match only
+    // when there is no application. llc/track-record NULL-ness participates so
+    // an LLC doc and a general doc (both doc_kind NULL) can never trip each
+    // other's version counter.
     params.push(row.app_id, row.borrower_id, row.doc_kind || '', row.source_type || '');
     where = `m.checklist_item_id IS NULL
-             AND COALESCE(m.application_id::text,'') = COALESCE($3::text,'')
-             AND COALESCE(m.borrower_id::text,'')   = COALESCE($4::text,'')
+             AND ${row.app_id
+               ? `m.application_id::text = $3::text`
+               : `m.application_id IS NULL AND $3::text IS NULL AND COALESCE(m.borrower_id::text,'') = COALESCE($4::text,'')`}
              AND COALESCE(m.doc_kind,'')            = $5
              AND COALESCE(m.source_type,'')         = $6
              AND (m.llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}
@@ -188,6 +200,10 @@ async function isSupersedeEvent(row, stateKey, currentVersion) {
 // from the condition-folder root into it. Only items recorded in
 // documents.sharepoint_backup_ref are touched, and sp.moveOwnItem refuses any
 // item whose current parent isn't the condition folder we created.
+// NOTE (owner-designed): ALL of the portal's root copies move — including a
+// still-current doc of another slot ("move in all the old documents in the
+// version 1 folder"). The freshest set always lives in the HIGHEST Version
+// folder; a still-current doc parked in Version 1 simply hasn't changed since.
 async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) {
   const v1 = await sp.ensureChildFolder(driveId, conditionFolder.id, 'Version 1');
   let where, params;
@@ -196,8 +212,9 @@ async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) 
     params = [row.checklist_item_id];
   } else {
     where = `checklist_item_id IS NULL
-             AND COALESCE(application_id::text,'') = COALESCE($1::text,'')
-             AND COALESCE(borrower_id::text,'')    = COALESCE($2::text,'')
+             AND ${row.app_id
+               ? `application_id::text = $1::text`
+               : `application_id IS NULL AND $1::text IS NULL AND COALESCE(borrower_id::text,'') = COALESCE($2::text,'')`}
              AND COALESCE(doc_kind,'')             = $3
              AND COALESCE(source_type,'')          = $4
              AND (llc_id IS NULL) = ${row.llc_id ? 'false' : 'true'}

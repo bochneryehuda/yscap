@@ -57,12 +57,15 @@ const norm = (s) => String(s || '')
 
 const nameTokens = (s) => norm(s).split(' ').filter(Boolean);
 
-// Address → { num, street[], unit } core. Returns null when there is no leading
-// house number (which is what keeps stage/category folders out of address
-// matching). `unit` captures the first token after an apt/unit/#-marker so two
-// different units at the same street address never collapse into one folder.
+// Address → { num, street[], unit } core, computed from the PRE-COMMA segment
+// only (the street portion — everything after the first comma is city/state/
+// zip tail and is ignorable). Returns null when there is no leading house
+// number (which is what keeps stage/category folders out of address matching).
+// `unit` captures the first token after an apt/unit/#-marker so two different
+// units at the same street address never collapse into one folder.
 function addressCore(s) {
-  let toks = norm(s).replace(/#/g, ' # ').split(' ').filter(Boolean);
+  const streetPart = String(s || '').split(',')[0];   // comma captured BEFORE norm strips it
+  let toks = norm(streetPart).replace(/#/g, ' # ').split(' ').filter(Boolean);
   if (!toks.length || !/^\d+[a-z]?$/.test(toks[0])) return null;
   const num = toks[0];
   toks = toks.slice(1);
@@ -74,7 +77,7 @@ function addressCore(s) {
     const mapped = SUFFIX[t] || DIRECTION[t] || t;
     street.push(mapped);
   }
-  // Drop pure-noise trailing tokens: zip, state abbrev, USA.
+  // Comma-less strings may still carry a state/zip/USA tail — strip that noise.
   while (street.length) {
     const last = street[street.length - 1];
     if (/^\d{5}(-\d{4})?$/.test(last) || STATE_ABBR.has(last) || NOISE_TAIL.has(last)) street.pop();
@@ -84,16 +87,18 @@ function addressCore(s) {
 }
 
 // Does candidate address folder match the target address? House number must be
-// identical; then the shorter street-token list must be a prefix of the longer
-// (tolerates a city/state tail on either side after noise-stripping). When BOTH
-// sides carry a unit/apt number, the units must be identical too.
+// identical and the (suffix/directional-normalized) pre-comma street tokens
+// must be EXACTLY equal — "654 Hamilton st" ≡ "654 Hamilton Street, Newark NJ",
+// but "45 Oak Street Extension" never matches "45 Oak St" (different street),
+// and a comma-less folder that embeds an unknown city falls through to the
+// safe create-new-folder path rather than guessing. When BOTH sides carry a
+// unit/apt number, the units must be identical too.
 function addressMatches(candidate, target) {
   const c = addressCore(candidate), t = addressCore(target);
   if (!c || !t || c.num !== t.num) return false;
   if (c.unit && t.unit && c.unit !== t.unit) return false;
-  const [short, long] = c.street.length <= t.street.length ? [c.street, t.street] : [t.street, c.street];
-  if (!short.length) return false;
-  for (let i = 0; i < short.length; i++) if (short[i] !== long[i]) return false;
+  if (!c.street.length || c.street.length !== t.street.length) return false;
+  for (let i = 0; i < c.street.length; i++) if (c.street[i] !== t.street[i]) return false;
   return true;
 }
 
@@ -186,6 +191,14 @@ async function resolveSyncFolder(ctx) {
     const bf = await sp.ensureChildFolder(driveId, parentId, borrowerName);
     parentId = bf.id; pathParts.push(borrowerName);
     if (bf.created) details.created.push('borrower');
+    // Keep the address level for application scopes here too — without it, a
+    // lead-capture borrower's multiple loans would commingle in one folder.
+    if (ctx.hasApplication) {
+      const addressName = ctx.addressOneLine || (ctx.ysLoanNumber ? `Loan ${ctx.ysLoanNumber}` : 'Property');
+      const af = await sp.ensureChildFolder(driveId, parentId, addressName);
+      parentId = af.id; pathParts.push(addressName);
+      if (af.created) details.created.push('address');
+    }
   } else {
     // 1) Officer folder (fuzzy; created if genuinely missing).
     const officers = await sp.listChildren(driveId, parentId);
