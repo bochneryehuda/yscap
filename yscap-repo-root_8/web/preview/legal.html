@@ -1,0 +1,231 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* legal.html — page-local layout only; tokens come from ds.css */
+  main{padding-bottom:20px}
+  .legal-hero{padding:60px 0 34px}
+  .legal-hero h1{font-size:clamp(38px,5vw,64px);margin:.14em 0 .3em}
+  .legal-hero .lede{max-width:62ch}
+  .legal-meta{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
+
+  .legal-wrap{display:grid;grid-template-columns:236px 1fr;gap:64px;align-items:start;padding-top:8px;padding-bottom:96px}
+  @media(max-width:860px){.legal-wrap{grid-template-columns:1fr;gap:0;padding-bottom:64px}}
+
+  /* anchor / table-of-contents nav */
+  .toc{position:sticky;top:104px}
+  .toc .toc-lab{font-size:12px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);margin-bottom:16px}
+  .toc ol{list-style:none;margin:0;padding:0;counter-reset:t}
+  .toc li{counter-increment:t}
+  .toc a{display:flex;gap:12px;align-items:baseline;padding:12px 0 12px 16px;border-left:2px solid var(--line);color:var(--ink-soft);font-size:14.5px;font-weight:600;line-height:1.35;transition:color .15s,border-color .15s}
+  .toc a::before{content:counter(t,decimal-leading-zero);font-family:var(--serif);font-size:12.5px;color:var(--gold);font-variant-numeric:tabular-nums}
+  .toc a:hover{color:var(--gold);border-left-color:var(--gold)}
+  @media(max-width:860px){
+    .toc{position:sticky;top:80px;z-index:30;background:var(--paper);margin:0 -24px;padding:12px 24px;border-bottom:1px solid var(--line-soft)}
+    .toc .toc-lab{display:none}
+    .toc ol{display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+    .toc ol::-webkit-scrollbar{display:none}
+    .toc a{white-space:nowrap;border-left:0;border:1px solid var(--line);border-radius:100px;padding:0 15px;min-height:44px;align-items:center}
+  }
+
+  /* document body */
+  .doc{min-width:0}
+  .doc-sec{scroll-margin-top:104px}
+  .doc-sec + .doc-sec{margin-top:58px;padding-top:58px;border-top:1px solid var(--line)}
+  .doc-sec > .sec-top{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:8px}
+  .doc-sec h2{font-size:clamp(26px,3.2vw,40px)}
+  .eff{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;letter-spacing:.02em;background:var(--card);border:1px solid var(--line);border-radius:100px;padding:6px 13px;color:var(--ink-soft);white-space:nowrap}
+  .eff .dot{width:6px;height:6px;border-radius:50%;background:var(--teal)}
+  .sec-intro{max-width:68ch;color:var(--ink-soft);font-size:17px;margin-top:10px}
+
+  /* term blocks (labelled clauses) */
+  .clause{max-width:68ch;padding:26px 0;border-top:1px solid var(--line-soft)}
+  .clause:first-of-type{border-top:0;padding-top:22px}
+  .clause .lab{font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--gold);margin-bottom:10px}
+  .clause h3{font-size:22px;margin-bottom:12px}
+  .clause p{color:var(--ink-1);line-height:1.65}
+  .clause p + p{margin-top:14px}
+  .clause a.tel{border-bottom:1px solid var(--gold);font-weight:600;white-space:nowrap}
+  .clause a.tel:hover{color:var(--gold)}
+
+  /* numbered SMS points */
+  .points{max-width:68ch;list-style:none;margin:0;padding:0}
+  .points li{display:grid;grid-template-columns:auto 1fr;gap:16px;padding:20px 0;border-top:1px solid var(--line-soft)}
+  .points li:first-child{border-top:0}
+  .points .no{font-family:var(--serif);font-size:20px;color:var(--gold);font-variant-numeric:tabular-nums;line-height:1.3}
+  .points .txt{line-height:1.65;color:var(--ink-1)}
+  .points .txt b{font-weight:600;color:var(--ink)}
+
+  /* privacy callouts + contact card */
+  .commit{max-width:68ch;display:grid;gap:14px;margin:22px 0 30px}
+  .commit .row{display:flex;gap:14px;align-items:flex-start;padding:18px 20px;background:var(--card);border:1px solid var(--line);border-radius:var(--r)}
+  .commit .row .mk{color:var(--teal);font-family:var(--serif);font-size:20px;line-height:1.2;flex:none}
+  .commit .row p{font-weight:500;color:var(--ink);line-height:1.55}
+  .contact-card{max-width:68ch;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--r);padding:26px 28px}
+  .contact-card .lab{font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);margin-bottom:12px}
+  .contact-card p{line-height:1.7;color:var(--ink-1)}
+  .contact-card a{border-bottom:1px solid var(--gold);font-weight:600;white-space:nowrap}
+  .contact-card a:hover{color:var(--gold)}
+
+  .disclaimer{max-width:68ch;font-size:13px;color:var(--ink-soft);line-height:1.6;margin-top:30px;padding-top:22px;border-top:1px solid var(--line-soft)}
+</style>
+
+<header class="site-nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#"><img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group"></a>
+    <nav class="nav-links">
+      <a>Financing</a>
+      <a>Tools</a>
+      <a>How it works</a>
+      <a>Team</a>
+      <a>Contact</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost">Client login</a>
+      <a class="btn btn-ink">Get a term sheet</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="hero legal-hero">
+    <div class="wrap">
+      <p class="eyebrow">Legal &amp; Compliance</p>
+      <h1>Legal &amp; Compliance</h1>
+      <p class="lede">The disclosures, licensing notices, and policies that govern how we lend and how this website may be used. Please read the section that applies to you.</p>
+      <div class="legal-meta">
+        <span class="chip">Business-purpose lending</span>
+        <span class="chip">NMLS 2609746</span>
+        <span class="chip">Equal Housing Lender</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="wrap legal-wrap">
+    <nav class="toc" aria-label="On this page">
+      <p class="toc-lab">On this page</p>
+      <ol>
+        <li><a href="#disclosures">Important Disclosures &amp; Licensing Notice</a></li>
+        <li><a href="#sms">SMS Terms &amp; Conditions</a></li>
+        <li><a href="#privacy">Privacy Policy</a></li>
+      </ol>
+    </nav>
+
+    <div class="doc">
+
+      <!-- 1. DISCLOSURES -->
+      <section class="doc-sec" id="disclosures">
+        <div class="sec-top">
+          <p class="eyebrow"><span class="idx">01</span>Disclosures</p>
+        </div>
+        <h2>Important Disclosures &amp; Licensing Notice</h2>
+        <p class="sec-intro">The following notices apply to all use of this website and to the financing described on it.</p>
+
+        <div class="clause">
+          <p class="lab">Business Purpose Only</p>
+          <p>All mortgage products and information on this website are intended solely for business-purpose and investment properties. We do not offer or accept applications for consumer-purpose loans (personal, family or household use) through this platform. By using this site, you certify that any inquiry is for a commercial or business investment.</p>
+        </div>
+
+        <div class="clause">
+          <p class="lab">New Jersey Consumer Loans</p>
+          <p>YS Capital Group is a Licensed Correspondent Lender regulated by the New Jersey Department of Banking and Insurance (DOBI). For information regarding consumer mortgage loans in New Jersey, please do not use this website &mdash; call us directly at <a class="tel" href="tel:+17186350277">718-635-0277</a>.</p>
+        </div>
+
+        <div class="clause">
+          <p class="lab">New York Consumer Loans</p>
+          <p>YS Capital Group is a Registered Mortgage Broker with the New York State Department of Financial Services (NMLS #2609746) &mdash; mortgage loans arranged through third-party providers. The business-purpose, investment-property financing described on this website is not consumer credit and is not offered to New York consumers here. This website is not intended to solicit or accept consumer (owner-occupied, 1&ndash;4 family residential) mortgage applications in New York. If you are a New York consumer seeking a residential mortgage, please do not use this website &mdash; contact us directly at <a class="tel" href="tel:+17188312168">718-831-2168</a>.</p>
+        </div>
+
+        <div class="clause">
+          <p class="lab">Copyright</p>
+          <p>&copy; 2026 YS Capital Group. All rights reserved. Loan programs, leverage, rates and pricing shown are indicative, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend.</p>
+        </div>
+      </section>
+
+      <!-- 2. SMS TERMS -->
+      <section class="doc-sec" id="sms">
+        <div class="sec-top">
+          <p class="eyebrow"><span class="idx">02</span>Messaging</p>
+          <span class="eff"><span class="dot"></span>Effective January 01, 2026</span>
+        </div>
+        <h2>SMS Terms &amp; Conditions</h2>
+        <p class="sec-intro">These terms govern text-message communications between you and YS Capital Group.</p>
+
+        <ol class="points">
+          <li>
+            <span class="no">1</span>
+            <span class="txt"><b>SMS Consent Communication:</b> The information (Phone Numbers) obtained as part of the SMS consent process will not be shared with third parties for marketing purposes.</span>
+          </li>
+          <li>
+            <span class="no">2</span>
+            <span class="txt"><b>Types of SMS Communications:</b> &hellip; Customer Care SMS.</span>
+          </li>
+          <li>
+            <span class="no">3</span>
+            <span class="txt"><b>Message Frequency:</b> Message frequency may vary. You may receive up to 5 SMS messages per week regarding your customer care SMS.</span>
+          </li>
+          <li>
+            <span class="no">5</span>
+            <span class="txt"><b>Opt-In Method:</b> &hellip; Verbally, during a conversation.</span>
+          </li>
+          <li>
+            <span class="no">8</span>
+            <span class="txt"><b>Standard Messaging Disclosures:</b> Message and data rates may apply. You can opt out at any time by texting 'STOP.' For assistance, text 'HELP'&hellip;</span>
+          </li>
+        </ol>
+      </section>
+
+      <!-- 3. PRIVACY -->
+      <section class="doc-sec" id="privacy">
+        <div class="sec-top">
+          <p class="eyebrow"><span class="idx">03</span>Privacy</p>
+          <span class="eff"><span class="dot"></span>Effective June 25, 2026</span>
+        </div>
+        <h2>Privacy Policy</h2>
+        <p class="sec-intro">A summary of how we treat your personal information. The following commitments apply to all users of this website.</p>
+
+        <div class="commit">
+          <div class="row"><span class="mk">&mdash;</span><p>We do not sell your personal information.</p></div>
+          <div class="row"><span class="mk">&mdash;</span><p>SMS consent is not shared with third parties or affiliates for their marketing purposes.</p></div>
+        </div>
+
+        <div class="contact-card">
+          <p class="lab">Contact</p>
+          <p>YS Capital Group, NMLS ID 2609746, 5 New Montrose Ave, Bsmt, Brooklyn, NY 11211. Email <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a>. Phone <a href="tel:+17188312168">718-831-2168</a>.</p>
+        </div>
+
+        <p class="disclaimer">Business-purpose, investment (non-owner-occupied) loans only. Loan programs, leverage, rates and pricing shown are indicative, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend.</p>
+      </section>
+
+    </div>
+  </div>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <img class="logo-foot" src="https://yscap.onrender.com/assets/brand/lockup-light.png" alt="YS Capital Group">
+        <p class="foot-addr">5 New Montrose Ave, Bsmt<br>Brooklyn, NY 11211</p>
+        <p class="foot-addr" style="margin-top:12px">718-831-2168 &middot; sales@yscapgroup.com</p>
+      </div>
+      <div>
+        <h5>Financing</h5>
+        <ul><li><a>DSCR Rental</a></li><li><a>Fix &amp; Flip</a></li><li><a>Bridge</a></li><li><a>Ground-Up</a></li><li><a>Multifamily</a></li></ul>
+      </div>
+      <div>
+        <h5>Tools</h5>
+        <ul><li><a>Term Sheet Studio</a></li><li><a>Deal Analyzer</a></li><li><a>Flip Analyzer</a></li><li><a>Portfolio Tracker</a></li></ul>
+      </div>
+      <div>
+        <h5>Legal</h5>
+        <ul><li><a href="#disclosures">Disclosures</a></li><li><a href="#sms">SMS Terms</a></li><li><a href="#privacy">Privacy Policy</a></li><li><a>Client login</a></li></ul>
+      </div>
+    </div>
+    <div class="foot-legal">
+      <p style="max-width:74ch">Business-purpose, investment (non-owner-occupied) loans only. Loan programs, leverage, rates and pricing shown are indicative, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend. &copy; 2026 YS Capital Group. NMLS ID 2609746.</p>
+      <div class="foot-badges">
+        <span class="chip">NMLS 2609746</span>
+        <span class="chip">Equal Housing Lender</span>
+      </div>
+    </div>
+  </div>
+</footer>

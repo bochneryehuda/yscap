@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>YS Capital Group — About &amp; Team</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+/* page-local only — no token redefinition */
+.about-hero{padding:78px 0 40px;}
+.about-hero .grid{display:grid;grid-template-columns:1.05fr .95fr;gap:64px;align-items:end;}
+.about-hero h1{font-size:clamp(46px,6vw,82px);}
+.about-hero h1 em{font-style:italic;color:var(--teal);}
+.about-hero .kicker{display:inline-flex;align-items:center;gap:14px;margin-bottom:26px;flex-wrap:wrap;}
+.about-hero .tag{font-size:12px;letter-spacing:.2em;text-transform:uppercase;font-weight:600;color:var(--ink-soft);}
+.who p{color:var(--ink-soft);font-size:19px;line-height:1.62;max-width:44ch;}
+.who p + p{margin-top:18px;}
+.who .sig{margin-top:24px;font-family:var(--serif);font-style:italic;font-size:20px;color:var(--ink);}
+
+/* values */
+.val-grid{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--line);border-left:1px solid var(--line);}
+.val{padding:32px 28px 34px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);}
+.val .n{font-size:12px;color:var(--gold);font-weight:700;letter-spacing:.1em;}
+.val h3{font-size:23px;margin:16px 0 12px;}
+.val p{font-size:14.5px;color:var(--ink-soft);line-height:1.55;}
+
+/* team */
+.team-note{font-size:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;color:var(--ink-soft);opacity:.75;}
+.team-grid{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--line);border-left:1px solid var(--line);}
+.team-card{padding:36px 30px 34px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);}
+.team-card .mono{width:66px;height:66px;font-size:23px;background:var(--paper-2);color:var(--teal-deep);}
+.team-card .ph{display:block;margin-top:10px;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;color:var(--ink-soft);opacity:.6;}
+.team-card h3{font-size:25px;margin:22px 0 6px;}
+.team-card .role{font-size:14px;font-weight:600;color:var(--teal-deep);letter-spacing:.01em;}
+.team-card .nm{margin-top:16px;padding-top:14px;border-top:1px solid var(--line-soft);font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--ink-soft);font-variant-numeric:tabular-nums;}
+
+/* wider team counts */
+.crew{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:var(--card);margin-top:26px;}
+.crew .c{padding:40px 34px;border-right:1px solid var(--line-soft);}
+.crew .c:last-child{border-right:0;}
+.crew .fig{font-family:var(--serif);font-size:52px;font-weight:500;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1;}
+.crew .lab{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-soft);margin-top:14px;font-weight:600;}
+.crew-line{margin-top:22px;font-family:var(--serif);font-style:italic;font-size:22px;color:var(--ink);}
+
+/* contact band */
+.contact-grid{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid rgba(255,255,255,.12);border-left:1px solid rgba(255,255,255,.12);}
+.contact-cell{padding:36px 30px;border-right:1px solid rgba(255,255,255,.12);border-bottom:1px solid rgba(255,255,255,.12);}
+.contact-cell .n{font-size:11px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--gold-soft);}
+.contact-cell .big{font-family:var(--serif);font-size:27px;font-weight:500;color:#fff;margin:16px 0 8px;font-variant-numeric:tabular-nums;}
+.contact-cell .sub{font-size:13.5px;color:rgba(244,240,231,.6);}
+.contact-cell .sub b{color:rgba(244,240,231,.9);font-weight:600;}
+.contact-foot{display:flex;justify-content:space-between;gap:28px;align-items:flex-end;margin-top:30px;flex-wrap:wrap;}
+.contact-foot .addr{color:rgba(244,240,231,.6);font-size:14px;line-height:1.7;}
+
+@media(max-width:980px){
+  .about-hero .grid{grid-template-columns:1fr;gap:40px;}
+  .val-grid,.team-grid,.contact-grid{grid-template-columns:1fr 1fr;}
+  .crew{grid-template-columns:1fr;}
+  .crew .c{border-right:0;border-bottom:1px solid var(--line-soft);}
+}
+@media(max-width:560px){
+  .val-grid,.team-grid,.contact-grid{grid-template-columns:1fr;}
+  .about-hero h1{font-size:44px;}
+}
+</style>
+</head>
+<body>
+
+<header class="site-nav">
+  <div class="wrap nav-inner">
+    <a class="logo-nav-link" href="./homepage-v1.html" aria-label="YS Capital Group">
+      <img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+    </a>
+    <nav class="nav-links">
+      <a href="./homepage-v1.html#programs">Financing</a>
+      <a href="./homepage-v1.html#suite">Tools</a>
+      <a href="./homepage-v1.html#process">How it works</a>
+      <a href="./about-team.html">Team</a>
+      <a href="#contact">Contact</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="#">Client login</a>
+      <a class="btn btn-ink" href="#">Get a term sheet</a>
+    </div>
+  </div>
+</header>
+
+<section class="about-hero">
+  <div class="wrap grid">
+    <div>
+      <div class="kicker">
+        <span class="chip"><span class="stars">★★★★★</span> 5.0 on Google</span>
+        <span class="tag">Private mortgage banking</span>
+      </div>
+      <h1>The answer is <em>yes.</em></h1>
+    </div>
+    <div class="who">
+      <p>YS Capital Group is a private mortgage bank built for real estate investors. We finance the property — not the paperwork — and stay with you from the first purchase all the way to permanent, long-term debt.</p>
+      <p>One partner, one relationship, one answer. Every loan is qualified on the asset and closed on your timeline, backed by a team that knows your file by name.</p>
+      <p class="sig">The answer is yes.™</p>
+    </div>
+  </div>
+</section>
+
+<section class="band" style="padding-top:56px;">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="eyebrow"><span class="idx">01</span>How we work</div>
+        <h2 style="margin-top:18px;">Built to say yes — and to close.</h2>
+      </div>
+      <p class="meta">Three commitments that shape every deal we underwrite, from a first bridge loan to a stabilized rental portfolio.</p>
+    </div>
+    <div class="val-grid">
+      <div class="val">
+        <div class="n">01</div>
+        <h3>Asset-based</h3>
+        <p>We qualify on the property's value and cash flow — not your tax returns or W-2s. The deal stands on the asset, so more investors get to yes.</p>
+      </div>
+      <div class="val">
+        <div class="n">02</div>
+        <h3>Fast by design</h3>
+        <p>Direct underwriting and a lean process mean a path measured in weeks, not months. When the deal moves, we move with it.</p>
+      </div>
+      <div class="val">
+        <div class="n">03</div>
+        <h3>One team</h3>
+        <p>Purchase, rehab, refinance, permanent — one partner across the whole arc, with a dedicated coordinator on every file.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="team" style="padding-top:0;">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="eyebrow"><span class="idx">02</span>Leadership</div>
+        <h2 style="margin-top:18px;">The people who sign off on yes.</h2>
+      </div>
+      <p class="meta">Officers are your point of contact; the lender is always YS Capital Group under company NMLS 2609746. <span class="team-note">Leadership portraits — photography [to add].</span></p>
+    </div>
+
+    <div class="team-grid">
+      <div class="team-card">
+        <div class="mono" aria-hidden="true">YB</div>
+        <span class="ph">Photography [to add]</span>
+        <h3>Yehuda Bochner</h3>
+        <div class="role">President</div>
+        <div class="nm">Company NMLS 2609746</div>
+      </div>
+      <div class="team-card">
+        <div class="mono" aria-hidden="true">MB</div>
+        <span class="ph">Photography [to add]</span>
+        <h3>Mendel Bochner</h3>
+        <div class="role">Sales Manager</div>
+        <div class="nm">Company NMLS 2609746</div>
+      </div>
+      <div class="team-card">
+        <div class="mono" aria-hidden="true">EB</div>
+        <span class="ph">Photography [to add]</span>
+        <h3>Esther Bochner</h3>
+        <div class="role">MLO &amp; Operations Manager</div>
+        <div class="nm">NMLS 2448529</div>
+      </div>
+    </div>
+
+    <div class="crew">
+      <div class="c">
+        <div class="fig num">16</div>
+        <div class="lab">Loan coordinators</div>
+      </div>
+      <div class="c">
+        <div class="fig num">8</div>
+        <div class="lab">Operations &amp; closing staff</div>
+      </div>
+    </div>
+    <p class="crew-line">A dedicated coordinator on every file.</p>
+  </div>
+</section>
+
+<section class="band dark" id="contact">
+  <div class="wrap">
+    <div class="sec-head">
+      <div>
+        <div class="eyebrow"><span class="idx">03</span>Contact</div>
+        <h2 style="margin-top:18px;">Talk to a real person.</h2>
+      </div>
+      <p class="meta">Call, email or message us — a coordinator will point your deal to the right officer.</p>
+    </div>
+
+    <div class="contact-grid">
+      <div class="contact-cell">
+        <div class="n">Call</div>
+        <div class="big">718-831-2168</div>
+        <div class="sub">Main line · <b>718-635-0277</b> processing</div>
+      </div>
+      <div class="contact-cell">
+        <div class="n">Email</div>
+        <div class="big">sales@yscapgroup.com</div>
+        <div class="sub">Send us the deal and we'll price it.</div>
+      </div>
+      <div class="contact-cell">
+        <div class="n">WhatsApp</div>
+        <div class="big">718-831-2168</div>
+        <div class="sub">Message us for a fast indicative quote.</div>
+      </div>
+    </div>
+
+    <div class="contact-foot">
+      <p class="addr">5 New Montrose Ave, Bsmt<br>Brooklyn, NY 11211</p>
+      <div class="hero-cta">
+        <a class="btn btn-gold btn-lg" href="#">Generate your term sheet</a>
+        <a class="btn btn-ghost btn-lg" href="#" style="color:var(--paper);border-color:rgba(255,255,255,.28);">Start an application</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <img class="logo-foot" src="https://yscap.onrender.com/assets/brand/lockup-light.png" alt="YS Capital Group">
+        <p class="foot-addr">Private mortgage banking for real estate investors. The answer is yes.™</p>
+        <p class="foot-addr" style="margin-top:14px;">5 New Montrose Ave, Bsmt<br>Brooklyn, NY 11211</p>
+      </div>
+      <div>
+        <h5>Financing</h5>
+        <ul><li><a href="./homepage-v1.html#programs">DSCR Rental</a></li><li><a href="./homepage-v1.html#programs">Fix &amp; Flip</a></li><li><a href="./homepage-v1.html#programs">Bridge</a></li><li><a href="./homepage-v1.html#programs">Ground-Up</a></li><li><a href="./homepage-v1.html#programs">Multifamily</a></li></ul>
+      </div>
+      <div>
+        <h5>Company</h5>
+        <ul><li><a href="./about-team.html">Team</a></li><li><a href="#contact">Contact</a></li><li><a href="#">Client login</a></li><li><a href="#">Privacy</a></li></ul>
+      </div>
+      <div>
+        <h5>Reach us</h5>
+        <ul><li><a href="tel:+17188312168">718-831-2168 · Main</a></li><li><a href="tel:+17186350277">718-635-0277 · Processing</a></li><li><a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a></li></ul>
+      </div>
+    </div>
+    <div class="foot-legal">
+      <div style="max-width:70ch;">Business-purpose, investment (non-owner-occupied) loans only. Loan programs, leverage, rates and pricing are indicative, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend. © 2026 YS Capital Group. NMLS ID 2609746.</div>
+      <div class="foot-badges"><span class="b">NMLS 2609746</span><span class="b">Equal Housing Lender</span></div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

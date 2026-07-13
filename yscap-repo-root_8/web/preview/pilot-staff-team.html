@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Team</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .stack{display:flex;flex-direction:column;gap:22px;}
+  .band2{display:grid;grid-template-columns:1.72fr 1fr;gap:20px;align-items:start;}
+  .invite{white-space:nowrap;}
+  .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .tbl-team{min-width:820px;}
+  .who{display:flex;align-items:center;gap:12px;}
+  .who .nm{font-weight:600;color:var(--ink);line-height:1.2;}
+  .who .em{font-size:12.5px;color:var(--ink-soft);margin-top:2px;font-variant-numeric:tabular-nums;}
+  .role{display:inline-flex;align-items:center;gap:8px;font-size:12px;font-weight:600;letter-spacing:.01em;padding:4px 11px;border-radius:100px;border:1px solid var(--app-line);background:var(--panel);color:var(--ink-1);white-space:nowrap;}
+  .role::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--ink-soft);flex:none;}
+  .role.t1::before{background:var(--gold);}
+  .role.t2::before{background:var(--teal);}
+  .yn{display:inline-flex;font-size:12px;font-weight:600;letter-spacing:.02em;padding:4px 11px;border-radius:100px;border:1px solid transparent;}
+  .yn.y{color:var(--teal-deep);background:var(--info-bg);}
+  .yn.n{color:var(--ink-soft);background:var(--panel-2);}
+  .acts{display:flex;gap:8px;flex-wrap:wrap;}
+  .acts .btn{padding:8px 14px;font-size:13px;}
+  /* role hierarchy side note */
+  .rh{display:flex;flex-direction:column;gap:0;}
+  .rh .tier{padding:15px 0;border-bottom:1px solid var(--app-line-soft);}
+  .rh .tier:last-child{border-bottom:0;}
+  .rh .lv{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;margin-bottom:9px;}
+  .rh .r{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14.5px;}
+  .rh .r::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ink-soft);flex:none;}
+  .rh .r.t1::before{background:var(--gold);}
+  .rh .r.t2::before{background:var(--teal);}
+  .rh .r .code{font-family:var(--sans);}
+  .rh .desc{font-size:13px;color:var(--ink-soft);margin-top:5px;line-height:1.45;padding-left:15px;}
+  .rh .ops{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px;padding-left:15px;}
+  .rh .op{font-size:12px;font-weight:600;color:var(--ink-1);background:var(--panel-2);border-radius:100px;padding:4px 11px;}
+  .rh .foot{font-size:12.5px;color:var(--ink-soft);line-height:1.5;margin-top:2px;padding-top:14px;border-top:1px solid var(--app-line-soft);}
+  .rh .foot b{color:var(--ink);font-weight:600;}
+  @media(max-width:1080px){.band2{grid-template-columns:1fr;}.acts .btn{padding:11px 16px;font-size:13.5px;}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search teammates, roles, files…</div>
+    <div class="user-pill">
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>Team</h1>
+        <div class="sub">Roster, roles and access.</div>
+      </div>
+      <button class="btn btn-gold invite">+ Invite teammate</button>
+    </div>
+
+    <div class="stack">
+
+      <!-- KPI STRIP -->
+      <div class="kpi-grid">
+        <div class="kpi">
+          <div class="v">9</div>
+          <div class="k">Total staff</div>
+          <div class="d">Across the YS Capital desk</div>
+        </div>
+        <div class="kpi">
+          <div class="v">3</div>
+          <div class="k">Loan officers</div>
+          <div class="d">Site-selectable on files</div>
+        </div>
+        <div class="kpi">
+          <div class="v">2</div>
+          <div class="k">Processors</div>
+          <div class="d">Plus 1 underwriter · 1 coordinator</div>
+        </div>
+        <div class="kpi">
+          <div class="v">7</div>
+          <div class="k">Active today</div>
+          <div class="d">Signed in within 24 hours</div>
+        </div>
+      </div>
+
+      <!-- TEAM TABLE + ROLE NOTE -->
+      <div class="band2">
+
+        <div class="panel">
+          <div class="panel-h">
+            <h3>Roster</h3>
+            <span class="pill mut">9 members</span>
+          </div>
+          <div class="tbl-wrap">
+            <table class="tbl tbl-team">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Role</th>
+                  <th class="num">Assigned files</th>
+                  <th>Site-selectable</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="who"><span class="mono">AD</span><span><span class="nm">Aaron Delmonico</span><span class="em">aaron.d@yscapgroup.com</span></span></span></td>
+                  <td><span class="role t1">super_admin</span></td>
+                  <td class="num">6</td>
+                  <td><span class="yn y">Yes</span></td>
+                  <td><span class="pill ok">Active</span></td>
+                  <td><div class="acts"><button class="btn btn-ghost">Edit</button><button class="btn btn-ghost">Permissions</button></div></td>
+                </tr>
+                <tr>
+                  <td><span class="who"><span class="mono">RM</span><span><span class="nm">Rivka Mendel</span><span class="em">rivka.m@yscapgroup.com</span></span></span></td>
+                  <td><span class="role t2">admin</span></td>
+                  <td class="num">14</td>
+                  <td><span class="yn y">Yes</span></td>
+                  <td><span class="pill ok">Active</span></td>
+                  <td><div class="acts"><button class="btn btn-ghost">Edit</button><button class="btn btn-ghost">Permissions</button></div></td>
+                </tr>
+                <tr>
+                  <td><span class="who"><span class="mono">TG</span><span><span class="nm">Tovah Grunwald</span><span class="em">tovah.g@yscapgroup.com</span></span></span></td>
+                  <td><span class="role">loan_officer</span></td>
+                  <td class="num">31</td>
+                  <td><span class="yn y">Yes</span></td>
+                  <td><span class="pill ok">Active</span></td>
+                  <td><div class="acts"><button class="btn btn-ghost">Edit</button><button class="btn btn-ghost">Permissions</button></div></td>
+                </tr>
+                <tr>
+                  <td><span class="who"><span class="mono">YB</span><span><span class="nm">Yosef Braun</span><span class="em">yosef.b@yscapgroup.com</span></span></span></td>
+                  <td><span class="role">loan_officer</span></td>
+                  <td class="num">27</td>
+                  <td><span class="yn y">Yes</span></td>
+                  <td><span class="pill ok">Active</span></td>
+                  <td><div class="acts"><button class="btn btn-ghost">Edit</button><button class="btn btn-ghost">Permissions</button></div></td>
+                </tr>
+                <tr>
+                  <td><span class="who"><span class="mono">NR</span><span><span class="nm">Naftali Roth</span><span class="em">naftali.r@yscapgroup.com</span></span></span></td>
+                  <td><span class="role">loan_officer</span></td>
+                  <td class="num">18</td>
+                  <td><span class="yn y">Yes</span></td>
+                  <td><span class="pill mut">Inactive</span></td>
+                  <td><div class="acts"><button class="btn btn-ghost">Edit</button><button class="btn btn-ghost">Permissions</button></div></td>
+                </tr>
+                <tr>
+                  <td><span class="who"><span class="mono">CP</span><span><span class="nm">Chana Perlmutter</span><span class="em">chana.p@yscapgroup.com</span></span></span></td>
+                  <td><span class="role">processor</span></td>
+                  <td class="num">42</td>
+                  <td><span class="yn n">No</span></td>
+                  <td><span class="pill ok">Active</span></td>
+                  <td><div class="acts"><button class="btn btn-ghost">Edit</button><button class="btn btn-ghost">Permissions</button></div></td>
+                </tr>
+                <tr>
+                  <td><span class="who"><span class="mono">MH</span><span><span class="nm">Meir Halberstam</span><span class="em">meir.h@yscapgroup.com</span></span></span></td>
+                  <td><span class="role">processor</span></td>
+                  <td class="num">38</td>
+                  <td><span class="yn n">No</span></td>
+                  <td><span class="pill ok">Active</span></td>
+                  <td><div class="acts"><button class="btn btn-ghost">Edit</button><button class="btn btn-ghost">Permissions</button></div></td>
+                </tr>
+                <tr>
+                  <td><span class="who"><span class="mono">DK</span><span><span class="nm">Devorah Klein</span><span class="em">devorah.k@yscapgroup.com</span></span></span></td>
+                  <td><span class="role">underwriter</span></td>
+                  <td class="num">23</td>
+                  <td><span class="yn n">No</span></td>
+                  <td><span class="pill ok">Active</span></td>
+                  <td><div class="acts"><button class="btn btn-ghost">Edit</button><button class="btn btn-ghost">Permissions</button></div></td>
+                </tr>
+                <tr>
+                  <td><span class="who"><span class="mono">SA</span><span><span class="nm">Shimon Adler</span><span class="em">shimon.a@yscapgroup.com</span></span></span></td>
+                  <td><span class="role">loan_coordinator</span></td>
+                  <td class="num">11</td>
+                  <td><span class="yn n">No</span></td>
+                  <td><span class="pill mut">Inactive</span></td>
+                  <td><div class="acts"><button class="btn btn-ghost">Edit</button><button class="btn btn-ghost">Permissions</button></div></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-h"><h3>Role hierarchy</h3></div>
+          <div class="panel-b">
+            <div class="rh">
+              <div class="tier">
+                <div class="lv">Tier 1 · Owner</div>
+                <div class="r t1"><span class="code">super_admin</span></div>
+                <div class="desc">Full control — billing, team, permissions and every file on the desk.</div>
+              </div>
+              <div class="tier">
+                <div class="lv">Tier 2 · Management</div>
+                <div class="r t2"><span class="code">admin</span></div>
+                <div class="desc">Manages the team and can view or act on all files, but not billing.</div>
+              </div>
+              <div class="tier">
+                <div class="lv">Tier 3 · Operators</div>
+                <div class="ops">
+                  <span class="op">loan_officer</span>
+                  <span class="op">processor</span>
+                  <span class="op">underwriter</span>
+                </div>
+                <div class="desc">Operate on assigned files only. Coordinators support across files.</div>
+              </div>
+              <div class="foot"><b>Site-selectable</b> members can be picked as the borrower-facing officer on a new application.</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

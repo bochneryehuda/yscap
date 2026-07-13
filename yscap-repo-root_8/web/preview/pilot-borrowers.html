@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Borrowers</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .ph-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+  .ph-search{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--app-line);border-radius:100px;padding:9px 16px;font-size:14px;color:var(--ink-soft);min-width:220px;}
+  .ph-search .mag{width:14px;height:14px;border-radius:50%;border:1.6px solid var(--ink-soft);position:relative;flex:none;opacity:.7;}
+  .ph-search .mag::after{content:"";position:absolute;width:6px;height:1.6px;background:var(--ink-soft);transform:rotate(45deg);right:-4px;bottom:0;}
+  .two{display:grid;grid-template-columns:1.55fr 1fr;gap:20px;align-items:start;}
+  .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .tbl-wrap .tbl{min-width:640px;}
+  .b-name{display:flex;align-items:center;gap:11px;}
+  .b-name .nm{font-weight:600;color:var(--ink);}
+  .b-name .rw.on{box-shadow:none;}
+  .tbl tr.sel td{background:var(--panel-2);box-shadow:inset 3px 0 0 var(--gold);}
+  .ent-cell{color:var(--ink-soft);font-size:13px;}
+  .fico{font-family:var(--serif);font-weight:500;font-size:16px;font-variant-numeric:tabular-nums;}
+  .fico .band{display:block;font-family:var(--sans);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);margin-top:2px;}
+  /* detail panel */
+  .det{display:flex;flex-direction:column;gap:18px;position:sticky;top:92px;}
+  .id-head{display:flex;align-items:center;gap:14px;margin-bottom:16px;}
+  .id-head .mono{width:46px;height:46px;font-size:16px;}
+  .id-head .nm{font-family:var(--serif);font-weight:500;font-size:22px;letter-spacing:-.01em;line-height:1.1;}
+  .id-head .rl{font-size:12.5px;color:var(--ink-soft);margin-top:3px;}
+  .id-rows{display:flex;flex-direction:column;}
+  .id-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 0;border-bottom:1px solid var(--app-line-soft);font-size:14px;}
+  .id-row:last-child{border-bottom:0;}
+  .id-row .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .id-row .v{text-align:right;color:var(--ink);}
+  .id-row .v.mono-fig{font-family:var(--serif);}
+  .pii{margin-top:14px;background:var(--panel-2);border:1px solid var(--app-line-soft);border-radius:var(--r);padding:13px 15px;}
+  .pii-top{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+  .pii .lab{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .shield{width:15px;height:16px;flex:none;background:var(--teal);clip-path:polygon(50% 0,100% 22%,100% 60%,50% 100%,0 60%,0 22%);opacity:.85;}
+  .pii .ssn{font-family:var(--serif);font-size:20px;font-weight:500;letter-spacing:.04em;font-variant-numeric:tabular-nums;color:var(--ink);margin-top:8px;}
+  .reveal{background:transparent;border:1px solid var(--app-line);border-radius:100px;font-family:var(--sans);font-weight:600;font-size:12px;color:var(--ink-1);padding:6px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+  .reveal:hover{border-color:var(--teal);color:var(--teal-deep);}
+  .reveal .lk{width:9px;height:8px;border:1.4px solid currentColor;border-bottom:0;border-radius:5px 5px 0 0;display:inline-block;position:relative;top:1px;}
+  .pii .note{font-size:11.5px;color:var(--ink-soft);margin-top:9px;line-height:1.45;}
+  .ent{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px 0;border-bottom:1px solid var(--app-line-soft);}
+  .ent:last-child{border-bottom:0;padding-bottom:0;}
+  .ent:first-child{padding-top:0;}
+  .ent .en{font-weight:600;font-size:14.5px;}
+  .ent .em{font-size:12.5px;color:var(--ink-soft);margin-top:3px;}
+  .tr-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--app-line-soft);border:1px solid var(--app-line-soft);border-radius:var(--r);overflow:hidden;}
+  .tr-cell{background:var(--panel);padding:15px 16px;}
+  .tr-cell .v{font-family:var(--serif);font-size:26px;font-weight:500;letter-spacing:-.02em;font-variant-numeric:tabular-nums;}
+  .tr-cell .v .u{color:var(--gold);font-size:.62em;}
+  .tr-cell .k{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-soft);margin-top:7px;font-weight:600;}
+  .tier{margin-top:14px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--ink-soft);}
+  .file-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 0;border-bottom:1px solid var(--app-line-soft);}
+  .file-row:last-child{border-bottom:0;padding-bottom:0;}
+  .file-row:first-child{padding-top:0;}
+  .file-l{display:flex;align-items:center;gap:12px;min-width:0;}
+  .doc{width:30px;height:36px;flex:none;background:var(--panel-2);border:1px solid var(--app-line);border-radius:3px;position:relative;}
+  .doc::after{content:"";position:absolute;top:6px;left:6px;right:6px;height:1.4px;background:var(--app-line);box-shadow:0 4px 0 var(--app-line),0 8px 0 var(--app-line);}
+  .file-l .fn{font-weight:600;font-size:14px;}
+  .file-l .fm{font-size:12px;color:var(--ink-soft);margin-top:2px;}
+  @media(max-width:1080px){
+    .two{grid-template-columns:1fr;}
+    .det{position:static;}
+  }
+  @media(max-width:560px){
+    .page-head{flex-direction:column;align-items:flex-start;}
+    .ph-search{min-width:0;flex:1;}
+    .tr-grid{grid-template-columns:1fr 1fr;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search loans, borrowers, LLCs…</div>
+    <div class="user-pill">
+      <button class="btn btn-gold btn-sm">+ New file</button>
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>Borrowers</h1>
+        <div class="sub">People and entities across the book.</div>
+      </div>
+      <div class="ph-actions">
+        <span class="ph-search"><span class="mag"></span>Search borrowers…</span>
+        <button class="btn btn-ink btn-sm">+ Add borrower</button>
+      </div>
+    </div>
+
+    <div class="two">
+
+      <!-- LEFT: BORROWERS DIRECTORY -->
+      <div class="panel">
+        <div class="panel-h">
+          <h3>Directory</h3>
+          <span class="pill mut">8 of 148</span>
+        </div>
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Borrower</th>
+                <th>Entities / LLCs</th>
+                <th class="num">Files</th>
+                <th class="num">FICO</th>
+                <th>Last activity</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="sel">
+                <td><div class="b-name"><span class="mono">DR</span><span class="nm">Daniel R.</span></div></td>
+                <td class="ent-cell">Maple Ridge Holdings LLC</td>
+                <td class="num">2</td>
+                <td class="num"><span class="fico">712</span></td>
+                <td class="mut">2h ago</td>
+                <td><span class="pill info">Processing</span></td>
+              </tr>
+              <tr>
+                <td><div class="b-name"><span class="mono">PM</span><span class="nm">Priya M.</span></div></td>
+                <td class="ent-cell">Cedar Hollow Capital LLC</td>
+                <td class="num">1</td>
+                <td class="num"><span class="fico">748</span></td>
+                <td class="mut">Yesterday</td>
+                <td><span class="pill warn">In underwriting</span></td>
+              </tr>
+              <tr>
+                <td><div class="b-name"><span class="mono">AO</span><span class="nm">Andre O.</span></div></td>
+                <td class="ent-cell">Ironbound Ventures LLC +1</td>
+                <td class="num">3</td>
+                <td class="num"><span class="fico">690</span></td>
+                <td class="mut">3d ago</td>
+                <td><span class="pill mut">Awaiting borrower</span></td>
+              </tr>
+              <tr>
+                <td><div class="b-name"><span class="mono">LT</span><span class="nm">Lena T.</span></div></td>
+                <td class="ent-cell">Summit Crossing LLC</td>
+                <td class="num">2</td>
+                <td class="num"><span class="fico">781</span></td>
+                <td class="mut">5h ago</td>
+                <td><span class="pill ok">Clear to close</span></td>
+              </tr>
+              <tr>
+                <td><div class="b-name"><span class="mono">MC</span><span class="nm">Marcus C.</span></div></td>
+                <td class="ent-cell">Blue Harbor Estates LLC</td>
+                <td class="num">1</td>
+                <td class="num"><span class="fico">664</span></td>
+                <td class="mut">1w ago</td>
+                <td><span class="pill alert">On hold</span></td>
+              </tr>
+              <tr>
+                <td><div class="b-name"><span class="mono">SV</span><span class="nm">Sofia V.</span></div></td>
+                <td class="ent-cell">Willow Creek Partners LLC</td>
+                <td class="num">4</td>
+                <td class="num"><span class="fico">803</span></td>
+                <td class="mut">4d ago</td>
+                <td><span class="pill ok">Funded</span></td>
+              </tr>
+              <tr>
+                <td><div class="b-name"><span class="mono">JH</span><span class="nm">Jonah H.</span></div></td>
+                <td class="ent-cell">Granite Peak Holdings LLC</td>
+                <td class="num">2</td>
+                <td class="num"><span class="fico">726</span></td>
+                <td class="mut">6h ago</td>
+                <td><span class="pill warn">In underwriting</span></td>
+              </tr>
+              <tr>
+                <td><div class="b-name"><span class="mono">RE</span><span class="nm">Rosa E.</span></div></td>
+                <td class="ent-cell">Riverstone Equity LLC</td>
+                <td class="num">1</td>
+                <td class="num"><span class="fico">701</span></td>
+                <td class="mut">2d ago</td>
+                <td><span class="pill info">Processing</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- RIGHT: BORROWER DETAIL -->
+      <div class="det">
+
+        <div class="panel">
+          <div class="panel-b">
+            <div class="id-head">
+              <span class="mono">DR</span>
+              <div>
+                <div class="nm">Daniel R.</div>
+                <div class="rl">Primary borrower · Guarantor</div>
+              </div>
+            </div>
+            <div class="id-rows">
+              <div class="id-row"><span class="k">Email</span><span class="v">daniel.r@example-mail.test</span></div>
+              <div class="id-row"><span class="k">Phone</span><span class="v mono-fig">(201) 555‑0148</span></div>
+              <div class="id-row"><span class="k">Location</span><span class="v">Newark, NJ</span></div>
+              <div class="id-row"><span class="k">Borrower ID</span><span class="v mono-fig">BR‑40217</span></div>
+            </div>
+
+            <div class="pii">
+              <div class="pii-top">
+                <span class="lab"><span class="shield"></span>Social security</span>
+                <button class="reveal"><span class="lk"></span>Reveal (audited)</button>
+              </div>
+              <div class="ssn">•••‑••‑1234</div>
+              <div class="note">Full SSN is masked. Revealing is logged to the audit trail with your name, timestamp, and reason — access is restricted to authorized staff.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-h"><h3>Entities / LLCs</h3><span class="pill ok">Verified</span></div>
+          <div class="panel-b">
+            <div class="ent">
+              <div>
+                <div class="en">Maple Ridge Holdings LLC</div>
+                <div class="em">NJ · 2 members · EIN ••‑•••4471</div>
+              </div>
+              <span class="pill ok">Verified</span>
+            </div>
+            <div class="ent">
+              <div>
+                <div class="en">Maple Ridge SPV II LLC</div>
+                <div class="em">NJ · 1 member · Formation pending</div>
+              </div>
+              <span class="pill warn">In review</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-h"><h3>Track record</h3></div>
+          <div class="panel-b">
+            <div class="tr-grid">
+              <div class="tr-cell">
+                <div class="v">7</div>
+                <div class="k">Completed deals</div>
+              </div>
+              <div class="tr-cell">
+                <div class="v"><span class="u">$</span>4.9<span class="u">M</span></div>
+                <div class="k">Total volume</div>
+              </div>
+            </div>
+            <div class="tier"><span class="pill info">Experienced</span>Tier 3 · 5+ verified exits</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-h"><h3>Files</h3><span class="pill mut">2</span></div>
+          <div class="panel-b">
+            <div class="file-row">
+              <div class="file-l">
+                <span class="doc"></span>
+                <div>
+                  <div class="fn">128 Vernon Ave — Fix &amp; Flip</div>
+                  <div class="fm">$345,000 · updated 2h ago</div>
+                </div>
+              </div>
+              <span class="pill info">Processing</span>
+            </div>
+            <div class="file-row">
+              <div class="file-l">
+                <span class="doc"></span>
+                <div>
+                  <div class="fn">54 Oak Lane — DSCR Rental</div>
+                  <div class="fm">$212,000 · updated 3w ago</div>
+                </div>
+              </div>
+              <span class="pill ok">Funded</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </main>
+</div>
+</body>
+</html>

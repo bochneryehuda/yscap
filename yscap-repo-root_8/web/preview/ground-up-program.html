@@ -1,0 +1,235 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  .gu-hero{display:grid;grid-template-columns:1.15fr .85fr;gap:64px;align-items:start}
+  @media(max-width:900px){.gu-hero{grid-template-columns:1fr;gap:36px}}
+  .hl-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:rgba(20,27,34,.14);border:1px solid rgba(20,27,34,.14);margin-top:8px}
+  @media(max-width:760px){.hl-strip{grid-template-columns:1fr 1fr}}
+  @media(max-width:460px){.hl-strip{grid-template-columns:1fr}}
+  .hl{background:#FBF9F3;padding:22px 22px}
+  .hl .k{font-family:'Fraunces',Georgia,serif;font-weight:600;font-size:1.12rem;color:#141B22;letter-spacing:-.01em}
+  .hl .d{font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;color:rgba(20,27,34,.55);font-weight:600;margin-top:8px}
+  .steps{list-style:none;margin:0;padding:0;counter-reset:s}
+  .steps li{position:relative;padding:18px 0 18px 46px;border-top:1px solid rgba(20,27,34,.12);counter-increment:s}
+  .steps li:first-child{border-top:0}
+  .steps li::before{content:counter(s);position:absolute;left:0;top:17px;width:28px;height:28px;border:1px solid #2F7F86;color:#2F7F86;border-radius:50%;display:grid;place-items:center;font-family:'Hanken Grotesk',system-ui,sans-serif;font-size:.8rem;font-weight:700;font-variant-numeric:tabular-nums}
+  .steps li b{display:block;font-family:'Hanken Grotesk',system-ui,sans-serif;font-size:.98rem;margin-bottom:2px}
+  .steps li span{color:rgba(20,27,34,.7);font-size:.94rem}
+  .how-grid{display:grid;grid-template-columns:.85fr 1.15fr;gap:56px;align-items:start}
+  @media(max-width:820px){.how-grid{grid-template-columns:1fr;gap:32px}}
+  .spec{width:100%;border-collapse:collapse}
+  .spec tr{border-top:1px solid rgba(20,27,34,.14)}
+  .spec tr:last-child{border-bottom:1px solid rgba(20,27,34,.14)}
+  .spec th{text-align:left;font-family:'Hanken Grotesk',system-ui,sans-serif;font-weight:600;font-size:.86rem;letter-spacing:.02em;color:#141B22;padding:14px 16px 14px 0;vertical-align:top;white-space:nowrap}
+  .spec td{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;color:#141B22;padding:14px 0;vertical-align:top}
+  .spec td .note{display:block;font-weight:400;font-size:.82rem;color:rgba(20,27,34,.6);margin-top:3px;font-variant-numeric:normal}
+  .lead-2col{display:grid;grid-template-columns:.8fr 1.2fr;gap:56px;align-items:start}
+  @media(max-width:820px){.lead-2col{grid-template-columns:1fr;gap:24px}}
+  .who-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:rgba(20,27,34,.14);border:1px solid rgba(20,27,34,.14)}
+  @media(max-width:720px){.who-grid{grid-template-columns:1fr}}
+  .who-cell{background:#F4F0E7;padding:26px 24px}
+  .who-cell .eyebrow{margin-bottom:10px}
+  .who-cell h4{font-family:'Fraunces',Georgia,serif;font-weight:600;font-size:1.18rem;margin:0 0 8px;color:#141B22}
+  .who-cell p{margin:0;color:rgba(20,27,34,.72);font-size:.94rem;line-height:1.55}
+  .siblings{display:flex;flex-wrap:wrap;gap:10px}
+  .sib{display:inline-flex;align-items:center;gap:8px;padding:10px 16px;border:1px solid rgba(20,27,34,.18);background:#F4F0E7;font-family:'Hanken Grotesk',system-ui,sans-serif;font-weight:600;font-size:.9rem;color:#141B22;text-decoration:none;transition:border-color .15s,color .15s}
+  .sib:hover{border-color:#AE8746;color:#AE8746}
+  .faq{border-top:1px solid rgba(20,27,34,.14)}
+  .faq details{border-bottom:1px solid rgba(20,27,34,.14)}
+  .faq summary{list-style:none;cursor:pointer;padding:22px 0;display:flex;justify-content:space-between;align-items:baseline;gap:24px;font-family:'Fraunces',Georgia,serif;font-size:1.2rem;font-weight:600;color:#141B22}
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary .mk{font-family:'Hanken Grotesk',system-ui,sans-serif;font-size:1.4rem;color:#AE8746;font-weight:400;line-height:1}
+  .faq details[open] summary .mk{color:#2F7F86}
+  .faq .ans{padding:0 0 24px;max-width:62ch;color:rgba(20,27,34,.78);font-size:1rem;line-height:1.6}
+  .footnote{font-size:.82rem;color:rgba(20,27,34,.6);line-height:1.55;max-width:78ch;margin-top:28px}
+  .cta-band-inner{display:grid;grid-template-columns:1fr auto;gap:40px;align-items:center}
+  @media(max-width:760px){.cta-band-inner{grid-template-columns:1fr;gap:28px}}
+  .cta-actions{display:flex;gap:14px;flex-wrap:wrap}
+</style>
+
+<header class="site-nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#"><img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group"></a>
+    <nav class="nav-links">
+      <a>Financing</a>
+      <a>Tools</a>
+      <a>How it works</a>
+      <a>Team</a>
+      <a>Contact</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost">Client login</a>
+      <a class="btn btn-ink">Get a term sheet</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap">
+      <div class="gu-hero">
+        <div>
+          <p class="eyebrow">Financing &middot; Construction</p>
+          <h1 style="font-size:clamp(44px,5.4vw,72px);margin:.1em 0 .35em">Ground-Up <em style="font-style:italic;color:#2F7F86">Construction</em></h1>
+          <p class="lede">From land to lease-up or sale &mdash; one construction partner. Land and vertical financing for residential and small-multifamily builds, with flexible draw schedules.</p>
+          <p class="micro" style="margin-top:18px;max-width:56ch">Financing covers land and vertical construction, released in draws as work is verified and managed by a dedicated draw coordinator.</p>
+          <div class="cta-actions" style="margin-top:28px">
+            <a class="btn btn-gold btn-lg">Structure your build</a>
+            <a class="btn btn-ghost btn-lg">Start an application</a>
+          </div>
+        </div>
+        <aside>
+          <p class="eyebrow" style="margin-bottom:14px">At a glance</p>
+          <div class="hl-strip">
+            <div class="hl"><div class="k">Land + vertical</div><div class="d">What we finance</div></div>
+            <div class="hl"><div class="k">Draws as you build</div><div class="d">Released on verification</div></div>
+            <div class="hl"><div class="k">Up to 24-mo term</div><div class="d">Initial construction term</div></div>
+            <div class="hl"><div class="k">Flexible schedule</div><div class="d">Draw structure</div></div>
+          </div>
+          <p class="micro" style="margin-top:16px">Conceptual overview &mdash; structure, leverage and terms are set at underwriting and are not an offer or commitment to lend.</p>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">The path</p>
+        <h2>From land to certificate of occupancy</h2>
+      </div>
+      <div class="how-grid">
+        <div>
+          <p class="lede" style="font-size:1.05rem">A single construction facility that funds the dirt, funds the build, and stays with you through stabilization &mdash; refinance or sale.</p>
+          <p class="micro" style="margin-top:14px;max-width:52ch">Construction funds release in stages as work is verified, so capital tracks the progress on the ground rather than sitting idle up front.</p>
+        </div>
+        <ul class="steps">
+          <li><b>Acquire land</b><span>Finance the parcel and roll straight into the vertical build under one facility.</span></li>
+          <li><b>Approve budget &amp; draws</b><span>We set the construction budget and a flexible draw schedule to match your scope of work.</span></li>
+          <li><b>Build in stages</b><span>Complete the work in phases against the agreed budget and timeline.</span></li>
+          <li><b>Draw as verified</b><span>A dedicated draw coordinator verifies each stage and releases the corresponding draw.</span></li>
+          <li><b>Refinance or sell</b><span>Exit to a rental refinance at lease-up, or sell the finished project.</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:0">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Program terms</p>
+        <h2>The construction facility at a glance</h2>
+      </div>
+      <div class="lead-2col">
+        <p class="lede" style="font-size:1.05rem">One facility for land plus vertical construction &mdash; with leverage that flexes to your experience, the asset type and the scenario.</p>
+        <table class="spec">
+          <tr><th>Financing covers</th><td>Land + vertical construction<span class="note">One facility from acquisition through build</span></td></tr>
+          <tr><th>Initial term</th><td>Up to 24 months<span class="note">Maximum initial construction term</span></td></tr>
+          <tr><th>Draw schedule</th><td>Flexible<span class="note">Released in draws as work is verified</span></td></tr>
+          <tr><th>Draw management</th><td>Dedicated coordinator<span class="note">Verifies each stage before release</span></td></tr>
+          <tr><th>Interest reserve</th><td>Financed<span class="note">A financed interest reserve applies on ground-up</span></td></tr>
+          <tr><th>Leverage</th><td>Experience-based tiers<span class="note">Varies by experience, asset type &amp; scenario</span></td></tr>
+          <tr><th>Eligible assets</th><td>Residential 1&ndash;4, small multifamily, mixed-use</td></tr>
+          <tr><th>First-time builders</th><td>Case-by-case</td></tr>
+        </table>
+      </div>
+      <p class="footnote">Terms, leverage and structure shown are conceptual and program-level only. They are indicative, subject to change, and contingent on full underwriting and program eligibility &mdash; not a rate lock, offer, or commitment to lend.</p>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:0">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">What we finance</p>
+        <h2>Built for residential and small-multifamily projects</h2>
+      </div>
+      <div class="who-grid">
+        <div class="who-cell">
+          <p class="eyebrow">01</p>
+          <h4>Residential 1&ndash;4</h4>
+          <p>Single-family and small residential builds, from the parcel through completion.</p>
+        </div>
+        <div class="who-cell">
+          <p class="eyebrow">02</p>
+          <h4>Small multifamily</h4>
+          <p>Ground-up multifamily projects sized for the small-balance investor.</p>
+        </div>
+        <div class="who-cell">
+          <p class="eyebrow">03</p>
+          <h4>Mixed-use</h4>
+          <p>Combined residential and commercial builds on a single construction facility.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:0">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Also available</p>
+        <h2>Programs that pair with your build</h2>
+      </div>
+      <div class="siblings">
+        <a class="sib">DSCR Rental</a>
+        <a class="sib">Fix &amp; Flip</a>
+        <a class="sib">Bridge</a>
+        <a class="sib">Multifamily</a>
+        <a class="sib">No-Ratio DSCR</a>
+        <a class="sib">Bank-Statement</a>
+        <a class="sib">HELOC / 2nd</a>
+        <a class="sib">Conventional</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" style="padding-top:0">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">FAQ</p>
+        <h2>Questions builders ask</h2>
+      </div>
+      <div class="faq">
+        <details open>
+          <summary>How do construction draws work?<span class="mk">+</span></summary>
+          <div class="ans">Construction funds are released in draws as the work is completed. A dedicated draw coordinator verifies each stage before the corresponding draw is released, so capital tracks the progress on the ground rather than funding the full budget up front.</div>
+        </details>
+        <details>
+          <summary>Do you work with first-time builders?<span class="mk">+</span></summary>
+          <div class="ans">Leverage on ground-up is organized in experience-based tiers, and first-time builders are considered case-by-case. Available leverage varies by your experience, the asset type and the specifics of the scenario.</div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="band dark">
+    <div class="wrap">
+      <div class="cta-band-inner">
+        <div>
+          <p class="eyebrow">Ready when you are</p>
+          <h2 style="margin:.15em 0 0">Structure your build</h2>
+        </div>
+        <div class="cta-actions">
+          <a class="btn btn-gold btn-lg">Structure your build</a>
+          <a class="btn btn-ghost btn-lg">Start an application</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-foot">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <img class="logo-foot" src="https://yscap.onrender.com/assets/brand/lockup-light.png" alt="YS Capital Group">
+        <p class="foot-addr">718-831-2168 &middot; sales@yscapgroup.com</p>
+      </div>
+      <div class="foot-legal">
+        <p>Business-purpose, investment (non-owner-occupied) loans only. Loan programs, leverage, rates and pricing shown are indicative, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend. &copy; 2026 YS Capital Group. NMLS ID 2609746.</p>
+        <div class="foot-badges">
+          <span class="chip">NMLS 2609746</span>
+          <span class="chip">Equal Housing Lender</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>

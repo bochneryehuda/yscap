@@ -1,0 +1,244 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* ---- tool top bar (lighter than marketing nav) ---- */
+  .tool-bar{position:sticky;top:0;z-index:50;background:rgba(251,249,243,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line-soft);}
+  .tool-bar .inner{display:flex;align-items:center;justify-content:space-between;height:60px;gap:24px;}
+  .crumb{display:flex;align-items:center;gap:12px;min-width:0;}
+  .crumb .logo-nav{height:34px;}
+  .crumb .cdiv{width:1px;height:24px;background:var(--line);}
+  .crumb .trail{font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .crumb .trail .sep{opacity:.4;padding:0 .5em;}
+  .crumb .trail .here{color:var(--ink);}
+  .tool-actions{display:flex;align-items:center;gap:10px;flex:none;}
+
+  /* ---- page header ---- */
+  .an-head{padding:40px 0 26px;}
+  .an-head h1{font-size:clamp(34px,4.4vw,52px);margin:.12em 0 .18em;}
+  .an-head h1 em{font-style:italic;color:var(--teal);}
+  .an-head .tag{font-family:var(--serif);font-style:italic;font-size:19px;color:var(--ink-soft);max-width:56ch;}
+  .an-head .chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px;}
+
+  /* ---- working grid ---- */
+  .analyzer{display:grid;grid-template-columns:1.02fr .98fr;gap:40px;align-items:start;padding-bottom:16px;}
+  .form-col{display:flex;flex-direction:column;gap:20px;}
+  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;}
+  .form-grid .field{margin-bottom:16px;}
+  .form-grid .span2{grid-column:1 / -1;}
+  .field .hint{font-size:11px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--ink-soft);opacity:.75;}
+  .panel-b .subhead{font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:var(--gold);margin:0 0 14px;}
+
+  /* ---- sticky output ---- */
+  .out-col{position:sticky;top:78px;display:flex;flex-direction:column;gap:18px;}
+
+  /* hero result panel */
+  .result{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;}
+  .result-top{display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--line-soft);}
+  .result-top .t{font-size:11px;letter-spacing:.2em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .result-top .est{font-size:11px;font-weight:700;color:var(--teal);letter-spacing:.12em;text-transform:uppercase;display:flex;align-items:center;gap:6px;}
+  .result-top .est::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--teal);}
+  .result-hero{padding:24px 22px 20px;display:flex;align-items:flex-end;justify-content:space-between;gap:20px;}
+  .result-hero .lab{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-weight:600;}
+  .result-hero .fig{font-family:var(--serif);font-weight:500;font-variant-numeric:tabular-nums;font-size:clamp(44px,6vw,60px);letter-spacing:-.02em;line-height:1;color:var(--gold);margin-top:8px;}
+  .result-hero .per{font-size:14px;color:var(--ink-soft);font-family:var(--sans);font-weight:500;margin-top:8px;}
+  .verdict-col{display:flex;flex-direction:column;align-items:flex-end;gap:10px;text-align:right;}
+  .result-mini{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line-soft);}
+  .result-mini .m{padding:14px 22px;border-right:1px solid var(--line-soft);}
+  .result-mini .m:last-child{border-right:0;}
+  .result-mini .mk{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:600;}
+  .result-mini .mv{font-family:var(--serif);font-size:22px;font-weight:500;font-variant-numeric:tabular-nums;margin-top:5px;}
+
+  .an-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:16px 22px 18px;border-top:1px solid var(--line-soft);}
+  .an-actions .btn{width:100%;justify-content:center;}
+
+  /* KPI tiles: label estimate flag */
+  .kpi .est-flag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);opacity:.6;font-weight:700;}
+
+  .disc{font-size:11.5px;line-height:1.55;color:var(--ink-soft);max-width:70ch;margin-top:4px;}
+  .disc b{color:var(--ink-1);font-weight:600;}
+
+  @media(max-width:980px){
+    .analyzer{grid-template-columns:1fr;gap:32px;}
+    .out-col{position:static;top:auto;}
+    .tool-bar .inner{height:auto;padding:12px 0;flex-wrap:wrap;gap:12px;}
+  }
+  /* mobile-first priority: great at 390px */
+  @media(max-width:560px){
+    .wrap{padding:0 18px;}
+    .an-head{padding:28px 0 20px;}
+    .form-grid{grid-template-columns:1fr;}
+    .an-actions{grid-template-columns:1fr;}
+    .result-hero{flex-direction:column;align-items:flex-start;}
+    .verdict-col{align-items:flex-start;text-align:left;}
+    .tool-actions{width:100%;gap:8px;}
+    .tool-actions .btn{flex:1;justify-content:center;}
+    /* iOS: inputs >=16px prevents focus zoom; tap targets >=44px */
+    .input{font-size:16px;padding:13px 14px;}
+    .btn{min-height:44px;}
+    .btn-sm{padding:12px 15px;font-size:14px;}
+  }
+</style>
+
+<header class="tool-bar">
+  <div class="wrap inner">
+    <div class="crumb">
+      <img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+      <span class="cdiv"></span>
+      <span class="trail">Investor Suite <span class="sep">/</span> <span class="here">Flip Analyzer</span></span>
+    </div>
+    <div class="tool-actions">
+      <button class="btn btn-ghost btn-sm">Share link</button>
+      <button class="btn btn-ghost btn-sm">Export</button>
+      <button class="btn btn-gold btn-sm">Apply now</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap an-head">
+    <p class="eyebrow">Investor Suite <span style="color:var(--ink);opacity:.35">/</span> Flip Analyzer</p>
+    <h1>Fix &amp; Flip <em>Analyzer</em></h1>
+    <p class="tag">Model an entire flip in real time &mdash; all-in project cost, net profit, ROI and the leverage lenders underwrite to, from your own numbers.</p>
+    <div class="chips">
+      <span class="chip">Fix &amp; Flip</span>
+      <span class="chip">No credit pull</span>
+      <span class="chip">Estimates only</span>
+    </div>
+  </div>
+
+  <div class="wrap analyzer">
+    <!-- ============ LEFT: INPUTS ============ -->
+    <div class="form-col">
+      <section class="panel">
+        <div class="panel-h"><h3>Purchase</h3><span class="eyebrow" style="color:var(--ink-soft)">Acquisition</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field"><label>Purchase price</label><input class="input num" type="text" value="$300,000" placeholder="$300,000"></div>
+            <div class="field"><label>Wholesale / assignment fee</label><input class="input num" type="text" value="$0" placeholder="$0"></div>
+            <div class="field"><label>Broker fee</label><input class="input num" type="text" value="$0" placeholder="$0"></div>
+            <div class="field"><label>Closing costs</label><input class="input num" type="text" value="$9,000" placeholder="$9,000"></div>
+            <div class="field"><label>Inspection / appraisal</label><input class="input num" type="text" value="$1,000" placeholder="$1,000"></div>
+            <div class="field"><label>Lender fees</label><input class="input num" type="text" value="$6,000" placeholder="$6,000"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><h3>Rehab</h3><span class="eyebrow" style="color:var(--ink-soft)">Construction</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field"><label>Interior</label><input class="input num" type="text" value="$25,000" placeholder="$25,000"></div>
+            <div class="field"><label>Exterior</label><input class="input num" type="text" value="$15,000" placeholder="$15,000"></div>
+            <div class="field"><label>Systems (HVAC / plumb / elec)</label><input class="input num" type="text" value="$10,000" placeholder="$10,000"></div>
+            <div class="field"><label>Permits &amp; approvals</label><input class="input num" type="text" value="$2,000" placeholder="$2,000"></div>
+            <div class="field"><label>Contingency reserve</label><input class="input num" type="text" value="$5,000" placeholder="$5,000"></div>
+            <div class="field"><label>Construction total <span style="text-transform:none;letter-spacing:0;font-weight:500;opacity:.7">(optional)</span></label><input class="input num" type="text" value="" placeholder="auto-sum"></div>
+          </div>
+          <p class="field hint" style="margin:2px 0 0">Leave the total blank to auto-sum the line items above.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><h3>Financing</h3><span class="eyebrow" style="color:var(--ink-soft)">Bridge loan</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field"><label>Loan amount</label><input class="input num" type="text" value="$280,000" placeholder="$280,000"></div>
+            <div class="field"><label>Interest rate</label><input class="input num" type="text" value="10.5%" placeholder="10.5%"></div>
+            <div class="field span2"><label>Holding period (months)</label><input class="input num" type="text" value="6" placeholder="6"></div>
+          </div>
+          <p class="field hint" style="margin:2px 0 0">Interest is modeled interest-only over the holding period.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><h3>Holding</h3><span class="eyebrow" style="color:var(--ink-soft)">Monthly carry</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field"><label>Property taxes</label><input class="input num" type="text" value="$400" placeholder="$400"></div>
+            <div class="field"><label>Insurance</label><input class="input num" type="text" value="$150" placeholder="$150"></div>
+            <div class="field"><label>Utilities</label><input class="input num" type="text" value="$150" placeholder="$150"></div>
+            <div class="field"><label>Maintenance</label><input class="input num" type="text" value="$100" placeholder="$100"></div>
+            <div class="field span2"><label>HOA dues</label><input class="input num" type="text" value="$0" placeholder="$0"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><h3>Selling</h3><span class="eyebrow" style="color:var(--ink-soft)">Exit costs</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field"><label>Realtor commission (% of ARV)</label><input class="input num" type="text" value="5%" placeholder="5%"></div>
+            <div class="field"><label>Attorney fees</label><input class="input num" type="text" value="$1,500" placeholder="$1,500"></div>
+            <div class="field"><label>Transfer taxes</label><input class="input num" type="text" value="$2,000" placeholder="$2,000"></div>
+            <div class="field"><label>Staging</label><input class="input num" type="text" value="$1,500" placeholder="$1,500"></div>
+            <div class="field span2"><label>Seller concessions</label><input class="input num" type="text" value="$0" placeholder="$0"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><h3>After-repair value</h3><span class="eyebrow" style="color:var(--ink-soft)">Exit</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field span2"><label>ARV &mdash; projected resale price</label><input class="input num" type="text" value="$500,000" placeholder="$500,000"></div>
+          </div>
+          <p class="field hint" style="margin:2px 0 0">Support ARV with comparable sales before you commit capital.</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ RIGHT: RESULTS (sticky) ============ -->
+    <div class="out-col">
+      <aside class="result">
+        <div class="result-top">
+          <span class="t">Flip result &middot; Estimate</span>
+          <span class="est">Live</span>
+        </div>
+        <div class="result-hero">
+          <div>
+            <div class="lab">Est. net profit</div>
+            <div class="fig">$97,400</div>
+            <div class="per">ROI 25.8% &middot; annualized 51.6%</div>
+          </div>
+          <div class="verdict-col">
+            <span class="pill ok">Strong &middot; ROI &ge;15%</span>
+            <span class="pill info">Within leverage</span>
+          </div>
+        </div>
+        <div class="result-mini">
+          <div class="m"><div class="mk">Total project cost</div><div class="mv num">$377,600</div></div>
+          <div class="m"><div class="mk">Cash in deal</div><div class="mv num">$97,600</div></div>
+        </div>
+        <div class="an-actions">
+          <button class="btn btn-ghost btn-sm">Share link</button>
+          <button class="btn btn-ghost btn-sm">Export</button>
+          <button class="btn btn-gold btn-sm">Apply now</button>
+        </div>
+      </aside>
+
+      <div class="kpi-grid">
+        <div class="kpi"><div class="v num">$97,400</div><div class="k">Net profit</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">25.8<span class="u">%</span></div><div class="k">ROI</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">51.6<span class="u">%</span></div><div class="k">Annualized ROI</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">$377,600</div><div class="k">Total project cost</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">$2,450<span class="u">/mo</span></div><div class="k">Monthly interest (IO)</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">74<span class="u">%</span></div><div class="k">Loan-to-cost</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">56<span class="u">%</span></div><div class="k">Loan-to-ARV</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">99.8<span class="u">%</span></div><div class="k">Return on cash</div><div class="est-flag">Estimate</div></div>
+      </div>
+
+      <p class="disc"><b>For estimation &amp; education only.</b> Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Final terms depend on full underwriting. Sample figures shown are illustrative.</p>
+    </div>
+  </div>
+</main>
+
+<footer class="site-foot" style="margin-top:40px">
+  <div class="wrap">
+    <div class="foot-legal" style="border-top:1px solid rgba(255,255,255,.12);padding-top:26px">
+      <p>Business-purpose, investment (non-owner-occupied) loans only. Metrics shown are estimates from your inputs, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend. &copy; 2026 YS Capital Group. NMLS ID 2609746.</p>
+      <div class="foot-badges">
+        <span class="chip">NMLS 2609746</span>
+        <span class="chip">Equal Housing Lender</span>
+      </div>
+    </div>
+  </div>
+</footer>

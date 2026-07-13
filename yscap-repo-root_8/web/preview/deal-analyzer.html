@@ -1,0 +1,249 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* ---- tool top bar (lighter than marketing nav) ---- */
+  .tool-bar{position:sticky;top:0;z-index:50;background:rgba(251,249,243,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line-soft);}
+  .tool-bar .inner{display:flex;align-items:center;justify-content:space-between;height:60px;gap:24px;}
+  .crumb{display:flex;align-items:center;gap:12px;min-width:0;}
+  .crumb .logo-nav{height:34px;}
+  .crumb .cdiv{width:1px;height:24px;background:var(--line);}
+  .crumb .trail{font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .crumb .trail .sep{opacity:.4;padding:0 .5em;}
+  .crumb .trail .here{color:var(--ink);}
+  .tool-actions{display:flex;align-items:center;gap:10px;flex:none;}
+
+  /* ---- page header ---- */
+  .an-head{padding:40px 0 26px;}
+  .an-head h1{font-size:clamp(34px,4.4vw,52px);margin:.12em 0 .18em;}
+  .an-head .tag{font-family:var(--serif);font-style:italic;font-size:19px;color:var(--ink-soft);max-width:54ch;}
+  .an-head .chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px;}
+
+  /* ---- working grid ---- */
+  .analyzer{display:grid;grid-template-columns:1.02fr .98fr;gap:40px;align-items:start;padding-bottom:16px;}
+  .form-col{display:flex;flex-direction:column;gap:20px;}
+  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;}
+  .form-grid .field{margin-bottom:16px;}
+  .form-grid .span2{grid-column:1 / -1;}
+  .field .hint{font-size:11px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--ink-soft);opacity:.75;}
+
+  /* ---- sticky output ---- */
+  .out-col{position:sticky;top:78px;display:flex;flex-direction:column;gap:18px;}
+
+  /* hero result panel */
+  .result{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;}
+  .result-top{display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--line-soft);}
+  .result-top .t{font-size:11px;letter-spacing:.2em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .result-top .est{font-size:11px;font-weight:700;color:var(--teal);letter-spacing:.12em;text-transform:uppercase;display:flex;align-items:center;gap:6px;}
+  .result-top .est::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--teal);}
+  .result-hero{padding:24px 22px 20px;display:flex;align-items:flex-end;justify-content:space-between;gap:20px;}
+  .result-hero .lab{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-weight:600;}
+  .result-hero .fig{font-family:var(--serif);font-weight:500;font-variant-numeric:tabular-nums;font-size:clamp(44px,6vw,60px);letter-spacing:-.02em;line-height:1;color:var(--gold);margin-top:8px;}
+  .result-hero .per{font-size:14px;color:var(--ink-soft);font-family:var(--sans);font-weight:500;margin-top:8px;}
+  .verdict-col{display:flex;flex-direction:column;align-items:flex-end;gap:10px;text-align:right;}
+  .result-mini{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line-soft);}
+  .result-mini .m{padding:14px 22px;border-right:1px solid var(--line-soft);}
+  .result-mini .m:last-child{border-right:0;}
+  .result-mini .mk{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:600;}
+  .result-mini .mv{font-family:var(--serif);font-size:22px;font-weight:500;font-variant-numeric:tabular-nums;margin-top:5px;}
+
+  .an-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:16px 22px 18px;border-top:1px solid var(--line-soft);}
+  .an-actions .btn{width:100%;justify-content:center;}
+
+  /* KPI tiles: label estimate flag */
+  .kpi .est-flag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);opacity:.6;font-weight:700;}
+
+  .disc{font-size:11.5px;line-height:1.55;color:var(--ink-soft);max-width:70ch;margin-top:4px;}
+  .disc b{color:var(--ink-1);font-weight:600;}
+
+  @media(max-width:980px){
+    .analyzer{grid-template-columns:1fr;gap:32px;}
+    .out-col{position:static;top:auto;}
+    .tool-bar .inner{height:auto;padding:12px 0;flex-wrap:wrap;gap:12px;}
+  }
+  @media(max-width:560px){
+    .form-grid{grid-template-columns:1fr;}
+    .an-actions{grid-template-columns:1fr;}
+    .result-hero{flex-direction:column;align-items:flex-start;}
+    .verdict-col{align-items:flex-start;text-align:left;}
+    .tool-actions .lbl-hide{display:none;}
+  }
+</style>
+
+<header class="tool-bar">
+  <div class="wrap inner">
+    <div class="crumb">
+      <img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+      <span class="cdiv"></span>
+      <span class="trail">Investor Suite <span class="sep">/</span> <span class="here">Deal Analyzer</span></span>
+    </div>
+    <div class="tool-actions">
+      <button class="btn btn-ghost btn-sm">Share link</button>
+      <button class="btn btn-ghost btn-sm">Export</button>
+      <button class="btn btn-gold btn-sm">Apply now</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap an-head">
+    <p class="eyebrow">Investor Suite <span style="color:var(--ink);opacity:.35">/</span> Deal Analyzer</p>
+    <h1>Deal Analyzer</h1>
+    <p class="tag">Underwrite a rental in real time &mdash; cash flow, cap rate, DSCR, debt yield and break-even, from your own numbers.</p>
+    <div class="chips">
+      <span class="chip">Rental / DSCR</span>
+      <span class="chip">No credit pull</span>
+      <span class="chip">Estimates only</span>
+    </div>
+  </div>
+
+  <div class="wrap analyzer">
+    <!-- ============ LEFT: INPUTS ============ -->
+    <div class="form-col">
+      <section class="panel">
+        <div class="panel-h"><h3>Property &amp; financing</h3><span class="eyebrow" style="color:var(--ink-soft)">Inputs</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field">
+              <label>Purchase price</label>
+              <input class="input num" type="text" value="$420,000" placeholder="$420,000">
+            </div>
+            <div class="field">
+              <label>After-repair value (ARV)</label>
+              <input class="input num" type="text" value="$520,000" placeholder="$520,000">
+            </div>
+            <div class="field">
+              <label>Loan-to-value (LTV)</label>
+              <input class="input num" type="text" value="75%" placeholder="75%">
+            </div>
+            <div class="field">
+              <label>Note rate</label>
+              <input class="input num" type="text" value="7.25%" placeholder="7.25%">
+            </div>
+            <div class="field">
+              <label>Term (years)</label>
+              <input class="input num" type="text" value="30" placeholder="30">
+            </div>
+            <div class="field">
+              <label>Monthly rent</label>
+              <input class="input num" type="text" value="$3,950" placeholder="$3,950">
+            </div>
+          </div>
+          <p class="field hint" style="margin:2px 0 0">Business-purpose, non-owner-occupied. Figures are self-reported for this estimate.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><h3>Operating &mdash; annual</h3><span class="eyebrow" style="color:var(--ink-soft)">Expenses</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field">
+              <label>Property taxes</label>
+              <input class="input num" type="text" value="$6,200" placeholder="$6,200">
+            </div>
+            <div class="field">
+              <label>Insurance</label>
+              <input class="input num" type="text" value="$1,800" placeholder="$1,800">
+            </div>
+            <div class="field">
+              <label>HOA dues</label>
+              <input class="input num" type="text" value="$0" placeholder="$0">
+            </div>
+            <div class="field">
+              <label>Management</label>
+              <input class="input num" type="text" value="$3,792" placeholder="8% of rent">
+            </div>
+            <div class="field">
+              <label>Maintenance</label>
+              <input class="input num" type="text" value="$2,370" placeholder="$2,370">
+            </div>
+            <div class="field">
+              <label>Utilities</label>
+              <input class="input num" type="text" value="$600" placeholder="$600">
+            </div>
+            <div class="field span2">
+              <label>Vacancy</label>
+              <input class="input num" type="text" value="5%" placeholder="5%">
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><h3>Acquisition costs</h3><span class="eyebrow" style="color:var(--ink-soft)">One-time</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field">
+              <label>Closing costs</label>
+              <input class="input num" type="text" value="$12,600" placeholder="$12,600">
+            </div>
+            <div class="field">
+              <label>Improvements</label>
+              <input class="input num" type="text" value="$18,000" placeholder="$18,000">
+            </div>
+            <div class="field span2">
+              <label>Holding costs</label>
+              <input class="input num" type="text" value="$3,400" placeholder="$3,400">
+            </div>
+          </div>
+          <p class="field hint" style="margin:2px 0 0">Used to estimate total cash invested for the cash-on-cash return.</p>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ RIGHT: RESULTS (sticky) ============ -->
+    <div class="out-col">
+      <aside class="result">
+        <div class="result-top">
+          <span class="t">Deal result &middot; Estimate</span>
+          <span class="est">Live</span>
+        </div>
+        <div class="result-hero">
+          <div>
+            <div class="lab">Est. monthly cash flow</div>
+            <div class="fig">$612</div>
+            <div class="per">&asymp; $7,344 / yr &middot; after debt service</div>
+          </div>
+          <div class="verdict-col">
+            <span class="pill ok">Strong</span>
+            <span class="pill info">DSCR qualifying</span>
+          </div>
+        </div>
+        <div class="result-mini">
+          <div class="m"><div class="mk">Loan amount</div><div class="mv num">$315,000</div></div>
+          <div class="m"><div class="mk">Net operating income</div><div class="mv num">$30,268</div></div>
+        </div>
+        <div class="an-actions">
+          <button class="btn btn-ghost btn-sm">Share link</button>
+          <button class="btn btn-ghost btn-sm">Export</button>
+          <button class="btn btn-gold btn-sm">Apply now</button>
+        </div>
+      </aside>
+
+      <div class="kpi-grid">
+        <div class="kpi"><div class="v num">$612<span class="u">/mo</span></div><div class="k">Monthly cash flow</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">$7,344</div><div class="k">Annual cash flow</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">7.2<span class="u">%</span></div><div class="k">Cap rate</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">6.8<span class="u">%</span></div><div class="k">Cash-on-cash</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">1.28<span class="u">x</span></div><div class="k">DSCR &middot; residential</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">9.6<span class="u">%</span></div><div class="k">Debt yield</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">78<span class="u">%</span></div><div class="k">Break-even occupancy</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">9.6</div><div class="k">Gross rent multiplier</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">36<span class="u">%</span></div><div class="k">Operating expense ratio</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">71<span class="u">%</span></div><div class="k">Loan-to-cost</div><div class="est-flag">Estimate</div></div>
+      </div>
+
+      <p class="disc"><b>For estimation &amp; education only.</b> Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Final terms depend on full underwriting. Sample figures shown are illustrative.</p>
+    </div>
+  </div>
+</main>
+
+<footer class="site-foot" style="margin-top:40px">
+  <div class="wrap">
+    <div class="foot-legal" style="border-top:1px solid rgba(255,255,255,.12);padding-top:26px">
+      <p>Business-purpose, investment (non-owner-occupied) loans only. Metrics shown are estimates from your inputs, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend. &copy; 2026 YS Capital Group. NMLS ID 2609746.</p>
+      <div class="foot-badges">
+        <span class="chip">NMLS 2609746</span>
+        <span class="chip">Equal Housing Lender</span>
+      </div>
+    </div>
+  </div>
+</footer>

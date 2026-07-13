@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Pipeline</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .stack{display:flex;flex-direction:column;gap:22px;}
+  .band2{display:grid;grid-template-columns:1.15fr 1fr;gap:20px;}
+  .prod-legend{display:flex;justify-content:space-between;align-items:baseline;margin-top:16px;font-size:13px;color:var(--ink-soft);}
+  .prod-legend b{font-family:var(--serif);font-weight:500;font-size:18px;color:var(--ink);font-variant-numeric:tabular-nums;}
+  .prod-legend .seg{display:flex;flex-direction:column;gap:3px;}
+  .prod-legend .seg .lab{font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;opacity:.7;}
+  .ph-rows{display:flex;gap:1px;background:var(--app-line-soft);border:1px solid var(--app-line-soft);border-radius:var(--r);overflow:hidden;margin-bottom:20px;}
+  .ph-cell{flex:1;background:var(--panel);padding:4px 4px 2px;}
+  .ph-cell .v{font-family:var(--serif);font-size:30px;font-weight:500;letter-spacing:-.02em;font-variant-numeric:tabular-nums;}
+  .ph-cell .v .u{color:var(--gold);font-size:.62em;}
+  .ph-cell .k{font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-soft);margin-top:7px;font-weight:600;}
+  .ph-lab{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;margin-bottom:11px;}
+  .aging .a b{color:var(--ink);font-variant-numeric:tabular-nums;}
+  .aging .a.hot{border-color:var(--gold);color:var(--ink);background:var(--panel-2);}
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
+  .tile{background:var(--panel);border:1px solid var(--app-line);border-radius:var(--r);padding:18px 20px;display:flex;align-items:center;gap:16px;}
+  .tile .fig{font-family:var(--serif);font-size:32px;font-weight:500;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums;min-width:1.4em;}
+  .tile .lab{font-size:13px;color:var(--ink-soft);line-height:1.35;}
+  .tile.acc{box-shadow:inset 3px 0 0 var(--gold);}
+  .tile.acc .fig{color:var(--gold);}
+  .tabs{display:flex;gap:8px;}
+  .tab{font-size:13px;font-weight:600;letter-spacing:.02em;padding:7px 15px;border-radius:100px;border:1px solid var(--app-line);color:var(--ink-soft);background:var(--panel);cursor:pointer;}
+  .tab.on{background:var(--ink);border-color:var(--ink);color:var(--paper);}
+  .tab .ct{opacity:.6;margin-left:6px;font-variant-numeric:tabular-nums;}
+  .tab.on .ct{opacity:.8;}
+  .cell-deal .prog{font-size:12.5px;color:var(--ink-soft);margin-top:3px;}
+  .off{display:inline-flex;align-items:center;gap:9px;white-space:nowrap;}
+  .off .mono{width:28px;height:28px;font-size:11px;}
+  .prog-cell{min-width:150px;}
+  .prog-cell .pct{font-size:11.5px;font-weight:700;color:var(--ink-soft);font-variant-numeric:tabular-nums;margin-bottom:6px;display:block;}
+  .pf-btns{display:flex;gap:10px;}
+  @media(max-width:1080px){.band2{grid-template-columns:1fr;}.tiles{grid-template-columns:1fr 1fr;}}
+  @media(max-width:720px){.tiles{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search loans, borrowers, LLCs…</div>
+    <div class="user-pill">
+      <button class="btn btn-gold btn-sm">+ New file</button>
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>Pipeline</h1>
+        <div class="sub">154 active files across the desk</div>
+      </div>
+      <div class="pf-btns">
+        <button class="btn btn-ink btn-sm">All applications <span class="num">(154)</span></button>
+        <button class="btn btn-ghost btn-sm">Lead Capture <span class="num">(0)</span></button>
+      </div>
+    </div>
+
+    <div class="stack">
+
+      <!-- KPI GRID -->
+      <div class="kpi-grid">
+        <div class="kpi">
+          <div class="v"><span class="u">$</span>22.4<span class="u">M</span></div>
+          <div class="k">Active pipeline</div>
+          <div class="d">45 open · 32 processing · 10 on hold</div>
+        </div>
+        <div class="kpi">
+          <div class="v">63</div>
+          <div class="k">Funded YTD</div>
+          <div class="d">$23.2M funded volume</div>
+        </div>
+        <div class="kpi">
+          <div class="v">95</div>
+          <div class="k">Funded all-time</div>
+          <div class="d">$35.1M lifetime volume</div>
+        </div>
+        <div class="kpi">
+          <div class="v">1</div>
+          <div class="k">New this week</div>
+          <div class="d">Submitted in last 7 days</div>
+        </div>
+        <div class="kpi">
+          <div class="v">0</div>
+          <div class="k">Needs attention</div>
+          <div class="d">Stalled &gt; 7 days</div>
+        </div>
+        <div class="kpi">
+          <div class="v">1</div>
+          <div class="k">Unread</div>
+          <div class="d">Borrower messages</div>
+        </div>
+      </div>
+
+      <!-- PRODUCTION + HEALTH -->
+      <div class="band2">
+        <div class="panel">
+          <div class="panel-h"><h3>Monthly production</h3><span class="pill mut">Trailing 12 mo</span></div>
+          <div class="panel-b">
+            <div class="bars">
+              <i style="height:38%"></i>
+              <i style="height:64%"></i>
+              <i style="height:52%"></i>
+              <i style="height:81%"></i>
+              <i style="height:47%"></i>
+              <i style="height:72%"></i>
+              <i style="height:90%"></i>
+              <i style="height:58%"></i>
+              <i style="height:77%"></i>
+              <i style="height:66%"></i>
+              <i style="height:84%"></i>
+              <i class="hi" style="height:22%"></i>
+            </div>
+            <div class="prod-legend">
+              <div class="seg"><span class="lab">This month</span><b>1 · $469K</b></div>
+              <div class="seg" style="text-align:right"><span class="lab">Last month</span><b>21 · $7.2M</b></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-h"><h3>Portfolio health</h3></div>
+          <div class="panel-b">
+            <div class="ph-rows">
+              <div class="ph-cell">
+                <div class="v">87<span class="u">%</span></div>
+                <div class="k">Pull-through</div>
+              </div>
+              <div class="ph-cell">
+                <div class="v"><span class="u">$</span>369<span class="u">K</span></div>
+                <div class="k">Avg funded · YTD</div>
+              </div>
+            </div>
+            <div class="ph-lab">Active pipeline aging</div>
+            <div class="aging">
+              <span class="a hot">0–7d · <b>45</b></span>
+              <span class="a">8–14d · <b>0</b></span>
+              <span class="a">15–30d · <b>0</b></span>
+              <span class="a">30d+ · <b>0</b></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ACTION TILES -->
+      <div class="tiles">
+        <div class="tile acc"><span class="fig">1</span><span class="lab">Docs need correction</span></div>
+        <div class="tile"><span class="fig">20</span><span class="lab">Awaiting your review</span></div>
+        <div class="tile"><span class="fig">153</span><span class="lab">Awaiting borrower</span></div>
+        <div class="tile"><span class="fig">1</span><span class="lab">Unread messages</span></div>
+      </div>
+
+      <!-- PIPELINE TABLE -->
+      <div class="panel">
+        <div class="panel-h">
+          <h3>Active files</h3>
+          <div class="tabs">
+            <button class="tab on">Active <span class="ct">154</span></button>
+            <button class="tab">Funded <span class="ct">63</span></button>
+            <button class="tab">Cancelled <span class="ct">7</span></button>
+            <button class="tab">All <span class="ct">224</span></button>
+          </div>
+        </div>
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>Deal / Borrower · Address</th>
+              <th>Program</th>
+              <th class="num">Amount</th>
+              <th>Officer</th>
+              <th>Status</th>
+              <th class="prog-cell">Progress</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="cell-deal"><div class="lead">Maple Ridge Holdings LLC</div><div class="mut">128 Vernon Ave, Newark NJ</div></td>
+              <td>Fix &amp; Flip</td>
+              <td class="num">$345,000</td>
+              <td><span class="off"><span class="mono">MB</span>M. Bochner</span></td>
+              <td><span class="pill info">Processing</span></td>
+              <td class="prog-cell"><span class="pct">40%</span><div class="prog-bar"><i style="width:40%"></i></div></td>
+            </tr>
+            <tr>
+              <td class="cell-deal"><div class="lead">Cedar Hollow Capital LLC</div><div class="mut">44 Sycamore St, Trenton NJ</div></td>
+              <td>DSCR Rental</td>
+              <td class="num">$512,000</td>
+              <td><span class="off"><span class="mono">DF</span>D. Feldman</span></td>
+              <td><span class="pill warn">In underwriting</span></td>
+              <td class="prog-cell"><span class="pct">62%</span><div class="prog-bar"><i style="width:62%"></i></div></td>
+            </tr>
+            <tr>
+              <td class="cell-deal"><div class="lead">Ironbound Ventures LLC</div><div class="mut">903 Ferry St, Jersey City NJ</div></td>
+              <td>Bridge</td>
+              <td class="num">$780,000</td>
+              <td><span class="off"><span class="mono">MB</span>M. Bochner</span></td>
+              <td><span class="pill mut">Awaiting borrower</span></td>
+              <td class="prog-cell"><span class="pct">28%</span><div class="prog-bar"><i style="width:28%"></i></div></td>
+            </tr>
+            <tr>
+              <td class="cell-deal"><div class="lead">Summit Crossing LLC</div><div class="mut">17 Highland Rd, Paterson NJ</div></td>
+              <td>Fix &amp; Flip</td>
+              <td class="num">$268,500</td>
+              <td><span class="off"><span class="mono">RS</span>R. Stein</span></td>
+              <td><span class="pill ok">CTC</span></td>
+              <td class="prog-cell"><span class="pct">91%</span><div class="prog-bar"><i style="width:91%"></i></div></td>
+            </tr>
+            <tr>
+              <td class="cell-deal"><div class="lead">Blue Harbor Estates LLC</div><div class="mut">250 Bergen Blvd, Elizabeth NJ</div></td>
+              <td>Ground-Up Construction</td>
+              <td class="num">$1,240,000</td>
+              <td><span class="off"><span class="mono">SK</span>S. Klein</span></td>
+              <td><span class="pill alert">On hold</span></td>
+              <td class="prog-cell"><span class="pct">34%</span><div class="prog-bar"><i style="width:34%"></i></div></td>
+            </tr>
+            <tr>
+              <td class="cell-deal"><div class="lead">Willow Creek Partners LLC</div><div class="mut">62 Grove St, Montclair NJ</div></td>
+              <td>DSCR Rental</td>
+              <td class="num">$430,000</td>
+              <td><span class="off"><span class="mono">DF</span>D. Feldman</span></td>
+              <td><span class="pill ok">Funded</span></td>
+              <td class="prog-cell"><span class="pct">100%</span><div class="prog-bar"><i style="width:100%"></i></div></td>
+            </tr>
+            <tr>
+              <td class="cell-deal"><div class="lead">Granite Peak Holdings LLC</div><div class="mut">88 Market St, New Brunswick NJ</div></td>
+              <td>Rental Portfolio</td>
+              <td class="num">$2,150,000</td>
+              <td><span class="off"><span class="mono">RS</span>R. Stein</span></td>
+              <td><span class="pill warn">In underwriting</span></td>
+              <td class="prog-cell"><span class="pct">55%</span><div class="prog-bar"><i style="width:55%"></i></div></td>
+            </tr>
+            <tr>
+              <td class="cell-deal"><div class="lead">Riverstone Equity LLC</div><div class="mut">311 Central Ave, Hoboken NJ</div></td>
+              <td>Bridge</td>
+              <td class="num">$655,000</td>
+              <td><span class="off"><span class="mono">SK</span>S. Klein</span></td>
+              <td><span class="pill info">Processing</span></td>
+              <td class="prog-cell"><span class="pct">47%</span><div class="prog-bar"><i style="width:47%"></i></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

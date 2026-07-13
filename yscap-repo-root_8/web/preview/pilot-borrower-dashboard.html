@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Borrower Dashboard</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* --- page-local layout only; no token redefs --- */
+  .app-nav{display:flex;align-items:center;gap:22px;}
+  .app-nav a{font-size:14.5px;font-weight:500;color:var(--ink-soft);}
+  .app-nav a.on{color:var(--ink);font-weight:600;}
+  .app-nav a:hover{color:var(--gold);}
+  .app-nav .sep{color:var(--app-line);font-size:13px;}
+  @media(max-width:820px){.app-nav{display:none;}}
+
+  .loan-meta{display:grid;grid-template-columns:repeat(4,auto);gap:30px 44px;}
+  .loan-meta .m .k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-weight:700;}
+  .loan-meta .m .v{font-size:16px;font-weight:600;color:var(--ink);margin-top:6px;}
+  .loan-meta .m .v.fig{font-family:var(--serif);font-weight:500;font-size:24px;font-variant-numeric:tabular-nums;letter-spacing:-.01em;}
+  @media(max-width:720px){.loan-meta{grid-template-columns:1fr 1fr;}}
+
+  /* horizontal status stepper */
+  .stepper{display:flex;align-items:flex-start;margin-top:26px;}
+  .step{flex:1;display:flex;flex-direction:column;align-items:center;text-align:center;position:relative;min-width:0;}
+  .step .node{width:16px;height:16px;border-radius:50%;background:var(--panel-2);border:2px solid var(--app-line);z-index:2;transition:.2s;}
+  .step.done .node{background:var(--teal);border-color:var(--teal);}
+  .step.now .node{background:var(--gold);border-color:var(--gold);box-shadow:0 0 0 5px var(--warn-bg);}
+  .step .line{position:absolute;top:7px;left:-50%;width:100%;height:2px;background:var(--app-line);z-index:1;}
+  .step.done .line,.step.now .line{background:var(--teal);}
+  .step:first-child .line{display:none;}
+  .step .lab{font-size:12.5px;font-weight:600;color:var(--ink-soft);margin-top:12px;line-height:1.25;}
+  .step.done .lab{color:var(--ink);}
+  .step.now .lab{color:var(--ink);}
+  .step .lab .sm{display:block;font-size:11px;font-weight:600;color:var(--gold);letter-spacing:.04em;margin-top:3px;}
+  @media(max-width:640px){.step .lab{font-size:11px;}}
+
+  .cl-action{margin-left:auto;flex:none;align-self:center;}
+
+  .two-up{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+  @media(max-width:820px){.two-up{grid-template-columns:1fr;}}
+
+  .doc-stat{display:flex;align-items:baseline;gap:10px;margin-bottom:14px;}
+  .doc-stat .big{font-family:var(--serif);font-size:30px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
+  .doc-stat .of{color:var(--ink-soft);font-size:14px;}
+
+  .contact{display:flex;align-items:center;gap:13px;padding:13px 0;border-bottom:1px solid var(--app-line-soft);}
+  .contact:last-of-type{border-bottom:0;}
+  .contact .mono{width:40px;height:40px;font-size:14px;}
+  .contact .nm{font-weight:600;font-size:15px;}
+  .contact .ro{font-size:12.5px;color:var(--ink-soft);margin-top:2px;}
+
+  .cond-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+  .cond-row .pill{font-size:12.5px;padding:6px 13px;}
+
+  .foot-strip{margin-top:28px;padding:20px 24px;background:var(--panel);border:1px solid var(--app-line);border-radius:var(--r);display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;}
+  .foot-strip .msg{font-size:14.5px;color:var(--ink-soft);}
+  .foot-strip .msg b{color:var(--ink);font-weight:600;}
+  .foot-strip .tag{font-family:var(--serif);font-style:italic;font-size:14px;color:var(--ink-soft);}
+
+  .stack{display:grid;gap:20px;}
+  .welcome-tag{font-family:var(--serif);font-style:italic;color:var(--ink-soft);font-size:14px;margin-top:2px;}
+</style>
+</head>
+<body>
+<div class="app no-side">
+
+  <header class="app-topbar">
+    <span class="cobrand"><span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span><span class="div"></span><span class="ys">YS Capital</span></span>
+    <nav class="app-nav">
+      <a class="on">Dashboard</a><span class="sep">·</span>
+      <a>My loan</a><span class="sep">·</span>
+      <a>Documents</a><span class="sep">·</span>
+      <a>Profile</a><span class="sep">·</span>
+      <a>Messages</a>
+    </nav>
+    <span class="user-pill"><span class="mono">DR</span></span>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>Welcome back, Daniel</h1>
+        <div class="sub">Here's where your financing stands.</div>
+        <div class="welcome-tag">Navigate every deal.</div>
+      </div>
+      <a class="btn btn-ghost btn-sm">View my loan</a>
+    </div>
+
+    <div class="stack">
+
+      <!-- PRIMARY LOAN FILE -->
+      <section class="panel">
+        <div class="panel-h">
+          <h3>Your loan file</h3>
+          <span class="pill info">In processing</span>
+        </div>
+        <div class="panel-b">
+          <div class="loan-meta">
+            <div class="m"><div class="k">Vesting entity</div><div class="v">Maple Ridge Holdings LLC</div></div>
+            <div class="m"><div class="k">Property</div><div class="v">128 Vernon Ave, Newark NJ</div></div>
+            <div class="m"><div class="k">Program</div><div class="v">Fix &amp; Flip</div></div>
+            <div class="m"><div class="k">Loan amount</div><div class="v fig num">$345,000</div></div>
+          </div>
+
+          <div class="stepper">
+            <div class="step done"><span class="line"></span><span class="node"></span><span class="lab">Applied</span></div>
+            <div class="step done"><span class="line"></span><span class="node"></span><span class="lab">In review</span></div>
+            <div class="step now"><span class="line"></span><span class="node"></span><span class="lab">Processing<span class="sm">You are here</span></span></div>
+            <div class="step"><span class="line"></span><span class="node"></span><span class="lab">Underwriting</span></div>
+            <div class="step"><span class="line"></span><span class="node"></span><span class="lab">Clear to close</span></div>
+            <div class="step"><span class="line"></span><span class="node"></span><span class="lab">Funded</span></div>
+          </div>
+
+          <div style="margin-top:30px;">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px;">
+              <span style="font-size:12.5px;font-weight:600;color:var(--ink-soft);letter-spacing:.04em;">Overall progress</span>
+              <span class="num" style="font-family:var(--serif);font-size:15px;">42%</span>
+            </div>
+            <div class="prog-bar"><i style="width:42%;"></i></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- NEXT STEPS -->
+      <section class="panel">
+        <div class="panel-h">
+          <h3>Your next steps</h3>
+          <span class="pill warn">3 to do</span>
+        </div>
+        <div class="panel-b" style="padding-top:4px;padding-bottom:4px;">
+          <div class="cl-item">
+            <span class="cl-box"></span>
+            <div><div class="ttl">Upload executed purchase contract</div><div class="hint">Fully signed by all parties</div></div>
+            <a class="btn btn-gold btn-sm cl-action">Upload</a>
+          </div>
+          <div class="cl-item">
+            <span class="cl-box"></span>
+            <div><div class="ttl">Provide 2 months bank statements</div><div class="hint">Gold Standard program</div></div>
+            <a class="btn btn-gold btn-sm cl-action">Upload</a>
+          </div>
+          <div class="cl-item">
+            <span class="cl-box"></span>
+            <div><div class="ttl">Verify your LLC (vesting entity)</div><div class="hint">Articles of organization + operating agreement</div></div>
+            <a class="btn btn-gold btn-sm cl-action">Upload</a>
+          </div>
+          <div class="cl-item">
+            <span class="cl-box done"></span>
+            <div><div class="ttl">Government-issued photo ID</div><div class="hint">Received · thank you</div></div>
+            <span class="pill ok cl-action">Done</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- TWO-UP: DOCUMENTS + TEAM -->
+      <div class="two-up">
+        <section class="panel">
+          <div class="panel-h">
+            <h3>Documents</h3>
+            <a class="link-u" style="font-size:13.5px;">View all documents →</a>
+          </div>
+          <div class="panel-b">
+            <div class="doc-stat">
+              <span class="big num">7</span><span class="of">of 11 complete</span>
+            </div>
+            <div class="prog-bar"><i style="width:64%;"></i></div>
+            <div style="font-size:13px;color:var(--ink-soft);margin-top:14px;">4 documents still needed to move to underwriting.</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h">
+            <h3>Your team</h3>
+            <span class="pill mut">Here for you</span>
+          </div>
+          <div class="panel-b" style="padding-top:6px;">
+            <div class="contact">
+              <span class="mono">SM</span>
+              <div><div class="nm">Sofia Marlowe</div><div class="ro">Loan Officer</div></div>
+            </div>
+            <div class="contact">
+              <span class="mono">TE</span>
+              <div><div class="nm">Theo Ellison</div><div class="ro">Loan Processor</div></div>
+            </div>
+            <a class="btn btn-ink btn-sm" style="margin-top:16px;width:100%;justify-content:center;">Message your team</a>
+          </div>
+        </section>
+      </div>
+
+      <!-- CONDITIONS SUMMARY -->
+      <section class="panel">
+        <div class="panel-h">
+          <h3>Conditions</h3>
+          <a class="link-u" style="font-size:13.5px;">Review conditions →</a>
+        </div>
+        <div class="panel-b">
+          <div class="cond-row">
+            <span class="pill warn">2 outstanding</span>
+            <span class="pill info">1 in review</span>
+            <span class="pill ok">3 satisfied</span>
+            <span style="font-size:13px;color:var(--ink-soft);margin-left:4px;">Clearing outstanding conditions keeps you on track to close.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- FOOTER STRIP -->
+      <div class="foot-strip">
+        <div class="msg">Have a question? <b>Message your team</b> or call <b class="num">718-831-2168</b>.</div>
+        <div class="tag">PILOT — Navigate every deal.</div>
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

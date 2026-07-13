@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — ClickUp sync</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .stack{display:flex;flex-direction:column;gap:22px;}
+  .head-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+  .conn-note{display:inline-flex;align-items:center;gap:9px;margin-top:12px;font-size:12.5px;font-weight:600;letter-spacing:.02em;color:var(--teal-deep);background:var(--info-bg);border:1px solid var(--app-line-soft);border-radius:100px;padding:6px 13px;}
+  .conn-note .cu{width:13px;height:13px;border-radius:50%;flex:none;background:var(--teal);}
+  .conn-note .mono-id{font-family:var(--serif);font-variant-numeric:tabular-nums;color:var(--ink-soft);font-weight:500;}
+  /* sync health rows */
+  .health{display:flex;flex-direction:column;}
+  .h-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 0;border-bottom:1px solid var(--app-line-soft);}
+  .h-row:last-child{border-bottom:0;}
+  .h-row .lhs{display:flex;align-items:flex-start;gap:13px;min-width:0;}
+  .h-ic{width:34px;height:34px;border-radius:8px;flex:none;background:var(--panel-2);border:1px solid var(--app-line-soft);display:flex;align-items:center;justify-content:center;}
+  .h-ic i{width:13px;height:13px;border-radius:3px;display:block;}
+  .h-row .ttl{font-weight:600;font-size:15px;color:var(--ink);}
+  .h-row .hint{font-size:12.5px;color:var(--ink-soft);margin-top:3px;}
+  .h-row .rhs{display:flex;align-items:center;gap:14px;flex:none;}
+  .h-row .when{font-size:12.5px;color:var(--ink-soft);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;}
+  .h-row .when b{display:block;color:var(--ink-1);font-weight:600;font-size:13px;}
+  /* table scroll container — never overflow the page */
+  .tbl-scroll{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .tbl-scroll .tbl{min-width:880px;}
+  .t-time{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink-1);font-weight:600;}
+  .t-time .d{display:block;font-size:12px;font-weight:500;color:var(--ink-soft);margin-top:2px;}
+  .dir{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;letter-spacing:.02em;padding:4px 11px;border-radius:100px;border:1px solid var(--app-line);white-space:nowrap;color:var(--ink-1);background:var(--panel-2);}
+  .dir .ar{font-family:var(--serif);font-weight:600;}
+  .dir.push{color:var(--teal-deep);background:var(--info-bg);border-color:transparent;}
+  .dir.pull{color:var(--gold);background:var(--warn-bg);border-color:transparent;}
+  .tgt{color:var(--ink-1);}
+  .tgt .lead{font-weight:600;color:var(--ink);}
+  .tgt .sub{display:block;font-size:12.5px;color:var(--ink-soft);margin-top:2px;}
+  .fields{color:var(--ink-1);}
+  .ftag{display:inline-block;font-family:var(--serif);font-variant-numeric:tabular-nums;font-size:12px;color:var(--ink-soft);background:var(--panel-2);border:1px solid var(--app-line-soft);border-radius:100px;padding:2px 9px;margin:2px 4px 2px 0;}
+  .row-act{display:flex;gap:7px;white-space:nowrap;}
+  .btn-xs{padding:6px 12px;font-size:12.5px;min-height:0;}
+  /* duplicate candidates */
+  .dup{display:flex;flex-direction:column;gap:14px;}
+  .dup-card{border:1px solid var(--app-line-soft);border-radius:var(--r);padding:15px 16px;background:var(--panel-2);}
+  .dup-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;}
+  .dup-score{font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:700;color:var(--warn);}
+  .dup-pair{display:flex;align-items:stretch;gap:10px;}
+  .dup-side{flex:1;min-width:0;background:var(--panel);border:1px solid var(--app-line-soft);border-radius:var(--r);padding:11px 13px;}
+  .dup-side .src{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .dup-side .nm{font-weight:600;font-size:14px;color:var(--ink);margin-top:5px;}
+  .dup-side .id{font-family:var(--serif);font-variant-numeric:tabular-nums;font-size:12px;color:var(--ink-soft);margin-top:3px;}
+  .dup-vs{align-self:center;font-size:12px;font-weight:700;color:var(--ink-soft);flex:none;}
+  .dup-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:13px;}
+  .dup-foot .meta{font-size:12px;color:var(--ink-soft);}
+  .side-grid{display:grid;grid-template-columns:1.5fr 1fr;gap:22px;align-items:start;}
+  .foot-note{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:16px 22px;border-top:1px solid var(--app-line-soft);font-size:12.5px;color:var(--ink-soft);}
+  @media(max-width:1080px){
+    .side-grid{grid-template-columns:1fr;}
+  }
+  @media(max-width:720px){
+    .head-actions{width:100%;}
+    .h-row{flex-wrap:wrap;}
+    .h-row .rhs{width:100%;justify-content:space-between;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Audit log</a>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>ClickUp</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search loans, borrowers, LLCs…</div>
+    <div class="user-pill">
+      <button class="btn btn-gold btn-sm">+ New file</button>
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>ClickUp sync</h1>
+        <div class="sub">Pipeline and CRM synchronization.</div>
+        <span class="conn-note"><span class="cu"></span>Workspace · YS Capital Lending &nbsp;·&nbsp; <span class="mono-id">List 901204417</span></span>
+      </div>
+      <div class="head-actions">
+        <span class="pill ok">Connected</span>
+        <button class="btn btn-gold btn-sm">Sync now</button>
+      </div>
+    </div>
+
+    <div class="stack">
+
+      <!-- KPI STRIP -->
+      <div class="kpi-grid">
+        <div class="kpi">
+          <div class="v">342</div>
+          <div class="k">Files in sync</div>
+          <div class="d">Mapped to ClickUp tasks</div>
+        </div>
+        <div class="kpi">
+          <div class="v">7</div>
+          <div class="k">Pending pushes</div>
+          <div class="d">Queued outbound changes</div>
+        </div>
+        <div class="kpi">
+          <div class="v">2<span class="u">m</span> 41<span class="u">s</span></div>
+          <div class="k">Last poll</div>
+          <div class="d">Reconcile every 5 min</div>
+        </div>
+        <div class="kpi">
+          <div class="v">0</div>
+          <div class="k">Failed · 24h</div>
+          <div class="d">No unresolved errors</div>
+        </div>
+      </div>
+
+      <div class="side-grid">
+
+        <!-- LEFT COLUMN -->
+        <div class="stack">
+
+          <!-- SYNC HEALTH -->
+          <div class="panel">
+            <div class="panel-h">
+              <h3>Sync health</h3>
+              <span class="pill ok">All systems nominal</span>
+            </div>
+            <div class="panel-b">
+              <div class="health">
+                <div class="h-row">
+                  <div class="lhs">
+                    <span class="h-ic"><i style="background:var(--teal);"></i></span>
+                    <div>
+                      <div class="ttl">Inbox drain</div>
+                      <div class="hint">Webhook events from ClickUp &rarr; PILOT queue</div>
+                    </div>
+                  </div>
+                  <div class="rhs">
+                    <span class="when">last run<b>12s ago</b></span>
+                    <span class="pill ok">Running</span>
+                  </div>
+                </div>
+
+                <div class="h-row">
+                  <div class="lhs">
+                    <span class="h-ic"><i style="background:var(--gold);"></i></span>
+                    <div>
+                      <div class="ttl">Reconcile poll</div>
+                      <div class="hint">Full-list diff sweep · every 5 minutes</div>
+                    </div>
+                  </div>
+                  <div class="rhs">
+                    <span class="when">last run<b>2m 41s ago</b></span>
+                    <span class="pill ok">Idle</span>
+                  </div>
+                </div>
+
+                <div class="h-row">
+                  <div class="lhs">
+                    <span class="h-ic"><i style="background:var(--warn);"></i></span>
+                    <div>
+                      <div class="ttl">Outbound push</div>
+                      <div class="hint">PILOT field edits &rarr; ClickUp custom fields</div>
+                    </div>
+                  </div>
+                  <div class="rhs">
+                    <span class="when">7 queued<b>draining now</b></span>
+                    <span class="pill warn">Active</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- RECENT SYNC ACTIVITY -->
+          <div class="panel">
+            <div class="panel-h">
+              <h3>Recent sync activity</h3>
+              <button class="btn btn-ghost btn-sm">View all</button>
+            </div>
+            <div class="tbl-scroll">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Direction</th>
+                    <th>File</th>
+                    <th>Fields changed</th>
+                    <th>Result</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="t-time">09:44:12<span class="d">Jul 13</span></td>
+                    <td><span class="dir push"><span class="ar">&rarr;</span>ClickUp</span></td>
+                    <td class="tgt"><span class="lead">Maple Ridge Holdings LLC</span><span class="sub">YS-10428</span></td>
+                    <td class="fields"><span class="ftag">Loan stage</span><span class="ftag">Amount</span></td>
+                    <td><span class="pill ok">ok</span></td>
+                    <td class="row-act"><button class="btn btn-ghost btn-xs">Repush</button></td>
+                  </tr>
+                  <tr>
+                    <td class="t-time">09:41:58<span class="d">Jul 13</span></td>
+                    <td><span class="dir pull"><span class="ar">&larr;</span>ClickUp</span></td>
+                    <td class="tgt"><span class="lead">Cedar Hollow Capital LLC</span><span class="sub">YS-10391</span></td>
+                    <td class="fields"><span class="ftag">Assignee</span></td>
+                    <td><span class="pill ok">ok</span></td>
+                    <td class="row-act"><button class="btn btn-ghost btn-xs">Repull</button></td>
+                  </tr>
+                  <tr>
+                    <td class="t-time">09:39:07<span class="d">Jul 13</span></td>
+                    <td><span class="dir push"><span class="ar">&rarr;</span>ClickUp</span></td>
+                    <td class="tgt"><span class="lead">Granite Peak Holdings LLC</span><span class="sub">YS-10377</span></td>
+                    <td class="fields"><span class="ftag">Close date</span><span class="ftag">Status</span></td>
+                    <td><span class="pill warn">retry</span></td>
+                    <td class="row-act"><button class="btn btn-ghost btn-xs">Repush</button></td>
+                  </tr>
+                  <tr>
+                    <td class="t-time">09:36:44<span class="d">Jul 13</span></td>
+                    <td><span class="dir pull"><span class="ar">&larr;</span>ClickUp</span></td>
+                    <td class="tgt"><span class="lead">Summit Crossing LLC</span><span class="sub">YS-10360</span></td>
+                    <td class="fields"><span class="ftag">Priority</span><span class="ftag">Tags</span></td>
+                    <td><span class="pill ok">ok</span></td>
+                    <td class="row-act"><button class="btn btn-ghost btn-xs">Repull</button></td>
+                  </tr>
+                  <tr>
+                    <td class="t-time">09:33:19<span class="d">Jul 13</span></td>
+                    <td><span class="dir push"><span class="ar">&rarr;</span>ClickUp</span></td>
+                    <td class="tgt"><span class="lead">Blue Harbor Estates LLC</span><span class="sub">YS-10344</span></td>
+                    <td class="fields"><span class="ftag">Loan stage</span></td>
+                    <td><span class="pill ok">ok</span></td>
+                    <td class="row-act"><button class="btn btn-ghost btn-xs">Repush</button></td>
+                  </tr>
+                  <tr>
+                    <td class="t-time">09:28:53<span class="d">Jul 13</span></td>
+                    <td><span class="dir push"><span class="ar">&rarr;</span>ClickUp</span></td>
+                    <td class="tgt"><span class="lead">Willow Creek Partners LLC</span><span class="sub">YS-10318</span></td>
+                    <td class="fields"><span class="ftag">Amount</span><span class="ftag">Rate</span><span class="ftag">Term</span></td>
+                    <td><span class="pill ok">ok</span></td>
+                    <td class="row-act"><button class="btn btn-ghost btn-xs">Repush</button></td>
+                  </tr>
+                  <tr>
+                    <td class="t-time">09:24:31<span class="d">Jul 13</span></td>
+                    <td><span class="dir pull"><span class="ar">&larr;</span>ClickUp</span></td>
+                    <td class="tgt"><span class="lead">Ironbound Ventures LLC</span><span class="sub">YS-10297</span></td>
+                    <td class="fields"><span class="ftag">Comment</span></td>
+                    <td><span class="pill ok">ok</span></td>
+                    <td class="row-act"><button class="btn btn-ghost btn-xs">Repull</button></td>
+                  </tr>
+                  <tr>
+                    <td class="t-time">09:19:06<span class="d">Jul 13</span></td>
+                    <td><span class="dir push"><span class="ar">&rarr;</span>ClickUp</span></td>
+                    <td class="tgt"><span class="lead">Riverstone Equity LLC</span><span class="sub">YS-10271</span></td>
+                    <td class="fields"><span class="ftag">Status</span><span class="ftag">Assignee</span></td>
+                    <td><span class="pill ok">ok</span></td>
+                    <td class="row-act"><button class="btn btn-ghost btn-xs">Repush</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="foot-note">
+              <span>Showing 8 of 1,204 events · last 90 minutes</span>
+              <span>Retries auto-backoff · max 5 attempts</span>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- RIGHT COLUMN -->
+        <div class="stack">
+
+          <!-- DUPLICATE CANDIDATES -->
+          <div class="panel">
+            <div class="panel-h">
+              <h3>Duplicate candidates</h3>
+              <span class="pill warn">2 open</span>
+            </div>
+            <div class="panel-b">
+              <div class="dup">
+
+                <div class="dup-card">
+                  <div class="dup-top">
+                    <span class="dup-score">92% name match</span>
+                    <span class="pill mut">flagged 1h ago</span>
+                  </div>
+                  <div class="dup-pair">
+                    <div class="dup-side">
+                      <div class="src">PILOT</div>
+                      <div class="nm">Oakmont Ridge LLC</div>
+                      <div class="id">YS-10402</div>
+                    </div>
+                    <div class="dup-vs">vs</div>
+                    <div class="dup-side">
+                      <div class="src">ClickUp</div>
+                      <div class="nm">Oakmont Ridge, LLC</div>
+                      <div class="id">CU-86tf29</div>
+                    </div>
+                  </div>
+                  <div class="dup-foot">
+                    <span class="meta">Same borrower · differing punctuation</span>
+                    <button class="btn btn-ghost btn-xs">Resolve</button>
+                  </div>
+                </div>
+
+                <div class="dup-card">
+                  <div class="dup-top">
+                    <span class="dup-score">88% name match</span>
+                    <span class="pill mut">flagged 3h ago</span>
+                  </div>
+                  <div class="dup-pair">
+                    <div class="dup-side">
+                      <div class="src">PILOT</div>
+                      <div class="nm">Silver Birch Holdings LLC</div>
+                      <div class="id">YS-10358</div>
+                    </div>
+                    <div class="dup-vs">vs</div>
+                    <div class="dup-side">
+                      <div class="src">ClickUp</div>
+                      <div class="nm">Silverbirch Holdings LLC</div>
+                      <div class="id">CU-86tg04</div>
+                    </div>
+                  </div>
+                  <div class="dup-foot">
+                    <span class="meta">Two tasks, one file · merge suggested</span>
+                    <button class="btn btn-ghost btn-xs">Resolve</button>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </div>
+
+          <!-- MAPPING SUMMARY -->
+          <div class="panel">
+            <div class="panel-h">
+              <h3>Field mapping</h3>
+              <button class="btn btn-ghost btn-sm">Edit</button>
+            </div>
+            <div class="panel-b">
+              <div class="health">
+                <div class="h-row">
+                  <div class="lhs"><div><div class="ttl">Loan stage</div><div class="hint">PILOT status &rarr; CU status</div></div></div>
+                  <div class="rhs"><span class="pill ok">2-way</span></div>
+                </div>
+                <div class="h-row">
+                  <div class="lhs"><div><div class="ttl">Loan amount</div><div class="hint">Currency custom field</div></div></div>
+                  <div class="rhs"><span class="pill info">push only</span></div>
+                </div>
+                <div class="h-row">
+                  <div class="lhs"><div><div class="ttl">Assignee</div><div class="hint">CU member &rarr; loan officer</div></div></div>
+                  <div class="rhs"><span class="pill info">pull only</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILOT — Audit log</title>
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local layout only — no token redefs */
+  .stack{display:flex;flex-direction:column;gap:22px;}
+  .lock-note{display:inline-flex;align-items:center;gap:9px;margin-top:12px;font-size:12.5px;font-weight:600;letter-spacing:.02em;color:var(--teal-deep);background:var(--info-bg);border:1px solid var(--app-line-soft);border-radius:100px;padding:6px 13px;}
+  .lock-note .shield{width:13px;height:15px;flex:none;background:var(--teal);clip-path:polygon(50% 0,100% 22%,100% 60%,50% 100%,0 60%,0 22%);}
+  .head-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  /* filters */
+  .filters{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;}
+  .filters .field{margin-bottom:0;flex:1;min-width:150px;}
+  .filters .field.grow{flex:2;min-width:200px;}
+  .sel{background:var(--panel);border:1px solid var(--app-line);border-radius:var(--r);padding:12px 14px;font-family:var(--sans);font-size:15px;color:var(--ink);appearance:none;cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,var(--ink-soft) 50%),linear-gradient(135deg,var(--ink-soft) 50%,transparent 50%);background-position:calc(100% - 18px) 55%,calc(100% - 13px) 55%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;}
+  .sel:focus{outline:none;border-color:var(--teal);}
+  /* table scroll container — never overflow the page */
+  .tbl-scroll{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .tbl-scroll .tbl{min-width:840px;}
+  .t-time{font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink-1);font-weight:600;}
+  .t-time .d{display:block;font-size:12px;font-weight:500;color:var(--ink-soft);margin-top:2px;}
+  .actor{display:inline-flex;align-items:center;gap:10px;white-space:nowrap;}
+  .actor .mono{width:30px;height:30px;font-size:11px;}
+  .actor .nm{font-weight:600;color:var(--ink);}
+  .actor .rl{display:block;font-size:12px;font-weight:500;color:var(--ink-soft);font-family:var(--sans);letter-spacing:.02em;}
+  .actor-id{font-family:var(--serif);font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--ink-soft);}
+  .ip{font-variant-numeric:tabular-nums;color:var(--ink-soft);white-space:nowrap;}
+  .tgt{color:var(--ink-1);}
+  .tgt .sub{display:block;font-size:12.5px;color:var(--ink-soft);margin-top:2px;}
+  .pill.mono-pill{font-family:var(--serif);letter-spacing:.01em;}
+  /* emphasize the sensitive SSN reveal rows */
+  .tbl tr.sensitive td{background:var(--crit-bg);}
+  .tbl tr.sensitive:hover td{background:#f0d8d5;}
+  .tbl tr.sensitive td:first-child{box-shadow:inset 3px 0 0 var(--crit);}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:12.5px;color:var(--ink-soft);}
+  .legend .lg{display:inline-flex;align-items:center;gap:7px;}
+  .legend .sw{width:10px;height:10px;border-radius:3px;flex:none;}
+  .foot-note{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:16px 22px;border-top:1px solid var(--app-line-soft);font-size:12.5px;color:var(--ink-soft);}
+  @media(max-width:720px){
+    .filters .field,.filters .field.grow{flex:1 1 100%;min-width:0;}
+    .head-actions{width:100%;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <span class="cobrand">
+        <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+        <span class="div"></span>
+        <span class="ys">YS Capital</span>
+      </span>
+    </div>
+
+    <div class="sb-sec">Main</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Pipeline</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>My tasks</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Chat</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Leads</a>
+
+    <div class="sb-sec">Files</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Borrowers</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Conditions</a>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Vendors</a>
+
+    <div class="sb-sec">Admin</div>
+    <a class="sb-link"><span class="ic" style="background:var(--app-line);border-radius:3px;"></span>Team</a>
+    <a class="sb-link on"><span class="ic" style="background:var(--gold);border-radius:3px;"></span>Audit log</a>
+  </aside>
+
+  <header class="app-topbar">
+    <span class="cobrand">
+      <span class="pilot-lockup"><span class="pilot-mark"></span><span class="pilot-word">PILOT</span></span>
+      <span class="div"></span>
+      <span class="ys">YS Capital</span>
+    </span>
+    <div class="search">Search loans, borrowers, LLCs…</div>
+    <div class="user-pill">
+      <button class="btn btn-gold btn-sm">+ New file</button>
+      <span class="mono">YB</span>
+      <span class="chip">Super Admin</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="page-head">
+      <div>
+        <h1>Audit log</h1>
+        <div class="sub">Every access to protected borrower data, recorded.</div>
+        <span class="lock-note"><span class="shield"></span>GLBA · PII access trail · immutable &amp; append-only</span>
+      </div>
+      <div class="head-actions">
+        <button class="btn btn-ghost btn-sm">Export</button>
+      </div>
+    </div>
+
+    <div class="stack">
+
+      <!-- FILTERS -->
+      <div class="panel">
+        <div class="panel-b">
+          <div class="filters">
+            <div class="field grow">
+              <label>Search</label>
+              <input class="input" type="text" placeholder="Actor, target, IP, action…">
+            </div>
+            <div class="field">
+              <label>Actor</label>
+              <select class="sel">
+                <option>All actors</option>
+                <option>M. Bochner</option>
+                <option>D. Feldman</option>
+                <option>R. Stein</option>
+                <option>S. Klein</option>
+                <option>A. Okafor</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Action</label>
+              <select class="sel">
+                <option>All actions</option>
+                <option>view_ssn</option>
+                <option>download_document</option>
+                <option>update_borrower</option>
+                <option>login</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Date range</label>
+              <select class="sel">
+                <option>Last 7 days</option>
+                <option>Last 30 days</option>
+                <option>Last 90 days</option>
+                <option>Custom…</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- KPI STRIP -->
+      <div class="kpi-grid">
+        <div class="kpi">
+          <div class="v">148</div>
+          <div class="k">Events today</div>
+          <div class="d">Across 6 active staff</div>
+        </div>
+        <div class="kpi">
+          <div class="v">9</div>
+          <div class="k">SSN reveals · 30d</div>
+          <div class="d">Each justified &amp; logged</div>
+        </div>
+        <div class="kpi">
+          <div class="v">213</div>
+          <div class="k">Document downloads · 30d</div>
+          <div class="d">Tax docs, IDs, statements</div>
+        </div>
+        <div class="kpi">
+          <div class="v">6</div>
+          <div class="k">Unique actors</div>
+          <div class="d">Sessions in last 30 days</div>
+        </div>
+      </div>
+
+      <!-- AUDIT TABLE -->
+      <div class="panel">
+        <div class="panel-h">
+          <h3>Access events</h3>
+          <div class="legend">
+            <span class="lg"><span class="sw" style="background:var(--crit)"></span>view_ssn</span>
+            <span class="lg"><span class="sw" style="background:var(--info)"></span>download_document</span>
+            <span class="lg"><span class="sw" style="background:var(--warn)"></span>update_borrower</span>
+            <span class="lg"><span class="sw" style="background:var(--ink-soft)"></span>login</span>
+          </div>
+        </div>
+        <div class="tbl-scroll">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Actor</th>
+                <th>Action</th>
+                <th>Target</th>
+                <th>IP address</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="sensitive">
+                <td class="t-time">09:42:17<span class="d">Jul 13, 2026</span></td>
+                <td><span class="actor"><span class="mono">MB</span><span><span class="nm">M. Bochner</span><span class="rl">Senior Processor</span></span></span></td>
+                <td><span class="pill alert mono-pill">view_ssn</span></td>
+                <td class="tgt">Maple Ridge Holdings LLC<span class="sub">Borrower · Aaron Delgado</span></td>
+                <td class="ip">10.4.22.108</td>
+              </tr>
+              <tr>
+                <td class="t-time">09:38:02<span class="d">Jul 13, 2026</span></td>
+                <td><span class="actor"><span class="mono">DF</span><span><span class="nm">D. Feldman</span><span class="rl">Loan Officer</span></span></span></td>
+                <td><span class="pill info mono-pill">download_document</span></td>
+                <td class="tgt">2024 Tax Return.pdf<span class="sub">Cedar Hollow Capital LLC</span></td>
+                <td class="ip">10.4.22.71</td>
+              </tr>
+              <tr>
+                <td class="t-time">09:21:55<span class="d">Jul 13, 2026</span></td>
+                <td><span class="actor"><span class="mono">RS</span><span><span class="nm">R. Stein</span><span class="rl">Underwriter</span></span></span></td>
+                <td><span class="pill warn mono-pill">update_borrower</span></td>
+                <td class="tgt">Granite Peak Holdings LLC<span class="sub">Field · Entity address</span></td>
+                <td class="ip">10.4.22.44</td>
+              </tr>
+              <tr class="sensitive">
+                <td class="t-time">08:57:40<span class="d">Jul 13, 2026</span></td>
+                <td><span class="actor"><span class="mono">RS</span><span><span class="nm">R. Stein</span><span class="rl">Underwriter</span></span></span></td>
+                <td><span class="pill alert mono-pill">view_ssn</span></td>
+                <td class="tgt">Summit Crossing LLC<span class="sub">Borrower · Priya Nair</span></td>
+                <td class="ip">10.4.22.44</td>
+              </tr>
+              <tr>
+                <td class="t-time">08:44:19<span class="d">Jul 13, 2026</span></td>
+                <td><span class="actor"><span class="mono">SK</span><span><span class="nm">S. Klein</span><span class="rl">Loan Officer</span></span></span></td>
+                <td><span class="pill info mono-pill">download_document</span></td>
+                <td class="tgt">Drivers License.jpg<span class="sub">Blue Harbor Estates LLC</span></td>
+                <td class="ip">10.4.22.90</td>
+              </tr>
+              <tr>
+                <td class="t-time">08:31:06<span class="d">Jul 13, 2026</span></td>
+                <td><span class="actor"><span class="mono">AO</span><span><span class="nm">A. Okafor</span><span class="rl">Processor</span></span></span></td>
+                <td><span class="pill mut mono-pill">login</span></td>
+                <td class="tgt">Session started<span class="sub">MFA · authenticator app</span></td>
+                <td class="ip">10.4.22.133</td>
+              </tr>
+              <tr>
+                <td class="t-time">08:15:52<span class="d">Jul 13, 2026</span></td>
+                <td><span class="actor"><span class="mono">DF</span><span><span class="nm">D. Feldman</span><span class="rl">Loan Officer</span></span></span></td>
+                <td><span class="pill warn mono-pill">update_borrower</span></td>
+                <td class="tgt">Willow Creek Partners LLC<span class="sub">Field · Phone number</span></td>
+                <td class="ip">10.4.22.71</td>
+              </tr>
+              <tr class="sensitive">
+                <td class="t-time">17:52:31<span class="d">Jul 12, 2026</span></td>
+                <td><span class="actor"><span class="mono">MB</span><span><span class="nm">M. Bochner</span><span class="rl">Senior Processor</span></span></span></td>
+                <td><span class="pill alert mono-pill">view_ssn</span></td>
+                <td class="tgt">Ironbound Ventures LLC<span class="sub">Borrower · Marcus Whitfield</span></td>
+                <td class="ip">10.4.22.108</td>
+              </tr>
+              <tr>
+                <td class="t-time">17:40:08<span class="d">Jul 12, 2026</span></td>
+                <td><span class="actor"><span class="mono">SK</span><span><span class="nm">S. Klein</span><span class="rl">Loan Officer</span></span></span></td>
+                <td><span class="pill info mono-pill">download_document</span></td>
+                <td class="tgt">Bank Statement Q2.pdf<span class="sub">Riverstone Equity LLC</span></td>
+                <td class="ip">10.4.22.90</td>
+              </tr>
+              <tr>
+                <td class="t-time">17:22:47<span class="d">Jul 12, 2026</span></td>
+                <td><span class="actor"><span class="mono">AO</span><span><span class="nm">A. Okafor</span><span class="rl">Processor</span></span></span></td>
+                <td><span class="pill mut mono-pill">login</span></td>
+                <td class="tgt">Session started<span class="sub">MFA · authenticator app</span></td>
+                <td class="ip">10.4.22.133</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="foot-note">
+          <span>Showing 10 of 148 events · Jul 12–13, 2026</span>
+          <span>Records are append-only and retained for 7 years per policy.</span>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+</body>
+</html>

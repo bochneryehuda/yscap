@@ -1,0 +1,225 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* ---- tool top bar (lighter than marketing nav) ---- */
+  .tool-bar{position:sticky;top:0;z-index:50;background:rgba(251,249,243,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line-soft);}
+  .tool-bar .inner{display:flex;align-items:center;justify-content:space-between;height:60px;gap:24px;}
+  .crumb{display:flex;align-items:center;gap:12px;min-width:0;}
+  .crumb .logo-nav{height:34px;}
+  .crumb .cdiv{width:1px;height:24px;background:var(--line);}
+  .crumb .trail{font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .crumb .trail .sep{opacity:.4;padding:0 .5em;}
+  .crumb .trail .here{color:var(--ink);}
+  .tool-actions{display:flex;align-items:center;gap:10px;flex:none;}
+
+  /* ---- page header ---- */
+  .an-head{padding:40px 0 26px;}
+  .an-head h1{font-size:clamp(34px,4.4vw,52px);margin:.12em 0 .18em;}
+  .an-head h1 em{font-style:italic;color:var(--teal);}
+  .an-head .tag{font-family:var(--serif);font-style:italic;font-size:19px;color:var(--ink-soft);max-width:56ch;}
+  .an-head .chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px;}
+
+  /* ---- working grid ---- */
+  .analyzer{display:grid;grid-template-columns:1.02fr .98fr;gap:40px;align-items:start;padding-bottom:16px;}
+  .form-col{display:flex;flex-direction:column;gap:20px;}
+  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;}
+  .form-grid .field{margin-bottom:16px;}
+  .form-grid .span2{grid-column:1 / -1;}
+  .field .hint{font-size:11px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--ink-soft);opacity:.75;}
+  .input-wrap{position:relative;}
+  .cost-sum{display:flex;align-items:baseline;justify-content:space-between;border-top:1px solid var(--line);margin-top:4px;padding-top:14px;}
+  .cost-sum .k{font-size:12px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .cost-sum .v{font-family:var(--serif);font-weight:500;font-size:24px;font-variant-numeric:tabular-nums;}
+
+  /* ---- sticky output ---- */
+  .out-col{position:sticky;top:78px;display:flex;flex-direction:column;gap:18px;}
+
+  /* hero result panel */
+  .result{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;}
+  .result-top{display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--line-soft);}
+  .result-top .t{font-size:11px;letter-spacing:.2em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);}
+  .result-top .est{font-size:11px;font-weight:700;color:var(--teal);letter-spacing:.12em;text-transform:uppercase;display:flex;align-items:center;gap:6px;}
+  .result-top .est::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--teal);}
+  .result-hero{padding:24px 22px 22px;display:flex;align-items:flex-end;justify-content:space-between;gap:20px;}
+  .result-hero .lab{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);font-weight:600;}
+  .result-hero .fig{font-family:var(--serif);font-weight:500;font-variant-numeric:tabular-nums;font-size:clamp(48px,7vw,66px);letter-spacing:-.02em;line-height:1;color:var(--gold);margin-top:10px;}
+  .result-hero .fig .u{font-size:.38em;color:var(--ink-soft);font-weight:500;letter-spacing:.02em;margin-left:.2em;}
+  .result-hero .per{font-size:14px;color:var(--ink-soft);font-family:var(--sans);font-weight:500;margin-top:10px;}
+  .verdict-col{display:flex;flex-direction:column;align-items:flex-end;gap:10px;text-align:right;}
+  .result-mini{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line-soft);}
+  .result-mini .m{padding:14px 22px;border-right:1px solid var(--line-soft);}
+  .result-mini .m:last-child{border-right:0;}
+  .result-mini .mk{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);font-weight:600;}
+  .result-mini .mv{font-family:var(--serif);font-size:22px;font-weight:500;font-variant-numeric:tabular-nums;margin-top:5px;}
+
+  .an-actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:16px 22px 18px;border-top:1px solid var(--line-soft);}
+  .an-actions .btn{width:100%;justify-content:center;}
+
+  .kpi .est-flag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft);opacity:.6;font-weight:700;}
+
+  .disc{font-size:11.5px;line-height:1.55;color:var(--ink-soft);max-width:70ch;margin-top:4px;}
+  .disc b{color:var(--ink-1);font-weight:600;}
+
+  @media(max-width:980px){
+    .analyzer{grid-template-columns:1fr;gap:32px;}
+    .out-col{position:static;top:auto;}
+    .tool-bar .inner{height:auto;padding:12px 0;flex-wrap:wrap;gap:12px;}
+  }
+  @media(max-width:560px){
+    .form-grid{grid-template-columns:1fr;}
+    .an-actions{grid-template-columns:1fr;}
+    .result-hero{flex-direction:column;align-items:flex-start;}
+    .verdict-col{align-items:flex-start;text-align:left;}
+    .tool-actions .lbl-hide{display:none;}
+  }
+</style>
+
+<header class="tool-bar">
+  <div class="wrap inner">
+    <div class="crumb">
+      <img class="logo-nav" src="https://yscap.onrender.com/assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+      <span class="cdiv"></span>
+      <span class="trail">Investor Suite <span class="sep">/</span> <span class="here">Refi BreakPoint</span></span>
+    </div>
+    <div class="tool-actions">
+      <button class="btn btn-ghost btn-sm">Share link</button>
+      <button class="btn btn-ghost btn-sm">Export</button>
+      <button class="btn btn-gold btn-sm">Apply now</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="wrap an-head">
+    <p class="eyebrow">Investor Suite <span style="color:var(--ink);opacity:.35">/</span> Refi BreakPoint</p>
+    <h1>Refi <em>BreakPoint</em></h1>
+    <p class="tag">Find the month your refinance pays for itself &mdash; weigh the new rate against every closing cost to see the true break-even.</p>
+    <div class="chips">
+      <span class="chip">Rate &amp; term refi</span>
+      <span class="chip">No credit pull</span>
+      <span class="chip">Estimates only</span>
+    </div>
+  </div>
+
+  <div class="wrap analyzer">
+    <!-- ============ LEFT: INPUTS ============ -->
+    <div class="form-col">
+      <section class="panel">
+        <div class="panel-h"><h3>Your loan &amp; rate</h3><span class="eyebrow" style="color:var(--ink-soft)">Inputs</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field span2">
+              <label>Current loan balance</label>
+              <input class="input num" type="text" inputmode="decimal" value="$485,000" placeholder="$485,000">
+            </div>
+            <div class="field">
+              <label>Current rate (old)</label>
+              <input class="input num" type="text" inputmode="decimal" value="7.75%" placeholder="7.75%">
+            </div>
+            <div class="field">
+              <label>New rate</label>
+              <input class="input num" type="text" inputmode="decimal" value="6.50%" placeholder="6.50%">
+            </div>
+          </div>
+          <p class="field hint" style="margin:2px 0 0">Business-purpose, non-owner-occupied. Payments compare a 30-year amortization on the same balance; figures are self-reported for this estimate.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><h3>Closing costs</h3><span class="eyebrow" style="color:var(--ink-soft)">One-time</span></div>
+        <div class="panel-b">
+          <div class="form-grid">
+            <div class="field">
+              <label>Broker fee</label>
+              <input class="input num" type="text" inputmode="decimal" value="$4,850" placeholder="$4,850">
+            </div>
+            <div class="field">
+              <label>Appraisal</label>
+              <input class="input num" type="text" inputmode="decimal" value="$650" placeholder="$650">
+            </div>
+            <div class="field">
+              <label>Title</label>
+              <input class="input num" type="text" inputmode="decimal" value="$2,100" placeholder="$2,100">
+            </div>
+            <div class="field">
+              <label>Recording</label>
+              <input class="input num" type="text" inputmode="decimal" value="$185" placeholder="$185">
+            </div>
+            <div class="field">
+              <label>Attorney</label>
+              <input class="input num" type="text" inputmode="decimal" value="$950" placeholder="$950">
+            </div>
+            <div class="field">
+              <label>Bank fee</label>
+              <input class="input num" type="text" inputmode="decimal" value="$1,200" placeholder="$1,200">
+            </div>
+            <div class="field">
+              <label>Prepay penalty</label>
+              <input class="input num" type="text" inputmode="decimal" value="$2,400" placeholder="$2,400">
+            </div>
+            <div class="field">
+              <label>Other</label>
+              <input class="input num" type="text" inputmode="decimal" value="$400" placeholder="$400">
+            </div>
+          </div>
+          <div class="cost-sum">
+            <span class="k">Total closing costs</span>
+            <span class="v num">$12,735</span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ RIGHT: RESULTS (sticky) ============ -->
+    <div class="out-col">
+      <aside class="result">
+        <div class="result-top">
+          <span class="t">Break-even &middot; Estimate</span>
+          <span class="est">Live</span>
+        </div>
+        <div class="result-hero">
+          <div>
+            <div class="lab">Break-even point</div>
+            <div class="fig">31<span class="u">months</span></div>
+            <div class="per">&asymp; 2.6 years to recover $12,735 in costs</div>
+          </div>
+          <div class="verdict-col">
+            <span class="pill warn">Reasonable</span>
+            <span class="pill info">Rate &amp; term refi</span>
+          </div>
+        </div>
+        <div class="result-mini">
+          <div class="m"><div class="mk">Monthly savings</div><div class="mv num">$409</div></div>
+          <div class="m"><div class="mk">Rate reduction</div><div class="mv num">1.25%</div></div>
+        </div>
+        <div class="an-actions">
+          <button class="btn btn-ghost btn-sm">Share link</button>
+          <button class="btn btn-ghost btn-sm">Export</button>
+          <button class="btn btn-gold btn-sm">Apply now</button>
+        </div>
+      </aside>
+
+      <div class="kpi-grid">
+        <div class="kpi"><div class="v num">$409<span class="u">/mo</span></div><div class="k">Monthly savings</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">$12,735</div><div class="k">Total closing costs</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">$3,066<span class="u">/mo</span></div><div class="k">New payment</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">$3,475<span class="u">/mo</span></div><div class="k">Old payment</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">$4,908</div><div class="k">Annual savings</div><div class="est-flag">Estimate</div></div>
+        <div class="kpi"><div class="v num">31<span class="u">mo</span></div><div class="k">Months to break even</div><div class="est-flag">Estimate</div></div>
+      </div>
+
+      <p class="disc"><b>For estimation &amp; education only.</b> Outputs are estimates based on your inputs and are not a quote, an approval, or a commitment to lend, nor financial, legal or tax advice. Break-even is total closing costs divided by estimated monthly payment savings and ignores changes to loan term, taxes and escrow. Final terms depend on full underwriting. Sample figures shown are illustrative.</p>
+    </div>
+  </div>
+</main>
+
+<footer class="site-foot" style="margin-top:40px">
+  <div class="wrap">
+    <div class="foot-legal" style="border-top:1px solid rgba(255,255,255,.12);padding-top:26px">
+      <p>Business-purpose, investment (non-owner-occupied) loans only. Metrics shown are estimates from your inputs, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend. &copy; 2026 YS Capital Group. NMLS ID 2609746.</p>
+      <div class="foot-badges">
+        <span class="chip">NMLS 2609746</span>
+        <span class="chip">Equal Housing Lender</span>
+      </div>
+    </div>
+  </div>
+</footer>

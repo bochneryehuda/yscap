@@ -1,0 +1,317 @@
+<link rel="stylesheet" href="./ds.css">
+<style>
+  /* page-local only — never redefines ds.css tokens */
+  .cc-filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  .cc-filters .field{flex:1 1 220px;min-width:180px;margin:0}
+  .cc-filters .cc-select{flex:0 0 auto}
+  .cc-select{position:relative;display:inline-flex;align-items:center;gap:8px;height:44px;padding:0 34px 0 14px;border:1px solid var(--line,#e7e3da);border-radius:10px;background:var(--panel,#fff);color:var(--ink,#1b1d20);font:inherit;font-size:14px;cursor:pointer;appearance:none;-webkit-appearance:none}
+  .cc-select::after{content:"";position:absolute;right:14px;width:7px;height:7px;border-right:1.5px solid var(--muted,#8a8578);border-bottom:1.5px solid var(--muted,#8a8578);transform:translateY(-2px) rotate(45deg)}
+  .cc-toggle{display:inline-flex;align-items:center;gap:9px;height:44px;padding:0 14px;border:1px solid var(--line,#e7e3da);border-radius:10px;background:var(--panel,#fff);color:var(--ink-2,#54514a);font-size:13.5px;cursor:pointer;white-space:nowrap}
+  .cc-switch{width:34px;height:20px;border-radius:999px;background:#d9d4c8;position:relative;flex:0 0 auto}
+  .cc-switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.18)}
+
+  .cc-grouphead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .cc-grouphead .cc-count{font-variant-numeric:tabular-nums;color:var(--muted,#8a8578);font-size:13px}
+
+  .cc-list{display:flex;flex-direction:column}
+  .cc-row{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:14px;padding:16px 4px;border-top:1px solid var(--line,#efece4);align-items:start}
+  .cc-row:first-child{border-top:0}
+  .cc-row:hover{background:var(--panel-2,#faf8f3)}
+  .cc-dot{width:9px;height:9px;border-radius:50%;margin-top:6px;background:#3f8f7d;box-shadow:0 0 0 3px rgba(63,143,125,.14)}
+  .cc-dot.is-off{background:#b9b3a5;box-shadow:0 0 0 3px rgba(185,179,165,.16)}
+  .cc-dot.is-manual{background:var(--gold,#b8862f);box-shadow:0 0 0 3px rgba(184,134,47,.16)}
+
+  .cc-main{min-width:0}
+  .cc-title{font-family:var(--font-display,"Fraunces",Georgia,serif);font-size:16px;line-height:1.25;color:var(--ink,#1b1d20);font-weight:560;letter-spacing:-.01em}
+  .cc-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .cc-sees{margin-top:10px;font-size:13px;line-height:1.45;color:var(--ink-2,#54514a);max-width:64ch}
+  .cc-sees b{font-weight:600;color:var(--muted,#8a8578);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-right:6px}
+  .cc-meta{margin-top:8px;font-size:12px;color:var(--muted,#8a8578);font-variant-numeric:tabular-nums}
+  .cc-meta .sep{opacity:.5;margin:0 7px}
+
+  .cc-actions{display:flex;gap:2px;align-items:center;justify-self:end}
+  .cc-act{height:32px;padding:0 12px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--ink-2,#54514a);font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
+  .cc-act:hover{background:var(--panel,#fff);border-color:var(--line,#e7e3da)}
+  .cc-act.danger:hover{color:#b0492f;border-color:rgba(176,73,47,.35)}
+
+  .chip-type{border-color:rgba(47,125,120,.28);color:#2b6e69;background:rgba(47,125,120,.07)}
+  .chip-aud{border-color:var(--line,#e7e3da);color:var(--ink-2,#54514a)}
+  .chip-built{border-color:rgba(184,134,47,.32);color:var(--gold,#9a6f1f);background:rgba(184,134,47,.08)}
+
+  @media (max-width:720px){
+    .cc-row{grid-template-columns:14px minmax(0,1fr);row-gap:12px}
+    .cc-actions{grid-column:1 / -1;justify-self:start;flex-wrap:wrap}
+    .cc-act{height:40px;padding:0 14px;border:1px solid var(--line,#e7e3da);background:var(--panel,#fff)}
+    .cc-filters .field,.cc-filters .cc-select,.cc-filters .cc-toggle{flex:1 1 100%;width:100%;justify-content:space-between}
+  }
+</style>
+
+<div class="app">
+  <aside class="app-sidebar">
+    <div class="brandrow">
+      <div class="cobrand pilot-lockup">
+        <span class="pilot-mark">PILOT</span>
+        <span class="pilot-by">by YS Capital</span>
+      </div>
+    </div>
+
+    <nav class="sb-nav">
+      <div class="sb-sec">Main</div>
+      <a class="sb-link" href="#">Pipeline</a>
+      <a class="sb-link" href="#">My tasks</a>
+      <a class="sb-link" href="#">Chat</a>
+      <a class="sb-link" href="#">Leads</a>
+
+      <div class="sb-sec">Files</div>
+      <a class="sb-link" href="#">Borrowers</a>
+      <a class="sb-link on" href="#">Conditions</a>
+      <a class="sb-link" href="#">Vendors</a>
+
+      <div class="sb-sec">Admin</div>
+      <a class="sb-link" href="#">Team</a>
+      <a class="sb-link" href="#">Audit log</a>
+    </nav>
+  </aside>
+
+  <header class="app-topbar">
+    <div class="tb-crumb">Files <span class="tb-sep">/</span> <b>Conditions</b></div>
+    <div class="tb-right">
+      <span class="pill pill-ok">Rules healthy</span>
+      <span class="tb-user">SB</span>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <div class="page-head">
+      <div class="page-head-l">
+        <h1>Condition Center</h1>
+        <p class="sub">Every condition on the platform — built-in and custom — with the logic that places it on files.</p>
+      </div>
+      <div class="page-head-r">
+        <button class="btn btn-ghost">Re-run all rules</button>
+        <button class="btn btn-gold">+ New condition</button>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi">
+        <div class="kpi-v">52</div>
+        <div class="kpi-k">Active conditions</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-v">0</div>
+        <div class="kpi-k">On every file</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-v">0</div>
+        <div class="kpi-k">Rule-based</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-v">0</div>
+        <div class="kpi-k">Manual library</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-v">52</div>
+        <div class="kpi-k">Built-in workflow</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-b">
+        <div class="cc-filters">
+          <div class="field">
+            <input class="input" type="search" placeholder="Search conditions, logic, or borrower-facing text…" aria-label="Search conditions">
+          </div>
+          <button class="cc-select" type="button">All types</button>
+          <button class="cc-select" type="button">Internal + external</button>
+          <button class="cc-toggle" type="button" aria-pressed="false"><span class="cc-switch"></span> Show inactive</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-h">
+        <div class="cc-grouphead">
+          <span>Built-in workflow</span>
+          <span class="cc-count">— added when a file is created (52)</span>
+        </div>
+      </div>
+      <div class="panel-b">
+        <div class="cc-list">
+
+          <div class="cc-row">
+            <span class="cc-dot" aria-hidden="true"></span>
+            <div class="cc-main">
+              <div class="cc-title">Products &amp; pricing — product registered</div>
+              <div class="cc-tags">
+                <span class="chip chip-type">Form / Tool</span>
+                <span class="chip chip-aud">External + Internal</span>
+                <span class="chip chip-built">Built-In</span>
+              </div>
+              <div class="cc-sees"><b>Borrower sees</b>Select your loan product and confirm the registered pricing tier for this deal.</div>
+              <div class="cc-meta">On 155 files<span class="sep">·</span>v1</div>
+            </div>
+            <div class="cc-actions">
+              <button class="cc-act">Edit</button>
+              <button class="cc-act">Deactivate</button>
+              <button class="cc-act danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="cc-row">
+            <span class="cc-dot" aria-hidden="true"></span>
+            <div class="cc-main">
+              <div class="cc-title">Executed purchase contract</div>
+              <div class="cc-tags">
+                <span class="chip chip-type">Document Upload</span>
+                <span class="chip chip-aud">External + Internal</span>
+                <span class="chip chip-built">Built-In</span>
+              </div>
+              <div class="cc-sees"><b>Borrower sees</b>Upload the fully executed purchase &amp; sale agreement, including all addenda and signatures.</div>
+              <div class="cc-meta">On 152 files<span class="sep">·</span>v3</div>
+            </div>
+            <div class="cc-actions">
+              <button class="cc-act">Edit</button>
+              <button class="cc-act">Deactivate</button>
+              <button class="cc-act danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="cc-row">
+            <span class="cc-dot" aria-hidden="true"></span>
+            <div class="cc-main">
+              <div class="cc-title">Borrower photo ID (government-issued)</div>
+              <div class="cc-tags">
+                <span class="chip chip-type">Document Upload</span>
+                <span class="chip chip-aud">External + Internal</span>
+                <span class="chip chip-built">Built-In</span>
+              </div>
+              <div class="cc-sees"><b>Borrower sees</b>Upload a clear photo of your driver&rsquo;s license or passport for each guarantor on the loan.</div>
+              <div class="cc-meta">On 155 files<span class="sep">·</span>v2</div>
+            </div>
+            <div class="cc-actions">
+              <button class="cc-act">Edit</button>
+              <button class="cc-act">Deactivate</button>
+              <button class="cc-act danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="cc-row">
+            <span class="cc-dot" aria-hidden="true"></span>
+            <div class="cc-main">
+              <div class="cc-title">LLC (vesting entity) — verify entity &amp; documents</div>
+              <div class="cc-tags">
+                <span class="chip chip-type">Form / Tool</span>
+                <span class="chip chip-aud">External + Internal</span>
+                <span class="chip chip-built">Built-In</span>
+              </div>
+              <div class="cc-sees"><b>Borrower sees</b>Confirm the vesting entity and upload the Operating Agreement, Articles, and EIN letter.</div>
+              <div class="cc-meta">On 138 files<span class="sep">·</span>v4</div>
+            </div>
+            <div class="cc-actions">
+              <button class="cc-act">Edit</button>
+              <button class="cc-act">Deactivate</button>
+              <button class="cc-act danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="cc-row">
+            <span class="cc-dot" aria-hidden="true"></span>
+            <div class="cc-main">
+              <div class="cc-title">Rehab budget / Scope of Work</div>
+              <div class="cc-tags">
+                <span class="chip chip-type">Form / Tool</span>
+                <span class="chip chip-aud">External + Internal</span>
+                <span class="chip chip-built">Built-In</span>
+              </div>
+              <div class="cc-sees"><b>Borrower sees</b>Enter your line-item rehab budget and scope of work so we can size the construction holdback.</div>
+              <div class="cc-meta">On 94 files<span class="sep">·</span>v2</div>
+            </div>
+            <div class="cc-actions">
+              <button class="cc-act">Edit</button>
+              <button class="cc-act">Deactivate</button>
+              <button class="cc-act danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="cc-row">
+            <span class="cc-dot" aria-hidden="true"></span>
+            <div class="cc-main">
+              <div class="cc-title">2 months bank statements — Gold Standard program</div>
+              <div class="cc-tags">
+                <span class="chip chip-type">Document Upload</span>
+                <span class="chip chip-aud">External + Internal</span>
+                <span class="chip chip-built">Built-In</span>
+              </div>
+              <div class="cc-sees"><b>Borrower sees</b>Upload your two most recent months of bank statements showing reserves for the Gold Standard program.</div>
+              <div class="cc-meta">On 61 files<span class="sep">·</span>v1</div>
+            </div>
+            <div class="cc-actions">
+              <button class="cc-act">Edit</button>
+              <button class="cc-act">Deactivate</button>
+              <button class="cc-act danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="cc-row">
+            <span class="cc-dot" aria-hidden="true"></span>
+            <div class="cc-main">
+              <div class="cc-title">Title &amp; closing</div>
+              <div class="cc-tags">
+                <span class="chip chip-type">Document Upload</span>
+                <span class="chip chip-aud">External + Internal</span>
+                <span class="chip chip-built">Built-In</span>
+              </div>
+              <div class="cc-sees"><b>Borrower sees</b>Provide title company contact and the preliminary title commitment for review before closing.</div>
+              <div class="cc-meta">On 149 files<span class="sep">·</span>v2</div>
+            </div>
+            <div class="cc-actions">
+              <button class="cc-act">Edit</button>
+              <button class="cc-act">Deactivate</button>
+              <button class="cc-act danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="cc-row">
+            <span class="cc-dot" aria-hidden="true"></span>
+            <div class="cc-main">
+              <div class="cc-title">Hazard insurance</div>
+              <div class="cc-tags">
+                <span class="chip chip-type">Document Upload</span>
+                <span class="chip chip-aud">External + Internal</span>
+                <span class="chip chip-built">Built-In</span>
+              </div>
+              <div class="cc-sees"><b>Borrower sees</b>Upload an evidence-of-insurance binder naming the lender as mortgagee for the required coverage amount.</div>
+              <div class="cc-meta">On 147 files<span class="sep">·</span>v3</div>
+            </div>
+            <div class="cc-actions">
+              <button class="cc-act">Edit</button>
+              <button class="cc-act">Deactivate</button>
+              <button class="cc-act danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="cc-row">
+            <span class="cc-dot" aria-hidden="true"></span>
+            <div class="cc-main">
+              <div class="cc-title">Signed term sheet</div>
+              <div class="cc-tags">
+                <span class="chip chip-type">Document Upload</span>
+                <span class="chip chip-aud">External + Internal</span>
+                <span class="chip chip-built">Built-In</span>
+              </div>
+              <div class="cc-sees"><b>Borrower sees</b>Review and e-sign the term sheet to lock in the quoted rate, leverage, and fee structure.</div>
+              <div class="cc-meta">On 151 files<span class="sep">·</span>v5</div>
+            </div>
+            <div class="cc-actions">
+              <button class="cc-act">Edit</button>
+              <button class="cc-act">Deactivate</button>
+              <button class="cc-act danger">Delete</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
