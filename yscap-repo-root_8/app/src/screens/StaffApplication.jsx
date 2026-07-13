@@ -466,10 +466,17 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
       // vesting entity yet, the one just created here IS the file's vesting entity —
       // link it so it shows (and drives the LLC condition). If one already exists,
       // leave it: this was a plain library add and will surface once tied to a deal.
+      let linkedNow = false;
       if (!app.llc_id && created && created.llcId) {
-        try { await api.staffSetVestingLlc(appId, created.llcId); } catch (_) { /* best-effort */ }
+        try { await api.staffSetVestingLlc(appId, created.llcId); linkedNow = true; } catch (_) { /* best-effort */ }
       }
-      flash('Entity created ✓ — its document slots are ready for upload.');
+      // A name the borrower already has is REUSED (merge), not created anew — say
+      // so honestly rather than claiming a fresh entity with empty document slots.
+      flash(created && created.existed
+        ? (linkedNow
+            ? 'This entity already existed — linked it to this file with its documents & verification.'
+            : 'This entity already existed — it’s in the borrower’s entities list.')
+        : 'Entity created ✓ — its document slots are ready for upload.');
       setShowCreate(false); setCf(blankCreate); await load(); onChanged && await onChanged();
     } catch (e) { setErr(e.message || 'Could not create the entity'); }
     finally { setBusy(''); entityGate.leave(); }

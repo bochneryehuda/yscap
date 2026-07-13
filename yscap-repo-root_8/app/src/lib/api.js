@@ -222,12 +222,15 @@ export const api = {
   notificationPrefs:     () => req('GET', '/api/borrower/notification-prefs'),
   saveNotificationPref:  (b) => req('PUT', '/api/borrower/notification-prefs', b),
 
-  drafts:       () => req('GET', '/api/borrower/drafts'),
-  createDraft:  (b) => req('POST', '/api/borrower/drafts', b),
-  draft:        (id) => req('GET', `/api/borrower/drafts/${id}`),
-  saveDraft:    (id, b) => req('PUT', `/api/borrower/drafts/${id}`, b),
-  deleteDraft:  (id) => req('DELETE', `/api/borrower/drafts/${id}`),
-  submitDraft:  (id, b) => req('POST', `/api/borrower/drafts/${id}/submit`, b),
+  drafts:         () => req('GET', '/api/borrower/drafts'),
+  archivedDrafts: () => req('GET', '/api/borrower/drafts?archived=1'),
+  createDraft:    (b) => req('POST', '/api/borrower/drafts', b),
+  draft:          (id) => req('GET', `/api/borrower/drafts/${id}`),
+  saveDraft:      (id, b) => req('PUT', `/api/borrower/drafts/${id}`, b),
+  deleteDraft:    (id) => req('DELETE', `/api/borrower/drafts/${id}`),
+  archiveDraft:   (id) => req('POST', `/api/borrower/drafts/${id}/archive`),
+  unarchiveDraft: (id) => req('POST', `/api/borrower/drafts/${id}/unarchive`),
+  submitDraft:    (id, b) => req('POST', `/api/borrower/drafts/${id}/submit`, b),
 
   // ---- staff portal (loan officer / processor / underwriter / admin) ----
   staffLogin:     (email, password) => req('POST', '/auth/staff/login', { email, password }),

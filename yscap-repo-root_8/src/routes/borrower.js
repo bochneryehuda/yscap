@@ -929,14 +929,21 @@ router.post('/llcs', async (req, res) => {
   if (ein.error) return res.status(400).json({ error: ein.error });
   const parsed = parseMembers(b.members, b.ownershipPct);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  const r = await db.query(
-    `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-    [me(req), b.llcName, ein.ein || null, b.formationState || null, b.formationDate || null, b.ownershipPct || null]);
-  if (parsed.members && parsed.members.length) await replaceMembers(r.rows[0].id, parsed.members);
-  // Requesting an LLC pulls its document requirements: EIN letter, formation docs, operating agreement.
-  try { await generateLlcChecklist(r.rows[0].id); } catch (_) {}
-  res.status(201).json({ ok: true, llcId: r.rows[0].id });
+  // A name this borrower already has is REUSED, not duplicated or rejected —
+  // creating "123 Main LLC" when it already exists just hands back the existing
+  // entity so the picker/file links to it and inherits its docs + verification.
+  const { id: llcId, existed } = await llcLib.findOrCreateLlc(me(req), {
+    llcName: b.llcName, ein: ein.ein, formationState: b.formationState,
+    formationDate: b.formationDate, ownershipPct: b.ownershipPct,
+  });
+  // Only a brand-new entity gets members + its document checklist; an existing
+  // one keeps its own (never clobbered by a re-create).
+  if (!existed) {
+    if (parsed.members && parsed.members.length) await replaceMembers(llcId, parsed.members);
+    // Requesting an LLC pulls its document requirements: EIN letter, formation docs, operating agreement.
+    try { await generateLlcChecklist(llcId); } catch (_) {}
+  }
+  res.status(existed ? 200 : 201).json({ ok: true, llcId, existed });
 });
 // Fill in / correct an own entity's details (name / EIN / formation /
 // ownership). A VERIFIED entity is locked — staff verified it as-is, so
@@ -2085,10 +2092,14 @@ router.use(require('./borrower-chat'));
 // form-state object as it changes; nothing here touches the pricing engines.
 
 router.get('/drafts', async (req, res) => {
+  // Default: active (open, not archived) drafts. `?archived=1` returns the
+  // borrower's archived drafts so they can restore or delete them.
+  const archived = req.query.archived === '1' || req.query.archived === 'true';
   const r = await db.query(
-    `SELECT id,label,step,updated_at,created_at,submitted_application_id
+    `SELECT id,label,step,updated_at,created_at,submitted_application_id,archived_at
        FROM application_drafts
       WHERE borrower_id=$1 AND submitted_application_id IS NULL
+        AND archived_at IS ${archived ? 'NOT NULL' : 'NULL'}
       ORDER BY updated_at DESC`, [me(req)]);
   res.json(r.rows);
 });
@@ -2141,9 +2152,30 @@ router.put('/drafts/:id', async (req, res) => {
   res.json({ ok: true, ...r.rows[0] });
 });
 
+// Permanently remove an unsubmitted draft (a submitted one is a real file and
+// is never touched here). Owner-scoped; reports whether a row actually went.
 router.delete('/drafts/:id', async (req, res) => {
-  await db.query(`DELETE FROM application_drafts WHERE id=$1 AND borrower_id=$2 AND submitted_application_id IS NULL`,
+  const r = await db.query(
+    `DELETE FROM application_drafts WHERE id=$1 AND borrower_id=$2 AND submitted_application_id IS NULL RETURNING id`,
     [req.params.id, me(req)]);
+  res.json({ ok: true, deleted: !!r.rows[0] });
+});
+// Archive / restore an unsubmitted draft — a reversible hide, so a borrower can
+// tidy their in-progress list without losing work.
+router.post('/drafts/:id/archive', async (req, res) => {
+  const r = await db.query(
+    `UPDATE application_drafts SET archived_at=now(), updated_at=now()
+      WHERE id=$1 AND borrower_id=$2 AND submitted_application_id IS NULL RETURNING id`,
+    [req.params.id, me(req)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+router.post('/drafts/:id/unarchive', async (req, res) => {
+  const r = await db.query(
+    `UPDATE application_drafts SET archived_at=NULL, updated_at=now()
+      WHERE id=$1 AND borrower_id=$2 AND submitted_application_id IS NULL RETURNING id`,
+    [req.params.id, me(req)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json({ ok: true });
 });
 

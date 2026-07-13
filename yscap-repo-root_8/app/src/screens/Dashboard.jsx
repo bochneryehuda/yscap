@@ -16,14 +16,35 @@ export default function Dashboard() {
   const [unread, setUnread] = useState({});
   const [drawBusy, setDrawBusy] = useState(null);
   const [outByLoan, setOutByLoan] = useState({});
+  const [archived, setArchived] = useState([]);      // archived (hidden) drafts
+  const [showArchived, setShowArchived] = useState(false);
+  const [draftBusy, setDraftBusy] = useState(null);
 
   const load = () => {
     // Each panel loads independently: a failing drafts/notifications call must
     // not blank the loans list (or leave the page on "Loading…" forever).
     api.applications().then(a => setApps(a || [])).catch(e => { setApps([]); setErr(e.message); });
     api.drafts().then(d => setDrafts(d || [])).catch(() => {});
+    api.archivedDrafts().then(d => setArchived(d || [])).catch(() => {});
     api.notifications().then(n => setNotifs(n || [])).catch(() => {});
   };
+
+  // Tidy in-progress applications. Delete is permanent (confirm first); archive
+  // just hides a draft so it can be restored. All idempotent server-side, so the
+  // per-row busy flag is enough — no duplicate rows are ever created here.
+  async function archiveDraft(id) {
+    setDraftBusy(id);
+    try { await api.archiveDraft(id); load(); } catch (e) { setErr(e.message || 'Could not archive'); } finally { setDraftBusy(null); }
+  }
+  async function unarchiveDraft(id) {
+    setDraftBusy(id);
+    try { await api.unarchiveDraft(id); load(); } catch (e) { setErr(e.message || 'Could not restore'); } finally { setDraftBusy(null); }
+  }
+  async function removeDraft(id, label) {
+    if (!window.confirm(`Delete "${label || 'this draft application'}"? This can't be undone.`)) return;
+    setDraftBusy(id);
+    try { await api.deleteDraft(id); load(); } catch (e) { setErr(e.message || 'Could not delete'); } finally { setDraftBusy(null); }
+  }
   useEffect(() => {
     load();
     api.chatInbox().then(rows => {
@@ -189,7 +210,7 @@ export default function Dashboard() {
           </>
         )}
 
-      {drafts.length > 0 && (
+      {(drafts.length > 0 || archived.length > 0) && (
         <div className="panel" style={{ marginBottom: 18 }}>
           <h3 style={{ marginBottom: 12 }}>Continue where you left off</h3>
           {drafts.map(d => (
@@ -198,11 +219,36 @@ export default function Dashboard() {
                 <div className="ttl">{d.label || 'Draft application'}</div>
                 <div className="muted small">Saved {dstr(d.updated_at)} · step {d.step}</div>
               </div>
-              <div className="row">
+              <div className="row" style={{ gap: 6 }}>
                 <Link className="btn ghost" to={`/apply/${d.id}`}>Resume</Link>
+                <button className="btn ghost small" disabled={draftBusy === d.id} onClick={() => archiveDraft(d.id)}
+                  title="Hide this draft — you can restore it any time">Archive</button>
+                <button className="btn ghost small" disabled={draftBusy === d.id} onClick={() => removeDraft(d.id, d.label)}
+                  title="Delete this draft permanently" style={{ color: 'var(--danger)' }}>Delete</button>
               </div>
             </div>
           ))}
+          {drafts.length === 0 && <div className="muted small">No active drafts — your archived ones are below.</div>}
+          {archived.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <button className="btn link small" onClick={() => setShowArchived(v => !v)}>
+                {showArchived ? 'Hide' : 'Show'} archived drafts ({archived.length})
+              </button>
+              {showArchived && archived.map(d => (
+                <div className="item" key={d.id} style={{ opacity: 0.75 }}>
+                  <div>
+                    <div className="ttl">{d.label || 'Draft application'} <span className="muted small">· archived</span></div>
+                    <div className="muted small">Saved {dstr(d.updated_at)} · step {d.step}</div>
+                  </div>
+                  <div className="row" style={{ gap: 6 }}>
+                    <button className="btn ghost small" disabled={draftBusy === d.id} onClick={() => unarchiveDraft(d.id)}>Restore</button>
+                    <button className="btn ghost small" disabled={draftBusy === d.id} onClick={() => removeDraft(d.id, d.label)}
+                      style={{ color: 'var(--danger)' }}>Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

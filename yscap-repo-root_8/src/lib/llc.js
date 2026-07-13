@@ -310,6 +310,50 @@ function normalizeEin(raw) {
   return { ein: `${digits.slice(0, 2)}-${digits.slice(2)}` };
 }
 
+// Find one of this borrower's entities by NORMALIZED name (case- and
+// whitespace-insensitive, same key as uq_llcs_borrower_name). Returns the id or
+// null. The one place this predicate lives, so every create path agrees.
+async function findLlcByName(borrowerId, name) {
+  const nm = String(name || '').trim();
+  if (!nm) return null;
+  const r = await db.query(
+    `SELECT id FROM llcs WHERE borrower_id=$1 AND lower(btrim(llc_name))=lower(btrim($2)) LIMIT 1`,
+    [borrowerId, nm]);
+  return r.rows[0] ? r.rows[0].id : null;
+}
+
+// THE chokepoint for "creating" an entity from anywhere (borrower/staff entity
+// screens, a new application, a new file, a name typed on a track record, a
+// ClickUp task). A name the borrower ALREADY has is REUSED — never duplicated
+// and never rejected — so whatever context triggered the create links that one
+// existing entity and inherits its details, documents and verification. The
+// existing entity is returned untouched (it is edited only through the entity
+// screen, never silently overwritten by a re-create). Returns { id, existed }.
+// Callers should skip member/checklist setup and any data overwrite when
+// existed === true, and link the returned id into their file/application.
+async function findOrCreateLlc(borrowerId, fields) {
+  const name = String((fields && fields.llcName) || '').trim();
+  if (!name) throw new Error('llcName required');
+  const existingId = await findLlcByName(borrowerId, name);
+  if (existingId) return { id: existingId, existed: true };
+  try {
+    const r = await db.query(
+      `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [borrowerId, name, (fields.ein || null), (fields.formationState || null),
+        (fields.formationDate || null), (fields.ownershipPct || null)]);
+    return { id: r.rows[0].id, existed: false };
+  } catch (e) {
+    // Only reachable where uq_llcs_borrower_name exists: a concurrent create
+    // won the race for the same name — reuse the winner instead of erroring.
+    if (e && e.code === '23505') {
+      const again = await findLlcByName(borrowerId, name);
+      if (again) return { id: again, existed: true };
+    }
+    throw e;
+  }
+}
+
 module.exports = {
   LLC_SLOT_CODES,
   getMembers,
@@ -321,4 +365,6 @@ module.exports = {
   parseMembers,
   replaceMembers,
   normalizeEin,
+  findLlcByName,
+  findOrCreateLlc,
 };
