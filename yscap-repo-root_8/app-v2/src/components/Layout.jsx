@@ -3,32 +3,37 @@ import { NavLink, useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
-const BRAND = import.meta.env.BASE_URL + 'brand/';
-
-export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'YS Capital Group' }) {
+export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'PILOT by YS Capital' }) {
   return (
     <Link to={to} className="brand" aria-label={ariaLabel} style={{ textDecoration: 'none' }}>
-      {/* OWNER DECISION (2026-07-07): header uses the real full logo image too
-          (matching the redesigned login), not the small mark + typed wordmark.
-          WHITE-FIRST REDESIGN (2026-07-08): the header is now white, so use the
-          light-background lockup (dark mark) — lockup-dark (light mark) would be
-          invisible on white. */}
-      <img className="brand-logo" src={BRAND + 'lockup-light.png'} alt="YS Capital Group" />
+      {/* PILOT co-brand lockup: gold navigation-chevron mark (CSS clip-path) +
+          "PILOT" wordmark (Fraunces, tracked, ink) + quiet "by YS Capital"
+          endorsement (muted, Hanken). White-first header, so ink-on-white. */}
+      <span className="pilot-lockup" aria-hidden="true">
+        <span className="pilot-mark" />
+        <span className="pilot-stack">
+          <span className="pilot-word">PILOT</span>
+          <span className="pilot-by">by YS Capital</span>
+        </span>
+      </span>
       {consoleLabel && <span className="sub">{consoleLabel}</span>}
     </Link>
   );
 }
 
-/* Centered lockup for the public auth cards (login / register / verify …).
-   OWNER DECISION (2026-07-07): use the real full logo image here instead of a
-   typed wordmark — the small mark + typed name read as unprofessional.
-   WHITE-FIRST REDESIGN (2026-07-08): the auth card is now white, so use the
-   light-background lockup (dark mark + tagline). The dark-optimised lockup
-   (light mark on transparent) would nearly disappear on the white card. */
+/* Centered PILOT lockup for the public auth cards (login / register / verify …).
+   The doorway shows the full "PILOT by YS Capital" endorsement. White-first
+   auth card, so the ink wordmark reads on the white panel. */
 export function BrandLockup() {
   return (
-    <div className="brand-lockup" aria-label="YS Capital Group">
-      <img className="brand-lockup-img" src={BRAND + 'lockup-light.png'} alt="YS Capital Group" />
+    <div className="brand-lockup" aria-label="PILOT by YS Capital">
+      <span className="pilot-lockup pilot-lockup-lg" aria-hidden="true">
+        <span className="pilot-mark" />
+        <span className="pilot-stack">
+          <span className="pilot-word">PILOT</span>
+          <span className="pilot-by">by YS Capital</span>
+        </span>
+      </span>
     </div>
   );
 }
