@@ -110,6 +110,31 @@ app.use('/api/admin', require('./routes/admin'));
 // its own token verification from a query parameter.
 app.use('/api/events', require('./routes/events'));
 
+// --- Auth email link bounce -------------------------------------------------
+// One-time auth links (reset / verify / accept) live in the SPA's HASH route
+// (/portal/#/reset?token=…). Email click-tracking (e.g. Resend) rewrites every
+// link through a tracking domain and DROPS the #fragment — so the token never
+// arrives and the reset/verify page shows "link missing/expired". The email
+// therefore points at a PLAIN path+query URL (which trackers preserve),
+// /link/<kind>?token=…, and we bounce it into the hash route HERE, server-side,
+// after the tracker is out of the loop. Never an open redirect — it only ever
+// sends the browser to /portal/#/<whitelisted route>. The Location is set
+// manually because res.redirect()/res.location() run encodeurl(), which would
+// turn the '#' into '%23' and break the fragment.
+const LINK_BOUNCE = { reset: '/reset', verify: '/verify', accept: '/accept' };
+app.get('/link/:kind', (req, res, next) => {
+  const route = LINK_BOUNCE[req.params.kind];
+  if (!route) return next();
+  const params = new URLSearchParams();
+  for (const k of ['token', 'email', 'code']) {
+    const v = req.query[k];
+    if (v != null && v !== '') params.set(k, String(v));
+  }
+  const qs = params.toString();
+  const portal = (cfg.portalPath || '/portal').replace(/\/+$/, '');
+  res.set('Location', `${portal}/#${route}${qs ? '?' + qs : ''}`).status(302).end();
+});
+
 // --- Static site (your existing build drops into web/) ---
 const webDir = path.join(__dirname, '..', cfg.webDir);
 app.use(express.static(webDir));
