@@ -15,9 +15,10 @@ Pipeline Drive / <Loan Officer> / <Borrower> / <Property Address> / YS portal sy
 
 - Existing officer/borrower/address folders are **reused** via conservative fuzzy matching
   (middle-name-tolerant borrower names; "St"≡"Street"-style address normalization anchored on
-  an identical house number). When no confident match exists, a **new** exact-named folder is
-  **created** — the sync never guesses into someone else's folder and never renames anything
-  to "fix" it.
+  an identical house number). When no confident match exists, a **new** folder is **created**,
+  named **`<name>, YS portal sync`** so anyone browsing can tell automation-created folders
+  from human-created ones — the sync never guesses into someone else's folder and never
+  renames anything to "fix" it (matched folders keep their human names).
 - All portal-written files live **only inside `YS portal syncing` folders**. The sync never
   writes a file anywhere else in the tree (creating missing folders up the chain is allowed).
 - When a document is replaced in the portal (a new version supersedes the old), the condition's
