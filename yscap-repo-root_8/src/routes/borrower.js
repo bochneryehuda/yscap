@@ -1443,9 +1443,20 @@ router.get('/track-records', async (req, res) => {
     `SELECT t.id, t.borrower_id, t.llc_id, t.property_address, t.deal_type,
             t.purchase_price, t.sale_price, t.rehab_amount, t.purchase_date, t.sale_date,
             t.rent_amount, t.rent_date, t.refi_amount, t.refi_date, t.current_value, t.notes,
-            t.is_verified, t.docs_status, t.created_at, t.updated_at,
+            t.is_verified, t.docs_status, t.owned_personally, t.created_at, t.updated_at,
             COALESCE(t.entity_name, l.llc_name) AS entity_name,
-            (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count
+            (SELECT count(*)::int FROM documents d WHERE d.track_record_id=t.id) AS doc_count,
+            (SELECT COALESCE(json_agg(json_build_object(
+                    'id', d.id, 'filename', d.filename, 'review_status', d.review_status,
+                    'created_at', d.created_at) ORDER BY d.created_at), '[]'::json)
+               FROM documents d
+              WHERE d.track_record_id=t.id AND d.visibility='borrower' AND d.is_current) AS docs,
+            (SELECT COALESCE(json_agg(json_build_object(
+                    'id', ci.id, 'label', COALESCE(ci.borrower_label, ci.label),
+                    'hint', COALESCE(ci.borrower_hint, ci.hint), 'status', ci.status) ORDER BY ci.created_at), '[]'::json)
+               FROM checklist_items ci
+              WHERE ci.track_record_id=t.id AND ci.audience IN ('borrower','both')
+                AND ci.status NOT IN ('satisfied')) AS doc_requests
        FROM track_records t
        LEFT JOIN llcs l ON l.id = t.llc_id
       WHERE t.borrower_id=$1 ORDER BY t.sale_date DESC NULLS LAST, t.created_at DESC`, [me(req)]);
@@ -1494,7 +1505,12 @@ function trackRecordMissing(b) {
   return miss;
 }
 function trackRecordCols(b) {
+  // "Owned under my personal name" excludes an entity: the flag wins over any
+  // stale entityName/llcId still sitting in the payload (the tool clears them,
+  // but the server enforces it so no write path can save both).
+  const personal = !!b.ownedPersonally;
   return {
+    owned_personally: personal,
     property_address: JSON.stringify(b.propertyAddress),
     deal_type: b.dealType || 'flip',
     purchase_price: moneyField(b.purchasePrice),
@@ -1509,11 +1525,12 @@ function trackRecordCols(b) {
     current_value: moneyField(b.currentValue),
     notes: b.notes ? String(b.notes).slice(0, 1000) : null,
     property_type: b.propertyType ? String(b.propertyType).slice(0, 60) : null,
-    entity_name: b.entityName ? String(b.entityName).slice(0, 160) : null,
+    entity_name: (!personal && b.entityName) ? String(b.entityName).slice(0, 160) : null,
   };
 }
 router.post('/track-records', async (req, res) => {
   const b = req.body || {};
+  if (b.ownedPersonally) b.llcId = null;   // personal-name line carries no entity
   // An LLC reference must be one of the borrower's own entities.
   if (b.llcId) {
     const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]);
@@ -1553,6 +1570,7 @@ router.post('/track-records', async (req, res) => {
 // (a verified entry is locked as underwriting evidence).
 router.put('/track-records/:id', async (req, res) => {
   const b = req.body || {};
+  if (b.ownedPersonally) b.llcId = null;   // personal-name line carries no entity
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2 AND is_verified=false`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
   if (b.llcId) {
@@ -1601,14 +1619,53 @@ router.post('/track-records/:id/documents', async (req, res) => {
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  // A back-office document request for THIS line item (a condition tagged with
+  // track_record_id) is satisfied by uploading straight to the line: attach the
+  // document to the oldest open request so it counts as the condition's doc too.
+  const openReq = await db.query(
+    `SELECT id FROM checklist_items
+      WHERE track_record_id=$1 AND item_kind='document' AND audience IN ('borrower','both')
+        AND status IN ('outstanding','requested','issue')
+      ORDER BY created_at LIMIT 1`, [req.params.id]);
+  const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
   const r = await db.query(
-    `INSERT INTO documents (borrower_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'borrower',$1,'track_record_doc') RETURNING id`,
-    [me(req), req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref]);
+    `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$1,'track_record_doc') RETURNING id`,
+    [me(req), req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
+  if (reqItemId) {
+    await db.query(
+      `UPDATE checklist_items SET status='received', updated_at=now()
+        WHERE id=$1 AND status IN ('outstanding','requested','issue')`, [reqItemId]);
+    enqueueChecklistStatusPush(reqItemId).catch(() => {});
+  }
   await audit(req, 'upload_track_record_doc', 'track_record', req.params.id, { filename: b.filename });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
+
+  // The upload answered an open back-office request — tell the file's loan
+  // team it's ready for review (best-effort, after the response).
+  if (reqItemId) {
+    try {
+      const it = await db.query(
+        `SELECT ci.label, ci.application_id, a.loan_officer_id, a.processor_id
+           FROM checklist_items ci LEFT JOIN applications a ON a.id=ci.application_id
+          WHERE ci.id=$1`, [reqItemId]);
+      const row = it.rows[0];
+      if (row) {
+        const targets = new Set([row.loan_officer_id, row.processor_id].filter(Boolean));
+        for (const sid of targets) {
+          await notify.notifyStaff(sid, {
+            type: 'doc_uploaded', title: 'Requested track-record document uploaded',
+            body: `"${b.filename}" was uploaded for "${row.label}".`,
+            applicationId: row.application_id || null,
+            link: row.application_id ? `/internal/app/${row.application_id}` : '/internal',
+            ctaLabel: 'Review the document',
+          });
+        }
+      }
+    } catch (_) { /* never fail the upload on a notify hiccup */ }
+  }
 });
 
 // The saved STATIC COPY of the track record: the live builder posts a fresh
@@ -1656,14 +1713,19 @@ router.post('/documents', async (req, res) => {
   }
   // The checklist item must be the borrower's own too — otherwise the document
   // row can be pointed at another borrower's checklist-item id.
+  let trackRecordId = null;   // inherited from a line-item request condition
   if (b.checklistItemId) {
     const o = await db.query(
-      `SELECT ci.llc_id FROM checklist_items ci
+      `SELECT ci.llc_id, ci.track_record_id FROM checklist_items ci
         WHERE ci.id=$1 AND (ci.borrower_id=$2
            OR ci.application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)
            OR ci.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`,
       [b.checklistItemId, me(req)]);
     if (!o.rows[0]) return res.status(404).json({ error: 'checklist item not found' });
+    // A condition raised FOR one track-record line item: the upload belongs to
+    // that line too, so it lands on the line item and in its REO/<address>
+    // folder — not only on the condition.
+    trackRecordId = o.rows[0].track_record_id || null;
     // An llc-scoped item's uploads ALWAYS belong to that LLC, even when the
     // caller omits llcId — otherwise the verified-lock (and the document's
     // llc_id linkage) could be sidestepped by posting the bare item id.
@@ -1687,10 +1749,16 @@ router.post('/documents', async (req, res) => {
   const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
-    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'borrower',$10,$11,$12) RETURNING id`,
-    [b.checklistItemId || null, b.applicationId || null, me(req), b.llcId || null,
+    `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'borrower',$11,$12,$13) RETURNING id`,
+    [b.checklistItemId || null, b.applicationId || null, me(req), b.llcId || null, trackRecordId,
      b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, me(req), docKind, slot]);
+  // The requested line item has its document — reflect it on the line too.
+  if (trackRecordId) {
+    await db.query(
+      `UPDATE track_records SET docs_status='received', updated_at=now()
+        WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [trackRecordId]);
+  }
   if (docKind === 'term_sheet' && b.applicationId) {
     await db.query(
       `UPDATE documents SET is_current=false,

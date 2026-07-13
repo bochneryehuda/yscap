@@ -31,7 +31,7 @@ const TR=(function(){
   function blankProp(kind){ return {
     id:"p"+Math.random().toString(36).slice(2,9),
     kind:kind||"flip",
-    address:"", city:"", state:"", zip:"", entity:"", propType:"", seller:"",
+    address:"", city:"", state:"", zip:"", entity:"", ownedPersonally:false, propType:"", seller:"",
     purchasePrice:"", purchaseDate:"", rehab:"",
     salePrice:"", saleDate:"",
     rent:"", rentDate:"", refiAmount:"", refiDate:"", currentValue:"",
@@ -53,6 +53,9 @@ const TR=(function(){
   function flash(msg){ const f=$("#tr-flash"); if(!f) return; f.textContent=msg; f.classList.add("show"); clearTimeout(flash._t); flash._t=setTimeout(()=>f.classList.remove("show"),2800); }
 
   /* ---------- per-record derived figures ---------- */
+  // The entity a deal was held under, for display/exports: the LLC name, or
+  // "Personal name" when the borrower held it personally (no LLC).
+  function entityLabel(p){ return p.ownedPersonally ? "Personal name" : (p.entity||""); }
   function exitDate(p){ return p.kind==="flip" ? p.saleDate : (p.rentDate||p.refiDate); }
   function exitLabel(p){ return p.kind==="flip" ? "Sold" : (p.rentDate?"Leased":(p.refiDate?"Refinanced":"Exit")); }
   function holdMonths(p){ return monthsBetween(p.purchaseDate, exitDate(p)); }
@@ -163,7 +166,7 @@ const TR=(function(){
     let list=S.props.filter(p=>p.kind===kind);
     if(S.groupBy==="entity"){
       const groups={};
-      list.forEach(p=>{ const k=(p.entity||"").trim()||"— No entity on record —"; (groups[k]=groups[k]||[]).push(p); });
+      list.forEach(p=>{ const k=(entityLabel(p)||"").trim()||"— No entity on record —"; (groups[k]=groups[k]||[]).push(p); });
       return Object.keys(groups).sort().map(g=>'<div class="tr-group"><div class="tr-group-h">'+esc(g)+' <span>'+groups[g].length+'</span></div>'+groups[g].map(card).join("")+'</div>').join("");
     }
     return list.map(card).join("");
@@ -213,7 +216,7 @@ const TR=(function(){
           (p.propType?'<span class="tr-badge-2">'+esc(p.propType)+'</span>':'')+
           (qual?'<span class="tr-qual" title="Counts toward your 3-year experience tier">Recent exit</span>':(ex&&recordOK(p)?'<span class="tr-qual out" title="Older than 3 years — outside the experience window">Outside 3-yr window</span>':''))+
         '</div>'+
-        '<div class="tr-card-addr">'+esc(addrLine(p))+(p.entity?'<span class="tr-card-entity">'+esc(p.entity)+'</span>':'')+'</div>'+
+        '<div class="tr-card-addr">'+esc(addrLine(p))+(entityLabel(p)?'<span class="tr-card-entity">'+esc(entityLabel(p))+'</span>':'')+'</div>'+
         '<div class="tr-figs">'+figs.map(f=>'<div class="tr-fig"><span class="k">'+f[0]+'</span><span class="v">'+esc(f[1])+'</span></div>').join("")+'</div>'+
         (p.notes?'<div class="tr-notes">'+esc(p.notes)+'</div>':'')+
         (chips?'<div class="tr-chips">'+chips+'</div>':'')+
@@ -267,7 +270,8 @@ const TR=(function(){
           fld("State","state",p.state,"text","NY","sm"),
           fld("ZIP","zip",p.zip,"text","","sm"),
           sel2("Property type","propType",p.propType,opt(p.propType)),
-          fld("LLC / entity on record","entity",p.entity,"text","Optional — e.g. 123 Main LLC","wide opt")
+          chk("Owned under my personal name","ownedPersonally",p.ownedPersonally,"No LLC — this property was held in your own name","wide"),
+          fld("LLC / entity on record","entity",p.entity,"text","Optional — e.g. 123 Main LLC","wide opt"+(p.ownedPersonally?" hide":""))
         ])+
         grp("Acquisition",[
           fld("Purchase price","purchasePrice",p.purchasePrice,"money"),
@@ -303,6 +307,7 @@ const TR=(function(){
   function fld(label,key,val,type,ph,cls){ type=type||"text"; const adorn=type==="money"?'<span class="tr-adorn">$</span>':''; const it=type==="money"?"text":type;
     return '<div class="tr-fld '+(cls||"")+'"><label>'+label+(/\bopt\b/.test(cls||"")?' <em>(optional)</em>':'')+'</label><div class="tr-inp'+(type==="money"?" money":"")+'">'+adorn+'<input data-f="'+key+'" type="'+it+'"'+(type==="money"?' inputmode="decimal"':'')+' value="'+esc(val)+'"'+(ph?(' placeholder="'+esc(ph)+'"'):'')+'></div></div>'; }
   function sel2(label,key,val,opts,cls){ return '<div class="tr-fld '+(cls||"")+'"><label>'+label+'</label><div class="tr-inp sel"><select data-f="'+key+'"><option value="">Select…</option>'+opts+'</select></div></div>'; }
+  function chk(label,key,val,hint,cls){ return '<div class="tr-fld check '+(cls||"")+'"><label class="tr-check"><input type="checkbox" data-f="'+key+'"'+(val?' checked':'')+'><span class="tr-check-t">'+label+(hint?'<em>'+hint+'</em>':'')+'</span></label></div>'; }
 
   function mkOverlay(){
     let ov=$("#tr-ov"); if(ov) ov.remove();
@@ -324,7 +329,18 @@ const TR=(function(){
     ov.querySelector(".tr-ov-x").onclick=ov._close;
     ov.querySelectorAll("[data-cancel]").forEach(b=>b.onclick=ov._close);
     const msg=ov.querySelector("#tr-form-msg");
-    const readInputs=()=>{ ov.querySelectorAll("[data-f]").forEach(el=>{ ov._work[el.dataset.f]=el.value; }); };
+    const fval=el=>el.type==="checkbox"?el.checked:el.value;
+    const readInputs=()=>{ ov.querySelectorAll("[data-f]").forEach(el=>{ ov._work[el.dataset.f]=fval(el); }); };
+    // "Owned under my personal name" excludes an entity: hide + clear the
+    // LLC/entity input while it's on.
+    function syncPersonal(){
+      const on=!!ov._work.ownedPersonally;
+      const ent=ov.querySelector('[data-f="entity"]');
+      if(!ent) return;
+      const fld=ent.closest(".tr-fld");
+      if(fld) fld.classList.toggle("hide",on);
+      if(on && ent.value){ ent.value=""; ov._work.entity=""; }
+    }
     // AUTOSAVE (owner-directed 2026-07-12): every line item saves as you type —
     // no Save click required, and NO field is mandatory except the address (the
     // line's identity). Partial entries persist; a live warning at the bottom
@@ -343,7 +359,8 @@ const TR=(function(){
       const i=S.props.findIndex(x=>x.id===p.id); if(i>=0) S.props[i]=Object.assign({},p); else S.props.push(Object.assign({},p)); save(); return true; }
     let _t=null;
     ov.querySelectorAll("[data-f]").forEach(el=> el.addEventListener("input",()=>{
-      ov._work[el.dataset.f]=el.value;
+      ov._work[el.dataset.f]=fval(el);
+      if(el.dataset.f==="ownedPersonally") syncPersonal();
       clearTimeout(_t); _t=setTimeout(()=>{ commit(); paintMsg(); }, 450);
     }));
     const sw=ov.querySelector("[data-switch]"); if(sw) sw.onclick=()=>{ readInputs(); commit(); ov._work.kind=sw.dataset.switch; openForm(ov._work); };
@@ -408,7 +425,7 @@ const TR=(function(){
       await ensureXLSX(); const X=window.XLSX;
       const INK="0B1014",IVORY="F3EFE6",GOLD="9A7518",TEAL="4E777F",TEALD="1F3A40",LIGHT="EAF1F1",LINE="DCE1E2",DARK="1F2A30",FLIPBG="6E5417",HOLDBG="1F3A40";
       const flipCols=[
-        {h:"Entity / LLC",get:p=>p.entity,w:20},
+        {h:"Entity / LLC",get:p=>entityLabel(p),w:20},
         {h:"Property address",get:p=>addrLine(p),w:34,al:"left"},
         {h:"Property type",get:p=>p.propType,w:16},
         {h:"Purchase price",get:p=>num(p.purchasePrice)||"",money:true,sum:true,al:"right",w:14},
@@ -421,7 +438,7 @@ const TR=(function(){
         {h:"Recent (3yr)",get:p=>qualifies(p)?"Yes":(exitDate(p)?"No":""),al:"center",w:12}
       ];
       const holdCols=[
-        {h:"Entity / LLC",get:p=>p.entity,w:20},
+        {h:"Entity / LLC",get:p=>entityLabel(p),w:20},
         {h:"Property address",get:p=>addrLine(p),w:34,al:"left"},
         {h:"Property type",get:p=>p.propType,w:16},
         {h:"Purchase price",get:p=>num(p.purchasePrice)||"",money:true,sum:true,al:"right",w:14},
@@ -453,14 +470,25 @@ const TR=(function(){
       put(R,0,(S.borrower?("Borrower: "+S.borrower+"   ·   "):"")+"Generated "+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})+"   ·   NMLS ID 2609746",stTag); span(R,0,N-1,stTag); merge(R,0,N-1); rowH[R]={hpt:15}; R++;
       R++;
       function block(title,kind,cols,bg){
+        // SECTION WIDTH PARITY (owner-directed 2026-07-13): both sections span
+        // the SAME N columns with no dangling stub — when a section has fewer
+        // real columns than N (flip = 11 vs hold = 12), its LAST column is
+        // merged across the remaining cells so the Fix & Flip block ends flush
+        // at the same right edge as Fix & Hold instead of one column short.
+        const lastC=cols.length-1, pad=cols.length<N;
         put(R,0,title,stBanner(bg)); span(R,0,N-1,stBanner(bg)); merge(R,0,N-1); rowH[R]={hpt:20}; R++;
-        for(let c=0;c<N;c++) put(R,c,c<cols.length?cols[c].h:"",stTH(c<cols.length?(cols[c].al||"left"):"left")); rowH[R]={hpt:26}; R++;
+        for(let c=0;c<N;c++) put(R,c,c<cols.length?cols[c].h:"",stTH(c<cols.length?(cols[c].al||"left"):(cols[lastC].al||"left")));
+        if(pad) merge(R,lastC,N-1);
+        rowH[R]={hpt:26}; R++;
         const list=S.props.filter(p=>p.kind===kind); const totals={};
-        list.forEach(p=>{ for(let c=0;c<N;c++){ const col=cols[c]; if(col){ const val=col.get(p); put(R,c,val==null?"":val, col.money?stMoney:stCell(col.al||"left")); if(col.sum) totals[c]=(totals[c]||0)+num(val); } else put(R,c,"",stCell("left")); } R++; });
+        list.forEach(p=>{ for(let c=0;c<N;c++){ const col=cols[c]; if(col){ const val=col.get(p); put(R,c,val==null?"":val, col.money?stMoney:stCell(col.al||"left")); if(col.sum) totals[c]=(totals[c]||0)+num(val); } else put(R,c,"",stCell(cols[lastC].al||"left")); }
+          if(pad) merge(R,lastC,N-1);
+          R++; });
         if(!list.length){ put(R,0,"No "+(kind==="flip"?"fix & flip":"fix & hold")+" deals entered.",stCell("left")); span(R,0,N-1,stCell("left")); merge(R,0,N-1); R++; }
         else { const firstSum=cols.findIndex(c=>c.sum); const mEnd=Math.max(0,firstSum-1);
           put(R,0,"TOTALS ("+list.length+")",stTot("left")); span(R,0,mEnd,stTot("left")); merge(R,0,mEnd);
           for(let c=mEnd+1;c<N;c++){ if(totals[c]!=null) put(R,c,totals[c],stTotM); else put(R,c,"",stTot("right")); }
+          if(pad) merge(R,lastC,N-1);
           R++;
         }
         R++; // spacer
@@ -521,6 +549,8 @@ const TR=(function(){
           if(/date/i.test(key)){ const d=(v instanceof Date)?v:parseDate(v); if(d) v=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
           if(/price|rehab|rent|refiamount|currentvalue/i.test(key)) v=String(num(v)||"");
           p[key]=String(v); any=true; } });
+        // "Personal name" in the Entity column round-trips to the personal flag.
+        if(/^personal(\s+name)?$/i.test(String(p.entity||"").trim())){ p.ownedPersonally=true; p.entity=""; }
         if(any && String(p.address).trim() && (num(p.purchasePrice)>0 || num(p.salePrice)>0 || num(p.rent)>0)) out.push(p);
       }
     });
@@ -554,6 +584,12 @@ const TR=(function(){
       y+=62;
 
       const PROJ={flip:"Fix & Flip",hold:"Fix & Hold"};
+      // SECTION WIDTH PARITY (owner-directed 2026-07-13): both section tables
+      // share ONE fixed column layout (widths sum to the printable width), so
+      // the Fix & Flip and Fix & Hold sections are exactly the same width with
+      // their columns aligned — autoTable no longer sizes each independently.
+      const COLW=[18,88,150,72,62,56,58,62,58,48,40];   // = W-2*M = 712pt
+      const sharedCols={}; COLW.forEach((w,i)=>{ sharedCols[i]={cellWidth:w}; }); sharedCols[0].halign="center";
       function section(kind,title){
         const list=S.props.filter(p=>p.kind===kind);
         doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(INK[0],INK[1],INK[2]); doc.text(pdfSafe(title)+" ("+list.length+")", M, y); y+=6;
@@ -561,17 +597,17 @@ const TR=(function(){
           ? [["#","Entity","Property","Type","Purchase","Pur. date","Rehab","Sale","Sale date","Hold","Recent"]]
           : [["#","Entity","Property","Type","Purchase","Pur. date","Rehab","Rent/mo","Rented","Refi","Recent"]];
         const body=list.map((p,i)=>{ const hm=holdMonths(p);
-          const common=[String(i+1),pdfSafe(p.entity||"—"),pdfSafe(addrLine(p)),pdfSafe(p.propType||"—"),num(p.purchasePrice)?money(p.purchasePrice):"—",fmtDate(p.purchaseDate)||"—",num(p.rehab)?money(p.rehab):"—"];
+          const common=[String(i+1),pdfSafe(entityLabel(p)||"—"),pdfSafe(addrLine(p)),pdfSafe(p.propType||"—"),num(p.purchasePrice)?money(p.purchasePrice):"—",fmtDate(p.purchaseDate)||"—",num(p.rehab)?money(p.rehab):"—"];
           const tail=[qualifies(p)?"Yes":(exitDate(p)?"No":"—")];
           if(kind==="flip") return common.concat([num(p.salePrice)?money(p.salePrice):"—",fmtDate(p.saleDate)||"—",(hm!=null&&hm>=0)?(hm+"mo"):"—"]).concat(tail);
           return common.concat([num(p.rent)?money(p.rent):"—",fmtDate(p.rentDate)||"—",num(p.refiAmount)?money(p.refiAmount):"—"]).concat(tail);
         });
         if(!list.length) body.push(["—","No "+title.toLowerCase()+" deals entered.","","","","","","","","",""]);
-        doc.autoTable({ startY:y+4, head:head, body:body, theme:"grid", margin:{left:M,right:M},
+        doc.autoTable({ startY:y+4, head:head, body:body, theme:"grid", margin:{left:M,right:M}, tableWidth:W-2*M,
           styles:{font:"helvetica",fontSize:7.5,cellPadding:3,overflow:"linebreak",textColor:[34,38,42],lineColor:[224,228,228],lineWidth:.5},
           headStyles:{fillColor:[31,42,48],textColor:[243,239,230],fontStyle:"bold",fontSize:7.5},
           alternateRowStyles:{fillColor:[248,250,250]},
-          columnStyles:{0:{cellWidth:18,halign:"center"},2:{cellWidth:150}},
+          columnStyles:sharedCols,
           didDrawPage:()=>{ header(); } });
         y=doc.lastAutoTable.finalY+18;
       }

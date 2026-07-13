@@ -292,6 +292,9 @@ export const api = {
   // Raise an issue/request against a track-record line item or a vesting LLC — it
   // becomes a named internal+external condition on the file (applicationId).
   staffRaiseTrackRecordIssue: (id, applicationId, reason) => req('POST', `/api/staff/track-records/${id}/raise-issue`, { applicationId, reason }),
+  // Request a DOCUMENT for one track-record line item — becomes a condition
+  // tagged with the line item; uploads land on the line + its REO folder.
+  staffRequestTrackRecordDoc: (id, applicationId, label) => req('POST', `/api/staff/track-records/${id}/request-doc`, { applicationId, label }),
   staffTrackRecordDocs: (id) => req('GET', `/api/staff/track-records/${id}/documents`),
   staffRaiseLlcIssue:         (id, applicationId, reason) => req('POST', `/api/staff/llcs/${id}/raise-issue`, { applicationId, reason }),
   staffPatchItem:   (itemId, b) => req('PATCH', `/api/staff/checklist/${itemId}`, b),

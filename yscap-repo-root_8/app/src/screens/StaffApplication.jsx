@@ -951,22 +951,42 @@ function StaffTrackRecordPanel({ app, role }) {
             const pa = t.property_address || {};
             const addr = pa.oneLine || [pa.line1 || pa.street || pa.address, pa.city, pa.state].filter(Boolean).join(', ') || 'Past project';
             const itemDocs = trDocs[t.id] || [];
+            const openReqs = (t.doc_requests || []).filter(rq => rq && rq.status !== 'satisfied');
             return (
               <div key={t.id} style={{ padding: '4px 0', borderTop: '1px solid rgba(127,169,176,.15)' }}>
                 <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span className="small" style={{ flex: 1, minWidth: 160 }}>{addr}</span>
+                  {t.owned_personally
+                    ? <span className="pill small" title="Held under the borrower's personal name — no LLC">Personal name</span>
+                    : (t.entity_name ? <span className="pill small" title="Entity on record">{t.entity_name}</span> : null)}
                   {t.verification_status && <span className="pill small">{t.verification_status}</span>}
+                  <button className="btn ghost small" disabled={trBusy === t.id}
+                    title="Ask the borrower for a specific document on this past project — it becomes a condition on this file and files into the project's REO folder"
+                    onClick={async () => {
+                      const label = window.prompt(`Request a document for "${addr}" — which document do you need? (the borrower will see this)`);
+                      if (label == null || !label.trim()) return;
+                      setTrBusy(t.id); setTrMsg('');
+                      try { await api.staffRequestTrackRecordDoc(t.id, app.id, label.trim()); setTrMsg(`Document requested on ${addr} — added as a condition on this file.`); refreshTrs(); }
+                      catch (e) { setTrMsg(e.message || 'Could not request the document'); }
+                      finally { setTrBusy(''); }
+                    }}>Request a document</button>
                   <button className="btn ghost small" disabled={trBusy === t.id}
                     title="Post a request/issue about this past project — it becomes a condition on this file"
                     onClick={async () => {
                       const reason = window.prompt(`Raise an issue on "${addr}" — what do you need? (the borrower will see this)`);
                       if (reason == null || !reason.trim()) return;
                       setTrBusy(t.id); setTrMsg('');
-                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); }
+                      try { await api.staffRaiseTrackRecordIssue(t.id, app.id, reason.trim()); setTrMsg(`Issue raised on ${addr} — added as a condition on this file.`); refreshTrs(); }
                       catch (e) { setTrMsg(e.message || 'Could not raise the issue'); }
                       finally { setTrBusy(''); }
                     }}>Raise an issue</button>
                 </div>
+                {openReqs.map(rq => (
+                  <div className="row" key={rq.id} style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 0 2px 18px' }}>
+                    <span className="small muted" style={{ flex: 1, minWidth: 140 }}>↳ {rq.label}</span>
+                    <span className="pill small">{rq.status}</span>
+                  </div>
+                ))}
                 {/* Per-line-item documents: accept / reject each with a reason (#126). */}
                 {itemDocs.map((d) => {
                   const rs = d.review_status || 'pending';

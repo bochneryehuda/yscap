@@ -62,7 +62,7 @@
     return {
       id: r.id, kind: kind,
       address: a.street || a.line1 || a.oneLine || "", city: a.city || "", state: a.state || "", zip: a.zip || "",
-      entity: r.entity_name || "", propType: r.property_type || "", seller: "",
+      entity: r.entity_name || "", ownedPersonally: !!r.owned_personally, propType: r.property_type || "", seller: "",
       purchasePrice: nstr(r.purchase_price), purchaseDate: dstr(r.purchase_date), rehab: nstr(r.rehab_amount),
       salePrice: nstr(r.sale_price), saleDate: dstr(r.sale_date),
       rent: nstr(r.rent_amount), rentDate: dstr(r.rent_date),
@@ -70,6 +70,7 @@
       notes: r.notes || "", loNotes: r.lo_notes || "",
       status: r.verification_status || (r.is_verified ? "verified" : "pending"),
       _verified: !!r.is_verified, _docCount: r.doc_count || 0, _dealType: r.deal_type || "",
+      _docs: r.docs || [], _requests: r.doc_requests || [],
     };
   }
   function payloadFromProp(p) {
@@ -86,10 +87,12 @@
       rentAmount: p.kind === "hold" ? (p.rent || "") : "", rentDate: p.kind === "hold" ? (p.rentDate || "") : "",
       refiAmount: p.kind === "hold" ? (p.refiAmount || "") : "", refiDate: p.kind === "hold" ? (p.refiDate || "") : "",
       currentValue: p.currentValue || "", notes: p.notes || "",
-      propertyType: p.propType || "", entityName: p.entity || "",
+      propertyType: p.propType || "", entityName: p.ownedPersonally ? "" : (p.entity || ""),
+      ownedPersonally: !!p.ownedPersonally,
     };
     // Entity typed to match one of the borrower's LLCs → hard-link the deal.
-    var llc = llcByName(p.entity);
+    // A personal-name property carries no entity link at all.
+    var llc = p.ownedPersonally ? null : llcByName(p.entity);
     out.llcId = llc ? llc.id : null;
     return out;
   }
@@ -296,7 +299,7 @@
     function row(p) {
       var st = propsById[p.id] ? (propsById[p.id].status || "pending") : "pending";
       return "<tr><td>" + escH([p.address, [p.city, p.state].filter(Boolean).join(", "), p.zip].filter(Boolean).join(", ") || "—") +
-        "</td><td>" + escH(p.entity || "—") +
+        "</td><td>" + escH(p.ownedPersonally ? "Personal name" : (p.entity || "—")) +
         "</td><td>" + escH(p.propType || "—") +
         "</td><td>" + fmtMoney(p.purchasePrice) + (p.purchaseDate ? "<br><small>" + escH(p.purchaseDate) + "</small>" : "") +
         "</td><td>" + fmtMoney(p.rehab) +
@@ -404,15 +407,11 @@
           actions.appendChild(lock);
         }
       }
-      if (!actions.querySelector(".tr-portal-docs")) {
-        var docsBtn = document.createElement("button");
-        docsBtn.className = "tr-icon tr-portal-docs";
-        docsBtn.title = "Supporting documents (closing statement, deed, lease…)";
-        docsBtn.textContent = "📎" + (p._docCount ? p._docCount : "");
-        docsBtn.style.cssText = "font-size:.8rem";
-        docsBtn.onclick = function () { openDocs(p); };
-        actions.appendChild(docsBtn);
-      }
+      // Inline documents strip (owner-directed 2026-07-13): upload DIRECTLY on
+      // the line item — file picker + drag-and-drop on the card, no popup and
+      // no separate page. Uploaded documents render as chips right on the card.
+      var main = card.querySelector(".tr-card-main");
+      if (main && !main.querySelector(".tr-docstrip")) renderDocStrip(card, main, p);
       if (staffMode && !actions.querySelector(".tr-portal-verify")) {
         var sel = document.createElement("select");
         sel.className = "tr-portal-verify";
@@ -446,66 +445,96 @@
     });
   };
 
-  /* ---- documents overlay per track-record entry ---- */
-  function openDocs(p) {
-    var old = document.getElementById("tr-portal-docsov"); if (old) old.remove();
-    var ov = document.createElement("div");
-    ov.id = "tr-portal-docsov"; ov.className = "tr-ov";
-    ov.innerHTML = '<div class="tr-ov-box"><button class="tr-ov-x" aria-label="Close">✕</button>' +
-      '<h3>Supporting documents</h3><p style="opacity:.75">' +
-      (p.address || "This deal") + " — closing statement, deed, lease, or anything that verifies this deal.</p>" +
-      '<div id="tr-portal-doclist"><p style="opacity:.6">Loading…</p></div>' +
-      '<div style="margin-top:1rem"><button class="tr-btn primary" id="tr-portal-upbtn">+ Upload a document</button>' +
-      '<input id="tr-portal-upinput" type="file" style="display:none"></div></div>';
-    document.body.appendChild(ov);
-    document.body.style.overflow = "hidden";
-    var close = function () { ov.remove(); document.body.style.overflow = ""; };
-    ov.querySelector(".tr-ov-x").onclick = close;
-    ov.addEventListener("click", function (e) { if (e.target === ov) close(); });
-
-    function renderList() {
-      api("GET", docsUrl(p.id)).then(function (docs) {
-        var el = ov.querySelector("#tr-portal-doclist");
-        if (!el) return;
-        if (!docs || !docs.length) { el.innerHTML = '<p style="opacity:.6">No documents on this deal yet.</p>'; return; }
-        el.innerHTML = docs.map(function (d) {
-          return '<div style="display:flex;gap:.6rem;align-items:center;padding:.35rem 0;border-bottom:1px solid rgba(127,169,176,.2)">' +
-            '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + String(d.filename).replace(/</g, "&lt;") + "</span>" +
-            '<button class="tr-btn line" data-dl="' + d.id + '" data-fn="' + String(d.filename).replace(/"/g, "&quot;") + '" style="padding:.2rem .7rem;font-size:.75rem">Download</button></div>';
-        }).join("");
-        el.querySelectorAll("[data-dl]").forEach(function (b) {
-          b.onclick = function () {
-            fetch(downloadUrl(b.dataset.dl), { headers: { Authorization: "Bearer " + token } })
-              .then(function (r) { if (!r.ok) throw new Error("Download failed"); return r.blob(); })
-              .then(function (blob) {
-                var a = document.createElement("a");
-                a.href = URL.createObjectURL(blob); a.download = b.dataset.fn || "document";
-                document.body.appendChild(a); a.click(); a.remove();
-                setTimeout(function () { URL.revokeObjectURL(a.href); }, 1500);
-              }).catch(function (e) { flash(e.message); });
-          };
-        });
-      }).catch(function (e) { flash(e.message || "Couldn't load documents"); });
-    }
-    renderList();
-
-    var input = ov.querySelector("#tr-portal-upinput");
-    ov.querySelector("#tr-portal-upbtn").onclick = function () { input.click(); };
-    input.onchange = function () {
-      var file = input.files && input.files[0];
-      if (!file) return;
+  /* ---- inline documents strip per track-record entry ----
+     Replaces the old popup overlay (owner-directed 2026-07-13): the borrower
+     (and staff) upload supporting documents DIRECTLY on the line item — click
+     "Add document" or drop files anywhere on the card. Uploaded docs show as
+     chips (click to download); open back-office document requests show as an
+     amber banner that clears once the document arrives. */
+  function escA(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;"); }
+  function downloadDoc(id, fn) {
+    fetch(downloadUrl(id), { headers: { Authorization: "Bearer " + token } })
+      .then(function (r) { if (!r.ok) throw new Error("Download failed"); return r.blob(); })
+      .then(function (blob) {
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(blob); a.download = fn || "document";
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 1500);
+      }).catch(function (e) { flash(e.message); });
+  }
+  function uploadFilesToRecord(p, files, done) {
+    var list = Array.prototype.slice.call(files || []).filter(Boolean);
+    if (!list.length) { if (done) done(); return; }
+    var i = 0, okCount = 0;
+    function next() {
+      if (i >= list.length) {
+        if (okCount) flash(okCount === 1 ? ('Uploaded "' + list[0].name + '" to this deal.') : ("Uploaded " + okCount + " documents to this deal."));
+        // Pull the server truth (doc chips, request status, counts) once per batch.
+        reload().catch(function () {}).then(function () { if (done) done(); });
+        return;
+      }
+      var file = list[i++];
       var r = new FileReader();
       r.onload = function () {
         var s = String(r.result);
         api("POST", docsUrl(p.id), {
           filename: file.name, contentType: file.type || "application/octet-stream",
           dataBase64: s.slice(s.indexOf(",") + 1),
-        }).then(function () { flash('Uploaded "' + file.name + '" to this deal.'); renderList(); return reload(); })
-          .catch(function (e) { flash(e.message || "Upload failed"); });
+        }).then(function () { okCount++; next(); })
+          .catch(function (e) { flash(e.message || ('Upload failed — "' + file.name + '"')); next(); });
       };
+      r.onerror = function () { flash('Could not read "' + file.name + '"'); next(); };
       r.readAsDataURL(file);
+    }
+    next();
+  }
+  function renderDocStrip(card, main, p) {
+    var strip = document.createElement("div");
+    strip.className = "tr-docstrip";
+    var reqs = (p._requests || []).filter(function (rq) { return rq && rq.status !== "satisfied" && rq.status !== "received"; });
+    var docs = p._docs || [];
+    var html = '<div class="tr-docstrip-h"><span class="tr-docstrip-l">Documents</span>' +
+      '<button type="button" class="tr-doc-add" title="Closing statement, deed, lease… — or drag files onto this card">+ Add document</button>' +
+      '<span style="font-size:.72rem;color:var(--muted-2)">or drag &amp; drop onto the card</span></div>';
+    reqs.forEach(function (rq) {
+      html += '<div class="tr-doc-req">⚠ Requested by your loan team: ' + escA(rq.label || "a document") + '</div>';
+    });
+    if (docs.length) {
+      html += '<div class="tr-doc-chips">' + docs.map(function (d) {
+        var st = d.review_status === "accepted" ? "accepted" : (d.review_status === "rejected" ? "rejected" : "pending");
+        return '<button type="button" class="tr-doc-chip ' + st + '" data-dl="' + escA(d.id) + '" data-fn="' + escA(d.filename) + '" title="' +
+          (st === "rejected" ? "Rejected — please replace this document. " : (st === "accepted" ? "Accepted. " : "")) + 'Click to download">' +
+          '<span class="st"></span><span class="fn">' + escA(d.filename) + '</span></button>';
+      }).join("") + '</div>';
+    }
+    strip.innerHTML = html;
+    var input = document.createElement("input");
+    input.type = "file"; input.multiple = true; input.style.display = "none";
+    strip.appendChild(input);
+    var addBtn = strip.querySelector(".tr-doc-add");
+    addBtn.onclick = function () { input.click(); };
+    input.onchange = function () {
+      addBtn.classList.add("busy"); addBtn.textContent = "Uploading…";
+      uploadFilesToRecord(p, input.files, function () { addBtn.classList.remove("busy"); addBtn.textContent = "+ Add document"; });
       input.value = "";
     };
+    strip.querySelectorAll("[data-dl]").forEach(function (b) {
+      b.onclick = function () { downloadDoc(b.dataset.dl, b.dataset.fn); };
+    });
+    // Drag & drop anywhere on the card.
+    if (!card._trDnd) {
+      card._trDnd = true;
+      ["dragenter", "dragover"].forEach(function (ev) {
+        card.addEventListener(ev, function (e) { e.preventDefault(); e.stopPropagation(); card.classList.add("tr-dropping"); });
+      });
+      ["dragleave", "drop"].forEach(function (ev) {
+        card.addEventListener(ev, function (e) { e.preventDefault(); e.stopPropagation(); card.classList.remove("tr-dropping"); });
+      });
+      card.addEventListener("drop", function (e) {
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) uploadFilesToRecord(p, e.dataTransfer.files);
+      });
+    }
+    main.appendChild(strip);
   }
 
   /* ---- chrome for portal / embed mode ---- */
