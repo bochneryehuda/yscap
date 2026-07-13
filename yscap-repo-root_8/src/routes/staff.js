@@ -2555,14 +2555,21 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
   if (ein.error) return res.status(400).json({ error: ein.error });
   const parsed = llcLib.parseMembers(b.members, b.ownershipPct);
   if (parsed.error) return res.status(400).json({ error: parsed.error });
-  const r = await db.query(
-    `INSERT INTO llcs (borrower_id,llc_name,ein,formation_state,formation_date,ownership_pct)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-    [borrowerId, String(b.llcName).trim(), ein.ein || null, b.formationState || null, b.formationDate || null, b.ownershipPct || null]);
-  if (parsed.members && parsed.members.length) await llcLib.replaceMembers(r.rows[0].id, parsed.members);
-  try { await require('./borrower').generateLlcChecklist(r.rows[0].id); } catch (_) { /* best-effort */ }
-  await audit(req, 'create_llc', 'llc', r.rows[0].id, { borrowerId });
-  res.status(201).json({ ok: true, llcId: r.rows[0].id });
+  // A name this borrower already has is REUSED, not duplicated or rejected — so
+  // adding "123 Main LLC" to a file when the borrower already has that entity
+  // links the existing one (with its docs + verification) instead of erroring.
+  const { id: llcId, existed } = await llcLib.findOrCreateLlc(borrowerId, {
+    llcName: String(b.llcName).trim(), ein: ein.ein, formationState: b.formationState,
+    formationDate: b.formationDate, ownershipPct: b.ownershipPct,
+  });
+  // Only a brand-new entity gets members + its document checklist; an existing
+  // one keeps its own (never clobbered by a re-create).
+  if (!existed) {
+    if (parsed.members && parsed.members.length) await llcLib.replaceMembers(llcId, parsed.members);
+    try { await require('./borrower').generateLlcChecklist(llcId); } catch (_) { /* best-effort */ }
+  }
+  await audit(req, existed ? 'reuse_llc' : 'create_llc', 'llc', llcId, { borrowerId, existed });
+  res.status(existed ? 200 : 201).json({ ok: true, llcId, existed });
 });
 
 // Fill in / correct an entity's details on the borrower's behalf. Mirrors the
