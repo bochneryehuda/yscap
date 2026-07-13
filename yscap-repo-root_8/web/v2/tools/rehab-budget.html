@@ -45,19 +45,84 @@ html[data-embed] .rb-hero .intro { display: none !important; }
 html[data-embed] .rb-hero { padding: .6rem 1rem .2rem; }
 html[data-embed] main { padding-top: 0 !important; }
 </style>
+<style>
+/* =====================================================================
+   Rehab Budget — blueprint chrome polish (v2, ADDITIVE / chrome-only).
+   Layers on the FROZEN suite.css + rehab-budget.css (neither is touched)
+   and on the FROZEN rehab-budget.js, which renders the whole calculator
+   body into #rb-steps / #rb-body / #rb-nav. Every id, name, data-* and
+   RB.* hook is preserved byte-for-byte; this block only restyles the
+   header, hero and footer and adds reduced-motion-safe polish. The tool
+   is forced light, so the palette comes straight from the suite tokens
+   (--ivory = #172326 dark ink, --ink = #F7FAF9 light paper).
+   ===================================================================== */
+:root{ --rb-maxw:1180px; }
+
+/* Visibility guard — headings stay dark ink on the light page, never
+   dark-on-dark, beating suite.css's themed h1/h2/h3 -> var(--ivory). */
+:root[data-theme="light"] .rb-hero h1,
+:root[data-theme="light"] .topbar .topbar-crumb .here{ color:var(--ivory); }
+
+/* ---- top bar (blueprint tool-bar treatment) ---- */
+.topbar .topbar-inner{ max-width:var(--rb-maxw); }
+.topbar-brand img{ transition:opacity .2s var(--ease), transform .2s var(--ease); }
+.topbar-brand:hover img{ opacity:.82; transform:translateY(-1px); }
+.topbar-crumb{ min-width:0; }
+.tb-under{ position:relative; }
+.tb-under::after{ content:""; position:absolute; left:0; right:0; bottom:-3px; height:1.5px; background:var(--gold); transform:scaleX(0); transform-origin:left; transition:transform .28s var(--ease); }
+.tb-under:hover::after{ transform:scaleX(1); }
+.topbar-actions .btn{ transition:transform .2s var(--ease), box-shadow .25s var(--ease), background .25s var(--ease), border-color .2s var(--ease), color .2s var(--ease); }
+.topbar-actions .btn:hover{ transform:translateY(-1px); }
+
+/* ---- hero (blueprint: left-aligned, serif display, drawn gold underline) ---- */
+.rb-hero{ text-align:left; max-width:var(--rb-maxw); margin:0 auto; padding:2.8rem 1.5rem 1.2rem; }
+.rb-hero .suite-eyebrow{ margin-bottom:.55rem; }
+.rb-hero h1{ font-size:clamp(2.1rem,4.4vw,3.15rem); letter-spacing:-.012em; line-height:1.03; }
+.rb-hero h1 em{ font-style:italic; color:var(--teal); position:relative; }
+.rb-hero h1 em::after{ content:""; position:absolute; left:0; right:0; bottom:-.04em; height:2px; background:var(--gold); transform:scaleX(1); transform-origin:left; }
+.rb-hero .tm{ color:var(--gold); }
+.rb-hero .tool-tagline{ font-family:var(--font-d); font-style:italic; color:var(--gold); margin-top:.55rem; font-size:1.08rem; }
+.rb-hero p.intro{ margin:.9rem 0 0; max-width:64ch; }
+.rb-steps{ margin:1.7rem 0 0; justify-content:flex-start; }
+
+/* ---- wizard body: keep the frozen layout, add subtle elevation polish ---- */
+.rb-wrap{ max-width:var(--rb-maxw); }
+.rb-card{ transition:box-shadow .28s var(--ease), border-color .25s var(--ease); }
+.rb-card:hover{ box-shadow:0 8px 22px -15px rgba(22,32,29,.38); }
+
+/* ---- polish: draw-in underline + one-way reveal below the fold only ---- */
+@keyframes rb-draw{ from{ transform:scaleX(0); } to{ transform:scaleX(1); } }
+@keyframes rb-reveal{ from{ opacity:0; transform:translateY(16px); } to{ opacity:1; transform:none; } }
+@media (prefers-reduced-motion: no-preference){
+  .rb-hero h1 em::after{ transform:scaleX(0); animation:rb-draw .7s .35s var(--ease) forwards; }
+  @supports (animation-timeline: view()){
+    .suite-footer .sf-inner{ animation:rb-reveal linear both; animation-timeline:view(); animation-range:entry 2% cover 26%; }
+  }
+}
+
+/* ---- responsive ---- */
+@media(max-width:980px){ .rb-hero{ padding:2rem 1.25rem 1rem; } }
+@media(max-width:560px){
+  .rb-hero{ padding:1.6rem 1.15rem .8rem; }
+  .topbar-actions .btn{ flex:1; justify-content:center; }
+}
+</style>
 </head>
 <body>
+<div class="grain" aria-hidden="true"></div>
+<span class="orb orb-1" aria-hidden="true"></span>
+<span class="orb orb-2" aria-hidden="true"></span>
 
 <header class="topbar">
     <div class="topbar-inner">
         <a class="topbar-brand" href="../index.html"><img src="../assets/images/ys-logo-t.png" alt="YS Capital Group"></a>
         <span class="topbar-sep"></span>
-        <div class="topbar-crumb"><a class="crumb-suite" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Rehab Budget</span></div>
+        <div class="topbar-crumb"><a class="crumb-suite tb-under" href="../suite.html">Investor Suite</a><span class="crumb-suite">/</span><span class="here">Rehab Budget</span></div>
         <div class="topbar-actions">
-            <a class="back" href="../suite.html">← All tools</a>
-            <button class="btn btn-line" type="button" onclick="RB.share(this)" title="Copy a link that saves this scope of work">Share link 🔗</button>
-            <button class="btn btn-line" type="button" onclick="RB.exportXlsx(this)" title="Excel is what YS needs to underwrite your rehab budget">Export Excel ⤓</button>
-            <button class="btn btn-line" type="button" onclick="document.getElementById('rb-import').click()">Import ⤒</button>
+            <a class="back tb-under" href="../suite.html">← All tools</a>
+            <button class="btn btn-sm btn-line" type="button" onclick="RB.share(this)" title="Copy a link that saves this scope of work">Share link 🔗</button>
+            <button class="btn btn-sm btn-gold" type="button" onclick="RB.exportXlsx(this)" title="Excel is what YS needs to underwrite your rehab budget">Export Excel ⤓</button>
+            <button class="btn btn-sm btn-line" type="button" onclick="document.getElementById('rb-import').click()">Import ⤒</button>
             <input id="rb-import" type="file" accept=".xlsx" class="hide" onchange="RB.importXlsx(this)">
         </div>
     </div>
@@ -66,7 +131,7 @@ html[data-embed] main { padding-top: 0 !important; }
 <main>
 <section class="rb-hero">
     <div class="suite-eyebrow">RTL Loan Application</div>
-    <h1>YS Rehab Budget<span class="tm">™</span></h1>
+    <h1>YS <em>Rehab Budget</em><span class="tm">™</span></h1>
     <p class="tool-tagline">The scope of work serious investors say YES to.</p>
     <p class="intro">Build a clean, lender-ready scope of work in minutes. Tell us about the property, check the work you're doing, and only those line items appear. Works for single-family up to 10+ units, with a live running total. Your link saves everything — share it, come back to it, or export a branded Excel or PDF.</p>
     <div class="rb-steps" id="rb-steps"></div>
