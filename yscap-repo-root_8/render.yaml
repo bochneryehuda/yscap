@@ -61,6 +61,9 @@ services:
         sync: false
       # Fill these in the dashboard when you wire the rest:
       # NOTIFY_ADMINS, MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, CLICKUP_API_TOKEN
+      # SharePoint one-way sync (Pipeline Drive mirror — docs/SHAREPOINT-POLICY.md):
+      # SHAREPOINT_BACKUP_ENABLED=1, SHAREPOINT_DRIVE_ID, and optionally
+      # MS_CLIENT_CERT_PEM_B64 (certificate auth, preferred over the secret).
 databases:
   - name: yscap
     plan: basic-1gb

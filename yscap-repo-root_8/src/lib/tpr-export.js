@@ -1,10 +1,13 @@
 /**
- * DPR / clean-file export (#148). Packages ONLY the clean set — accepted +
- * current documents — into a property-centric ZIP:
+ * DPR / clean-file export (#148; layout reworked owner-directed 2026-07-13).
+ * Packages ONLY the clean set — accepted + current documents — into a
+ * property-centric ZIP whose subject folder is organized BY CONDITION NAME,
+ * mirroring the SharePoint "YS portal syncing" folder layout:
  *
- *   01_Subject_Property__<address>/     the subject loan's accepted docs, by category
+ *   01_Subject_Property__<address>/
  *      00_REGISTERED_PRODUCT.{json,txt}
- *      05_Purchase_Contract/ …          (all categories EXCEPT the term sheet)
+ *      01_<Condition label>/ …          one folder per condition, every document
+ *      NN_General_Documents/            docs with no condition (except term sheet)
  *   02_Term_Sheet/                      the signed term sheet, pulled out on its own
  *   03_Track_Record/
  *      Track_Record.html                a branded, printable operational track record
@@ -16,6 +19,11 @@
  * Track-record verification docs are gated at the LINE-ITEM level (a project's
  * documents ride on its is_verified flag — the individual files are 'pending'
  * because verification is per project, not per document).
+ *
+ * Every generated export is ALSO saved as a document row (doc_kind 'tpr_export',
+ * visibility 'internal' so it can never ride into a future buyer package) —
+ * which makes the SharePoint mirror pick it up into the file's
+ * "YS portal syncing/TPR Exports" folder, with Version-N history on re-export.
  */
 const db = require('../db');
 const storage = require('./storage');
@@ -268,17 +276,30 @@ async function buildTprExport(appId) {
   const TERMSHEET = '02_Term_Sheet';
   const TRACK = '03_Track_Record';
 
-  // 1) Subject-file documents → subject-property folder (by category), with the
-  //    term sheet pulled out to its own top-level folder.
+  // 1) Subject-file documents → subject-property folder, ONE FOLDER PER
+  //    CONDITION (exact condition names — the same layout as the SharePoint
+  //    "YS portal syncing" mirror), with the term sheet pulled out on its own.
+  //    Folder numbers follow first appearance (docs arrive ordered by the
+  //    condition's sort_order), so the package reads in checklist order.
+  const conditionFolders = {};   // condition label -> numbered folder name
+  let conditionSeq = 0;
+  const conditionFolderFor = (label) => {
+    const key = folderName(label || 'General Documents');
+    if (!conditionFolders[key]) {
+      conditionSeq += 1;
+      conditionFolders[key] = `${String(conditionSeq).padStart(2, '0')}_${key}`;
+    }
+    return conditionFolders[key];
+  };
   for (const d of docs) {
     let bytes;
     try { bytes = await storage.read(d.storage_ref); }
     catch (_) { unavailable.push({ source: d.filename, requirement: d.item_label || null }); continue; }
-    const top = isTermSheet(d) ? TERMSHEET : `${SUBJECT}/${folderFor(d.item_label || d.filename)}`;
+    const top = isTermSheet(d) ? TERMSHEET : `${SUBJECT}/${conditionFolderFor(d.item_label)}`;
     counters[top] = (counters[top] || 0) + 1;
     const nn = String(counters[top]).padStart(2, '0');
     const ext = (d.filename.match(/\.[a-zA-Z0-9]{1,6}$/) || [''])[0] || '';
-    const base = sanitize(d.item_label || d.filename.replace(/\.[^.]+$/, ''));
+    const base = sanitize(d.filename.replace(/\.[^.]+$/, '') || d.item_label || 'document');
     const name = `${top}/${nn}_${base}${ext}`;
     files.push({ name, data: bytes });
     manifestDocs.push({ file: name, source: d.filename, requirement: d.item_label || null, accepted_by: d.reviewed_by_name || null, accepted_at: d.reviewed_at || d.created_at });
@@ -394,7 +415,7 @@ async function buildTprExport(appId) {
     `Loan: ${app.ys_loan_number || '(pending)'}   Borrower: ${borrowerName}   Property: ${propLabel}`,
     `Generated: ${generatedAt}`, '',
     `PACKAGE LAYOUT:`,
-    `  ${SUBJECT}/         subject property — accepted documents by category`,
+    `  ${SUBJECT}/         subject property — one folder per condition, in checklist order`,
     `  ${TERMSHEET}/                       signed term sheet`,
     `  ${TRACK}/                    operating track record (HTML + Excel) + per-property verification docs`,
     '',
@@ -413,4 +434,31 @@ async function buildTprExport(appId) {
   return { zip: zip(files), filename, includedCount: manifestDocs.length, missing };
 }
 
-module.exports = { buildTprExport, folderFor, buildXlsx };
+/**
+ * Persist a generated export as a document on the file (owner-directed
+ * 2026-07-13) so the SharePoint mirror files it into
+ * "YS portal syncing/TPR Exports" — with Version-N history on re-export.
+ * visibility 'internal' structurally excludes it from every future buyer
+ * package; superseding the previous export drives the mirror's versioning.
+ * Best-effort: a failure here never blocks the download.
+ */
+async function saveTprExportDocument(appId, zipBuf, filename, actorId) {
+  const app = (await db.query('SELECT borrower_id FROM applications WHERE id=$1', [appId])).rows[0];
+  if (!app) return null;
+  const { ref, provider } = await storage.save(zipBuf, { filename });
+  const r = await db.query(
+    `INSERT INTO documents (application_id, borrower_id, filename, content_type, size_bytes,
+                            storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id,
+                            doc_kind, source_type, visibility)
+     VALUES ($1,$2,$3,'application/zip',$4,$5,$6,'staff',$7,'tpr_export','system','internal') RETURNING id`,
+    [appId, app.borrower_id, filename, zipBuf.length, provider, ref, actorId || null]);
+  await db.query(
+    `UPDATE documents SET is_current=false,
+        review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+      WHERE application_id=$1 AND doc_kind='tpr_export' AND id<>$2 AND is_current=true`,
+    [appId, r.rows[0].id]);
+  try { require('./sharepoint-backup').kick(); } catch (_) { /* mirror is best-effort */ }
+  return r.rows[0].id;
+}
+
+module.exports = { buildTprExport, saveTprExportDocument, folderFor, buildXlsx };

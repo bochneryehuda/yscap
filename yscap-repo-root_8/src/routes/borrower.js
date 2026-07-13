@@ -87,6 +87,7 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
     out.push({ id: r.rows[0].id, filename: a.filename });
   }
   if (out.length) await audit(req, 'store_tool_exports', 'checklist_item', itemId, { toolKey, files: out.map((x) => x.filename) });
+  if (out.length) { try { require('../lib/sharepoint-backup').kick(); } catch (_) {} }
   return out;
 }
 
@@ -180,6 +181,7 @@ router.post('/profile/photo-id', async (req, res) => {
           AND application_id IN (SELECT id FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1)`,
       [me(req)]);
     await audit(req, 'upload_photo_id', 'borrower', me(req));
+    try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
     res.status(201).json({ ok: true, documentId: d.rows[0].id });
   } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
 });
@@ -1605,6 +1607,7 @@ router.post('/track-records/:id/documents', async (req, res) => {
     [me(req), req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
   await audit(req, 'upload_track_record_doc', 'track_record', req.params.id, { filename: b.filename });
+  try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 
@@ -1724,6 +1727,7 @@ router.post('/documents', async (req, res) => {
   // vesting in this entity (all three in => the condition moves to review).
   if (b.llcId) { try { await llcLib.syncLlcConditions(b.llcId); } catch (_) { /* best-effort */ } }
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
+  try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 
   // An LLC document uploaded from the profile (no file context): tell the loan

@@ -129,20 +129,36 @@ module.exports = {
   storageDir:      process.env.STORAGE_DIR || 'uploads',
   maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '20', 10),   // per-file cap
 
-  // --- SharePoint document backup (append-only mirror) ---
-  // Reuses the Microsoft Graph app credentials above (MS_TENANT_ID/CLIENT_ID/
-  // CLIENT_SECRET). APPEND-ONLY by policy: the integration NEVER deletes, moves,
-  // renames, or overwrites anything in SharePoint (see docs/SHAREPOINT-POLICY.md
-  // and CLAUDE.md). Master switch defaults OFF — nothing touches SharePoint until
+  // --- SharePoint document sync (one-way mirror into Pipeline Drive) ---
+  // Owner-directed design (2026-07-13): every document saved on the server is
+  // mirrored into the existing team-site tree at
+  //   Pipeline Drive/<Officer>/<Borrower>/<Address>/YS portal syncing/<Condition>/
+  // ONE-WAY (write to SharePoint only, never read documents back), NEVER deletes
+  // anything anywhere, and only ever moves/renames its OWN previously-uploaded
+  // mirror copies within a `YS portal syncing` folder (version shuffling). See
+  // docs/SHAREPOINT-POLICY.md + CLAUDE.md. Reuses the Graph app credentials
+  // above; also supports certificate auth (MS_CLIENT_CERT_PEM / _B64) with
+  // fallback to the client secret when both are configured.
+  // Master switch defaults OFF — nothing touches SharePoint until
   // SHAREPOINT_BACKUP_ENABLED=1 and the MS_* creds are set.
   sharepointBackupEnabled: process.env.SHAREPOINT_BACKUP_ENABLED === '1',
   sharepointSiteHost:  process.env.SHAREPOINT_SITE_HOST || 'yscapgroup.sharepoint.com',
   sharepointSitePath:  process.env.SHAREPOINT_SITE_PATH || '/sites/SharedData',
   sharepointDriveName: process.env.SHAREPOINT_DRIVE_NAME || 'Documents', // document library
-  // Dedicated, clearly-labeled backup root — the mirror writes ONLY under here,
-  // never into the human-curated "Pipeline Drive" folders.
-  sharepointBackupRoot: (process.env.SHAREPOINT_BACKUP_ROOT || 'Portal Document Backup')
-                          .replace(/^\/+|\/+$/g, ''),
+  // Pin the exact document-library drive id (from Graph). When set, the site
+  // host/path/name above are only a fallback — the pin survives library renames.
+  sharepointDriveId:   process.env.SHAREPOINT_DRIVE_ID || '',
+  // The human tree the mirror files into, and the portal-owned subfolder name it
+  // creates inside each address folder. The mirror writes documents ONLY inside
+  // `YS portal syncing` folders (folder creation up the chain is allowed).
+  sharepointPipelineRoot: process.env.SHAREPOINT_PIPELINE_ROOT || 'Pipeline Drive',
+  sharepointSyncFolderName: process.env.SHAREPOINT_SYNC_FOLDER || 'YS portal syncing',
+  // Where documents land when no officer/borrower can be determined at all.
+  sharepointUnfiledRoot: process.env.SHAREPOINT_UNFILED_ROOT || 'YS Portal Syncing - Unfiled',
+  // Certificate auth (preferred when present; falls back to the client secret).
+  msClientCertPem: process.env.MS_CLIENT_CERT_PEM
+                 || (process.env.MS_CLIENT_CERT_PEM_B64
+                     ? Buffer.from(process.env.MS_CLIENT_CERT_PEM_B64, 'base64').toString('utf8') : ''),
   sharepointBackupPollSec: parseInt(process.env.SHAREPOINT_BACKUP_POLL_SEC || '300', 10),
 
   // --- ClickUp bidirectional sync (server-side token only) ---

@@ -84,6 +84,9 @@ app.get('/api/health', async (req, res) => {
     storageWritable: storageInfo && storageInfo.ok,
     storagePersistent: storageInfo && storageInfo.persistent,
     storageBase: storageInfo && storageInfo.base,
+    // SharePoint one-way sync status (config + last reconciliation pass; cheap —
+    // no live Graph call on the health path).
+    sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
     ts: Date.now(),
   });
 });
@@ -265,6 +268,12 @@ if (require.main === module) {
     // Reminder/task dispatcher (#93): fires scheduled reminders at their due
     // moment via the notify fan-out. Minute cadence; self-gated + idempotent.
     try { require('./lib/reminders').startDispatcher(); } catch (e) { console.warn('reminder dispatcher not started:', e.message); }
+    // SharePoint one-way sync (owner-directed 2026-07-13): mirrors every
+    // document into Pipeline Drive/<Officer>/<Borrower>/<Address>/YS portal
+    // syncing/<Condition>/ — write-only, never deletes, versions on supersede.
+    // Self-gated by SHAREPOINT_BACKUP_ENABLED + MS_* creds; inert otherwise.
+    // First run performs the full-history backfill (oldest-first).
+    try { require('./lib/sharepoint-backup').start(); } catch (e) { console.warn('sharepoint sync not started:', e.message); }
   });
 }
 module.exports = app;

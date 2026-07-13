@@ -1,5 +1,19 @@
 # SharePoint Integration — Current-State Research & Proposed Architecture
 
+> **STATUS UPDATE (2026-07-13): DESIGN FINALIZED BY THE OWNER AND BUILT.** The owner resolved
+> every open decision in §11: documents file INTO the existing `Pipeline Drive/<Officer>/
+> <Borrower>/<Address>/` tree inside a portal-owned **`YS portal syncing`** subfolder with one
+> folder per condition; sync is a one-way async reconciler with an instant kick on upload;
+> superseded documents get **Version 1 / Version 2 / …** folders (the only move ever performed —
+> restricted to the portal's own mirror copies inside `YS portal syncing`); the full existing
+> document history is backfilled on first run; fuzzy matching links middle-name variants and
+> St/Street-style address variants (house-number equality required), creating new folders when
+> unsure; the app keeps `Sites.ReadWrite.All` (owner declined the downgrade); auth is
+> certificate + client-secret with fallback; the TPR export is reorganized by condition name and
+> mirrored too. Implementation: `src/lib/sharepoint.js`, `src/lib/sharepoint-map.js`,
+> `src/lib/sharepoint-backup.js`, `db/092`; binding policy in `docs/SHAREPOINT-POLICY.md`.
+> The sections below are the research record that led here.
+
 _Research pass, 2026-07-12. Read-only. No customer data appears in this document — all folder
 examples are **anonymized/illustrative**; real borrower names, loan-officer names, and property
 addresses observed in SharePoint are intentionally replaced with placeholders. No secrets stored._

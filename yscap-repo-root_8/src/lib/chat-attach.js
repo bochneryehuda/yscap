@@ -33,6 +33,7 @@ async function saveChatAttachment({ applicationId, borrowerId, filename, content
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'chat_attachment',$10) RETURNING id`,
     [applicationId || null, borrowerId || null, String(filename || 'attachment').slice(0, 300),
      contentType || 'application/octet-stream', buf.length, provider, ref, byKind, byId, visibility]);
+  try { require('./sharepoint-backup').kick(); } catch (_) { /* mirror is best-effort */ }
   return { documentId: r.rows[0].id, kind: kindOf(contentType, filename), size: buf.length };
 }
 
