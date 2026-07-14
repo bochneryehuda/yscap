@@ -199,6 +199,25 @@ app.get('/link/:kind', (req, res, next) => {
 //     web/…) keeps resolving exactly as before.
 const webDir = path.join(__dirname, '..', cfg.webDir);
 const v2Dir = path.join(webDir, 'v2');
+
+// Vanity login subdomain (owner-directed 2026-07-14): pilot.yscapgroup.com (and
+// www.pilot.…) route STRAIGHT to the PILOT client login. Only the bare root on
+// those hosts is redirected into the portal; assets, /api, and /portal deep
+// links fall through so the SPA + API work normally under the subdomain. On the
+// main domain this is a no-op. Runs before the static mounts so root doesn't
+// serve the marketing homepage on the login subdomain.
+const PILOT_LOGIN_HOSTS = new Set(cfg.pilotLoginHosts || []);
+if (PILOT_LOGIN_HOSTS.size) {
+  const portal = (cfg.portalPath || '/portal').replace(/\/+$/, '');
+  app.use((req, res, next) => {
+    const host = String(req.headers.host || '').toLowerCase().split(':')[0];
+    if (PILOT_LOGIN_HOSTS.has(host) && (req.path === '/' || req.path === '/index.html')) {
+      return res.redirect(302, `${portal}/`);
+    }
+    next();
+  });
+}
+
 app.use(express.static(v2Dir));            // V2 wins at the root
 app.use('/v1', express.static(webDir));    // version 1, kept browsable
 app.use(express.static(webDir));           // fallthrough: v1 assets + legacy /v2/* URLs

@@ -117,6 +117,13 @@ module.exports = {
   // HashRouter). Email + notification deep links must include it, or they land
   // on the marketing site instead of the portal.
   portalPath:    ('/' + (process.env.PORTAL_PATH || 'portal').replace(/^\/+|\/+$/g, '')),
+  // Vanity subdomains that route straight to the PILOT client login. A request
+  // to the bare root on one of these hosts 302s into the portal (everything
+  // else — assets/API/portal deep links — passes through). Override with
+  // PILOT_LOGIN_HOSTS (comma-separated) if the subdomain ever changes.
+  pilotLoginHosts: (process.env.PILOT_LOGIN_HOSTS ||
+                    'pilot.yscapgroup.com,www.pilot.yscapgroup.com')
+                    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
   // Public URL of the branded logo shown in email headers. Defaults to the PILOT
   // lockup image (web/(v2/)assets/brand/pilot-lockup-email.png) — the exact site
   // top-left lockup (gold chevron mark + "PILOT" in Fraunces + "by YS Capital"),
