@@ -394,7 +394,7 @@ router.get('/applications', async (req, res) => {
 router.get('/search', async (req, res) => {
   try {
     const raw = String(req.query.q || '').trim();
-    if (raw.length < 2) return res.json({ loans: [], borrowers: [], llcs: [] });
+    if (raw.length < 2) return res.json({ loans: [], borrowers: [], llcs: [], trackRecords: [], officers: [], tasks: [], chats: [] });
     const like = '%' + raw.slice(0, 80) + '%';
     const meId = req.actor && req.actor.id;
 
@@ -448,7 +448,56 @@ router.get('/search', async (req, res) => {
           ${lScope}
         ORDER BY l.llc_name LIMIT 6`, lParams);
 
-    res.json({ loans: loans.rows, borrowers: borrowers.rows, llcs: llcs.rows });
+    // ---- track records (REO — the borrower's prior projects, by address) ----
+    // Scoped through the owning borrower exactly like LLCs.
+    const trParams = [like];
+    let trScope = '';
+    if (!seesAllBorrowers(req)) {
+      trParams.push(meId);
+      trScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=t.borrower_id
+                               AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2
+                                 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))`;
+    }
+    const trackRecords = await db.query(
+      `SELECT t.id, t.borrower_id, t.property_address, t.deal_type, b.first_name, b.last_name
+         FROM track_records t JOIN borrowers b ON b.id=t.borrower_id
+        WHERE COALESCE(t.property_address->>'oneLine','') ILIKE $1 ${trScope}
+        ORDER BY t.created_at DESC LIMIT 6`, trParams);
+
+    // ---- officers / team (the roster is visible to all staff) ----
+    const officers = await db.query(
+      `SELECT id, full_name, title, role, email FROM staff_users
+        WHERE is_active=true AND (full_name ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(title,'') ILIKE $1)
+        ORDER BY sort_order NULLS LAST, full_name LIMIT 6`, [like]);
+
+    // ---- tasks / reminders (title), scoped to files the staffer can reach ----
+    const tkParams = [like];
+    let tkScope = '';
+    if (!seesAll(req)) { tkParams.push(meId); tkScope = 'AND (a.loan_officer_id=$2 OR a.processor_id=$2 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))'; }
+    const tasks = await db.query(
+      `SELECT r.id, r.title, r.kind, r.status, r.application_id, b.first_name, b.last_name,
+              a.property_address
+         FROM reminders r JOIN applications a ON a.id=r.application_id
+         JOIN borrowers b ON b.id=a.borrower_id
+        WHERE a.deleted_at IS NULL AND r.title ILIKE $1 ${tkScope}
+        ORDER BY r.due_at DESC NULLS LAST LIMIT 6`, tkParams);
+
+    // ---- chats (conversation name), scoped to files the staffer can reach ----
+    const cvParams = [like];
+    let cvScope = '';
+    if (!seesAll(req)) { cvParams.push(meId); cvScope = 'AND (a.loan_officer_id=$2 OR a.processor_id=$2 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))'; }
+    const chats = await db.query(
+      `SELECT c.id, c.name, c.application_id, b.first_name, b.last_name
+         FROM conversations c JOIN applications a ON a.id=c.application_id
+         JOIN borrowers b ON b.id=a.borrower_id
+        WHERE a.deleted_at IS NULL AND c.archived_at IS NULL AND c.name ILIKE $1 ${cvScope}
+        ORDER BY c.created_at DESC LIMIT 6`, cvParams);
+
+    res.json({
+      loans: loans.rows, borrowers: borrowers.rows, llcs: llcs.rows,
+      trackRecords: trackRecords.rows, officers: officers.rows,
+      tasks: tasks.rows, chats: chats.rows,
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
