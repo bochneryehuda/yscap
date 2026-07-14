@@ -25,10 +25,18 @@ function moveInFrom(years, months, asOf = new Date()) {
   return d;
 }
 
-/** A move-in date → the LIVE {years, months, totalMonths} as of now. */
+/** A move-in date → the LIVE {years, months, totalMonths} as of now.
+ *  `since` is a `date` column, which now arrives as a raw 'YYYY-MM-DD' string
+ *  (db.js OID-1082 parser). `new Date('YYYY-MM-DD')` parses as UTC midnight, so
+ *  reading .getFullYear()/.getMonth()/.getDate() in a behind-UTC server TZ
+ *  would shift the day back one — the very bug the parser fix removes. Parse the
+ *  date-only string into LOCAL calendar components so the month math is exact. */
 function durationSince(since, now = new Date()) {
   if (!since) return null;
-  const from = since instanceof Date ? since : new Date(since);
+  let from;
+  const m = typeof since === 'string' && /^(\d{4})-(\d{2})-(\d{2})/.exec(since);
+  if (m) from = new Date(+m[1], +m[2] - 1, +m[3]);          // local-midnight calendar date
+  else from = since instanceof Date ? since : new Date(since);
   if (isNaN(from)) return null;
   let months = (now.getFullYear() - from.getFullYear()) * 12 + (now.getMonth() - from.getMonth());
   if (now.getDate() < from.getDate()) months -= 1;

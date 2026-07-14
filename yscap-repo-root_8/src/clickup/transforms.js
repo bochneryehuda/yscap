@@ -46,7 +46,14 @@ function fromEpochMs(ms) {
   if (ms == null || ms === '') return null;
   const n = Number(ms);
   if (!isFinite(n)) return null;
-  return new Date(n).toISOString().slice(0, 10);          // YYYY-MM-DD
+  // The synced ClickUp fields (DOB, expected/actual closing, acquisition date)
+  // are all DATE-ONLY, meant to sit at UTC midnight. But a legacy value we wrote
+  // before the outbound midnight fix landed a few hours off midnight (it read a
+  // local-midnight JS Date), and a user editing in a non-UTC ClickUp workspace
+  // can store off-midnight too. Snapping to the NEAREST UTC day (add 12h then
+  // slice) makes any near-midnight epoch resolve to its intended calendar day,
+  // instead of rolling back a day (the off-by-one the owner saw on closing/DOB).
+  return new Date(n + 12 * 3600 * 1000).toISOString().slice(0, 10);   // YYYY-MM-DD
 }
 
 // ---- money / numbers ------------------------------------------------------

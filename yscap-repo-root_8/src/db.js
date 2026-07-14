@@ -1,6 +1,21 @@
 /** Postgres pool. Uses DATABASE_URL from Render. */
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
 const cfg = require('./config');
+
+// ROOT DATE FIX (owner-directed 2026-07-14): node-postgres parses a `date`
+// column (OID 1082) into a JS Date at the SERVER's LOCAL midnight. When the
+// server TZ is behind UTC (Render runs UTC, but any non-UTC deploy triggers
+// this), `res.json` then serializes that Date via toISOString() — which is
+// UTC — shifting the calendar day backwards (e.g. an expected_closing of
+// 2026-07-18 renders as 2026-07-17). That single parse was the root cause of
+// "every date field is off by a day" AND of the ClickUp date drift (the
+// outbound push read the local-midnight Date and sent a non-midnight epoch).
+// A pure `date` has no time or zone, so the only correct in-JS representation
+// is the raw 'YYYY-MM-DD' string. Returning it verbatim eliminates the shift
+// on EVERY date column at one chokepoint, and makes the ClickUp toEpochMs()
+// take its TZ-safe Date.UTC() string branch. `timestamptz` (OID 1184) is
+// unaffected — it keeps its instant-in-time Date semantics.
+types.setTypeParser(1082, (v) => v);
 
 if (!cfg.databaseUrl) {
   // The single most common production failure: the service is deployed but no

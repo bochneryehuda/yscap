@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { fmtDay } from '../lib/dates.js';
 import LlcManager, { llcBadge, US_STATES } from '../components/LlcManager.jsx';
 
 /* Your entities (LLCs) — the full, standalone section. Every LLC the borrower
@@ -10,7 +11,7 @@ import LlcManager, { llcBadge, US_STATES } from '../components/LlcManager.jsx';
    track record's entity linking — one database, set up once, reused forever. */
 
 const mask = (ein) => ein ? `••-•••${String(ein).replace(/\D/g, '').slice(-4)}` : null;
-const dt = (d) => d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : null;
+const dt = (d) => fmtDay(d, { year: 'numeric', month: 'short', day: 'numeric' }, 'en-US') || null;
 
 function EntityCard({ llc, apps, onChanged, startOpen }) {
   const [open, setOpen] = useState(!!startOpen);

@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
+import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { useAuth } from '../lib/auth.jsx';
 import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
@@ -20,6 +21,30 @@ import FileContacts from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
+
+/* A closing-date <input type="date"> that DOESN'T fight the typist.
+ * The old input saved on every onChange and reloaded the file — but a date
+ * input fires change with each intermediate value while you type the year
+ * (0002 → 0020 → 0202 → 2026), and the reload reset focus, so "you can't even
+ * type in dates." This holds a local draft, saves only on blur/Enter, and only
+ * when the value is a real complete date (or cleared) — never mid-type. */
+function ClosingDateField({ value, onSave }) {
+  const [draft, setDraft] = useState(dayInputValue(value));
+  useEffect(() => { setDraft(dayInputValue(value)); }, [value]);
+  const commit = () => {
+    const cur = dayInputValue(value);
+    if (draft === cur) return;                                   // unchanged
+    if (draft && !/^\d{4}-\d{2}-\d{2}$/.test(draft)) return;      // incomplete → ignore
+    if (draft && Number(draft.slice(0, 4)) < 1900) return;        // mid-type year → ignore
+    onSave(draft || null);
+  };
+  return (
+    <input className="input" type="date" value={draft}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+  );
+}
 
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
@@ -780,7 +805,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                     })()
                   ) : (
                   <div className="row" style={{ gap: 14, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
-                    <span className="muted small">Formed {l.formation_date ? new Date(l.formation_date).toLocaleDateString() : '—'}</span>
+                    <span className="muted small">Formed {l.formation_date ? fmtDay(l.formation_date) : '—'}</span>
                     <span className="muted small">Borrower owns {l.ownership_pct != null ? `${l.ownership_pct}%` : '—'}</span>
                     {(l.members || []).map(m => (
                       <span key={m.id} className="muted small">
@@ -1367,7 +1392,7 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
         <div className="metrow"><span className="k">Name</span><span className="v">{app.co_first_name} {app.co_last_name}</span></div>
         <div className="metrow"><span className="k">Email</span><span className="v">{app.co_email || '—'}</span></div>
         <div className="metrow"><span className="k">Phone</span><span className="v">{app.co_cell_phone || '—'}</span></div>
-        {app.co_date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{new Date(app.co_date_of_birth).toLocaleDateString()}</span></div>}
+        {app.co_date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{fmtDay(app.co_date_of_birth)}</span></div>}
         <div className="metrow"><span className="k">FICO</span><span className="v">{app.co_fico || '—'}</span></div>
         <div className="metrow"><span className="k">Citizenship</span><span className="v">{app.co_citizenship || '—'}</span></div>
         <div className="metrow"><span className="k">Tier</span><span className="v">{app.co_tier || '—'}</span></div>
@@ -2245,16 +2270,12 @@ export default function StaffApplication() {
         <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
           <div className="field" style={{ marginBottom: 0 }}>
             <label>Expected closing</label>
-            <input className="input" type="date"
-              value={app.expected_closing ? String(app.expected_closing).slice(0, 10) : ''}
-              onChange={e => setClosing('expectedClosing', e.target.value)} />
+            <ClosingDateField value={app.expected_closing} onSave={v => setClosing('expectedClosing', v)} />
             <div className="hint" style={{ marginTop: 6 }}>Setting an expected date notifies the borrower.</div>
           </div>
           <div className="field" style={{ marginBottom: 0 }}>
             <label>Actual closing</label>
-            <input className="input" type="date"
-              value={app.actual_closing ? String(app.actual_closing).slice(0, 10) : ''}
-              onChange={e => setClosing('actualClosing', e.target.value)} />
+            <ClosingDateField value={app.actual_closing} onSave={v => setClosing('actualClosing', v)} />
           </div>
         </div>
 
@@ -2279,7 +2300,7 @@ export default function StaffApplication() {
             <div className="metrow"><span className="k">Email</span><span className="v">{borrower.email || '—'}</span></div>
             <div className="metrow"><span className="k">Phone</span><span className="v">{borrower.cell_phone || '—'}</span></div>
             {/* DOB shown for the primary borrower too, to match the co-borrower panel (#99). */}
-            {borrower.date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{new Date(borrower.date_of_birth).toLocaleDateString()}</span></div>}
+            {borrower.date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{fmtDay(borrower.date_of_birth)}</span></div>}
             <div className="metrow"><span className="k">FICO</span><span className="v">{borrower.fico || '—'}</span></div>
             <div className="metrow"><span className="k">Citizenship</span><span className="v">{borrower.citizenship || '—'}</span></div>
             <div className="metrow"><span className="k">Tier</span><span className="v">{borrower.tier || '—'}</span></div>
