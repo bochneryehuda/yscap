@@ -1,87 +1,88 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import {
+  STAGES, STAGE_LABEL, STAGE_PILL, BOARD_STAGES, OPEN_STAGES, SOURCES, PROGRAMS,
+  TOOL_LABEL, leadName, initials, money, dueSoon, todayStr,
+} from '../lib/leadCrm.js';
 
-/* Leads CRM (owner-directed 2026-07-14): the marketing-lead capture, built up
-   into a working desk for loan officers — status pipeline, claim/assign, a
-   next-follow-up date, and a per-lead notes / contact log. Admins/underwriters
-   see every lead; a loan officer sees the ones routed to them plus the shared
-   (unassigned) desk. */
-
-const TOOL_LABEL = {
-  loan_application: 'Loan application', rehab_budget: 'Rehab budget', term_sheet: 'Term sheet',
-  deal_analyzer: 'Deal analyzer', qualifier: 'Qualifier', contact: 'Contact',
-  subscribe: 'Newsletter', dscr_waitlist: 'DSCR waitlist',
-};
-const STATUSES = ['new', 'contacted', 'working', 'converted', 'archived'];
-const SRC_CLASS = { term_sheet: 'ts', loan_application: 'app', contact: 'contact' };
-const STATUS_PILL = { new: 'info', contacted: 'warn', working: 'warn', converted: 'ok', archived: 'mut' };
-const initials = (s) => (String(s || '').trim().split(/\s+/).map(w => w[0] || '').join('').slice(0, 2).toUpperCase()) || '—';
-const todayStr = () => new Date().toISOString().slice(0, 10);
-const dueSoon = (l) => l.next_follow_up && String(l.next_follow_up).slice(0, 10) <= todayStr() && l.status !== 'converted' && l.status !== 'archived';
+/* Leads CRM (owner-directed full CRM, 2026-07-14): a real lead desk for loan
+   officers — a kanban pipeline OR list, manual + marketing-captured leads,
+   search & filters, per-lead ownership, deal value, and a click-through to the
+   full lead workspace (timeline, tasks, files, convert). Admins/underwriters see
+   every lead; a loan officer sees theirs plus the shared (unassigned) desk. */
 
 export default function StaffLeads() {
-  const { actor } = useAuth();
+  const { actor, can } = useAuth();
+  const nav = useNavigate();
+  const seesAll = can ? can('see_all_files') : false;
   const [rows, setRows] = useState(null);
+  const [team, setTeam] = useState([]);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
-  const [filter, setFilter] = useState('open');   // open | due | all
-  const [open, setOpen] = useState(null);
-  const [notes, setNotes] = useState([]);         // notes for the open lead
-  const [noteText, setNoteText] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [view, setView] = useState('board');      // board | list
+  const [q, setQ] = useState('');
+  const [stageF, setStageF] = useState('');
+  const [ownerF, setOwnerF] = useState('');
+  const [sourceF, setSourceF] = useState('');
+  const [scope, setScope] = useState('open');     // open | all
+  const [addOpen, setAddOpen] = useState(false);
 
   const load = () => api.staffLeads().then(setRows).catch(e => setErr(e.message));
-  useEffect(() => { load(); }, []);
-  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 3000); };
+  useEffect(() => { load(); api.staffTeam().then(setTeam).catch(() => {}); }, []);
+  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 2600); };
 
-  async function patch(id, body, note) {
-    try { await api.staffUpdateLead(id, body); await load(); if (note) flash(note); }
-    catch (e) { setErr(e.message); }
-  }
-  async function openLead(l) {
-    if (open === l.id) { setOpen(null); return; }
-    setOpen(l.id); setNotes([]); setNoteText('');
-    try { setNotes(await api.staffLeadNotes(l.id)); } catch { /* keep empty */ }
-  }
-  async function addNote(id) {
-    const body = noteText.trim();
-    if (!body || busy) return;
-    setBusy(true);
-    try {
-      await api.staffAddLeadNote(id, body);
-      setNoteText('');
-      setNotes(await api.staffLeadNotes(id));
-      await load();   // a note nudges 'new' → 'contacted' + re-sorts
-    } catch (e) { setErr(e.message); }
-    setBusy(false);
-  }
+  const officers = useMemo(() => team.filter(m => ['loan_officer', 'admin', 'super_admin', 'processor'].includes(m.role)), [team]);
+
+  const shown = useMemo(() => {
+    if (!rows) return [];
+    const term = q.trim().toLowerCase();
+    return rows.filter(l => {
+      if (scope === 'open' && !OPEN_STAGES.includes(l.status)) return false;
+      if (stageF && l.status !== stageF) return false;
+      if (ownerF === 'me' && !(actor && l.officer_id === actor.id)) return false;
+      if (ownerF === 'unassigned' && l.officer_id) return false;
+      if (ownerF && ownerF !== 'me' && ownerF !== 'unassigned' && l.officer_id !== ownerF) return false;
+      if (sourceF && (l.lead_source || l.source || l.tool) !== sourceF) return false;
+      if (term) {
+        const hay = [leadName(l), l.company, l.email, l.phone, l.referral_partner].filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
+    });
+  }, [rows, q, stageF, ownerF, sourceF, scope, actor]);
 
   if (err) return <div role="alert" className="notice err">{err}</div>;
   if (rows == null) return <div className="panel pad muted">Loading leads…</div>;
 
-  const isOpenStatus = (r) => r.status !== 'archived' && r.status !== 'converted';
-  const shown = rows.filter(r => filter === 'all' ? true : filter === 'due' ? dueSoon(r) : isOpenStatus(r));
-  const openCount = rows.filter(isOpenStatus).length;
-  const newCount = rows.filter(r => r.status === 'new').length;
-  const workingCount = rows.filter(r => r.status === 'contacted' || r.status === 'working').length;
-  const convertedCount = rows.filter(r => r.status === 'converted').length;
-  const dueCount = rows.filter(dueSoon).length;
+  const cnt = (fn) => rows.filter(fn).length;
+  const newCount = cnt(l => l.status === 'new');
+  const workingCount = cnt(l => ['contacted', 'qualified', 'quoted', 'working'].includes(l.status));
+  const dueCount = cnt(dueSoon);
+  const wonCount = cnt(l => l.status === 'converted');
+  const pipelineValue = rows.filter(l => OPEN_STAGES.includes(l.status)).reduce((s, l) => s + (Number(l.loan_amount) || 0), 0);
+
+  const sources = [...new Set(rows.map(l => l.lead_source || l.source || l.tool).filter(Boolean))];
+
+  async function quickStage(l, status) {
+    try { await api.staffUpdateLead(l.id, { status }); await load(); flash(`Moved to ${STAGE_LABEL[status]}`); }
+    catch (e) { setErr(e.message); }
+  }
 
   return (
     <>
       <div className="page-head">
         <div>
           <h1>Leads</h1>
-          <div className="sub">
-            Submissions from the website tools — application, rehab budget, term-sheet requests, DSCR &amp; newsletter
-            sign-ups. Claim a lead, log every touch, set a follow-up, and move it down the pipeline to a live file.
-          </div>
+          <div className="sub">Your lead desk — capture, qualify, and work every opportunity to a live file.</div>
         </div>
-        <div className="filters page-head-actions">
-          <button className={`tab ${filter === 'open' ? 'on' : ''}`} onClick={() => setFilter('open')}>Open <span className="ct">{openCount}</span></button>
-          {dueCount > 0 && <button className={`tab ${filter === 'due' ? 'on' : ''}`} onClick={() => setFilter('due')}>Follow up <span className="ct">{dueCount}</span></button>}
-          <button className={`tab ${filter === 'all' ? 'on' : ''}`} onClick={() => setFilter('all')}>All <span className="ct">{rows.length}</span></button>
+        <div className="page-head-actions">
+          <div className="seg" role="tablist">
+            <button className={`tab ${view === 'board' ? 'on' : ''}`} onClick={() => setView('board')}>Board</button>
+            <button className={`tab ${view === 'list' ? 'on' : ''}`} onClick={() => setView('list')}>List</button>
+          </div>
+          <button className="btn btn-gold btn-sm" onClick={() => setAddOpen(true)}>+ Add lead</button>
         </div>
       </div>
 
@@ -89,111 +90,211 @@ export default function StaffLeads() {
 
       <div className="stack">
         <div className="kpi-grid">
-          <div className="kpi"><div className="v">{newCount}</div><div className="k">New leads</div><div className="d">Awaiting triage</div></div>
-          <div className="kpi"><div className="v">{workingCount}</div><div className="k">Working</div><div className="d">Contacted or in progress</div></div>
-          <div className="kpi"><div className="v">{dueCount}</div><div className="k">Follow up due</div><div className="d">On/past their date</div></div>
-          <div className="kpi"><div className="v">{convertedCount}</div><div className="k">Converted</div><div className="d">Promoted to a live file</div></div>
+          <div className="kpi"><div className="v">{newCount}</div><div className="k">New</div><div className="d">Awaiting first touch</div></div>
+          <div className="kpi"><div className="v">{workingCount}</div><div className="k">Working</div><div className="d">Contacted → in progress</div></div>
+          <div className="kpi"><div className="v">{dueCount}</div><div className="k">Follow-up due</div><div className="d">On/past their date</div></div>
+          <div className="kpi"><div className="v">{money(pipelineValue) || '$0'}</div><div className="k">Open pipeline</div><div className="d">Est. loan value</div></div>
         </div>
 
-        <div className="panel">
-          <div className="panel-h">
-            <h3>Captured leads</h3>
-            <span className="pill mut">{shown.length} shown</span>
+        {/* Filters */}
+        <div className="row lead-filters" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input className="input" style={{ flex: '1 1 260px', minWidth: 200, maxWidth: 380 }} type="search"
+            placeholder="Search name, company, email, phone…" value={q} onChange={e => setQ(e.target.value)} />
+          <select className="input flt-sm" style={{ width: 150 }} value={stageF} onChange={e => setStageF(e.target.value)}>
+            <option value="">All stages</option>
+            {STAGES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+          <select className="input flt-sm" style={{ width: 160 }} value={ownerF} onChange={e => setOwnerF(e.target.value)}>
+            <option value="">All owners</option>
+            <option value="me">My leads</option>
+            <option value="unassigned">Unassigned</option>
+            {seesAll && officers.map(o => <option key={o.id} value={o.id}>{o.full_name}</option>)}
+          </select>
+          {sources.length > 1 && (
+            <select className="input flt-sm" style={{ width: 150 }} value={sourceF} onChange={e => setSourceF(e.target.value)}>
+              <option value="">All sources</option>
+              {sources.map(s => <option key={s} value={s}>{TOOL_LABEL[s] || s}</option>)}
+            </select>
+          )}
+          <label className="row small" style={{ gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+            <input type="checkbox" checked={scope === 'all'} onChange={e => setScope(e.target.checked ? 'all' : 'open')} />
+            Include closed
+          </label>
+          <span className="muted small">{shown.length} shown</span>
+        </div>
+
+        {view === 'board'
+          ? <LeadBoard leads={shown} onOpen={(l) => nav(`/internal/leads/${l.id}`)} onStage={quickStage} actor={actor} />
+          : <LeadList leads={shown} onOpen={(l) => nav(`/internal/leads/${l.id}`)} actor={actor} />}
+      </div>
+
+      {addOpen && <AddLeadModal officers={officers} seesAll={seesAll}
+        onClose={() => setAddOpen(false)}
+        onCreated={(leadId) => { setAddOpen(false); nav(`/internal/leads/${leadId}`); }} onErr={setErr} />}
+    </>
+  );
+}
+
+// ---- Kanban board ----------------------------------------------------------
+function LeadBoard({ leads, onOpen, onStage, actor }) {
+  const byStage = (key) => leads.filter(l => l.status === key);
+  return (
+    <div className="lead-board">
+      {BOARD_STAGES.map(s => {
+        const col = byStage(s.key);
+        const val = col.reduce((a, l) => a + (Number(l.loan_amount) || 0), 0);
+        return (
+          <div key={s.key} className="lead-col">
+            <div className="lead-col-h">
+              <span className={`pill ${STAGE_PILL[s.key]}`}>{s.label}</span>
+              <span className="lead-col-ct">{col.length}{val > 0 ? ` · ${money(val)}` : ''}</span>
+            </div>
+            <div className="lead-col-body">
+              {col.length === 0
+                ? <div className="lead-col-empty">—</div>
+                : col.map(l => <LeadCard key={l.id} l={l} onOpen={onOpen} onStage={onStage} actor={actor} />)}
+            </div>
           </div>
-          {shown.length === 0
-            ? <div className="panel-b"><div className="empty-state"><h3>No {filter === 'all' ? '' : filter + ' '}leads yet</h3><p>New submissions from the site tools will land here.</p></div></div>
-            : (
-              <div className="tbl-scroll">
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>Name</th><th>Source</th><th>Contact</th><th>Status</th>
-                      <th>Assigned</th><th>Follow up</th><th>Received</th><th className="act">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {shown.map(l => {
-                      const isOpen = open === l.id;
-                      const mine = l.officer_id && actor && l.officer_id === actor.id;
-                      return (
-                        <React.Fragment key={l.id}>
-                          <tr>
-                            <td className="cell-deal">
-                              <span className="who"><span className="mono">{initials(l.name || l.email)}</span><span className="lead">{l.name || l.email || 'Anonymous'}</span></span>
-                              {l.message && <div className="mut lead-msg">{l.message}</div>}
-                            </td>
-                            <td><span className={`src ${SRC_CLASS[l.tool] || ''}`}>{TOOL_LABEL[l.tool] || l.tool}</span></td>
-                            <td className="mut">{[l.email, l.phone].filter(Boolean).join(' · ') || '—'}</td>
-                            <td><span className={`pill ${STATUS_PILL[l.status] || 'mut'}`}>{l.status}</span></td>
-                            <td>{l.officer_name
-                              ? <span className="off"><span className="mono">{initials(l.officer_name)}</span>{mine ? 'You' : l.officer_name}</span>
-                              : <span className="off un"><span className="dot" />Loan desk</span>}</td>
-                            <td className="mut" style={dueSoon(l) ? { color: 'var(--warning, #b8860b)', fontWeight: 600 } : undefined}>
-                              {l.next_follow_up ? String(l.next_follow_up).slice(0, 10) : '—'}
-                            </td>
-                            <td className="rec">{new Date(l.created_at).toLocaleDateString()}</td>
-                            <td className="act">
-                              <div className="row-act">
-                                <select className="input" style={{ maxWidth: 130 }} value={l.status} onChange={e => patch(l.id, { status: e.target.value })}>
-                                  {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                                </select>
-                                <button className="btn btn-ghost btn-sm" onClick={() => openLead(l)}>{isOpen ? 'Close' : 'Open'}{l.note_count > 0 ? ` · ${l.note_count}` : ''}</button>
-                              </div>
-                            </td>
-                          </tr>
-                          {isOpen && (
-                            <tr className="lead-payload-row">
-                              <td colSpan={8}>
-                                <div className="grid cols-2" style={{ gap: 18, alignItems: 'start' }}>
-                                  {/* left: manage */}
-                                  <div>
-                                    <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-                                      {l.email && <a className="btn btn-ghost btn-sm" href={`mailto:${l.email}`}>✉ Email</a>}
-                                      {l.phone && <a className="btn btn-ghost btn-sm" href={`tel:${l.phone}`}>☎ Call</a>}
-                                      {mine
-                                        ? <button className="btn btn-ghost btn-sm" onClick={() => patch(l.id, { officerId: null }, 'Released to the desk')}>Release</button>
-                                        : <button className="btn primary btn-sm" onClick={() => patch(l.id, { officerId: actor && actor.id }, 'Claimed — it’s yours')}>Claim to me</button>}
-                                    </div>
-                                    <label className="muted small" style={{ display: 'block', marginBottom: 4 }}>Next follow-up</label>
-                                    <input className="input" type="date" style={{ maxWidth: 200 }} value={l.next_follow_up ? String(l.next_follow_up).slice(0, 10) : ''}
-                                      onChange={e => patch(l.id, { nextFollowUp: e.target.value || null }, e.target.value ? 'Follow-up set' : 'Follow-up cleared')} />
-                                    {l.payload && (
-                                      <details style={{ marginTop: 12 }}>
-                                        <summary className="muted small" style={{ cursor: 'pointer' }}>Submission detail</summary>
-                                        <pre className="lead-payload" style={{ marginTop: 8 }}>{JSON.stringify(l.payload, null, 2)}</pre>
-                                      </details>
-                                    )}
-                                  </div>
-                                  {/* right: notes / contact log */}
-                                  <div>
-                                    <div className="muted small" style={{ marginBottom: 6, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>Contact log</div>
-                                    <div className="row" style={{ gap: 6, marginBottom: 10 }}>
-                                      <input className="input" style={{ flex: 1 }} placeholder="Log a call, email, or note…" value={noteText}
-                                        onChange={e => setNoteText(e.target.value)} onKeyDown={e => e.key === 'Enter' && addNote(l.id)} />
-                                      <button className="btn primary btn-sm" disabled={busy || !noteText.trim()} onClick={() => addNote(l.id)}>{busy ? '…' : 'Log'}</button>
-                                    </div>
-                                    {notes.length === 0
-                                      ? <div className="muted small">No notes yet — every call or email you log shows here.</div>
-                                      : notes.map(n => (
-                                          <div key={n.id} style={{ padding: '7px 0', borderTop: '1px solid rgba(127,127,127,.14)' }}>
-                                            <div style={{ fontSize: 14 }}>{n.body}</div>
-                                            <div className="muted small">{n.staff_name || 'Staff'} · {new Date(n.created_at).toLocaleString()}</div>
-                                          </div>
-                                        ))}
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+        );
+      })}
+    </div>
+  );
+}
+
+function LeadCard({ l, onOpen, onStage, actor }) {
+  const mine = l.officer_id && actor && l.officer_id === actor.id;
+  return (
+    <div className="lead-card" role="button" tabIndex={0}
+      onClick={() => onOpen(l)} onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onOpen(l))}>
+      <div className="lead-card-top">
+        <span className="lead-card-name">{leadName(l)}</span>
+        {Number(l.loan_amount) > 0 && <span className="lead-card-amt">{money(l.loan_amount)}</span>}
+      </div>
+      {l.company && <div className="lead-card-sub">{l.company}</div>}
+      <div className="lead-card-meta">
+        {l.program && <span className="tagm">{l.program}</span>}
+        {(l.lead_source || l.tool) && <span className="tagm mut">{TOOL_LABEL[l.lead_source || l.tool] || l.lead_source || l.tool}</span>}
+      </div>
+      <div className="lead-card-foot">
+        <span className="lead-card-owner">
+          {l.officer_name ? <><span className="mono">{initials(l.officer_name)}</span>{mine ? 'You' : l.officer_name}</> : <span className="muted">Loan desk</span>}
+        </span>
+        <span className="lead-card-flags">
+          {l.open_tasks > 0 && <span className="flagm" title="Open tasks">◷ {l.open_tasks}</span>}
+          {dueSoon(l) && <span className="flagm due" title="Follow-up due">● due</span>}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ---- List view -------------------------------------------------------------
+function LeadList({ leads, onOpen, actor }) {
+  if (leads.length === 0) return (
+    <div className="panel"><div className="panel-b"><div className="empty-state"><h3>No leads here</h3><p>Add a lead or adjust your filters.</p></div></div></div>
+  );
+  return (
+    <div className="panel">
+      <div className="tbl-scroll">
+        <table className="tbl lead-tbl">
+          <thead>
+            <tr><th>Name</th><th>Source</th><th>Stage</th><th>Owner</th><th className="num">Est. amount</th><th>Follow-up</th><th>Tasks</th></tr>
+          </thead>
+          <tbody>
+            {leads.map(l => {
+              const mine = l.officer_id && actor && l.officer_id === actor.id;
+              return (
+                <tr key={l.id} className="lead-row" onClick={() => onOpen(l)}>
+                  <td className="cell-deal">
+                    <span className="who"><span className="mono">{initials(leadName(l))}</span><span className="lead">{leadName(l)}</span></span>
+                    {l.company && <div className="mut">{l.company}</div>}
+                  </td>
+                  <td className="mut">{TOOL_LABEL[l.lead_source || l.tool] || l.lead_source || l.tool || '—'}</td>
+                  <td><span className={`pill ${STAGE_PILL[l.status] || 'mut'}`}>{STAGE_LABEL[l.status] || l.status}</span></td>
+                  <td>{l.officer_name
+                    ? <span className="off"><span className="mono">{initials(l.officer_name)}</span>{mine ? 'You' : l.officer_name}</span>
+                    : <span className="off un"><span className="dot" />Loan desk</span>}</td>
+                  <td className="num">{money(l.loan_amount) || '—'}</td>
+                  <td className="mut" style={dueSoon(l) ? { color: 'var(--warning,#b8860b)', fontWeight: 600 } : undefined}>
+                    {l.next_follow_up ? String(l.next_follow_up).slice(0, 10) : '—'}</td>
+                  <td className="mut">{l.open_tasks > 0 ? `${l.open_tasks} open` : '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---- Add-lead modal --------------------------------------------------------
+function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
+  const [f, setF] = useState({ firstName: '', lastName: '', company: '', email: '', phone: '', leadSource: 'referral', referralPartner: '', program: '', loanAmount: '', officerId: '' });
+  const [busy, setBusy] = useState(false);
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+  async function create() {
+    if (busy) return;
+    if (!f.firstName.trim() && !f.email.trim() && !f.phone.trim()) return onErr('Enter at least a name, email, or phone.');
+    setBusy(true);
+    try {
+      const r = await api.staffCreateLead({
+        firstName: f.firstName, lastName: f.lastName, company: f.company, email: f.email, phone: f.phone,
+        leadSource: f.leadSource, referralPartner: f.referralPartner, program: f.program,
+        loanAmount: f.loanAmount === '' ? undefined : Number(f.loanAmount),
+        officerId: seesAll ? (f.officerId || undefined) : undefined,
+      });
+      onCreated(r.leadId);
+    } catch (e) { onErr(e.message || 'Could not add lead'); setBusy(false); }
+  }
+  return (
+    <div className="cv-modal-back" onClick={onClose}>
+      <div className="cv-modal lead-convert" onClick={e => e.stopPropagation()} role="dialog" aria-label="Add a lead">
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <h3 style={{ margin: 0 }}>Add a lead</h3>
+          <button className="btn ghost small" onClick={onClose} aria-label="Close">Close ✕</button>
+        </div>
+        <div className="lead-form">
+          <div className="grid cols-2">
+            <label className="field"><span>First name</span><input className="input" autoFocus value={f.firstName} onChange={e => set('firstName', e.target.value)} /></label>
+            <label className="field"><span>Last name</span><input className="input" value={f.lastName} onChange={e => set('lastName', e.target.value)} /></label>
+          </div>
+          <label className="field"><span>Company / entity</span><input className="input" value={f.company} onChange={e => set('company', e.target.value)} placeholder="Acme Holdings LLC" /></label>
+          <div className="grid cols-2">
+            <label className="field"><span>Email</span><input className="input" type="email" value={f.email} onChange={e => set('email', e.target.value)} /></label>
+            <label className="field"><span>Phone</span><input className="input" value={f.phone} onChange={e => set('phone', e.target.value)} /></label>
+          </div>
+          <div className="grid cols-2">
+            <label className="field"><span>Source</span>
+              <select className="input" value={f.leadSource} onChange={e => set('leadSource', e.target.value)}>
+                {SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            <label className="field"><span>Referral partner</span><input className="input" value={f.referralPartner} onChange={e => set('referralPartner', e.target.value)} /></label>
+          </div>
+          <div className="grid cols-2">
+            <label className="field"><span>Program of interest</span>
+              <select className="input" value={f.program} onChange={e => set('program', e.target.value)}>
+                <option value="">—</option>
+                {PROGRAMS.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </label>
+            <label className="field"><span>Est. loan amount</span><input className="input" type="number" min="0" inputMode="numeric" value={f.loanAmount} onChange={e => set('loanAmount', e.target.value)} placeholder="325000" /></label>
+          </div>
+          {seesAll && officers.length > 0 && (
+            <label className="field"><span>Assign to</span>
+              <select className="input" value={f.officerId} onChange={e => set('officerId', e.target.value)}>
+                <option value="">Loan desk (unassigned)</option>
+                {officers.map(o => <option key={o.id} value={o.id}>{o.full_name}</option>)}
+              </select>
+            </label>
+          )}
+        </div>
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-gold" disabled={busy} onClick={create}>{busy ? 'Adding…' : 'Add lead'}</button>
         </div>
       </div>
-    </>
+    </div>
   );
 }
