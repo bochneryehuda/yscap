@@ -72,7 +72,7 @@ export default function ToolModal({ url, title, onClose }) {
         if (!doc.getElementById('ys-portal-embed-style')) {
           const style = doc.createElement('style');
           style.id = 'ys-portal-embed-style';
-          style.textContent = '.ys-theme-toggle{display:none!important}';
+          style.textContent = '.ys-theme-toggle{display:none!important}html,body{background:#F4F0E7!important}';
           doc.head.appendChild(style);
         }
         done = true;

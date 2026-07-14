@@ -363,7 +363,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         doc.documentElement.setAttribute('data-theme', 'light');
         if (doc.head) {
           const s = doc.createElement('style');
-          s.textContent = HIDE_CSS + '\n.ys-theme-toggle{display:none!important}';
+          s.textContent = HIDE_CSS + '\n.ys-theme-toggle{display:none!important}\nhtml,body{background:#F4F0E7!important}';
           doc.head.appendChild(s);
         }
         stamped = true;
@@ -412,7 +412,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
           // marketing-site theme; the embed hides the tool's own toggle.
           doc.documentElement.setAttribute('data-theme', 'light');
           const themeStyle = doc.createElement('style');
-          themeStyle.textContent = '.ys-theme-toggle{display:none!important}';
+          themeStyle.textContent = '.ys-theme-toggle{display:none!important}html,body{background:#F4F0E7!important}';
           doc.head.appendChild(themeStyle);
         } catch (_) { /* cosmetic only */ }
         // Portal-authenticated staff (or an unlocked admin session) get the
