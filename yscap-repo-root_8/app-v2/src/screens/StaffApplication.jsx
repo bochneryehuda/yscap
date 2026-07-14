@@ -129,6 +129,65 @@ function Completeness({ app, borrower, appId, onSaved }) {
     endpoint={`/api/staff/applications/${appId}/complete-fields`} onSaved={onSaved} />;
 }
 
+/* Borrower PRIMARY (home) residence address — the borrower enters this in their
+   profile, but when STAFF fill out a file for a borrower who isn't in the portal
+   there was no place to capture it. This editor saves it straight to the
+   borrower profile (current_address), so it's on file for underwriting and the
+   1003/URLA the same as if the borrower had typed it. Reused for the co-borrower. */
+const oneLineAddr = (a) => [a.line1, a.unit ? `#${a.unit}` : '', a.city, [a.state, a.zip].filter(Boolean).join(' ')]
+  .map(s => String(s || '').trim()).filter(Boolean).join(', ');
+function PrimaryAddressPanel({ borrowerId, address, name, onSaved }) {
+  const blank = { line1: '', unit: '', city: '', state: '', zip: '' };
+  const [a, setA] = useState({ ...blank, ...(address || {}) });
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState('');
+  const key = borrowerId + '|' + JSON.stringify(address || {});
+  useEffect(() => { setA({ ...blank, ...(address || {}) }); setSaved(false); /* eslint-disable-next-line */ }, [key]);
+  const set = (k, v) => { setA(s => ({ ...s, [k]: v })); setSaved(false); };
+  const hasAny = ['line1', 'city', 'state', 'zip'].some(k => String(a[k] || '').trim());
+  async function save() {
+    setBusy(true); setErr('');
+    try {
+      const clean = hasAny ? { ...a, oneLine: oneLineAddr(a) } : null;
+      await api.staffUpdateBorrower(borrowerId, { currentAddress: clean });
+      setSaved(true); if (onSaved) await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 4 }}>
+        <h3>{name} — primary address</h3>
+        <div className="spacer" />
+        <span className={`pill ${hasAny ? 'done' : ''}`}>{hasAny ? 'On file' : 'Not set'}</span>
+      </div>
+      <p className="muted small" style={{ marginTop: 0, marginBottom: 12 }}>
+        The borrower&apos;s home (physical) residence address. Enter it here when you&apos;re filling out the file for them.
+      </p>
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 8 }}>{err}</div>}
+      <div className="grid" style={{ gridTemplateColumns: '2fr 1fr', gap: 10 }}>
+        <div className="field"><label>Street address</label>
+          <input className="input" value={a.line1} onChange={e => set('line1', e.target.value)} placeholder="123 Main St" /></div>
+        <div className="field"><label>Unit</label>
+          <input className="input" value={a.unit} onChange={e => set('unit', e.target.value)} placeholder="Apt 2" /></div>
+      </div>
+      <div className="grid" style={{ gridTemplateColumns: '2fr 1fr 1fr', gap: 10 }}>
+        <div className="field"><label>City</label>
+          <input className="input" value={a.city} onChange={e => set('city', e.target.value)} /></div>
+        <div className="field"><label>State</label>
+          <input className="input" value={a.state} onChange={e => set('state', e.target.value.toUpperCase())} maxLength={2} placeholder="NJ" /></div>
+        <div className="field"><label>ZIP</label>
+          <input className="input" value={a.zip} onChange={e => set('zip', e.target.value)} inputMode="numeric" placeholder="07001" /></div>
+      </div>
+      <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+        <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save address'}</button>
+        {saved && <span className="muted small">Saved ✓</span>}
+      </div>
+    </div>
+  );
+}
+
 // #30 — the co-borrower's own completeness card, separate from the primary
 // borrower's. Only renders when a co-borrower is linked. Name / phone / DOB are
 // inline-addable here; email + SSN point to the Co-borrower panel.
@@ -2179,7 +2238,17 @@ export default function StaffApplication() {
       <Section id="sec-application" title="Application details"
         info="What the borrower filled out — completeness at a glance, plus the editable deal numbers. Changing them here flows straight into pricing.">
       <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
+      {app.borrower_id && (
+        <PrimaryAddressPanel borrowerId={app.borrower_id}
+          address={borrower && borrower.current_address}
+          name={`${app.first_name || ''} ${app.last_name || ''}`.trim() || 'Borrower'} onSaved={load} />
+      )}
       <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
+      {app.co_borrower_id && (
+        <PrimaryAddressPanel borrowerId={app.co_borrower_id}
+          address={app.co_current_address}
+          name={`${app.co_first_name || ''} ${app.co_last_name || ''}`.trim() || 'Co-borrower'} onSaved={load} />
+      )}
       <EditFileDetails app={app} onSaved={load} />
       <ClickupFileData app={app} />
       </Section>
