@@ -1,7 +1,7 @@
 {
   "name": "PILOT by YS Capital",
   "short_name": "PILOT",
-  "description": "Your YS Capital Group loan file \u2014 documents, tasks, and messages in one place.",
+  "description": "Your loan file in PILOT \u2014 documents, tasks, and messages in one place.",
   "id": "/portal/",
   "start_url": "/portal/#/dashboard",
   "scope": "/portal/",

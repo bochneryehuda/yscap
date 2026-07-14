@@ -152,9 +152,14 @@ module.exports = {
   // creates inside each address folder. The mirror writes documents ONLY inside
   // `YS portal syncing` folders (folder creation up the chain is allowed).
   sharepointPipelineRoot: process.env.SHAREPOINT_PIPELINE_ROOT || 'Pipeline Drive',
-  sharepointSyncFolderName: process.env.SHAREPOINT_SYNC_FOLDER || 'YS portal syncing',
+  // PILOT branding (2026-07-14): NEW leaf folders are "Synced by Pilot"; the
+  // resolver reuses a LEGACY-named leaf ("YS portal syncing") when one already
+  // exists so existing trees are never duplicated (backward-compat aliases).
+  sharepointSyncFolderName: process.env.SHAREPOINT_SYNC_FOLDER || 'Synced by Pilot',
+  sharepointSyncFolderLegacy: ['YS portal syncing'],
   // Where documents land when no officer/borrower can be determined at all.
-  sharepointUnfiledRoot: process.env.SHAREPOINT_UNFILED_ROOT || 'YS Portal Syncing - Unfiled',
+  sharepointUnfiledRoot: process.env.SHAREPOINT_UNFILED_ROOT || 'Pilot — Unfiled',
+  sharepointUnfiledLegacy: ['YS Portal Syncing - Unfiled'],
   // Certificate auth (preferred when present; falls back to the client secret).
   msClientCertPem: process.env.MS_CLIENT_CERT_PEM
                  || (process.env.MS_CLIENT_CERT_PEM_B64

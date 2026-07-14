@@ -233,7 +233,7 @@ export default function Dashboard() {
           <div className="panel">
             <h3>No applications yet</h3>
             <p className="muted" style={{ margin: '8px 0 16px' }}>
-              Start your first loan application. Everything saves automatically as you go.
+              Start your first loan application. PILOT saves your progress automatically as you go.
             </p>
             <button className="btn primary" onClick={newApplication}>Start an application</button>
           </div>
