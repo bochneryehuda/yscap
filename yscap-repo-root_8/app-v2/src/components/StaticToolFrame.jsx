@@ -43,7 +43,9 @@ export default function StaticToolFrame({ src, title, fill = false, minHeight = 
         // portal's gray sheet through and read as "ugly gray". And stop looping
         // decorative motion (the "Live" dot pulse etc.) that reads as blinking here.
         style.textContent = 'html,body{height:auto!important;min-height:0!important;background:#F4F0E7!important}'
-          + '.ys-theme-toggle{display:none!important}'
+          // Hide the tool's OWN marketing header (both variants) + footer so the
+          // embed reads as standalone — no double header inside the portal.
+          + '.ys-theme-toggle,.topbar,.tool-bar,.suite-footer{display:none!important}'
           + '*,*::before,*::after{animation-iteration-count:1!important}';
         win.document.head.appendChild(style);
       } catch (_) { /* cosmetic only */ }

@@ -15,7 +15,7 @@ const STUDIO_URL = '/tools/term-sheet.html';
 // the full form, program cards, leverage slider, eligibility, structure,
 // fees, cash to close, liquidity, compliance text — renders untouched.
 const HIDE_CSS = `
-  .topbar, .tool-hero, .suite-footer, #leadCapture, #handoff,
+  .topbar, .tool-bar, .tool-hero, .suite-footer, #leadCapture, #handoff,
   #floatActions, #applyModal, .fill-hint { display: none !important; }
   body { padding-top: 0 !important; }
   /* height:auto so scrollHeight reflects CONTENT, not the iframe viewport —
