@@ -122,8 +122,8 @@ function Header({ b, name, onChanged }) {
             </div>
           </div>
           <div className="small" style={{ marginTop: 10 }}>
-            {b.has_account === false ? <span className="pill">No PILOT account</span>
-              : <span className="pill ok">PILOT active{b.last_login_at ? ` · ${ago(b.last_login_at)}` : ''}</span>}
+            {b.has_account === false ? <span className="pill">No account</span>
+              : <span className="pill ok">Active{b.last_login_at ? ` · ${ago(b.last_login_at)}` : ''}</span>}
             {b.fico ? <span className="pill" style={{ marginLeft: 6 }}>FICO {b.fico}</span> : null}
             {b.has_ssn ? <span className="pill" style={{ marginLeft: 6 }}>SSN on file</span> : null}
           </div>

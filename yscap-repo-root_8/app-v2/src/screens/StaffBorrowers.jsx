@@ -106,7 +106,7 @@ export default function StaffBorrowers() {
             <option value="name">Name (A–Z)</option>
             <option value="officer">Loan officer</option>
             <option value="files"># of files</option>
-            <option value="portal">PILOT status</option>
+            <option value="portal">Account status</option>
             <option value="created">Newest added</option>
           </select>
           <input className="input" placeholder="Search name, email, phone, officer…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 280 }} />
@@ -131,7 +131,7 @@ export default function StaffBorrowers() {
                 <th>Contact</th>
                 <th>Loan officer</th>
                 <th className="num">Files</th>
-                <th>PILOT</th>
+                <th>Account</th>
                 <th>Last login</th>
                 <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
