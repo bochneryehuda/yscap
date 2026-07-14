@@ -100,7 +100,16 @@ function sanitizeOverrides(input) {
   return Object.keys(out).length ? out : null;
 }
 
+// #64: a file's ACTIVE assignees are the primary LO/processor PLUS any
+// full-access ASSISTANTS in application_assignees. This reusable SQL fragment
+// lets every access gate (staff.js scoping helper, chat modules) recognize an
+// assistant from ONE definition — `${alias}.id` must be selectable, and `p` is
+// the acting staff-id param placeholder (e.g. '$1').
+const assigneeExistsSql = (alias, p) =>
+  `EXISTS (SELECT 1 FROM application_assignees aa` +
+  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL)`;
+
 module.exports = {
   ROLES, ROLE_KEYS, ROLE_LABEL, CAPABILITIES, CAP_KEYS, ROLE_DEFAULTS,
-  defaultsFor, effectivePermissions, can, sanitizeOverrides,
+  defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql,
 };

@@ -104,6 +104,13 @@ async function staffCanAccess(actor, conv) {
   if (!conv || conv.app_deleted_at) return false;
   if (can(actor, 'see_all_files')) return true;
   if (conv.loan_officer_id === actor.id || conv.processor_id === actor.id) return true;
+  // #64: a full-access ASSISTANT assignee on the file may open its chats too.
+  if (conv.application_id) {
+    const asg = await db.query(
+      `SELECT 1 FROM application_assignees WHERE application_id=$1 AND staff_id=$2 AND removed_at IS NULL`,
+      [conv.application_id, actor.id]);
+    if (asg.rows[0]) return true;
+  }
   const m = await db.query(
     `SELECT 1 FROM conversation_members WHERE conversation_id=$1 AND member_kind='staff' AND member_id=$2 AND removed_at IS NULL`,
     [conv.id, actor.id]);

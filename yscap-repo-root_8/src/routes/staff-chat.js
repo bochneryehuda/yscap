@@ -10,7 +10,7 @@ const router = require('../lib/safe-router')();
 const db = require('../db');
 const chat = require('../lib/chat');
 const events = require('../lib/events');
-const { can } = require('../lib/permissions');
+const { can, assigneeExistsSql } = require('../lib/permissions');
 
 // Capability-based (mirrors staff.js): honors per-user see_all_files overrides.
 const seesAll = (req) => can(req.actor, 'see_all_files');
@@ -52,7 +52,7 @@ router.get('/chat/conversations', async (req, res) => {
       FROM applications a JOIN borrowers b ON b.id=a.borrower_id
       CROSS JOIN (VALUES ('borrower','','💬'), ('internal','Loan Team','🔒'),
                          ('lo_processor','Officer ↔ Processor','🤝')) AS v(kind,name,emoji)
-     WHERE a.deleted_at IS NULL ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
+     WHERE a.deleted_at IS NULL ${scoped ? `AND (a.loan_officer_id=$1 OR a.processor_id=$1 OR ${assigneeExistsSql('a', '$1')})` : ''}
     ON CONFLICT (application_id, kind) WHERE kind <> 'custom' DO NOTHING`,
     scoped ? [req.actor.id] : []);
   await db.query(`
@@ -68,7 +68,7 @@ router.get('/chat/conversations', async (req, res) => {
         UNION ALL SELECT 'staff', a.processor_id, 'Processor', false) p
      WHERE a.deleted_at IS NULL AND c.kind <> 'custom' AND p.id IS NOT NULL
        AND (p.borrower_side = false OR c.kind='borrower')
-       ${scoped ? 'AND (a.loan_officer_id=$1 OR a.processor_id=$1)' : ''}
+       ${scoped ? `AND (a.loan_officer_id=$1 OR a.processor_id=$1 OR ${assigneeExistsSql('a', '$1')})` : ''}
     ON CONFLICT (conversation_id, member_kind, member_id) DO NOTHING`,
     scoped ? [req.actor.id] : []);
 
@@ -110,7 +110,7 @@ router.get('/chat/conversations', async (req, res) => {
                    LEFT JOIN borrowers b3 ON b3.id=cm2.member_id AND cm2.member_kind='borrower'
                   WHERE cm2.conversation_id=c.id AND cm2.removed_at IS NULL) x) mem ON true
       WHERE a.deleted_at IS NULL AND c.archived_at IS NULL
-        ${scoped ? `AND (a.loan_officer_id=$1 OR a.processor_id=$1 OR cm.conversation_id IS NOT NULL)` : ''}
+        ${scoped ? `AND (a.loan_officer_id=$1 OR a.processor_id=$1 OR cm.conversation_id IS NOT NULL OR ${assigneeExistsSql('a', '$1')})` : ''}
       ORDER BY (COALESCE(cm.unread_count,0) > 0) DESC, lm.created_at DESC NULLS LAST, a.created_at DESC
       LIMIT 500`, [req.actor.id]);
 
@@ -418,7 +418,7 @@ router.get('/chat/search', async (req, res) => {
        LEFT JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.member_kind='staff'
             AND cm.member_id=$2 AND cm.removed_at IS NULL
       WHERE m.deleted_at IS NULL AND m.body ILIKE $1 AND a.deleted_at IS NULL
-        ${scoped ? 'AND (a.loan_officer_id=$2 OR a.processor_id=$2 OR cm.conversation_id IS NOT NULL)' : ''}
+        ${scoped ? `AND (a.loan_officer_id=$2 OR a.processor_id=$2 OR cm.conversation_id IS NOT NULL OR ${assigneeExistsSql('a', '$2')})` : ''}
         ${convFilter}
       ORDER BY m.seq DESC LIMIT 50`, params);
   res.json({ results: r.rows.map(x => ({ ...x, seq: Number(x.seq) })) });
