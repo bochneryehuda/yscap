@@ -4420,6 +4420,90 @@ router.post('/documents/:id/review', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// PERMANENTLY delete a document (owner-directed 2026-07-14): a mistake-upload
+// shouldn't linger as a "not accepted" version forever, and — critically — a
+// deleted document must NEVER be mirrored to SharePoint (it was never needed,
+// it's not just an old version). This hard-deletes the DB row + the local
+// bytes; because the SharePoint reconciler only ever mirrors documents where
+// sharepoint_backed_up_at IS NULL, a doc deleted before the async sync runs is
+// simply gone and never reaches a Version-1 folder. SharePoint's own no-delete
+// policy is honored: we never issue a Graph delete — if the doc had already
+// been mirrored, that copy stays (a human removes it in SharePoint if desired).
+// Works for EVERY document surface (pipeline conditions, LLC docs, track-record
+// docs) since they all live in one `documents` table, keyed by the doc id.
+router.delete('/documents/:id', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id,filename,storage_provider,storage_ref,application_id,borrower_id,llc_id,
+              checklist_item_id,track_record_id,review_status,is_current,sharepoint_backed_up_at
+         FROM documents WHERE id=$1`, [req.params.id]);
+    const doc = r.rows[0];
+    if (!doc) return res.status(404).json({ error: 'not found' });
+    if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
+    // Permanent, irreversible deletion (and SharePoint-backup suppression) is
+    // more destructive than accept/reject, so gate it on the same capability the
+    // UI gates the Delete button on (`canComplete` = sign-off-capable roles) —
+    // an assigned loan_officer / software_setup is never shown the button and
+    // must not be able to delete via a direct API call.
+    if (!can(req.actor, 'sign_off_conditions'))
+      return res.status(403).json({ error: 'You do not have permission to permanently delete documents.' });
+
+    // Remove the stored bytes best-effort (never block the DB delete on a
+    // storage hiccup). local unlinks; s3/sharepoint providers are no-op removes.
+    try { if (doc.storage_ref) await storage.remove(doc.storage_ref); } catch (_) { /* orphan bytes are acceptable */ }
+
+    // Hard-delete the row. FKs into documents are ON DELETE SET NULL
+    // (borrowers.photo_id_document_id) so this never cascades unexpectedly.
+    await db.query(`DELETE FROM documents WHERE id=$1`, [doc.id]);
+
+    // If this was the current document on a checklist condition and nothing
+    // accepted remains, reopen the condition so it's re-requested (unless it was
+    // already signed off — a signed-off item stays; staff can reopen it
+    // explicitly). Mirrors the review endpoint's condition handling.
+    if (doc.checklist_item_id) {
+      const remain = await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current=true AND review_status='accepted' LIMIT 1`,
+        [doc.checklist_item_id]);
+      if (!remain.rows[0]) {
+        await db.query(
+          `UPDATE checklist_items SET status='outstanding', updated_at=now()
+            WHERE id=$1 AND status IN ('received','issue','requested') AND signed_off_at IS NULL`,
+          [doc.checklist_item_id]);
+        try { await enqueueChecklistStatusPush(doc.checklist_item_id); } catch (_) {}
+      }
+    }
+
+    // Removing CURRENT evidence un-does the downstream state the same way a
+    // reject does — deleting a mistake pending doc changes nothing, but deleting
+    // the live doc a verified LLC / track-record line stood on revokes that
+    // verification (its clean evidence no longer exists). Old/superseded versions
+    // (is_current=false) never disturb a verification.
+    if (doc.is_current && doc.llc_id) {
+      const wasVerified = await db.query(
+        `UPDATE llcs SET is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now()
+          WHERE id=$1 AND is_verified=true RETURNING id`, [doc.llc_id]);
+      if (wasVerified.rows[0]) await audit(req, 'unverify_llc', 'llc', doc.llc_id, { cause: 'document_deleted', documentId: doc.id });
+      try { await llcLib.syncLlcConditions(doc.llc_id, { reopen: true }); } catch (_) { /* best-effort */ }
+    }
+    if (doc.is_current && doc.track_record_id) {
+      const was = await db.query(
+        `UPDATE track_records SET verification_status='docs', is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now()
+          WHERE id=$1 AND is_verified=true RETURNING borrower_id`, [doc.track_record_id]);
+      if (was.rows[0]) {
+        await audit(req, 'unverify_track_record', 'track_record', doc.track_record_id, { cause: 'document_deleted', documentId: doc.id });
+        await db.query(
+          `UPDATE borrowers SET tier=(SELECT count(*) FROM track_records WHERE borrower_id=$1 AND is_verified=true AND (${RECENT_EXIT_SQL})) WHERE id=$1`,
+          [was.rows[0].borrower_id]);
+        try { await require('../lib/experience').syncExperienceChecklistForBorrower(was.rows[0].borrower_id); } catch (_) {}
+        try { await conditionEngine.evaluateBorrowerApplications(was.rows[0].borrower_id, { actor: req.actor, reason: 'track_record_doc_deleted' }); } catch (_) {}
+      }
+    }
+    await audit(req, 'delete_document', 'document', doc.id,
+      { filename: doc.filename, wasMirrored: !!doc.sharepoint_backed_up_at, llcId: doc.llc_id, trackRecordId: doc.track_record_id });
+    res.json({ ok: true, deleted: true, wasMirrored: !!doc.sharepoint_backed_up_at });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // The clean set of documents on a file: accepted + current only. Every export /
 // package path should draw from here so a rejected/superseded doc is never
 // included. Exported for reuse by the (future) TPR export builder.

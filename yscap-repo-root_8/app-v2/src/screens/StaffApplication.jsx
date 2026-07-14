@@ -397,6 +397,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                       {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(doc, 'accept')}>Accept</button>}
                       {completer && <button className="btn ghost small" title="Accept this document but keep the condition open — ask the borrower for one more" onClick={() => onReviewDoc(doc, 'accept_more')}>Accept +1 more</button>}
                       {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(doc, 'reject')}>Reject</button>}
+                      {completer && <button className="btn link small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => onReviewDoc(doc, 'delete')}>Delete</button>}
                     </>
                   ) : (
                     <>
@@ -423,6 +424,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
                     {completer && rs !== 'accepted' && <button className="btn primary small" onClick={() => onReviewDoc(d, 'accept')}>Accept</button>}
                     {completer && <button className="btn ghost small" title="Accept this document but keep the condition open — ask the borrower for one more" onClick={() => onReviewDoc(d, 'accept_more')}>Accept +1 more</button>}
                     {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
+                    {completer && <button className="btn link small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => onReviewDoc(d, 'delete')}>Delete</button>}
                   </div>
                 );
               })}
@@ -856,6 +858,7 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                             )}
                             {completer && rs !== 'accepted' && <button className="btn primary small" disabled={reviewBusy} onClick={() => review(s, 'accept')}>Accept</button>}
                             {rs !== 'rejected' && <button className="btn link small" disabled={reviewBusy} onClick={() => review(s, 'reject')}>Reject</button>}
+                            {completer && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={reviewBusy} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => review(s, 'delete')}>Delete</button>}
                           </>
                         ) : (
                           !l.is_verified && (
@@ -981,6 +984,14 @@ function StaffTrackRecordPanel({ app, role }) {
   // requires a reason and un-verifies the line item (its evidence no longer stands).
   const reviewTrDoc = useCallback(async (doc, action) => {
     let reason;
+    if (action === 'delete') {
+      if (!window.confirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
+      setTrBusy(doc.id); setTrMsg('');
+      try { await api.staffDeleteDoc(doc.id); setTrMsg('Document deleted for good.'); refreshTrs(); }
+      catch (e) { setTrMsg(e.message || 'Could not delete the document'); }
+      finally { setTrBusy(''); }
+      return;
+    }
     if (action === 'reject') {
       reason = window.prompt('Why is this document being rejected? The borrower is notified and the line item is un-verified until a new document is accepted.');
       if (reason == null || !reason.trim()) return;
@@ -1107,6 +1118,7 @@ function StaffTrackRecordPanel({ app, role }) {
                       <span className="pill small" style={rs === 'accepted' ? { borderColor: 'var(--ok)', color: 'var(--ok)' } : rs === 'rejected' ? { borderColor: 'var(--danger)', color: 'var(--danger)' } : undefined}>{rs}</span>
                       {completerTR && rs !== 'accepted' && <button className="btn primary small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'accept')}>Accept</button>}
                       {rs !== 'rejected' && <button className="btn link small" disabled={trBusy === d.id} onClick={() => reviewTrDoc(d, 'reject')}>Reject</button>}
+                      {completerTR && <button className="btn link small" style={{ color: 'var(--danger)' }} disabled={trBusy === d.id} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewTrDoc(d, 'delete')}>Delete</button>}
                       {rs === 'rejected' && d.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 18 }}>{d.rejection_reason}</span>}
                     </div>
                   );
@@ -1611,6 +1623,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                           onClick={() => onReviewDoc(d, 'accept_more')}>Accept +1 more</button>
                       )}
                       {rs !== 'rejected' && <button className="btn link small" onClick={() => onReviewDoc(d, 'reject')}>Reject</button>}
+                      {completer && <button className="btn link small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => onReviewDoc(d, 'delete')}>Delete</button>}
                     </div>
                   );
                 })}
@@ -1837,6 +1850,16 @@ export default function StaffApplication() {
   async function reviewDoc(doc, action) {
     if (busyAct) return;
     let reason, opts;
+    // Permanent delete — for a mistake-upload. Removes it for good (bytes + row)
+    // and, crucially, keeps it out of SharePoint (a deleted doc was never needed).
+    if (action === 'delete') {
+      if (!window.confirm(`Permanently delete "${doc.filename || 'this document'}"?\n\nThis removes it for good and it will NOT be synced to SharePoint. Use this only for a document uploaded by mistake.`)) return;
+      setBusyAct('review');
+      try { await api.staffDeleteDoc(doc.id); flash('Document deleted for good.'); await load(); }
+      catch (e) { setErr(e.message); }
+      finally { setBusyAct(''); }
+      return;
+    }
     if (action === 'reject') {
       reason = window.prompt('Why is this document being rejected? The borrower will see this and can upload a new version.');
       if (reason == null || !reason.trim()) return;
@@ -2402,6 +2425,7 @@ export default function StaffApplication() {
                   </button>
                   {d.is_current && rs !== 'accepted' && canComplete(role) && <button className="btn primary small" onClick={() => reviewDoc(d, 'accept')}>Accept</button>}
                   {d.is_current && rs !== 'rejected' && <button className="btn ghost small" onClick={() => reviewDoc(d, 'reject')}>Reject</button>}
+                  {canComplete(role) && <button className="btn ghost small" style={{ color: 'var(--danger)' }} title="Permanently delete — for a mistake upload (never synced to SharePoint)" onClick={() => reviewDoc(d, 'delete')}>Delete</button>}
                 </div>
               </div>
               );

@@ -257,6 +257,9 @@ export const api = {
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
   staffAppDocuments:(id) => req('GET', `/api/staff/applications/${id}/documents`),
   staffReviewDoc:   (id, action, reason, opts) => req('POST', `/api/staff/documents/${id}/review`, { action, reason, ...(opts || {}) }),
+  // Permanently delete a document (mistake-upload) — removes bytes + row, never
+  // syncs to SharePoint. Reopens the condition if nothing accepted remains.
+  staffDeleteDoc:   (id) => req('DELETE', `/api/staff/documents/${id}`),
   staffDownloadDoc: (id) => download(`/api/staff/documents/${id}/download`),
   staffBorrowerSearch: (q) => req('GET', '/api/staff/borrowers/search?q=' + encodeURIComponent(q)),
   // #83 — loan-officer borrower management
