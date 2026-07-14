@@ -214,7 +214,9 @@ function render(p) {
             ' &nbsp;&middot;&nbsp; ' +
             '<a href="' + esc(COMPANY.site) + '" style="color:' + BRAND.tealDk + ';text-decoration:none;">yscapgroup.com</a>' +
           '</p>' +
-          '<p style="margin:12px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.5;color:' + BRAND.soft2 + ';">' +
+          /* legal fine print stays AA-legible on the soft footer: muted (6.5:1),
+             not soft2 (~3.5:1 at 11px) — disclosure copy must be readable. */
+          '<p style="margin:12px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:1.5;color:' + BRAND.muted + ';">' +
             'Sent by PILOT, the ' + esc(COMPANY.name) + ' investor platform, regarding a business-purpose loan file. ' +
             'For business use only; not an offer to enter into an interest-rate lock or a commitment to lend.' +
           '</p>' +
