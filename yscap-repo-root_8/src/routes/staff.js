@@ -2178,8 +2178,12 @@ async function canSeeBorrowerId(req, borrowerId) {
   if (seesAllBorrowers(req)) return true;
   if (!borrowerId) return false;
   const r = await db.query(
+    // Match a file where this person is the primary OR the CO-borrower — a
+    // co-borrower is a party on the staffer's file, so an assigned loan officer /
+    // processor may see (and invite) them. Fails-safe: still requires the staffer
+    // be assigned to a file the borrower is actually on.
     `SELECT 1 FROM applications
-      WHERE borrower_id=$1 AND deleted_at IS NULL
+      WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL
         AND (loan_officer_id=$2 OR processor_id=$2
              OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))
       LIMIT 1`,
