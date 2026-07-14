@@ -4440,6 +4440,13 @@ router.delete('/documents/:id', async (req, res) => {
     const doc = r.rows[0];
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
+    // Permanent, irreversible deletion (and SharePoint-backup suppression) is
+    // more destructive than accept/reject, so gate it on the same capability the
+    // UI gates the Delete button on (`canComplete` = sign-off-capable roles) —
+    // an assigned loan_officer / software_setup is never shown the button and
+    // must not be able to delete via a direct API call.
+    if (!can(req.actor, 'sign_off_conditions'))
+      return res.status(403).json({ error: 'You do not have permission to permanently delete documents.' });
 
     // Remove the stored bytes best-effort (never block the DB delete on a
     // storage hiccup). local unlinks; s3/sharepoint providers are no-op removes.
