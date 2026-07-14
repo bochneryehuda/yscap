@@ -59,7 +59,7 @@ export default function StaffLogin() {
               <div className="field">
                 <div className="field-row">
                   <label>Password</label>
-                  <button className="btn link small pw-forgot" onClick={() => nav('/forgot')}>Forgot password?</button>
+                  <button className="btn link small pw-forgot" onClick={() => nav('/internal/forgot')}>Forgot password?</button>
                 </div>
                 <PasswordInput
                   value={password}

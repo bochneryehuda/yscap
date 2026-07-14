@@ -80,10 +80,13 @@ export default function App() {
           {/* public */}
           <Route path="/login" element={<Login />} />
           <Route path="/verify" element={<Verify />} />
-          <Route path="/forgot" element={<Forgot />} />
+          <Route path="/forgot" element={<Forgot scope="borrower" />} />
           <Route path="/reset" element={<Reset />} />
           <Route path="/accept" element={<Accept />} />
           <Route path="/internal/login" element={<StaffLogin />} />
+          {/* Staff console has its OWN reset screen so a dual borrower+staff
+              account is never sent two different reset emails (owner 2026-07-14). */}
+          <Route path="/internal/forgot" element={<Forgot scope="staff" />} />
 
           {/* borrower */}
           <Route path="/dashboard" element={<Private><Dashboard /></Private>} />
