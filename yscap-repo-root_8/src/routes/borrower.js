@@ -95,11 +95,14 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
 router.get('/profile', async (req, res) => {
   const r = await db.query(
     `SELECT id,first_name,last_name,email,cell_phone,date_of_birth,ssn_last4,fico,
-            current_address,mailing_address,years_at_residence,months_at_residence,
+            current_address,mailing_address,years_at_residence,months_at_residence,residence_since,
             housing_status,housing_payment,citizenship,marital_status,
             photo_id_document_id,contact_type,tier
      FROM borrowers WHERE id=$1`, [me(req)]);
-  res.json(r.rows[0] || {});
+  // Live residence duration from the anchored move-in date (owner-directed
+  // 2026-07-14) — the stored years/months are recomputed to "now" so a profile
+  // opened months after the count was entered shows the real elapsed time.
+  res.json(require('../lib/residence').withLiveResidence(r.rows[0]) || {});
 });
 
 // Update the borrower's canonical profile. The client sends camelCase keys and
@@ -122,6 +125,14 @@ router.put('/profile', async (req, res) => {
   if (b.maritalStatus !== undefined) fields.marital_status = clean(b.maritalStatus);
   if (b.yearsAtResidence !== undefined) fields.years_at_residence = (b.yearsAtResidence === '' || b.yearsAtResidence == null) ? null : Number(b.yearsAtResidence);
   if (b.monthsAtResidence !== undefined) fields.months_at_residence = (b.monthsAtResidence === '' || b.monthsAtResidence == null) ? null : parseInt(b.monthsAtResidence, 10);
+  // Anchor the move-in DATE whenever a fresh count is entered (owner-directed
+  // 2026-07-14): the count is a snapshot as of NOW; storing residence_since lets
+  // every later read compute the live duration without the borrower re-typing.
+  if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) {
+    const y = fields.years_at_residence != null ? fields.years_at_residence : null;
+    const m = fields.months_at_residence != null ? fields.months_at_residence : null;
+    fields.residence_since = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
+  }
   if (b.housingStatus !== undefined) fields.housing_status = clean(b.housingStatus);
   if (b.housingPayment !== undefined) fields.housing_payment = (b.housingPayment === '' || b.housingPayment == null) ? null : Number(String(b.housingPayment).replace(/[^0-9.]/g, '')) || null;
   if (b.currentAddress !== undefined) fields.current_address = b.currentAddress ? JSON.stringify(b.currentAddress) : null;
@@ -190,7 +201,7 @@ router.post('/profile/photo-id', async (req, res) => {
 router.get('/applications', async (req, res) => {
   const r = await db.query(
     `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.property_address,a.loan_amount,
-            a.loan_officer_name,a.submitted_at,a.created_at,a.llc_id,
+            a.loan_officer_name,a.submitted_at,a.created_at,a.llc_id,a.draw_setup_requested_at,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both')) AS borrower_total,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('received','satisfied')) AS borrower_done
      FROM applications a WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ORDER BY a.created_at DESC`, [me(req)]);
@@ -202,12 +213,23 @@ router.get('/applications', async (req, res) => {
 router.post('/applications/:id/request-draw', async (req, res) => {
   const own = await db.query(
     `SELECT a.id,a.status,a.property_address,a.ys_loan_number,a.loan_officer_id,a.processor_id,
+            a.draw_setup_requested_at,
             b.first_name,b.last_name,b.email
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
       WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`, [req.params.id, me(req)]);
   const a = own.rows[0];
   if (!a) return res.status(404).json({ error: 'not found' });
   if (a.status !== 'funded') return res.status(400).json({ error: 'Draws can be requested once your loan is funded.' });
+  // ONE request per file (owner-directed 2026-07-14): repeat clicks used to
+  // fan out the full email set every time. The atomic claim below wins exactly
+  // once — every later call answers ok/already with the original timestamp and
+  // sends NOTHING.
+  const claim = await db.query(
+    `UPDATE applications SET draw_setup_requested_at=now(), updated_at=now()
+      WHERE id=$1 AND draw_setup_requested_at IS NULL RETURNING draw_setup_requested_at`, [a.id]);
+  if (!claim.rows[0]) {
+    return res.json({ ok: true, already: true, requestedAt: a.draw_setup_requested_at });
+  }
   const addr = (a.property_address && (a.property_address.oneLine || a.property_address.line1 || a.property_address.street)) || 'your property';
   const borrowerName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
   const team = [...new Set([a.loan_officer_id, a.processor_id].filter(Boolean))];
@@ -276,7 +298,8 @@ router.post('/applications', async (req, res) => {
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
-  await generateChecklist(appId, me(req), b.program, b.loanType, { isAssignment: !!b.isAssignment });
+  // Invariant chokepoint (root fix 2026-07-14) — inputs derive from the saved row.
+  await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'borrower_create' });
   // Auto-apply the saved appraisal card to this new file (no tap) when the
   // borrower previously chose "save to next file". Best-effort; never blocks.
   try { await apprCard.autoApplySavedCardIfOptedIn(appId, me(req)); } catch (_) {}
@@ -1267,12 +1290,15 @@ async function notifyTeamOfChangeRequests(appId, requested) {
     const row = a.rows[0]; if (!row) return;
     const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
     const fields = requested.map((r) => r.field_label).join(', ');
+    // Before → after for each requested field, so the team sees exactly what is
+    // being asked without opening the file.
+    const changeLines = requested.map((r) => changeRequests.describeChange(r)).join('; ');
     const ctx = await notify.fileContext(appId);
     for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
       await notify.notifyStaff(sid, {
         type: 'change_request',
         title: `${who} requested a change to ${fields}`,
-        body: `${ctx ? ctx.label : 'A file'} — review the requested change and approve or reject it.`,
+        body: `${ctx ? ctx.label : 'A file'} — ${changeLines}. Review and approve or reject it.`,
         meta: (ctx && ctx.meta) || undefined,
         applicationId: appId, link: `/internal/app/${appId}`, ctaLabel: 'Review the change' });
     }
@@ -1882,6 +1908,14 @@ router.post('/documents', async (req, res) => {
           applicationId: b.applicationId,
           link: `/internal/app/${b.applicationId}`,
           ctaLabel: 'Review the document',
+          // Attach the document itself so the loan team can review it straight
+          // from the email (owner-directed). Always LIST the file; attach the
+          // bytes only when small enough for the mail providers (Graph caps inline
+          // attachments ~3 MB) — larger files are still one tap away in the portal.
+          files: [b.filename],
+          attachments: buf.length <= 3 * 1024 * 1024
+            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: b.dataBase64 }]
+            : undefined,
         };
         const targets = new Set([row.loan_officer_id, row.processor_id].filter(Boolean));
         for (const sid of targets) await notify.notifyStaff(sid, opts);
@@ -2419,7 +2453,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
     } catch (e) { console.error('[apply] co-borrower invite failed:', db.describeError(e)); }
   }
 
-  await generateChecklist(appId, me(req), b.program, b.loanType, { isAssignment: !!b.isAssignment });
+  // Invariant chokepoint (root fix 2026-07-14) — inputs derive from the saved row.
+  await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'draft_submit' });
   // Auto-apply the saved appraisal card to this new file (no tap) when the
   // borrower previously chose "save to next file". Best-effort; never blocks.
   try { await apprCard.autoApplySavedCardIfOptedIn(appId, me(req)); } catch (_) {}

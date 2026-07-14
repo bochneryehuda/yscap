@@ -13,7 +13,7 @@ const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const cfg = require('../config');
 const { redactPII } = require('../lib/redact');
-const { generateChecklist } = require('./borrower');
+// (checklist generation now flows through the ensureFileConditions chokepoint)
 
 router.post('/', async (req, res) => {
   // Fail CLOSED: with no key configured this endpoint would accept anonymous
@@ -39,7 +39,17 @@ router.post('/', async (req, res) => {
     const b = await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship)
        VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
+       ON CONFLICT (email) DO UPDATE SET
+         -- A real submitted name heals a placeholder row; never a real one.
+         first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
+                          AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
+                         THEN EXCLUDED.first_name ELSE borrowers.first_name END,
+         last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')
+                         AND lower(btrim(EXCLUDED.last_name)) NOT IN ('','unknown')
+                        THEN EXCLUDED.last_name ELSE borrowers.last_name END,
+         cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
+         citizenship=COALESCE(borrowers.citizenship,EXCLUDED.citizenship),
+         updated_at=now() RETURNING id`,
       [p.firstName || p.b1First || 'Unknown', p.lastName || p.b1Last || 'Unknown', email,
        p.cellPhone || p.b1Phone || null, p.citizenship || p.b1Citizen || null]);
     const borrowerId = b.rows[0].id;
@@ -59,16 +69,22 @@ router.post('/', async (req, res) => {
       if (o.rows[0]) officerId = o.rows[0].id;
     }
     // 3) create the application (distinct property address)
+    // Assignment fields flow through so ensureFileConditions generates the
+    // assignment condition on an intake assignment deal (audit finding #3).
+    const isAssign = !!(p.isAssignment || p.assignment);
     const a = await client.query(
       `INSERT INTO applications
          (borrower_id,loan_officer_id,loan_officer_name,program,loan_type,property_address,property_type,units,
-          purchase_price,as_is_value,arv,rehab_budget,loan_amount,ltv,source,raw_intake,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'website_form',$15,'new',now()) RETURNING id`,
+          purchase_price,as_is_value,arv,rehab_budget,loan_amount,ltv,
+          is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'website_form',$18,'new',now()) RETURNING id`,
       [borrowerId, officerId, officerName, p.program || p.dealType || null, p.loanType || p.purpose || null,
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
        num(p.purchasePrice || p.price), num(p.asIsValue || p.asIs), num(p.arv),
-       num(p.rehabBudget || p.rehab), num(p.loanAmount), num(p.ltv), JSON.stringify(redactPII(p))]);
+       num(p.rehabBudget || p.rehab), num(p.loanAmount), num(p.ltv),
+       isAssign, num(p.underlyingContractPrice || p.underlyingPrice), num(p.assignmentFee),
+       JSON.stringify(redactPII(p))]);
     const appId = a.rows[0].id;
     await client.query('COMMIT');
 
@@ -78,7 +94,10 @@ router.post('/', async (req, res) => {
     // create a DUPLICATE application.
     res.status(201).json({ ok: true, borrowerId, applicationId: appId, assigned: !!officerId });
     try {
-      await generateChecklist(appId, borrowerId, p.program || p.dealType, p.loanType || p.purpose);
+      // Invariant chokepoint (root fix 2026-07-14): derives program/loan
+      // type/assignment from the SAVED row — this caller used to pass no opts
+      // at all, so an intake assignment deal never got its assignment condition.
+      await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'intake' });
       // Create + link the ClickUp task in the correct folder the moment a file is
       // started from the public website form too (#92) — the same create-on-start
       // wired into the staff + borrower origination paths. Best-effort.

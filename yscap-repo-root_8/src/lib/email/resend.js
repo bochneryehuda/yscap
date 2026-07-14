@@ -8,12 +8,18 @@ const cfg = require('../../config');
 
 module.exports = {
   name: 'resend',
-  async sendMail({ to, subject, text, html }) {
+  async sendMail({ to, subject, text, html, attachments }) {
     if (!cfg.resendApiKey) {
       throw new Error('RESEND_API_KEY is not set — add it in the Render environment to send email.');
     }
     const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
     if (!recipients.length) throw new Error('no recipient');
+    // Resend attachments: { filename, content (base64) }. Size-gating is the
+    // caller's job (the doc-upload site only attaches ≤3 MB and always lists the
+    // filename); here we just map whatever survived that gate.
+    const atts = (Array.isArray(attachments) ? attachments : [])
+      .filter((a) => a && a.filename && a.content)
+      .map((a) => ({ filename: String(a.filename), content: String(a.content) }));
 
     // Bound the request so a hung network call can't wedge the send path.
     const ac = new AbortController();
@@ -26,13 +32,13 @@ module.exports = {
           Authorization: `Bearer ${cfg.resendApiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
+        body: JSON.stringify(Object.assign({
           from: cfg.notifyFrom,
           to: recipients,
           subject,
           text,
           html,
-        }),
+        }, atts.length ? { attachments: atts } : {})),
         signal: ac.signal,
       });
     } catch (e) {

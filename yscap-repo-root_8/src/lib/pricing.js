@@ -25,7 +25,12 @@ try {
 function enginesReady() { return !!(YSP && GSP && YSTitle); }
 
 const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program' };
+// Hardcoded fee fallback (used only if the company-settings cache is stone
+// cold). Company defaults (Pricing Admin Center) override these for every
+// not-yet-registered file; a per-file adminPricing override still wins over
+// both. The engine MATH is untouched — this is the input/fee-default layer.
 const FEES = { lender: 2195, credit: 150, appraisal: 800 };
+const pricingSettings = require('./pricing-settings');
 
 /* ---- small coercers ---- */
 function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
@@ -164,7 +169,11 @@ function setEngineMarkup(program, value) {
 /* ---- normalize an engine result into one UI-agnostic quote shape ---- */
 function normalize(program, input, ev, ladder) {
   const s = ev.sizing || {};
-  const defaultOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT) : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
+  const cd = pricingSettings.current();   // company-wide defaults (or literals)
+  // Origination default: per-file override → COMPANY default → engine constant.
+  const engineOrigPct = (program === 'gold' ? (GSP.constants && GSP.constants.ORIG_PCT) : (YSP.constants && YSP.constants.ORIG_PCT)) || 0.0125;
+  const companyOrigPct = program === 'gold' ? cd.origGoldPct : cd.origStdPct;
+  const defaultOrigPct = (companyOrigPct != null ? companyOrigPct / 100 : engineOrigPct);
   const origPct = percentOverride(input, program === 'gold' ? 'origGoldPct' : 'origStdPct', defaultOrigPct);
   // Rounding policy (owner-directed 2026-07-09): the financed loan is reported in
   // WHOLE DOLLARS, floored DOWN — never lend more than the engine sized. The
@@ -184,11 +193,14 @@ function normalize(program, input, ev, ladder) {
   const state = clean(input.state).toUpperCase();
   const title = YSTitle.estimate(state, totalLoan, input.loanType);
   const titleAutoTotal = num(title.total);
+  // Title: per-file override → COMPANY flat title (if set) → per-state estimate.
   const titleOverridden = hasInput(input, 'titleFee');
-  const titleTotal = titleOverridden ? num(input.titleFee) : titleAutoTotal;
-  const lenderFee = numberOverride(input, 'lenderFee', FEES.lender);
-  const creditFee = numberOverride(input, 'creditFee', FEES.credit);
-  const appraisalFee = numberOverride(input, 'appraisalFee', FEES.appraisal);
+  const titleTotal = titleOverridden ? num(input.titleFee)
+    : (cd.titleFee != null ? num(cd.titleFee) : titleAutoTotal);
+  // Flat fees: per-file override → COMPANY default → hardcoded literal.
+  const lenderFee = numberOverride(input, 'lenderFee', cd.lenderFee != null ? cd.lenderFee : FEES.lender);
+  const creditFee = numberOverride(input, 'creditFee', cd.creditFee != null ? cd.creditFee : FEES.credit);
+  const appraisalFee = numberOverride(input, 'appraisalFee', cd.appraisalFee != null ? cd.appraisalFee : FEES.appraisal);
   const origination = totalLoan > 0 ? round2(totalLoan * origPct) : 0;
   const assignmentExcess = num(s.assignmentExcessOOP) || num(ev.assignment && ev.assignment.excessOOP);
   const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal);
@@ -301,7 +313,15 @@ function normalize(program, input, ev, ladder) {
 /* ---- quote one program (no persistence) ---- */
 function quoteProgram(program, input) {
   if (!enginesReady()) throw new Error('pricing engines unavailable' + (loadErr ? ': ' + loadErr : ''));
-  const m = markupOverride(input, program);
+  // Markup: per-file override → COMPANY default → engine's built-in markup.
+  // Applied through the SAME frozen setMarkup hook and reset in finally — the
+  // engine math is never changed, only which markup input it runs with.
+  let m = markupOverride(input, program);
+  if (m == null) {
+    const cd = pricingSettings.current();
+    const companyMarkup = program === 'gold' ? cd.markupGoldPct : cd.markupStdPct;
+    if (companyMarkup != null) m = num(companyMarkup) / 100;
+  }
   if (m != null) setEngineMarkup(program, m);
   if (program === 'gold') {
     try {

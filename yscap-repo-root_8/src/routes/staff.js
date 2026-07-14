@@ -405,11 +405,13 @@ router.get('/exceptions', async (req, res) => {
     const r = await db.query(
       `SELECT
          count(*) FILTER (WHERE a.loan_officer_id IS NULL AND a.status NOT IN ('funded','declined','withdrawn'))::int AS unassigned,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
+         -- Funded/terminal files stay quiet in every outside-the-file rollup
+         -- (owner-directed 2026-07-14); their conditions remain inside the file.
+         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
+         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
+         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
          count(*) FILTER (WHERE EXISTS(SELECT 1 FROM messages m WHERE m.application_id=a.id AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL))::int AS unread_messages,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
+         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
          count(*) FILTER (WHERE EXISTS(SELECT 1 FROM post_closing_items p WHERE p.application_id=a.id AND p.status='exception'))::int AS post_closing_exceptions
        FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params);
     res.json(r.rows[0]);
@@ -431,6 +433,12 @@ router.get('/my-tasks', async (req, res) => {
        JOIN borrowers b ON b.id=a.borrower_id
       WHERE a.deleted_at IS NULL
         AND ci.status NOT IN ('satisfied')
+        -- FUNDED/terminal files stay quiet OUTSIDE the file (owner-directed
+        -- 2026-07-14): their open conditions remain visible INSIDE the file,
+        -- but they never populate the task list again. Post-closing items are
+        -- the one exception — they stay live even after funding.
+        AND (a.status NOT IN ('funded','declined','withdrawn')
+             OR ci.phase = 'post_closing' OR ci.category = 'post_closing')
         AND (ci.assignee_staff_id=$1
              OR (ci.assignee_staff_id IS NULL AND ci.role_scope='loan_officer' AND a.loan_officer_id=$1)
              OR (ci.assignee_staff_id IS NULL AND ci.role_scope='processor' AND a.processor_id=$1))
@@ -505,14 +513,21 @@ router.post('/applications', async (req, res) => {
       const p = await db.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [b.processorId]);
       if (p.rows[0]) processorId = p.rows[0].id;
     }
-    // A processor who opens a file is assigned to it, so it stays on their desk
-    // (otherwise they'd immediately lose sight of the file they just created).
-    if (!processorId && req.actor.role === 'processor') processorId = req.actor.id;
+    // NO automatic processor assignment (owner-directed 2026-07-14): a file's
+    // processor is set ONLY by an explicit pick (the dropdown above) or by the
+    // ClickUp Processor Email field mirroring in. The old "a processor who
+    // opens a file is assigned to it" default is exactly how Lisa Katz (role
+    // processor, but the DRAW coordinator) ended up auto-assigned on a file
+    // she merely created — that must never happen.
 
     // Assignment purchases: capture the underlying price + fee (like the
     // borrower path) so leverage/pricing size off seller price + fee and the
     // assignment doc is generated.
-    const isAssignment = !!b.isAssignment && Number(b.underlyingContractPrice) > 0;
+    // The TICKED flag is the truth (root fix 2026-07-14): requiring the
+    // underlying price too silently stored is_assignment=false when staff
+    // ticked assignment without typing the price yet — so the assignment
+    // condition never generated. The price is its own field, filled when known.
+    const isAssignment = !!b.isAssignment;
     const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
     const assignFee = isAssignment ? (b.assignmentFee || null) : null;
     const purchasePrice = isAssignment
@@ -535,8 +550,15 @@ router.post('/applications', async (req, res) => {
        processorId, isAssignment, underlying, assignFee]);
     const appId = ins.rows[0].id;
 
-    try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType, { isAssignment }); }
-    catch (e) { console.error('[staff-origination] checklist failed:', db.describeError(e)); }
+    try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'staff_create' }); }
+    catch (e) {
+      // NEVER silent (root fix 2026-07-14): a staff file with no checklist was
+      // a 201 + a console line nobody saw. It still must not fail the create,
+      // but it now leaves an audit trail; the db/095 boot reconciler + the
+      // zero-item health tripwire catch anything that slips through.
+      console.error('[staff-origination] checklist failed:', db.describeError(e));
+      try { await audit(req, 'conditions_generation_failed', 'application', appId, { error: String(e.message || e).slice(0, 300) }); } catch (_) {}
+    }
     // Optionally add a CO-BORROWER right at creation (#98) — same identity-graph
     // linking as adding one later. A bad co-borrower payload must not fail the
     // whole file (it's already created); surface it as a soft warning instead.
@@ -681,8 +703,12 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
         `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
          ON CONFLICT (email) DO UPDATE SET
-           first_name=COALESCE(NULLIF(borrowers.first_name,''),EXCLUDED.first_name),
-           last_name=COALESCE(NULLIF(borrowers.last_name,''),EXCLUDED.last_name),
+           -- Staff-typed identity beats a PLACEHOLDER ('Unknown'/'Co-Borrower' are
+           -- our own not-null fillers, never data) — but never a real stored name.
+           first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
+                           THEN EXCLUDED.first_name ELSE borrowers.first_name END,
+           last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')
+                          THEN EXCLUDED.last_name ELSE borrowers.last_name END,
            cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
            date_of_birth=COALESCE(borrowers.date_of_birth,EXCLUDED.date_of_birth),
            ssn_encrypted=COALESCE(borrowers.ssn_encrypted,EXCLUDED.ssn_encrypted),
@@ -735,6 +761,38 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     if (e.status) return res.status(e.status).json({ error: e.message });
     res.status(500).json({ error: 'server error', detail: e.message });
   }
+});
+
+// #30 — inline-fill the CO-BORROWER's missing identity fields from the file's
+// separate "Co-borrower completeness" section, mirroring /complete-fields for
+// the primary borrower. Partial update of the linked co-borrower's `borrowers`
+// row; SSN + email stay in the Co-borrower panel (secure/link flows), so this
+// only handles name / phone / date of birth.
+router.post('/applications/:id/co-borrower-fields', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const ar = await db.query(`SELECT co_borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+    if (!ar.rows[0]) return res.status(404).json({ error: 'not found' });
+    const coId = ar.rows[0].co_borrower_id;
+    if (!coId) return res.status(409).json({ error: 'no co-borrower on this file' });
+    const vals = [coId]; const sets = [];
+    const put = (col, v) => { vals.push(v); sets.push(`${col}=$${vals.length}`); };
+    if (typeof b.co_name === 'string' && b.co_name.trim()) {
+      const parts = b.co_name.trim().split(/\s+/);
+      put('first_name', parts.shift());
+      // Only set last_name when a second token was actually given — a single-word
+      // entry shouldn't duplicate the first name into the last (it would falsely
+      // read as a complete name; leaving last_name keeps completeness flagging it).
+      if (parts.length) put('last_name', parts.join(' '));
+    }
+    if (typeof b.co_phone === 'string' && b.co_phone.trim()) put('cell_phone', b.co_phone.trim());
+    if (b.co_dob) put('date_of_birth', b.co_dob);
+    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+    sets.push('updated_at=now()');
+    await db.query(`UPDATE borrowers SET ${sets.join(', ')} WHERE id=$1`, vals);
+    await audit(req, 'complete_co_borrower_fields', 'application', req.params.id, { fields: sets.length - 1, coBorrowerId: coId });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
 });
 
 // #81 — the subject vesting LLC's borrower-owners and each one's ownership %.
@@ -1651,11 +1709,13 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
       await audit(req, 'approve_change_request', 'application', cr.application_id,
         { field: applied.field, from: applied.oldValue, to: applied.newValue });
     } catch (_) {}
-    // Tell the borrower their requested change was accepted (borrower-safe copy).
+    // Tell the borrower their requested change was accepted (borrower-safe copy),
+    // spelling out the exact before → after that is now on file.
     try {
+      const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
         type: 'change_request', title: 'Your requested change was approved',
-        body: `Your loan team approved your update to ${cr.field_label}.`,
+        body: `Your loan team approved your update to ${cr.field_label}. ${change} is now on file.`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
     res.json({ ok: true, applied });
@@ -1669,7 +1729,7 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
 router.post('/change-requests/:cid/reject', async (req, res) => {
   const note = String((req.body || {}).note || '').trim() || null;
   try {
-    const cr = (await db.query(`SELECT application_id, field_label, status FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
+    const cr = (await db.query(`SELECT application_id, field, field_label, old_value, new_value, status FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
     if (!cr) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
     if (cr.status !== 'pending') return res.status(409).json({ error: `this request is already ${cr.status}` });
@@ -1683,9 +1743,10 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
     if (!upd.rows[0]) return res.status(409).json({ error: 'this request was just decided by someone else' });
     await audit(req, 'reject_change_request', 'application', cr.application_id, { field: cr.field_label });
     try {
+      const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
         type: 'change_request', title: 'Update on your requested change',
-        body: `Your loan team reviewed your requested change to ${cr.field_label}.`,
+        body: `Your loan team reviewed your requested change (${change}) and it was not applied${note ? `: ${note}` : '. Reach out if you have questions.'}`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
     res.json({ ok: true });
@@ -2199,7 +2260,7 @@ router.get('/borrowers/:id', async (req, res) => {
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.date_of_birth,
               b.ssn_last4, b.fico, b.citizenship, b.marital_status, b.dependents_count, b.tier,
-              b.current_address, b.mailing_address, b.years_at_residence, b.months_at_residence,
+              b.current_address, b.mailing_address, b.years_at_residence, b.months_at_residence, b.residence_since,
               b.housing_status, b.housing_payment, b.contact_type, b.primary_officer_id,
               b.photo_id_document_id, b.created_at, b.last_seen_at,
               (SELECT last_login_at FROM borrower_auth WHERE borrower_id=b.id) AS last_login_at,
@@ -2210,7 +2271,8 @@ router.get('/borrowers/:id', async (req, res) => {
         WHERE b.id=$1`,
       [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-    res.json(r.rows[0]);
+    // Live residence duration from the anchored move-in date (owner-directed 2026-07-14).
+    res.json(require('../lib/residence').withLiveResidence(r.rows[0]));
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -3632,9 +3694,11 @@ router.get('/leads', async (req, res) => {
     const params = seesAll(req) ? [] : [req.actor.id];
     const r = await db.query(
       `SELECT l.id,l.tool,l.name,l.email,l.phone,l.subject,l.message,l.payload,l.status,
-              l.officer_id,l.created_at, s.full_name AS officer_name
+              l.officer_id,l.created_at,l.next_follow_up,l.application_id,
+              s.full_name AS officer_name,
+              (SELECT count(*)::int FROM lead_notes ln WHERE ln.lead_id=l.id) AS note_count
          FROM leads l LEFT JOIN staff_users s ON s.id=l.officer_id
-         ${where} ORDER BY l.created_at DESC LIMIT 300`, params);
+         ${where} ORDER BY (l.status='new') DESC, COALESCE(l.next_follow_up,'9999-12-31') ASC, l.created_at DESC LIMIT 300`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3653,10 +3717,42 @@ router.patch('/leads/:id', async (req, res) => {
   const sets = [], vals = []; let i = 1;
   if (b.status !== undefined) { sets.push(`status=$${i++}`); vals.push(b.status); }
   if (b.officerId !== undefined) { sets.push(`officer_id=$${i++}`); vals.push(b.officerId || null); }
+  if (b.nextFollowUp !== undefined) { sets.push(`next_follow_up=$${i++}`); vals.push(b.nextFollowUp || null); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try { await db.query(`UPDATE leads SET ${sets.join(',')} WHERE id=$${i}`, vals); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Lead CRM: per-lead notes / contact log. Same horizontal scope as PATCH — a
+// non-privileged officer only touches their own or an unassigned lead.
+async function leadInScope(req, leadId) {
+  if (seesAll(req)) return true;
+  const r = await db.query(`SELECT 1 FROM leads WHERE id=$1 AND (officer_id=$2 OR officer_id IS NULL)`, [leadId, req.actor.id]);
+  return !!r.rows[0];
+}
+router.get('/leads/:id/notes', async (req, res) => {
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT ln.id, ln.body, ln.created_at, s.full_name AS staff_name
+         FROM lead_notes ln LEFT JOIN staff_users s ON s.id=ln.staff_id
+        WHERE ln.lead_id=$1 ORDER BY ln.created_at DESC LIMIT 200`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/leads/:id/notes', async (req, res) => {
+  const body = String((req.body || {}).body || '').trim();
+  if (!body) return res.status(400).json({ error: 'a note is required' });
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const ins = await db.query(
+      `INSERT INTO lead_notes (lead_id, staff_id, body) VALUES ($1,$2,$3)
+       RETURNING id, body, created_at`, [req.params.id, req.actor.id, body.slice(0, 4000)]);
+    // Touch the lead so it re-sorts and a fresh note nudges it out of "new".
+    await db.query(`UPDATE leads SET updated_at=now(), status=CASE WHEN status='new' THEN 'contacted' ELSE status END WHERE id=$1`, [req.params.id]);
+    res.status(201).json({ ok: true, note: ins.rows[0] });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- documents ----------------

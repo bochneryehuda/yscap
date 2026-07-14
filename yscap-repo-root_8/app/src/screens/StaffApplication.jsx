@@ -49,29 +49,32 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, hint: 'Enter via the secure SSN field on the borrower profile.' },
   { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'number' },
   { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
-  // #73 — when a co-borrower is linked, THEIR personal info is required too (not
-  // a condition — required fields). Filled in the Co-borrower panel (so edit:
-  // false here). Gated to payloads that actually carry the co-borrower join
-  // (the staff file), so they never show as spuriously-missing on the borrower's
-  // own completeness view.
-  ...((app.co_borrower_id && ('co_first_name' in app)) ? [
-    { key: 'co_name', label: 'Co-borrower name', ok: !!(app.co_first_name && app.co_last_name), edit: false, hint: 'Enter in the Co-borrower panel.' },
-    { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, hint: 'Enter in the Co-borrower panel.' },
-    { key: 'co_phone', label: 'Co-borrower phone', ok: !!app.co_cell_phone, edit: false, hint: 'Enter in the Co-borrower panel.' },
-    { key: 'co_dob', label: 'Co-borrower date of birth', ok: !!app.co_date_of_birth, edit: false, hint: 'Enter in the Co-borrower panel.' },
-    { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, hint: 'Enter in the Co-borrower panel (stored encrypted).' },
-  ] : []),
 ];
+
+// #30 — the co-borrower's own required identity fields, shown in a SEPARATE
+// "Co-borrower completeness" section (not mixed into the primary borrower's).
+// Name / phone / date of birth are inline-addable (+) via the co-borrower-fields
+// endpoint; email + SSN stay in the Co-borrower panel (set at link / secure
+// flow). Gated to the staff payload that carries the co-borrower join.
+const PLACEHOLDER_NAME = new Set(['', 'unknown', 'co-borrower', 'n/a', 'na', 'tbd']);
+const realName = (v) => !!v && !PLACEHOLDER_NAME.has(String(v).trim().toLowerCase());
+const CO_COMPLETENESS_FIELDS = (app) => ((app.co_borrower_id && ('co_first_name' in app)) ? [
+  { key: 'co_name', label: 'Co-borrower name', ok: realName(app.co_first_name) && realName(app.co_last_name), type: 'text' },
+  { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, hint: 'Set in the Co-borrower panel.' },
+  { key: 'co_phone', label: 'Co-borrower phone', ok: !!app.co_cell_phone, type: 'tel' },
+  { key: 'co_dob', label: 'Co-borrower date of birth', ok: !!app.co_date_of_birth, type: 'date' },
+  { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, hint: 'Enter in the Co-borrower panel (stored encrypted).' },
+] : []);
 
 /* Application completeness with INLINE editing — click a missing field to enter
    it right there; it saves to the file (and syncs to ClickUp) without a form.
    `endpoint` differs for staff vs borrower; `onSaved` reloads the file. */
-function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Application completeness' }) {
+function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Application completeness', fields: fieldsProp }) {
   const [editing, setEditing] = useState(null);
   const [val, setVal] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const fields = COMPLETENESS_FIELDS(app, borrower);
+  const fields = fieldsProp || COMPLETENESS_FIELDS(app, borrower);
   const done = fields.filter((x) => x.ok).length;
   const missing = fields.filter((x) => !x.ok);
   const start = (f) => { setEditing(f.key); setVal(''); setErr(''); };
@@ -119,6 +122,17 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
         )}
     </div>
   );
+}
+
+// #30 — the co-borrower's own completeness card, separate from the primary
+// borrower's. Only renders when a co-borrower is linked. Name / phone / DOB are
+// inline-addable here; email + SSN point to the Co-borrower panel.
+function CoBorrowerCompleteness({ app, appId, onSaved }) {
+  const fields = CO_COMPLETENESS_FIELDS(app);
+  if (!fields.length) return null;
+  return <CompletenessPanel app={app} borrower={null} fields={fields}
+    endpoint={`/api/staff/applications/${appId}/co-borrower-fields`} onSaved={onSaved}
+    heading="Co-borrower completeness" />;
 }
 
 function Completeness({ app, borrower, appId, onSaved }) {
@@ -2125,6 +2139,7 @@ export default function StaffApplication() {
       <Section id="sec-application" title="Application details"
         info="What the borrower filled out — completeness at a glance, plus the editable deal numbers. Changing them here flows straight into pricing.">
       <Completeness app={app} borrower={borrower} appId={app.id} onSaved={load} />
+      <CoBorrowerCompleteness app={app} appId={app.id} onSaved={load} />
       <EditFileDetails app={app} onSaved={load} />
       <ClickupFileData app={app} />
       </Section>

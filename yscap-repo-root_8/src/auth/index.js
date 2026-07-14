@@ -166,7 +166,15 @@ router.post('/borrower/register', async (req, res) => {
     const b = await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
        VALUES ($1,$2,$3,$4)
-       ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
+       ON CONFLICT (email) DO UPDATE SET
+         -- The person typing their OWN name beats a placeholder row (e.g. a
+         -- sync-created 'Unknown Unknown') — never a real stored name.
+         first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
+                         THEN EXCLUDED.first_name ELSE borrowers.first_name END,
+         last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')
+                        THEN EXCLUDED.last_name ELSE borrowers.last_name END,
+         cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
+         updated_at=now() RETURNING id`,
       [firstName || 'Unknown', lastName || 'Unknown', email, cellPhone || null]);
     const id = b.rows[0].id;
     const exists = await client.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [id]);
@@ -629,7 +637,12 @@ router.post('/accept', async (req, res, next) => {
     }
     const b = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email) VALUES ($1,$2,$3)
-       ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
+       ON CONFLICT (email) DO UPDATE SET
+         first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
+                         THEN EXCLUDED.first_name ELSE borrowers.first_name END,
+         last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')
+                        THEN EXCLUDED.last_name ELSE borrowers.last_name END,
+         updated_at=now() RETURNING id`,
       [firstName || 'Unknown', lastName || 'Unknown', row.email]);
     // Bump token_version on the password change (invalidates any prior sessions)
     // and issue the token with the ACTUAL resulting version. Hardcoding 0 handed

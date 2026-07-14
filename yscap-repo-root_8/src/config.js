@@ -105,12 +105,13 @@ module.exports = {
   // HashRouter). Email + notification deep links must include it, or they land
   // on the marketing site instead of the portal.
   portalPath:    ('/' + (process.env.PORTAL_PATH || 'portal').replace(/^\/+|\/+$/g, '')),
-  // Public URL of the branded logo shown in email headers. Defaults to the
-  // app's own statically-served asset (web/assets/brand/lockup-dark.png) so it
-  // renders on the dark email canvas. Override with EMAIL_LOGO_URL if you host
-  // it elsewhere (e.g. the marketing site).
+  // Public URL of the branded logo shown in email headers. Defaults to the PILOT
+  // lockup image (web/(v2/)assets/brand/pilot-lockup-email.png) — the exact site
+  // top-left lockup (gold chevron mark + "PILOT" in Fraunces + "by YS Capital"),
+  // baked onto white so it reads on the light email header. Override with
+  // EMAIL_LOGO_URL if hosted elsewhere.
   emailLogoUrl:  process.env.EMAIL_LOGO_URL ||
-                 ((process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,'') + '/assets/brand/lockup-dark.png'),
+                 ((process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,'') + '/assets/brand/pilot-lockup-email.png'),
   notifyAdmins:  (process.env.NOTIFY_ADMINS || '').split(',').map(s => s.trim()).filter(Boolean),
   // Microsoft Graph (Outlook) provider:
   msTenantId:    process.env.MS_TENANT_ID,
@@ -152,9 +153,14 @@ module.exports = {
   // creates inside each address folder. The mirror writes documents ONLY inside
   // `YS portal syncing` folders (folder creation up the chain is allowed).
   sharepointPipelineRoot: process.env.SHAREPOINT_PIPELINE_ROOT || 'Pipeline Drive',
-  sharepointSyncFolderName: process.env.SHAREPOINT_SYNC_FOLDER || 'YS portal syncing',
+  // PILOT branding (2026-07-14): NEW leaf folders are "Synced by Pilot"; the
+  // resolver reuses a LEGACY-named leaf ("YS portal syncing") when one already
+  // exists so existing trees are never duplicated (backward-compat aliases).
+  sharepointSyncFolderName: process.env.SHAREPOINT_SYNC_FOLDER || 'Synced by Pilot',
+  sharepointSyncFolderLegacy: ['YS portal syncing'],
   // Where documents land when no officer/borrower can be determined at all.
-  sharepointUnfiledRoot: process.env.SHAREPOINT_UNFILED_ROOT || 'YS Portal Syncing - Unfiled',
+  sharepointUnfiledRoot: process.env.SHAREPOINT_UNFILED_ROOT || 'Pilot — Unfiled',
+  sharepointUnfiledLegacy: ['YS Portal Syncing - Unfiled'],
   // Certificate auth (preferred when present; falls back to the client secret).
   msClientCertPem: process.env.MS_CLIENT_CERT_PEM
                  || (process.env.MS_CLIENT_CERT_PEM_B64

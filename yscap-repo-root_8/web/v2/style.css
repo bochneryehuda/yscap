@@ -141,8 +141,21 @@ main,.footer{ position:relative; z-index:1; }
     max-width:var(--maxw); margin:0 auto; padding:.9rem 1.5rem;
     display:flex; align-items:center; gap:1.2rem; flex-wrap:nowrap;
 }
-.nav-brand img{ height:44px; width:auto; transition:opacity .2s; }
+/* flex:none so the logo NEVER collapses to 0 width in the nowrap flex row
+   (owner-reported "tiny / messed up" top-left logo, 2026-07-14 — it was being
+   shrunk out of existence). Bumped to 54px for real presence. */
+.nav-brand{ flex:none; display:inline-flex; align-items:center; }
+.nav-brand img{ height:54px; width:auto; max-width:none; flex:none; display:block; transition:opacity .2s; }
 .nav-brand:hover img{ opacity:.82; }
+/* Theme-aware logo pair: show the variant that reads on the active theme.
+   Default (no data-theme / light) shows the dark-ink logo; dark shows teal.
+   Selectors match .nav-brand img's specificity so the display toggle wins. */
+.nav-brand img.logo-on-dark{ display:none; }
+:root:not([data-theme="light"]) .nav-brand img.logo-on-light{ display:none; }
+:root:not([data-theme="light"]) .nav-brand img.logo-on-dark{ display:block; }
+/* Compliance marks (EHO / NMLS) are dark-ink art — invert them on dark theme
+   so the HUD/fair-housing + NMLS symbols stay visible (owner-directed). */
+:root:not([data-theme="light"]) .compliance-mark{ filter:brightness(0) invert(1) opacity(.9); }
 .nav-links{ display:flex; align-items:center; gap:1.5rem; flex-wrap:nowrap; }
 .nav-links a{ font-size:.92rem; color:var(--ivory-soft); font-weight:500; white-space:nowrap; transition:color .2s; }
 .nav-links a:hover{ color:var(--gold); }

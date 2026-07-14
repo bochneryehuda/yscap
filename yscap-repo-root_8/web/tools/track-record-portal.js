@@ -462,31 +462,52 @@
         setTimeout(function () { URL.revokeObjectURL(a.href); }, 1500);
       }).catch(function (e) { flash(e.message); });
   }
+  // Upload targets a SERVER track-record id. On a brand-new line the id is still a
+  // client temp id (the debounced sync hasn't created the row yet), so resolve —
+  // or create-on-demand — the real id first. The create is idempotent by
+  // clientRowId (db/087), so racing the background sync can't double-insert.
+  function ensureRecordSaved(p) {
+    var mapped = idMap[p.id];
+    if (mapped != null) return Promise.resolve(mapped);
+    if (knownIds.indexOf(p.id) >= 0) return Promise.resolve(p.id);  // already a server id
+    var pay = payloadFromProp(p);
+    return api("POST", createUrl(), Object.assign({ clientRowId: p.id }, pay)).then(function (created) {
+      var newId = created && (created.trackRecordId != null ? created.trackRecordId : created.id);
+      if (newId == null) return p.id;
+      idMap[p.id] = newId;
+      if (knownIds.indexOf(newId) < 0) knownIds.push(newId);
+      basePayloads[newId] = JSON.stringify(pay);
+      try { TR.adoptServerId(p.id, newId); } catch (e) { /* tool still works */ }
+      return newId;
+    });
+  }
   function uploadFilesToRecord(p, files, done) {
     var list = Array.prototype.slice.call(files || []).filter(Boolean);
     if (!list.length) { if (done) done(); return; }
-    var i = 0, okCount = 0;
-    function next() {
-      if (i >= list.length) {
-        if (okCount) flash(okCount === 1 ? ('Uploaded "' + list[0].name + '" to this deal.') : ("Uploaded " + okCount + " documents to this deal."));
-        // Pull the server truth (doc chips, request status, counts) once per batch.
-        reload().catch(function () {}).then(function () { if (done) done(); });
-        return;
+    ensureRecordSaved(p).catch(function () { return p.id; }).then(function (sid) {
+      var i = 0, okCount = 0;
+      function next() {
+        if (i >= list.length) {
+          if (okCount) flash(okCount === 1 ? ('Uploaded "' + list[0].name + '" to this deal.') : ("Uploaded " + okCount + " documents to this deal."));
+          // Pull the server truth (doc chips, request status, counts) once per batch.
+          reload().catch(function () {}).then(function () { if (done) done(); });
+          return;
+        }
+        var file = list[i++];
+        var r = new FileReader();
+        r.onload = function () {
+          var s = String(r.result);
+          api("POST", docsUrl(sid), {
+            filename: file.name, contentType: file.type || "application/octet-stream",
+            dataBase64: s.slice(s.indexOf(",") + 1),
+          }).then(function () { okCount++; next(); })
+            .catch(function (e) { flash(e.message || ('Upload failed — "' + file.name + '"')); next(); });
+        };
+        r.onerror = function () { flash('Could not read "' + file.name + '"'); next(); };
+        r.readAsDataURL(file);
       }
-      var file = list[i++];
-      var r = new FileReader();
-      r.onload = function () {
-        var s = String(r.result);
-        api("POST", docsUrl(p.id), {
-          filename: file.name, contentType: file.type || "application/octet-stream",
-          dataBase64: s.slice(s.indexOf(",") + 1),
-        }).then(function () { okCount++; next(); })
-          .catch(function (e) { flash(e.message || ('Upload failed — "' + file.name + '"')); next(); });
-      };
-      r.onerror = function () { flash('Could not read "' + file.name + '"'); next(); };
-      r.readAsDataURL(file);
-    }
-    next();
+      next();
+    });
   }
   function renderDocStrip(card, main, p) {
     var strip = document.createElement("div");

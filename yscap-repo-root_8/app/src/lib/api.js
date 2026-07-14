@@ -346,6 +346,8 @@ export const api = {
   staffNotifs:      () => req('GET', '/api/staff/notifications'),
   staffLeads:       () => req('GET', '/api/staff/leads'),
   staffUpdateLead:  (id, b) => req('PATCH', `/api/staff/leads/${id}`, b),
+  staffLeadNotes:   (id) => req('GET', `/api/staff/leads/${id}/notes`),
+  staffAddLeadNote: (id, body) => req('POST', `/api/staff/leads/${id}/notes`, { body }),
   staffDashboard:   (params) => req('GET', '/api/staff/dashboard' + (params && Object.keys(params).length ? '?' + new URLSearchParams(params) : '')),
   staffChatInbox:   () => req('GET', '/api/staff/chat/inbox'),
   staffReact:       (msgId, emoji) => req('POST', `/api/staff/messages/${msgId}/react`, { emoji }),
@@ -455,4 +457,8 @@ export const api = {
 
   // ---- Condition Center: borrower answers an information condition ----
   submitInfoCondition: (appId, itemId, value) => req('POST', `/api/borrower/applications/${appId}/checklist/${itemId}/info`, { value }),
+
+  // ---- Pricing Admin Center (manage_pricing): company-wide markup/fee defaults ----
+  adminPricingGet: () => req('GET', '/api/admin/pricing'),
+  adminPricingPut: (b) => req('PUT', '/api/admin/pricing', b),
 };

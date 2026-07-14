@@ -35,7 +35,7 @@ async function getToken() {
 
 module.exports = {
   name: 'graph',
-  async sendMail({ to, subject, text, html }) {
+  async sendMail({ to, subject, text, html, attachments }) {
     const token = await getToken();
     // NOTIFY_FROM may be a display-name form ("YS Capital <noreply@ys.com>"); the
     // Graph /users/{id} path needs a BARE address/UPN or every send fails with 400.
@@ -48,6 +48,13 @@ module.exports = {
       body: { contentType: html ? 'HTML' : 'Text', content: html || text || '' },
       toRecipients: (Array.isArray(to) ? to : [to]).map(a => ({ emailAddress: { address: a } })),
     };
+    // Graph fileAttachment: { name, contentBytes (base64) }. (Under ~3 MB total;
+    // larger sends need an upload session — out of scope here, so the email still
+    // lists the file and the doc is available in the portal.)
+    const atts = (Array.isArray(attachments) ? attachments : [])
+      .filter((a) => a && a.filename && a.content)
+      .map((a) => ({ '@odata.type': '#microsoft.graph.fileAttachment', name: String(a.filename), contentType: a.contentType || 'application/octet-stream', contentBytes: String(a.content) }));
+    if (atts.length) message.attachments = atts;
     const r = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

@@ -9,8 +9,24 @@
 (function () {
   "use strict";
 
+  // MINIMUM INTEREST (owner-directed 2026-07-14, ALL programs current and
+  // future): every term sheet carries a three-month minimum EARNED interest
+  // provision — a payoff before three full months of interest simply pays the
+  // remainder of that minimum at payoff. Industry-standard bridge/RTL term;
+  // it is a minimum-interest (interest floor) provision, NOT a prepayment
+  // penalty, and the wording must always say so.
+  var MIN_INTEREST_ROW = "3 months (minimum earned interest \u2014 not a prepayment penalty)";
+  var MIN_INTEREST_DETAIL = "All programs carry a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor, not a prepayment penalty.";
+
+
   var LENDER = { name: "YS Capital Group", nmls: "2609746", email: "sales@yscapgroup.com", phone: "718-831-2168" };
   var FEES = { lender: 2195, credit: 150, appraisal: 800 };   // flat third-party estimates (origination % comes from the engine / admin field)
+  // Company-wide pricing defaults (Pricing Admin Center, owner-directed
+  // 2026-07-14): seeded to the historic literals, then overwritten live from
+  // /api/pricing-defaults so a company fee/markup change reaches every new term
+  // sheet on the marketing generator AND the portal studio. The admin studio
+  // fields still override per session; a per-file registration still snapshots.
+  var CO = { markupStd: 0.5, markupGold: 0.5, origStd: 1.25, origGold: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -523,19 +539,31 @@
   function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : dflt; }
   // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
   function syncAdminMarkup() {
-    var std = adminNum("tsYspStd", 0.5), gold = adminNum("tsYspGold", 0.5);
+    var std = adminNum("tsYspStd", CO.markupStd), gold = adminNum("tsYspGold", CO.markupGold);
     try { if (typeof YSP !== "undefined" && YSP.setMarkup) YSP.setMarkup(std / 100); } catch (e) {}
     try { if (typeof GSP !== "undefined" && GSP && GSP.setMarkup) GSP.setMarkup(gold / 100); } catch (e) {}
   }
   // Admin fee/origination overrides. Defaults reproduce current behavior exactly.
-  function adminOrigPct(prog) { return adminNum(prog === "gold" ? "tsOrigGold" : "tsOrigStd", 1.25) / 100; }  // fraction
-  function adminFeeUW() { return adminNum("tsFeeUW", FEES.lender); }
-  function adminFeeCredit() { return adminNum("tsFeeCredit", FEES.credit); }
-  function adminFeeAppr() { return adminNum("tsFeeAppr", FEES.appraisal); }
-  function adminTitle() { var e = el("tsFeeTitle"); if (!e) return null; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : null; }  // null = use estimate
+  function adminOrigPct(prog) { return adminNum(prog === "gold" ? "tsOrigGold" : "tsOrigStd", prog === "gold" ? CO.origGold : CO.origStd) / 100; }  // fraction
+  function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
+  function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
+  function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
+  function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(e.value) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
   function origPtStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + (p === 1 ? " pt" : " pts"); }
   function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
+  // Fill the (blank) admin fee/markup inputs from the company defaults for
+  // DISPLAY only. Never overwrite a value already present — a non-blank field is
+  // an explicit per-file override (typed by staff or restored by the studio's
+  // applyState) and must win. Pricing reads CO for any blank field via adminNum,
+  // so the math is already correct before this ever runs.
+  function seedAdminDefaults() {
+    var s = function (id, v) { var e = el(id); if (e && String(e.value).trim() === "") e.value = v; };
+    s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold));
+    s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold));
+    s("tsFeeUW", String(CO.lender)); s("tsFeeCredit", String(CO.credit)); s("tsFeeAppr", String(CO.appraisal));
+    if (CO.title != null) s("tsFeeTitle", String(CO.title));
+  }
   function manualOn() { var e = el("tsManualOn"); return !!(e && e.checked); }
   function wireAdmin() {
     var trig = el("tsAdminTrigger"), lock = el("tsAdminLock"), panel = el("tsAdminPanel"),
@@ -551,8 +579,8 @@
     function manualVis() { var on = manualOn(); var mf = el("tsManualFields"), mh = el("tsManualHint"); if (mf) mf.hidden = !on; if (mh) mh.hidden = !on; }
     function lockDown() {
       if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
-      setVal("tsYspStd", "0.5"); setVal("tsYspGold", "0.5"); setVal("tsOrigStd", "1.25"); setVal("tsOrigGold", "1.25");
-      setVal("tsFeeUW", "2195"); setVal("tsFeeCredit", "150"); setVal("tsFeeAppr", "800"); setVal("tsFeeTitle", "");
+      setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold));
+      setVal("tsFeeUW", String(CO.lender)); setVal("tsFeeCredit", String(CO.credit)); setVal("tsFeeAppr", String(CO.appraisal)); setVal("tsFeeTitle", CO.title != null ? String(CO.title) : "");
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
       manualVis();
@@ -816,6 +844,7 @@
       ["Status", statusLabel(d.status)],
       ["Loan amount", (stdExit || stdCity) ? "Manual review" : (stdOk && d.totalLoan ? money(d.totalLoan) : EM)],
       ["Note rate", (stdOk && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM],
+      ["Minimum interest", MIN_INTEREST_ROW],
       ["Initial advance", stdOk ? money(d.initialAdvance) : EM],
       ["Rehab / construction holdback", stdOk ? money(d.rehabHoldback) : EM],
       ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
@@ -837,6 +866,7 @@
         ["Product", (gd.productLabel || EM) + (gd.tierLabel ? " \u00b7 " + gd.tierLabel : "")],
         ["Loan amount", gExit ? "Manual review" : (gOk && gd.totalLoan ? money(gd.totalLoan) : EM)],
         ["Note rate", (gOk && gd.rate > 0) ? gd.rate.toFixed(2) + "%" : EM],
+        ["Minimum interest", MIN_INTEREST_ROW],
         ["Initial advance", gOk ? money(gd.initialAdvance) : EM],
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
         ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
@@ -1322,7 +1352,7 @@
       // ---- footer ----
       doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 48, W - M, H - 48);
       doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-      doc.text(pdfSafe(LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
+      doc.text(pdfSafe(MIN_INTEREST_DETAIL + " " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
 
       drawDerivationPage(doc, d, "Basis for This Proof of Funds", "The figures in the preceding letter were generated from the inputs below, provided by the applicant through the YS Capital Term Sheet Studio. This page shows what was entered and how the financing amount was determined.");
       doc.save("YS-Capital-Proof-of-Funds-" + borrower.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") + ".pdf");
@@ -1468,13 +1498,14 @@
       ["Initial / as-is LTV", pc(d.ltvPct)],
       (d.arvPct > 0) ? ["Loan-to-ARV", pc(d.arvPct)] : null,
       ["Note rate (interest-only)", (d.rate > 0 ? d.rate.toFixed(2) + "%" : "\u2014")],
+      ["Minimum interest", MIN_INTEREST_ROW],
       ["Origination", origPctStr(d.origPct != null ? d.origPct : 0.0125) + " of loan"]
     ]);
 
     // footer
     doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 46, W - M, H - 46);
     doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-    doc.text(pdfSafe("Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
+    doc.text(pdfSafe(MIN_INTEREST_DETAIL + " Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
   }
 
   /* ===================== wiring ===================== */
@@ -1518,7 +1549,24 @@
       if (t) { ev.preventDefault(); ev.stopPropagation(); t.classList.toggle("tip-open"); }
     });
     wireAdmin();
-    recompute();
+    // Pull company-wide pricing defaults, then recompute. Best-effort: on any
+    // failure the tool keeps its seeded literals (never blocks the sheet).
+    (function(){
+      try {
+        fetch("/api/pricing-defaults").then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
+          if (d && typeof d === "object") {
+            if (d.markupStdPct != null) CO.markupStd = Number(d.markupStdPct);
+            if (d.markupGoldPct != null) CO.markupGold = Number(d.markupGoldPct);
+            if (d.origStdPct != null) CO.origStd = Number(d.origStdPct);
+            if (d.origGoldPct != null) CO.origGold = Number(d.origGoldPct);
+            if (d.lenderFee != null) CO.lender = Number(d.lenderFee);
+            if (d.creditFee != null) CO.credit = Number(d.creditFee);
+            if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
+            CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
+          }
+        }).catch(function(){}).then(function(){ seedAdminDefaults(); recompute(); });
+      } catch (e) { recompute(); }
+    })();
   }
   window.TS = { exportPdf: exportPdf, exportLetter: exportLetter, exportXlsx: exportXlsx, importXlsx: importXlsx, share: function (b) { try { YS.shareLink(b); } catch (e) {} },
     _calc: calc, _calcGold: calcGold, _xlsxSections: xlsxSections, _gather: gather, _manualOn: manualOn };

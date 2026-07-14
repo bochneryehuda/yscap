@@ -560,6 +560,16 @@ async function fireChatEmail(j) {
       WHERE conversation_id=$1 AND seq > $2 AND kind='text' AND deleted_at IS NULL
         AND NOT (sender_kind=$3 AND sender_id=$4)`,
     [j.conversation_id, watermark, j.recipient_kind, j.recipient_id]);
+  // The actual unread messages (body + any attachment), newest last, so the
+  // email can WRITE OUT the conversation (owner-directed 2026-07-14) instead of a
+  // bare "you have messages" — capped so a long thread can't bloat the email.
+  const unreadMsgs = await db.query(
+    `SELECT m.body, m.attachment_kind
+       FROM messages m
+      WHERE m.conversation_id=$1 AND m.seq > $2 AND m.kind='text' AND m.deleted_at IS NULL
+        AND NOT (m.sender_kind=$3 AND m.sender_id=$4)
+      ORDER BY m.seq ASC LIMIT 12`,
+    [j.conversation_id, watermark, j.recipient_kind, j.recipient_id]).catch(() => ({ rows: [] }));
   const n = pending.rows[0].n;
   if (n > 0) {
     const ctx = await notify.fileContext(conv.application_id);
@@ -577,13 +587,27 @@ async function fireChatEmail(j) {
       to = s.rows[0] && s.rows[0].email ? [s.rows[0].email] : [];
     }
     if (allowEmail && to.length) {
-      // No message CONTENT in the email — a deep link only. Chat bodies can
-      // carry loan details; email is a second retention surface we keep clean.
+      // WRITE THE CONVERSATION INTO THE EMAIL (owner-directed 2026-07-14): the
+      // unread messages are spelled out, not just linked. A borrower-facing digest
+      // is scrubbed (the frozen capital-partner rule still overrides — no note-buyer
+      // name may reach a borrower), and an attachment/voice line is noted since the
+      // file itself lives in the portal.
       const link = isBorrower ? `/app/${conv.application_id}` : `/internal/chat?c=${conv.id}`;
+      const clean = (t) => (isBorrower ? scrubText(String(t || '')) : String(t || ''));
+      const lines = [];
+      (unreadMsgs.rows || []).forEach((m) => {
+        const t = String(m.body || '').trim();
+        if (t) lines.push('“' + clean(t) + '”');
+        else if (m.attachment_kind) lines.push(m.attachment_kind === 'voice' ? '[Voice message — listen in the portal]' : '[Attachment — open it in the portal]');
+      });
+      // Only "…and N more" for messages we didn't FETCH (past the LIMIT 12) — an
+      // empty-body row that rendered no line was still fetched, so it isn't "more".
+      if (n > unreadMsgs.rows.length) lines.push(`…and ${n - unreadMsgs.rows.length} more.`);
       const msg = notify.buildEmail({
-        title: n === 1 ? 'You have an unread message' : `You have ${n} unread messages`,
-        body: `${n === 1 ? 'A message is' : `${n} messages are`} waiting for you in “${isBorrower ? scrubText(conv.name) : conv.name}”` +
-              (ctx ? ` on ${ctx.loanNo} (${ctx.addr})` : '') + '.',
+        title: n === 1 ? 'New message from your loan team' : `${n} new messages`,
+        body: `${n === 1 ? 'You have a new message' : `You have ${n} new messages`} in “${isBorrower ? scrubText(conv.name) : conv.name}”` +
+              (ctx ? ` on ${ctx.loanNo} (${ctx.addr})` : '') + ':',
+        lines,
         link, ctaLabel: 'Open the conversation',
         meta: ctx ? ctx.meta : [],
       }, isBorrower ? 'borrower' : 'staff');

@@ -18,6 +18,17 @@ function splitName(full) {
 }
 const joinName = (first, last) => [first, last].map((x) => String(x || '').trim()).filter(Boolean).join(' ');
 
+// 'Unknown' / 'Co-Borrower' are OUR OWN placeholders (the NOT NULL name columns
+// need something at insert time) — they are never real data. Every store/heal
+// path must treat them as ABSENT, exactly like the push side already blanks
+// 'Unknown' before writing ClickUp. Root fix 2026-07-14: the pull/store side
+// treating placeholders as data is what froze co-borrowers as
+// "Unknown Unknown" forever.
+const PLACEHOLDER_NAMES = new Set(['', 'unknown', 'co-borrower', 'n/a', 'na', 'tbd', '-', '--']);
+const isPlaceholderName = (v) => v == null || PLACEHOLDER_NAMES.has(String(v).trim().toLowerCase());
+// Synthetic no-email shadow addresses minted by the sync (never user data).
+const isShadowEmail = (v) => /@clickup\.local$/i.test(String(v || '').trim());
+
 // ---- dates (portal date <-> ClickUp epoch ms) -----------------------------
 function toEpochMs(v) {
   if (v == null || v === '') return null;
@@ -172,7 +183,7 @@ function maskCard(number) {
 }
 
 module.exports = {
-  splitName, joinName,
+  splitName, joinName, isPlaceholderName, isShadowEmail,
   toEpochMs, fromEpochMs,
   parseMoney, numToString,
   normalizePhone, phoneDigits,

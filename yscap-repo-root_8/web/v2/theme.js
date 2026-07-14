@@ -17,7 +17,12 @@
   // In light theme, swap the teal-on-dark logo for the dark-teal logo that reads on light paper.
   function swapLogos(t){
     var dark=(t==="light"); var imgs=document.getElementsByTagName("img");
-    for(var i=0;i<imgs.length;i++){ var s=imgs[i].getAttribute("src")||"";
+    for(var i=0;i<imgs.length;i++){
+      // Paired logos (.logo-on-light / .logo-on-dark) are theme-swapped by CSS
+      // now — never rewrite their src (that would break the pair).
+      var cl=imgs[i].className||"";
+      if(/logo-on-(light|dark)/.test(cl)) continue;
+      var s=imgs[i].getAttribute("src")||"";
       if(/ys-logo-t(-dark)?\.png/.test(s)) imgs[i].setAttribute("src", s.replace(/ys-logo-t(-dark)?\.png/, dark?"ys-logo-t-dark.png":"ys-logo-t.png")); }
   }
   apply(get()); // run immediately (before stylesheets render)

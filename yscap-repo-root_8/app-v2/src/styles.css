@@ -108,8 +108,13 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .panel{background:var(--ink-1);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
 .panel + .panel{margin-top:18px}
 .grid{display:grid;gap:16px}
-.grid.cols-2{grid-template-columns:1fr 1fr}
-.grid.cols-3{grid-template-columns:repeat(3,1fr)}
+/* minmax(0,1fr), NOT 1fr: a bare 1fr is minmax(auto,1fr), so a column can't
+   shrink below its content's min-content width — one panel with wide content
+   (e.g. the per-file Add-condition panel) then exceeds 50% and shoves its
+   sibling (Underwriting conditions) off the right edge of the page. minmax(0,…)
+   lets every column shrink to its share so nothing runs off-page. */
+.grid.cols-2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(max-width:720px){.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.nav{gap:12px}}
 
 /* fields */
@@ -2026,3 +2031,28 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   border-radius:100px;padding:3px 10px}
 .cv-ctx-tag.mut{color:var(--text-muted);background:var(--surface-soft)}
 .cv-ctx-people{font-size:12px;color:var(--text-muted)}
+
+/* Global chat launcher (bottom-right) — one tap to Messages / team chat from any
+   authenticated page (rendered by both layouts). Above content, below modals. */
+.chat-fab{position:fixed;right:20px;bottom:calc(20px + env(safe-area-inset-bottom,0px));
+  z-index:90;display:inline-flex;align-items:center;gap:9px;height:52px;padding:0 18px 0 16px;
+  border:none;border-radius:26px;background:var(--primary);color:#fff;cursor:pointer;
+  font-family:var(--sans);font-weight:700;font-size:14.5px;letter-spacing:.01em;
+  box-shadow:0 8px 24px rgba(23,35,38,.24),0 2px 6px rgba(23,35,38,.14);
+  transition:transform .14s ease,box-shadow .14s ease,background .14s ease}
+.chat-fab:hover{background:var(--primary-hover);transform:translateY(-1px);
+  box-shadow:0 12px 30px rgba(23,35,38,.28),0 3px 8px rgba(23,35,38,.16)}
+.chat-fab:active{transform:translateY(0)}
+.chat-fab svg{flex:none}
+.chat-fab-label{white-space:nowrap}
+.chat-fab-badge{position:absolute;top:-4px;right:-2px;min-width:20px;height:20px;padding:0 5px;
+  border-radius:10px;background:var(--gold);color:var(--on-accent,#1b1206);font-size:11px;font-weight:800;
+  display:inline-flex;align-items:center;justify-content:center;border:2px solid var(--surface)}
+@media(max-width:720px){
+  .chat-fab{right:14px;bottom:calc(14px + env(safe-area-inset-bottom,0px));height:50px;padding:0 15px;width:50px;justify-content:center}
+  .chat-fab-label{display:none}
+}
+/* While a mobile nav drawer is open, hide the FAB so it doesn't float over the
+   dimmed sidebar (the staff drawer sits below the FAB's z-index). */
+.app:has(.app-sidebar.open) .chat-fab,
+.shell:has(.nav.open) .chat-fab{display:none}

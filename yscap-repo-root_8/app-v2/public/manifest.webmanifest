@@ -1,10 +1,10 @@
 {
   "name": "PILOT by YS Capital",
   "short_name": "PILOT",
-  "description": "Your YS Capital Group loan file \u2014 documents, tasks, and messages in one place.",
-  "id": "/v2/portal/",
-  "start_url": "/v2/portal/#/dashboard",
-  "scope": "/v2/portal/",
+  "description": "Your loan file in PILOT \u2014 documents, tasks, and messages in one place.",
+  "id": "/portal/",
+  "start_url": "/portal/#/dashboard",
+  "scope": "/portal/",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#141B22",
@@ -38,15 +38,15 @@
   "shortcuts": [
     {
       "name": "Dashboard",
-      "url": "/v2/portal/#/dashboard"
+      "url": "/portal/#/dashboard"
     },
     {
       "name": "Messages",
-      "url": "/v2/portal/#/dashboard"
+      "url": "/portal/#/dashboard"
     },
     {
       "name": "Profile",
-      "url": "/v2/portal/#/profile"
+      "url": "/portal/#/profile"
     }
   ]
 }

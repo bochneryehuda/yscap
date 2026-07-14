@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="theme.js?v=n6"></script>
+<script src="theme.js?v=n7"></script>
 <script>
 (function () {
   try {
@@ -305,7 +305,12 @@ section[id], main[id]{ scroll-margin-top:96px; }
 <header class="nav" id="nav">
     <div class="nav-inner">
         <a href="#top" class="nav-brand">
-            <img src="assets/images/ys-logo-t.png" alt="YS Capital Group">
+            <!-- Both logos in the DOM; CSS shows the one that reads on the
+                 active theme (owner-directed 2026-07-14). No JS timing, no
+                 broken swap: the on-light (dark-ink) logo shows in light mode,
+                 the on-dark (teal) logo in dark mode. -->
+            <img class="logo-on-light" src="assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+            <img class="logo-on-dark" src="assets/images/ys-logo-t.png" alt="YS Capital Group">
         </a>
         <nav class="nav-links" aria-label="Primary">
             <a href="#programs">Programs</a>
@@ -371,20 +376,20 @@ section[id], main[id]{ scroll-margin-top:96px; }
                     <span class="t">Term Sheet · Indicative</span>
                     <span class="live">Live</span>
                 </div>
-                <div class="ts-tabs">
-                    <button class="on" type="button">Standard</button>
-                    <button type="button">Gold Standard</button>
+                <div class="ts-tabs" id="tsTabs">
+                    <button type="button" data-prog="gold" class="on">Gold Standard</button>
+                    <button type="button" data-prog="standard">Standard</button>
                 </div>
                 <div class="ts-body">
-                    <div class="ts-prop">SUBJECT · <b>Fix &amp; Flip</b> · Purchase $300,000 · Rehab $75,000 · ARV $500,000</div>
-                    <div class="ts-row big"><span class="k">Loan amount</span><span class="v acc m-num">$345,000</span></div>
-                    <div class="ts-row"><span class="k">Note rate</span><span class="v m-num">9.50%</span></div>
-                    <div class="ts-row"><span class="k">Origination</span><span class="v m-num">1.25 pts</span></div>
-                    <div class="ts-row"><span class="k">Loan-to-cost</span><span class="v m-num">92.5%</span></div>
-                    <div class="ts-row"><span class="k">Est. monthly (IO)</span><span class="v m-num">$2,731</span></div>
+                    <div class="ts-prop">SUBJECT · <b>Fix &amp; Flip</b> · Single-family · Purchase $300,000 · Rehab $75,000 · ARV $500,000</div>
+                    <div class="ts-row big"><span class="k">Loan amount</span><span class="v acc m-num" id="tsLoan">$348,750</span></div>
+                    <div class="ts-row"><span class="k">Note rate</span><span class="v m-num" id="tsRate">7.50%</span></div>
+                    <div class="ts-row"><span class="k">Origination</span><span class="v m-num" id="tsOrig">1.25 pts</span></div>
+                    <div class="ts-row"><span class="k">Loan-to-cost</span><span class="v m-num" id="tsLtc">93.0%</span></div>
+                    <div class="ts-row"><span class="k">Est. monthly (IO)</span><span class="v m-num" id="tsMo">$2,180</span></div>
                 </div>
                 <div class="ts-foot">
-                    <span class="note">Illustrative example — indicative only, not a commitment to lend.</span>
+                    <span class="note">Illustrative best-case example — indicative only, a proposal and not a commitment to lend.</span>
                     <a class="link-u" href="tools/term-sheet.html">Open the full studio →</a>
                 </div>
             </div>
@@ -479,7 +484,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
                 <span class="flag-tag">Flagship · DSCR Rental</span>
                 <h3>Qualify on the property's cash flow.</h3>
                 <p>No tax returns, no W-2s. 30-year fixed, ARM and interest-only — on purchases, refinances and cash-out. 1–4 units, LLC-friendly, single property or portfolio.</p>
-                <a class="link-u" href="tools/term-sheet.html">Price a DSCR deal →</a>
+                <a class="link-u" href="#dscrWaitlist" data-dscr-open role="button">Price my DSCR deal →</a>
             </div>
             <div class="r">
                 <div class="spec"><span class="k">Purchase &amp; R/T</span><span class="v m-num">85% <small>LTV</small></span></div>
@@ -650,8 +655,8 @@ section[id], main[id]{ scroll-margin-top:96px; }
     </div>
     <figure class="rv-feature reveal-up">
         <span class="qm" aria-hidden="true">&ldquo;</span>
-        <blockquote>YS Capital is the best direct lender I've ever dealt with! Fast and efficient — it's worth the try, you won't regret it!</blockquote>
-        <figcaption><b>Dov Steiner</b> · Verified Google review</figcaption>
+        <blockquote id="rvFeatureText">YS Capital is the best direct lender I've ever dealt with! Fast and efficient — it's worth the try, you won't regret it!</blockquote>
+        <figcaption id="rvFeatureCap">Verified Google review</figcaption>
     </figure>
     <div class="review-viewport" aria-label="Client reviews">
         <div class="review-track" id="reviewTrack"><!-- populated from real reviews via script --></div>
@@ -695,6 +700,27 @@ section[id], main[id]{ scroll-margin-top:96px; }
         var html = REVIEWS.map(card).join('');
         track.innerHTML = html + html;                 // duplicate set → seamless infinite loop
         track.style.animationDuration = Math.max(48, REVIEWS.length * 5) + 's';
+    }
+
+    /* The BIG featured review rotates and is always ANONYMOUS (owner-directed):
+       never a reviewer name on the hero pull-quote — only "Verified Google
+       review". The named marquee cards above stay as social proof. */
+    var feat = document.getElementById('rvFeatureText');
+    if (feat && REVIEWS.length > 1) {
+        // Rotate through the reviews in order, starting from the first, advancing
+        // every 6.5s. Deterministic (no Math.random) so it's stable across loads.
+        var order = REVIEWS.map(function (r, i) { return i; });
+        var fi = 0;
+        var advance = function () {
+            fi = (fi + 1) % order.length;
+            feat.style.opacity = '0';
+            setTimeout(function () {
+                feat.textContent = REVIEWS[order[fi]].text;   // text only — no name
+                feat.style.opacity = '1';
+            }, 320);
+        };
+        feat.style.transition = 'opacity .32s ease';
+        setInterval(advance, 6500);
     }
 })();
 </script>
@@ -810,7 +836,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
         <div class="db2-text">
             <span class="db2-kicker">Current borrowers</span>
             <h2>Already funded with us? Request a draw.</h2>
-            <p>Submit a draw request, upload your photos and invoices, and track each release from your secure, YS&nbsp;Capital–branded portal.</p>
+            <p>Submit a draw request, upload your photos and invoices, and track each release in our secure online draw portal.</p>
         </div>
         <a class="btn btn-solid btn-lg db2-btn" href="https://portal.sitewire.co/login/YSCapitalGroup" target="_blank" rel="noopener">
             Request a Draw
@@ -852,6 +878,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
             <a href="#contact">Contact</a>
             <a href="privacy.html">Privacy Policy</a>
             <a href="sms-terms.html">SMS Terms</a>
+            <a href="disclosures.html">Disclosures</a>
         </nav>
         <div class="footer-compliance">
             <h5>Compliance</h5>
@@ -862,6 +889,18 @@ section[id], main[id]{ scroll-margin-top:96px; }
         </div>
     </div>
 
+    <div class="footer-subscribe">
+        <div class="fsub-copy">
+            <h5>Stay in the loop</h5>
+            <p>Rate moves, new programs and investor tips — occasional emails, no spam.</p>
+        </div>
+        <form class="fsub-form" id="subscribeForm" novalidate>
+            <input type="email" name="email" inputmode="email" autocomplete="email" placeholder="you@email.com" aria-label="Email address" required>
+            <button type="submit" class="btn btn-gold">Subscribe</button>
+        </form>
+        <p class="fsub-status" id="subscribeStatus" role="status" aria-live="polite"></p>
+    </div>
+
     <div class="disclosures">
         <h4>Important Disclosures &amp; Licensing Notice</h4>
         <div class="disc-grid">
@@ -870,7 +909,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
             <p><strong>New York Consumer Loans.</strong> YS Capital Group is a Registered Mortgage Broker with the New York State Department of Financial Services (NMLS&nbsp;<a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">#2609746</a>) — mortgage loans arranged through third-party providers. The business-purpose, investment-property financing described on this website is not consumer credit and is not offered to New York consumers here. This website is not intended to solicit or accept consumer (owner-occupied, 1–4 family residential) mortgage applications in New York. If you are a New York consumer seeking a residential mortgage, please do not use this website — contact us directly at 718-831-2168.</p>
             <p><strong>SMS Communications.</strong> By providing your phone number or messaging YS Capital Group, you agree to receive conversational and account-related text messages at the number provided. Message frequency varies. Reply STOP to opt out or HELP for help. Message and data rates may apply. SMS consent is not shared with third parties or affiliates for their marketing purposes, and mobile opt-in data is never sold. See our <a href="privacy.html">Privacy Policy</a> and <a href="sms-terms.html">SMS Terms &amp; Conditions</a>.</p>
         </div>
-        <p class="copyright">© 2026 YS Capital Group. All rights reserved. Loan programs, leverage, rates and pricing shown are indicative, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend.</p>
+        <p class="copyright">© 2026 YS Capital Group. All rights reserved. Loan programs, leverage, rates and pricing shown are indicative, subject to change, and contingent on full underwriting and program eligibility. Not a commitment to lend. Read the full <a href="disclosures.html">Disclosures &amp; Licensing Notice</a>.</p>
     </div>
 </footer>
 
@@ -977,6 +1016,103 @@ section[id], main[id]{ scroll-margin-top:96px; }
   })();
 </script>
 <!-- ============ /APPLY CHOOSER MODAL ============ -->
+
+<script>
+/* Hero term-sheet card: Standard / Gold switcher (owner-directed 2026-07-14).
+   Defaults to the GOLD best-case single-family scenario (7.5% rate, 93% LTC).
+   These are illustrative marketing figures — a proposal, never a commitment,
+   and NOT the frozen pricing engine (that lives in the studio). */
+(function(){
+  var SCENARIOS = {
+    gold:     { loan:'$348,750', rate:'7.50%', orig:'1.25 pts', ltc:'93.0%', mo:'$2,180' },
+    standard: { loan:'$345,000', rate:'9.50%', orig:'1.25 pts', ltc:'92.0%', mo:'$2,731' }
+  };
+  var tabs = document.getElementById('tsTabs');
+  if(!tabs) return;
+  function paint(prog){
+    var s = SCENARIOS[prog] || SCENARIOS.gold;
+    var set = function(id,v){ var el=document.getElementById(id); if(el) el.textContent=v; };
+    set('tsLoan',s.loan); set('tsRate',s.rate); set('tsOrig',s.orig); set('tsLtc',s.ltc); set('tsMo',s.mo);
+    Array.prototype.forEach.call(tabs.querySelectorAll('button'), function(b){
+      b.classList.toggle('on', b.getAttribute('data-prog')===prog);
+    });
+  }
+  tabs.addEventListener('click', function(e){
+    var b = e.target.closest('button[data-prog]'); if(!b) return;
+    paint(b.getAttribute('data-prog'));
+  });
+  paint('gold');   // best-case Gold is the default landing view
+})();
+</script>
+
+<!-- DSCR instant-pricing waitlist (coming soon) + shared lead capture -->
+<style>
+  .footer-subscribe{max-width:1180px;margin:0 auto;padding:26px 40px;display:flex;align-items:center;gap:22px 32px;flex-wrap:wrap;border-top:1px solid var(--line,rgba(255,255,255,.12))}
+  .footer-subscribe .fsub-copy{flex:1 1 260px;min-width:0}
+  .footer-subscribe h5{margin:0 0 4px;font-size:15px}
+  .footer-subscribe p{margin:0;color:var(--muted);font-size:13.5px;line-height:1.5}
+  .fsub-form{display:flex;gap:8px;flex:1 1 320px;min-width:0;max-width:460px}
+  .fsub-form input{flex:1;min-width:0;padding:12px 14px;border-radius:var(--r,6px);border:1px solid var(--line,rgba(255,255,255,.18));background:rgba(255,255,255,.04);color:inherit;font:inherit}
+  .fsub-status{flex-basis:100%;margin:2px 0 0;font-size:13px;color:var(--gold)}
+  @media(max-width:640px){.footer-subscribe{padding:22px 16px}.fsub-form{max-width:none}}
+  .ys-modal-back{position:fixed;inset:0;background:rgba(10,14,18,.66);z-index:1200;display:none;align-items:center;justify-content:center;padding:20px}
+  .ys-modal-back.open{display:flex}
+  .ys-modal{background:var(--card,#fff);color:var(--ink,#141B22);max-width:440px;width:100%;border-radius:12px;padding:28px 26px;box-shadow:0 30px 80px rgba(10,14,18,.4);position:relative}
+  .ys-modal h3{margin:0 0 6px;font-family:var(--font-d,Georgia),serif;font-size:1.5rem}
+  .ys-modal .soon{display:inline-block;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--gold,#AE8746);margin-bottom:10px}
+  .ys-modal p{margin:0 0 14px;line-height:1.6;color:var(--ink-soft,#4B585C);font-size:15px}
+  .ys-modal form{display:flex;gap:8px;flex-wrap:wrap}
+  .ys-modal input{flex:1;min-width:0;padding:12px 14px;border-radius:8px;border:1px solid rgba(20,27,34,.2);font:inherit}
+  .ys-modal .ys-modal-x{position:absolute;top:12px;right:14px;background:none;border:none;font-size:22px;line-height:1;cursor:pointer;color:var(--ink-soft,#4B585C)}
+  .ys-modal .status{flex-basis:100%;margin:8px 0 0;font-size:13px;color:var(--teal,#2F7F86)}
+</style>
+<div class="ys-modal-back" id="dscrWaitlist" aria-hidden="true">
+  <div class="ys-modal" role="dialog" aria-modal="true" aria-labelledby="dscrWaitTitle">
+    <button type="button" class="ys-modal-x" data-dscr-close aria-label="Close">&times;</button>
+    <span class="soon">Coming soon</span>
+    <h3 id="dscrWaitTitle">Instant DSCR pricing is almost here</h3>
+    <p>We're building instant DSCR rental pricing right into the site. Leave your email and we'll let you know the moment it's live — and in the meantime a loan officer can price your DSCR deal by hand.</p>
+    <form id="dscrWaitForm" novalidate>
+      <input type="email" name="email" inputmode="email" autocomplete="email" placeholder="you@email.com" aria-label="Email address" required>
+      <button type="submit" class="btn btn-gold">Notify me</button>
+      <p class="status" id="dscrWaitStatus" role="status" aria-live="polite"></p>
+    </form>
+  </div>
+</div>
+<script>
+(function(){
+  // Shared, dependency-free lead capture → POST /api/leads (same endpoint the
+  // marketing tools use). No visitor login; server stores + notifies + confirms.
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  function submitLead(tool, email, statusEl, okMsg){
+    if(!EMAIL_RE.test(email)){ statusEl.style.color=''; statusEl.textContent='Please enter a valid email.'; return Promise.resolve(false); }
+    statusEl.textContent='Sending…';
+    return fetch('/api/leads', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ tool: tool, email: email, subject: tool, message: 'Captured from the marketing site ('+tool+').' }) })
+      .then(function(r){ return r.ok ? r.json().catch(function(){return {};}) : Promise.reject(r); })
+      .then(function(){ statusEl.textContent = okMsg; return true; })
+      .catch(function(){ statusEl.textContent = 'Something went wrong — please try again.'; return false; });
+  }
+  // Subscribe (footer)
+  var sf = document.getElementById('subscribeForm');
+  if(sf){ sf.addEventListener('submit', function(e){ e.preventDefault();
+    submitLead('subscribe', sf.email.value.trim(), document.getElementById('subscribeStatus'), 'Thanks — you’re on the list.')
+      .then(function(ok){ if(ok) sf.reset(); }); }); }
+  // DSCR waitlist modal
+  var back = document.getElementById('dscrWaitlist');
+  function openM(){ if(back){ back.classList.add('open'); back.setAttribute('aria-hidden','false'); var i=back.querySelector('input'); if(i) i.focus(); } }
+  function closeM(){ if(back){ back.classList.remove('open'); back.setAttribute('aria-hidden','true'); } }
+  document.addEventListener('click', function(e){
+    var o=e.target.closest('[data-dscr-open]'); if(o){ e.preventDefault(); openM(); return; }
+    if(e.target.closest('[data-dscr-close]') || e.target===back){ closeM(); }
+  });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeM(); });
+  var wf = document.getElementById('dscrWaitForm');
+  if(wf){ wf.addEventListener('submit', function(e){ e.preventDefault();
+    submitLead('dscr_waitlist', wf.email.value.trim(), document.getElementById('dscrWaitStatus'), 'You’re on the waitlist — we’ll be in touch.')
+      .then(function(ok){ if(ok){ wf.reset(); setTimeout(closeM, 1600); } }); }); }
+})();
+</script>
 
 <script src="script.js"></script>
 </body>

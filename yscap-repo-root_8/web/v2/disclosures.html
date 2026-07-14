@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script src="theme.js?v=n6"></script>
+<script>
+(function () {
+  try {
+    var de = document.documentElement;
+    de.setAttribute("data-theme", "light");   // white-first — matches the portal (belt-and-suspenders vs a stale theme.js)
+    var q = new URLSearchParams(location.search);
+    if (q.get("embed") === "1") de.setAttribute("data-embed", "1");
+  } catch (e) {}
+})();
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Disclosures &amp; Licensing | YS Capital Group</title>
+<meta name="description" content="Important disclosures, licensing notices, and terms governing YS Capital Group business-purpose lending and the investor tools.">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/images/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="assets/images/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/images/favicon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=pilot2">
+<style>
+/* ============================================================
+   v2/privacy.html — legal reskin (design only)
+   Blueprint: web/preview/legal.html · self-contained, scoped to .ysl
+   Legal copy is preserved VERBATIM; this layer is presentation only.
+   ============================================================ */
+.ysl{
+  --paper:#F4F0E7; --paper-2:#EDE6D7; --card:#FBF9F3;
+  --ink:#141B22; --ink-1:#1D2830; --ink-soft:#4B585C;
+  --gold:#AE8746; --gold-soft:#C9A86A; --teal:#2F7F86;
+  --line:rgba(20,27,34,.16); --line-soft:rgba(20,27,34,.08);
+  --serif:'Fraunces',Georgia,'Times New Roman',serif;
+  --sans:'Hanken Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --r:4px; --ease:cubic-bezier(.22,.61,.36,1);
+  color:var(--ink); font-family:var(--sans);
+}
+.ysl *{box-sizing:border-box;}
+.ysl-wrap{max-width:1240px;margin:0 auto;padding:0 40px;}
+@media(max-width:980px){.ysl-wrap{padding:0 24px;}}
+
+/* ---- hero ---- */
+.ysl-hero{padding:9.5rem 0 2.4rem;}
+.ysl-eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:600;color:var(--gold);margin:0 0 1rem;}
+.ysl-hero h1{font-family:var(--serif);font-weight:500;letter-spacing:-.01em;line-height:1.04;font-size:clamp(38px,5vw,64px);margin:.1em 0 .5em;color:var(--ink);}
+.ysl-eff{display:inline-flex;align-items:center;gap:9px;font-size:12.5px;font-weight:600;letter-spacing:.02em;background:var(--card);border:1px solid var(--line);border-radius:100px;padding:7px 15px;color:var(--ink-soft);}
+.ysl-eff .dot{width:6px;height:6px;border-radius:50%;background:var(--teal);}
+
+/* ---- two-column layout: section index + document ---- */
+.ysl-grid{display:grid;grid-template-columns:236px 1fr;gap:64px;align-items:start;padding-top:8px;padding-bottom:96px;}
+@media(max-width:860px){.ysl-grid{grid-template-columns:1fr;gap:0;padding-bottom:64px;}}
+
+/* ---- sticky section index ---- */
+.ysl-toc{position:sticky;top:104px;}
+.ysl-toc .lab{font-size:12px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);margin:0 0 16px;}
+.ysl-toc ol{list-style:none;margin:0;padding:0;counter-reset:t;}
+.ysl-toc li{counter-increment:t;}
+.ysl-toc a{display:flex;gap:12px;align-items:baseline;padding:11px 0 11px 16px;border-left:2px solid var(--line);color:var(--ink-soft);font-size:14px;font-weight:600;line-height:1.35;transition:color .15s,border-color .15s;}
+.ysl-toc a::before{content:counter(t,decimal-leading-zero);font-family:var(--serif);font-size:12.5px;color:var(--gold);font-variant-numeric:tabular-nums;flex:none;}
+.ysl-toc a:hover{color:var(--gold);border-left-color:var(--gold);}
+@media(max-width:860px){
+  .ysl-toc{position:sticky;top:60px;z-index:30;background:var(--paper);margin:0 -24px;padding:12px 24px;border-bottom:1px solid var(--line-soft);}
+  .ysl-toc .lab{display:none;}
+  .ysl-toc ol{display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+  .ysl-toc ol::-webkit-scrollbar{display:none;}
+  .ysl-toc a{white-space:nowrap;border-left:0;border:1px solid var(--line);border-radius:100px;padding:0 15px;min-height:44px;align-items:center;}
+}
+
+/* ---- document body ---- */
+.ysl-doc{min-width:0;}
+.ysl-clause{max-width:70ch;scroll-margin-top:112px;padding:26px 0;border-top:1px solid var(--line-soft);counter-increment:c;position:relative;}
+.ysl-clause:first-child{border-top:0;padding-top:6px;}
+.ysl-clause p{color:var(--ink-1);line-height:1.72;font-size:17px;}
+.ysl-clause p + p{margin-top:14px;}
+.ysl-clause p strong{color:var(--ink);font-weight:700;letter-spacing:-.005em;}
+/* animated, always-visible underline on links (gold at rest, teal wipe on hover) */
+.ysl-clause a{
+  color:var(--ink);font-weight:600;text-decoration:none;
+  background-image:linear-gradient(var(--teal),var(--teal)),linear-gradient(var(--gold),var(--gold));
+  background-size:0% 1px,100% 1px;background-position:0 100%,0 100%;background-repeat:no-repeat;
+  transition:background-size .35s var(--ease),color .2s var(--ease);
+}
+.ysl-clause a:hover{color:var(--teal);background-size:100% 1px,100% 1px;}
+
+.ysl-foot-note{max-width:70ch;font-size:13px;color:var(--ink-soft);line-height:1.6;margin-top:30px;padding-top:22px;border-top:1px solid var(--line-soft);}
+
+/* ---- polish: one-way reveals (resting state is fully visible → never blank) ---- */
+@media(prefers-reduced-motion:no-preference){
+  @keyframes ysl-rise{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+  .ysl-anim{animation:ysl-rise .55s var(--ease) both;}
+  .ysl-hero .ysl-anim{animation-delay:.04s;}
+  .ysl-hero h1.ysl-anim{animation-delay:.10s;}
+  .ysl-hero .ysl-eff.ysl-anim{animation-delay:.16s;}
+  .ysl-doc .ysl-clause{animation:ysl-rise .55s var(--ease) both;}
+  .ysl-doc .ysl-clause:nth-child(1){animation-delay:.06s;}
+  .ysl-doc .ysl-clause:nth-child(2){animation-delay:.12s;}
+  .ysl-doc .ysl-clause:nth-child(3){animation-delay:.18s;}
+  .ysl-doc .ysl-clause:nth-child(4){animation-delay:.22s;}
+  .ysl-doc .ysl-clause:nth-child(5){animation-delay:.26s;}
+  .ysl-doc .ysl-clause:nth-child(n+6){animation-delay:.30s;}
+}
+@media(prefers-reduced-motion:reduce){
+  .ysl-clause a{transition:color .2s;}
+}
+</style>
+</head>
+<body>
+<header class="nav scrolled" id="nav">
+    <div class="nav-inner">
+        <a href="index.html" class="nav-brand">
+            <img src="assets/images/ys-logo-t.png" alt="YS Capital Group">
+        </a>
+        <nav class="nav-links" aria-label="Primary">
+            <a href="index.html#programs">Programs</a>
+            <a href="index.html#contact">Contact</a>
+            <a href="suite.html" class="nav-suite">Investor Suite</a>
+        </nav>
+        <div class="nav-actions">
+            <a class="btn btn-solid" href="/portal/">Client Login</a>
+            <a class="btn btn-ghost" href="index.html">Back to Site</a>
+        </div>
+    </div>
+</header>
+<main id="top" class="ysl">
+    <section class="ysl-hero">
+        <div class="ysl-wrap">
+            <p class="eyebrow ysl-eyebrow ysl-anim">Compliance</p>
+            <h1 class="ysl-anim">Disclosures &amp; Licensing</h1>
+            <span class="ysl-eff ysl-anim"><span class="dot"></span>Last updated: July 14, 2026</span>
+        </div>
+    </section>
+
+    <div class="ysl-wrap ysl-grid">
+        <nav class="ysl-toc" aria-label="On this page">
+            <p class="lab">On this page</p>
+            <ol>
+                <li><a href="#d-business">Business purpose only</a></li>
+                <li><a href="#d-nj">New Jersey consumer loans</a></li>
+                <li><a href="#d-ny">New York consumer loans</a></li>
+                <li><a href="#d-pricing">Rates, leverage &amp; pricing</a></li>
+                <li><a href="#d-tools">Investor tools &amp; estimates</a></li>
+                <li><a href="#d-termsheet">Term sheets &amp; proposals</a></li>
+                <li><a href="#d-draws">Construction draws</a></li>
+                <li><a href="#d-sms">SMS communications</a></li>
+                <li><a href="#d-eho">Equal housing</a></li>
+                <li><a href="#d-contact">Contact us</a></li>
+            </ol>
+        </nav>
+
+        <div class="ysl-doc">
+            <section class="ysl-clause" id="d-business">
+                <p><strong>Business purpose only.</strong> All mortgage products and information on this website, and every tool in the Investor Suite, are intended solely for business-purpose and investment (non-owner-occupied) properties. We do not offer or accept applications for consumer-purpose loans (personal, family or household use) through this platform. By using this site you certify that any inquiry is for a commercial or business investment.</p>
+            </section>
+            <section class="ysl-clause" id="d-nj">
+                <p><strong>New Jersey consumer loans.</strong> YS Capital Group is a Licensed Correspondent Lender regulated by the New Jersey Department of Banking and Insurance (DOBI). For information regarding consumer mortgage loans in New Jersey, please do not use this website — call us directly at <a href="tel:7186350277">718-635-0277</a>.</p>
+            </section>
+            <section class="ysl-clause" id="d-ny">
+                <p><strong>New York consumer loans.</strong> YS Capital Group is a Registered Mortgage Broker with the New York State Department of Financial Services (NMLS&nbsp;<a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">#2609746</a>) — mortgage loans arranged through third-party providers. The business-purpose, investment-property financing described on this website is not consumer credit and is not offered to New York consumers here. This website is not intended to solicit or accept consumer (owner-occupied, 1–4 family residential) mortgage applications in New York. If you are a New York consumer seeking a residential mortgage, please do not use this website — contact us directly at <a href="tel:7188312168">718-831-2168</a>.</p>
+            </section>
+            <section class="ysl-clause" id="d-pricing">
+                <p><strong>Rates, leverage &amp; pricing are indicative.</strong> Any rate, leverage (LTV/LTC/ARV), fee, closing-cost, or loan-amount figure shown anywhere on this website or in our tools is illustrative and indicative only — a representative example, not an APR, not a rate lock, and not an offer or commitment to lend. Your actual terms depend on loan type, credit (FICO), leverage, DSCR, property type, occupancy, loan amount, points elected, prepayment structure, experience, state, and full underwriting, and may differ. Leverage shown is a maximum, set by experience and credit and capped by property value/ARV. Funding timelines vary by deal, title and third-party turnaround.</p>
+            </section>
+            <section class="ysl-clause" id="d-tools">
+                <p><strong>Investor tools &amp; estimates.</strong> The calculators and tools in the Investor Suite (deal, flip, equity, refinance, portfolio, rate, qualifier, rehab budget, track record and term-sheet tools) are provided for estimation and education only. Every output is an estimate based on the values you enter and is not a quote, an approval, or a commitment to lend, nor financial, legal, accounting or tax advice. Use is at your own risk; verify all figures with your loan team before relying on them.</p>
+            </section>
+            <section class="ysl-clause" id="d-termsheet">
+                <p><strong>Term sheets &amp; proposals.</strong> A term sheet or scenario generated here is an illustrative, indicative proposal only and is not a commitment to lend, a pre-approval, or a rate lock. Every program carries a minimum earned-interest provision of three months — an interest floor (not a prepayment penalty): if the loan pays off before three full months of interest have been earned, the remaining balance of that minimum interest is due at payoff. Final terms are set by the executed loan documents after full underwriting.</p>
+            </section>
+            <section class="ysl-clause" id="d-draws">
+                <p><strong>Construction draws.</strong> Construction and rehab draw requests for funded loans are handled through an independent third-party draw-management portal operated by Sitewire. That portal is operated by Sitewire, not by YS Capital Group, and its own terms and privacy practices govern information you submit there.</p>
+            </section>
+            <section class="ysl-clause" id="d-sms">
+                <p><strong>SMS communications.</strong> By providing your phone number or messaging YS Capital Group, you agree to receive conversational and account-related text messages at the number provided. Message frequency varies. Reply STOP to opt out or HELP for help. Message and data rates may apply. SMS consent is not shared with third parties or affiliates for their marketing purposes, and mobile opt-in data is never sold. See our <a href="privacy.html">Privacy Policy</a> and <a href="sms-terms.html">SMS Terms &amp; Conditions</a>.</p>
+            </section>
+            <section class="ysl-clause" id="d-eho">
+                <p><strong>Equal housing.</strong> YS Capital Group is an Equal Housing Lender. We do business in accordance with applicable fair-lending laws and do not discriminate on any basis prohibited by law.</p>
+            </section>
+            <section class="ysl-clause" id="d-contact">
+                <p><strong>Contact us.</strong> YS Capital Group, <a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">NMLS ID 2609746</a>, 5 New Montrose Ave, Bsmt, Brooklyn, NY 11211. Email <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a>. Phone <a href="tel:7188312168">718-831-2168</a>.</p>
+            </section>
+        </div>
+    </div>
+</main>
+<footer class="footer">
+    <div class="disclosures">
+        <p class="legal-links" style="margin:0 0 8px;font-size:13px"><a href="privacy.html">Privacy Policy</a> · <a href="sms-terms.html">SMS Terms</a> · <a href="index.html">Home</a></p>
+        <p class="copyright">© 2026 YS Capital Group. All rights reserved.</p>
+    </div>
+</footer>
+<script src="script.js"></script>
+<script src="float-actions.js"></script>
+</body>
+</html>

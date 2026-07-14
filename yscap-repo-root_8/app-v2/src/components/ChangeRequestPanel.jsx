@@ -12,9 +12,15 @@ const FIELDS = [
   { key: 'as_is_value', label: 'As-is value', type: 'money' },
   { key: 'arv', label: 'After-repair value (ARV)', type: 'money' },
   { key: 'rehab_budget', label: 'Rehab budget', type: 'money' },
+  { key: 'units', label: 'Number of units', type: 'int' },
   { key: 'property_type', label: 'Property type', type: 'select',
     options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
+  { key: 'program', label: 'Program', type: 'select',
+    options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
+  { key: 'loan_type', label: 'Loan type', type: 'select',
+    options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
 ];
+const MONEY_KEYS = new Set(FIELDS.filter((f) => f.type === 'money').map((f) => f.key));
 
 const STATUS_PILL = {
   pending: { text: 'Waiting for your loan team', cls: '' },
@@ -23,12 +29,15 @@ const STATUS_PILL = {
   superseded: { text: 'Replaced by a newer request', cls: '' },
 };
 
-function money(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? '$' + n.toLocaleString() : v;
+// Format a value the way its field should read (money as $, everything else
+// verbatim) — used for both the list and the "currently on file" hint.
+function fmtVal(field, v) {
+  if (v == null || v === '') return '—';
+  if (MONEY_KEYS.has(field)) { const n = Number(v); return Number.isFinite(n) ? '$' + n.toLocaleString() : String(v); }
+  return String(v);
 }
 
-export default function ChangeRequestPanel({ appId }) {
+export default function ChangeRequestPanel({ appId, app }) {
   const [state, setState] = useState({ locked: false, requests: [] });
   const [field, setField] = useState('arv');
   const [value, setValue] = useState('');
@@ -82,9 +91,14 @@ export default function ChangeRequestPanel({ appId }) {
               <option value="" disabled>Choose…</option>
               {def.options.map((o) => <option key={o} value={o}>{o}</option>)}
             </select>
-          : <input className="input" style={{ maxWidth: 180 }} type="number" inputMode="decimal"
+          : <input className="input" style={{ maxWidth: 180 }} type="number" inputMode={def.type === 'int' ? 'numeric' : 'decimal'}
               placeholder="New value" value={value} onChange={(e) => setValue(e.target.value)} />}
       </div>
+      {app && (
+        <div className="muted small" style={{ marginBottom: 8 }}>
+          Currently on file: <strong>{fmtVal(def.key, app[def.key])}</strong>
+        </div>
+      )}
       <textarea className="input" rows={2} style={{ width: '100%', marginBottom: 8 }}
         placeholder="Why are you asking for this change? (optional but helps us review it faster)"
         value={reason} onChange={(e) => setReason(e.target.value)} />
@@ -94,13 +108,12 @@ export default function ChangeRequestPanel({ appId }) {
         <div style={{ marginTop: 14 }}>
           <div className="muted small" style={{ marginBottom: 6 }}>Your requests</div>
           {requests.map((r) => {
-            const isMoney = ['purchase_price', 'as_is_value', 'arv', 'rehab_budget'].includes(r.field);
             const pill = STATUS_PILL[r.status] || { text: r.status, cls: '' };
             return (
               <div key={r.id} className="row" style={{ gap: 8, alignItems: 'baseline', padding: '6px 0', borderTop: '1px solid rgba(127,127,127,.12)', flexWrap: 'wrap' }}>
                 <strong style={{ minWidth: 130 }}>{r.field_label}</strong>
                 <span className="muted small">
-                  {r.old_value != null ? (isMoney ? money(r.old_value) : r.old_value) : '—'} → {isMoney ? money(r.new_value) : r.new_value}
+                  {fmtVal(r.field, r.old_value)} → {fmtVal(r.field, r.new_value)}
                 </span>
                 <div className="spacer" />
                 <span className={`pill ${pill.cls}`}>{pill.text}</span>

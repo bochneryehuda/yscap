@@ -64,6 +64,30 @@ app.get('/api/health', async (req, res) => {
   }
   let storageInfo;
   try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
+  // Missing-conditions tripwire (owner-directed 2026-07-14, after the breach):
+  // a LIVE file sitting at zero checklist items, or an RTL file without its
+  // purchase-contract condition, must be impossible — if it ever happens again
+  // this surfaces it loudly instead of waiting for a human to notice.
+  let conditionsGuard;
+  if (dbStatus === 'up') {
+    try {
+      const g = await Promise.race([
+        db.query(
+          `SELECT
+             count(*) FILTER (WHERE NOT EXISTS
+               (SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id))::int AS zero_items,
+             count(*) FILTER (WHERE
+               (COALESCE(a.program,'')||' '||COALESCE(a.loan_type,'')) !~* 'dscr|rental|\\mrent\\M|long[- ]?term|30[- ]?year'
+               AND NOT EXISTS (SELECT 1 FROM checklist_items ci
+                                JOIN checklist_templates t ON t.id=ci.template_id
+                               WHERE ci.application_id=a.id AND t.code='rtl_p1_contract'))::int AS no_contract
+             FROM applications a
+            WHERE a.deleted_at IS NULL AND a.status NOT IN ('declined','withdrawn','cancelled','funded')`),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('guard timeout')), 2500)),
+      ]);
+      conditionsGuard = { filesZeroItems: g.rows[0].zero_items, rtlFilesMissingContract: g.rows[0].no_contract };
+    } catch (e) { conditionsGuard = { error: e.message }; }
+  }
   // Liveness: 200 unless the caller explicitly asked for a strict DB gate.
   const code = (strict && dbStatus !== 'up') ? 503 : 200;
   res.status(code).json({
@@ -87,11 +111,22 @@ app.get('/api/health', async (req, res) => {
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
+    ...(conditionsGuard ? { conditionsGuard } : {}),
     ts: Date.now(),
   });
 });
 app.use('/auth', require('./auth').router);
 app.use('/api/roster', require('./routes/roster'));   // public team roster (site dropdown + ?lo branding)
+// Public company pricing defaults — the marketing term-sheet generator + the
+// portal studio read these live so a company-wide fee/markup change reaches
+// every not-yet-registered term sheet. Never 500s the site (empty → the tool
+// keeps its literals).
+app.get('/api/pricing-defaults', async (req, res) => {
+  try {
+    const d = await require('./lib/pricing-settings').load();
+    res.set('Cache-Control', 'public, max-age=60').json(d);
+  } catch (e) { res.set('Cache-Control', 'no-store').json({}); }
+});
 app.use('/api/address', require('./routes/address')); // address autocomplete/verification proxy (key stays server-side)
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/intake', require('./routes/intake'));
@@ -103,6 +138,7 @@ app.use('/api/staff', require('./routes/staff'));
 {
   const { requireAuth, requirePermission } = require('./auth');
   app.use('/api/admin/conditions', requireAuth, requirePermission('manage_conditions'), require('./routes/admin-conditions'));
+  app.use('/api/admin/pricing', requireAuth, requirePermission('manage_pricing'), require('./routes/admin-pricing'));
 }
 // ClickUp Control Center (health, dry-run/backfill, activity, per-file re-sync).
 // The router applies its own requireAuth + platform_setup guards.
@@ -126,6 +162,21 @@ app.use('/api/events', require('./routes/events'));
 // turn the '#' into '%23' and break the fragment.
 const LINK_BOUNCE = { reset: '/reset', verify: '/verify', accept: '/accept' };
 app.get('/link/:kind', (req, res, next) => {
+  const portal = (cfg.portalPath || '/portal').replace(/\/+$/, '');
+  // Generic route bounce (owner-reported broken notification links,
+  // 2026-07-14): EVERY email deep link now travels as /link/r?to=<route> so
+  // click-trackers can't eat the #fragment. Never an open redirect: the
+  // Location is ALWAYS our own portal + '/#' + a sanitized route path —
+  // an absolute URL or a header-injection attempt cannot survive the checks.
+  if (req.params.kind === 'r') {
+    let to = String(req.query.to || '/');
+    if (!to.startsWith('/')) to = '/' + to;
+    // printable ASCII only (kills CR/LF header injection), no protocol-relative
+    // '//host' escapes, bounded length.
+    if (to.startsWith('//') || to.length > 600 || !/^[\x20-\x7E]+$/.test(to) || /[<>"'\\]/.test(to)) to = '/';
+    res.set('Location', `${portal}/#${to}`).status(302).end();
+    return;
+  }
   const route = LINK_BOUNCE[req.params.kind];
   if (!route) return next();
   const params = new URLSearchParams();
@@ -134,13 +185,23 @@ app.get('/link/:kind', (req, res, next) => {
     if (v != null && v !== '') params.set(k, String(v));
   }
   const qs = params.toString();
-  const portal = (cfg.portalPath || '/portal').replace(/\/+$/, '');
   res.set('Location', `${portal}/#${route}${qs ? '?' + qs : ''}`).status(302).end();
 });
 
-// --- Static site (your existing build drops into web/) ---
+// --- Static site ---
+// V2 / PILOT IS THE DEFAULT (owner-directed 2026-07-14): the V2 tree (web/v2 —
+// reskinned marketing, tools, and the PILOT portal bundle) serves at the ROOT,
+// so every visitor lands on version 2 — homepage, /tools/*, /suite.html, and
+// the /portal SPA. Version 1 is NOT deleted:
+//   • /v1/**  — the original design, browsable in full (incl. /v1/portal/).
+//   • the plain web/ mount stays as a fallthrough, so any file V2 doesn't
+//     carry (v1 portal assets, legacy /v2/* bookmark URLs, uploads under
+//     web/…) keeps resolving exactly as before.
 const webDir = path.join(__dirname, '..', cfg.webDir);
-app.use(express.static(webDir));
+const v2Dir = path.join(webDir, 'v2');
+app.use(express.static(v2Dir));            // V2 wins at the root
+app.use('/v1', express.static(webDir));    // version 1, kept browsable
+app.use(express.static(webDir));           // fallthrough: v1 assets + legacy /v2/* URLs
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/auth')) return next();
   // A missing FILE (anything with an extension — .css/.js/.png…) must 404, not
@@ -148,13 +209,17 @@ app.get('*', (req, res, next) => {
   // stale index.html referencing a purged bundle "unstyled" the whole portal —
   // and service workers then cache that poisoned response.
   if (/\.[a-z0-9]{2,8}$/i.test(req.path)) return res.status(404).type('text/plain').send('not found');
-  // A deep link under /portal/ (e.g. a hard refresh, or a link without the #)
-  // must boot the SPA shell, not the marketing homepage — otherwise the portal
-  // "disappears" into the public site on refresh.
-  const shell = req.path.startsWith('/portal')
+  // A deep link under /portal/ (hard refresh, or a link without the #) must
+  // boot the matching SPA shell, not a marketing homepage. /portal (and legacy
+  // /v2/portal) boot the PILOT shell; /v1/portal boots the version-1 shell.
+  const shell = req.path.startsWith('/v1/portal')
     ? path.join(webDir, 'portal', 'index.html')
-    : path.join(webDir, 'index.html');
-  res.sendFile(shell, (err) => err && res.sendFile(path.join(webDir, 'index.html'), (e2) => e2 && next()));
+    : (req.path.startsWith('/portal') || req.path.startsWith('/v2/portal'))
+      ? path.join(v2Dir, 'portal', 'index.html')
+      : req.path.startsWith('/v1')
+        ? path.join(webDir, 'index.html')
+        : path.join(v2Dir, 'index.html');
+  res.sendFile(shell, (err) => err && res.sendFile(path.join(v2Dir, 'index.html'), (e2) => e2 && next()));
 });
 
 // 404 for unmatched API routes

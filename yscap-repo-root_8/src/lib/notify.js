@@ -25,6 +25,9 @@ function buildEmail(opts, audience) {
     intro:     opts.body || '',
     lines:     opts.lines || [],
     meta:      opts.meta || [],
+    // The email lists the file(s) even when the bytes are too big to attach; the
+    // explicit `files` list wins, else derive from whatever bytes were attached.
+    files:     (Array.isArray(opts.files) && opts.files.length ? opts.files : (opts.attachments || []).map((a) => a && a.filename)).filter(Boolean),
     cta:       { label: opts.ctaLabel || (audience === 'borrower' ? 'Open your portal' : 'Open the loan file'), url: link },
     note:      opts.note || (audience === 'borrower'
                  ? 'You are receiving this because you have an active file with YS Capital Group.'
@@ -37,7 +40,11 @@ async function _emailRow(id, to, opts, audience) {
   if (!to || !to.length) { await _mark(id, 'skipped'); return; }
   try {
     const msg = buildEmail(opts, audience);
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html });
+    // Attachments (owner-directed): doc-upload + chat emails carry the actual
+    // file(s). Each is { filename, contentType, content (base64) }. Bounded +
+    // sanitized at the call site; providers that don't support attachments ignore them.
+    const attachments = Array.isArray(opts.attachments) ? opts.attachments.filter((a) => a && a.filename && a.content) : [];
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments });
     await _mark(id, res && res.ok ? 'sent' : 'skipped');
   } catch (e) {
     await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);

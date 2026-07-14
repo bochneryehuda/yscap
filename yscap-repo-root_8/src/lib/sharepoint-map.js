@@ -55,11 +55,18 @@ const UNIT_MARKERS = new Set(['apt', 'apartment', 'unit', 'ste', 'suite', 'fl', 
 // human-created ones. Matched (pre-existing) folders are never renamed. The
 // marker is stripped during matching so a previously-created folder still
 // matches its borrower/address next time.
-const AUTO_MARKER = ', YS portal sync';
+// PILOT branding (owner-directed 2026-07-14): auto-created folders are now
+// marked "…, Synced by Pilot". The matcher MUST keep recognizing the LEGACY
+// "YS portal sync[ing]" names forever — existing folders are never renamed
+// (hard no-rename policy) and must still match so we never duplicate/strand
+// them. norm() therefore strips BOTH the new and the legacy phrasing.
+const AUTO_MARKER = ', Synced by Pilot';
 
 const norm = (s) => String(s || '')
   .toLowerCase()
-  .replace(/\bys portal sync(ing)?\b/g, ' ')   // marker never participates in matching
+  .replace(/\bys portal sync(ing)?\b/g, ' ')     // LEGACY marker/leaf — keep forever
+  .replace(/\bsynced by pilot\b/g, ' ')          // new marker
+  .replace(/\bpilot sync(ing)?\b/g, ' ')         // new leaf / short alt
   .replace(/[.,'’"()‘’“”]/g, ' ')
   .replace(/\s+/g, ' ')
   .trim();
@@ -193,14 +200,27 @@ async function resolveSyncFolder(ctx) {
 
   const borrowerName = [ctx.borrowerFirst, ctx.borrowerLast].filter(Boolean).join(' ').trim() || 'Unknown Borrower';
 
-  // Every folder the automation CREATES is named "<name>, YS portal sync"
+  // Every folder the automation CREATES is named "<name>, Synced by Pilot"
   // (AUTO_MARKER) so humans can tell it apart; matched folders keep their name.
   const createMarked = async (pid, name) => sp.ensureChildFolder(driveId, pid, `${name}${AUTO_MARKER}`);
 
+  // Alias-aware create for the fixed leaf/unfiled folders (owner-directed
+  // 2026-07-14): reuse a LEGACY-named folder if one already exists under this
+  // parent (so we never duplicate/strand the 15 existing "YS portal syncing"
+  // leaves), and only create under the NEW Pilot name when none is present.
+  // Never renames — matched legacy folders keep their old name.
+  const ensureAliased = async (pid, name, legacyNames) => {
+    const wanted = [name, ...(legacyNames || [])].map((n) => n.toLowerCase());
+    const kids = await sp.listChildren(driveId, pid);
+    const hit = kids.find((k) => k.isFolder && wanted.includes(String(k.name).toLowerCase()));
+    if (hit) return { id: hit.id, name: hit.name, webUrl: hit.webUrl, created: false };
+    return sp.ensureChildFolder(driveId, pid, name);
+  };
+
   if (!ctx.officerName) {
     // No officer at all → clearly-labeled unfiled area, never guessing.
-    const unfiled = await sp.ensureChildFolder(driveId, parentId, cfg.sharepointUnfiledRoot);
-    parentId = unfiled.id; pathParts.push(cfg.sharepointUnfiledRoot);
+    const unfiled = await ensureAliased(parentId, cfg.sharepointUnfiledRoot, cfg.sharepointUnfiledLegacy);
+    parentId = unfiled.id; pathParts.push(unfiled.name);
     details.flags.push('no-officer:unfiled');
     const bf = await createMarked(parentId, borrowerName);
     parentId = bf.id; pathParts.push(bf.name);
@@ -258,9 +278,11 @@ async function resolveSyncFolder(ctx) {
   }
 
   // 4) The portal-owned sync folder. Everything the mirror writes lives inside
-  //    here — the only place it ever writes files.
-  const sync = await sp.ensureChildFolder(driveId, parentId, cfg.sharepointSyncFolderName);
-  pathParts.push(cfg.sharepointSyncFolderName);
+  //    here — the only place it ever writes files. Alias-aware so an existing
+  //    "YS portal syncing" leaf is reused (never duplicated) while new scopes
+  //    get "Synced by Pilot".
+  const sync = await ensureAliased(parentId, cfg.sharepointSyncFolderName, cfg.sharepointSyncFolderLegacy);
+  pathParts.push(sync.name);
   const fullPath = pathParts.join('/');
 
   await db.query(

@@ -48,6 +48,7 @@ export default function StaffLayout({ children }) {
     ? 'Admin console' : `${ROLE_LABEL[role] || 'Internal'} console`;
   const canManageTeam = can('manage_team');
   const canManageConditions = can('manage_conditions');
+  const canManagePricing = can('manage_pricing');
   const canManageVendors = can('manage_vendors');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
@@ -69,6 +70,7 @@ export default function StaffLayout({ children }) {
             <NavLink to="/internal/leads">Leads</NavLink>
             <NavLink to="/internal/borrowers" title="Your borrowers — invite to the portal, reset or set a password, see last login">Borrowers</NavLink>
             {canManageConditions && <NavLink to="/internal/conditions" title="Condition Center — the global condition library & rules">Conditions</NavLink>}
+            {canManagePricing && <NavLink to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults">Pricing</NavLink>}
             {canManageTeam && <NavLink to="/internal/team">Team</NavLink>}
             {canManageVendors && <NavLink to="/internal/vendors" title="Title & insurance vendor directory">Vendors</NavLink>}
             {canDeleteFiles && <NavLink to="/internal/archived" title="Archived files — restore or delete permanently">Archived</NavLink>}
