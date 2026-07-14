@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
@@ -50,6 +50,18 @@ export default function StaffTeam() {
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const flash = (m) => { setMsg(m); setTimeout(() => setMsg(''), 4000); };
+
+  // Roster KPIs — derived from the staff rows already loaded (each carries
+  // is_active / has_login / mfa_enabled). No new fetch, pure counts.
+  const stats = useMemo(() => {
+    const list = rows || [];
+    return {
+      total: list.length,
+      active: list.filter(s => s.is_active).length,
+      withLogin: list.filter(s => s.has_login).length,
+      mfa: list.filter(s => s.mfa_enabled).length,
+    };
+  }, [rows]);
 
   async function create(e) {
     e.preventDefault(); setErr(''); setBusy(true);
@@ -132,6 +144,15 @@ export default function StaffTeam() {
 
       {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
       {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
+
+      {rows != null && (
+        <div className="kpi-grid" style={{ marginBottom: 18 }}>
+          <div className="kpi"><div className="v">{stats.total}</div><div className="k">Team members</div><div className="d">On the roster</div></div>
+          <div className="kpi"><div className="v">{stats.active}</div><div className="k">Active</div><div className="d">Can log in &amp; be assigned</div></div>
+          <div className="kpi"><div className="v">{stats.withLogin}</div><div className="k">With login</div><div className="d">Account set up</div></div>
+          <div className="kpi"><div className="v">{stats.mfa}</div><div className="k">MFA on</div><div className="d">Two-factor enabled</div></div>
+        </div>
+      )}
 
       {/* ---- add new staff ---- */}
       <div className="panel" style={{ marginBottom: 20 }}>

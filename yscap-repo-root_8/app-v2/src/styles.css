@@ -1974,3 +1974,45 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   .app .file-rail-grid{display:block}
   .app .file-rail{position:static;margin-top:20px}
 }
+
+/* =====================================================================
+   BLUEPRINT DERIVED-DATA ELEMENTS (frontend-only, 2026-07-13)
+   Presentation for values computed in-component from data each screen
+   already holds — no fetch/engine/rule involved. All scoped under .app
+   except the chat context card (shared .cv-* surface, light-first).
+   ===================================================================== */
+
+/* Task priority pills (StaffTasks) — derived from each task's existing due_date */
+.app .pri{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  padding:3px 9px;border-radius:100px;border:1px solid var(--border);color:var(--text-muted);
+  background:var(--surface);white-space:nowrap;flex:none}
+.app .pri.pri-high{color:var(--danger);border-color:transparent;background:var(--danger-soft)}
+.app .pri.pri-soon{color:var(--warning);border-color:transparent;background:var(--warning-soft)}
+.app .pri.pri-normal{color:var(--text-muted)}
+
+/* Audit sensitive-row emphasis (StaffAuditLog) — rows whose existing category is PII */
+.app .audit-row.sensitive{background:var(--danger-soft);box-shadow:inset 3px 0 0 var(--danger);
+  padding-left:12px;border-radius:0 6px 6px 0}
+.app .pii-tag{margin-left:8px;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--danger);background:var(--surface);border:1px solid var(--danger);border-radius:100px;
+  padding:1px 8px;vertical-align:middle}
+
+/* Condition Center typed chips + serif titles (StaffConditionStudio) */
+.app .cc-def-title{font-family:var(--serif);font-weight:600;letter-spacing:-.01em;font-size:15.5px}
+.app .pill.cc-type-document{color:var(--primary-hover);border-color:var(--primary)}
+.app .pill.cc-type-info_field{color:var(--gold);border-color:var(--gold)}
+.app .pill.cc-type-tool{color:var(--primary-hover);border-color:var(--primary)}
+.app .pill.cc-type-esign{color:var(--warning);border-color:var(--warning)}
+.app .pill.cc-type-internal_task,
+.app .pill.cc-type-internal_condition{color:var(--text-muted);border-color:var(--border)}
+
+/* Chat context card (StaffChat) — from the selected conversation's existing fields.
+   Enriches the existing .cv-pane-context; light-first like the rest of the chat. */
+.cv-context{display:flex;flex-direction:column;gap:8px;padding:11px 13px;border:1px solid var(--border);
+  border-radius:var(--radius);background:var(--surface)}
+.cv-context a{font-weight:600;color:var(--text)}
+.cv-context-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.cv-ctx-tag{font-size:11.5px;font-weight:600;color:var(--primary-hover);background:var(--primary-soft);
+  border-radius:100px;padding:3px 10px}
+.cv-ctx-tag.mut{color:var(--text-muted);background:var(--surface-soft)}
+.cv-ctx-people{font-size:12px;color:var(--text-muted)}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -84,6 +84,19 @@ export default function StaffVendors() {
     catch (e) { setErr(e.message || 'Could not delete'); }
   }
 
+  // Directory KPIs — derived purely from the vendor rows the screen already holds
+  // (each row carries contact_type + files_used). No new data is fetched.
+  const stats = useMemo(() => {
+    const list = rows || [];
+    const by = (t) => list.filter(v => v.contact_type === t).length;
+    return {
+      total: list.length,
+      title: by('title_company'),
+      insurance: by('insurance_agent'),
+      files: list.reduce((n, v) => n + (Number(v.files_used) || 0), 0),
+    };
+  }, [rows]);
+
   if (!isAdmin) return <div role="alert" className="notice err">The vendor directory is admin-only.</div>;
   const needle = q.trim().toLowerCase();
   const shown = (rows || []).filter(v => !needle
@@ -102,6 +115,16 @@ export default function StaffVendors() {
       </div>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
+
+      {rows != null && (
+        <div className="kpi-grid" style={{ margin: '4px 0 14px' }}>
+          <div className="kpi"><div className="v">{stats.total}</div><div className="k">Vendors</div><div className="d">In the directory</div></div>
+          <div className="kpi"><div className="v">{stats.title}</div><div className="k">Title companies</div></div>
+          <div className="kpi"><div className="v">{stats.insurance}</div><div className="k">Insurance agents</div></div>
+          <div className="kpi"><div className="v">{stats.files}</div><div className="k">Files referenced</div><div className="d">Across all vendors</div></div>
+        </div>
+      )}
+
       {adding && <VendorForm initial={blank()} busy={busy} onSave={add} onCancel={() => setAdding(false)} />}
 
       <div className="row" style={{ gap: 8, margin: '12px 0', flexWrap: 'wrap' }}>

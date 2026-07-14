@@ -35,6 +35,8 @@ export default function StaffTasks() {
   if (!rows) return <div className="panel pad muted">Loading your tasks…</div>;
 
   const today = new Date().toISOString().slice(0, 10);
+  // "Soon" window: due within the next 3 days. Derived only from due_date.
+  const soonBy = new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10);
   const dueToday = rows.filter(r => r.due_date === today).length;
   const overdueCount = rows.filter(r => r.due_date && r.due_date < today).length;
   const inReview = rows.filter(r => r.status === 'received').length;
@@ -90,6 +92,8 @@ export default function StaffTasks() {
                 {items.map(it => {
                   const overdue = it.due_date && it.due_date < today;
                   const isToday = it.due_date === today;
+                  // Priority derived purely from the task's existing due_date.
+                  const pri = !it.due_date ? null : (it.due_date < today ? 'high' : it.due_date <= soonBy ? 'soon' : 'normal');
                   return (
                     <Link to={`/internal/app/${it.application_id}`} className="task" key={it.id}>
                       <div className="who-wrap">
@@ -104,6 +108,7 @@ export default function StaffTasks() {
                         </div>
                       </div>
                       <div className="task-meta">
+                        {pri && <span className={`pri pri-${pri}`}>{pri === 'high' ? 'High' : pri === 'soon' ? 'Soon' : 'Normal'}</span>}
                         {it.due_date && (
                           <span className={`due ${overdue ? 'over' : isToday ? 'today' : ''}`}>
                             {overdue ? 'Overdue' : isToday ? 'Today' : `Due ${it.due_date}`}
