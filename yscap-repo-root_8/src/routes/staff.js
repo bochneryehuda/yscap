@@ -855,6 +855,9 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     }
     if (typeof b.co_phone === 'string' && b.co_phone.trim()) put('cell_phone', b.co_phone.trim());
     if (b.co_dob) put('date_of_birth', b.co_dob);
+    // #60 — parity with the primary borrower's inline-add fields.
+    if (b.co_fico !== undefined && b.co_fico !== '' && Number.isFinite(Number(b.co_fico))) put('fico', Math.trunc(Number(b.co_fico)));
+    if (typeof b.co_citizenship === 'string' && b.co_citizenship.trim()) put('citizenship', b.co_citizenship.trim());
     if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
     sets.push('updated_at=now()');
     await db.query(`UPDATE borrowers SET ${sets.join(', ')} WHERE id=$1`, vals);

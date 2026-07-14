@@ -51,11 +51,13 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
 ];
 
-// #30 — the co-borrower's own required identity fields, shown in a SEPARATE
+// #30 / #60 — the co-borrower's own required identity fields, shown in a SEPARATE
 // "Co-borrower completeness" section (not mixed into the primary borrower's).
-// Name / phone / date of birth are inline-addable (+) via the co-borrower-fields
-// endpoint; email + SSN stay in the Co-borrower panel (set at link / secure
-// flow). Gated to the staff payload that carries the co-borrower join.
+// Name / phone / date of birth / FICO / citizenship are all inline-addable (+)
+// via the co-borrower-fields endpoint — PARITY with the primary borrower section
+// (owner-directed 2026-07-14: "add it right there like you can on the borrower").
+// Email + SSN stay in the Co-borrower panel (set at link / secure flow). Gated to
+// the staff payload that carries the co-borrower join.
 const PLACEHOLDER_NAME = new Set(['', 'unknown', 'co-borrower', 'n/a', 'na', 'tbd']);
 const realName = (v) => !!v && !PLACEHOLDER_NAME.has(String(v).trim().toLowerCase());
 const CO_COMPLETENESS_FIELDS = (app) => ((app.co_borrower_id && ('co_first_name' in app)) ? [
@@ -63,6 +65,8 @@ const CO_COMPLETENESS_FIELDS = (app) => ((app.co_borrower_id && ('co_first_name'
   { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, hint: 'Set in the Co-borrower panel.' },
   { key: 'co_phone', label: 'Co-borrower phone', ok: !!app.co_cell_phone, type: 'tel' },
   { key: 'co_dob', label: 'Co-borrower date of birth', ok: !!app.co_date_of_birth, type: 'date' },
+  { key: 'co_fico', label: 'Co-borrower FICO', ok: !!app.co_fico, type: 'number' },
+  { key: 'co_citizenship', label: 'Co-borrower citizenship', ok: !!app.co_citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
   { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, hint: 'Enter in the Co-borrower panel (stored encrypted).' },
 ] : []);
 
