@@ -3694,9 +3694,11 @@ router.get('/leads', async (req, res) => {
     const params = seesAll(req) ? [] : [req.actor.id];
     const r = await db.query(
       `SELECT l.id,l.tool,l.name,l.email,l.phone,l.subject,l.message,l.payload,l.status,
-              l.officer_id,l.created_at, s.full_name AS officer_name
+              l.officer_id,l.created_at,l.next_follow_up,l.application_id,
+              s.full_name AS officer_name,
+              (SELECT count(*)::int FROM lead_notes ln WHERE ln.lead_id=l.id) AS note_count
          FROM leads l LEFT JOIN staff_users s ON s.id=l.officer_id
-         ${where} ORDER BY l.created_at DESC LIMIT 300`, params);
+         ${where} ORDER BY (l.status='new') DESC, COALESCE(l.next_follow_up,'9999-12-31') ASC, l.created_at DESC LIMIT 300`, params);
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3715,10 +3717,42 @@ router.patch('/leads/:id', async (req, res) => {
   const sets = [], vals = []; let i = 1;
   if (b.status !== undefined) { sets.push(`status=$${i++}`); vals.push(b.status); }
   if (b.officerId !== undefined) { sets.push(`officer_id=$${i++}`); vals.push(b.officerId || null); }
+  if (b.nextFollowUp !== undefined) { sets.push(`next_follow_up=$${i++}`); vals.push(b.nextFollowUp || null); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try { await db.query(`UPDATE leads SET ${sets.join(',')} WHERE id=$${i}`, vals); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Lead CRM: per-lead notes / contact log. Same horizontal scope as PATCH — a
+// non-privileged officer only touches their own or an unassigned lead.
+async function leadInScope(req, leadId) {
+  if (seesAll(req)) return true;
+  const r = await db.query(`SELECT 1 FROM leads WHERE id=$1 AND (officer_id=$2 OR officer_id IS NULL)`, [leadId, req.actor.id]);
+  return !!r.rows[0];
+}
+router.get('/leads/:id/notes', async (req, res) => {
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT ln.id, ln.body, ln.created_at, s.full_name AS staff_name
+         FROM lead_notes ln LEFT JOIN staff_users s ON s.id=ln.staff_id
+        WHERE ln.lead_id=$1 ORDER BY ln.created_at DESC LIMIT 200`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/leads/:id/notes', async (req, res) => {
+  const body = String((req.body || {}).body || '').trim();
+  if (!body) return res.status(400).json({ error: 'a note is required' });
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const ins = await db.query(
+      `INSERT INTO lead_notes (lead_id, staff_id, body) VALUES ($1,$2,$3)
+       RETURNING id, body, created_at`, [req.params.id, req.actor.id, body.slice(0, 4000)]);
+    // Touch the lead so it re-sorts and a fresh note nudges it out of "new".
+    await db.query(`UPDATE leads SET updated_at=now(), status=CASE WHEN status='new' THEN 'contacted' ELSE status END WHERE id=$1`, [req.params.id]);
+    res.status(201).json({ ok: true, note: ins.rows[0] });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // ---------------- documents ----------------
