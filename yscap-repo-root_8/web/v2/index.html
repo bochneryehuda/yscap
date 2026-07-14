@@ -484,7 +484,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
                 <span class="flag-tag">Flagship · DSCR Rental</span>
                 <h3>Qualify on the property's cash flow.</h3>
                 <p>No tax returns, no W-2s. 30-year fixed, ARM and interest-only — on purchases, refinances and cash-out. 1–4 units, LLC-friendly, single property or portfolio.</p>
-                <a class="link-u" href="#dscr-waitlist" data-dscr-open role="button">Price my DSCR deal →</a>
+                <a class="link-u" href="#dscrWaitlist" data-dscr-open role="button">Price my DSCR deal →</a>
             </div>
             <div class="r">
                 <div class="spec"><span class="k">Purchase &amp; R/T</span><span class="v m-num">85% <small>LTV</small></span></div>
@@ -707,7 +707,8 @@ section[id], main[id]{ scroll-margin-top:96px; }
        review". The named marquee cards above stay as social proof. */
     var feat = document.getElementById('rvFeatureText');
     if (feat && REVIEWS.length > 1) {
-        // Start on a stable-but-not-always-first quote without Math.random.
+        // Rotate through the reviews in order, starting from the first, advancing
+        // every 6.5s. Deterministic (no Math.random) so it's stable across loads.
         var order = REVIEWS.map(function (r, i) { return i; });
         var fi = 0;
         var advance = function () {

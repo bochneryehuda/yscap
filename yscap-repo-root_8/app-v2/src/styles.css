@@ -2052,3 +2052,7 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   .chat-fab{right:14px;bottom:calc(14px + env(safe-area-inset-bottom,0px));height:50px;padding:0 15px;width:50px;justify-content:center}
   .chat-fab-label{display:none}
 }
+/* While a mobile nav drawer is open, hide the FAB so it doesn't float over the
+   dimmed sidebar (the staff drawer sits below the FAB's z-index). */
+.app:has(.app-sidebar.open) .chat-fab,
+.shell:has(.nav.open) .chat-fab{display:none}
