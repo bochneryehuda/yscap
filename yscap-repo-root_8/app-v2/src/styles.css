@@ -1442,7 +1442,7 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .app-navtoggle{display:none}
 
 .app-main{grid-area:main;min-width:0;padding:30px 0 60px}
-.app .wrap{max-width:1240px;padding:0 36px}
+.app .wrap{max-width:min(1620px,96vw);padding:0 40px}
 .app-foot{border-top:1px solid var(--border);margin-top:8px;padding:20px 0;
   color:var(--text-muted);font-size:13px}
 
@@ -1895,7 +1895,7 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
      unsupported — first-paint safe. — */
 .shell .timeline:has(.tl-step){display:flex;align-items:flex-start;gap:0;padding:8px 0 2px}
 .shell .timeline:has(.tl-step) .tl-step{flex:1 1 0;min-width:0;flex-direction:column;align-items:center;
-  text-align:center;gap:8px;padding:0}
+  text-align:center;gap:8px;padding:0 6px}
 .shell .timeline:has(.tl-step) .tl-step::before{display:none}
 .shell .timeline:has(.tl-step) .tl-step:not(:last-child)::after{content:'';position:absolute;top:8px;left:50%;
   width:100%;height:2px;background:var(--border);z-index:0}
@@ -1903,10 +1903,17 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .shell .timeline:has(.tl-step) .tl-step.current:not(:last-child)::after{background:var(--primary)}
 .shell .timeline:has(.tl-step) .tl-dot{margin:0;z-index:1}
 .shell .timeline:has(.tl-step) .tl-body{min-width:0}
-.shell .timeline:has(.tl-step) .tl-label{font-size:12.5px}
-@media(max-width:640px){
-  .shell .timeline:has(.tl-step) .tl-body .small{display:none}
-  .shell .timeline:has(.tl-step) .tl-label{font-size:11px}
+.shell .timeline:has(.tl-step) .tl-label{font-size:11px;line-height:1.2;overflow-wrap:break-word}
+/* On phones the 7-step horizontal track can't fit — flip back to a clean vertical list. */
+@media(max-width:720px){
+  .shell .timeline:has(.tl-step){display:block;padding:0}
+  .shell .timeline:has(.tl-step) .tl-step{flex-direction:row;align-items:flex-start;text-align:left;gap:12px;padding:6px 0}
+  .shell .timeline:has(.tl-step) .tl-step::after{display:none}
+  .shell .timeline:has(.tl-step) .tl-step:not(:last-child)::before{content:'';display:block;position:absolute;left:7px;top:20px;bottom:-6px;width:2px;background:var(--border)}
+  .shell .timeline:has(.tl-step) .tl-step.done:not(:last-child)::before,
+  .shell .timeline:has(.tl-step) .tl-step.current:not(:last-child)::before{background:var(--primary)}
+  .shell .timeline:has(.tl-step) .tl-label{font-size:13.5px}
+  .shell .timeline:has(.tl-step) .tl-body .small{display:block}
 }
 
 /* — Dashboard: editorial next-steps strip (tiles laid on a hairline grid) and
@@ -1942,7 +1949,9 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
    ===================================================================== */
 
 /* ---- Borrower (.shell) ---- */
-.shell .file-rail-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:22px;align-items:start}
+.shell .file-rail-grid{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:28px;align-items:start}
+/* the borrower content wrap caps at 1180px; the rail needs the loan-file page wider so section content stays readable (>=1081px only; below that the grid collapses to one column) */
+@media(min-width:1081px){ .shell .wrap:has(.file-rail-grid){max-width:min(1600px,96vw)} }
 .shell .file-rail{position:sticky;top:152px;display:flex;flex-direction:column;gap:16px;min-width:0}
 .shell .file-rail .panel{margin-top:0}
 .shell .rail-team{display:flex;align-items:center;gap:12px}
