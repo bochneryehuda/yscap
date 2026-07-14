@@ -9,6 +9,16 @@
 (function () {
   "use strict";
 
+  // MINIMUM INTEREST (owner-directed 2026-07-14, ALL programs current and
+  // future): every term sheet carries a three-month minimum EARNED interest
+  // provision — a payoff before three full months of interest simply pays the
+  // remainder of that minimum at payoff. Industry-standard bridge/RTL term;
+  // it is a minimum-interest (interest floor) provision, NOT a prepayment
+  // penalty, and the wording must always say so.
+  var MIN_INTEREST_ROW = "3 months (minimum earned interest \u2014 not a prepayment penalty)";
+  var MIN_INTEREST_DETAIL = "All programs carry a 3-month minimum earned interest provision: if the loan pays off before three full months of interest have accrued, the remainder of that minimum is due at payoff. This is an interest floor, not a prepayment penalty.";
+
+
   var LENDER = { name: "YS Capital Group", nmls: "2609746", email: "sales@yscapgroup.com", phone: "718-831-2168" };
   var FEES = { lender: 2195, credit: 150, appraisal: 800 };   // flat third-party estimates (origination % comes from the engine / admin field)
 
@@ -816,6 +826,7 @@
       ["Status", statusLabel(d.status)],
       ["Loan amount", (stdExit || stdCity) ? "Manual review" : (stdOk && d.totalLoan ? money(d.totalLoan) : EM)],
       ["Note rate", (stdOk && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM],
+      ["Minimum interest", MIN_INTEREST_ROW],
       ["Initial advance", stdOk ? money(d.initialAdvance) : EM],
       ["Rehab / construction holdback", stdOk ? money(d.rehabHoldback) : EM],
       ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
@@ -837,6 +848,7 @@
         ["Product", (gd.productLabel || EM) + (gd.tierLabel ? " \u00b7 " + gd.tierLabel : "")],
         ["Loan amount", gExit ? "Manual review" : (gOk && gd.totalLoan ? money(gd.totalLoan) : EM)],
         ["Note rate", (gOk && gd.rate > 0) ? gd.rate.toFixed(2) + "%" : EM],
+        ["Minimum interest", MIN_INTEREST_ROW],
         ["Initial advance", gOk ? money(gd.initialAdvance) : EM],
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
         ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
@@ -1322,7 +1334,7 @@
       // ---- footer ----
       doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 48, W - M, H - 48);
       doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-      doc.text(pdfSafe(LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
+      doc.text(pdfSafe(MIN_INTEREST_DETAIL + " " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Business-purpose lending only. This document is proof of funds / pre-qualification and is not a commitment to lend or an offer to extend consumer credit. Figures are indicative and subject to full underwriting, appraisal, title and final credit approval."), M, H - 36, { maxWidth: W - 2 * M });
 
       drawDerivationPage(doc, d, "Basis for This Proof of Funds", "The figures in the preceding letter were generated from the inputs below, provided by the applicant through the YS Capital Term Sheet Studio. This page shows what was entered and how the financing amount was determined.");
       doc.save("YS-Capital-Proof-of-Funds-" + borrower.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") + ".pdf");
@@ -1468,13 +1480,14 @@
       ["Initial / as-is LTV", pc(d.ltvPct)],
       (d.arvPct > 0) ? ["Loan-to-ARV", pc(d.arvPct)] : null,
       ["Note rate (interest-only)", (d.rate > 0 ? d.rate.toFixed(2) + "%" : "\u2014")],
+      ["Minimum interest", MIN_INTEREST_ROW],
       ["Origination", origPctStr(d.origPct != null ? d.origPct : 0.0125) + " of loan"]
     ]);
 
     // footer
     doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 46, W - M, H - 46);
     doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-    doc.text(pdfSafe("Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
+    doc.text(pdfSafe(MIN_INTEREST_DETAIL + " Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
   }
 
   /* ===================== wiring ===================== */
