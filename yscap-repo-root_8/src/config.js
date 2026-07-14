@@ -105,12 +105,13 @@ module.exports = {
   // HashRouter). Email + notification deep links must include it, or they land
   // on the marketing site instead of the portal.
   portalPath:    ('/' + (process.env.PORTAL_PATH || 'portal').replace(/^\/+|\/+$/g, '')),
-  // Public URL of the branded logo shown in email headers. Defaults to the
-  // app's own statically-served asset (web/assets/brand/lockup-dark.png) so it
-  // renders on the dark email canvas. Override with EMAIL_LOGO_URL if you host
-  // it elsewhere (e.g. the marketing site).
+  // Public URL of the branded logo shown in email headers. Defaults to the PILOT
+  // lockup image (web/(v2/)assets/brand/pilot-lockup-email.png) — the exact site
+  // top-left lockup (gold chevron mark + "PILOT" in Fraunces + "by YS Capital"),
+  // baked onto white so it reads on the light email header. Override with
+  // EMAIL_LOGO_URL if hosted elsewhere.
   emailLogoUrl:  process.env.EMAIL_LOGO_URL ||
-                 ((process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,'') + '/assets/brand/lockup-dark.png'),
+                 ((process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,'') + '/assets/brand/pilot-lockup-email.png'),
   notifyAdmins:  (process.env.NOTIFY_ADMINS || '').split(',').map(s => s.trim()).filter(Boolean),
   // Microsoft Graph (Outlook) provider:
   msTenantId:    process.env.MS_TENANT_ID,
