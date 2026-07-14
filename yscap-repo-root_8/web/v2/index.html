@@ -484,7 +484,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
                 <span class="flag-tag">Flagship · DSCR Rental</span>
                 <h3>Qualify on the property's cash flow.</h3>
                 <p>No tax returns, no W-2s. 30-year fixed, ARM and interest-only — on purchases, refinances and cash-out. 1–4 units, LLC-friendly, single property or portfolio.</p>
-                <a class="link-u" href="tools/term-sheet.html">Price a DSCR deal →</a>
+                <a class="link-u" href="#dscr-waitlist" data-dscr-open role="button">Price my DSCR deal →</a>
             </div>
             <div class="r">
                 <div class="spec"><span class="k">Purchase &amp; R/T</span><span class="v m-num">85% <small>LTV</small></span></div>
@@ -655,8 +655,8 @@ section[id], main[id]{ scroll-margin-top:96px; }
     </div>
     <figure class="rv-feature reveal-up">
         <span class="qm" aria-hidden="true">&ldquo;</span>
-        <blockquote>YS Capital is the best direct lender I've ever dealt with! Fast and efficient — it's worth the try, you won't regret it!</blockquote>
-        <figcaption><b>Dov Steiner</b> · Verified Google review</figcaption>
+        <blockquote id="rvFeatureText">YS Capital is the best direct lender I've ever dealt with! Fast and efficient — it's worth the try, you won't regret it!</blockquote>
+        <figcaption id="rvFeatureCap">Verified Google review</figcaption>
     </figure>
     <div class="review-viewport" aria-label="Client reviews">
         <div class="review-track" id="reviewTrack"><!-- populated from real reviews via script --></div>
@@ -700,6 +700,26 @@ section[id], main[id]{ scroll-margin-top:96px; }
         var html = REVIEWS.map(card).join('');
         track.innerHTML = html + html;                 // duplicate set → seamless infinite loop
         track.style.animationDuration = Math.max(48, REVIEWS.length * 5) + 's';
+    }
+
+    /* The BIG featured review rotates and is always ANONYMOUS (owner-directed):
+       never a reviewer name on the hero pull-quote — only "Verified Google
+       review". The named marquee cards above stay as social proof. */
+    var feat = document.getElementById('rvFeatureText');
+    if (feat && REVIEWS.length > 1) {
+        // Start on a stable-but-not-always-first quote without Math.random.
+        var order = REVIEWS.map(function (r, i) { return i; });
+        var fi = 0;
+        var advance = function () {
+            fi = (fi + 1) % order.length;
+            feat.style.opacity = '0';
+            setTimeout(function () {
+                feat.textContent = REVIEWS[order[fi]].text;   // text only — no name
+                feat.style.opacity = '1';
+            }, 320);
+        };
+        feat.style.transition = 'opacity .32s ease';
+        setInterval(advance, 6500);
     }
 })();
 </script>
@@ -815,7 +835,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
         <div class="db2-text">
             <span class="db2-kicker">Current borrowers</span>
             <h2>Already funded with us? Request a draw.</h2>
-            <p>Submit a draw request, upload your photos and invoices, and track each release from your secure, YS&nbsp;Capital–branded portal.</p>
+            <p>Submit a draw request, upload your photos and invoices, and track each release in our secure online draw portal.</p>
         </div>
         <a class="btn btn-solid btn-lg db2-btn" href="https://portal.sitewire.co/login/YSCapitalGroup" target="_blank" rel="noopener">
             Request a Draw
@@ -866,6 +886,18 @@ section[id], main[id]{ scroll-margin-top:96px; }
                 <img src="assets/images/nmls.svg" alt="NMLS ID 2609746" class="compliance-mark">
             </div>
         </div>
+    </div>
+
+    <div class="footer-subscribe">
+        <div class="fsub-copy">
+            <h5>Stay in the loop</h5>
+            <p>Rate moves, new programs and investor tips — occasional emails, no spam.</p>
+        </div>
+        <form class="fsub-form" id="subscribeForm" novalidate>
+            <input type="email" name="email" inputmode="email" autocomplete="email" placeholder="you@email.com" aria-label="Email address" required>
+            <button type="submit" class="btn btn-gold">Subscribe</button>
+        </form>
+        <p class="fsub-status" id="subscribeStatus" role="status" aria-live="polite"></p>
     </div>
 
     <div class="disclosures">
@@ -1009,6 +1041,75 @@ section[id], main[id]{ scroll-margin-top:96px; }
     paint(b.getAttribute('data-prog'));
   });
   paint('gold');   // best-case Gold is the default landing view
+})();
+</script>
+
+<!-- DSCR instant-pricing waitlist (coming soon) + shared lead capture -->
+<style>
+  .footer-subscribe{max-width:1180px;margin:0 auto;padding:26px 40px;display:flex;align-items:center;gap:22px 32px;flex-wrap:wrap;border-top:1px solid var(--line,rgba(255,255,255,.12))}
+  .footer-subscribe .fsub-copy{flex:1 1 260px;min-width:0}
+  .footer-subscribe h5{margin:0 0 4px;font-size:15px}
+  .footer-subscribe p{margin:0;color:var(--muted);font-size:13.5px;line-height:1.5}
+  .fsub-form{display:flex;gap:8px;flex:1 1 320px;min-width:0;max-width:460px}
+  .fsub-form input{flex:1;min-width:0;padding:12px 14px;border-radius:var(--r,6px);border:1px solid var(--line,rgba(255,255,255,.18));background:rgba(255,255,255,.04);color:inherit;font:inherit}
+  .fsub-status{flex-basis:100%;margin:2px 0 0;font-size:13px;color:var(--gold)}
+  @media(max-width:640px){.footer-subscribe{padding:22px 16px}.fsub-form{max-width:none}}
+  .ys-modal-back{position:fixed;inset:0;background:rgba(10,14,18,.66);z-index:1200;display:none;align-items:center;justify-content:center;padding:20px}
+  .ys-modal-back.open{display:flex}
+  .ys-modal{background:var(--card,#fff);color:var(--ink,#141B22);max-width:440px;width:100%;border-radius:12px;padding:28px 26px;box-shadow:0 30px 80px rgba(10,14,18,.4);position:relative}
+  .ys-modal h3{margin:0 0 6px;font-family:var(--font-d,Georgia),serif;font-size:1.5rem}
+  .ys-modal .soon{display:inline-block;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--gold,#AE8746);margin-bottom:10px}
+  .ys-modal p{margin:0 0 14px;line-height:1.6;color:var(--ink-soft,#4B585C);font-size:15px}
+  .ys-modal form{display:flex;gap:8px;flex-wrap:wrap}
+  .ys-modal input{flex:1;min-width:0;padding:12px 14px;border-radius:8px;border:1px solid rgba(20,27,34,.2);font:inherit}
+  .ys-modal .ys-modal-x{position:absolute;top:12px;right:14px;background:none;border:none;font-size:22px;line-height:1;cursor:pointer;color:var(--ink-soft,#4B585C)}
+  .ys-modal .status{flex-basis:100%;margin:8px 0 0;font-size:13px;color:var(--teal,#2F7F86)}
+</style>
+<div class="ys-modal-back" id="dscrWaitlist" aria-hidden="true">
+  <div class="ys-modal" role="dialog" aria-modal="true" aria-labelledby="dscrWaitTitle">
+    <button type="button" class="ys-modal-x" data-dscr-close aria-label="Close">&times;</button>
+    <span class="soon">Coming soon</span>
+    <h3 id="dscrWaitTitle">Instant DSCR pricing is almost here</h3>
+    <p>We're building instant DSCR rental pricing right into the site. Leave your email and we'll let you know the moment it's live — and in the meantime a loan officer can price your DSCR deal by hand.</p>
+    <form id="dscrWaitForm" novalidate>
+      <input type="email" name="email" inputmode="email" autocomplete="email" placeholder="you@email.com" aria-label="Email address" required>
+      <button type="submit" class="btn btn-gold">Notify me</button>
+      <p class="status" id="dscrWaitStatus" role="status" aria-live="polite"></p>
+    </form>
+  </div>
+</div>
+<script>
+(function(){
+  // Shared, dependency-free lead capture → POST /api/leads (same endpoint the
+  // marketing tools use). No visitor login; server stores + notifies + confirms.
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  function submitLead(tool, email, statusEl, okMsg){
+    if(!EMAIL_RE.test(email)){ statusEl.style.color=''; statusEl.textContent='Please enter a valid email.'; return Promise.resolve(false); }
+    statusEl.textContent='Sending…';
+    return fetch('/api/leads', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ tool: tool, email: email, subject: tool, message: 'Captured from the marketing site ('+tool+').' }) })
+      .then(function(r){ return r.ok ? r.json().catch(function(){return {};}) : Promise.reject(r); })
+      .then(function(){ statusEl.textContent = okMsg; return true; })
+      .catch(function(){ statusEl.textContent = 'Something went wrong — please try again.'; return false; });
+  }
+  // Subscribe (footer)
+  var sf = document.getElementById('subscribeForm');
+  if(sf){ sf.addEventListener('submit', function(e){ e.preventDefault();
+    submitLead('subscribe', sf.email.value.trim(), document.getElementById('subscribeStatus'), 'Thanks — you’re on the list.')
+      .then(function(ok){ if(ok) sf.reset(); }); }); }
+  // DSCR waitlist modal
+  var back = document.getElementById('dscrWaitlist');
+  function openM(){ if(back){ back.classList.add('open'); back.setAttribute('aria-hidden','false'); var i=back.querySelector('input'); if(i) i.focus(); } }
+  function closeM(){ if(back){ back.classList.remove('open'); back.setAttribute('aria-hidden','true'); } }
+  document.addEventListener('click', function(e){
+    var o=e.target.closest('[data-dscr-open]'); if(o){ e.preventDefault(); openM(); return; }
+    if(e.target.closest('[data-dscr-close]') || e.target===back){ closeM(); }
+  });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeM(); });
+  var wf = document.getElementById('dscrWaitForm');
+  if(wf){ wf.addEventListener('submit', function(e){ e.preventDefault();
+    submitLead('dscr_waitlist', wf.email.value.trim(), document.getElementById('dscrWaitStatus'), 'You’re on the waitlist — we’ll be in touch.')
+      .then(function(ok){ if(ok){ wf.reset(); setTimeout(closeM, 1600); } }); }); }
 })();
 </script>
 

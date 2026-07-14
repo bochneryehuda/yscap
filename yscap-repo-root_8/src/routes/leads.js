@@ -20,6 +20,8 @@ const TOOL_LABEL = {
   deal_analyzer: 'Deal analyzer',
   qualifier: 'Qualifier',
   contact: 'Contact request',
+  subscribe: 'Newsletter / updates subscription',
+  dscr_waitlist: 'DSCR instant pricing — waitlist',
 };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
