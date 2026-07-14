@@ -2178,8 +2178,12 @@ async function canSeeBorrowerId(req, borrowerId) {
   if (seesAllBorrowers(req)) return true;
   if (!borrowerId) return false;
   const r = await db.query(
+    // Match a file where this person is the primary OR the CO-borrower — a
+    // co-borrower is a party on the staffer's file, so an assigned loan officer /
+    // processor may see (and invite) them. Fails-safe: still requires the staffer
+    // be assigned to a file the borrower is actually on.
     `SELECT 1 FROM applications
-      WHERE borrower_id=$1 AND deleted_at IS NULL
+      WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL
         AND (loan_officer_id=$2 OR processor_id=$2
              OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))
       LIMIT 1`,
@@ -2286,8 +2290,13 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
     if (!b) return res.status(404).json({ error: 'not found' });
     if (!b.email) return res.status(400).json({ error: 'this borrower has no email on file' });
+    // Match files where they are the primary OR the CO-borrower (owner-directed
+    // 2026-07-14): a co-borrower is its own borrower record and gets its own
+    // portal login with full (OR-gated) access to the shared loan — but the
+    // primary invite never reaches them, so this powers a dedicated co-borrower
+    // invite. Without the co_borrower_id match a pure co-borrower would 400.
     const app = (await db.query(
-      `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+      `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
       [req.params.id])).rows[0];
     if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
     const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });
