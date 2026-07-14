@@ -1902,6 +1902,18 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .cv-composer .input{border-radius:12px;background:var(--surface-soft);border-color:var(--border)}
 .cv-composer .btn.primary{border-radius:12px}
 
+/* Clean line-icons for chat controls — replaces the emoji-glyph buttons so the
+   chat reads as a professional tool. Reaction emoji stay (they're content). */
+.ci{display:inline-block;vertical-align:-0.14em;flex:none}
+.msg-actions button .ci{width:16px;height:16px;vertical-align:middle}
+.cv-menu button{display:flex;align-items:center;gap:8px}
+.cv-menu button .ci{width:15px;height:15px;flex:none;opacity:.85}
+.cv-iconbtn{display:inline-flex;align-items:center;justify-content:center}
+.cv-iconbtn .ci{width:17px;height:17px}
+.cv-pin-flag .ci,.cv-visible-banner .ci,.cv-pinned .ci{width:13px;height:13px;vertical-align:-0.12em}
+.cv-tick .ci{width:12px;height:12px;vertical-align:-0.08em}
+.msg-att-file .ic .ci{width:16px;height:16px}
+
 /* ---- conversation LIST rows: monogram/channel crest, no emoji icons ---- */
 .cv-list-scroll{border-color:var(--border);background:var(--surface);border-radius:var(--radius)}
 .cv-item{gap:12px;padding:13px 14px;border-radius:0;border-bottom:1px solid var(--surface-soft)}

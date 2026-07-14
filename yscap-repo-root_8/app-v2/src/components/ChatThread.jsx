@@ -11,6 +11,41 @@ import DocPreview from './DocPreview.jsx';
 
 const QUICK_EMOJI = ['👍', '❤️', '✅', '👀', '🎉', '❓'];
 const REF_ICON = { task: '☑', document: '⎙', application: '🏠', borrower: '👤' };
+
+/* Clean line-icon set for the chat's interactive controls. Replaces the
+   emoji-glyph buttons (📎🎤🙂↩📌⋯📁🔔) so the borrower chat reads as a
+   professional business tool, not a consumer social app. Reaction emoji stay
+   (they're content). Inherits currentColor + sizes to the button's font-size. */
+const CI_PATHS = {
+  attach: 'M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.48-8.49',
+  mic: 'M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4',
+  stop: 'M6 6h12v12H6z',
+  reply: 'M9 17 4 12l5-5M4 12h11a5 5 0 0 1 5 5v2',
+  pin: 'M12 17v5M9 3h6l-1 6 3 3v2H7v-2l3-3-1-6z',
+  more: 'M5 12h.01M12 12h.01M19 12h.01',
+  smile: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8.5 14a4 4 0 0 0 7 0M9 9.5h.01M15 9.5h.01',
+  folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0',
+  bellOff: 'M13.7 21a2 2 0 0 1-3.4 0M18 8a6 6 0 0 0-9.3-5M6 8c0 7-3 9-3 9h13M3 3l18 18',
+  eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2',
+  info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 8h.01',
+  trash: 'M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13',
+  pencil: 'M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3zM13.5 6.5l3 3',
+  unread: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 12h.01',
+  search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-3.4-3.4',
+  close: 'M6 6l12 12M18 6 6 18',
+};
+function CI({ name, className }) {
+  const d = CI_PATHS[name];
+  if (!d) return null;
+  return (
+    <svg className={`ci ${className || ''}`} viewBox="0 0 24 24" width="1em" height="1em" fill="none"
+      stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {d.split('M').filter(Boolean).map((seg, i) => <path key={i} d={'M' + seg} />)}
+    </svg>
+  );
+}
 const fmtSize = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const readFileAsBase64 = (file) => new Promise((res, rej) => {
   const r = new FileReader();
@@ -112,7 +147,7 @@ function Attachment({ m, download }) {
   return (
     <div className="row" style={{ gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
       <button className="msg-att-file" onClick={canPreview ? () => setPreview(true) : saveIt} disabled={busy} title={canPreview ? 'Preview' : 'Download'}>
-        <span className="ic">{m.attachment_kind === 'pdf' ? '⎙' : '📎'}</span>
+        <span className="ic"><CI name="attach" /></span>
         <span className="nm">{m.attachment_name || 'Attachment'}</span>
         <span className="sz">{fmtSize(m.attachment_size)}{busy ? ' · downloading…' : ''}</span>
       </button>
@@ -686,17 +721,17 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                 onChange={e => setSearchQ(e.target.value)} />
             </form>
           )}
-          <button className="btn ghost small" onClick={toggleShared} title="Files, media & links shared here">📁</button>
+          <button className="btn ghost small cv-iconbtn" onClick={toggleShared} title="Files, media & links shared here"><CI name="folder" /></button>
           {A.mute && <MuteButton conv={conv} A={A} members={members} me={me} />}
         </div>
       </div>
 
       {borrowerVisible && (
-        <div className="cv-visible-banner">👁 Visible to the borrower — everything here is part of their file</div>
+        <div className="cv-visible-banner"><CI name="eye" /> Visible to the borrower — everything here is part of their file</div>
       )}
       {pinnedTop && (
         <button className="cv-pinned" onClick={() => jumpToSeq(pinnedTop.seq)} title="Jump to pinned message">
-          📌 <strong>{pinnedTop.sender_name}:</strong>&nbsp;
+          <CI name="pin" /> <strong>{pinnedTop.sender_name}:</strong>&nbsp;
           <span className="cv-pin-body">{pinnedTop.body ? pinnedTop.body.slice(0, 120) : 'Attachment'}</span>
         </button>
       )}
@@ -826,9 +861,9 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                 data-seq={m.seq}>
                 {!isMine && <span className="cv-ava msg" title={m.sender_name}>{grouped ? '' : initials(m.sender_name)}</span>}
                 <div className={`cv-bubble ${isMine ? 'me' : 'them'} ${m.priority === 'urgent' ? 'urgent' : m.priority === 'important' ? 'important' : ''}`}>
-                  {m.priority === 'urgent' && <div className="cv-priority">🔴 URGENT</div>}
-                  {m.priority === 'important' && <div className="cv-priority imp">❗ Important</div>}
-                  {m.pinned && <div className="cv-pin-flag">📌 Pinned</div>}
+                  {m.priority === 'urgent' && <div className="cv-priority">Urgent</div>}
+                  {m.priority === 'important' && <div className="cv-priority imp">Important</div>}
+                  {m.pinned && <div className="cv-pin-flag"><CI name="pin" /> Pinned</div>}
                   {!isMine && !grouped && <div className="msg-from">{m.sender_name || 'Member'}</div>}
                   {m.reply_snippet && (
                     <button className="cv-quote" onClick={() => m.reply_to_message_id && jumpToSeq((sorted.find(x => x.id === m.reply_to_message_id) || {}).seq || m.seq)}>
@@ -856,7 +891,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                   <div className="msg-time">
                     {timeShort(m.created_at)}
                     {m.edited_at && ' · edited'}
-                    {m._status === 'sending' && <span className="cv-tick" title="Sending…"> 🕓</span>}
+                    {m._status === 'sending' && <span className="cv-tick" title="Sending…"> <CI name="clock" /></span>}
                     {m._status === 'failed' && (
                       <span className="cv-fail"> failed · <button className="btn link small" onClick={() => submit(m)}>retry</button></span>
                     )}
@@ -877,19 +912,19 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                         {QUICK_EMOJI.slice(0, 3).map(e => (
                           <button key={e} className="msg-quickrx" title={`React ${e}`} aria-label={`React with ${e}`} onClick={() => doReact(m.id, e)}>{e}</button>
                         ))}
-                        <button title="More reactions" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}>🙂</button>
-                        <button title="Reply" onClick={() => setReplyTo(m)}>↩</button>
-                        {A.pin && <button title={m.pinned ? 'Unpin' : 'Pin'} onClick={() => doPin(m)}>📌</button>}
-                        <button title="More" onClick={() => setMenuFor(menuFor === m.id ? null : m.id)}>⋯</button>
+                        <button title="More reactions" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}><CI name="smile" /></button>
+                        <button title="Reply" onClick={() => setReplyTo(m)}><CI name="reply" /></button>
+                        {A.pin && <button title={m.pinned ? 'Unpin' : 'Pin'} onClick={() => doPin(m)}><CI name="pin" /></button>}
+                        <button title="More" onClick={() => setMenuFor(menuFor === m.id ? null : m.id)}><CI name="more" /></button>
                       </span>
                     )}
                   </div>
                   {menuFor === m.id && (
                     <div className="cv-menu">
-                      {isMine && m.kind === 'text' && <button onClick={() => { setEditing({ id: m.id, text: m.body || '' }); setMenuFor(null); }}>✎ Edit</button>}
-                      {isMine && <button onClick={() => doDelete(m)}>🗑 Delete</button>}
-                      <button onClick={() => { setInfoFor(infoFor === m.id ? null : m.id); setMenuFor(null); }}>ℹ Message info</button>
-                      <button onClick={() => doMarkUnreadHere(m)}>◌ Mark unread from here</button>
+                      {isMine && m.kind === 'text' && <button onClick={() => { setEditing({ id: m.id, text: m.body || '' }); setMenuFor(null); }}><CI name="pencil" /> Edit</button>}
+                      {isMine && <button onClick={() => doDelete(m)}><CI name="trash" /> Delete</button>}
+                      <button onClick={() => { setInfoFor(infoFor === m.id ? null : m.id); setMenuFor(null); }}><CI name="info" /> Message info</button>
+                      <button onClick={() => doMarkUnreadHere(m)}><CI name="unread" /> Mark unread from here</button>
                     </div>
                   )}
                   {infoFor === m.id && (
@@ -990,16 +1025,16 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
           <div className="row" style={{ gap: 8, alignItems: 'center' }}>
             <input ref={fileRef} type="file" style={{ display: 'none' }}
               accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip" onChange={onPickFile} />
-            <button className="btn ghost msg-tool" title="Attach a photo, video, PDF or file" onClick={() => fileRef.current && fileRef.current.click()}>📎</button>
+            <button className="btn ghost msg-tool" title="Attach a photo, video, PDF or file" onClick={() => fileRef.current && fileRef.current.click()}><CI name="attach" /></button>
             <button className={`btn ghost msg-tool ${recState === 'recording' ? 'rec' : ''}`}
               title={recState === 'recording' ? 'Stop recording' : 'Record a voice note'} onClick={toggleRecord}>
-              {recState === 'recording' ? '■' : '🎤'}
+              {recState === 'recording' ? <CI name="stop" /> : <CI name="mic" />}
             </button>
             {isStaff && (
               <button className={`btn ghost msg-tool cv-prio ${priority}`}
                 title={priority === 'normal' ? 'Mark as important / urgent' : priority === 'important' ? 'Important — click for urgent' : 'Urgent — re-notifies every 2 min until read'}
                 onClick={() => setPriority(p => p === 'normal' ? 'important' : p === 'important' ? 'urgent' : 'normal')}>
-                {priority === 'urgent' ? '🔴' : priority === 'important' ? '❗' : '!'}
+                !
               </button>
             )}
             <input className="input" placeholder={recState === 'recording' ? 'Recording voice note…' : `Message ${conv.name}`}
@@ -1029,8 +1064,8 @@ function MuteButton({ conv, A, members, me }) {
   const [open, setOpen] = useState(false);
   return (
     <span style={{ position: 'relative' }}>
-      <button className="btn ghost small" title={muted ? 'Muted — click to change' : 'Mute notifications for this chat'}
-        onClick={() => setOpen(!open)}>{muted ? '🔕' : '🔔'}</button>
+      <button className="btn ghost small cv-iconbtn" title={muted ? 'Muted — click to change' : 'Mute notifications for this chat'}
+        onClick={() => setOpen(!open)}>{muted ? <CI name="bellOff" /> : <CI name="bell" />}</button>
       {open && (
         <div className="cv-menu" style={{ right: 0, top: '110%' }}>
           <button onClick={() => { A.mute({ minutes: 60 }).catch(() => {}); setOpen(false); }}>Mute 1 hour</button>
