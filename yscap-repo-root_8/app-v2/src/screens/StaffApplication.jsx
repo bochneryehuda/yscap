@@ -2151,7 +2151,11 @@ export default function StaffApplication() {
         onOpenStudio={() => { studioRef.current ? studioRef.current.openStudio() : document.getElementById('sec-pricing')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }} />
       <StaffChangeRequests appId={id} onChanged={load} />
       <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
-      <div className="grid cols-2" style={{ marginTop: 14 }}>
+      {/* Stacked, not a 2-col grid: the file page's centre column is narrow
+          (sub-nav + summary rail flank it), so side-by-side crushed each panel to
+          ~160px and pushed the Underwriting list off the page. Full-width, stacked,
+          each panel reads at the full section width. */}
+      <div className="stack" style={{ marginTop: 14 }}>
         <AddConditionPanel appId={id} items={items} onChanged={load}
           onError={(t) => setErr(t)} onFlash={flash} />
         <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}

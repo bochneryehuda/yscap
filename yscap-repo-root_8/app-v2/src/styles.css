@@ -108,8 +108,13 @@ h1{font-size:26px} h2{font-size:20px} h3{font-size:16px}
 .panel{background:var(--ink-1);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
 .panel + .panel{margin-top:18px}
 .grid{display:grid;gap:16px}
-.grid.cols-2{grid-template-columns:1fr 1fr}
-.grid.cols-3{grid-template-columns:repeat(3,1fr)}
+/* minmax(0,1fr), NOT 1fr: a bare 1fr is minmax(auto,1fr), so a column can't
+   shrink below its content's min-content width — one panel with wide content
+   (e.g. the per-file Add-condition panel) then exceeds 50% and shoves its
+   sibling (Underwriting conditions) off the right edge of the page. minmax(0,…)
+   lets every column shrink to its share so nothing runs off-page. */
+.grid.cols-2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}
 @media(max-width:720px){.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.nav{gap:12px}}
 
 /* fields */
