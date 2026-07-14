@@ -1108,7 +1108,17 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 /* modal */
 .cv-modal-back{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;display:flex;
   align-items:center;justify-content:center;padding:20px}
-.cv-modal{width:100%;max-width:480px;max-height:85vh;overflow-y:auto}
+/* Every modal needs a readable CARD surface. `.cv-modal` previously carried only
+   sizing, so any modal that didn't also add `.panel` (the Add-lead / Convert-lead
+   forms, the Dashboard confirm) rendered TRANSPARENT over the dim backdrop —
+   invisible text (owner-reported 2026-07-14). Give the base a solid surface here
+   so no modal can be transparent again; the flex modals (doc preview, reminder
+   composer) fill it and set their own inner layout, so this only helps them. */
+.cv-modal{width:100%;max-width:480px;max-height:85vh;overflow-y:auto;
+  background:var(--surface,var(--ink-1));border:1px solid var(--border,var(--line));
+  border-radius:var(--radius);box-shadow:0 24px 60px -24px rgba(0,0,0,.55)}
+/* The lead forms put their fields straight in the modal — give them breathing room. */
+.cv-modal.lead-convert{padding:22px}
 /* Phones: a centred card is cramped and hard to reach one-handed — every modal
    (reminder composer, document preview, chat pickers) becomes a thumb-reachable
    bottom sheet that fills the width, rounds only its top, respects the home-bar
