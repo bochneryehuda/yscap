@@ -38,8 +38,13 @@ export default function StaticToolFrame({ src, title, fill = false, minHeight = 
         // embedded tool follows the portal's white coloring).
         win.document.documentElement.setAttribute('data-theme', 'light');
         const style = win.document.createElement('style');
-        style.textContent = 'html,body{height:auto!important;min-height:0!important;background:transparent}'
-          + '.ys-theme-toggle{display:none!important}';
+        // Keep the tool's OWN brand-paper background (matches the perfect standalone
+        // version) instead of forcing transparent — forcing transparent showed the
+        // portal's gray sheet through and read as "ugly gray". And stop looping
+        // decorative motion (the "Live" dot pulse etc.) that reads as blinking here.
+        style.textContent = 'html,body{height:auto!important;min-height:0!important;background:#F4F0E7!important}'
+          + '.ys-theme-toggle{display:none!important}'
+          + '*,*::before,*::after{animation-iteration-count:1!important}';
         win.document.head.appendChild(style);
       } catch (_) { /* cosmetic only */ }
       if (!disposed) setLoaded(true);
