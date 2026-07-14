@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useLocation, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { useAuth } from '../lib/auth.jsx';
@@ -519,6 +519,11 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
 
 export default function Application() {
   const { id } = useParams();
+  const loc = useLocation();
+  // A chat email deep-link arrives as /app/:id?chat=<conversationId> — auto-open
+  // the Messages section so the recipient lands ON the conversation instead of at
+  // the top of the file (owner-reported 2026-07-14). Runs once the file paints.
+  const wantsChat = /(?:^|[?&])chat=/.test(loc.search || '');
   const [app, setApp] = useState(null);
   const [items, setItems] = useState([]);
   const [uploads, setUploads] = useState([]);
@@ -580,6 +585,16 @@ export default function Application() {
     return () => window.removeEventListener('focus', onFocus);
     /* eslint-disable-next-line */
   }, [id]);
+  // Chat deep-link (…?chat=<id>): once the file has painted, bring the Messages
+  // section into view so the recipient lands on the conversation.
+  useEffect(() => {
+    if (!wantsChat || !app) return undefined;
+    const t = setTimeout(() => {
+      const el = document.getElementById('sec-messages');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 350);
+    return () => clearTimeout(t);
+  }, [wantsChat, app]);
 
   const readB64 = fileToBase64;   // shared reader (lib/files.js)
 
