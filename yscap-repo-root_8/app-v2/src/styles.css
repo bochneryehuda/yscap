@@ -1913,6 +1913,8 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .cv-pin-flag .ci,.cv-visible-banner .ci,.cv-pinned .ci{width:13px;height:13px;vertical-align:-0.12em}
 .cv-tick .ci{width:12px;height:12px;vertical-align:-0.08em}
 .msg-att-file .ic .ci{width:16px;height:16px}
+.cv-replying .ci{width:14px;height:14px;vertical-align:-0.12em}
+.cv-rename-hint .ci{width:12px;height:12px}
 
 /* ---- conversation LIST rows: monogram/channel crest, no emoji icons ---- */
 .cv-list-scroll{border-color:var(--border);background:var(--surface);border-radius:var(--radius)}

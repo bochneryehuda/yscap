@@ -697,7 +697,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
               <div className="cv-title" onClick={() => A.rename && setRenaming(conv.name)}
                 title={A.rename ? 'Click to rename this chat' : undefined}
                 style={A.rename ? { cursor: 'pointer' } : undefined}>
-                {conv.name}{A.rename && <span className="cv-rename-hint">✎</span>}
+                {conv.name}{A.rename && <span className="cv-rename-hint"><CI name="pencil" /></span>}
               </div>
             )}
             <div className="cv-sub">
@@ -868,7 +868,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                   {m.reply_snippet && (
                     <button className="cv-quote" onClick={() => m.reply_to_message_id && jumpToSeq((sorted.find(x => x.id === m.reply_to_message_id) || {}).seq || m.seq)}>
                       <strong>{m.reply_snippet.sender}</strong>
-                      <span>{m.reply_snippet.body || (m.reply_snippet.attachmentKind ? '📎 Attachment' : '')}</span>
+                      <span>{m.reply_snippet.body || (m.reply_snippet.attachmentKind ? 'Attachment' : '')}</span>
                     </button>
                   )}
                   <Attachment m={m} download={A.download} />
@@ -998,7 +998,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
       <div className={`cv-composer ${borrowerVisible ? 'borrower-visible' : ''}`}>
         {replyTo && (
           <div className="cv-replying">
-            ↩ Replying to <strong>{replyTo.sender_name}</strong>: {String(replyTo.body || 'attachment').slice(0, 80)}
+            <CI name="reply" /> Replying to <strong>{replyTo.sender_name}</strong>: {String(replyTo.body || 'attachment').slice(0, 80)}
             <button className="btn link small" onClick={() => setReplyTo(null)}>×</button>
           </div>
         )}
