@@ -12,7 +12,6 @@ export default function Accept() {
   const { signIn } = useAuth();
   const token = params.get('token') || '';
 
-  const [fullName, setFullName] = useState('');
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [busy, setBusy] = useState(false);
@@ -24,7 +23,7 @@ export default function Accept() {
     if (pw !== pw2) return setErr('Passwords do not match.');
     setBusy(true);
     try {
-      const r = await api.acceptInvite({ token, password: pw, fullName: fullName.trim() || undefined });
+      const r = await api.acceptInvite({ token, password: pw });
       if (r && r.token) { signIn(r.token); nav('/dashboard'); }
       else nav('/login');
     } catch (e) { setErr(e.message || 'This invitation is invalid or has expired.'); }
@@ -42,10 +41,8 @@ export default function Accept() {
     );
 
   return (
-    <AuthShell title="Activate your account" subtitle="Set a password to finish setting up your access.">
+    <AuthShell title="Set your password" subtitle="Choose a password to finish setting up your access.">
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
-      <div className="field"><label>Full name</label>
-        <input className="input" autoComplete="name" value={fullName} onChange={e => setFullName(e.target.value)} /></div>
       <div className="field"><label>Password</label>
         <PasswordInput autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} /></div>
       <div className="field"><label>Confirm password</label>
