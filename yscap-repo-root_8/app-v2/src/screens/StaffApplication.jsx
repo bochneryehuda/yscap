@@ -1621,6 +1621,21 @@ function ClickupSyncPanel({ app, canSetup, onResynced }) {
   );
 }
 
+/* Clean line icons (Feather-style) replacing the old emoji on the Message /
+   Remind actions — owner-directed 2026-07-14 ("looks like kid play"). */
+const IconMessage = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ marginRight: 7, verticalAlign: '-2px' }}>
+    <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-4-.9L3 21l1.9-4.9A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5z" />
+  </svg>
+);
+const IconBell = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ marginRight: 7, verticalAlign: '-2px' }}>
+    <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.7 21a2 2 0 0 1-3.4 0" />
+  </svg>
+);
+
 export default function StaffApplication() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -2007,59 +2022,79 @@ export default function StaffApplication() {
         info="Status, milestone gating, assignments and the deal at a glance — the control panel for this file.">
       <DealSnapshot app={app} gating={gating} />
       <ClickupSyncPanel app={app} canSetup={can('platform_setup')} onResynced={load} />
-      <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16 }}>
-        <span className="muted small">Advance status</span>
-        <select className="input" style={{ maxWidth: 190 }} value={app.status} onChange={e => changeStatus(e.target.value)}>
-          {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
-        </select>
-        <span className="muted small">Notifies the borrower &amp; assigned team.</span>
-        {gating && (() => {
-          const g = gating.clear_to_close || {};
-          const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
-          return g.ready
-            ? <span className="ts-badge ok" title="All prior-to-docs conditions cleared and gates satisfied">Clear-to-close ready</span>
-            : <span className="ts-badge warn" title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.label)].join(' · ')}>{n} to clear before CTC</span>;
-        })()}
-        <div className="spacer" />
-        <button className="btn ghost" onClick={() => setChatOpen(true)}>💬 Message</button>
-        <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says">🔔 Remind</button>
-        <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
-          title="Email the borrower an invite to join this file in PILOT">
-          {inviteBusy ? 'Sending…' : 'Invite borrower'}
-        </button>
-      </div>
-      <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
-        <span className="muted small">Internal (ClickUp) status</span>
-        <select className="input" style={{ maxWidth: 280 }} value={app.internal_status || ''}
-          onChange={e => changeInternalStatus(e.target.value)}
-          title="The exact ClickUp task status (38-status workflow). Setting it re-derives the borrower-facing status and pushes to ClickUp.">
-          {/* Keep the current value selectable even if it isn't a normalized known key
-              (live ClickUp statuses carry irregular casing / trailing spaces). */}
-          {!app.internal_status && <option value="">— not set —</option>}
-          {app.internal_status && !internalStatuses.some(s => s.value === app.internal_status) &&
-            <option value={app.internal_status}>{app.internal_status} (current)</option>}
-          {(() => {
-            const groups = {};
-            for (const s of internalStatuses) (groups[s.external] || (groups[s.external] = [])).push(s);
-            return Object.keys(groups).map(ext => (
-              <optgroup key={ext} label={ext}>
-                {groups[ext].map(s => <option key={s.value} value={s.value}>{s.value}</option>)}
-              </optgroup>
-            ));
+      {/* Status, ClickUp status & closing — one clean labeled control panel. The
+          old version crammed the selects + buttons into loose rows and cut off the
+          long ClickUp-status field; labels now sit above full-width fields in a
+          responsive 2-col grid (owner-directed redesign 2026-07-14). */}
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <b>Status &amp; closing</b>
+          {gating && (() => {
+            const g = gating.clear_to_close || {};
+            const n = (g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0);
+            return g.ready
+              ? <span className="ts-badge ok" title="All prior-to-docs conditions cleared and gates satisfied">Clear-to-close ready</span>
+              : <span className="ts-badge warn" title={[...(g.conditions || []).map(c => c.title), ...(g.gates || []).map(x => x.label)].join(' · ')}>{n} to clear before CTC</span>;
           })()}
-        </select>
-        <span className="muted small">Pushes the exact status to ClickUp; borrower status is re-derived.</span>
-      </div>
-      <div className="row" style={{ gap: 8, alignItems: 'center', marginBottom: 16, flexWrap: 'wrap' }}>
-        <span className="muted small">Expected closing</span>
-        <input className="input" type="date" style={{ maxWidth: 170 }}
-          value={app.expected_closing ? String(app.expected_closing).slice(0, 10) : ''}
-          onChange={e => setClosing('expectedClosing', e.target.value)} />
-        <span className="muted small" style={{ marginLeft: 8 }}>Actual closing</span>
-        <input className="input" type="date" style={{ maxWidth: 170 }}
-          value={app.actual_closing ? String(app.actual_closing).slice(0, 10) : ''}
-          onChange={e => setClosing('actualClosing', e.target.value)} />
-        <span className="muted small">Setting an expected date notifies the borrower.</span>
+        </div>
+
+        <div className="grid cols-2" style={{ gap: 16 }}>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Borrower-facing status</label>
+            <select className="input" value={app.status} onChange={e => changeStatus(e.target.value)}>
+              {APP_STATUSES.map(s => <option key={s} value={s}>{APP_STATUS_LABEL[s]}</option>)}
+            </select>
+            <div className="hint" style={{ marginTop: 6 }}>Advancing notifies the borrower &amp; assigned team.</div>
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Internal status (ClickUp)</label>
+            <select className="input" value={app.internal_status || ''}
+              onChange={e => changeInternalStatus(e.target.value)}
+              title="The exact ClickUp task status (38-status workflow). Setting it re-derives the borrower-facing status and pushes to ClickUp.">
+              {/* Keep the current value selectable even if it isn't a normalized known key
+                  (live ClickUp statuses carry irregular casing / trailing spaces). */}
+              {!app.internal_status && <option value="">— not set —</option>}
+              {app.internal_status && !internalStatuses.some(s => s.value === app.internal_status) &&
+                <option value={app.internal_status}>{app.internal_status} (current)</option>}
+              {(() => {
+                const groups = {};
+                for (const s of internalStatuses) (groups[s.external] || (groups[s.external] = [])).push(s);
+                return Object.keys(groups).map(ext => (
+                  <optgroup key={ext} label={ext}>
+                    {groups[ext].map(s => <option key={s.value} value={s.value}>{s.value}</option>)}
+                  </optgroup>
+                ));
+              })()}
+            </select>
+            <div className="hint" style={{ marginTop: 6 }}>Pushes the exact status to ClickUp; borrower status is re-derived.</div>
+          </div>
+        </div>
+
+        <div className="grid cols-2" style={{ gap: 16, marginTop: 14 }}>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Expected closing</label>
+            <input className="input" type="date"
+              value={app.expected_closing ? String(app.expected_closing).slice(0, 10) : ''}
+              onChange={e => setClosing('expectedClosing', e.target.value)} />
+            <div className="hint" style={{ marginTop: 6 }}>Setting an expected date notifies the borrower.</div>
+          </div>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Actual closing</label>
+            <input className="input" type="date"
+              value={app.actual_closing ? String(app.actual_closing).slice(0, 10) : ''}
+              onChange={e => setClosing('actualClosing', e.target.value)} />
+          </div>
+        </div>
+
+        <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 16, flexWrap: 'wrap' }}>
+          <button className="btn ghost" onClick={() => setChatOpen(true)}><IconMessage />Message</button>
+          <button className="btn ghost" onClick={() => setRemindOpen(true)} title="Schedule a reminder or task — pick a date/time, who's included, and what it says"><IconBell />Remind</button>
+          <div className="spacer" />
+          <button className="btn primary" onClick={inviteBorrower} disabled={inviteBusy}
+            title="Email the borrower an invite to join this file in PILOT">
+            {inviteBusy ? 'Sending…' : 'Invite borrower'}
+          </button>
+        </div>
       </div>
 
       <PropertyPhoto address={propAddress !== '—' ? propAddress : ''} />
@@ -2380,7 +2415,7 @@ export default function StaffApplication() {
           <div className="cv-modal" style={{ maxWidth: 760, width: '96%', height: '88vh', display: 'flex', flexDirection: 'column' }}
             onClick={(e) => e.stopPropagation()}>
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', padding: '2px 2px 10px' }}>
-              <h3 style={{ margin: 0 }}>💬 Conversation{addrLine(app.property_address) !== '—' ? ` — ${addrLine(app.property_address)}` : ''}</h3>
+              <h3 style={{ margin: 0, display: 'inline-flex', alignItems: 'center' }}><IconMessage />Conversation{addrLine(app.property_address) !== '—' ? ` — ${addrLine(app.property_address)}` : ''}</h3>
               <button className="btn ghost small" onClick={() => setChatOpen(false)}>Close ✕</button>
             </div>
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
