@@ -116,6 +116,52 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
       });
     }
   }
+  // A NEGATIVE track-record change makes the registered product FATAL
+  // (owner-directed 2026-07-14, same family as the db/096 economics trigger —
+  // track_records writes can't fire that applications trigger, so the check
+  // lives here, on the path every track-record mutation already calls). If the
+  // CURRENT registration priced with more experience than is verified NOW
+  // (a line item was un-verified, deleted, or aged out), the structure no
+  // longer holds: flag it stale and reopen Products & Pricing + the signed
+  // term sheet.
+  try {
+    const reg = await client.query(
+      `SELECT id, inputs FROM product_registrations
+        WHERE application_id=$1 AND is_current AND NOT stale LIMIT 1`, [appId]);
+    if (reg.rows[0]) {
+      const pin = reg.rows[0].inputs || {};
+      const pricedWith = { flips: int(pin.expFlips), holds: int(pin.expHolds), ground: int(pin.expGround) };
+      const dropped = pricedWith.flips > int(counts.flips)
+        || pricedWith.holds > int(counts.holds)
+        || pricedWith.ground > int(counts.ground);
+      if (dropped) {
+        await client.query(
+          `UPDATE product_registrations SET stale=true,
+                  stale_reason='verified track-record experience dropped below what the product was priced with'
+            WHERE id=$1`, [reg.rows[0].id]);
+        await client.query(
+          `UPDATE checklist_items SET status='received', signed_off_at=NULL, signed_off_by=NULL,
+                  reviewed_at=NULL, reviewed_by=NULL,
+                  notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%'
+                             THEN '[auto] Verified track-record experience dropped below what the product was priced with — re-register the product.'
+                             ELSE notes END,
+                  updated_at=now()
+            WHERE application_id=$1 AND tool_key='product_pricing'
+              AND (status='satisfied' OR signed_off_at IS NOT NULL)`, [appId]);
+        await client.query(
+          `UPDATE checklist_items ci SET status='outstanding', signed_off_at=NULL, signed_off_by=NULL,
+                  reviewed_at=NULL, reviewed_by=NULL,
+                  notes=CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%'
+                             THEN '[auto] Verified experience changed — the signed term sheet no longer matches. Generate the new term sheet and collect a fresh signature.'
+                             ELSE ci.notes END,
+                  updated_at=now()
+             FROM checklist_templates t
+            WHERE t.id=ci.template_id AND t.code='rtl_cond_signedts' AND ci.application_id=$1
+              AND (ci.status IN ('received','satisfied') OR ci.signed_off_at IS NOT NULL)`, [appId]);
+      }
+    }
+  } catch (e) { console.warn('[experience] registration staleness check skipped:', e.message); }
+
   const requiredAny = hasRequirement(required);
   // NO experience claimed on the file → there is nothing to verify, so the
   // track-record condition is NOT APPLICABLE. We auto-satisfy it (stamped
