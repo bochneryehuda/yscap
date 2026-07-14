@@ -326,7 +326,7 @@ window.YS = (function () {
       let r;
       r = row(pad([name]));                          merges.push({ s:{r:r,c:0}, e:{r:r,c:maxC-1} }); styleRow(r,0,maxC-1,titleStyle); rowH[r]={hpt:26};
       r = row(pad(["Powered by YS Capital Group — The tool serious investors say YES to."])); merges.push({ s:{r:r,c:0}, e:{r:r,c:maxC-1} }); styleRow(r,0,maxC-1,tagStyle); rowH[r]={hpt:18};
-      r = row(pad(["Generated " + new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}) + "  ·  Prepared by Yehuda Bochner"])); merges.push({ s:{r:r,c:0}, e:{r:r,c:maxC-1} }); styleRow(r,0,maxC-1,metaStyle);
+      r = row(pad(["Generated " + new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}) + "  ·  Prepared by YS Capital Group"])); merges.push({ s:{r:r,c:0}, e:{r:r,c:maxC-1} }); styleRow(r,0,maxC-1,metaStyle);
       row(pad([""]));
 
       if (inputs.length) {
