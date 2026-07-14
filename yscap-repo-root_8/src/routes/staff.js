@@ -505,9 +505,12 @@ router.post('/applications', async (req, res) => {
       const p = await db.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [b.processorId]);
       if (p.rows[0]) processorId = p.rows[0].id;
     }
-    // A processor who opens a file is assigned to it, so it stays on their desk
-    // (otherwise they'd immediately lose sight of the file they just created).
-    if (!processorId && req.actor.role === 'processor') processorId = req.actor.id;
+    // NO automatic processor assignment (owner-directed 2026-07-14): a file's
+    // processor is set ONLY by an explicit pick (the dropdown above) or by the
+    // ClickUp Processor Email field mirroring in. The old "a processor who
+    // opens a file is assigned to it" default is exactly how Lisa Katz (role
+    // processor, but the DRAW coordinator) ended up auto-assigned on a file
+    // she merely created — that must never happen.
 
     // Assignment purchases: capture the underlying price + fee (like the
     // borrower path) so leverage/pricing size off seller price + fee and the

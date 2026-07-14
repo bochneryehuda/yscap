@@ -151,6 +151,21 @@ app.use('/api/events', require('./routes/events'));
 // turn the '#' into '%23' and break the fragment.
 const LINK_BOUNCE = { reset: '/reset', verify: '/verify', accept: '/accept' };
 app.get('/link/:kind', (req, res, next) => {
+  const portal = (cfg.portalPath || '/portal').replace(/\/+$/, '');
+  // Generic route bounce (owner-reported broken notification links,
+  // 2026-07-14): EVERY email deep link now travels as /link/r?to=<route> so
+  // click-trackers can't eat the #fragment. Never an open redirect: the
+  // Location is ALWAYS our own portal + '/#' + a sanitized route path —
+  // an absolute URL or a header-injection attempt cannot survive the checks.
+  if (req.params.kind === 'r') {
+    let to = String(req.query.to || '/');
+    if (!to.startsWith('/')) to = '/' + to;
+    // printable ASCII only (kills CR/LF header injection), no protocol-relative
+    // '//host' escapes, bounded length.
+    if (to.startsWith('//') || to.length > 600 || !/^[\x20-\x7E]+$/.test(to) || /[<>"'\\]/.test(to)) to = '/';
+    res.set('Location', `${portal}/#${to}`).status(302).end();
+    return;
+  }
   const route = LINK_BOUNCE[req.params.kind];
   if (!route) return next();
   const params = new URLSearchParams();
@@ -159,7 +174,6 @@ app.get('/link/:kind', (req, res, next) => {
     if (v != null && v !== '') params.set(k, String(v));
   }
   const qs = params.toString();
-  const portal = (cfg.portalPath || '/portal').replace(/\/+$/, '');
   res.set('Location', `${portal}/#${route}${qs ? '?' + qs : ''}`).status(302).end();
 });
 

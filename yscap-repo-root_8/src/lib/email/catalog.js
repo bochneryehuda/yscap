@@ -35,7 +35,6 @@ const cfg = require('../../config');
 const BOUNCE_ROUTES = { '/reset': 'reset', '/verify': 'verify', '/accept': 'accept' };
 function link(path) {
   const base = (cfg.appUrl || '').replace(/\/+$/, '');
-  const portal = (cfg.portalPath || '/portal').replace(/\/+$/, '');
   let p = String(path || '');
   if (/^https?:/i.test(p)) return p;
   p = p.replace(/^\/#/, '');                 // tolerate a pre-hashed input
@@ -43,10 +42,17 @@ function link(path) {
   const qIdx = p.indexOf('?');
   const routePath = qIdx >= 0 ? p.slice(0, qIdx) : p;
   const kind = BOUNCE_ROUTES[routePath];
-  // Token links -> tracking-proof plain URL that the server bounces to the hash
-  // route; every other portal deep link stays a direct hash URL.
+  // Token links -> the dedicated tracking-proof bounce kinds (back-compat).
   if (kind) return base + '/link/' + kind + (qIdx >= 0 ? p.slice(qIdx) : '');
-  return base + portal + '/#' + p;
+  // ROOT FIX (owner-reported broken notification links, 2026-07-14): the
+  // fragment-drop problem was never only about token links — click-tracking
+  // rewrites EVERY link in EVERY email and drops the #fragment, so every
+  // "See the message" / "Open the loan file" CTA landed on the bare portal
+  // instead of its deep route. ALL portal links in email are now plain
+  // path+query bounce URLs (/link/r?to=<route>) that trackers preserve; the
+  // server 302s them into /portal/#<route> (never an open redirect — the
+  // destination is always our own portal hash route).
+  return base + '/link/r?to=' + encodeURIComponent(p);
 }
 
 const ROLE_LABEL = {
