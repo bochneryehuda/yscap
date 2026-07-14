@@ -190,7 +190,7 @@ router.post('/profile/photo-id', async (req, res) => {
 router.get('/applications', async (req, res) => {
   const r = await db.query(
     `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.property_address,a.loan_amount,
-            a.loan_officer_name,a.submitted_at,a.created_at,a.llc_id,
+            a.loan_officer_name,a.submitted_at,a.created_at,a.llc_id,a.draw_setup_requested_at,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both')) AS borrower_total,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('received','satisfied')) AS borrower_done
      FROM applications a WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ORDER BY a.created_at DESC`, [me(req)]);
@@ -202,12 +202,23 @@ router.get('/applications', async (req, res) => {
 router.post('/applications/:id/request-draw', async (req, res) => {
   const own = await db.query(
     `SELECT a.id,a.status,a.property_address,a.ys_loan_number,a.loan_officer_id,a.processor_id,
+            a.draw_setup_requested_at,
             b.first_name,b.last_name,b.email
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
       WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`, [req.params.id, me(req)]);
   const a = own.rows[0];
   if (!a) return res.status(404).json({ error: 'not found' });
   if (a.status !== 'funded') return res.status(400).json({ error: 'Draws can be requested once your loan is funded.' });
+  // ONE request per file (owner-directed 2026-07-14): repeat clicks used to
+  // fan out the full email set every time. The atomic claim below wins exactly
+  // once — every later call answers ok/already with the original timestamp and
+  // sends NOTHING.
+  const claim = await db.query(
+    `UPDATE applications SET draw_setup_requested_at=now(), updated_at=now()
+      WHERE id=$1 AND draw_setup_requested_at IS NULL RETURNING draw_setup_requested_at`, [a.id]);
+  if (!claim.rows[0]) {
+    return res.json({ ok: true, already: true, requestedAt: a.draw_setup_requested_at });
+  }
   const addr = (a.property_address && (a.property_address.oneLine || a.property_address.line1 || a.property_address.street)) || 'your property';
   const borrowerName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
   const team = [...new Set([a.loan_officer_id, a.processor_id].filter(Boolean))];

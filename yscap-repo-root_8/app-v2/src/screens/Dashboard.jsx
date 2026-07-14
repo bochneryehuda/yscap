@@ -76,13 +76,26 @@ export default function Dashboard() {
     catch (e) { setErr(e.message); }
     finally { setCreating(false); }
   }
+  const [drawConfirm, setDrawConfirm] = useState(null);   // { id, address } | null
   async function requestDraw(e, id) {
     e.preventDefault(); e.stopPropagation();
-    setDrawBusy(id); setErr('');
+    // Confirm first (owner-directed 2026-07-14): the click used to silently
+    // fire the email fan-out with no feedback, so borrowers clicked it dozens
+    // of times → dozens of emails. Now a popup confirms; the server enforces
+    // one request per file; the button greys out afterward.
+    const a = (apps || []).find(x => x.id === id);
+    setDrawConfirm({ id, address: a ? addrLine(a.property_address) : 'this property' });
+  }
+  async function confirmDraw() {
+    const id = drawConfirm && drawConfirm.id;
+    if (!id) return;
+    setDrawBusy(id); setErr(''); setDrawConfirm(null);
     try {
-      await api.requestDraw(id);
-      setMsg('Draw request sent ✓ — our draws team and your loan officer will follow up.');
-      setTimeout(() => setMsg(''), 5000);
+      const r = await api.requestDraw(id);
+      setMsg(r && r.already
+        ? 'Your draw request is already in — our draws team has it and will follow up. No need to request again.'
+        : 'Draw request received ✓ — our draws team and your loan officer will follow up shortly.');
+      setTimeout(() => setMsg(''), 6000);
       load();
     } catch (e2) { setErr(e2.message || 'Could not send the draw request'); }
     finally { setDrawBusy(null); }
@@ -105,7 +118,12 @@ export default function Dashboard() {
 
   // Cross-file "what's next" roll-up, computed from the list we already loaded.
   const activeApps = (apps || []).filter(a => !['declined', 'withdrawn'].includes(a.status));
-  const outstanding = (apps || []).reduce((s, a) => s + Math.max(0, (a.borrower_total || 0) - (a.borrower_done || 0)), 0);
+  // Funded/terminal files are muted OUTSIDE the file (owner-directed
+  // 2026-07-14): their remaining items stay visible inside the file but never
+  // count toward the borrower's cross-file "to complete" rollup.
+  const quietStatuses = ['funded', 'closed', 'declined', 'withdrawn', 'cancelled'];
+  const outstanding = (apps || []).filter(a => !quietStatuses.includes(a.status))
+    .reduce((s, a) => s + Math.max(0, (a.borrower_total || 0) - (a.borrower_done || 0)), 0);
   const unreadTotal = Object.values(unread).reduce((s, n) => s + n, 0);
   // Borrower dashboard order (owner-directed #149/#150): lead with the loans —
   // ACTIVE files (in-progress applications) first, then MORTGAGES (funded/closed
@@ -139,10 +157,18 @@ export default function Dashboard() {
         </div>
       )}
       {a.status === 'funded' && (
-        <button className="btn primary" style={{ marginTop: 12, width: '100%' }}
-          disabled={drawBusy === a.id} onClick={e => requestDraw(e, a.id)}>
-          {drawBusy === a.id ? 'Sending…' : 'Request a draw'}
-        </button>
+        a.draw_setup_requested_at ? (
+          <button className="btn" style={{ marginTop: 12, width: '100%', opacity: 0.6, cursor: 'default' }}
+            disabled title="Your draw request is in — our team will follow up."
+            onClick={e => { e.preventDefault(); e.stopPropagation(); }}>
+            Draw requested ✓
+          </button>
+        ) : (
+          <button className="btn primary" style={{ marginTop: 12, width: '100%' }}
+            disabled={drawBusy === a.id} onClick={e => requestDraw(e, a.id)}>
+            {drawBusy === a.id ? 'Sending…' : 'Request a draw'}
+          </button>
+        )
       )}
     </Link>
   );
@@ -157,6 +183,25 @@ export default function Dashboard() {
       {err && <div role="alert" className="notice err">{err}
         <button className="btn link small" onClick={() => { setErr(''); load(); }}>Retry</button></div>}
       {msg && <div className="notice ok">{msg}</div>}
+
+      {drawConfirm && (
+        <div className="cv-modal-back" onClick={() => setDrawConfirm(null)}>
+          <div className="cv-modal" style={{ maxWidth: 460, width: '92%' }} role="dialog" aria-modal="true"
+            aria-label="Request a construction draw" onClick={e => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Request a construction draw</h3>
+            <p className="muted" style={{ lineHeight: 1.5 }}>
+              We'll notify our draws team and your loan officer to start the draw
+              process on <strong>{drawConfirm.address}</strong>. They'll reach out
+              with the inspection and disbursement steps.
+            </p>
+            <p className="muted small">You only need to request this once per loan.</p>
+            <div className="row" style={{ gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button className="btn ghost" onClick={() => setDrawConfirm(null)}>Cancel</button>
+              <button className="btn primary" onClick={confirmDraw}>Request the draw</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {apps && apps.length > 0 && (
         <div className="next-strip">

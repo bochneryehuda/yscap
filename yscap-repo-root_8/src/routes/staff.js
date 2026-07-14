@@ -405,11 +405,13 @@ router.get('/exceptions', async (req, res) => {
     const r = await db.query(
       `SELECT
          count(*) FILTER (WHERE a.loan_officer_id IS NULL AND a.status NOT IN ('funded','declined','withdrawn'))::int AS unassigned,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
+         -- Funded/terminal files stay quiet in every outside-the-file rollup
+         -- (owner-directed 2026-07-14); their conditions remain inside the file.
+         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
+         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
+         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
          count(*) FILTER (WHERE EXISTS(SELECT 1 FROM messages m WHERE m.application_id=a.id AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL))::int AS unread_messages,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
+         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
          count(*) FILTER (WHERE EXISTS(SELECT 1 FROM post_closing_items p WHERE p.application_id=a.id AND p.status='exception'))::int AS post_closing_exceptions
        FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params);
     res.json(r.rows[0]);
@@ -431,6 +433,12 @@ router.get('/my-tasks', async (req, res) => {
        JOIN borrowers b ON b.id=a.borrower_id
       WHERE a.deleted_at IS NULL
         AND ci.status NOT IN ('satisfied')
+        -- FUNDED/terminal files stay quiet OUTSIDE the file (owner-directed
+        -- 2026-07-14): their open conditions remain visible INSIDE the file,
+        -- but they never populate the task list again. Post-closing items are
+        -- the one exception — they stay live even after funding.
+        AND (a.status NOT IN ('funded','declined','withdrawn')
+             OR ci.phase = 'post_closing' OR ci.category = 'post_closing')
         AND (ci.assignee_staff_id=$1
              OR (ci.assignee_staff_id IS NULL AND ci.role_scope='loan_officer' AND a.loan_officer_id=$1)
              OR (ci.assignee_staff_id IS NULL AND ci.role_scope='processor' AND a.processor_id=$1))
