@@ -187,9 +187,15 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
   const locked = !!llc.is_verified || readOnly;
   const badge = llcBadge(llc);
   const own = pctNum(f.ownershipPct);
+  const ownSet = f.ownershipPct !== '';
   const memberTotal = (members || []).reduce((s, m) => s + pctNum(m.ownershipPct), 0);
   const total = own + memberTotal;
-  const needsMembers = f.ownershipPct !== '' && own < 100;
+  const needsMembers = ownSet && own < 100;
+  // Keep the ownership + LAYERED-ENTITY editor visible whenever the entity is
+  // editable, even at 100% personal ownership — so "owned by another LLC" is
+  // always discoverable, not hidden the moment someone claims 100% (owner-directed:
+  // the layered-entity capability must show everywhere an entity appears).
+  const showOwnership = ownSet && (needsMembers || (!locked && depth < MAX_NESTED_DEPTH));
   const remaining = Math.round((100 - total) * 100) / 100;
 
   return (
@@ -231,13 +237,14 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
       </div>
       {!locked && <button className="btn primary small" style={{ marginTop: 8 }} disabled={busy === 'details'} onClick={saveDetails}>{busy === 'details' ? 'Saving…' : 'Save details'}</button>}
 
-      {/* ---- ownership structure: who owns the rest? ---- */}
-      {needsMembers && (
+      {/* ---- ownership structure (incl. layered entities): who owns the rest? ---- */}
+      {showOwnership && (
         <div style={{ marginTop: 14 }}>
           <div style={{ fontWeight: 600 }}>Ownership structure</div>
           <p className="muted small" style={{ marginBottom: 8 }}>
-            You own {own}% — tell us who owns the remaining {Math.max(0, Math.round((100 - own) * 100) / 100)}%.
-            Every member and their percentage, until the total is 100%.
+            {needsMembers
+              ? <>You own {own}% — tell us who owns the remaining {Math.max(0, Math.round((100 - own) * 100) / 100)}%. Every member and their percentage, until the total is 100%.</>
+              : <>You own 100%. If this entity is actually owned by <strong>another LLC</strong> (a layered entity), lower your % and add that LLC below as an entity owner — it gets its own section, details and three documents.</>}
           </p>
           {(members || []).map((m, i) => (
             <div className="row" key={i} style={{ gap: 8, flexWrap: 'wrap', marginBottom: 6, alignItems: 'center' }}>
