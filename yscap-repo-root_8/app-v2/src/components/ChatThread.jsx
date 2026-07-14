@@ -651,7 +651,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
       {/* ---------- header ---------- */}
       <div className="cv-head">
         <div className="cv-head-main">
-          <span className="cv-emoji">{conv.emoji || '💬'}</span>
+          <span className="cv-ava cv-head-ava" aria-hidden="true">{initials(conv.name)}</span>
           <div style={{ minWidth: 0 }}>
             {renaming != null ? (
               <form onSubmit={e => { e.preventDefault(); doRename(); }} className="row" style={{ gap: 6 }}>
@@ -794,7 +794,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
             </button>
           </div>
         )}
-        {sorted.length === 0 && <p className="muted small" style={{ textAlign: 'center', marginTop: 30 }}>No messages yet. Say hello 👋</p>}
+        {sorted.length === 0 && <p className="muted small" style={{ textAlign: 'center', marginTop: 30 }}>No messages yet — send the first message.</p>}
         {sorted.map((m) => {
           const isMine = m.sender_kind === me.kind && m.sender_id === me.id;
           const day = dayLabel(m.created_at);
@@ -813,7 +813,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
             return (
               <React.Fragment key={m.id}>
                 {showDay && <div className="cv-day"><span>{day}</span></div>}
-                <div className="cv-system">{m.kind === 'milestone' ? '🏁 ' : ''}{m.body}</div>
+                <div className={`cv-system ${m.kind === 'milestone' ? 'milestone' : ''}`}><span className="cv-sys-dot" aria-hidden="true" />{m.body}</div>
               </React.Fragment>
             );
           }

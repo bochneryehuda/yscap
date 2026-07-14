@@ -716,6 +716,12 @@ export default function Application() {
           <h1 className="file-top-addr">{addrLine(app.property_address)}</h1>
           <span className="muted small">{app.ys_loan_number || 'Loan # pending'} · {app.program || '—'} · {app.loan_type || '—'}</span>
         </div>
+        {app.loan_amount != null && (
+          <span className="file-top-amt">
+            <span className="k">Loan amount</span>
+            <span className="ln-amount">{money(app.loan_amount)}</span>
+          </span>
+        )}
         <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{LABEL[app.status] || app.status}</span>
       </div>
 

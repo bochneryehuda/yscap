@@ -163,7 +163,9 @@ export default function Profile() {
       <div className="panel">
         <h3 style={{ marginBottom: 4 }}>Personal information</h3>
         <div className="secure-strip">
-          <span className="lock" aria-hidden="true">🔒</span>
+          <span className="lock" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="10" width="16" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+          </span>
           <div>Required on every application — stored securely here so applications can skip it. <b>Your SSN is encrypted and only its last 4 digits are ever shown.</b></div>
         </div>
         <div className="grid cols-3">

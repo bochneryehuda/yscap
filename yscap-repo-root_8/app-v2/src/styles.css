@@ -1780,3 +1780,149 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .app .q-table{display:block}                       /* pipeline grid "table" wrapper */
 .app .whenn{white-space:nowrap;font-variant-numeric:tabular-nums}  /* archived date cell */
 .app .files-c{white-space:nowrap}                  /* vendors file-count cell (num handles alignment) */
+
+/* =====================================================================
+   PILOT CHAT — MODERN MESSAGING REDESIGN (owner top priority, 2026-07-13)
+   Rebuilds the SHARED ChatThread (.cv-*) + the conversation lists to the
+   approved blueprints (web/preview/pilot-staff-chat.html · pilot-messages.html):
+   calm white "them" bubbles + refined teal "me" bubbles, tight professional
+   radius with a 4px tail, monogram avatars, quiet inline timestamps + read
+   states, disciplined spacing, and a clean composer. Presentation only — every
+   selector below is an equal-specificity override of the .cv-*/.msg-* rules
+   earlier in this file, so it wins by source order and touches NO logic. The
+   same component drives the STAFF chat, the BORROWER in-file conversation, and
+   the standalone lists, so one system serves all three.
+   ===================================================================== */
+
+/* ---- thread frame + header ---- */
+.cv-thread{background:var(--surface);border-color:var(--border);
+  box-shadow:0 1px 2px rgba(23,35,38,.04)}
+.cv-head{background:var(--surface);border-bottom-color:var(--surface-soft);padding:14px 18px}
+.cv-head-ava{width:36px;height:36px;font-size:13px;border-radius:9px}
+.cv-title{font-family:var(--serif);font-weight:500;font-size:18px;letter-spacing:-.01em}
+.cv-sub{margin-top:3px}
+
+/* ---- monogram avatars (rounded-square crest, gold-wash · teal ink) ---- */
+.cv-ava{background:var(--gold-soft);color:var(--primary-hover);border-color:var(--border);border-radius:9px}
+.cv-ava.small,.cv-ava.tiny{border-radius:7px}
+.cv-ava.msg{width:30px;height:30px;font-size:11px;border-radius:8px}
+.cv-avastack .cv-ava{margin-left:-8px}
+.cv-avastack .cv-ava:first-child{margin-left:0}
+
+/* ---- message stream: generous, disciplined spacing ---- */
+.cv-scroll{padding:20px 20px 14px;background:var(--bg)}
+.cv-row{margin-top:16px}
+.cv-row.grouped{margin-top:4px}
+
+/* ---- day divider → quiet uppercase pill (blueprint .daydot) ---- */
+.cv-day span{background:var(--surface);border-color:var(--surface-soft);color:var(--text-muted);
+  font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;padding:4px 13px;border-radius:100px}
+
+/* ---- system line → inline status chip with a soft dot (blueprint .sys) ---- */
+.cv-system{display:flex;align-items:center;gap:9px;text-align:left;margin:14px auto;width:fit-content;max-width:90%;
+  font-size:12px;color:var(--text-muted);background:var(--surface);border:1px solid var(--surface-soft);
+  border-radius:100px;padding:6px 14px}
+.cv-sys-dot{width:6px;height:6px;border-radius:50%;background:var(--success);flex:none}
+.cv-system.milestone .cv-sys-dot{background:var(--primary)}
+
+/* ---- bubbles: refined radius + tail, calm ink, roomy line-height ---- */
+.cv-bubble{border-radius:13px;padding:10px 14px;font-size:14.5px;line-height:1.5;min-width:0}
+.cv-bubble.them{background:var(--surface);border-color:var(--border);border-bottom-left-radius:4px}
+.cv-bubble.me{border-bottom-right-radius:4px}   /* solid-teal .me + white text kept from the light-theme block */
+.msg-from{font-size:11px;font-weight:700;letter-spacing:.02em;color:var(--text-muted);opacity:1;margin-bottom:3px}
+.cv-bubble.me .msg-from{color:rgba(255,255,255,.82)}
+.msg-body{font-size:14.5px;line-height:1.5}
+.msg-time{font-size:10.5px;opacity:.72;font-variant-numeric:tabular-nums;margin-top:4px}
+
+/* ---- read markers align to the crest radius ---- */
+.cv-readmarks .cv-ava.tiny{border-color:var(--primary-border)}
+
+/* ---- composer: clean icon tools + calm input row (blueprint .composer) ---- */
+.cv-composer{background:var(--surface);border-top-color:var(--surface-soft);padding:12px 14px}
+.cv-composer .msg-tool{width:42px;height:42px;min-height:42px;border-radius:11px;padding:0;font-size:18px;
+  display:inline-flex;align-items:center;justify-content:center;background:var(--surface-soft);
+  border:1px solid var(--border);color:var(--text-soft)}
+.cv-composer .msg-tool:hover{border-color:var(--border-strong);color:var(--text);background:var(--surface)}
+.cv-composer .msg-tool.rec{background:var(--danger-soft);border-color:var(--danger);color:var(--danger)}
+.cv-composer .input{border-radius:12px;background:var(--surface-soft);border-color:var(--border)}
+.cv-composer .btn.primary{border-radius:12px}
+
+/* ---- conversation LIST rows: monogram/channel crest, no emoji icons ---- */
+.cv-list-scroll{border-color:var(--border);background:var(--surface);border-radius:var(--radius)}
+.cv-item{gap:12px;padding:13px 14px;border-radius:0;border-bottom:1px solid var(--surface-soft)}
+.cv-item:hover{background:var(--surface-soft)}
+.cv-item.active{background:var(--surface-soft);outline:none;box-shadow:inset 3px 0 0 var(--gold)}
+.cv-item-ava{flex:none;width:34px;height:34px;border-radius:8px;background:var(--gold-soft);
+  border:1px solid var(--border);color:var(--primary-hover);display:inline-flex;align-items:center;
+  justify-content:center;font-weight:700;font-size:13px;letter-spacing:.01em}
+.cv-item-name{font-weight:600}
+.cv-item.unread .cv-item-name{font-weight:700}
+.cv-eye{flex:none;width:6px;height:6px;border-radius:50%;background:var(--gold);display:inline-block}
+.cv-muted-tag{font-size:10.5px;font-weight:600;color:var(--text-muted);background:var(--surface-soft);
+  border:1px solid var(--border);border-radius:100px;padding:1px 8px}
+
+/* ---- empty pane crest (replaces the 💬 glyph) ---- */
+.cv-empty-mark{width:52px;height:52px;border-radius:14px;margin:0 auto 14px;background:var(--gold-soft);
+  border:1px solid var(--border);position:relative}
+.cv-empty-mark::before{content:'';position:absolute;inset:14px 13px 18px;border:2px solid var(--primary);
+  border-radius:9px 9px 9px 3px}
+
+/* =====================================================================
+   PILOT BORROWER — BLUEPRINT REDESIGN (owner 2026-07-13)
+   Editorial refinements scoped under .shell (borrower shell root) or a
+   borrower-exclusive hook, so the STAFF console (.app) and every shared
+   component's staff usage stay untouched. Presentation only.
+   ===================================================================== */
+
+/* — Loan file HERO: the sticky identity bar carries the headline loan amount
+     beside the address + status, the way the blueprint file header reads. — */
+.shell .file-top{gap:16px}
+.shell .file-top-amt{display:flex;flex-direction:column;align-items:flex-end;flex:none;line-height:1.15}
+.shell .file-top-amt .k{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-muted);font-weight:700}
+.shell .file-top-amt .ln-amount{font-size:22px}
+@media(max-width:720px){.shell .file-top-amt{align-items:flex-start}.shell .file-top-amt .k{display:none}}
+
+/* — Section nav reads as the blueprint's clean tabs: quiet rows, gold active
+     edge, refined type. (Restyle only — the shared .file-nav behaviour and the
+     staff usage under .app are untouched.) — */
+.shell .file-nav ol{padding:7px;box-shadow:0 10px 30px rgba(23,35,38,.06)}
+.shell .file-nav a{font-weight:600;font-size:13.5px;color:var(--text-muted)}
+.shell .file-nav a.active{color:var(--text);font-weight:700}
+
+/* — Status timeline → horizontal stepper (blueprint tl-track). StatusTimeline
+     is borrower-only; :has(.tl-step) targets ONLY it, never Apply's .timeline
+     (no .tl-step children), and degrades to the vertical list if :has is
+     unsupported — first-paint safe. — */
+.shell .timeline:has(.tl-step){display:flex;align-items:flex-start;gap:0;padding:8px 0 2px}
+.shell .timeline:has(.tl-step) .tl-step{flex:1 1 0;min-width:0;flex-direction:column;align-items:center;
+  text-align:center;gap:8px;padding:0}
+.shell .timeline:has(.tl-step) .tl-step::before{display:none}
+.shell .timeline:has(.tl-step) .tl-step:not(:last-child)::after{content:'';position:absolute;top:8px;left:50%;
+  width:100%;height:2px;background:var(--border);z-index:0}
+.shell .timeline:has(.tl-step) .tl-step.done:not(:last-child)::after,
+.shell .timeline:has(.tl-step) .tl-step.current:not(:last-child)::after{background:var(--primary)}
+.shell .timeline:has(.tl-step) .tl-dot{margin:0;z-index:1}
+.shell .timeline:has(.tl-step) .tl-body{min-width:0}
+.shell .timeline:has(.tl-step) .tl-label{font-size:12.5px}
+@media(max-width:640px){
+  .shell .timeline:has(.tl-step) .tl-body .small{display:none}
+  .shell .timeline:has(.tl-step) .tl-label{font-size:11px}
+}
+
+/* — Dashboard: editorial next-steps strip (tiles laid on a hairline grid) and
+     calmer loan cards, matching the blueprint dashboard. .next-strip is a
+     borrower-only hook; loan cards are .shell .panel links. — */
+.shell .next-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1px;
+  background:var(--border);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:20px}
+.shell .next-item{background:var(--surface);border:0;border-radius:0;flex-direction:column;align-items:flex-start;
+  justify-content:center;gap:6px;padding:18px 20px}
+.shell .next-item .ni-l{color:var(--text-muted);line-height:1.35}
+.shell .next-item.ok{justify-content:center}
+
+/* — Profile: the SSN reassurance is already the teal "secure" strip; give the
+     inline lock SVG a clean baseline (no emoji). — */
+.shell .secure-strip .lock svg{width:15px;height:15px;display:block}
+
+/* — Profile entity + track-record chips read a touch more present. .reqchip is
+     borrower-only (Profile / EntitiesScreen / TrackRecordScreen). — */
+.shell .reqchips{display:flex;flex-wrap:wrap;gap:8px}
