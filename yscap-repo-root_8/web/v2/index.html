@@ -371,20 +371,20 @@ section[id], main[id]{ scroll-margin-top:96px; }
                     <span class="t">Term Sheet · Indicative</span>
                     <span class="live">Live</span>
                 </div>
-                <div class="ts-tabs">
-                    <button class="on" type="button">Standard</button>
-                    <button type="button">Gold Standard</button>
+                <div class="ts-tabs" id="tsTabs">
+                    <button type="button" data-prog="gold" class="on">Gold Standard</button>
+                    <button type="button" data-prog="standard">Standard</button>
                 </div>
                 <div class="ts-body">
-                    <div class="ts-prop">SUBJECT · <b>Fix &amp; Flip</b> · Purchase $300,000 · Rehab $75,000 · ARV $500,000</div>
-                    <div class="ts-row big"><span class="k">Loan amount</span><span class="v acc m-num">$345,000</span></div>
-                    <div class="ts-row"><span class="k">Note rate</span><span class="v m-num">9.50%</span></div>
-                    <div class="ts-row"><span class="k">Origination</span><span class="v m-num">1.25 pts</span></div>
-                    <div class="ts-row"><span class="k">Loan-to-cost</span><span class="v m-num">92.5%</span></div>
-                    <div class="ts-row"><span class="k">Est. monthly (IO)</span><span class="v m-num">$2,731</span></div>
+                    <div class="ts-prop">SUBJECT · <b>Fix &amp; Flip</b> · Single-family · Purchase $300,000 · Rehab $75,000 · ARV $500,000</div>
+                    <div class="ts-row big"><span class="k">Loan amount</span><span class="v acc m-num" id="tsLoan">$348,750</span></div>
+                    <div class="ts-row"><span class="k">Note rate</span><span class="v m-num" id="tsRate">7.50%</span></div>
+                    <div class="ts-row"><span class="k">Origination</span><span class="v m-num" id="tsOrig">1.25 pts</span></div>
+                    <div class="ts-row"><span class="k">Loan-to-cost</span><span class="v m-num" id="tsLtc">93.0%</span></div>
+                    <div class="ts-row"><span class="k">Est. monthly (IO)</span><span class="v m-num" id="tsMo">$2,180</span></div>
                 </div>
                 <div class="ts-foot">
-                    <span class="note">Illustrative example — indicative only, not a commitment to lend.</span>
+                    <span class="note">Illustrative best-case example — indicative only, a proposal and not a commitment to lend.</span>
                     <a class="link-u" href="tools/term-sheet.html">Open the full studio →</a>
                 </div>
             </div>
@@ -977,6 +977,34 @@ section[id], main[id]{ scroll-margin-top:96px; }
   })();
 </script>
 <!-- ============ /APPLY CHOOSER MODAL ============ -->
+
+<script>
+/* Hero term-sheet card: Standard / Gold switcher (owner-directed 2026-07-14).
+   Defaults to the GOLD best-case single-family scenario (7.5% rate, 93% LTC).
+   These are illustrative marketing figures — a proposal, never a commitment,
+   and NOT the frozen pricing engine (that lives in the studio). */
+(function(){
+  var SCENARIOS = {
+    gold:     { loan:'$348,750', rate:'7.50%', orig:'1.25 pts', ltc:'93.0%', mo:'$2,180' },
+    standard: { loan:'$345,000', rate:'9.50%', orig:'1.25 pts', ltc:'92.0%', mo:'$2,731' }
+  };
+  var tabs = document.getElementById('tsTabs');
+  if(!tabs) return;
+  function paint(prog){
+    var s = SCENARIOS[prog] || SCENARIOS.gold;
+    var set = function(id,v){ var el=document.getElementById(id); if(el) el.textContent=v; };
+    set('tsLoan',s.loan); set('tsRate',s.rate); set('tsOrig',s.orig); set('tsLtc',s.ltc); set('tsMo',s.mo);
+    Array.prototype.forEach.call(tabs.querySelectorAll('button'), function(b){
+      b.classList.toggle('on', b.getAttribute('data-prog')===prog);
+    });
+  }
+  tabs.addEventListener('click', function(e){
+    var b = e.target.closest('button[data-prog]'); if(!b) return;
+    paint(b.getAttribute('data-prog'));
+  });
+  paint('gold');   // best-case Gold is the default landing view
+})();
+</script>
 
 <script src="script.js"></script>
 </body>
