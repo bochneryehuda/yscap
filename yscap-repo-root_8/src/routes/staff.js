@@ -371,6 +371,70 @@ router.get('/applications', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// Unified global search for the top-bar omnibox — loans, borrowers, and LLCs in
+// ONE call so the header search actually returns results (it used to be a dead
+// aria-hidden placeholder). Every value is bound as %q% (never interpolated);
+// authorization mirrors the rest of the staff API: seesAll staff match
+// everything, everyone else is scoped to files they run (loans) / borrowers on
+// those files (borrowers + their LLCs). Returns at most 6 of each so the
+// dropdown stays snappy.
+router.get('/search', async (req, res) => {
+  try {
+    const raw = String(req.query.q || '').trim();
+    if (raw.length < 2) return res.json({ loans: [], borrowers: [], llcs: [] });
+    const like = '%' + raw.slice(0, 80) + '%';
+    const meId = req.actor && req.actor.id;
+
+    // ---- loans (applications) ----
+    const loanParams = [like];
+    let loanScope = '';
+    if (!seesAll(req)) { loanParams.push(meId); loanScope = 'AND (a.loan_officer_id=$2 OR a.processor_id=$2)'; }
+    const loans = await db.query(
+      `SELECT a.id, a.ys_loan_number, a.status, a.program, a.loan_amount, a.property_address,
+              b.first_name, b.last_name
+         FROM applications a JOIN borrowers b ON b.id=a.borrower_id
+        WHERE a.deleted_at IS NULL ${loanScope}
+          AND ((b.first_name||' '||b.last_name) ILIKE $1
+               OR a.ys_loan_number ILIKE $1
+               OR COALESCE(a.property_address->>'oneLine','') ILIKE $1)
+        ORDER BY a.created_at DESC LIMIT 6`, loanParams);
+
+    // ---- borrowers ----
+    const bParams = [like];
+    let bScope = '';
+    if (!seesAllBorrowers(req)) {
+      bParams.push(meId);
+      bScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=b.id
+                              AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2))`;
+    }
+    const borrowers = await db.query(
+      `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone
+         FROM borrowers b
+        WHERE (b.first_name ILIKE $1 OR b.last_name ILIKE $1
+               OR (b.first_name||' '||b.last_name) ILIKE $1
+               OR COALESCE(b.email,'') ILIKE $1)
+          ${bScope}
+        ORDER BY b.last_name, b.first_name LIMIT 6`, bParams);
+
+    // ---- LLCs (scoped through their owning borrower) ----
+    const lParams = [like];
+    let lScope = '';
+    if (!seesAllBorrowers(req)) {
+      lParams.push(meId);
+      lScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=l.borrower_id
+                              AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2))`;
+    }
+    const llcs = await db.query(
+      `SELECT l.id, l.llc_name, l.ein, l.borrower_id, b.first_name, b.last_name
+         FROM llcs l JOIN borrowers b ON b.id=l.borrower_id
+        WHERE (l.llc_name ILIKE $1 OR COALESCE(l.ein,'') ILIKE $1)
+          ${lScope}
+        ORDER BY l.llc_name LIMIT 6`, lParams);
+
+    res.json({ loans: loans.rows, borrowers: borrowers.rows, llcs: llcs.rows });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Self-serve ClickUp re-sync: pull THIS staffer's own pipeline folder into the
 // portal (materialize/refresh + reassign their RTL files) — no developer needed.
 // Runs in the background; the UI refreshes its pipeline after a moment.

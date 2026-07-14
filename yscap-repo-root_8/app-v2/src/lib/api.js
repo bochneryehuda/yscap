@@ -242,6 +242,8 @@ export const api = {
   // createdFrom/To, flag ('stalled'|'nodate'), limit, offset. Called bare it
   // returns the full scoped pipeline (used to build filter facets + counts).
   staffApplications:(params) => req('GET', '/api/staff/applications' + qs(params)),
+  // Top-bar omnibox — one call returns { loans, borrowers, llcs }.
+  staffGlobalSearch:(q) => req('GET', '/api/staff/search' + qs({ q })),
   staffMyTasks:     () => req('GET', '/api/staff/my-tasks'),
   staffExceptions:  () => req('GET', '/api/staff/exceptions'),
   staffCreateFile:  (b) => req('POST', '/api/staff/applications', b),

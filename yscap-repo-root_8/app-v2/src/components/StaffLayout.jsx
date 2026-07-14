@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
@@ -37,6 +37,151 @@ function NavIcon({ name }) {
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"
         strokeLinecap="round" strokeLinejoin="round">{NAV_ICON[name]}</svg>
     </span>
+  );
+}
+
+// --- Top-bar global search (omnibox) -------------------------------------
+// Real, working search across loans, borrowers, and LLCs. Replaces the old
+// dead aria-hidden placeholder ("not functioning at all"). Debounced, keyboard
+// friendly (↑/↓/Enter/Esc), closes on outside-click, and navigates to the file,
+// borrower, or the LLC's owning borrower on select.
+const searchAddr = (a) => !a ? '' : (a.oneLine || [a.street || a.line1, a.city, a.state].filter(Boolean).join(', ') || '');
+const STATUS_LABEL = {
+  new: 'New', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting',
+  approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded',
+  on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn',
+};
+
+function GlobalSearch() {
+  const nav = useNavigate();
+  const [q, setQ] = useState('');
+  const [res, setRes] = useState(null);   // { loans, borrowers, llcs } | null
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [active, setActive] = useState(-1); // index into the flat results list
+  const boxRef = useRef(null);
+  const inputRef = useRef(null);
+
+  // Flatten the grouped results into one ordered list for keyboard nav + Enter.
+  const flat = [];
+  if (res) {
+    (res.loans || []).forEach(l => flat.push({ kind: 'loan', to: `/internal/app/${l.id}`, row: l }));
+    (res.borrowers || []).forEach(b => flat.push({ kind: 'borrower', to: `/internal/borrowers/${b.id}`, row: b }));
+    (res.llcs || []).forEach(l => flat.push({ kind: 'llc', to: `/internal/borrowers/${l.borrower_id}`, row: l }));
+  }
+
+  // Debounced fetch. Min 2 chars; races are guarded by a per-call token.
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) { setRes(null); setBusy(false); return undefined; }
+    setBusy(true);
+    let alive = true;
+    const t = setTimeout(() => {
+      api.staffGlobalSearch(term)
+        .then(r => { if (alive) { setRes(r); setActive(-1); } })
+        .catch(() => { if (alive) setRes({ loans: [], borrowers: [], llcs: [] }); })
+        .finally(() => { if (alive) setBusy(false); });
+    }, 250);
+    return () => { alive = false; clearTimeout(t); };
+  }, [q]);
+
+  // Close on outside click.
+  useEffect(() => {
+    const onDoc = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  const go = (item) => {
+    if (!item) return;
+    setOpen(false); setQ(''); setRes(null);
+    nav(item.to);
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { setOpen(false); inputRef.current && inputRef.current.blur(); return; }
+    if (!flat.length) { if (e.key === 'Enter') e.preventDefault(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(i => Math.min(flat.length - 1, i + 1)); setOpen(true); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(i => Math.max(0, i - 1)); }
+    else if (e.key === 'Enter') { e.preventDefault(); go(flat[active >= 0 ? active : 0]); }
+  };
+
+  const hasResults = flat.length > 0;
+  const showPanel = open && q.trim().length >= 2;
+
+  return (
+    <div className="app-search" ref={boxRef} role="search">
+      <svg className="app-search-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" /><path d="m20 20-3.4-3.4" />
+      </svg>
+      <input
+        ref={inputRef}
+        className="app-search-in"
+        type="search"
+        value={q}
+        placeholder="Search loans, borrowers, LLCs…"
+        aria-label="Search loans, borrowers, and LLCs"
+        autoComplete="off"
+        onChange={e => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKey}
+      />
+      {showPanel && (
+        <div className="app-search-panel" role="listbox">
+          {busy && !hasResults && <div className="ass-empty">Searching…</div>}
+          {!busy && !hasResults && <div className="ass-empty">No matches for “{q.trim()}”.</div>}
+          {(res && res.loans && res.loans.length > 0) && (
+            <div className="ass-group">
+              <div className="ass-h">Loans</div>
+              {res.loans.map((l) => {
+                const idx = flat.findIndex(f => f.kind === 'loan' && f.row.id === l.id);
+                return (
+                  <button key={`loan-${l.id}`} type="button"
+                    className={`ass-item ${active === idx ? 'on' : ''}`}
+                    onMouseEnter={() => setActive(idx)} onClick={() => go(flat[idx])}>
+                    <span className="ass-t">{l.first_name} {l.last_name}</span>
+                    <span className="ass-s">{searchAddr(l.property_address) || (l.ys_loan_number || 'Loan # pending')}
+                      {' · '}{STATUS_LABEL[l.status] || l.status}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {(res && res.borrowers && res.borrowers.length > 0) && (
+            <div className="ass-group">
+              <div className="ass-h">Borrowers</div>
+              {res.borrowers.map((b) => {
+                const idx = flat.findIndex(f => f.kind === 'borrower' && f.row.id === b.id);
+                return (
+                  <button key={`bor-${b.id}`} type="button"
+                    className={`ass-item ${active === idx ? 'on' : ''}`}
+                    onMouseEnter={() => setActive(idx)} onClick={() => go(flat[idx])}>
+                    <span className="ass-t">{b.first_name} {b.last_name}</span>
+                    <span className="ass-s">{b.email || b.cell_phone || 'Borrower'}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {(res && res.llcs && res.llcs.length > 0) && (
+            <div className="ass-group">
+              <div className="ass-h">Entities</div>
+              {res.llcs.map((l) => {
+                const idx = flat.findIndex(f => f.kind === 'llc' && f.row.id === l.id);
+                return (
+                  <button key={`llc-${l.id}`} type="button"
+                    className={`ass-item ${active === idx ? 'on' : ''}`}
+                    onMouseEnter={() => setActive(idx)} onClick={() => go(flat[idx])}>
+                    <span className="ass-t">{l.llc_name}</span>
+                    <span className="ass-s">Owned by {l.first_name} {l.last_name}{l.ein ? ` · EIN ${l.ein}` : ''}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -121,13 +266,7 @@ export default function StaffLayout({ children }) {
       <header className="app-topbar">
         <button className="app-navtoggle" aria-label={menuOpen ? 'Close menu' : 'Open menu'}
           aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>{menuOpen ? '✕' : '☰'}</button>
-        <div className="app-search" aria-hidden="true">
-          <svg className="app-search-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="7" /><path d="m20 20-3.4-3.4" />
-          </svg>
-          <span>Search loans, borrowers, LLCs…</span>
-        </div>
+        <GlobalSearch />
         <div className="user-pill">
           <NavLink className="btn btn-gold btn-sm" to="/internal/new">+ New file</NavLink>
           <span className="chip" title="Your role">{roleLabel}</span>
