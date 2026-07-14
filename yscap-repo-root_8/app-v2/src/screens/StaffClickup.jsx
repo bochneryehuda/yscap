@@ -90,7 +90,7 @@ export default function StaffClickup() {
 
   async function reSync(dir) {
     const id = appId.trim();
-    if (!id) { setErr('Enter a PILOT file (application) ID first.'); return; }
+    if (!id) { setErr('Enter a file (application) ID first.'); return; }
     setBusy(dir); setErr('');
     try {
       const r = dir === 'repush' ? await api.clickupRepush(id) : await api.clickupRepull(id);
@@ -239,7 +239,7 @@ export default function StaffClickup() {
         <h3 style={{ marginTop: 0 }}>Re-sync a single file</h3>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div className="field" style={{ margin: 0 }}>
-            <label>PILOT file (application) ID</label>
+            <label>File (application) ID</label>
             <input className="input" style={{ minWidth: 320 }} value={appId} onChange={e => setAppId(e.target.value)} placeholder="application UUID" />
           </div>
           <button className="btn" disabled={!!busy} onClick={() => reSync('repush')}>{busy === 'repush' ? 'Pushing…' : 'Push → ClickUp'}</button>
