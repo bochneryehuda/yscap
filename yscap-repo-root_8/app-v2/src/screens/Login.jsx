@@ -1,15 +1,25 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth, useAuthNotice } from '../lib/auth.jsx';
 import AuthShell from '../components/AuthShell.jsx';
 import PasswordInput from '../components/PasswordInput.jsx';
 import { PASSWORD_HINT, passwordProblem } from '../lib/password.js';
 
+// A deep link that hit the login guard stashes its target in `location.state.from`.
+// Return there after sign-in (so an email link lands ON its page) — but never to
+// another auth screen, and only same-app relative paths.
+const AUTH_ROUTES = /^\/(login|internal\/login|forgot|internal\/forgot|verify|reset|accept)\b/;
+export function returnDest(loc, fallback) {
+  const from = loc && loc.state && typeof loc.state.from === 'string' ? loc.state.from : '';
+  return (from && from.startsWith('/') && !from.startsWith('//') && !AUTH_ROUTES.test(from)) ? from : fallback;
+}
+
 export default function Login() {
   const { signIn } = useAuth();
   const notice = useAuthNotice();
   const nav = useNavigate();
+  const loc = useLocation();
   const [mode, setMode] = useState('login');       // login | mfa | register
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -21,7 +31,7 @@ export default function Login() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const done = (t) => { signIn(t); nav('/dashboard'); };
+  const done = (t) => { signIn(t); nav(returnDest(loc, '/dashboard')); };
 
   async function submitLogin() {
     setErr(''); setBusy(true);

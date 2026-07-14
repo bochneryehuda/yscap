@@ -36,10 +36,14 @@ import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 
-/* Borrower-only area. Internal users who land here are bounced to their console. */
+/* Borrower-only area. Internal users who land here are bounced to their console.
+   An unauthenticated hit carries the intended route through sign-in (`from`) so
+   an email deep-link (e.g. a chat conversation) lands ON its target after login
+   instead of dumping the user on the portal home (owner-reported 2026-07-14). */
 function Private({ children }) {
   const { isAuthed, isStaff } = useAuth();
-  if (!isAuthed) return <Navigate to="/login" replace />;
+  const loc = useLocation();
+  if (!isAuthed) return <Navigate to="/login" state={{ from: loc.pathname + loc.search }} replace />;
   if (isStaff) return <Navigate to="/internal" replace />;
   return <Layout>{children}</Layout>;
 }
@@ -47,7 +51,8 @@ function Private({ children }) {
 /* Internal-only area. Borrowers who land here are bounced to their dashboard. */
 function StaffPrivate({ children }) {
   const { isAuthed, isStaff } = useAuth();
-  if (!isAuthed) return <Navigate to="/internal/login" replace />;
+  const loc = useLocation();
+  if (!isAuthed) return <Navigate to="/internal/login" state={{ from: loc.pathname + loc.search }} replace />;
   if (!isStaff) return <Navigate to="/dashboard" replace />;
   return <StaffLayout>{children}</StaffLayout>;
 }

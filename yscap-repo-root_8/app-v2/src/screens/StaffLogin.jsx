@@ -1,14 +1,16 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth, useAuthNotice } from '../lib/auth.jsx';
 import AuthShell from '../components/AuthShell.jsx';
 import PasswordInput from '../components/PasswordInput.jsx';
+import { returnDest } from './Login.jsx';
 
 export default function StaffLogin() {
   const { signIn } = useAuth();
   const notice = useAuthNotice();
   const nav = useNavigate();
+  const loc = useLocation();
   const [mode, setMode] = useState('login');   // login | mfa
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -18,7 +20,7 @@ export default function StaffLogin() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const done = (t) => { signIn(t); nav('/internal'); };
+  const done = (t) => { signIn(t); nav(returnDest(loc, '/internal')); };
 
   async function submitLogin() {
     setErr(''); setBusy(true);

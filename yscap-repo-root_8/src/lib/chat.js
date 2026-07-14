@@ -24,6 +24,7 @@ const events = require('./events');
 const pii = require('./pii-guard');
 const notify = require('./notify');
 const email = require('./email');
+const storage = require('./storage');
 const { link: portalLink } = require('./email/catalog');
 const { can } = require('./permissions');
 const { scrubText } = require('./borrower-safe');
@@ -564,8 +565,14 @@ async function fireChatEmail(j) {
   // email can WRITE OUT the conversation (owner-directed 2026-07-14) instead of a
   // bare "you have messages" — capped so a long thread can't bloat the email.
   const unreadMsgs = await db.query(
-    `SELECT m.body, m.attachment_kind
+    `SELECT m.body, m.attachment_kind, m.attachment_document_id,
+            COALESCE(NULLIF(btrim(bo.first_name || ' ' || bo.last_name), ''), su.full_name, 'A teammate') AS sender_name,
+            d.filename AS att_filename, d.content_type AS att_ct,
+            d.storage_ref AS att_ref, d.size_bytes AS att_size
        FROM messages m
+       LEFT JOIN borrowers bo   ON m.sender_kind='borrower' AND bo.id=m.sender_id
+       LEFT JOIN staff_users su ON m.sender_kind='staff'    AND su.id=m.sender_id
+       LEFT JOIN documents d    ON d.id=m.attachment_document_id
       WHERE m.conversation_id=$1 AND m.seq > $2 AND m.kind='text' AND m.deleted_at IS NULL
         AND NOT (m.sender_kind=$3 AND m.sender_id=$4)
       ORDER BY m.seq ASC LIMIT 12`,
@@ -592,14 +599,51 @@ async function fireChatEmail(j) {
       // is scrubbed (the frozen capital-partner rule still overrides — no note-buyer
       // name may reach a borrower), and an attachment/voice line is noted since the
       // file itself lives in the portal.
-      const link = isBorrower ? `/app/${conv.application_id}` : `/internal/chat?c=${conv.id}`;
+      // Deep-link straight into the conversation. Borrower: their file page, with
+      // ?chat=<id> so the file auto-opens the chat thread instead of just landing
+      // on the file. Staff: the chat hub focused on this conversation. The email
+      // link() bounce (/link/r) preserves the query through click-tracking, and
+      // the login guard now carries the target through sign-in (owner-reported
+      // 2026-07-14: "the link just gets me to the portal, not the conversation").
+      const link = isBorrower ? `/app/${conv.application_id}?chat=${conv.id}` : `/internal/chat?c=${conv.id}`;
       const clean = (t) => (isBorrower ? scrubText(String(t || '')) : String(t || ''));
       const lines = [];
-      (unreadMsgs.rows || []).forEach((m) => {
+      // Attach the ACTUAL files that were shared (owner-directed 2026-07-14) so the
+      // recipient doesn't have to open the portal to see them — size-capped so the
+      // email stays deliverable; anything over the cap keeps the "open in the
+      // portal" wording. Each line names WHO sent it.
+      const attachments = [];
+      let attBytes = 0;
+      // Total across the digest, held to the email providers' ~3 MB attachment
+      // ceiling (Resend/Graph both cap around there; the doc-upload email path
+      // uses the same ≤3 MB rule). A larger file would make the provider reject
+      // the WHOLE message — so anything that would push past the cap is skipped
+      // and keeps the "open it in the portal" line, and the email still sends.
+      const ATT_TOTAL_CAP = 3 * 1024 * 1024;
+      for (const m of (unreadMsgs.rows || [])) {
+        const who = clean(m.sender_name || 'A teammate');
         const t = String(m.body || '').trim();
-        if (t) lines.push('“' + clean(t) + '”');
-        else if (m.attachment_kind) lines.push(m.attachment_kind === 'voice' ? '[Voice message — listen in the portal]' : '[Attachment — open it in the portal]');
-      });
+        if (t) { lines.push(`${who}: “${clean(t)}”`); continue; }
+        if (m.attachment_document_id && m.att_ref) {
+          const name = m.att_filename || 'attachment';
+          const sz = Number(m.att_size) || 0;
+          let attached = false;
+          if (attBytes + (sz || 0) <= ATT_TOTAL_CAP) {
+            try {
+              const buf = await storage.read(m.att_ref);
+              if (buf && buf.length && attBytes + buf.length <= ATT_TOTAL_CAP) {
+                attachments.push({ filename: name, contentType: m.att_ct || 'application/octet-stream', content: buf.toString('base64') });
+                attBytes += buf.length;
+                attached = true;
+              }
+            } catch (_) { /* unreadable — fall back to the portal line */ }
+          }
+          lines.push(attached ? `${who} shared a file (attached): ${clean(name)}`
+                              : `${who} shared a file — open it in the portal: ${clean(name)}`);
+          continue;
+        }
+        if (m.attachment_kind) lines.push(m.attachment_kind === 'voice' ? `${who} sent a voice message — listen in the portal` : `${who} shared an attachment — open it in the portal`);
+      }
       // Only "…and N more" for messages we didn't FETCH (past the LIMIT 12) — an
       // empty-body row that rendered no line was still fetched, so it isn't "more".
       if (n > unreadMsgs.rows.length) lines.push(`…and ${n - unreadMsgs.rows.length} more.`);
@@ -610,8 +654,9 @@ async function fireChatEmail(j) {
         lines,
         link, ctaLabel: 'Open the conversation',
         meta: ctx ? ctx.meta : [],
+        attachments,
       }, isBorrower ? 'borrower' : 'staff');
-      await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html }).catch(() => {});
+      await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments }).catch(() => {});
     }
   }
   // One digest covers every pending email job for this recipient+conversation.
