@@ -44,7 +44,7 @@ export default function Accept() {
     <AuthShell title="Set your password" subtitle="Choose a password to finish setting up your access.">
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
       <div className="field"><label>Password</label>
-        <PasswordInput autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} /></div>
+        <PasswordInput autoComplete="new-password" rules value={pw} onChange={e => setPw(e.target.value)} /></div>
       <div className="field"><label>Confirm password</label>
         <PasswordInput autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && submit()} /></div>

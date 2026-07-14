@@ -128,7 +128,7 @@ const staffToken    = (id, role, tv) => C.signJwt({ sub: id, kind: 'staff', role
 router.post('/borrower/register', async (req, res) => {
   const { email, password, firstName, lastName, cellPhone } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'email + password required' });
-  { const w = C.passwordProblem(password); if (w) return res.status(400).json({ error: w }); }
+  { const w = C.passwordProblem(password, [email, firstName, lastName]); if (w) return res.status(400).json({ error: w }); }
   let client;
   try {
     client = await db.getClient();

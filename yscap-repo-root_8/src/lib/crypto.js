@@ -147,20 +147,42 @@ function newBackupCodes(n = 10) {
 // ---------- password strength (S1-02) ----------
 // One shared rule applied at EVERY interactive password-set point (staff +
 // borrower registration, self-change, admin reset, invite accept). Returns a
-// plain-language reason the password is too weak, or null if it passes. Kept
-// modest so it hardens accounts without frustrating borrowers: at least 8
-// characters, with a lowercase letter, an uppercase letter, and a number. This
-// only gates NEW password sets — it never re-checks existing stored passwords,
-// so nobody is locked out of an account they already have.
-const PASSWORD_MIN = 8;
+// plain-language reason the password is too weak, or null if it passes. Hardened
+// for a regulated lender (HIPAA-aware / NYDFS 23 NYCRR 500): at least 10
+// characters with a lowercase letter, an uppercase letter, a number, AND a
+// symbol, and it rejects obviously guessable passwords (common weak passwords,
+// a single repeated character, or a value that just echoes the user's own email
+// / name). This only gates NEW password sets — it never re-checks existing
+// stored passwords, so nobody is locked out of an account they already have.
+const PASSWORD_MIN = 10;
 const PASSWORD_MAX = 200; // guard scrypt against absurd inputs; well above any real password
-function passwordProblem(pw) {
+// A small denylist of the most-guessed passwords + patterns. Not a substitute
+// for a breach-corpus check, but it stops the worst offenders that still satisfy
+// the composition rules (e.g. "Password1!"). Compared case-insensitively.
+const WEAK_PASSWORDS = new Set([
+  'password', 'password1', 'password1!', 'password123', 'passw0rd', 'p@ssw0rd', 'p@ssword1',
+  'welcome1', 'welcome123', 'qwerty123', 'qwertyuiop', 'letmein1', 'admin123', 'iloveyou1',
+  'abc123456', 'changeme1', '1q2w3e4r5t', 'q1w2e3r4t5', 'monkey123', 'football1', 'sunshine1',
+]);
+function passwordProblem(pw, hints) {
   const s = String(pw == null ? '' : pw);
   if (s.length < PASSWORD_MIN) return `Password must be at least ${PASSWORD_MIN} characters.`;
   if (s.length > PASSWORD_MAX) return `Password must be ${PASSWORD_MAX} characters or fewer.`;
   if (!/[a-z]/.test(s)) return 'Password must include a lowercase letter.';
   if (!/[A-Z]/.test(s)) return 'Password must include an uppercase letter.';
   if (!/[0-9]/.test(s)) return 'Password must include a number.';
+  if (!/[^A-Za-z0-9]/.test(s)) return 'Password must include a symbol (e.g. ! ? @ # $ %).';
+  const low = s.toLowerCase();
+  if (WEAK_PASSWORDS.has(low)) return 'That password is too common — please choose a less guessable one.';
+  if (/^(.)\1+$/.test(s)) return 'Password can’t be a single repeated character.';
+  // Reject a password that merely echoes the user's identity (email local part,
+  // first/last name). `hints` is optional (a string or array of strings); older
+  // callers that don't pass it simply skip this check.
+  const toks = (Array.isArray(hints) ? hints : [hints])
+    .filter(Boolean)
+    .flatMap(h => String(h).toLowerCase().split(/[@.\s]+/))
+    .filter(t => t.length >= 4);
+  if (toks.some(t => low.includes(t))) return 'Password can’t contain your name or email.';
   return null;
 }
 

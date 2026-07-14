@@ -50,8 +50,7 @@ export default function Reset() {
     <AuthShell title="Choose a new password" subtitle="Enter and confirm your new password below.">
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
       <div className="field"><label>New password</label>
-        <PasswordInput autoComplete="new-password" value={pw} autoFocus onChange={e => setPw(e.target.value)} />
-        <div className="hint" style={{ marginTop: 6 }}>{PASSWORD_HINT}</div></div>
+        <PasswordInput autoComplete="new-password" rules value={pw} autoFocus onChange={e => setPw(e.target.value)} /></div>
       <div className="field"><label>Confirm password</label>
         <PasswordInput autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && submit()} /></div>
