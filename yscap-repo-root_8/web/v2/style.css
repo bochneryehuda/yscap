@@ -153,8 +153,12 @@ main,.footer{ position:relative; z-index:1; }
 .nav-brand img.logo-on-dark{ display:none; }
 :root:not([data-theme="light"]) .nav-brand img.logo-on-light{ display:none; }
 :root:not([data-theme="light"]) .nav-brand img.logo-on-dark{ display:block; }
-/* Compliance marks (EHO / NMLS) are dark-ink art — invert them on dark theme
-   so the HUD/fair-housing + NMLS symbols stay visible (owner-directed). */
+/* Compliance marks (Equal Housing Lender / NMLS) are single-color line art. Force
+   them to read on whatever the footer is: BLACK on the light (default) theme,
+   WHITE on dark. brightness(0) collapses the art to a solid silhouette regardless
+   of the source file's own color, so a light-colored asset can't wash out on the
+   light footer (owner-directed 2026-07-14). */
+:root[data-theme="light"] .compliance-mark{ filter:brightness(0) opacity(.72); }
 :root:not([data-theme="light"]) .compliance-mark{ filter:brightness(0) invert(1) opacity(.9); }
 .nav-links{ display:flex; align-items:center; gap:1.5rem; flex-wrap:nowrap; }
 .nav-links a{ font-size:.92rem; color:var(--ivory-soft); font-weight:500; white-space:nowrap; transition:color .2s; }

@@ -19,7 +19,15 @@
 <meta name="description" content="YS Capital Group is a private mortgage banking platform built for real estate investors. DSCR rental, fix &amp; flip, bridge, construction and Non-QM financing — qualified on the property, not your tax returns, and structured to close fast. The Answer Is Yes.">
 <link rel="icon" type="image/png" sizes="32x32" href="assets/images/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="assets/images/favicon-16.png">
-<link rel="apple-touch-icon" sizes="180x180" href="assets/images/favicon-180.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icon-192.png">
+<!-- PWA install identity — PILOT by YS Capital (owner-directed 2026-07-14):
+     installing the site as a desktop/mobile app shows the PILOT name, the PILOT
+     navigation-chevron icon and PILOT ink color branding (manifest theme). -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="application-name" content="PILOT">
+<meta name="apple-mobile-web-app-title" content="PILOT">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <meta property="og:title" content="YS Capital Group — Private Lending for Real Estate Investors">
 <meta property="og:description" content="DSCR rental, fix &amp; flip, bridge, construction and Non-QM financing — qualified on the deal, not your tax returns, and structured to close fast. One partner from purchase to permanent.">
 <meta property="og:type" content="website">
@@ -32,7 +40,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=pilot2">
+<link rel="stylesheet" href="style.css?v=pilot3">
 <!-- ============================================================
      PILOT × YS — editorial homepage architecture (v2).
      Scoped, self-contained layout system for the rebuilt sections
@@ -350,7 +358,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
     <div class="m-wrap hero-grid">
         <div>
             <div class="kicker reveal">
-                <a class="chip" href="https://www.google.com/search?q=YS+Capital+Group#lrd=0x27294937c5642be3:0xcf6c0a344b1a67d3,1,,,," target="_blank" rel="noopener" aria-label="Rated 5.0 out of 5 on Google — read our verified reviews"><span class="stars" aria-hidden="true">★★★★★</span> <span class="hr-on">5.0 on Google</span></a>
+                <a class="chip" href="https://www.google.com/maps?cid=14946332483050432467" target="_blank" rel="noopener" aria-label="Rated 5.0 out of 5 on Google — read our verified reviews"><span class="stars" aria-hidden="true">★★★★★</span> <span class="hr-on">5.0 on Google</span></a>
                 <span class="tag">Private mortgage banking · For real estate investors</span>
             </div>
             <h1 class="hero-title">
@@ -650,7 +658,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
         <div class="reviews-badge">
             <span class="rb-stars" aria-hidden="true">★★★★★</span>
             <span class="rb-text"><strong>Rated 5.0</strong> · real, verified Google reviews</span>
-            <a class="rb-link" id="reviewsGoogleLink" href="https://www.google.com/search?q=YS+Capital+Group#lrd=0x27294937c5642be3:0xcf6c0a344b1a67d3,1,,,," target="_blank" rel="noopener">Read them on Google →</a>
+            <a class="rb-link" id="reviewsGoogleLink" href="https://www.google.com/maps?cid=14946332483050432467" target="_blank" rel="noopener">Read them on Google →</a>
         </div>
     </div>
     <figure class="rv-feature reveal-up">
@@ -1023,9 +1031,13 @@ section[id], main[id]{ scroll-margin-top:96px; }
    These are illustrative marketing figures — a proposal, never a commitment,
    and NOT the frozen pricing engine (that lives in the studio). */
 (function(){
+  /* Each program shows its HEADLINE MAX loan-to-cost on the shared $375,000 cost
+     basis (Purchase $300k + Rehab $75k): Gold 93.0% -> 0.93x375k = $348,750;
+     Standard 92.5% (its true program max LTC, 0.925) -> 0.925x375k = $346,875.
+     Monthly is interest-only at the shown rate. Illustrative, not the engine. */
   var SCENARIOS = {
     gold:     { loan:'$348,750', rate:'7.50%', orig:'1.25 pts', ltc:'93.0%', mo:'$2,180' },
-    standard: { loan:'$345,000', rate:'9.50%', orig:'1.25 pts', ltc:'92.0%', mo:'$2,731' }
+    standard: { loan:'$346,875', rate:'9.50%', orig:'1.25 pts', ltc:'92.5%', mo:'$2,746' }
   };
   var tabs = document.getElementById('tsTabs');
   if(!tabs) return;
