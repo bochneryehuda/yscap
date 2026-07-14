@@ -386,9 +386,11 @@ router.get('/search', async (req, res) => {
     const meId = req.actor && req.actor.id;
 
     // ---- loans (applications) ----
+    // Scope matches the pipeline list exactly (incl. visible_officer_ids
+    // delegation) so a file an officer can open is also findable here.
     const loanParams = [like];
     let loanScope = '';
-    if (!seesAll(req)) { loanParams.push(meId); loanScope = 'AND (a.loan_officer_id=$2 OR a.processor_id=$2)'; }
+    if (!seesAll(req)) { loanParams.push(meId); loanScope = 'AND (a.loan_officer_id=$2 OR a.processor_id=$2 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))'; }
     const loans = await db.query(
       `SELECT a.id, a.ys_loan_number, a.status, a.program, a.loan_amount, a.property_address,
               b.first_name, b.last_name
@@ -405,7 +407,8 @@ router.get('/search', async (req, res) => {
     if (!seesAllBorrowers(req)) {
       bParams.push(meId);
       bScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=b.id
-                              AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2))`;
+                              AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2
+                                OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))`;
     }
     const borrowers = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone
@@ -422,7 +425,8 @@ router.get('/search', async (req, res) => {
     if (!seesAllBorrowers(req)) {
       lParams.push(meId);
       lScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=l.borrower_id
-                              AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2))`;
+                              AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2
+                                OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))`;
     }
     const llcs = await db.query(
       `SELECT l.id, l.llc_name, l.ein, l.borrower_id, b.first_name, b.last_name
@@ -3752,25 +3756,67 @@ router.post('/applications/:id/messages', async (req, res) => {
 // ---------------- leads (marketing-site submissions) ----------------
 // admins/underwriters see all; a loan officer sees leads routed to them plus
 // unrouted ones (the shared desk).
+const LEAD_STATUSES = ['new', 'contacted', 'qualified', 'quoted', 'working', 'nurturing', 'converted', 'lost', 'archived'];
 router.get('/leads', async (req, res) => {
   try {
-    const where = seesAll(req) ? '' : 'WHERE (officer_id=$1 OR officer_id IS NULL)';
+    const where = seesAll(req) ? '' : 'WHERE (l.officer_id=$1 OR l.officer_id IS NULL)';
     const params = seesAll(req) ? [] : [req.actor.id];
     const r = await db.query(
-      `SELECT l.id,l.tool,l.name,l.email,l.phone,l.subject,l.message,l.payload,l.status,
-              l.officer_id,l.created_at,l.next_follow_up,l.application_id,
+      `SELECT l.id,l.tool,l.name,l.first_name,l.last_name,l.company,l.email,l.phone,l.phone_alt,
+              l.subject,l.message,l.status,l.officer_id,l.created_at,l.updated_at,l.next_follow_up,
+              l.application_id,l.borrower_id,l.loan_amount,l.program,l.property_type,l.property_address,
+              l.lead_source,l.referral_partner,l.tags,l.estimated_close,l.lost_reason,l.last_activity_at,
               s.full_name AS officer_name,
-              (SELECT count(*)::int FROM lead_notes ln WHERE ln.lead_id=l.id) AS note_count
+              (SELECT count(*)::int FROM lead_activities la WHERE la.lead_id=l.id) AS activity_count,
+              (SELECT count(*)::int FROM lead_tasks lt WHERE lt.lead_id=l.id AND lt.done=false) AS open_tasks,
+              (SELECT min(lt.due_at) FROM lead_tasks lt WHERE lt.lead_id=l.id AND lt.done=false) AS next_task_due,
+              (SELECT count(*)::int FROM documents d WHERE d.lead_id=l.id) AS doc_count
          FROM leads l LEFT JOIN staff_users s ON s.id=l.officer_id
-         ${where} ORDER BY (l.status='new') DESC, COALESCE(l.next_follow_up,'9999-12-31') ASC, l.created_at DESC LIMIT 300`, params);
+         ${where}
+        ORDER BY (l.status='new') DESC, COALESCE(l.next_follow_up,'9999-12-31') ASC,
+                 l.last_activity_at DESC NULLS LAST, l.created_at DESC LIMIT 500`, params);
     res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Manually add a lead (the CRM "+ Add lead" — leads no longer only arrive from
+// the marketing tools). Owned by the creator when they're a loan officer (their
+// book); admins may pick an owner or leave it on the shared desk.
+router.post('/leads', async (req, res) => {
+  const b = req.body || {};
+  const first = String(b.firstName || '').trim();
+  const last = String(b.lastName || '').trim();
+  const email = String(b.email || '').trim();
+  const phone = String(b.phone || '').trim();
+  if (!first && !last && !email && !phone) return res.status(400).json({ error: 'a name, email, or phone is required' });
+  const name = [first, last].filter(Boolean).join(' ') || email || phone;
+  const status = LEAD_STATUSES.includes(b.status) ? b.status : 'new';
+  const amount = (b.loanAmount !== undefined && b.loanAmount !== '' && Number.isFinite(Number(b.loanAmount))) ? Number(b.loanAmount) : null;
+  try {
+    let officerId = null;
+    if (b.officerId) { const o = await db.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true`, [b.officerId]); if (o.rows[0]) officerId = o.rows[0].id; }
+    if (!officerId && !seesAll(req)) officerId = req.actor.id;
+    const ins = await db.query(
+      `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,company,email,phone,phone_alt,
+                          contact_address,property_address,property_type,program,loan_amount,referral_partner,
+                          subject,message,status,officer_id,created_by_staff_id,last_activity_at)
+       VALUES ('manual','manual',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,now())
+       RETURNING id`,
+      [b.leadSource || 'manual', name, first || null, last || null, b.company || null, email || null, phone || null, b.phoneAlt || null,
+        b.contactAddress ? JSON.stringify(b.contactAddress) : null, b.propertyAddress ? JSON.stringify(b.propertyAddress) : null,
+        b.propertyType || null, b.program || null, amount, b.referralPartner || null,
+        b.subject || null, b.message || null, status, officerId, req.actor.id]);
+    const leadId = ins.rows[0].id;
+    await db.query(`INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body) VALUES ($1,$2,'system','Lead created',$3)`,
+      [leadId, req.actor.id, 'Lead added manually']);
+    await audit(req, 'staff_create_lead', 'lead', leadId, { name });
+    res.status(201).json({ ok: true, leadId });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 router.patch('/leads/:id', async (req, res) => {
   const b = req.body || {};
-  const STATUSES = ['new', 'contacted', 'working', 'converted', 'archived'];
-  if (b.status && !STATUSES.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+  if (b.status && !LEAD_STATUSES.includes(b.status)) return res.status(400).json({ error: 'bad status' });
   // Horizontal scope: a non-privileged officer may only touch a lead that is
   // unassigned or already theirs — the same scope GET /leads applies — so one
   // officer can't reassign or alter another officer's lead by its id.
@@ -3778,14 +3824,75 @@ router.patch('/leads/:id', async (req, res) => {
     const own = await db.query(`SELECT 1 FROM leads WHERE id=$1 AND (officer_id=$2 OR officer_id IS NULL)`, [req.params.id, req.actor.id]);
     if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
   }
+  // Snapshot the current status (for stage-change logging) + names (so a
+  // single-field name PATCH rebuilds the flat `name` from both parts).
+  const cur = await db.query(`SELECT status, first_name, last_name FROM leads WHERE id=$1`, [req.params.id]);
+  if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+  const prevStatus = cur.rows[0].status;
   const sets = [], vals = []; let i = 1;
-  if (b.status !== undefined) { sets.push(`status=$${i++}`); vals.push(b.status); }
-  if (b.officerId !== undefined) { sets.push(`officer_id=$${i++}`); vals.push(b.officerId || null); }
-  if (b.nextFollowUp !== undefined) { sets.push(`next_follow_up=$${i++}`); vals.push(b.nextFollowUp || null); }
+  const col = (name, val) => { sets.push(`${name}=$${i++}`); vals.push(val); };
+  if (b.status !== undefined) { col('status', b.status); if (b.status === 'lost') col('lost_at', new Date().toISOString()); }
+  if (b.officerId !== undefined) col('officer_id', b.officerId || null);
+  if (b.nextFollowUp !== undefined) col('next_follow_up', b.nextFollowUp || null);
+  if (b.firstName !== undefined) col('first_name', String(b.firstName).trim() || null);
+  if (b.lastName !== undefined) col('last_name', String(b.lastName).trim() || null);
+  if (b.company !== undefined) col('company', b.company || null);
+  if (b.email !== undefined) col('email', String(b.email).trim() || null);
+  if (b.phone !== undefined) col('phone', String(b.phone).trim() || null);
+  if (b.phoneAlt !== undefined) col('phone_alt', String(b.phoneAlt).trim() || null);
+  if (b.contactAddress !== undefined) col('contact_address', b.contactAddress ? JSON.stringify(b.contactAddress) : null);
+  if (b.propertyAddress !== undefined) col('property_address', b.propertyAddress ? JSON.stringify(b.propertyAddress) : null);
+  if (b.propertyType !== undefined) col('property_type', b.propertyType || null);
+  if (b.program !== undefined) col('program', b.program || null);
+  if (b.loanAmount !== undefined) col('loan_amount', (b.loanAmount !== '' && Number.isFinite(Number(b.loanAmount))) ? Number(b.loanAmount) : null);
+  if (b.leadSource !== undefined) col('lead_source', b.leadSource || null);
+  if (b.referralPartner !== undefined) col('referral_partner', b.referralPartner || null);
+  if (b.estimatedClose !== undefined) col('estimated_close', b.estimatedClose || null);
+  if (b.lostReason !== undefined) col('lost_reason', b.lostReason || null);
+  if (Array.isArray(b.tags)) col('tags', b.tags.map(t => String(t).trim()).filter(Boolean).slice(0, 20));
+  // Keep the flat `name` in sync when structured names change (legacy consumers).
+  if (b.firstName !== undefined || b.lastName !== undefined) {
+    const nm = [b.firstName !== undefined ? String(b.firstName).trim() : (cur.rows[0].first_name || ''),
+      b.lastName !== undefined ? String(b.lastName).trim() : (cur.rows[0].last_name || '')].filter(Boolean).join(' ');
+    if (nm) col('name', nm);
+  }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
-  sets.push('updated_at=now()'); vals.push(req.params.id);
-  try { await db.query(`UPDATE leads SET ${sets.join(',')} WHERE id=$${i}`, vals); res.json({ ok: true }); }
-  catch (e) { res.status(500).json({ error: 'server error' }); }
+  sets.push('updated_at=now()');
+  vals.push(req.params.id);
+  try {
+    await db.query(`UPDATE leads SET ${sets.join(',')} WHERE id=$${i}`, vals);
+    // Log a stage change to the activity timeline (and re-stamp activity time).
+    if (b.status !== undefined && b.status !== prevStatus) {
+      await db.query(
+        `INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body, meta)
+         VALUES ($1,$2,'status_change',$3,$4,$5)`,
+        [req.params.id, req.actor.id, `Stage → ${b.status}`, `Moved from ${prevStatus} to ${b.status}`,
+          JSON.stringify({ from: prevStatus, to: b.status })]);
+      await db.query(`UPDATE leads SET last_activity_at=now() WHERE id=$1`, [req.params.id]);
+    }
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Full detail for one lead (contact + deal + owner). Timeline/tasks/docs load
+// via their own endpoints below.
+router.get('/leads/:id', async (req, res) => {
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT l.*, s.full_name AS officer_name,
+              cb.full_name AS created_by_name,
+              b.first_name AS conv_borrower_first, b.last_name AS conv_borrower_last,
+              a.ys_loan_number AS conv_loan_number, a.status AS conv_app_status
+         FROM leads l
+         LEFT JOIN staff_users s ON s.id=l.officer_id
+         LEFT JOIN staff_users cb ON cb.id=l.created_by_staff_id
+         LEFT JOIN borrowers b ON b.id=l.borrower_id
+         LEFT JOIN applications a ON a.id=l.application_id
+        WHERE l.id=$1`, [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 // Lead CRM: per-lead notes / contact log. Same horizontal scope as PATCH — a
@@ -3816,6 +3923,201 @@ router.post('/leads/:id/notes', async (req, res) => {
     // Touch the lead so it re-sorts and a fresh note nudges it out of "new".
     await db.query(`UPDATE leads SET updated_at=now(), status=CASE WHEN status='new' THEN 'contacted' ELSE status END WHERE id=$1`, [req.params.id]);
     res.status(201).json({ ok: true, note: ins.rows[0] });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ===================== Lead CRM: activity timeline ========================
+// One append-only log of everything on a lead: logged calls/emails/SMS/meetings,
+// freeform notes, plus the automatic status_change/file/assignment rows.
+const LEAD_ACTIVITY_TYPES = ['call', 'email', 'sms', 'meeting', 'note'];
+router.get('/leads/:id/activities', async (req, res) => {
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT la.id, la.activity_type, la.direction, la.subject, la.body, la.occurred_at, la.meta, la.created_at,
+              s.full_name AS staff_name
+         FROM lead_activities la LEFT JOIN staff_users s ON s.id=la.staff_id
+        WHERE la.lead_id=$1 ORDER BY la.occurred_at DESC, la.created_at DESC LIMIT 300`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/leads/:id/activities', async (req, res) => {
+  const b = req.body || {};
+  const type = LEAD_ACTIVITY_TYPES.includes(b.type) ? b.type : 'note';
+  const body = String(b.body || '').trim();
+  const subject = String(b.subject || '').trim();
+  if (!body && !subject) return res.status(400).json({ error: 'a note or subject is required' });
+  const direction = ['inbound', 'outbound'].includes(b.direction) ? b.direction : null;
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    // A logged activity may carry its own timestamp (e.g. "I called yesterday").
+    let occurred = null;
+    if (b.occurredAt && !Number.isNaN(Date.parse(b.occurredAt))) occurred = new Date(b.occurredAt).toISOString();
+    const ins = await db.query(
+      `INSERT INTO lead_activities (lead_id, staff_id, activity_type, direction, subject, body, occurred_at)
+       VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz, now()))
+       RETURNING id, activity_type, direction, subject, body, occurred_at, created_at`,
+      [req.params.id, req.actor.id, type, direction, subject || null, body.slice(0, 6000) || null, occurred]);
+    // Logging real contact nudges a brand-new lead out of "new" and re-sorts it.
+    await db.query(
+      `UPDATE leads SET last_activity_at=now(), updated_at=now(),
+              status=CASE WHEN status='new' AND $2 THEN 'contacted' ELSE status END
+        WHERE id=$1`, [req.params.id, type !== 'note']);
+    await audit(req, 'staff_lead_activity', 'lead', req.params.id, { type });
+    res.status(201).json({ ok: true, activity: ins.rows[0] });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ===================== Lead CRM: tasks ====================================
+router.get('/leads/:id/tasks', async (req, res) => {
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT t.id, t.title, t.body, t.due_at, t.done, t.done_at, t.assignee_staff_id, t.created_at,
+              s.full_name AS assignee_name
+         FROM lead_tasks t LEFT JOIN staff_users s ON s.id=t.assignee_staff_id
+        WHERE t.lead_id=$1 ORDER BY t.done ASC, t.due_at ASC NULLS LAST, t.created_at DESC LIMIT 200`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/leads/:id/tasks', async (req, res) => {
+  const b = req.body || {};
+  const title = String(b.title || '').trim();
+  if (!title) return res.status(400).json({ error: 'a task title is required' });
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    let assignee = req.actor.id;
+    if (b.assigneeStaffId) { const o = await db.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true`, [b.assigneeStaffId]); if (o.rows[0]) assignee = o.rows[0].id; }
+    let due = null;
+    if (b.dueAt && !Number.isNaN(Date.parse(b.dueAt))) due = new Date(b.dueAt).toISOString();
+    const ins = await db.query(
+      `INSERT INTO lead_tasks (lead_id, title, body, due_at, assignee_staff_id, created_by_staff_id)
+       VALUES ($1,$2,$3,$4::timestamptz,$5,$6)
+       RETURNING id, title, body, due_at, done, assignee_staff_id, created_at`,
+      [req.params.id, title.slice(0, 300), String(b.body || '').slice(0, 2000) || null, due, assignee, req.actor.id]);
+    await db.query(`UPDATE leads SET updated_at=now() WHERE id=$1`, [req.params.id]);
+    res.status(201).json({ ok: true, task: ins.rows[0] });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.patch('/leads/:id/tasks/:taskId', async (req, res) => {
+  const b = req.body || {};
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const sets = [], vals = []; let i = 1;
+    if (b.done !== undefined) { sets.push(`done=$${i++}`); vals.push(!!b.done); sets.push(`done_at=${b.done ? 'now()' : 'NULL'}`); }
+    if (b.title !== undefined && String(b.title).trim()) { sets.push(`title=$${i++}`); vals.push(String(b.title).trim().slice(0, 300)); }
+    if (b.dueAt !== undefined) { sets.push(`due_at=$${i++}::timestamptz`); vals.push(b.dueAt && !Number.isNaN(Date.parse(b.dueAt)) ? new Date(b.dueAt).toISOString() : null); }
+    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+    sets.push('updated_at=now()');
+    vals.push(req.params.taskId); vals.push(req.params.id);
+    const r = await db.query(`UPDATE lead_tasks SET ${sets.join(',')} WHERE id=$${i++} AND lead_id=$${i} RETURNING id`, vals);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ===================== Lead CRM: attachments ==============================
+router.get('/leads/:id/documents', async (req, res) => {
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(
+      `SELECT d.id, d.filename, d.content_type, d.size_bytes, d.created_at, d.uploaded_by_kind
+         FROM documents d WHERE d.lead_id=$1 ORDER BY d.created_at DESC LIMIT 200`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.post('/leads/:id/documents', async (req, res) => {
+  const b = req.body || {};
+  if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const buf = Buffer.from(b.dataBase64, 'base64');
+    if (!buf.length) return res.status(400).json({ error: 'empty file' });
+    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    const r = await db.query(
+      `INSERT INTO documents (lead_id, filename, content_type, size_bytes, storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'staff',$7) RETURNING id`,
+      [req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
+    await db.query(
+      `INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body, meta)
+       VALUES ($1,$2,'file','Attached a file',$3,$4)`,
+      [req.params.id, req.actor.id, b.filename, JSON.stringify({ documentId: r.rows[0].id })]);
+    await db.query(`UPDATE leads SET last_activity_at=now(), updated_at=now() WHERE id=$1`, [req.params.id]);
+    await audit(req, 'staff_upload_lead_doc', 'lead', req.params.id, { filename: b.filename });
+    res.status(201).json({ ok: true, documentId: r.rows[0].id });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.get('/leads/:id/documents/:docId', async (req, res) => {
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const r = await db.query(`SELECT * FROM documents WHERE id=$1 AND lead_id=$2`, [req.params.docId, req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    await audit(req, 'staff_download_lead_doc', 'lead', req.params.id, { documentId: req.params.docId });
+    return serveDocument(res, r.rows[0], { inline: req.query.inline === '1' });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ===================== Lead CRM: convert to a loan file ===================
+// Turn a qualified lead into a real borrower + application, and write back the
+// (previously dead) leads.borrower_id / leads.application_id linkage. Reuses the
+// same match-or-create borrower pattern as POST /applications.
+router.post('/leads/:id/convert', async (req, res) => {
+  const b = req.body || {};
+  try {
+    if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+    const lr = await db.query(`SELECT * FROM leads WHERE id=$1`, [req.params.id]);
+    const lead = lr.rows[0];
+    if (!lead) return res.status(404).json({ error: 'not found' });
+    if (lead.application_id) return res.status(409).json({ error: 'This lead is already converted.', applicationId: lead.application_id });
+
+    const email = String(b.email || lead.email || '').trim();
+    const firstName = String(b.firstName || lead.first_name || '').trim();
+    const lastName = String(b.lastName || lead.last_name || '').trim();
+    const addr = b.propertyAddress || lead.property_address || null;
+    if (!email) return res.status(400).json({ error: 'a borrower email is required to convert' });
+    if (!firstName) return res.status(400).json({ error: 'a borrower first name is required to convert' });
+    if (!addr || !(addr.oneLine || addr.street || addr.line1))
+      return res.status(400).json({ error: 'a subject property address is required to convert' });
+
+    const br = await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (email) DO UPDATE SET cell_phone=COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone), updated_at=now()
+       RETURNING id`,
+      [firstName, lastName || '', email, lead.phone || null]);
+    const borrowerId = br.rows[0].id;
+
+    // Owner: the lead's officer, else the acting officer, else unassigned.
+    let officerId = lead.officer_id, officerName = null;
+    if (b.loanOfficerId) { const o = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [b.loanOfficerId]); if (o.rows[0]) { officerId = o.rows[0].id; officerName = o.rows[0].full_name; } }
+    if (officerId && !officerName) { const o = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [officerId]); officerName = o.rows[0] ? o.rows[0].full_name : null; }
+    if (!officerId && req.actor.role === 'loan_officer') { officerId = req.actor.id; const o = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]); officerName = o.rows[0] ? o.rows[0].full_name : null; }
+
+    // loan_amount is intentionally left null — it's set by the pricing engine on
+    // product registration, exactly like a normal new staff file. The lead's
+    // estimate stays on the lead; it must not seed the priced pipeline amount.
+    const ins = await db.query(
+      `INSERT INTO applications (borrower_id,property_address,property_type,program,loan_officer_id,loan_officer_name,source,status,submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'staff','new',now())
+       RETURNING id, ys_loan_number`,
+      [borrowerId, JSON.stringify(addr), b.propertyType || lead.property_type || null,
+        b.program || lead.program || null, officerId, officerName]);
+    const appId = ins.rows[0].id;
+
+    try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'lead_convert' }); }
+    catch (e) { console.error('[lead-convert] checklist failed:', db.describeError ? db.describeError(e) : e.message); }
+
+    await db.query(
+      `UPDATE leads SET status='converted', borrower_id=$2, application_id=$3, last_activity_at=now(), updated_at=now() WHERE id=$1`,
+      [req.params.id, borrowerId, appId]);
+    await db.query(
+      `INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body, meta)
+       VALUES ($1,$2,'system','Converted to a loan file',$3,$4)`,
+      [req.params.id, req.actor.id, `Created file ${ins.rows[0].ys_loan_number || appId}`, JSON.stringify({ applicationId: appId, borrowerId })]);
+    await audit(req, 'staff_convert_lead', 'lead', req.params.id, { applicationId: appId, borrowerId });
+    res.status(201).json({ ok: true, applicationId: appId, borrowerId, loanNumber: ins.rows[0].ys_loan_number });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
