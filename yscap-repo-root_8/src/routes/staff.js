@@ -2286,8 +2286,13 @@ router.post('/borrowers/:id/portal-invite', async (req, res) => {
     const b = (await db.query(`SELECT id, email, first_name FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
     if (!b) return res.status(404).json({ error: 'not found' });
     if (!b.email) return res.status(400).json({ error: 'this borrower has no email on file' });
+    // Match files where they are the primary OR the CO-borrower (owner-directed
+    // 2026-07-14): a co-borrower is its own borrower record and gets its own
+    // portal login with full (OR-gated) access to the shared loan — but the
+    // primary invite never reaches them, so this powers a dedicated co-borrower
+    // invite. Without the co_borrower_id match a pure co-borrower would 400.
     const app = (await db.query(
-      `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+      `SELECT id FROM applications WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`,
       [req.params.id])).rows[0];
     if (!app) return res.status(400).json({ error: 'this borrower has no active file to invite them to' });
     const out = await inviteBorrowerToFile({ appId: app.id, borrowerId: b.id, email: b.email, firstName: b.first_name, req });

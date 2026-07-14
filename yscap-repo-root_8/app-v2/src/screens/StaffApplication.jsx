@@ -1272,6 +1272,20 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
     try { await api.staffSetCoBorrower(appId, { unlink: true }); await onChanged(); }
     catch (e) { setErr(e.message || 'Could not remove the co-borrower'); } finally { setBusy(false); }
   }
+  // A co-borrower is its own borrower record with its OWN portal login and full
+  // (shared) access to the loan — but the primary's invite never reaches them, so
+  // invite them directly here (owner-directed 2026-07-14). If they already have a
+  // login the endpoint emails a sign-in link instead of a fresh invite.
+  const [inviteMsg, setInviteMsg] = useState('');
+  async function inviteCo() {
+    if (!app.co_borrower_id) return;
+    setBusy(true); setErr(''); setInviteMsg('');
+    try {
+      const r = await api.staffBorrowerInvite(app.co_borrower_id);
+      setInviteMsg(r && r.hasAccount ? 'Sign-in link emailed — they already have a portal login.' : 'Portal invitation emailed to the co-borrower.');
+    } catch (e) { setErr(e.message || 'Could not invite the co-borrower'); }
+    finally { setBusy(false); }
+  }
   async function revealCoSsn() {
     if (coSsn) { setCoSsn(''); return; }
     setSsnBusy(true);
@@ -1302,6 +1316,14 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
               </button>
             )}
           </span>
+        </div>
+        <div className="row" style={{ marginTop: 8, gap: 8, alignItems: 'center' }}>
+          <button className="btn ghost small" onClick={inviteCo}
+            disabled={busy || !app.co_email}
+            title={app.co_email ? 'Email the co-borrower their own portal invitation (they get full access to this loan)' : 'Add a co-borrower email first'}>
+            Invite co-borrower to portal
+          </button>
+          {inviteMsg && <span className="muted small" style={{ color: 'var(--ok)' }}>{inviteMsg}</span>}
         </div>
       </>}
       {adding && <>

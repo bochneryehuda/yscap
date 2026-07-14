@@ -871,7 +871,13 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                     )}
                     {!m.deleted_at && !m._status && (
                       <span className="msg-actions">
-                        <button title="React" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}>🙂</button>
+                        {/* One-tap quick reactions right on hover (owner-directed
+                            2026-07-14): hover a message and thumbs-up it directly,
+                            no extra click. 🙂 still opens the full picker. */}
+                        {QUICK_EMOJI.slice(0, 3).map(e => (
+                          <button key={e} className="msg-quickrx" title={`React ${e}`} aria-label={`React with ${e}`} onClick={() => doReact(m.id, e)}>{e}</button>
+                        ))}
+                        <button title="More reactions" onClick={() => setReactFor(reactFor === m.id ? null : m.id)}>🙂</button>
                         <button title="Reply" onClick={() => setReplyTo(m)}>↩</button>
                         {A.pin && <button title={m.pinned ? 'Unpin' : 'Pin'} onClick={() => doPin(m)}>📌</button>}
                         <button title="More" onClick={() => setMenuFor(menuFor === m.id ? null : m.id)}>⋯</button>
