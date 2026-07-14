@@ -51,11 +51,14 @@ const STATUS_LABEL = {
   approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded',
   on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn',
 };
+const DEAL_LABEL = {
+  flip: 'Fix & Flip', 'fix-and-hold': 'Fix & Hold', 'ground-up': 'Ground-up', rental: 'Rental',
+};
 
 function GlobalSearch() {
   const nav = useNavigate();
   const [q, setQ] = useState('');
-  const [res, setRes] = useState(null);   // { loans, borrowers, llcs } | null
+  const [res, setRes] = useState(null);   // { loans, borrowers, llcs, trackRecords, officers, tasks, chats } | null
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(-1); // index into the flat results list
@@ -63,11 +66,16 @@ function GlobalSearch() {
   const inputRef = useRef(null);
 
   // Flatten the grouped results into one ordered list for keyboard nav + Enter.
+  // Order here == render order below, so ↑/↓ walk the visible list top-to-bottom.
   const flat = [];
   if (res) {
     (res.loans || []).forEach(l => flat.push({ kind: 'loan', to: `/internal/app/${l.id}`, row: l }));
     (res.borrowers || []).forEach(b => flat.push({ kind: 'borrower', to: `/internal/borrowers/${b.id}`, row: b }));
     (res.llcs || []).forEach(l => flat.push({ kind: 'llc', to: `/internal/borrowers/${l.borrower_id}`, row: l }));
+    (res.trackRecords || []).forEach(t => flat.push({ kind: 'track', to: `/internal/borrowers/${t.borrower_id}`, row: t }));
+    (res.tasks || []).forEach(t => flat.push({ kind: 'task', to: `/internal/app/${t.application_id}`, row: t }));
+    (res.chats || []).forEach(c => flat.push({ kind: 'chat', to: `/internal/chat?c=${c.id}`, row: c }));
+    (res.officers || []).forEach(o => flat.push({ kind: 'officer', to: `/internal?officerId=${o.id}`, row: o }));
   }
 
   // Debounced fetch. Min 2 chars; races are guarded by a per-call token.
@@ -79,7 +87,7 @@ function GlobalSearch() {
     const t = setTimeout(() => {
       api.staffGlobalSearch(term)
         .then(r => { if (alive) { setRes(r); setActive(-1); } })
-        .catch(() => { if (alive) setRes({ loans: [], borrowers: [], llcs: [] }); })
+        .catch(() => { if (alive) setRes({ loans: [], borrowers: [], llcs: [], trackRecords: [], officers: [], tasks: [], chats: [] }); })
         .finally(() => { if (alive) setBusy(false); });
     }, 250);
     return () => { alive = false; clearTimeout(t); };
@@ -119,8 +127,8 @@ function GlobalSearch() {
         className="app-search-in"
         type="search"
         value={q}
-        placeholder="Search loans, borrowers, LLCs…"
-        aria-label="Search loans, borrowers, and LLCs"
+        placeholder="Search loans, borrowers, entities, REO, tasks, chats, team…"
+        aria-label="Search loans, borrowers, entities, track records, officers, tasks, and chats"
         autoComplete="off"
         onChange={e => { setQ(e.target.value); setOpen(true); }}
         onFocus={() => setOpen(true)}
@@ -174,6 +182,73 @@ function GlobalSearch() {
                     onMouseEnter={() => setActive(idx)} onClick={() => go(flat[idx])}>
                     <span className="ass-t">{l.llc_name}</span>
                     <span className="ass-s">Owned by {l.first_name} {l.last_name}{l.ein ? ` · EIN ${l.ein}` : ''}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {(res && res.trackRecords && res.trackRecords.length > 0) && (
+            <div className="ass-group">
+              <div className="ass-h">Track records (REO)</div>
+              {res.trackRecords.map((t) => {
+                const idx = flat.findIndex(f => f.kind === 'track' && f.row.id === t.id);
+                return (
+                  <button key={`tr-${t.id}`} type="button"
+                    className={`ass-item ${active === idx ? 'on' : ''}`}
+                    onMouseEnter={() => setActive(idx)} onClick={() => go(flat[idx])}>
+                    <span className="ass-t">{searchAddr(t.property_address) || 'Property'}</span>
+                    <span className="ass-s">{DEAL_LABEL[t.deal_type] || t.deal_type || 'Project'}
+                      {' · '}{t.first_name} {t.last_name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {(res && res.tasks && res.tasks.length > 0) && (
+            <div className="ass-group">
+              <div className="ass-h">Tasks &amp; reminders</div>
+              {res.tasks.map((t) => {
+                const idx = flat.findIndex(f => f.kind === 'task' && f.row.id === t.id);
+                return (
+                  <button key={`task-${t.id}`} type="button"
+                    className={`ass-item ${active === idx ? 'on' : ''}`}
+                    onMouseEnter={() => setActive(idx)} onClick={() => go(flat[idx])}>
+                    <span className="ass-t">{t.title}</span>
+                    <span className="ass-s">{t.first_name} {t.last_name}
+                      {searchAddr(t.property_address) ? ` · ${searchAddr(t.property_address)}` : ''}
+                      {t.status ? ` · ${t.status}` : ''}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {(res && res.chats && res.chats.length > 0) && (
+            <div className="ass-group">
+              <div className="ass-h">Chats</div>
+              {res.chats.map((c) => {
+                const idx = flat.findIndex(f => f.kind === 'chat' && f.row.id === c.id);
+                return (
+                  <button key={`chat-${c.id}`} type="button"
+                    className={`ass-item ${active === idx ? 'on' : ''}`}
+                    onMouseEnter={() => setActive(idx)} onClick={() => go(flat[idx])}>
+                    <span className="ass-t">{c.name}</span>
+                    <span className="ass-s">{c.first_name} {c.last_name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {(res && res.officers && res.officers.length > 0) && (
+            <div className="ass-group">
+              <div className="ass-h">Team</div>
+              {res.officers.map((o) => {
+                const idx = flat.findIndex(f => f.kind === 'officer' && f.row.id === o.id);
+                return (
+                  <button key={`off-${o.id}`} type="button"
+                    className={`ass-item ${active === idx ? 'on' : ''}`}
+                    onMouseEnter={() => setActive(idx)} onClick={() => go(flat[idx])}>
+                    <span className="ass-t">{o.full_name}</span>
+                    <span className="ass-s">{o.title || ROLE_LABEL[o.role] || o.role}</span>
                   </button>
                 );
               })}
