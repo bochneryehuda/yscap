@@ -128,7 +128,7 @@ export default function StaffLeads() {
                             <td>{l.officer_name
                               ? <span className="off"><span className="mono">{initials(l.officer_name)}</span>{mine ? 'You' : l.officer_name}</span>
                               : <span className="off un"><span className="dot" />Loan desk</span>}</td>
-                            <td className={dueSoon(l) ? 'mut' : 'mut'} style={dueSoon(l) ? { color: 'var(--warning, #b8860b)', fontWeight: 600 } : undefined}>
+                            <td className="mut" style={dueSoon(l) ? { color: 'var(--warning, #b8860b)', fontWeight: 600 } : undefined}>
                               {l.next_follow_up ? String(l.next_follow_up).slice(0, 10) : '—'}
                             </td>
                             <td className="rec">{new Date(l.created_at).toLocaleDateString()}</td>
