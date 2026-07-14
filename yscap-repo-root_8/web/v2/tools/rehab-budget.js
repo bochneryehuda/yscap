@@ -909,14 +909,18 @@ const RB = (function(){
       const doc=new jsPDF({unit:"pt",format:"letter",orientation:(useCols && colKeys.length>=3)?"landscape":"portrait"});
       const W=doc.internal.pageSize.getWidth(), M=42;
       const INK=[20,27,34], TEAL=[47,127,134], TEALD=[31,58,64], GOLD=[174,135,70], GRAY=[75,88,92], LIGHT=[234,241,241], IV=[244,240,231];
-      // header band
-      doc.setFillColor(INK[0],INK[1],INK[2]); doc.rect(0,0,W,88,"F");
-      doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(0,88,W,2,"F"); // crisp gold rule under header
-      const logo=logoData(); if(logo){ const h=40,w=logo.w*(h/logo.h); try{ doc.addImage(logo.dataURI,"PNG",M,26,w,h); }catch(e){} }
-      doc.setTextColor(IV[0],IV[1],IV[2]); doc.setFont("times","bold"); doc.setFontSize(21); doc.text("Rehab Budget — Scope of Work", W-M, 42, {align:"right"});
-      doc.setFont("times","italic"); doc.setFontSize(10.5); doc.setTextColor(GOLD[0],GOLD[1],GOLD[2]); doc.text("The scope of work serious investors say YES to.", W-M, 60, {align:"right"});
-      doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(170,178,182); doc.text("YS Capital Group · NMLS ID 2609746 · "+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}), W-M, 74, {align:"right"});
-      let y=112;
+      const IVORY=[250,248,242], GOLDL=[196,163,101], HAIR=[210,201,185], MUTE=[150,158,162], PAPER=[252,252,251], ZEBRA=[250,250,248], FOOT=[248,249,249];
+      // ---- header band (editorial masthead) ----
+      const HB=104;
+      doc.setFillColor(INK[0],INK[1],INK[2]); doc.rect(0,0,W,HB,"F");
+      doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(0,HB,W,2.4,"F");            // crisp gold rule
+      doc.setFillColor(HAIR[0],HAIR[1],HAIR[2]); doc.rect(0,HB+2.4,W,0.6,"F");        // fine secondary rule
+      const logo=logoData(); if(logo){ const h=46,w=logo.w*(h/logo.h); try{ doc.addImage(logo.dataURI,"PNG",M,29,w,h); }catch(e){} }
+      doc.setTextColor(IV[0],IV[1],IV[2]); doc.setFont("times","bold"); doc.setFontSize(22); doc.text("Rehab Budget — Scope of Work", W-M, 50, {align:"right"});
+      doc.setDrawColor(GOLD[0],GOLD[1],GOLD[2]); doc.setLineWidth(0.8); doc.line(W-M-150, 58, W-M, 58);   // gold underline accent
+      doc.setFont("times","italic"); doc.setFontSize(10.5); doc.setTextColor(GOLDL[0],GOLDL[1],GOLDL[2]); doc.text("The scope of work serious investors say YES to.", W-M, 74, {align:"right"});
+      doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(170,178,182); doc.text("YS Capital Group · NMLS ID 2609746 · "+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}), W-M, 90, {align:"right"});
+      let y=124;
       const PROJ={cosmetic:"Cosmetic refresh",moderate:"Moderate rehab",heavy:"Heavy / gut rehab",ground:"Ground-up construction"};
       const propLabel = !isMulti() ? "Single-family" : (unitCount()+(S.propType==="large"?"-unit building":"-unit multifamily"));
       const facts=[
@@ -927,9 +931,17 @@ const RB = (function(){
         ["Project timeline", S.months?(S.months+" months"):"—"],
         ["Target budget", S.target?money(num(S.target)):"—"]
       ];
-      doc.setFontSize(9);
-      for(let i=0;i<facts.length;i++){ const col=i%3, x=M+col*((W-2*M)/3); if(col===0&&i>0)y+=32; doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.setFont("helvetica","bold"); doc.setFontSize(7.5); doc.text(pdfSafe(facts[i][0]).toUpperCase(),x,y); doc.setTextColor(20,27,34); doc.setFont("helvetica","bold"); doc.setFontSize(10.5); doc.text(pdfSafe(facts[i][1]),x,y+14); }
-      y+=46;
+      // ---- property summary panel ----
+      const sColW=(W-2*M)/3, sPadX=14, sRows=Math.ceil(facts.length/3), sRowH=36, sTop=y, sH=16+sRows*sRowH;
+      doc.setFillColor(IVORY[0],IVORY[1],IVORY[2]); doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.8); doc.roundedRect(M,sTop,W-2*M,sH,5,5,"FD");
+      doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.5);
+      for(let ci=1;ci<3;ci++){ const lx=M+ci*sColW; doc.line(lx,sTop+11,lx,sTop+sH-11); }
+      for(let i=0;i<facts.length;i++){ const col=i%3, row=Math.floor(i/3), x=M+col*sColW+sPadX, ry=sTop+17+row*sRowH;
+        doc.setTextColor(MUTE[0],MUTE[1],MUTE[2]); doc.setFont("helvetica","bold"); doc.setFontSize(6.8); doc.setCharSpace(0.6); doc.text(pdfSafe(facts[i][0]).toUpperCase(),x,ry); doc.setCharSpace(0);
+        const val=pdfSafe(facts[i][1]), maxW=sColW-sPadX-8; let fs=11.5; doc.setFont("times","bold"); doc.setFontSize(fs);
+        while(fs>8 && doc.getTextWidth(val)>maxW){ fs-=0.5; doc.setFontSize(fs); }
+        doc.setTextColor(INK[0],INK[1],INK[2]); doc.text(val,x,ry+15); }
+      y=sTop+sH+18;
       const vd=S.vd,vrows=[];
       const dlt=(a,b)=>{ const d=num(b)-num(a); return (num(a)||num(b))&&d!==0?("   ("+(d>0?"+":"")+d+")"):""; };
       const span=(a,b,suf)=> ((a||b)? ((a||"?")+" to "+(b||"?")+(suf||"")) : "");
@@ -942,16 +954,17 @@ const RB = (function(){
       if(vd.curb)vrows.push(["Exterior / curb appeal", vd.curbNotes||"Exterior and curb-appeal improvements"]);
       if(vd.other)vrows.push(["Other value-add", vd.other]);
       if(vrows.length){
-        const titleH=22, rowH=16, boxH=titleH+18+vrows.length*rowH+6;
-        doc.setFillColor(247,250,250); doc.setDrawColor(TEAL[0],TEAL[1],TEAL[2]); doc.setLineWidth(1.1); doc.roundedRect(M,y,W-2*M,boxH,6,6,"FD");
+        const titleH=24, rowH=17, boxH=titleH+18+vrows.length*rowH+8;
+        doc.setFillColor(PAPER[0],PAPER[1],PAPER[2]); doc.setDrawColor(TEAL[0],TEAL[1],TEAL[2]); doc.setLineWidth(1); doc.roundedRect(M,y,W-2*M,boxH,6,6,"FD");
         doc.setFillColor(TEALD[0],TEALD[1],TEALD[2]); doc.rect(M,y,W-2*M,titleH,"F");
-        doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(IV[0],IV[1],IV[2]); doc.text("VALUE DRIVERS — IMPROVEMENTS THAT SUPPORT THE AFTER-REPAIR VALUE", M+12, y+15);
-        doc.setFont("helvetica","italic"); doc.setFontSize(8); doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.text("What the appraiser should credit toward the after-repair value (ARV).", M+12, y+titleH+13);
+        doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(M,y,3.5,titleH,"F");   // gold accent on the title bar
+        doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(IV[0],IV[1],IV[2]); doc.setCharSpace(0.4); doc.text("VALUE DRIVERS — IMPROVEMENTS THAT SUPPORT THE AFTER-REPAIR VALUE", M+14, y+16); doc.setCharSpace(0);
+        doc.setFont("helvetica","italic"); doc.setFontSize(8); doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.text("What the appraiser should credit toward the after-repair value (ARV).", M+14, y+titleH+13);
         let yy=y+titleH+30; doc.setFontSize(9.5);
-        vrows.forEach(r=>{ doc.setFont("helvetica","bold"); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]); doc.text(pdfSafe(r[0]), M+14, yy); doc.setFont("helvetica","normal"); doc.setTextColor(28,30,34); const dt=doc.splitTextToSize(pdfSafe(r[1]),W-2*M-185); doc.text(dt,M+172,yy); yy+=rowH; });
-        y+=boxH+14;
+        vrows.forEach((r,ri)=>{ if(ri>0){ doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.4); doc.line(M+14,yy-11,W-M-14,yy-11); } doc.setFont("helvetica","bold"); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]); doc.text(pdfSafe(r[0]), M+14, yy); doc.setFont("helvetica","normal"); doc.setTextColor(28,30,34); const dt=doc.splitTextToSize(pdfSafe(r[1]),W-2*M-185); doc.text(dt,M+172,yy); yy+=rowH; });
+        y+=boxH+16;
       }
-      if(S.narrative){ doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]); doc.text("NARRATIVE",M,y); y+=14; doc.setFont("helvetica","normal"); doc.setTextColor(35,38,42); doc.setFontSize(9); const ln=doc.splitTextToSize(pdfSafe(S.narrative),W-2*M); doc.text(ln,M,y); y+=ln.length*12+8; }
+      if(S.narrative){ doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]); doc.setCharSpace(0.5); doc.text("NARRATIVE",M,y); doc.setCharSpace(0); doc.setDrawColor(GOLD[0],GOLD[1],GOLD[2]); doc.setLineWidth(0.8); doc.line(M,y+4,M+58,y+4); y+=16; doc.setFont("helvetica","normal"); doc.setTextColor(35,38,42); doc.setFontSize(9); const ln=doc.splitTextToSize(pdfSafe(S.narrative),W-2*M); doc.text(ln,M,y); y+=ln.length*12+10; }
 
       const applyLbl={each:"Same each unit",split:"Per unit",common:"Common areas",exterior:"Exterior",project:"Project-wide"};
       let head, body=[], foot=[], colStyles;
@@ -968,7 +981,7 @@ const RB = (function(){
           });
         });
         const spanL=ncol-1;
-        const footRow=(l,v,strong)=>foot.push([{content:l,colSpan:spanL,styles:{halign:"left",fontStyle:"bold",fillColor:strong?LIGHT:[255,255,255],textColor:INK}},{content:money(v),styles:{halign:"right",fontStyle:"bold",fillColor:strong?LIGHT:[255,255,255],textColor:strong?TEALD:INK}}]);
+        const footRow=(l,v,strong)=>foot.push([{content:l,colSpan:spanL,styles:{halign:"left",fontStyle:"bold",fillColor:strong?INK:FOOT,textColor:strong?IV:INK,fontSize:strong?9.4:8}},{content:money(v),styles:{halign:"right",fontStyle:"bold",fillColor:strong?INK:FOOT,textColor:strong?GOLD:TEALD,fontSize:strong?9.4:8}}]);
         footRow("Subtotal",subtotal()); footRow("Contingency"+(S.cont.mode==="pct"&&S.cont.value?(" ("+S.cont.value+"%)"):""),contingency()); if(gcFeeAmt()>0)footRow("General Contractor fee",gcFeeAmt()); footRow("Soft costs",softTotal()); footRow("Hard costs",hardTotal()); footRow("TOTAL SCOPE OF WORK",grand(),true);
         colStyles={0:{cellWidth:22,halign:"center",textColor:GRAY},1:{cellWidth:useCols&&colKeys.length>=3?140:120}}; for(let i=0;i<colKeys.length;i++) colStyles[2+i]={halign:"right"}; colStyles[2+colKeys.length]={halign:"right",fontStyle:"bold"};
       } else {
@@ -980,15 +993,18 @@ const RB = (function(){
             if(it.desc) detail=(detail?detail+" — ":"")+it.desc; if(it.pct&&S.txn==="refi") detail=(detail?detail+" ":"")+"("+it.pct+"% done)";
             body.push([String(no),pdfSafe(metaOf(key).name),pdfSafe(detail),money(lineTotal(key))]); });
         });
-        const footRow=(l,v,strong)=>foot.push([{content:l,colSpan:3,styles:{halign:"left",fontStyle:"bold",fillColor:strong?LIGHT:[255,255,255],textColor:INK}},{content:money(v),styles:{halign:"right",fontStyle:"bold",fillColor:strong?LIGHT:[255,255,255],textColor:strong?TEALD:INK}}]);
+        const footRow=(l,v,strong)=>foot.push([{content:l,colSpan:3,styles:{halign:"left",fontStyle:"bold",fillColor:strong?INK:FOOT,textColor:strong?IV:INK,fontSize:strong?9.4:8}},{content:money(v),styles:{halign:"right",fontStyle:"bold",fillColor:strong?INK:FOOT,textColor:strong?GOLD:TEALD,fontSize:strong?9.4:8}}]);
         footRow("Subtotal",subtotal()); footRow("Contingency"+(S.cont.mode==="pct"&&S.cont.value?(" ("+S.cont.value+"%)"):""),contingency()); if(gcFeeAmt()>0)footRow("General Contractor fee",gcFeeAmt()); footRow("Soft costs",softTotal()); footRow("Hard costs",hardTotal()); footRow("TOTAL SCOPE OF WORK",grand(),true);
         colStyles={0:{cellWidth:22,halign:"center",textColor:GRAY},1:{cellWidth:150},2:{cellWidth:"auto"},3:{cellWidth:70,halign:"right",fontStyle:"bold"}};
       }
-      doc.autoTable({ startY:y+4, head:head, body:body, foot:foot, theme:"grid",
-        styles:{font:"helvetica",fontSize:8,cellPadding:4,textColor:[40,40,40],lineColor:[220,225,226],overflow:"linebreak"},
-        headStyles:{fillColor:INK,textColor:IV,fontStyle:"bold",halign:"left"},
+      doc.autoTable({ startY:y+2, head:head, body:body, foot:foot, theme:"grid",
+        styles:{font:"helvetica",fontSize:8.2,cellPadding:{top:5,right:6,bottom:5,left:6},textColor:[44,48,52],lineColor:[227,230,231],lineWidth:0.5,overflow:"linebreak",valign:"middle"},
+        headStyles:{fillColor:INK,textColor:IV,fontStyle:"bold",fontSize:8.5,halign:"left",cellPadding:{top:6,right:6,bottom:6,left:6},lineWidth:0},
+        bodyStyles:{lineColor:[229,232,233]},
+        alternateRowStyles:{fillColor:ZEBRA},
+        footStyles:{lineColor:[227,230,231],lineWidth:0.5},
         columnStyles:colStyles, margin:{left:M,right:M},
-        didDrawPage:()=>{ const ph=doc.internal.pageSize.getHeight(); doc.setFontSize(7); doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.setFont("helvetica","normal"); doc.text("For estimation & education only — not a quote, approval, or commitment to lend. Final budget and advance rates depend on full underwriting and appraisal.",M,ph-30,{maxWidth:W-2*M}); doc.text("© "+new Date().getFullYear()+" YS Capital Group · NMLS ID 2609746 · Equal Housing Lender",M,ph-16); }
+        didDrawPage:()=>{ const ph=doc.internal.pageSize.getHeight(); doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.6); doc.line(M,ph-40,W-M,ph-40); doc.setFontSize(7); doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.setFont("helvetica","normal"); doc.text("For estimation & education only — not a quote, approval, or commitment to lend. Final budget and advance rates depend on full underwriting and appraisal.",M,ph-30,{maxWidth:W-2*M}); doc.text("© "+new Date().getFullYear()+" YS Capital Group · NMLS ID 2609746 · Equal Housing Lender",M,ph-16); }
       });
       const _pfn=fileBase()+".pdf";
       if(opts.returnFile){ if(btn){ btn.textContent=o; btn.disabled=false; } return new File([doc.output("blob")], _pfn, {type:"application/pdf"}); }

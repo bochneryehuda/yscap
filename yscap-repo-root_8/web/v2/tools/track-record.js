@@ -564,24 +564,38 @@ const TR=(function(){
       const doc=new jsPDF({unit:"pt",format:"letter",orientation:"landscape"});
       const W=doc.internal.pageSize.getWidth(), H=doc.internal.pageSize.getHeight(), M=40;
       const INK=[20,27,34],TEAL=[47,127,134],TEALD=[31,58,64],GOLD=[174,135,70],GRAY=[75,88,92],IV=[244,240,231];
+      const IVSOFT=[250,249,244],HAIR=[223,226,227];
       const s=summary();
+      const HH=84;
       function header(){
-        doc.setFillColor(INK[0],INK[1],INK[2]); doc.rect(0,0,W,74,"F");
-        doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(0,74,W,2,"F");
-        const logo=logoData(); if(logo){ const h=34,w=logo.w*(h/logo.h); try{ doc.addImage(logo.dataURI,"PNG",M,21,w,h); }catch(e){} }
-        doc.setTextColor(IV[0],IV[1],IV[2]); doc.setFont("times","bold"); doc.setFontSize(19); doc.text("Borrower Track Record", W-M, 35, {align:"right"});
-        doc.setFont("times","italic"); doc.setFontSize(10); doc.setTextColor(GOLD[0],GOLD[1],GOLD[2]); doc.text("Verified real-estate experience", W-M, 52, {align:"right"});
-        doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(170,178,182);
-        doc.text((S.borrower?(pdfSafe(S.borrower)+"  ·  "):"")+"YS Capital Group · NMLS 2609746 · "+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}), W-M, 66, {align:"right"});
+        doc.setFillColor(INK[0],INK[1],INK[2]); doc.rect(0,0,W,HH,"F");
+        doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(0,HH,W,2.6,"F");
+        doc.setFillColor(TEAL[0],TEAL[1],TEAL[2]); doc.rect(0,HH+2.6,W,0.8,"F");
+        const logo=logoData(); if(logo){ const h=38,w=logo.w*(h/logo.h); try{ doc.addImage(logo.dataURI,"PNG",M,(HH-h)/2,w,h); }catch(e){} }
+        doc.setTextColor(IV[0],IV[1],IV[2]); doc.setFont("times","bold"); doc.setFontSize(21); doc.text("Borrower Track Record", W-M, 38, {align:"right"});
+        doc.setFont("times","italic"); doc.setFontSize(10.5); doc.setTextColor(GOLD[0],GOLD[1],GOLD[2]); doc.text("Verified real-estate experience", W-M, 55, {align:"right", charSpace:0.4});
+        doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(174,182,186);
+        doc.text((S.borrower?(pdfSafe(S.borrower)+"  ·  "):"")+"YS Capital Group · NMLS 2609746 · "+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"}), W-M, 71, {align:"right"});
+      }
+      function footer(){
+        const fy=H-30;
+        doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.6); doc.line(M,fy,W-M,fy);
+        doc.setDrawColor(GOLD[0],GOLD[1],GOLD[2]); doc.setLineWidth(1.4); doc.line(M,fy,M+32,fy);
+        doc.setFont("helvetica","normal"); doc.setFontSize(7); doc.setTextColor(120,128,134);
+        doc.text("For lender review. Borrower-reported experience; verification status reflects YS Capital Group's review. Not a commitment to lend.", M, H-19);
+        doc.text("© "+new Date().getFullYear()+" YS Capital Group · NMLS ID 2609746 · Equal Housing Lender", M, H-10);
       }
       header();
-      let y=96;
+      let y=HH+22;
       // experience ranking band
-      doc.setFillColor(247,250,250); doc.setDrawColor(TEAL[0],TEAL[1],TEAL[2]); doc.setLineWidth(1); doc.roundedRect(M,y,W-2*M,46,6,6,"FD");
-      doc.setFont("helvetica","bold"); doc.setFontSize(13); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]); doc.text("Experience ranking:  "+s.tier, M+14, y+20);
-      doc.setFont("helvetica","normal"); doc.setFontSize(9.5); doc.setTextColor(40,44,48);
-      doc.text(s.qual+" qualifying exit(s) in the last 3 years   ·   "+s.total+" total deals   ·   "+s.flips+" flips / "+s.holds+" holds   ·   "+money(s.vol)+" acquisition volume   ·   "+money(s.rehab)+" rehab", M+14, y+36);
-      y+=62;
+      const bandH=56;
+      doc.setFillColor(246,250,250); doc.setDrawColor(TEAL[0],TEAL[1],TEAL[2]); doc.setLineWidth(0.8); doc.roundedRect(M,y,W-2*M,bandH,7,7,"FD");
+      doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.roundedRect(M,y,4.5,bandH,2,2,"F");
+      doc.setFont("times","bold"); doc.setFontSize(15); doc.setTextColor(TEALD[0],TEALD[1],TEALD[2]); doc.text("Experience ranking:  "+s.tier, M+18, y+23);
+      doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.5); doc.line(M+18,y+30,W-M-14,y+30);
+      doc.setFont("helvetica","normal"); doc.setFontSize(9.3); doc.setTextColor(60,66,70);
+      doc.text(s.qual+" qualifying exit(s) in the last 3 years   ·   "+s.total+" total deals   ·   "+s.flips+" flips / "+s.holds+" holds   ·   "+money(s.vol)+" acquisition volume   ·   "+money(s.rehab)+" rehab", M+18, y+45);
+      y+=bandH+22;
 
       const PROJ={flip:"Fix & Flip",hold:"Fix & Hold"};
       // SECTION WIDTH PARITY (owner-directed 2026-07-13): both section tables
@@ -589,10 +603,17 @@ const TR=(function(){
       // the Fix & Flip and Fix & Hold sections are exactly the same width with
       // their columns aligned — autoTable no longer sizes each independently.
       const COLW=[18,88,150,72,62,56,58,62,58,48,40];   // = W-2*M = 712pt
-      const sharedCols={}; COLW.forEach((w,i)=>{ sharedCols[i]={cellWidth:w}; }); sharedCols[0].halign="center";
+      const sharedCols={}; COLW.forEach((w,i)=>{ sharedCols[i]={cellWidth:w}; });
+      // Alignment is pure typography (widths above stay frozen for section parity):
+      // right-align money, center dates / counts / status for a clean ledger.
+      sharedCols[0].halign="center"; sharedCols[4].halign="right"; sharedCols[5].halign="center";
+      sharedCols[6].halign="right"; sharedCols[7].halign="right"; sharedCols[8].halign="center";
+      sharedCols[9].halign="center"; sharedCols[10].halign="center";
       function section(kind,title){
         const list=S.props.filter(p=>p.kind===kind);
-        doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(INK[0],INK[1],INK[2]); doc.text(pdfSafe(title)+" ("+list.length+")", M, y); y+=6;
+        doc.setFillColor(GOLD[0],GOLD[1],GOLD[2]); doc.rect(M, y-9, 3.4, 11, "F");
+        doc.setFont("times","bold"); doc.setFontSize(13); doc.setTextColor(INK[0],INK[1],INK[2]); doc.text(pdfSafe(title)+" ("+list.length+")", M+10, y);
+        doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.6); doc.line(M, y+7, W-M, y+7); y+=6;
         const head = kind==="flip"
           ? [["#","Entity","Property","Type","Purchase","Pur. date","Rehab","Sale","Sale date","Hold","Recent"]]
           : [["#","Entity","Property","Type","Purchase","Pur. date","Rehab","Rent/mo","Rented","Refi","Recent"]];
@@ -604,21 +625,25 @@ const TR=(function(){
         });
         if(!list.length) body.push(["—","No "+title.toLowerCase()+" deals entered.","","","","","","","","",""]);
         doc.autoTable({ startY:y+4, head:head, body:body, theme:"grid", margin:{left:M,right:M}, tableWidth:W-2*M,
-          styles:{font:"helvetica",fontSize:7.5,cellPadding:3,overflow:"linebreak",textColor:[34,38,42],lineColor:[224,228,228],lineWidth:.5},
-          headStyles:{fillColor:[20,27,34],textColor:[244,240,231],fontStyle:"bold",fontSize:7.5},
-          alternateRowStyles:{fillColor:[248,250,250]},
+          styles:{font:"helvetica",fontSize:7.5,cellPadding:{top:4,right:5,bottom:4,left:5},overflow:"linebreak",textColor:[40,44,48],lineColor:[232,235,236],lineWidth:.5,valign:"middle"},
+          headStyles:{fillColor:INK,textColor:IV,fontStyle:"bold",fontSize:7.5,lineWidth:0,cellPadding:{top:5,right:5,bottom:5,left:5},valign:"middle"},
+          alternateRowStyles:{fillColor:IVSOFT},
           columnStyles:sharedCols,
-          didDrawPage:()=>{ header(); } });
-        y=doc.lastAutoTable.finalY+18;
+          didParseCell:(d)=>{ if(d.section==='body'){ const raw=d.row.raw;
+              if(raw && typeof raw[1]==='string' && /^No .*deals entered\.$/.test(raw[1])){ d.cell.styles.textColor=GRAY; d.cell.styles.fontStyle='italic'; }
+              if(d.column.index===10){ const t=(d.cell.raw==null?'':String(d.cell.raw)).trim();
+                if(t==='Yes'){ d.cell.styles.textColor=TEAL; d.cell.styles.fontStyle='bold'; }
+                else if(t==='No'){ d.cell.styles.textColor=[130,138,144]; } } } },
+          didDrawCell:(d)=>{ if(d.section==='head'){ doc.setDrawColor(GOLD[0],GOLD[1],GOLD[2]); doc.setLineWidth(1.3); doc.line(d.cell.x,d.cell.y+d.cell.height,d.cell.x+d.cell.width,d.cell.y+d.cell.height); } },
+          didDrawPage:()=>{ header(); footer(); } });
+        y=doc.lastAutoTable.finalY+20;
       }
       section("flip","Fix & Flip experience");
-      if(y>H-120){ doc.addPage(); y=96; }
+      if(y>H-120){ doc.addPage(); y=HH+22; }
       section("hold","Fix & Hold / Rental experience");
 
-      // footer compliance on last page
-      doc.setFont("helvetica","normal"); doc.setFontSize(7); doc.setTextColor(120,128,134);
-      doc.text("For lender review. Borrower-reported experience; verification status reflects YS Capital Group's review. Not a commitment to lend.", M, H-22);
-      doc.text("© "+new Date().getFullYear()+" YS Capital Group · NMLS ID 2609746 · Equal Housing Lender", M, H-12);
+      // footer compliance (also drawn per-page via didDrawPage)
+      footer();
 
       const fn=fileBase()+".pdf";
       if(opts.returnFile){ if(btn){btn.textContent=o;btn.disabled=false;} return doc.output("blob"); }
