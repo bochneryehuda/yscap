@@ -186,7 +186,7 @@ export default function StaffBorrowers() {
                       </td>
                     </tr>
                     {pwFor === b.id && (
-                      <tr style={{ background: 'rgba(127,169,176,.06)' }}>
+                      <tr style={{ background: 'var(--surface-soft)' }}>
                         <td colSpan={7} style={{ padding: '10px 12px' }}>
                           <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                             <span className="small">Set a new password for <strong>{name}</strong>:</span>
