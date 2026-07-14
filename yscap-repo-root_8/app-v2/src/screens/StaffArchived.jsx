@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -40,6 +40,18 @@ export default function StaffArchived() {
     finally { setBusy(''); }
   }
 
+  // KPIs derived from the archived rows already loaded (each carries loan_amount
+  // + deleted_at). No extra fetch — pure aggregation over existing data.
+  const stats = useMemo(() => {
+    const list = rows || [];
+    const cutoff = Date.now() - 30 * 864e5;
+    return {
+      total: list.length,
+      volume: list.reduce((n, a) => n + (Number(a.loan_amount) || 0), 0),
+      recent: list.filter(a => a.deleted_at && new Date(a.deleted_at).getTime() >= cutoff).length,
+    };
+  }, [rows]);
+
   if (!allowed) return <div role="alert" className="notice err">You do not have permission to manage archived files.</div>;
 
   return (
@@ -60,6 +72,14 @@ export default function StaffArchived() {
       </p>
       {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
       {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
+
+      {rows != null && rows.length > 0 && (
+        <div className="kpi-grid" style={{ marginBottom: 16 }}>
+          <div className="kpi"><div className="v">{stats.total}</div><div className="k">Archived files</div><div className="d">Out of the pipeline</div></div>
+          <div className="kpi"><div className="v">{money(stats.volume)}</div><div className="k">Loan amount</div><div className="d">Combined, archived</div></div>
+          <div className="kpi"><div className="v">{stats.recent}</div><div className="k">Last 30 days</div><div className="d">Recently archived</div></div>
+        </div>
+      )}
 
       {rows == null ? <div className="panel pad muted">Loading…</div>
         : rows.length === 0 ? (

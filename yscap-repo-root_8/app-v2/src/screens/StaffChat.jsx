@@ -189,10 +189,19 @@ export default function StaffChat() {
           <>
             <button className="btn ghost small cv-back" onClick={() => nav('/internal/chat')}>← All chats</button>
             {openConv && (
-              <div className="cv-pane-context">
+              <div className="cv-pane-context cv-context">
                 <a href={`#/internal/app/${openConv.application_id}`} title="Open the loan file">
                   📂 {openConv.borrower_first} {openConv.borrower_last} — {addrLine(openConv.property_address)}{openConv.ys_loan_number ? ` · ${openConv.ys_loan_number}` : ''}
                 </a>
+                <div className="cv-context-meta">
+                  {openConv.app_status && <span className={`pill ${openConv.app_status}`}>{openConv.app_status}</span>}
+                  {openConv.borrower_visible
+                    ? <span className="cv-ctx-tag">Borrower can see this chat</span>
+                    : <span className="cv-ctx-tag mut">Internal only</span>}
+                  {(openConv.members || []).length > 0 && (
+                    <span className="cv-ctx-people">{openConv.members.length} participant{openConv.members.length === 1 ? '' : 's'}</span>
+                  )}
+                </div>
               </div>
             )}
             <ChatThread key={openId} conversationId={openId} surface="staff" me={me}

@@ -73,6 +73,20 @@ export default function StaffAuditLog() {
     api.auditLogFacets().then(setFacets).catch(() => setFacets({ actions: [], categories: [], staff: [] }));
   }, [allowed]);
 
+  // Compliance KPIs — aggregated from the global facet action counts the screen
+  // already loads (each action carries { category, count }). No extra fetch;
+  // these are the same counts shown in the Action dropdown, summed by category.
+  const auditStats = useMemo(() => {
+    const acts = (facets && facets.actions) || [];
+    const sum = (pred) => acts.reduce((n, a) => n + (pred(a) ? (Number(a.count) || 0) : 0), 0);
+    return {
+      total: sum(() => true),
+      pii: sum(a => a.category === 'pii'),
+      document: sum(a => a.category === 'document'),
+      auth: sum(a => a.category === 'auth'),
+    };
+  }, [facets]);
+
   // The action list, optionally narrowed to the chosen category.
   const actionOptions = useMemo(() => {
     const acts = (facets && facets.actions) || [];
@@ -138,6 +152,15 @@ export default function StaffAuditLog() {
       <p className="muted small" style={{ marginTop: 2, marginBottom: 16, maxWidth: '76ch' }}>
         Search by borrower, property, officer or action; click a name to jump to the file or profile.
       </p>
+
+      {facets && (
+        <div className="kpi-grid" style={{ marginBottom: 14 }}>
+          <div className="kpi"><div className="v">{auditStats.total}</div><div className="k">Logged events</div><div className="d">Across the whole trail</div></div>
+          <div className={`kpi${auditStats.pii ? ' alert' : ''}`}><div className="v">{auditStats.pii}</div><div className="k">SSN / PII access</div><div className="d">Sensitive-data events</div></div>
+          <div className="kpi"><div className="v">{auditStats.document}</div><div className="k">Document actions</div><div className="d">Uploads &amp; views</div></div>
+          <div className="kpi"><div className="v">{auditStats.auth}</div><div className="k">Auth events</div><div className="d">Sign-in &amp; access</div></div>
+        </div>
+      )}
 
       {/* Filter bar */}
       <div className="panel" style={{ marginBottom: 14 }}>
@@ -227,6 +250,7 @@ export default function StaffAuditLog() {
 
 function AuditRow({ r, expanded, onToggle, onActor }) {
   const color = CAT_COLOR[r.category] || CAT_COLOR.other;
+  const sensitive = r.category === 'pii';   // SSN/PII rows get the emphasis treatment
   const when = new Date(r.at);
   // The target: a loan file, a borrower profile, or a bare entity reference.
   let target = null;
@@ -247,12 +271,13 @@ function AuditRow({ r, expanded, onToggle, onActor }) {
   }
 
   return (
-    <div className="audit-row">
+    <div className={`audit-row${sensitive ? ' sensitive' : ''}`}>
       <div className="row" style={{ alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
         <span title={r.category} style={{ width: 10, height: 10, borderRadius: '50%', background: color, marginTop: 6, flex: '0 0 auto' }} />
         <div style={{ flex: 1, minWidth: 240 }}>
           <div style={{ fontWeight: 600 }}>
             {r.action_label}
+            {sensitive && <span className="pii-tag" title="Sensitive SSN / PII access">SSN / PII</span>}
           </div>
           <div className="muted small" style={{ marginTop: 3, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
             <span>

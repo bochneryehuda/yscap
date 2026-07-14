@@ -512,8 +512,8 @@ export default function StaffConditionStudio() {
               <span className={'dot ' + (d.isActive ? 'done' : 'outstanding')} aria-hidden />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="cc-defline">
-                  <strong>{d.label}</strong>
-                  <span className="pill">{typeLabel[d.conditionType] || d.conditionType}</span>
+                  <strong className="cc-def-title">{d.label}</strong>
+                  <span className={`pill cc-type cc-type-${d.conditionType}`}>{typeLabel[d.conditionType] || d.conditionType}</span>
                   <span className={'pill cc-aud-' + d.audience}>{AUDIENCE_LABEL[d.audience] || d.audience}</span>
                   {d.category && <span className="pill">{catLabel[d.category] || d.category}</span>}
                   {d.origin === 'system' && <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold)' }}>Built-in</span>}
