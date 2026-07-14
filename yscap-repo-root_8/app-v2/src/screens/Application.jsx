@@ -728,6 +728,11 @@ export default function Application() {
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
 
+      {/* Blueprint 2-column shell (pilot-borrower-file): the existing section
+          nav + FileSections content stay exactly as they were on the main side;
+          a NEW presentation-only right rail sits beside them. Wrapping markup
+          only — FileSections and its .file-* internals are untouched. */}
+      <div className="file-rail-grid">
       <FileSections sections={SECTIONS}>
 
       <Section id="sec-overview" title="Loan overview"
@@ -1175,6 +1180,43 @@ export default function Application() {
       </Section>
 
       </FileSections>
+
+      {/* RIGHT RAIL — presentation only. Reads ONLY data the screen already
+          holds (the loan officer name from the loan object) plus a static
+          YS Capital help block. No fetch, no derivation, no handlers, no
+          note-buyer/capital-partner names. */}
+      <aside className="file-rail" aria-label="Your loan team and help">
+        <div className="panel">
+          <h3 style={{ marginBottom: 10 }}>Your team</h3>
+          <div className="rail-team">
+            <span className="rail-ava" aria-hidden="true" />
+            <div className="rail-who">
+              <div className="rail-n">{app.loan_officer_name || 'Lead Capture'}</div>
+              <div className="rail-r muted small">Loan Officer</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel rail-callout">
+          <div className="rail-callout-lbl">Next step</div>
+          <p className="small" style={{ margin: 0 }}>
+            Check <b>Conditions to close</b> for anything still needed — upload to a
+            condition and your loan team reviews it right away.
+          </p>
+        </div>
+
+        <div className="panel">
+          <h3 style={{ marginBottom: 8 }}>Need help?</h3>
+          <p className="muted small" style={{ marginBottom: 10 }}>
+            We're here Monday–Friday, 9am–6pm ET. Reach your YS Capital team anytime.
+          </p>
+          <div className="rail-help">
+            <span className="rail-help-ic" aria-hidden="true">☎</span>
+            <a href="tel:+17188312168">718-831-2168</a>
+          </div>
+        </div>
+      </aside>
+      </div>
 
       {sowOpen && sowItem && (
         <ToolModal

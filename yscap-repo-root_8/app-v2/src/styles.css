@@ -1926,3 +1926,51 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 /* — Profile entity + track-record chips read a touch more present. .reqchip is
      borrower-only (Profile / EntitiesScreen / TrackRecordScreen). — */
 .shell .reqchips{display:flex;flex-wrap:wrap;gap:8px}
+
+/* =====================================================================
+   LOAN FILE — BLUEPRINT 2-COLUMN SHELL WITH RIGHT RAIL (owner 2026-07-13)
+   Presentation only. A new outer grid wraps the (unchanged) FileSections
+   layout on the main side and a NEW presentational right rail on the other,
+   matching web/preview/pilot-borrower-file.html and pilot-staff-file.html.
+   `.file-rail-grid` / `.file-rail` (and `.rail-*`) are NEW hooks used ONLY in
+   Application.jsx (borrower) and StaffApplication.jsx (staff). Every rule is
+   scoped to the surface root — borrower under .shell, staff under .app — so
+   one variant's styling can never reach the other, and the shared FileSections
+   `.file-*` base classes / behaviour are untouched. Colours resolve from the
+   light palette (no dark-on-dark); the grid degrades to a single column with
+   the rail below on narrow screens (first-paint safe, reduced-motion safe).
+   ===================================================================== */
+
+/* ---- Borrower (.shell) ---- */
+.shell .file-rail-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:22px;align-items:start}
+.shell .file-rail{position:sticky;top:152px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.shell .file-rail .panel{margin-top:0}
+.shell .rail-team{display:flex;align-items:center;gap:12px}
+.shell .rail-ava{flex:0 0 auto;width:38px;height:38px;border-radius:50%;
+  background:linear-gradient(150deg,var(--gold),var(--primary))}
+.shell .rail-who{min-width:0}
+.shell .rail-n{font-weight:600;font-size:14px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.shell .rail-r{margin-top:1px}
+.shell .rail-callout{background:var(--warning-soft);border-color:#E9D8AE}
+.shell .rail-callout-lbl{font-size:12px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--gold);font-weight:700;margin-bottom:6px}
+.shell .rail-callout p{color:var(--text);line-height:1.5}
+.shell .rail-help{display:flex;align-items:center;gap:8px;font-size:14px}
+.shell .rail-help a{color:var(--text);font-weight:600;text-decoration:none;font-variant-numeric:tabular-nums}
+.shell .rail-help a:hover{color:var(--primary)}
+.shell .rail-help-ic{display:inline-flex;align-items:center;justify-content:center;
+  width:28px;height:28px;flex:none;border-radius:50%;background:var(--surface-soft);
+  border:1px solid var(--border);font-size:13px}
+@media(max-width:1080px){
+  .shell .file-rail-grid{display:block}
+  .shell .file-rail{position:static;margin-top:20px}
+}
+
+/* ---- Staff (.app) ---- */
+.app .file-rail-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:22px;align-items:start}
+.app .file-rail{position:sticky;top:152px;display:flex;flex-direction:column;gap:20px;min-width:0}
+.app .file-rail .panel{margin-top:0}
+@media(max-width:1080px){
+  .app .file-rail-grid{display:block}
+  .app .file-rail{position:static;margin-top:20px}
+}
