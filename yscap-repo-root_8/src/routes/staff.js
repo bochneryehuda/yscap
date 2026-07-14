@@ -3824,8 +3824,9 @@ router.patch('/leads/:id', async (req, res) => {
     const own = await db.query(`SELECT 1 FROM leads WHERE id=$1 AND (officer_id=$2 OR officer_id IS NULL)`, [req.params.id, req.actor.id]);
     if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
   }
-  // Snapshot the current status so a stage change is logged to the timeline.
-  const cur = await db.query(`SELECT status FROM leads WHERE id=$1`, [req.params.id]);
+  // Snapshot the current status (for stage-change logging) + names (so a
+  // single-field name PATCH rebuilds the flat `name` from both parts).
+  const cur = await db.query(`SELECT status, first_name, last_name FROM leads WHERE id=$1`, [req.params.id]);
   if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
   const prevStatus = cur.rows[0].status;
   const sets = [], vals = []; let i = 1;

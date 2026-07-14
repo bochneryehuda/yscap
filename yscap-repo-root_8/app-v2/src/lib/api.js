@@ -360,7 +360,9 @@ export const api = {
   staffUpdateLeadTask: (id, taskId, b) => req('PATCH', `/api/staff/leads/${id}/tasks/${taskId}`, b),
   staffLeadDocuments:(id) => req('GET', `/api/staff/leads/${id}/documents`),
   staffAddLeadDocument:(id, b) => req('POST', `/api/staff/leads/${id}/documents`, b),
-  staffLeadDocUrl:  (id, docId) => `/api/staff/leads/${id}/documents/${docId}`,
+  // Authed download — a plain <a href> can't send the Bearer token, so fetch
+  // the bytes and hand them to saveBlob (matches every other doc download).
+  staffDownloadLeadDoc:(id, docId) => download(`/api/staff/leads/${id}/documents/${docId}`),
   staffConvertLead: (id, b) => req('POST', `/api/staff/leads/${id}/convert`, b),
   staffDashboard:   (params) => req('GET', '/api/staff/dashboard' + (params && Object.keys(params).length ? '?' + new URLSearchParams(params) : '')),
   staffChatInbox:   () => req('GET', '/api/staff/chat/inbox'),

@@ -2151,7 +2151,8 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .lead-files{list-style:none;margin:10px 0 0;padding:0}
 .lead-files li{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--border)}
 .lead-files li:first-child{border-top:0}
-.lead-file-name{font-size:14px;font-weight:500;color:var(--teal-br);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lead-file-name{font-size:14px;font-weight:500;color:var(--teal-br);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  border:0;background:none;padding:0;text-align:left;cursor:pointer;min-width:0}
 .lead-file-name:hover{text-decoration:underline}
 
 /* ---- Board (kanban) ---- */

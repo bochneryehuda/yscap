@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, SOURCES, PROGRAMS, TOOL_LABEL, ACTIVITY_TYPES,
@@ -406,7 +406,10 @@ function AttachmentsPanel({ leadId, docs, onChange, onErr }) {
             <ul className="lead-files">
               {docs.map(d => (
                 <li key={d.id}>
-                  <a href={api.staffLeadDocUrl(leadId, d.id) + '?inline=1'} target="_blank" rel="noreferrer" className="lead-file-name">{d.filename}</a>
+                  <button type="button" className="lead-file-name" title="Download"
+                    onClick={async () => { try { const { blob, filename } = await api.staffDownloadLeadDoc(leadId, d.id); saveBlob(blob, filename || d.filename); } catch (e) { onErr(e.message || 'Could not open file'); } }}>
+                    {d.filename}
+                  </button>
                   <span className="muted small">{kb(d.size_bytes)}</span>
                 </li>
               ))}
