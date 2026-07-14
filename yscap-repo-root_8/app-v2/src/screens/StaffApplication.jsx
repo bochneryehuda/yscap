@@ -1229,6 +1229,70 @@ function VestingLlcOwners({ appId, app }) {
 }
 
 // #65 — the second borrower on a file. Shows the linked co-borrower (name,
+// The loan team (#64): the PRIMARY loan officer + processor plus any full-access
+// ASSISTANTS. Shows every teammate with a "Primary" badge; assistants carry a
+// remove (×). Add-assistant pickers below. The PRIMARY is changed through the
+// admin-only Assign controls, not here. `officers`/`processors` are the roster
+// lists already loaded by the parent; `onChanged` refreshes the file.
+function TeamAssignees({ appId, officers, processors, onChanged }) {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [addLo, setAddLo] = useState('');
+  const [addProc, setAddProc] = useState('');
+  const load = () => api.staffAssignees(appId).then(setRows).catch(() => setRows([]));
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [appId]);
+  if (!rows) return null;
+  const los = rows.filter(r => r.role === 'loan_officer');
+  const procs = rows.filter(r => r.role === 'processor');
+  async function add(role, staffId) {
+    if (!staffId) return;
+    setBusy('add'); setErr('');
+    try { await api.staffAddAssignee(appId, staffId, role); setAddLo(''); setAddProc(''); await load(); onChanged && onChanged(); }
+    catch (e) { setErr(e.message || 'Could not add'); } finally { setBusy(''); }
+  }
+  async function remove(role, staffId) {
+    setBusy(staffId); setErr('');
+    try { await api.staffRemoveAssignee(appId, staffId, role); await load(); onChanged && onChanged(); }
+    catch (e) { setErr(e.message || 'Could not remove'); } finally { setBusy(''); }
+  }
+  const Chip = ({ r }) => (
+    <span className="asg-chip">
+      {r.full_name}
+      {r.is_primary
+        ? <span className="asg-badge">Primary</span>
+        : <button className="asg-x" title="Remove assistant" disabled={busy === r.staff_id} onClick={() => remove(r.role, r.staff_id)}>×</button>}
+    </span>
+  );
+  const Line = ({ label, list }) => (
+    <div className="metrow" style={{ alignItems: 'flex-start' }}>
+      <span className="k">{label}</span>
+      <span className="v" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
+        {list.length ? list.map(r => <Chip key={r.staff_id} r={r} />) : <span className="muted small">—</span>}
+      </span>
+    </div>
+  );
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <Line label="Loan officers" list={los} />
+      <Line label="Processors" list={procs} />
+      <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+        <select className="input" style={{ maxWidth: 210, flex: '1 1 160px' }} value={addLo} onChange={e => setAddLo(e.target.value)}>
+          <option value="">+ Add assistant LO…</option>
+          {officers.filter(m => !los.some(r => r.staff_id === m.id)).map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+        </select>
+        {addLo && <button className="btn ghost small" disabled={busy === 'add'} onClick={() => add('loan_officer', addLo)}>Add</button>}
+        <select className="input" style={{ maxWidth: 210, flex: '1 1 160px' }} value={addProc} onChange={e => setAddProc(e.target.value)}>
+          <option value="">+ Add assistant processor…</option>
+          {processors.filter(m => !procs.some(r => r.staff_id === m.id)).map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+        </select>
+        {addProc && <button className="btn ghost small" disabled={busy === 'add'} onClick={() => add('processor', addProc)}>Add</button>}
+      </div>
+      {err && <p className="notice err small" style={{ marginTop: 6 }}>{err}</p>}
+    </div>
+  );
+}
+
 // contact, DOB, SSN reveal) and lets staff add/link or remove one. The record is
 // created encrypted + identity-matched server-side; removing only unlinks it.
 function CoBorrowerBlock({ appId, app, onChanged }) {
@@ -2261,8 +2325,7 @@ export default function StaffApplication() {
           <div className="metrow"><span className="k">ARV</span><span className="v">{money(app.arv)}</span></div>
           <div className="metrow"><span className="k">Rehab</span><span className="v">{money(app.rehab_budget)}</span></div>
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
-          <div className="metrow"><span className="k">Loan officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}</span></div>
-          <div className="metrow"><span className="k">Processor</span><span className="v">{procName || '—'}</span></div>
+          <TeamAssignees appId={id} officers={officers} processors={processors} onChanged={load} />
           {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
           <div className="gold-rule" style={{ margin: '10px 0' }} />
           {/* Reassigning a file is an admin function (S3-02) — the server 403s a
