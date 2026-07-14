@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<script src="theme.js?v=n6"></script>
+<script src="theme.js?v=n7"></script>
 <script>
 (function () {
   try {
@@ -305,7 +305,12 @@ section[id], main[id]{ scroll-margin-top:96px; }
 <header class="nav" id="nav">
     <div class="nav-inner">
         <a href="#top" class="nav-brand">
-            <img src="assets/images/ys-logo-t.png" alt="YS Capital Group">
+            <!-- Both logos in the DOM; CSS shows the one that reads on the
+                 active theme (owner-directed 2026-07-14). No JS timing, no
+                 broken swap: the on-light (dark-ink) logo shows in light mode,
+                 the on-dark (teal) logo in dark mode. -->
+            <img class="logo-on-light" src="assets/images/ys-logo-t-dark.png" alt="YS Capital Group">
+            <img class="logo-on-dark" src="assets/images/ys-logo-t.png" alt="YS Capital Group">
         </a>
         <nav class="nav-links" aria-label="Primary">
             <a href="#programs">Programs</a>
