@@ -600,7 +600,9 @@ async function fireChatEmail(j) {
         if (t) lines.push('“' + clean(t) + '”');
         else if (m.attachment_kind) lines.push(m.attachment_kind === 'voice' ? '[Voice message — listen in the portal]' : '[Attachment — open it in the portal]');
       });
-      if (n > lines.length) lines.push(`…and ${n - lines.length} more.`);
+      // Only "…and N more" for messages we didn't FETCH (past the LIMIT 12) — an
+      // empty-body row that rendered no line was still fetched, so it isn't "more".
+      if (n > unreadMsgs.rows.length) lines.push(`…and ${n - unreadMsgs.rows.length} more.`);
       const msg = notify.buildEmail({
         title: n === 1 ? 'New message from your loan team' : `${n} new messages`,
         body: `${n === 1 ? 'You have a new message' : `You have ${n} new messages`} in “${isBorrower ? scrubText(conv.name) : conv.name}”` +

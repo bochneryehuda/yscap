@@ -14,9 +14,9 @@ module.exports = {
     }
     const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
     if (!recipients.length) throw new Error('no recipient');
-    // Resend attachments: { filename, content (base64) }. Cap the total so a
-    // huge doc can't blow the API request; oversize attachments are dropped (the
-    // email still lists them and the file is available in the portal).
+    // Resend attachments: { filename, content (base64) }. Size-gating is the
+    // caller's job (the doc-upload site only attaches ≤3 MB and always lists the
+    // filename); here we just map whatever survived that gate.
     const atts = (Array.isArray(attachments) ? attachments : [])
       .filter((a) => a && a.filename && a.content)
       .map((a) => ({ filename: String(a.filename), content: String(a.content) }));
