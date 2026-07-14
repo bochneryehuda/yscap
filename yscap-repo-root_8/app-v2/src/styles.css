@@ -157,7 +157,12 @@ textarea{min-height:90px;resize:vertical}
 @media (max-width:720px){.rem-grid{grid-template-columns:1fr !important}}
 .metrow{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}
 .metrow:first-child{border-top:none}
-.metrow .k{color:var(--muted);font-size:13px} .metrow .v{font-weight:600}
+.metrow .k{color:var(--muted);font-size:13px}
+/* A long unbroken value (an email like BOCHNERYEHUDA@GMAIL.COM, an entity name,
+   a filename) must WRAP, not push its panel past the screen — otherwise on a
+   phone the value overflows and is clipped by the root overflow guard. min-width:0
+   lets the flex value shrink; overflow-wrap:anywhere breaks the token if needed. */
+.metrow .v{font-weight:600;min-width:0;overflow-wrap:anywhere;text-align:right}
 
 /* list items */
 .item{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:16px;
@@ -1899,8 +1904,16 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
      is borrower-only; :has(.tl-step) targets ONLY it, never Apply's .timeline
      (no .tl-step children), and degrades to the vertical list if :has is
      unsupported — first-paint safe. — */
-.shell .timeline:has(.tl-step){display:flex;align-items:flex-start;gap:0;padding:8px 0 2px}
-.shell .timeline:has(.tl-step) .tl-step{flex:1 1 0;min-width:0;flex-direction:column;align-items:center;
+/* Steps must never shrink below their label — otherwise, if this horizontal
+   track is ever forced into a cramped container (a blown-up layout viewport, or
+   a client that skipped the max-width:720px vertical fallback), the labels
+   overflow their column and LAP onto the next step. flex:1 0 auto + a per-step
+   min-width means the 7 steps either fit-and-grow, or the track scrolls
+   horizontally — but they can never overlap. (owner-directed 2026-07-14) */
+.shell .timeline:has(.tl-step){display:flex;align-items:flex-start;gap:0;padding:8px 0 2px;
+  overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.shell .timeline:has(.tl-step)::-webkit-scrollbar{display:none}
+.shell .timeline:has(.tl-step) .tl-step{flex:1 0 auto;min-width:80px;flex-direction:column;align-items:center;
   text-align:center;gap:8px;padding:0 6px}
 .shell .timeline:has(.tl-step) .tl-step::before{display:none}
 .shell .timeline:has(.tl-step) .tl-step:not(:last-child)::after{content:'';position:absolute;top:8px;left:50%;
