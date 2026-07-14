@@ -165,6 +165,23 @@ main,.footer{ position:relative; z-index:1; }
 .nav-links a:hover{ color:var(--gold); }
 .nav-actions{ display:flex; align-items:center; gap:.5rem; margin-left:auto; }
 .nav-actions .btn-ghost{ padding-left:.9rem; padding-right:.9rem; }
+/* PILOT Client Login — a distinct, branded login pill on every marketing screen
+   (owner-directed 2026-07-14): a gold-outlined pill carrying the PILOT gold
+   navigation-chevron mark + "Client Login", filling gold on hover. Uses
+   color:inherit so it reads on the light AND dark nav, and hard-coded PILOT gold
+   so it's identical across style.css / suite.css / inline styles. */
+.pilot-login{ display:inline-flex; align-items:center; gap:9px; padding:8px 17px;
+  border-radius:100px; background:transparent; color:inherit; border:1.5px solid #AE8746;
+  font-weight:600; font-size:.88rem; letter-spacing:.01em; text-decoration:none;
+  white-space:nowrap; transition:background .2s, color .2s; }
+.pilot-login:hover, .pilot-login:focus-visible{ background:#AE8746; color:#fff; }
+.pilot-login .plm{ width:13px; height:13px; background:#AE8746; flex:none;
+  clip-path:polygon(50% 0%,100% 100%,50% 74%,0% 100%); transition:background .2s; }
+.pilot-login:hover .plm, .pilot-login:focus-visible .plm{ background:#fff; }
+/* In the mobile drawer it goes full-width for tap comfort. The border is
+   restated so the drawer's generic `.nav-mobile a` bottom-border rule can't
+   out-rank it and paint a non-gold arc under the pill. */
+.nav-mobile .pilot-login{ justify-content:center; width:100%; padding:12px 17px; margin-top:.4rem; border:1.5px solid #AE8746; }
 .nav-toggle{ display:none; flex-direction:column; gap:5px; background:none; border:0; cursor:pointer; padding:6px; margin-left:auto; }
 .nav-toggle span{ width:24px; height:2px; background:var(--ivory); transition:.3s; }
 .nav-mobile{ display:none; }

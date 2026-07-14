@@ -404,3 +404,15 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
 .lo-contact a{ color:var(--teal-br,#5bb0a8); text-decoration:none; font-size:.82rem; font-weight:600; white-space:nowrap; }
 .lo-contact a:hover{ text-decoration:underline; }
 @media(max-width:560px){ .lo-meta{ margin-right:0; } .lo-contact{ width:100%; } }
+
+/* PILOT Client Login — the branded login pill (owner-directed 2026-07-14),
+   identical to the marketing-site rule: gold-outlined pill + PILOT gold
+   navigation-chevron mark + "Client Login", filling gold on hover. */
+.pilot-login{ display:inline-flex; align-items:center; gap:9px; padding:8px 17px;
+  border-radius:100px; background:transparent; color:inherit; border:1.5px solid #AE8746;
+  font-weight:600; font-size:.88rem; letter-spacing:.01em; text-decoration:none;
+  white-space:nowrap; transition:background .2s, color .2s; }
+.pilot-login:hover, .pilot-login:focus-visible{ background:#AE8746; color:#fff; }
+.pilot-login .plm{ width:13px; height:13px; background:#AE8746; flex:none;
+  clip-path:polygon(50% 0%,100% 100%,50% 74%,0% 100%); transition:background .2s; }
+.pilot-login:hover .plm, .pilot-login:focus-visible .plm{ background:#fff; }
