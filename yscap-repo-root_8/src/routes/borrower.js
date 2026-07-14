@@ -1290,12 +1290,15 @@ async function notifyTeamOfChangeRequests(appId, requested) {
     const row = a.rows[0]; if (!row) return;
     const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
     const fields = requested.map((r) => r.field_label).join(', ');
+    // Before → after for each requested field, so the team sees exactly what is
+    // being asked without opening the file.
+    const changeLines = requested.map((r) => changeRequests.describeChange(r)).join('; ');
     const ctx = await notify.fileContext(appId);
     for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
       await notify.notifyStaff(sid, {
         type: 'change_request',
         title: `${who} requested a change to ${fields}`,
-        body: `${ctx ? ctx.label : 'A file'} — review the requested change and approve or reject it.`,
+        body: `${ctx ? ctx.label : 'A file'} — ${changeLines}. Review and approve or reject it.`,
         meta: (ctx && ctx.meta) || undefined,
         applicationId: appId, link: `/internal/app/${appId}`, ctaLabel: 'Review the change' });
     }

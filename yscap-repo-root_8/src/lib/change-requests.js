@@ -23,21 +23,48 @@ const FIELD_LABELS = {
   program: 'Program',
   loan_type: 'Loan type',
   property_type: 'Property type',
+  units: 'Number of units',
   purchase_price: 'Purchase price',
   as_is_value: 'As-is value',
   arv: 'After-repair value (ARV)',
   rehab_budget: 'Rehab budget',
 };
 const MONEY_FIELDS = new Set(['purchase_price', 'as_is_value', 'arv', 'rehab_budget']);
-// Governed fields whose value must be one of a fixed set. property_type is the
-// only one the borrower UI offers as a picker, and it has a stable option list —
-// validate it so a hand-crafted request can't smuggle a junk value onto the file
-// even if a reviewer approves without looking. (program/loan_type are free-text
-// underwriting inputs the borrower UI never offers and staff eyeball on review.)
+const INT_FIELDS = new Set(['units']);
+// Governed enum fields whose value must be one of a fixed set — validated so a
+// hand-crafted request can't smuggle a junk value onto the file even if a
+// reviewer approves without looking. property_type, program and loan_type all
+// use the SAME option lists the completeness pickers offer, so an approved
+// request writes a value the pricing engine already understands.
 const FIELD_OPTIONS = {
   property_type: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'],
+  program: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'],
+  loan_type: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'],
 };
 const isGovernedField = (k) => Object.prototype.hasOwnProperty.call(FIELD_LABELS, k);
+
+// LINKAGE GUARD: every governed field name is interpolated into SQL (the value
+// is always parameterized). Assert at load that each is a plain snake_case token
+// — so a typo can never become an injection vector or a silently-missing write.
+for (const f of Object.keys(FIELD_LABELS)) {
+  if (!/^[a-z][a-z0-9_]*$/.test(f)) throw new Error(`change-requests: unsafe governed field name "${f}"`);
+}
+
+// Human-readable value for a field, used in the change-request notifications so
+// the borrower + team see the exact before → after (money as $, units as a plain
+// count, everything else verbatim).
+function formatValue(field, v) {
+  if (v == null || v === '') return '—';
+  if (MONEY_FIELDS.has(field)) { const n = Number(v); return Number.isFinite(n) ? '$' + n.toLocaleString('en-US') : String(v); }
+  if (INT_FIELDS.has(field)) { const n = Number(v); return Number.isFinite(n) ? String(n) : String(v); }
+  return String(v);
+}
+// "After-repair value (ARV): $500,000 → $525,000" — one line, ready to drop into
+// a notification body.
+function describeChange(cr) {
+  const label = cr.field_label || FIELD_LABELS[cr.field] || cr.field;
+  return `${label}: ${formatValue(cr.field, cr.old_value)} → ${formatValue(cr.field, cr.new_value)}`;
+}
 
 // A file is "locked" for the borrower once it carries a CURRENT product
 // registration — that's the moment terms became authoritative ("after products &
@@ -60,6 +87,12 @@ function normalizeValue(field, raw) {
     const s = String(raw).replace(/[^0-9.]/g, '');
     if (s === '') return null;
     const n = Number(s);
+    return Number.isFinite(n) ? String(n) : null;
+  }
+  if (INT_FIELDS.has(field)) {
+    const s = String(raw).replace(/[^0-9-]/g, '');
+    if (s === '') return null;
+    const n = parseInt(s, 10);
     return Number.isFinite(n) ? String(n) : null;
   }
   return String(raw).trim();
@@ -103,6 +136,7 @@ async function openRequest(appId, field, rawValue, { reason, requesterKind = 'bo
 // Coerce a stored string value back to the column type for the live write.
 function coerceForColumn(field, value) {
   if (MONEY_FIELDS.has(field)) { const n = Number(value); return Number.isFinite(n) ? n : null; }
+  if (INT_FIELDS.has(field)) { const n = parseInt(value, 10); return Number.isFinite(n) ? n : null; }
   return value;
 }
 
@@ -118,13 +152,23 @@ async function applyRequest(client, cr, deciderId, note) {
   const value = coerceForColumn(cr.field, cr.new_value);
   await client.query(
     `UPDATE applications SET ${cr.field}=$2, updated_at=now() WHERE id=$1`, [cr.application_id, value]);
+  // LINKAGE CHECK (verify-after-write, the repo's #1 bug-class guard): re-read the
+  // column and confirm the approved value actually landed on the linked field.
+  // Runs inside the caller's transaction, so a mismatch throws → ROLLBACK, and the
+  // borrower is never told a change was applied when the field didn't move.
+  const back = await client.query(`SELECT ${cr.field} AS v FROM applications WHERE id=$1`, [cr.application_id]);
+  const live = back.rows[0] ? back.rows[0].v : null;
+  if (normalizeValue(cr.field, live) !== normalizeValue(cr.field, cr.new_value)) {
+    throw Object.assign(new Error(`change request did not apply to ${cr.field_label || cr.field} — field linkage failed`), { status: 500 });
+  }
   await client.query(
     `UPDATE change_requests SET status='approved', decided_by=$2, decided_at=now(), decision_note=$3, updated_at=now()
       WHERE id=$1`, [cr.id, deciderId, note || null]);
-  return { field: cr.field, oldValue: cr.old_value, newValue: cr.new_value };
+  return { field: cr.field, fieldLabel: cr.field_label, oldValue: cr.old_value, newValue: cr.new_value };
 }
 
 module.exports = {
-  FIELD_LABELS, MONEY_FIELDS, isGovernedField,
+  FIELD_LABELS, MONEY_FIELDS, INT_FIELDS, FIELD_OPTIONS, isGovernedField,
   isBorrowerLocked, openRequest, applyRequest, currentValue, normalizeValue,
+  formatValue, describeChange,
 };

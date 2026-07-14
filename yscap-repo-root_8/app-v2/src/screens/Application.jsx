@@ -761,7 +761,7 @@ export default function Application() {
       <Section id="sec-application" title="Application details"
         info="What you told us on your application — the borrower, the property and the transaction. Ask your loan team to correct anything here.">
       <BorrowerCompleteness app={app} profile={profile} appId={id} onSaved={load} />
-      <ChangeRequestPanel appId={id} />
+      <ChangeRequestPanel appId={id} app={app} />
       <div className="grid cols-2">
         <div className="panel" style={{ marginTop: 0 }}>
           <h3 style={{ marginBottom: 12 }}>Borrower</h3>

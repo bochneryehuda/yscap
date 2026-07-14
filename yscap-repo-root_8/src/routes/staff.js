@@ -1706,11 +1706,13 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
       await audit(req, 'approve_change_request', 'application', cr.application_id,
         { field: applied.field, from: applied.oldValue, to: applied.newValue });
     } catch (_) {}
-    // Tell the borrower their requested change was accepted (borrower-safe copy).
+    // Tell the borrower their requested change was accepted (borrower-safe copy),
+    // spelling out the exact before → after that is now on file.
     try {
+      const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
         type: 'change_request', title: 'Your requested change was approved',
-        body: `Your loan team approved your update to ${cr.field_label}.`,
+        body: `Your loan team approved your update to ${cr.field_label}. ${change} is now on file.`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
     res.json({ ok: true, applied });
@@ -1724,7 +1726,7 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
 router.post('/change-requests/:cid/reject', async (req, res) => {
   const note = String((req.body || {}).note || '').trim() || null;
   try {
-    const cr = (await db.query(`SELECT application_id, field_label, status FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
+    const cr = (await db.query(`SELECT application_id, field, field_label, old_value, new_value, status FROM change_requests WHERE id=$1`, [req.params.cid])).rows[0];
     if (!cr) return res.status(404).json({ error: 'not found' });
     if (!(await canTouchApp(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
     if (cr.status !== 'pending') return res.status(409).json({ error: `this request is already ${cr.status}` });
@@ -1738,9 +1740,10 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
     if (!upd.rows[0]) return res.status(409).json({ error: 'this request was just decided by someone else' });
     await audit(req, 'reject_change_request', 'application', cr.application_id, { field: cr.field_label });
     try {
+      const change = changeRequests.describeChange(cr);
       await notify.notifyAppBorrowers(cr.application_id, {
         type: 'change_request', title: 'Update on your requested change',
-        body: `Your loan team reviewed your requested change to ${cr.field_label}.`,
+        body: `Your loan team reviewed your requested change (${change}) and it was not applied${note ? `: ${note}` : '. Reach out if you have questions.'}`,
         applicationId: cr.application_id, link: `/app/${cr.application_id}`, ctaLabel: 'Open your file' });
     } catch (_) {}
     res.json({ ok: true });
