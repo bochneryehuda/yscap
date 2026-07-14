@@ -63,7 +63,12 @@ export default function AuthShell({ title, subtitle, children, variant = 'borrow
       <section className="auth-form-panel">
         <div className="auth-form-top">
           <BrandLockup />
-          <span className="auth-help">Need help?</span>
+          <span style={{ display: 'inline-flex', gap: '16px', alignItems: 'center' }}>
+            {/* Back to the marketing home (leaves the /portal/ SPA) + a working
+                Need-help mailto (was a dead <span>) — owner-directed 2026-07-14. */}
+            <a className="auth-help" href="/" aria-label="Back to the yscapgroup.com home page">&larr; Back to home</a>
+            <a className="auth-help" href="mailto:pilot@yscapgroup.com">Need help?</a>
+          </span>
         </div>
         <div className="auth-form-mid">
           <div className="auth-card">
