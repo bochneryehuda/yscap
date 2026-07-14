@@ -614,7 +614,12 @@ async function fireChatEmail(j) {
       // portal" wording. Each line names WHO sent it.
       const attachments = [];
       let attBytes = 0;
-      const ATT_TOTAL_CAP = 8 * 1024 * 1024;   // total across the digest
+      // Total across the digest, held to the email providers' ~3 MB attachment
+      // ceiling (Resend/Graph both cap around there; the doc-upload email path
+      // uses the same ≤3 MB rule). A larger file would make the provider reject
+      // the WHOLE message — so anything that would push past the cap is skipped
+      // and keeps the "open it in the portal" line, and the email still sends.
+      const ATT_TOTAL_CAP = 3 * 1024 * 1024;
       for (const m of (unreadMsgs.rows || [])) {
         const who = clean(m.sender_name || 'A teammate');
         const t = String(m.body || '').trim();
