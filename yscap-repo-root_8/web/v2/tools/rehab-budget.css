@@ -323,7 +323,9 @@ body{ line-height:1.6; }
   --ink:#F7FAF9; --ink-1:#FFFFFF; --ink-2:#F1F6F5; --ink-3:#E7EFEE;
   --line:#DCE7E5; --line-2:rgba(23,35,38,.05);
   --teal:#2F7F86; --teal-br:#286D73; --teal-dp:#1F5B60; --teal-glow:rgba(47,127,134,.14);
-  --gold:#B9944A; --ivory:#172326; --ivory-soft:#2C3832; --muted:#5D6B70; --muted-2:#819096;
+  /* --muted-2 darkened from #819096 (only ~3.1:1 on the light paper — too faint
+     to read) to #626E74 (~5:1, AA) so the Scope-of-Work copy is legible. */
+  --gold:#B9944A; --ivory:#172326; --ivory-soft:#2C3832; --muted:#5D6B70; --muted-2:#626E74;
   --good:#178560; --warn:#B7791F; --bad:#B42318; --on-accent:#FFFFFF;
 }
 /* light theme: sharper + bolder so it reads as crisp, not washed out */
