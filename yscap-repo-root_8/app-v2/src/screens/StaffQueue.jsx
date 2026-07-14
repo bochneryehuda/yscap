@@ -6,6 +6,10 @@ import { useAuth } from '../lib/auth.jsx';
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
 const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
+// Presentational only: map a file's status → PILOT pill colour variant (dot pill).
+const PILL = { new: 'info', in_review: 'info', processing: 'info', underwriting: 'warn', approved: 'ok', clear_to_close: 'ok', funded: 'ok', on_hold: 'alert', declined: 'crit', withdrawn: 'mut' };
+// Two-letter monogram from a name (officer avatar) — display formatter.
+const initials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() || '—';
 // Status GROUPS (owner-defined). The pipeline defaults to ACTIVE so closed/
 // cancelled files never clutter the working view. Active = anything in-progress
 // (incl. on hold); Closed = funded; Cancelled = withdrawn/declined.
@@ -54,11 +58,11 @@ function ExceptionStrip({ e }) {
   const live = EXC.filter(x => (e[x.k] || 0) > 0);
   if (live.length === 0) return null;
   return (
-    <div className="kpi-row" style={{ marginBottom: 14 }}>
+    <div className="tiles">
       {live.map(x => (
-        <Link key={x.k} to={x.to} className="kpi alert" style={{ textDecoration: 'none' }}>
-          <div className="kpi-v">{e[x.k]}</div>
-          <div className="kpi-k">{x.label}</div>
+        <Link key={x.k} to={x.to} className={`tile${x.k === 'needs_correction' ? ' acc' : ''}`} style={{ textDecoration: 'none' }}>
+          <span className="fig">{e[x.k]}</span>
+          <span className="lab">{x.label}</span>
         </Link>
       ))}
     </div>
@@ -92,14 +96,14 @@ function Kpis({ d, activeParams }) {
       params: { flag: 'stalled' } },
   ];
   return (
-    <div className="kpi-row">
+    <div className="kpi-grid">
       {tiles.map(t => {
         const cls = `kpi${t.alert ? ' alert' : ''}`;
         const inner = (
           <>
-            <div className="kpi-v">{t.v}</div>
-            <div className="kpi-k">{t.k}</div>
-            {t.sub && <div className="muted small" style={{ marginTop: 2 }}>{t.sub}</div>}
+            <div className="v">{t.v}</div>
+            <div className="k">{t.k}</div>
+            {t.sub && <div className="d">{t.sub}</div>}
           </>
         );
         if (t.params) {
@@ -146,15 +150,15 @@ function ProductionBlock({ d }) {
   const maxVal = Math.max(1, ...trend.map(r => r.value || 0));
 
   return (
-    <div className="panel" style={{ marginBottom: 18 }}>
-      <div className="row" style={{ marginBottom: 12 }}>
+    <div className="panel">
+      <div className="panel-h">
         <h3>Monthly production</h3>
-        <div className="spacer" />
         <span className="pill" style={{ color, borderColor: 'currentColor' }}
           title="Change in funded count vs. last month">
           {arrow} {Math.abs(delta)}{pct != null ? ` · ${pct > 0 ? '+' : ''}${pct}%` : ''} vs last month
         </span>
       </div>
+      <div className="panel-b">
       <div className="row" style={{ gap: 26, marginBottom: trend.length ? 14 : 0, alignItems: 'flex-end' }}>
         <div>
           <div className="kpi-v" style={{ fontSize: '1.5rem' }}>{curCount}</div>
@@ -185,6 +189,7 @@ function ProductionBlock({ d }) {
           })}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -204,8 +209,9 @@ function HealthBlock({ d }) {
   ];
   if (d.pullThrough == null && !d.avgCycleDays && !d.avgFundedYtd && !agingTotal) return null;
   return (
-    <div className="panel" style={{ marginBottom: 18 }}>
-      <div className="row" style={{ marginBottom: 10 }}><h3 style={{ margin: 0 }}>Portfolio health</h3></div>
+    <div className="panel">
+      <div className="panel-h"><h3>Portfolio health</h3></div>
+      <div className="panel-b">
       <div className="row" style={{ gap: 26, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         {stats.map(s => (
           <div key={s.k}>
@@ -214,18 +220,19 @@ function HealthBlock({ d }) {
             <div className="muted small">{s.sub}</div>
           </div>
         ))}
-        {agingTotal > 0 && (
-          <div style={{ flex: 1, minWidth: 240 }}>
-            <div className="kpi-k" style={{ marginBottom: 6 }}>Active pipeline aging</div>
-            <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-              {[['0–7d', ag.a0_7, 'var(--ok)'], ['8–14d', ag.a8_14, 'var(--teal)'],
-                ['15–30d', ag.a15_30, 'var(--gold)'], ['30d+', ag.a30p, 'var(--danger)']].map(([lbl, n, c]) => (
-                <span key={lbl} className="pill" style={{ borderColor: c, color: c }}
-                  title={`${n || 0} active file(s) open ${lbl}`}>{lbl}: {n || 0}</span>
-              ))}
-            </div>
+      </div>
+      {agingTotal > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div className="kpi-k" style={{ marginBottom: 8 }}>Active pipeline aging</div>
+          <div className="aging">
+            {[['0–7d', ag.a0_7, true], ['8–14d', ag.a8_14, false],
+              ['15–30d', ag.a15_30, false], ['30d+', ag.a30p, false]].map(([lbl, n, hot]) => (
+              <span key={lbl} className={`a${hot ? ' hot' : ''}`}
+                title={`${n || 0} active file(s) open ${lbl}`}>{lbl} · <b>{n || 0}</b></span>
+            ))}
           </div>
-        )}
+        </div>
+      )}
       </div>
     </div>
   );
@@ -233,26 +240,31 @@ function HealthBlock({ d }) {
 
 function Row({ a }) {
   const pct = a.total_items > 0 ? Math.round((a.done_items / a.total_items) * 100) : 0;
+  const off = a.loan_officer_name;
   return (
-    <Link to={`/internal/app/${a.id}`} className="checkitem" style={{ textDecoration: 'none', color: 'inherit' }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600 }}>{a.first_name} {a.last_name} · {addrLine(a.property_address)}</div>
-        <div className="muted small">
-          {a.ys_loan_number || 'Loan # pending'} · {a.program || '—'} · {a.loan_type || '—'} · {money(a.loan_amount)}
-          {a.loan_officer_name ? ` · LO: ${a.loan_officer_name}` : ' · Unassigned'}
+    <Link to={`/internal/app/${a.id}`} className="q-row">
+      <div className="cell-deal">
+        <div className="lead">{a.first_name} {a.last_name}</div>
+        <div className="mut">{addrLine(a.property_address)}</div>
+        <div className="mut">
+          {a.ys_loan_number || 'Loan # pending'} · {a.loan_type || '—'}
           {a.internal_status ? ` · ClickUp: ${a.internal_status}` : ''}
           {/* Note buyer / where the file is sold — INTERNAL staff pipeline only
               (this whole screen is staff-gated; the borrower API strips `lender`). */}
           {a.lender ? <> · <span style={{ color: 'var(--gold)' }}>Note buyer: {a.lender}</span></> : ''}
         </div>
-        {a.total_items > 0 && (
-          <div className="row" style={{ gap: 8, marginTop: 6 }}>
-            <div className="progress" style={{ maxWidth: 180 }}><div className="progress-fill" style={{ width: pct + '%' }} /></div>
-            <span className="muted small">{pct}%</span>
-          </div>
-        )}
       </div>
-      <span className={`pill ${a.status}`}>{LABEL[a.status] || a.status}</span>
+      <div className="q-prog">{a.program || '—'}</div>
+      <div className="q-amt num">{money(a.loan_amount)}</div>
+      <div className="q-off">
+        {off ? <span className="off"><span className="mono">{initials(off)}</span>{off}</span> : <span className="mut">Unassigned</span>}
+      </div>
+      <div className="q-stat"><span className={`pill ${PILL[a.status] || 'mut'}`}>{LABEL[a.status] || a.status}</span></div>
+      <div className="prog-cell">
+        {a.total_items > 0
+          ? <><span className="pct">{pct}%</span><div className="prog-bar"><i style={{ width: pct + '%' }} /></div></>
+          : <span className="mut">—</span>}
+      </div>
     </Link>
   );
 }
@@ -416,21 +428,23 @@ export default function StaffQueue() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 16 }}>
-        <h1>Pipeline</h1>
-        <div className="spacer" />
-        <div className="row" style={{ gap: 6 }}>
-          <button className={`btn ${tab === 'mine' ? 'primary' : 'ghost'}`} onClick={() => setTab('mine')}>
-            {mineLabel}{allFiles ? ` (${allFiles.length})` : ''}
+      <div className="page-head">
+        <div>
+          <h1>Pipeline</h1>
+          <div className="sub">{allFiles ? `${allFiles.length} file(s) across the desk` : 'Loan pipeline'}</div>
+        </div>
+        <div className="page-head-actions">
+          <button className={`btn ${tab === 'mine' ? 'btn-ink' : 'btn-ghost'} btn-sm`} onClick={() => setTab('mine')}>
+            {mineLabel}{allFiles ? <> <span className="num">({allFiles.length})</span></> : ''}
           </button>
-          <button className={`btn ${tab === 'leads' ? 'primary' : 'ghost'}`} onClick={() => setTab('leads')}>
-            Lead Capture{leads ? ` (${leads.length})` : ''}
+          <button className={`btn ${tab === 'leads' ? 'btn-ink' : 'btn-ghost'} btn-sm`} onClick={() => setTab('leads')}>
+            Lead Capture{leads ? <> <span className="num">({leads.length})</span></> : ''}
           </button>
-          <button className="btn ghost" onClick={syncMine} disabled={syncing}
+          <button className="btn btn-ghost btn-sm" onClick={syncMine} disabled={syncing}
             title="Pull your files from your ClickUp folder into PILOT">
             {syncing ? 'Syncing…' : '⟳ Sync my files from ClickUp'}
           </button>
-          <button className="btn primary" onClick={() => nav('/internal/new')} title="Open a new loan file — the borrower doesn't need an account">
+          <button className="btn btn-gold btn-sm" onClick={() => nav('/internal/new')} title="Open a new loan file — the borrower doesn't need an account">
             + New file
           </button>
         </div>
@@ -439,20 +453,23 @@ export default function StaffQueue() {
 
       {err && <div role="alert" className="notice err">{err}
         <button className="btn link small" onClick={() => { setErr(''); loadContext(); fetchList(); }}>Retry</button></div>}
+      <div className="stack">
       <Kpis d={dash} activeParams={curFilter} />
-      <ProductionBlock d={dash} />
-      <HealthBlock d={dash} />
+      <div className="band2">
+        <ProductionBlock d={dash} />
+        <HealthBlock d={dash} />
+      </div>
       <ExceptionStrip e={exc} />
       {tab === 'mine' && (
         <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           {/* Primary lens: Active (default) / Closed / Cancelled / All — so the
               working pipeline never shows funded or withdrawn files unless asked. */}
-          <div className="row" style={{ gap: 4 }}>
+          <div className="tabs">
             {['active', 'closed', 'cancelled', 'all'].map(g => (
-              <button key={g} className={`btn ${(groupF === g || (groupF === '' && g === 'all')) ? 'primary' : 'ghost'} small`}
+              <button key={g} className={`tab ${(groupF === g || (groupF === '' && g === 'all')) ? 'on' : ''}`}
                 onClick={() => setParam({ group: g, status: '' })}
                 title={g === 'active' ? 'In-progress files (default)' : g === 'closed' ? 'Funded files' : g === 'cancelled' ? 'Withdrawn / declined' : 'Every file'}>
-                {GROUP_LABEL[g]}{allFiles ? ` (${groupCount(g)})` : ''}
+                {GROUP_LABEL[g]}{allFiles ? <span className="ct">{groupCount(g)}</span> : null}
               </button>
             ))}
           </div>
@@ -528,11 +545,28 @@ export default function StaffQueue() {
       )}
 
       <div className="panel">
+        <div className="panel-h">
+          <h3>{tab === 'mine' ? 'Active files' : 'Lead capture'}</h3>
+          {displayList && <span className="pill mut">{displayList.length} file(s)</span>}
+        </div>
         {displayList == null
-          ? <p className="muted">Loading…</p>
+          ? <div className="panel-b"><p className="muted">Loading…</p></div>
           : displayList.length === 0
-            ? <p className="muted small">Nothing here yet.</p>
-            : displayList.map(a => <Row key={a.id} a={a} />)}
+            ? <div className="panel-b"><div className="empty-state"><h3>Nothing here yet</h3></div></div>
+            : (
+              <div className="q-table">
+                <div className="q-head">
+                  <div>Deal / Borrower · Address</div>
+                  <div>Program</div>
+                  <div className="num">Amount</div>
+                  <div>Officer</div>
+                  <div>Status</div>
+                  <div>Progress</div>
+                </div>
+                {displayList.map(a => <Row key={a.id} a={a} />)}
+              </div>
+            )}
+      </div>
       </div>
     </>
   );

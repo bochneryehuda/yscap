@@ -15,6 +15,9 @@ const TYPES = [
   { v: 'other', label: 'Other' },
 ];
 const TYPE_LABEL = Object.fromEntries(TYPES.map(t => [t.v, t.label]));
+// Presentational only: type→swatch colour class + monogram initials for the directory table.
+const SWATCH = { title_company: 'sw-title', insurance_agent: 'sw-insurance', attorney: 'sw-attorney', contractor: 'sw-inspector', other: '' };
+const initials = (s) => (String(s || '').trim().split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()) || '—';
 const blank = () => ({ contactType: 'title_company', companyName: '', contactName: '', email: '', phone: '', address: '', notes: '' });
 
 function VendorForm({ initial, onSave, onCancel, busy }) {
@@ -88,13 +91,14 @@ export default function StaffVendors() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+      <div className="page-head">
         <div>
-          <h1>Vendor contacts</h1>
-          <p className="muted small">Every title company and insurance agent entered across the platform — curate them here.</p>
+          <h1>Vendors</h1>
+          <div className="sub">Every title company and insurance agent entered across the platform — curate them here.</div>
         </div>
-        <div className="spacer" />
-        <button className="btn primary" onClick={() => { setAdding(a => !a); setEditing(null); }}>{adding ? 'Close' : '+ Add vendor'}</button>
+        <div className="page-head-actions">
+          <button className="btn btn-ink btn-sm" onClick={() => { setAdding(a => !a); setEditing(null); }}>{adding ? 'Close' : '+ Add vendor'}</button>
+        </div>
       </div>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
@@ -110,35 +114,67 @@ export default function StaffVendors() {
       </div>
 
       <div className="panel">
-        {rows == null ? <p className="muted small">Loading…</p>
-          : shown.length === 0 ? <p className="muted small">No vendors match.</p>
-          : shown.map(v => (
-            <div key={v.id}>
-              <div className="checkitem" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                <span className="pill" style={{ minWidth: 120, textAlign: 'center' }}>{TYPE_LABEL[v.contact_type] || v.contact_type}</span>
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <div style={{ fontWeight: 600 }}>{v.company_name || v.contact_name || v.email || '—'}</div>
-                  <div className="muted small">
-                    {[v.contact_name && v.company_name ? v.contact_name : null, v.email, v.phone, v.address].filter(Boolean).join(' · ') || 'No contact details yet'}
-                  </div>
-                  <div className="muted small">
-                    Added by {v.added_by_staff ? `${v.added_by_staff} (staff)` : v.added_by_borrower ? `${v.added_by_borrower} (borrower)` : '—'}
-                    {v.files_used ? ` · used on ${v.files_used} file${v.files_used === 1 ? '' : 's'}` : ''}
-                    {v.notes ? ` · ${v.notes}` : ''}
-                  </div>
-                </div>
-                <button className="btn ghost small" onClick={() => { setEditing(editing === v.id ? null : v.id); setAdding(false); }}>
-                  {editing === v.id ? 'Close' : 'Edit'}
-                </button>
-                <button className="btn link small" style={{ color: 'var(--danger,#e06666)' }} onClick={() => del(v)}>Delete</button>
-              </div>
-              {editing === v.id && (
-                <VendorForm busy={busy}
-                  initial={{ contactType: v.contact_type, companyName: v.company_name || '', contactName: v.contact_name || '', email: v.email || '', phone: v.phone || '', address: v.address || '', notes: v.notes || '' }}
-                  onSave={(f) => saveEdit(v.id, f)} onCancel={() => setEditing(null)} />
-              )}
+        <div className="panel-h">
+          <h3>Directory</h3>
+          <span className="pill mut">{shown.length} of {rows ? rows.length : 0}</span>
+        </div>
+        {rows == null ? <div className="panel-b"><p className="muted small">Loading…</p></div>
+          : shown.length === 0 ? <div className="empty-state"><h3>No vendors match</h3><p>Try a different type or search term, or add a new vendor.</p></div>
+          : (
+            <div className="tbl-wrap">
+              <table className="tbl tbl-vendors">
+                <thead>
+                  <tr>
+                    <th>Company</th>
+                    <th>Type</th>
+                    <th>Contact</th>
+                    <th>Phone</th>
+                    <th className="num">Files</th>
+                    <th>Added by</th>
+                    <th className="actc"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map(v => (
+                    <React.Fragment key={v.id}>
+                      <tr>
+                        <td data-label="Company">
+                          <div className="co">
+                            <span className="mono">{initials(v.company_name || v.contact_name || v.email)}</span>
+                            <span>
+                              <span className="nm">{v.company_name || v.contact_name || v.email || '—'}</span>
+                              {v.notes && <span className="id">{v.notes}</span>}
+                            </span>
+                          </div>
+                        </td>
+                        <td data-label="Type"><span className="tchip"><span className={`sw ${SWATCH[v.contact_type] || ''}`} />{TYPE_LABEL[v.contact_type] || v.contact_type}</span></td>
+                        <td data-label="Contact">
+                          <span className="ct-nm">{v.contact_name || '—'}</span>
+                          {v.email && <span className="ct-em">{v.email}</span>}
+                        </td>
+                        <td data-label="Phone"><span className="num">{v.phone || '—'}</span></td>
+                        <td className="num files-c" data-label="Files">{v.files_used || 0}</td>
+                        <td data-label="Added by"><span className="mut">{v.added_by_staff ? `${v.added_by_staff} (staff)` : v.added_by_borrower ? `${v.added_by_borrower} (borrower)` : '—'}</span></td>
+                        <td className="actc" data-label="">
+                          <button className="rowbtn" onClick={() => { setEditing(editing === v.id ? null : v.id); setAdding(false); }}>{editing === v.id ? 'Close' : 'Edit'}</button>
+                          <button className="rowbtn danger" onClick={() => del(v)}>Delete</button>
+                        </td>
+                      </tr>
+                      {editing === v.id && (
+                        <tr className="editrow">
+                          <td colSpan={7} data-label="">
+                            <VendorForm busy={busy}
+                              initial={{ contactType: v.contact_type, companyName: v.company_name || '', contactName: v.contact_name || '', email: v.email || '', phone: v.phone || '', address: v.address || '', notes: v.notes || '' }}
+                              onSave={(f) => saveEdit(v.id, f)} onCancel={() => setEditing(null)} />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
+          )}
       </div>
     </>
   );

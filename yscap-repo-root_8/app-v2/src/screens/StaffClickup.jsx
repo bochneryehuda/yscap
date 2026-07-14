@@ -17,19 +17,15 @@ const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city,
 
 function Stat({ label, value, tone }) {
   return (
-    <div className="panel" style={{ background: 'var(--ink-2)', padding: '10px 14px', minWidth: 120 }}>
-      <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: tone === 'ok' ? 'var(--ok,#4caf82)' : tone === 'warn' ? 'var(--warn,#e0a800)' : 'inherit' }}>{value}</div>
+    <div className={`tile ${tone === 'ok' ? 'acc' : ''}`}>
+      <span className="fig">{value}</span>
+      <span className="lab">{label}</span>
     </div>
   );
 }
 
 function Dot({ on, label }) {
-  return (
-    <span className="pill" title={label} style={{ background: on ? 'rgba(76,175,130,.15)' : 'rgba(224,102,102,.12)', color: on ? 'var(--ok,#4caf82)' : 'var(--danger,#e06666)' }}>
-      {on ? '●' : '○'} {label}
-    </span>
-  );
+  return <span className={`pill ${on ? 'ok' : 'crit'}`} title={label}>{label}</span>;
 }
 
 function CountRow({ title, obj }) {
@@ -108,19 +104,20 @@ export default function StaffClickup() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+      <div className="page-head">
         <div>
           <h1>ClickUp Control Center</h1>
-          <p className="muted small">Validate and operate the ClickUp ⇄ PILOT sync. Start with a dry-run — it reads only, writes nothing.</p>
+          <div className="sub">Validate and operate the ClickUp ⇄ PILOT sync. Start with a dry-run — it reads only, writes nothing.</div>
         </div>
-        <div className="spacer" />
-        <button className="btn ghost small" onClick={() => { loadHealth(); loadActivity(); loadReview(); flash('Refreshed'); }}>Refresh</button>
+        <div className="page-head-actions">
+          <button className="btn ghost small" onClick={() => { loadHealth(); loadActivity(); loadReview(); flash('Refreshed'); }}>Refresh</button>
+        </div>
       </div>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
 
       {/* connection + switches */}
-      <div className="panel">
+      <div className="panel pad">
         <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
           <Dot on={health?.tokenSet} label="API token" />
           <Dot on={health?.enabled} label="Sync enabled" />
@@ -130,7 +127,7 @@ export default function StaffClickup() {
           <span className="pill">Poll {health?.pollSec ? `${health.pollSec}s` : '—'}</span>
         </div>
         {health?.error && <div className="notice err" style={{ marginTop: 8 }}>Health error: {health.error}</div>}
-        <div className="row" style={{ gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
+        <div className="tiles" style={{ marginTop: 12 }}>
           <Stat label="Backfilled borrowers" value={health?.backfilledBorrowers ?? '—'} />
           <Stat label="Tasks indexed" value={health?.tasksIndexed ?? '—'} />
         </div>
@@ -140,7 +137,7 @@ export default function StaffClickup() {
       </div>
 
       {/* manual review queue */}
-      <div className="panel" style={{ marginTop: 14 }}>
+      <div className="panel pad" style={{ marginTop: 14 }}>
         <div className="row" style={{ marginBottom: 4, alignItems: 'baseline', gap: 8 }}>
           <h3 style={{ margin: 0 }}>Manual Review</h3>
           <span className="pill">{review == null ? '…' : review.length}</span>
@@ -149,7 +146,7 @@ export default function StaffClickup() {
         {review == null ? <p className="muted small">Loading…</p>
           : review.length === 0 ? <p className="muted small">Nothing awaiting review — the queue is clear.</p>
           : <div style={{ overflowX: 'auto' }}>
-              <table className="table" style={{ width: '100%', minWidth: 720, fontSize: 13 }}>
+              <table className="tbl" style={{ minWidth: 720, fontSize: 13 }}>
                 <thead><tr>
                   <th style={{ textAlign: 'left' }}>Borrower</th><th style={{ textAlign: 'left' }}>Property</th>
                   <th style={{ textAlign: 'left' }}>YS #</th><th style={{ textAlign: 'left' }}>Task</th>
@@ -180,7 +177,7 @@ export default function StaffClickup() {
       </div>
 
       {/* backfill / dry-run */}
-      <div className="panel" style={{ marginTop: 14 }}>
+      <div className="panel pad" style={{ marginTop: 14 }}>
         <h3 style={{ marginTop: 0 }}>Backfill &amp; validation</h3>
         <p className="muted small">
           <b>Dry-run</b> samples real ClickUp tasks and reports what the mapping would produce — no DB or ClickUp writes.
@@ -194,8 +191,8 @@ export default function StaffClickup() {
         </div>
 
         {dry && (
-          <div className="panel" style={{ background: 'var(--ink-2)', marginTop: 12 }}>
-            <div className="row" style={{ gap: 10, flexWrap: 'wrap' }}>
+          <div className="panel pad" style={{ background: 'var(--surface-soft)', marginTop: 12 }}>
+            <div className="tiles" style={{ marginBottom: 12 }}>
               <Stat label="Tasks sampled" value={dry.tasksSeen ?? 0} />
               <Stat label="RTL" value={dry.rtl ?? 0} tone="ok" />
               <Stat label="Data-only" value={dry.dataOnly ?? 0} />
@@ -207,7 +204,7 @@ export default function StaffClickup() {
             <CountRow title="Programs seen" obj={dry.programs} />
             {Array.isArray(dry.samples) && dry.samples.length > 0 && (
               <div style={{ overflowX: 'auto', marginTop: 10 }}>
-                <table className="table" style={{ width: '100%', minWidth: 720, fontSize: 13 }}>
+                <table className="tbl" style={{ minWidth: 720, fontSize: 13 }}>
                   <thead><tr>
                     <th style={{ textAlign: 'left' }}>Task</th><th style={{ textAlign: 'left' }}>Internal → Borrower</th>
                     <th style={{ textAlign: 'left' }}>Program</th><th style={{ textAlign: 'left' }}>Type</th>
@@ -238,7 +235,7 @@ export default function StaffClickup() {
       </div>
 
       {/* per-file re-sync */}
-      <div className="panel" style={{ marginTop: 14 }}>
+      <div className="panel pad" style={{ marginTop: 14 }}>
         <h3 style={{ marginTop: 0 }}>Re-sync a single file</h3>
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div className="field" style={{ margin: 0 }}>
@@ -251,12 +248,12 @@ export default function StaffClickup() {
       </div>
 
       {/* activity */}
-      <div className="panel" style={{ marginTop: 14 }}>
+      <div className="panel pad" style={{ marginTop: 14 }}>
         <h3 style={{ marginTop: 0 }}>Recent sync activity</h3>
         {activity == null ? <p className="muted small">Loading…</p>
           : activity.length === 0 ? <p className="muted small">No ClickUp sync activity yet.</p>
           : <div style={{ overflowX: 'auto' }}>
-              <table className="table" style={{ width: '100%', minWidth: 560, fontSize: 13 }}>
+              <table className="tbl" style={{ minWidth: 560, fontSize: 13 }}>
                 <thead><tr>
                   <th style={{ textAlign: 'left' }}>When</th><th style={{ textAlign: 'left' }}>Action</th>
                   <th style={{ textAlign: 'left' }}>File</th><th style={{ textAlign: 'left' }}>Detail</th>

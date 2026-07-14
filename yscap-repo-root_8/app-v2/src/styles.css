@@ -1284,3 +1284,458 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 
 /* — Keyboard focus uses the brand focus colour — */
 :focus-visible{outline-color:var(--focus)}
+
+/* =====================================================================
+   PILOT BORROWER — EDITORIAL POLISH (blueprint alignment, owner 2026-07-13)
+   Presentation-only refinements that bring the authenticated BORROWER
+   screens up to the approved PILOT blueprints in web/preview/*:
+     · pilot-notifications.html   → iOS-style channel switches
+     · pilot-borrower-dashboard   → editorial "next steps" stat tiles
+     · pilot-borrower-file        → status timeline nodes/line (teal path)
+     · pilot-borrower-profile     → track-record / experience chips
+   EVERY selector below is scoped to a BORROWER-EXCLUSIVE class hook
+   (.notif-col, .next-*, .tl-* [StatusTimeline is borrower-only], .reqchip
+   [Profile / EntitiesScreen / TrackRecordScreen]) so NOTHING here touches
+   the staff console or any screen shared with it. No tokens are redefined;
+   colours resolve from the palette above. Appended last on purpose.
+   ===================================================================== */
+
+/* — Notification settings (pilot-notifications): the plain channel
+     checkboxes become the blueprint's paper/gold iOS switches. Scoped to
+     .notif-col so only this screen's toggles change; more specific than the
+     global input[type=checkbox] sizing rules, so it wins in every media. — */
+.notif-col input[type=checkbox]{
+  -webkit-appearance:none;appearance:none;position:relative;flex:none;margin:0;
+  width:46px;height:28px;border-radius:999px;cursor:pointer;
+  background:var(--border);border:1px solid var(--border-strong);
+  transition:background .18s ease,border-color .18s ease}
+.notif-col input[type=checkbox]::after{
+  content:'';position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 2px rgba(20,20,20,.28);transition:transform .18s ease}
+.notif-col input[type=checkbox]:checked{background:var(--gold);border-color:var(--gold)}
+.notif-col input[type=checkbox]:checked::after{transform:translateX(18px)}
+.notif-col input[type=checkbox]:disabled{opacity:.6;cursor:default}
+.notif-col input[type=checkbox]:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+@media(max-width:720px){
+  /* keep the phone tap target generous without shrinking the switch */
+  .notif-col input[type=checkbox]{width:48px;height:28px}
+}
+
+/* — Borrower dashboard (pilot-borrower-dashboard): the "next steps" strip
+     reads as calm editorial stat tiles — larger Fraunces figures, gold for
+     the outstanding count, teal for the active-files jump. — */
+.next-item{border-radius:14px;padding:16px 18px;gap:14px;align-items:center}
+.next-item .ni-n{font-size:30px;letter-spacing:-.02em}
+.next-item .ni-l{font-size:13.5px}
+.next-item.warn .ni-n{color:var(--gold)}
+.next-item.next-clickable .ni-n{color:var(--primary)}
+
+/* — Borrower loan file (pilot-borrower-file): the status timeline path is
+     PILOT teal for completed milestones (with a gold ring on the current
+     one), matching the blueprint stepper. StatusTimeline is borrower-only. — */
+.tl-step.done .tl-dot{background:var(--primary);border-color:var(--primary)}
+.tl-step.done:not(:last-child)::before{background:var(--primary)}
+.tl-step.current .tl-dot{box-shadow:0 0 0 4px rgba(174,135,70,.20)}
+.tl-closing{color:var(--text-muted)}
+
+/* — Borrower profile (pilot-borrower-profile): the track-record / experience
+     chips get a touch more presence and a warm "in progress" tint, echoing
+     the blueprint's experience tiles. .reqchip is borrower-only. — */
+.reqchip{padding:5px 13px}
+.reqchip.met{background:var(--success-soft);border-color:transparent}
+.reqchip.short{background:var(--warning-soft);border-color:transparent}
+
+/* — Borrower loan file HERO (pilot-borrower-file): a more editorial address
+     and tabular deal figures. SCOPED to .shell so the STAFF file header +
+     snapshot (rendered under .app) are completely untouched (both surfaces
+     share FileSections `.file-*` / `.metrow`). — */
+.shell .file-top-addr{font-size:23px;letter-spacing:-.01em}
+@media(max-width:900px){.shell .file-top-addr{font-size:19px}}
+.shell .file-main .metrow .v{font-variant-numeric:tabular-nums}
+
+/* — Loan amount = the blueprint's headline figure (pilot-borrower-dashboard /
+     -file): Fraunces, PILOT gold, tabular. `.ln-amount` is a BORROWER-ONLY
+     hook, added only on the loan-amount value in the dashboard loan cards and
+     the file's Loan snapshot — nothing shared or staff-side carries it. — */
+.shell .ln-amount{font-family:var(--serif);font-weight:600;font-size:19px;
+  letter-spacing:-.01em;color:var(--gold);font-variant-numeric:tabular-nums;line-height:1.2}
+
+/* — Borrower profile (pilot-borrower-profile): the SSN/encryption reassurance
+     becomes the blueprint's teal "secure" banner strip. `.secure-strip` is a
+     BORROWER-ONLY hook used only on the Profile personal-info notice. — */
+.shell .secure-strip{display:flex;align-items:center;gap:12px;margin:2px 0 14px;
+  padding:12px 15px;background:var(--primary-soft);border:1px solid var(--primary-border);
+  border-radius:var(--radius);font-size:13px;line-height:1.45;color:var(--text-muted)}
+.shell .secure-strip .lock{flex:none;width:30px;height:30px;border-radius:50%;background:var(--surface);
+  border:1px solid var(--primary-border);display:inline-flex;align-items:center;justify-content:center;
+  color:var(--primary-hover);font-size:14px}
+.shell .secure-strip b{color:var(--text);font-weight:600}
+
+/* =====================================================================
+   PILOT STAFF CONSOLE — EDITORIAL SHELL & PRIMITIVES (owner 2026-07-13)
+   Presentation-only. Rebuilds the authenticated STAFF/INTERNAL screens to
+   the approved blueprints in web/preview/pilot-staff-*.html, which share a
+   LEFT-SIDEBAR app shell + a common primitive vocabulary from web/preview/
+   ds.css (page-head · kpi-grid · panel-h/-b · tbl · pill-dots · prog-bar ·
+   tiles · mono · aging · bars). Ported here onto the portal's OWN white-first
+   PILOT tokens (--bg/--surface/--gold/--primary…) so colour stays 1:1 with
+   the rest of the console.
+
+   SCOPING: the whole system is nested under `.app` — the staff shell root set
+   ONLY on StaffLayout. Borrower screens and every component shared with the
+   borrower app (FileSections .file-*, chat .cv-*, StatusTimeline .tl-*, KPI
+   .kpi on borrower dashboards) live OUTSIDE `.app`, so nothing here can reach
+   them. The few names that also exist globally (.kpi/.pill/.panel) are only
+   ever re-styled as `.app .kpi` etc., which wins by specificity inside the
+   staff shell and is inert everywhere else.
+   ===================================================================== */
+
+/* ---- shell: sidebar · topbar · main (ds.css .app chrome) ---- */
+.app{min-height:100%;background:var(--bg);color:var(--text);
+  display:grid;grid-template-columns:248px minmax(0,1fr);grid-template-rows:auto 1fr;
+  grid-template-areas:'side top' 'side main'}
+.app-sidebar{grid-area:side;background:var(--surface);border-right:1px solid var(--border);
+  padding:20px 14px;display:flex;flex-direction:column;gap:3px;position:sticky;top:0;
+  height:100vh;overflow-y:auto;scrollbar-width:none;z-index:60}
+.app-sidebar::-webkit-scrollbar{display:none}
+.app-brandrow{padding:6px 10px 18px;margin-bottom:6px;border-bottom:1px solid var(--surface-soft)}
+.sb-sec{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-muted);
+  font-weight:700;padding:15px 12px 7px;opacity:.75}
+.sb-link{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:6px;
+  font-size:14.5px;font-weight:500;color:var(--text);cursor:pointer;
+  border-left:3px solid transparent;transition:background .15s,color .15s;white-space:nowrap}
+.sb-link:hover{background:var(--surface-soft);color:var(--text);text-decoration:none}
+.sb-link.active{background:var(--surface-soft);color:var(--text);font-weight:600;border-left-color:var(--gold)}
+.sb-link .ic{width:16px;height:16px;flex:none;border-radius:3px;background:var(--border);opacity:.85}
+.sb-link.active .ic{background:var(--gold);opacity:1}
+.sb-link .sb-badge{margin-left:auto;font-size:11px;font-weight:700;min-width:20px;text-align:center;
+  padding:1px 6px;border-radius:999px;background:var(--gold);color:#fff}
+.sb-spacer{flex:1}
+.sb-foot{border-top:1px solid var(--surface-soft);margin-top:6px;padding-top:10px;
+  display:flex;flex-direction:column;gap:8px}
+
+.app-topbar{grid-area:top;min-height:68px;background:var(--surface);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:16px;padding:0 28px;position:sticky;top:0;z-index:50}
+.app-topbar::before{content:'';position:absolute;left:0;right:0;top:0;height:2px;
+  background:linear-gradient(90deg,var(--primary-border),var(--gold) 55%,var(--primary-border))}
+.app-search{flex:1;max-width:420px;background:var(--surface-soft);border:1px solid var(--border);
+  border-radius:100px;padding:9px 16px;font-size:14px;color:var(--text-soft)}
+.app-topbar .user-pill{display:flex;align-items:center;gap:10px;margin-left:auto}
+.app-navtoggle{display:none}
+
+.app-main{grid-area:main;min-width:0;padding:30px 0 60px}
+.app .wrap{max-width:1240px;padding:0 36px}
+.app-foot{border-top:1px solid var(--border);margin-top:8px;padding:20px 0;
+  color:var(--text-muted);font-size:13px}
+
+/* ---- page head ---- */
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:24px;flex-wrap:wrap}
+.page-head h1{font-size:32px}
+.page-head .sub{color:var(--text-muted);font-size:15px;margin-top:6px}
+.page-head-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.stack{display:flex;flex-direction:column;gap:22px}
+
+/* ---- co-brand lockup (sidebar + topbar) ---- */
+.cobrand{display:inline-flex;align-items:center;gap:13px;min-width:0}
+.cobrand .div{width:1px;height:24px;background:var(--border);flex:none}
+.cobrand .ys{font-family:var(--serif);font-weight:600;font-size:14px;color:var(--text-muted);
+  letter-spacing:.01em;white-space:nowrap}
+
+/* ---- monogram avatar + inline officer ---- */
+.mono{width:34px;height:34px;border-radius:50%;background:var(--gold-soft);color:var(--primary-hover);
+  display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;
+  flex:none;border:1px solid var(--border);letter-spacing:.02em}
+.off{display:inline-flex;align-items:center;gap:9px;white-space:nowrap}
+.off .mono{width:28px;height:28px;font-size:11px}
+.chip{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;letter-spacing:.02em;
+  background:var(--surface-soft);border:1px solid var(--border);border-radius:100px;padding:6px 13px;color:var(--text)}
+.user-pill .btn{min-height:36px}
+
+/* ---- blueprint buttons (ds.css) — hyphen variants (no collision with .btn.ghost) ---- */
+.app .btn-gold{background:var(--gold);color:#fff;border-color:var(--gold)}
+.app .btn-gold:hover{background:#96702f;border-color:#96702f}
+.app .btn-ink{background:var(--text);color:var(--bg);border-color:var(--text)}
+.app .btn-ink:hover{background:#000}
+.app .btn-ghost{background:transparent;color:var(--text);border-color:var(--border)}
+.app .btn-ghost:hover{border-color:var(--text)}
+.btn-sm{min-height:36px;padding:9px 15px;font-size:13.5px}
+.num{font-variant-numeric:tabular-nums}
+.app .btn .num{opacity:.6;font-weight:600}
+
+/* ---- KPI grid (seamless hairline-split tiles) ---- */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1px;
+  background:var(--border);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.app .kpi{background:var(--surface);padding:20px 22px;border:0;border-radius:0;box-shadow:none}
+.app .kpi .v{font-family:var(--serif);font-size:32px;font-weight:500;letter-spacing:-.02em;
+  line-height:1.05;font-variant-numeric:tabular-nums;color:var(--text)}
+.app .kpi .v .u{color:var(--gold);font-size:.7em}
+.app .kpi .k{font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);
+  margin-top:8px;font-weight:600}
+.app .kpi .d{font-size:12.5px;color:var(--text-muted);margin-top:6px}
+.app .kpi:hover{transform:none;border:0}
+
+/* ---- panels: header / body split (ds.css) ---- */
+/* Padded by DEFAULT (safe if :has is unsupported → content stays inset, never
+   flush). Padding is removed only when a header/body/table sits as a DIRECT
+   child (those carry their own padding, or are meant to bleed to the edge).
+   `.pad` is restated last so an explicitly-padded panel always keeps padding. */
+.app .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  box-shadow:none;padding:20px 22px}
+/* full-bleed table inside a panel: clip only that table's corners to the panel
+   radius (never the panel itself — that would crop autocomplete/tooltip popovers) */
+.app .panel>.tbl,.app .panel>.tbl-scroll{border-radius:0 0 var(--radius) var(--radius);overflow:hidden}
+.panel-h{display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:16px 22px;border-bottom:1px solid var(--surface-soft)}
+.panel-h h2,.panel-h h3{font-size:18px}
+.panel-b{padding:20px 22px}
+.app .panel.flush,
+.app .panel:has(> .panel-h),
+.app .panel:has(> .panel-b),
+.app .panel:has(> .tbl-scroll),
+.app .panel:has(> .tbl-wrap),
+.app .panel:has(> .tbl){padding:0}
+.app .panel.pad{padding:20px 22px}
+
+/* ---- data table (ds.css .tbl) ---- */
+.tbl{width:100%;border-collapse:collapse;font-size:14px}
+.tbl th{text-align:left;font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-muted);font-weight:700;padding:12px 16px;border-bottom:1px solid var(--border)}
+.tbl td{padding:14px 16px;border-bottom:1px solid var(--surface-soft);vertical-align:middle}
+.tbl tr:last-child td{border-bottom:0}
+.tbl td.num,.tbl th.num{text-align:right;font-variant-numeric:tabular-nums}
+.tbl tbody tr:hover td{background:var(--surface-soft)}
+.tbl .lead{font-weight:600;color:var(--text)}
+.tbl .mut{color:var(--text-muted);font-size:13px}
+.tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tbl-scroll .tbl{min-width:640px}
+.cell-deal .lead{font-weight:600}
+.cell-deal .mut,.cell-deal .prog{font-size:12.5px;color:var(--text-muted);margin-top:3px}
+
+/* ---- status pills: add the blueprint status dot + extra semantics, scoped ---- */
+.app .pill{gap:6px;letter-spacing:.02em}
+.app .pill::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.app .pill.info{background:var(--primary-soft);color:var(--primary-hover)}
+.app .pill.warn{background:var(--warning-soft);color:var(--warning)}
+.app .pill.alert{background:#F6E7DE;color:#B4522A}
+.app .pill.crit{background:var(--danger-soft);color:var(--danger)}
+.app .pill.mut{background:var(--surface-soft);color:var(--text-muted)}
+
+/* ---- progress bar (ds.css) ---- */
+.prog-bar{height:6px;border-radius:100px;background:var(--surface-soft);overflow:hidden}
+.prog-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--primary),var(--gold))}
+.prog-cell{min-width:150px}
+.prog-cell .pct{font-size:11.5px;font-weight:700;color:var(--text-muted);
+  font-variant-numeric:tabular-nums;margin-bottom:6px;display:block}
+
+/* ---- pill-tabs + segmented filter tabs (ds.css .tab) ---- */
+.tabs{display:flex;gap:8px;flex-wrap:wrap}
+.tab{font-size:13px;font-weight:600;letter-spacing:.02em;padding:7px 15px;border-radius:100px;
+  border:1px solid var(--border);color:var(--text-muted);background:var(--surface);cursor:pointer;
+  font-family:var(--sans);transition:background .15s,color .15s,border-color .15s}
+.tab:hover{border-color:var(--border-strong)}
+.tab.on{background:var(--text);border-color:var(--text);color:var(--bg)}
+.tab .ct{opacity:.6;margin-left:6px;font-variant-numeric:tabular-nums}
+.tab.on .ct{opacity:.8}
+
+/* ---- action tiles (ds.css .tile) ---- */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:18px 20px;display:flex;align-items:center;gap:16px}
+.tile .fig{font-family:var(--serif);font-size:32px;font-weight:500;line-height:1;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;min-width:1.4em;color:var(--text)}
+.tile .lab{font-size:13px;color:var(--text-muted);line-height:1.35}
+.tile.acc{box-shadow:inset 3px 0 0 var(--gold)}
+.tile.acc .fig{color:var(--gold)}
+
+/* ---- aging chips + mini bar chart (ds.css) ---- */
+.aging{display:flex;gap:8px;flex-wrap:wrap}
+.aging .a{font-size:12px;font-weight:600;padding:5px 11px;border-radius:100px;
+  border:1px solid var(--border);color:var(--text-muted)}
+.aging .a b{color:var(--text);font-variant-numeric:tabular-nums}
+.aging .a.hot{border-color:var(--gold);color:var(--text);background:var(--surface-soft)}
+.bars{display:flex;align-items:flex-end;gap:6px;height:90px}
+.bars i{flex:1;background:var(--primary);border-radius:2px 2px 0 0;opacity:.5}
+.bars i.hi{background:var(--gold);opacity:1}
+.band2{display:grid;grid-template-columns:1.15fr 1fr;gap:20px}
+
+/* ---- checklist row (ds.css .cl-item) ---- */
+.cl-item{display:flex;align-items:flex-start;gap:14px;padding:16px 0;border-bottom:1px solid var(--surface-soft)}
+.cl-item:last-child{border-bottom:0}
+.cl-box{width:22px;height:22px;border-radius:5px;border:1.5px solid var(--border);flex:none;margin-top:1px}
+.cl-box.done{background:var(--success);border-color:var(--success)}
+.cl-item .ttl{font-weight:600;font-size:15px}
+.cl-item .hint{font-size:13px;color:var(--text-muted);margin-top:3px}
+
+/* ---- empty state ---- */
+.empty-state{border:1px dashed var(--border);border-radius:var(--radius);
+  padding:48px 30px;text-align:center;color:var(--text-muted);background:var(--surface)}
+.empty-state h3{font-size:18px;color:var(--text);margin-bottom:6px}
+
+/* =====================================================================
+   STAFF SHELL — RESPONSIVE (sidebar → slide-in drawer on <=1080px)
+   ===================================================================== */
+@media(max-width:1080px){
+  .app{grid-template-columns:1fr;grid-template-areas:'top' 'main'}
+  .app-navtoggle{display:inline-flex;align-items:center;justify-content:center;
+    width:44px;height:44px;flex:none;border:1px solid var(--border);border-radius:10px;
+    background:var(--surface);color:var(--text);font-size:18px;line-height:1;cursor:pointer;z-index:81}
+  .app-sidebar{position:fixed;top:0;left:0;bottom:0;width:min(84vw,300px);height:100dvh;
+    transform:translateX(-100%);transition:transform .22s cubic-bezier(.32,.72,.35,1);
+    box-shadow:16px 0 44px -24px rgba(0,0,0,.4);
+    padding:calc(18px + env(safe-area-inset-top)) 14px calc(20px + env(safe-area-inset-bottom))
+      calc(14px + env(safe-area-inset-left));z-index:80}
+  .app-sidebar.open{transform:none}
+  .app-scrim{position:fixed;inset:0;background:rgba(20,27,34,.42);z-index:70;animation:navfade .18s ease}
+  .app .wrap{padding:0 24px}
+  .app-topbar{padding:0 20px}
+  .app-search{display:none}
+}
+@media(min-width:1081px){.app-scrim{display:none}}
+@media(max-width:720px){
+  .app-main{padding:20px 0 44px}
+  .app .wrap{padding:0 16px}
+  .app-topbar{min-height:60px;padding:0 14px;gap:10px}
+  .page-head h1{font-size:24px}
+  .band2{grid-template-columns:1fr}
+  .kpi-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .app .kpi{padding:16px}
+  .app .kpi .v{font-size:26px}
+  .panel-h,.panel-b{padding:14px 16px}
+  .tile .fig{font-size:26px}
+  .app-topbar .chip,.app-topbar .pill{display:none}
+}
+@media(prefers-reduced-motion:reduce){.app-sidebar{transition:none}}
+
+/* ---- Team (pilot-staff-team): roster monogram + role tier pill ---- */
+.app .who{display:flex;align-items:center;gap:12px;min-width:0}
+.app .who .nm{font-weight:600;color:var(--text);line-height:1.25}
+.app .role{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;letter-spacing:.01em;
+  padding:3px 10px;border-radius:100px;border:1px solid var(--border);background:var(--surface);
+  color:var(--text);white-space:nowrap;text-transform:none;vertical-align:middle}
+.app .role::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--text-muted);flex:none}
+.app .role.t1::before{background:var(--gold)}
+.app .role.t2::before{background:var(--primary)}
+
+/* ---- Vendors (pilot-staff-vendors): directory table cells ---- */
+.app .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.app .tbl-wrap .tbl-vendors{min-width:820px}
+.app .co{display:flex;align-items:center;gap:12px;min-width:0}
+.app .co .nm{font-weight:600;color:var(--text);line-height:1.25}
+.app .co .id{display:block;font-size:11.5px;color:var(--text-muted);margin-top:2px}
+.app .ct-nm{font-weight:600;color:var(--text)}
+.app .ct-em{display:block;font-size:12.5px;color:var(--text-muted);margin-top:2px}
+.app .tchip{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--text);white-space:nowrap}
+.app .tchip .sw{width:9px;height:9px;border-radius:2px;flex:none;background:var(--text-muted)}
+.app .sw-title{background:var(--primary)}
+.app .sw-insurance{background:var(--gold)}
+.app .sw-appraisal{background:var(--primary-hover)}
+.app .sw-attorney{background:var(--text)}
+.app .sw-inspector{background:var(--gold-soft)}
+.app .tbl .actc{text-align:right;white-space:nowrap}
+.app .rowbtn{background:transparent;border:1px solid var(--border);border-radius:100px;font-family:var(--sans);
+  font-weight:600;font-size:12px;color:var(--text);padding:6px 13px;cursor:pointer;min-height:34px;margin-left:6px}
+.app .actc .rowbtn:first-child{margin-left:0}
+.app .rowbtn:hover{border-color:var(--primary);color:var(--primary-hover)}
+.app .rowbtn.danger:hover{border-color:var(--danger);color:var(--danger)}
+.app .editrow td{background:var(--surface-soft);padding:0 12px 12px}
+@media(max-width:820px){
+  .app .tbl-wrap{overflow:visible}
+  .app .tbl-vendors{min-width:0}
+  .app .tbl-vendors thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  .app .tbl-vendors,.app .tbl-vendors tbody,.app .tbl-vendors tr,.app .tbl-vendors td{display:block;width:100%}
+  .app .tbl-vendors tr{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:6px 4px 8px;margin-bottom:12px}
+  .app .tbl-vendors tr:hover td{background:transparent}
+  .app .tbl-vendors td{border-bottom:1px solid var(--surface-soft);padding:11px 16px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;text-align:right}
+  .app .tbl-vendors td:last-child{border-bottom:0}
+  .app .tbl-vendors td::before{content:attr(data-label);text-align:left;flex:none;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;font-weight:700;color:var(--text-muted);padding-top:3px}
+  .app .tbl-vendors td.actc{justify-content:flex-end}
+  .app .tbl-vendors td.actc::before{content:""}
+  .app .co{justify-content:flex-end}
+}
+
+/* ---- Archived (pilot-staff-archived): address subline in the deal cell ---- */
+.app .cell-deal .addr{font-size:12.5px;color:var(--text-muted);margin-top:3px}
+
+/* ---- Audit log (pilot-staff-audit): compliance note · legend · event rows ---- */
+.app .lock-note{display:inline-flex;align-items:center;gap:9px;margin-top:12px;font-size:12.5px;font-weight:600;
+  letter-spacing:.02em;color:var(--primary-hover);background:var(--primary-soft);border:1px solid var(--border);
+  border-radius:100px;padding:6px 13px}
+.app .lock-note .shield{width:13px;height:15px;flex:none;background:var(--primary);
+  clip-path:polygon(50% 0,100% 22%,100% 60%,50% 100%,0 60%,0 22%)}
+.app .audit-legend{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:12.5px;color:var(--text-muted)}
+.app .audit-legend .lg{display:inline-flex;align-items:center;gap:7px}
+.app .audit-legend .sw{width:10px;height:10px;border-radius:3px;flex:none}
+.app .audit-row{padding:14px 0;border-top:1px solid var(--surface-soft)}
+.app .audit-row:first-child{border-top:0}
+
+/* ---- New file (pilot-staff-new): two-column form + sticky summary rail ---- */
+.app .form-grid{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start}
+.app .form-col{display:flex;flex-direction:column;gap:20px;min-width:0}
+.app .grp-h{display:flex;align-items:baseline;gap:12px}
+.app .grp-h .n{font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;
+  color:var(--gold);font-variant-numeric:tabular-nums}
+.app .summary{position:sticky;top:88px}
+.app .sum-actions{display:flex;flex-direction:column;gap:10px;padding:18px 22px 22px}
+.app .sum-actions .btn{width:100%;justify-content:center}
+.app .sum-note{font-size:12px;color:var(--text-muted);text-align:center;padding:0 22px 20px;line-height:1.5}
+@media(max-width:1080px){.app .form-grid{grid-template-columns:1fr}.app .summary{position:static}}
+
+/* ---- Pipeline (pilot-staff-pipeline): CSS-grid "table" (rows are links) ---- */
+.app .q-head,.app .q-row{display:grid;
+  grid-template-columns:minmax(180px,2.4fr) minmax(110px,1fr) minmax(90px,.85fr) minmax(120px,1fr) minmax(110px,1fr) 160px;
+  gap:14px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--surface-soft)}
+.app .q-head{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);
+  font-weight:700;border-bottom:1px solid var(--border)}
+.app .q-head .num{text-align:right}
+.app .q-row{color:inherit;text-decoration:none;transition:background .12s}
+.app .q-row:hover{background:var(--surface-soft);text-decoration:none}
+.app .q-row:last-child{border-bottom:0}
+.app .q-prog{font-size:13.5px;color:var(--text);min-width:0}
+.app .q-amt{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.app .q-off,.app .q-stat{min-width:0}
+@media(max-width:960px){
+  .app .q-head{display:none}
+  .app .q-row{grid-template-columns:1fr;gap:6px;padding:14px}
+  .app .q-amt{text-align:left}
+}
+
+/* ---- Leads (pilot-staff-leads): source chip · message · payload ---- */
+.app .filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.app .src{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 10px;
+  border-radius:100px;border:1px solid var(--border);background:var(--surface-soft);color:var(--text-muted);white-space:nowrap}
+.app .src.ts{color:var(--primary-hover);background:var(--primary-soft);border-color:transparent}
+.app .src.app{color:var(--warning);background:var(--warning-soft);border-color:transparent}
+.app .src.contact{color:var(--text-muted);background:var(--surface-soft)}
+.app .lead-msg{font-size:12.5px;color:var(--text-muted);margin-top:4px;max-width:44ch;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.app .off.un{color:var(--text-muted)}
+.app .tbl td.rec{white-space:nowrap;color:var(--text-muted);font-size:12.5px}
+.app .tbl th.act,.app .tbl td.act{text-align:right;white-space:nowrap}
+.app .row-act{display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.app .lead-payload-row td{background:var(--surface-soft);padding:0}
+.app .lead-payload{margin:0;padding:14px 16px;font-size:12px;line-height:1.5;white-space:pre-wrap;
+  word-break:break-word;max-height:320px;overflow:auto;color:var(--text);
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* ---- My tasks (pilot-staff-tasks): file group header + task rows ---- */
+.app .lead-l{display:flex;align-items:center;gap:12px;min-width:0}
+.app .lead-file{display:block;min-width:0;color:inherit}
+.app .lead-file:hover{text-decoration:none}
+.app .lead-file .who,.app .who-wrap .who{display:block;font-weight:600;color:var(--text);line-height:1.25}
+.app .what{font-size:12.5px;color:var(--text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.app .task-meta{display:flex;align-items:center;gap:8px;flex:none}
+.app .grp-b{display:flex;flex-direction:column}
+.app .task{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 22px;
+  border-top:1px solid var(--surface-soft);color:inherit;text-decoration:none}
+.app .task:hover{background:var(--surface-soft);text-decoration:none}
+.app .who-wrap{display:flex;align-items:flex-start;gap:11px;min-width:0}
+.app .who-wrap .dot{margin-top:6px}
+.app .due{font-size:12px;font-weight:600;padding:3px 10px;border-radius:100px;border:1px solid var(--border);
+  color:var(--text-muted);white-space:nowrap}
+.app .due.over{color:var(--danger);border-color:transparent;background:var(--danger-soft)}
+.app .due.today{color:var(--warning);border-color:transparent;background:var(--warning-soft)}
+
+/* ---- reconciliation: small page-local classes referenced by screen JSX ---- */
+.app .q-table{display:block}                       /* pipeline grid "table" wrapper */
+.app .whenn{white-space:nowrap;font-variant-numeric:tabular-nums}  /* archived date cell */
+.app .files-c{white-space:nowrap}                  /* vendors file-count cell (num handles alignment) */

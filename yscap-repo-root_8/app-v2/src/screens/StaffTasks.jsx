@@ -4,6 +4,7 @@ import { api } from '../lib/api.js';
 
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
 const STATUS_LABEL = { outstanding: 'Outstanding', requested: 'Requested', received: 'In review', issue: 'Needs attention' };
+const initials = (...parts) => parts.filter(Boolean).map(s => String(s).trim()[0] || '').join('').slice(0, 2).toUpperCase() || '—';
 
 /* Everything on the signed-in staffer's plate across all their files — tasks
    assigned to them or role-routed to a file they own. Grouped by file. */
@@ -31,57 +32,91 @@ export default function StaffTasks() {
   }, [shown]);
 
   if (err) return <div role="alert" className="notice err">{err}</div>;
-  if (!rows) return <div className="panel muted">Loading your tasks…</div>;
+  if (!rows) return <div className="panel pad muted">Loading your tasks…</div>;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const dueToday = rows.filter(r => r.due_date === today).length;
+  const overdueCount = rows.filter(r => r.due_date && r.due_date < today).length;
+  const inReview = rows.filter(r => r.status === 'received').length;
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 16, alignItems: 'center' }}>
-        <h1>My tasks</h1>
-        <div className="spacer" />
-        <div className="row" style={{ gap: 6, alignItems: 'center' }}>
-          {['all', 'mine', 'overdue'].map(f => (
-            <button key={f} className={`btn ${filter === f ? 'primary' : 'ghost'}`} onClick={() => setFilter(f)}>
-              {f === 'all' ? 'All' : f === 'mine' ? 'Assigned to me' : 'Overdue'}
-            </button>
-          ))}
-          <select className="input" style={{ maxWidth: 150 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+      <div className="page-head">
+        <div>
+          <h1>My tasks</h1>
+          <div className="sub">Everything on your plate across every file you own — grouped by file.</div>
+        </div>
+        <div className="page-head-actions">
+          <div className="tabs">
+            {['all', 'mine', 'overdue'].map(f => (
+              <button key={f} className={`tab ${filter === f ? 'on' : ''}`} onClick={() => setFilter(f)}>
+                {f === 'all' ? 'All' : f === 'mine' ? 'Assigned to me' : 'Overdue'}
+              </button>
+            ))}
+          </div>
+          <select className="input" style={{ maxWidth: 160 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
             <option value="all">Any status</option>
             {Object.entries(STATUS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
         </div>
       </div>
-      {byFile.length === 0
-        ? <div className="panel muted">Nothing on your plate right now. 🎉</div>
-        : byFile.map(({ file, items }) => (
-          <div className="panel" key={file.application_id} style={{ marginBottom: 14 }}>
-            <div className="row" style={{ marginBottom: 8, alignItems: 'baseline' }}>
-              <Link to={`/internal/app/${file.application_id}`} style={{ fontWeight: 600 }}>
-                {file.first_name} {file.last_name} · {addrLine(file.property_address) || file.ys_loan_number || 'File'}
-              </Link>
-              <div className="spacer" />
-              {file.unread > 0 && <span className="chat-badge" title="Unread borrower messages">{file.unread}</span>}
-              <span className={`pill ${file.app_status}`}>{file.app_status}</span>
+
+      <div className="stack">
+        <div className="kpi-grid">
+          <div className="kpi"><div className="v">{dueToday}</div><div className="k">Due today</div><div className="d">Across your open files</div></div>
+          <div className="kpi"><div className="v">{overdueCount}</div><div className="k">Overdue</div><div className="d">Past their due date</div></div>
+          <div className="kpi"><div className="v">{inReview}</div><div className="k">Awaiting your review</div><div className="d">Conditions &amp; docs received</div></div>
+          <div className="kpi"><div className="v">{rows.length}</div><div className="k">Open tasks</div><div className="d">On your plate right now</div></div>
+        </div>
+
+        {byFile.length === 0
+          ? <div className="panel"><div className="panel-b"><div className="empty-state"><h3>Nothing on your plate right now 🎉</h3><p>New conditions and documents routed to your files will appear here.</p></div></div></div>
+          : byFile.map(({ file, items }) => (
+            <div className="panel" key={file.application_id}>
+              <div className="panel-h">
+                <div className="lead-l">
+                  <span className="mono">{initials(file.first_name, file.last_name)}</span>
+                  <Link to={`/internal/app/${file.application_id}`} className="lead-file">
+                    <div className="who">{file.first_name} {file.last_name}</div>
+                    <div className="what">{addrLine(file.property_address) || file.ys_loan_number || 'File'}</div>
+                  </Link>
+                </div>
+                <div className="task-meta">
+                  {file.unread > 0 && <span className="chat-badge" title="Unread borrower messages">{file.unread}</span>}
+                  <span className={`pill ${file.app_status}`}>{file.app_status}</span>
+                </div>
+              </div>
+              <div className="grp-b">
+                {items.map(it => {
+                  const overdue = it.due_date && it.due_date < today;
+                  const isToday = it.due_date === today;
+                  return (
+                    <Link to={`/internal/app/${it.application_id}`} className="task" key={it.id}>
+                      <div className="who-wrap">
+                        <span className={`dot ${it.status === 'received' ? 'outstanding' : it.status === 'issue' ? '' : 'outstanding'}`} style={it.status === 'issue' ? { background: 'var(--danger)' } : undefined} />
+                        <div>
+                          <div className="who">{it.label}</div>
+                          <div className="what">
+                            {STATUS_LABEL[it.status] || it.status}
+                            {it.role_scope && it.role_scope !== 'any' ? ` · ${it.role_scope}` : ''}
+                            {it.assigned_to_me ? ' · assigned to you' : ''}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="task-meta">
+                        {it.due_date && (
+                          <span className={`due ${overdue ? 'over' : isToday ? 'today' : ''}`}>
+                            {overdue ? 'Overdue' : isToday ? 'Today' : `Due ${it.due_date}`}
+                          </span>
+                        )}
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
             </div>
-            {items.map(it => {
-              const overdue = it.due_date && it.due_date < new Date().toISOString().slice(0, 10);
-              return (
-                <Link to={`/internal/app/${it.application_id}`} className="checkitem" key={it.id} style={{ textDecoration: 'none', color: 'inherit' }}>
-                  <span className={`dot ${it.status === 'received' ? 'outstanding' : it.status === 'issue' ? '' : 'outstanding'}`} style={it.status === 'issue' ? { background: 'var(--danger)' } : undefined} />
-                  <div style={{ flex: 1 }}>
-                    <div>{it.label}</div>
-                    <div className="muted small">
-                      {STATUS_LABEL[it.status] || it.status}
-                      {it.role_scope && it.role_scope !== 'any' ? ` · ${it.role_scope}` : ''}
-                      {it.assigned_to_me ? ' · assigned to you' : ''}
-                      {it.due_date ? ` · due ${it.due_date}` : ''}
-                    </div>
-                  </div>
-                  {overdue && <span className="pill" style={{ borderColor: 'var(--danger)', color: 'var(--danger)' }}>Overdue</span>}
-                </Link>
-              );
-            })}
-          </div>
-        ))}
+          ))}
+      </div>
     </>
   );
 }

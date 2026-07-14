@@ -224,9 +224,11 @@ export default function StaffConditionStudio() {
     const isLegacyScope = form.scope && form.scope !== 'application';
     return (
       <div>
-        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
-          <h1>{form.id ? 'Edit condition' : 'New condition'}</h1>
-          <button className="btn ghost small" onClick={() => setView('list')}>← Back to the library</button>
+        <div className="page-head">
+          <div><h1>{form.id ? 'Edit condition' : 'New condition'}</h1></div>
+          <div className="page-head-actions">
+            <button className="btn btn-ghost btn-sm" onClick={() => setView('list')}>← Back to the library</button>
+          </div>
         </div>
         {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} role="alert">{msg.text}</div>}
         {form.id && (
@@ -464,25 +466,24 @@ export default function StaffConditionStudio() {
   const active = defs.filter((d) => d.isActive);
   return (
     <div>
-      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 10 }}>
-        <h1>Condition Center</h1>
-        <div className="row" style={{ gap: 8 }}>
-          <button className="btn ghost small" disabled={busy} onClick={runAll} title="Re-run every automatic rule across all open files">Re-run all rules</button>
+      <div className="page-head">
+        <div>
+          <h1>Condition Center</h1>
+          <div className="sub">Every condition on the platform — built-in and custom — with the logic that places it on files. Edits never rewrite conditions already issued to files; they shape what goes out from now on.</div>
+        </div>
+        <div className="page-head-actions">
+          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={runAll} title="Re-run every automatic rule across all open files">Re-run all rules</button>
           <button className="btn primary" onClick={startNew}>+ New condition</button>
         </div>
       </div>
-      <p className="muted" style={{ marginTop: 2 }}>
-        Every condition on the platform — built-in and custom — with the logic that places it on files.
-        Edits never rewrite conditions already issued to files; they shape what goes out from now on.
-      </p>
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} role="alert">{msg.text}</div>}
 
-      <div className="kpi-row" style={{ marginBottom: 14 }}>
-        <div className="kpi"><div className="v">{active.length}</div><div className="l">Active conditions</div></div>
-        <div className="kpi"><div className="v">{active.filter((d) => d.autoApply === 'always').length}</div><div className="l">On every file</div></div>
-        <div className="kpi"><div className="v">{active.filter((d) => d.autoApply === 'rules').length}</div><div className="l">Rule-based</div></div>
-        <div className="kpi"><div className="v">{active.filter((d) => d.autoApply === 'manual').length}</div><div className="l">Manual library</div></div>
-        <div className="kpi"><div className="v">{active.filter((d) => !d.autoApply).length}</div><div className="l">Built-in workflow</div></div>
+      <div className="kpi-grid" style={{ marginBottom: 14 }}>
+        <div className="kpi"><div className="v">{active.length}</div><div className="k">Active conditions</div></div>
+        <div className="kpi"><div className="v">{active.filter((d) => d.autoApply === 'always').length}</div><div className="k">On every file</div></div>
+        <div className="kpi"><div className="v">{active.filter((d) => d.autoApply === 'rules').length}</div><div className="k">Rule-based</div></div>
+        <div className="kpi"><div className="v">{active.filter((d) => d.autoApply === 'manual').length}</div><div className="k">Manual library</div></div>
+        <div className="kpi"><div className="v">{active.filter((d) => !d.autoApply).length}</div><div className="k">Built-in workflow</div></div>
       </div>
 
       <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -504,7 +505,8 @@ export default function StaffConditionStudio() {
 
       {groups.map((g) => (
         <div className="panel" key={g.key} style={{ marginBottom: 14 }}>
-          <h3 style={{ marginTop: 0 }}>{g.title} <span className="muted small">({g.items.length})</span></h3>
+          <div className="panel-h"><h3>{g.title}</h3><span className="pill mut">{g.items.length}</span></div>
+          <div className="panel-b">
           {g.items.map((d) => (
             <div className="checkitem cc-defrow" key={d.id}>
               <span className={'dot ' + (d.isActive ? 'done' : 'outstanding')} aria-hidden />
@@ -534,9 +536,10 @@ export default function StaffConditionStudio() {
               </div>
             </div>
           ))}
+          </div>
         </div>
       ))}
-      {!groups.length && <div className="panel muted">Nothing matches your filters.</div>}
+      {!groups.length && <div className="empty-state"><h3>Nothing matches your filters</h3><p>Try clearing the search box or the type / visibility filters.</p></div>}
     </div>
   );
 }
