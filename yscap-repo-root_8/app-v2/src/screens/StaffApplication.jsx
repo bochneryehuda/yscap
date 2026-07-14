@@ -1982,6 +1982,11 @@ export default function StaffApplication() {
       {msg && <div className="notice ok">{msg}</div>}
       {err && app && <div role="alert" className="notice err">{err}</div>}
 
+      {/* Blueprint 2-column shell (pilot-staff-file): the existing section nav +
+          FileSections content stay exactly as they were on the main side; a NEW
+          presentation-only file-summary rail sits beside them. Wrapping markup
+          only — FileSections and its .file-* internals are untouched. */}
+      <div className="file-rail-grid">
       <FileSections sections={SECTIONS}>
 
       <Section id="sec-overview" title="File overview"
@@ -2312,6 +2317,35 @@ export default function StaffApplication() {
       </Section>
 
       </FileSections>
+
+      {/* RIGHT RAIL — presentation only. Reads ONLY variables already in scope
+          on this screen (app.*, procName, uwName, docs). No fetch, no
+          derivation, no handlers. Staff-only surface. */}
+      <aside className="file-rail" aria-label="File summary">
+        <div className="panel">
+          <h3 style={{ marginBottom: 8 }}>File summary</h3>
+          <div className="metrow"><span className="k">Loan number</span><span className="v">{app.ys_loan_number || 'Pending'}</span></div>
+          <div className="metrow"><span className="k">Status</span><span className="v">{app.status}</span></div>
+          <div className="metrow"><span className="k">Internal status</span><span className="v">{app.internal_status || '—'}</span></div>
+          <div className="metrow"><span className="k">Program</span><span className="v">{app.program || '—'}</span></div>
+          <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
+          <div className="metrow"><span className="k">Target closing</span><span className="v">{app.expected_closing ? String(app.expected_closing).slice(0, 10) : '—'}</span></div>
+        </div>
+
+        <div className="panel">
+          <h3 style={{ marginBottom: 8 }}>Team</h3>
+          <div className="metrow"><span className="k">Loan officer</span><span className="v">{app.loan_officer_name || 'Lead Capture'}</span></div>
+          <div className="metrow"><span className="k">Processor</span><span className="v">{procName || 'Unassigned'}</span></div>
+          <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName || 'Unassigned'}</span></div>
+        </div>
+
+        <div className="panel">
+          <h3 style={{ marginBottom: 8 }}>Documents</h3>
+          <div className="metrow"><span className="k">On file</span><span className="v">{docs.length}</span></div>
+        </div>
+      </aside>
+      </div>
+
       {previewDoc && (
         <DocPreview
           title={previewDoc.item_label || previewDoc.slot_label || 'Document preview'}
