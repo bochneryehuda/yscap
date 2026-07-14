@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -232,19 +232,65 @@ function LeadList({ leads, onOpen, actor }) {
 function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
   const [f, setF] = useState({ firstName: '', lastName: '', company: '', email: '', phone: '', leadSource: 'referral', referralPartner: '', program: '', loanAmount: '', officerId: '' });
   const [busy, setBusy] = useState(false);
+  const [autoState, setAutoState] = useState('');   // '', 'saving', 'saved'
   const set = (k, v) => setF(s => ({ ...s, [k]: v }));
+
+  // Build the field payload once, shared by the auto-save and the final submit.
+  const payload = (s) => ({
+    firstName: s.firstName, lastName: s.lastName, company: s.company, email: s.email, phone: s.phone,
+    leadSource: s.leadSource, referralPartner: s.referralPartner, program: s.program,
+    loanAmount: s.loanAmount === '' ? undefined : Number(s.loanAmount),
+    officerId: seesAll ? (s.officerId || undefined) : undefined,
+  });
+  const meaningful = (s) => !!(s.firstName.trim() || s.email.trim() || s.phone.trim());
+
+  // Draft AUTO-SAVE (owner-directed 2026-07-14). Anything typed is saved as you
+  // go so a partial lead is never lost — but WITHOUT the "new record per
+  // keystroke" bug: we CREATE the draft exactly ONCE, adopt its id, and PATCH the
+  // same row on every later change (the frozen create-once + adopt-server-id
+  // pattern). A single in-flight guard stops two fast debounces from both POSTing.
+  const draftId = useRef(null);
+  const creating = useRef(false);
+  const lastSaved = useRef('');
+  useEffect(() => {
+    if (busy) return undefined;                       // final submit in progress
+    if (!meaningful(f)) return undefined;             // nothing worth saving yet
+    const snapshot = JSON.stringify(f);
+    if (snapshot === lastSaved.current) return undefined;   // no real change
+    const t = setTimeout(async () => {
+      if (creating.current) return;                   // a create is mid-flight
+      try {
+        setAutoState('saving');
+        if (!draftId.current) {
+          creating.current = true;
+          const r = await api.staffCreateLead(payload(f));   // CREATE once
+          draftId.current = r.leadId;
+          creating.current = false;
+        } else {
+          await api.staffUpdateLead(draftId.current, payload(f));   // UPDATE the same row
+        }
+        lastSaved.current = snapshot;
+        setAutoState('saved');
+      } catch (_) { creating.current = false; setAutoState(''); /* a later change retries */ }
+    }, 800);   // debounce — never per-keystroke
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f, busy]);
+
   async function create() {
     if (busy) return;
-    if (!f.firstName.trim() && !f.email.trim() && !f.phone.trim()) return onErr('Enter at least a name, email, or phone.');
+    if (!meaningful(f)) return onErr('Enter at least a name, email, or phone.');
     setBusy(true);
     try {
-      const r = await api.staffCreateLead({
-        firstName: f.firstName, lastName: f.lastName, company: f.company, email: f.email, phone: f.phone,
-        leadSource: f.leadSource, referralPartner: f.referralPartner, program: f.program,
-        loanAmount: f.loanAmount === '' ? undefined : Number(f.loanAmount),
-        officerId: seesAll ? (f.officerId || undefined) : undefined,
-      });
-      onCreated(r.leadId);
+      // If the draft already exists (auto-saved), just finalize it with the
+      // latest values — do NOT create a second lead.
+      if (draftId.current) {
+        await api.staffUpdateLead(draftId.current, payload(f));
+        onCreated(draftId.current);
+      } else {
+        const r = await api.staffCreateLead(payload(f));
+        onCreated(r.leadId);
+      }
     } catch (e) { onErr(e.message || 'Could not add lead'); setBusy(false); }
   }
   return (
@@ -290,8 +336,11 @@ function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
             </label>
           )}
         </div>
-        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12, alignItems: 'center' }}>
+          <span className="muted small" aria-live="polite" style={{ marginRight: 'auto' }}>
+            {autoState === 'saving' ? 'Saving draft…' : autoState === 'saved' ? 'Draft saved ✓' : 'Autosaves as you type'}
+          </span>
+          <button className="btn btn-ghost" onClick={onClose}>Close</button>
           <button className="btn btn-gold" disabled={busy} onClick={create}>{busy ? 'Adding…' : 'Add lead'}</button>
         </div>
       </div>
