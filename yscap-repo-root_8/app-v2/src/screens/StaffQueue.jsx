@@ -10,17 +10,20 @@ const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processin
 const PILL = { new: 'info', in_review: 'info', processing: 'info', underwriting: 'warn', approved: 'ok', clear_to_close: 'ok', funded: 'ok', on_hold: 'alert', declined: 'crit', withdrawn: 'mut' };
 // Two-letter monogram from a name (officer avatar) — display formatter.
 const initials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() || '—';
-// Status GROUPS (owner-defined). The pipeline defaults to ACTIVE so closed/
-// cancelled files never clutter the working view. Active = anything in-progress
-// (incl. on hold); Closed = funded; Cancelled = withdrawn/declined.
+// Status GROUPS (owner-defined). The pipeline defaults to ACTIVE so paused/
+// closed/cancelled files never clutter the working view. Active = files being
+// worked; On hold = paused (owner-directed 2026-07-14 — held files fall off the
+// active view and every task surface, but stay reachable in their own bucket);
+// Closed = funded; Cancelled = withdrawn/declined.
 const STATUS_GROUPS = {
-  active: ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'on_hold'],
+  active: ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close'],
+  on_hold: ['on_hold'],
   closed: ['funded'],
   cancelled: ['declined', 'withdrawn'],
 };
 // The 'closed' group is funded-only, so it's labelled "Funded" — that's the view
 // owners look for. ('Cancelled' covers withdrawn/declined.)
-const GROUP_LABEL = { active: 'Active', closed: 'Funded', cancelled: 'Cancelled', all: 'All' };
+const GROUP_LABEL = { active: 'Active', on_hold: 'On hold', closed: 'Funded', cancelled: 'Cancelled', all: 'All' };
 const inGroup = (g, status) => g === 'all' || (STATUS_GROUPS[g] || []).includes(status);
 const bigMoney = (n) => n == null ? '$0' : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? '$' + Math.round(n / 1e3) + 'K' : '$' + n;
 
@@ -465,10 +468,10 @@ export default function StaffQueue() {
           {/* Primary lens: Active (default) / Closed / Cancelled / All — so the
               working pipeline never shows funded or withdrawn files unless asked. */}
           <div className="tabs">
-            {['active', 'closed', 'cancelled', 'all'].map(g => (
+            {['active', 'on_hold', 'closed', 'cancelled', 'all'].map(g => (
               <button key={g} className={`tab ${(groupF === g || (groupF === '' && g === 'all')) ? 'on' : ''}`}
                 onClick={() => setParam({ group: g, status: '' })}
-                title={g === 'active' ? 'In-progress files (default)' : g === 'closed' ? 'Funded files' : g === 'cancelled' ? 'Withdrawn / declined' : 'Every file'}>
+                title={g === 'active' ? 'In-progress files (default)' : g === 'on_hold' ? 'Paused files (kept out of the active view and task lists)' : g === 'closed' ? 'Funded files' : g === 'cancelled' ? 'Withdrawn / declined' : 'Every file'}>
                 {GROUP_LABEL[g]}{allFiles ? <span className="ct">{groupCount(g)}</span> : null}
               </button>
             ))}
