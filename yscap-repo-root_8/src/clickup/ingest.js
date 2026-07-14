@@ -336,9 +336,22 @@ async function findExistingApp(task, read, borrowerId) {
     if (s.rows[0]) {
       const linked = s.rows[0].clickup_pipeline_task_id;
       if (!linked || linked === task.id) return { id: s.rows[0].id, how: 'linked_stamp', detail: { stamp: read.portalFileId } };
-      return { ambiguous: true, detail: { stamp: read.portalFileId, boundToTask: linked } };
+      // The stamp resolves to an app that is already bound to a DIFFERENT, live
+      // task — so this stamp is a stale COPY, not an authoritative binding.
+      // Root cause of "a second file for the same borrower re-syncs forever but
+      // never lands" (owner-reported 2026-07-14, Yaniv Erez): our Portal File ID
+      // is a copyable ClickUp short_text field, and "duplicate a task to start a
+      // new file" is the documented workflow, so the duplicated task inherits the
+      // source app's UUID. Trusting it returned {ambiguous} on every reconcile
+      // pass → the file was never created. The clickup_pipeline_task_id binding —
+      // NOT the copyable stamp — is authoritative, so IGNORE this stamp and fall
+      // through to the identity match / create path keyed on THIS task's own id.
+      // (Once the new file is created and linked, the next outbound push rewrites
+      // this task's stamp to the correct UUID, so it self-heals. A genuine
+      // same-loan conflict is still caught below by the ys_loan_number global
+      // unique-key guard, which correctly stays → ambiguous.)
     }
-    // stale stamp (app deleted) -> fall through
+    // stale stamp (app deleted, or a copied stamp bound to another task) -> fall through
   }
   // ys_loan_number is a GLOBAL unique key — same number == same loan. Match it
   // across ALL borrowers (not just the resolved one) so a re-linked/re-keyed file
