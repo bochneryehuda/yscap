@@ -64,6 +64,30 @@ app.get('/api/health', async (req, res) => {
   }
   let storageInfo;
   try { storageInfo = require('./lib/storage').probe(); } catch (e) { storageInfo = { ok: false, error: e.message }; }
+  // Missing-conditions tripwire (owner-directed 2026-07-14, after the breach):
+  // a LIVE file sitting at zero checklist items, or an RTL file without its
+  // purchase-contract condition, must be impossible — if it ever happens again
+  // this surfaces it loudly instead of waiting for a human to notice.
+  let conditionsGuard;
+  if (dbStatus === 'up') {
+    try {
+      const g = await Promise.race([
+        db.query(
+          `SELECT
+             count(*) FILTER (WHERE NOT EXISTS
+               (SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id))::int AS zero_items,
+             count(*) FILTER (WHERE
+               (COALESCE(a.program,'')||' '||COALESCE(a.loan_type,'')) !~* 'dscr|rental|\\mrent\\M|long[- ]?term|30[- ]?year'
+               AND NOT EXISTS (SELECT 1 FROM checklist_items ci
+                                JOIN checklist_templates t ON t.id=ci.template_id
+                               WHERE ci.application_id=a.id AND t.code='rtl_p1_contract'))::int AS no_contract
+             FROM applications a
+            WHERE a.deleted_at IS NULL AND a.status NOT IN ('declined','withdrawn','cancelled','funded')`),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('guard timeout')), 2500)),
+      ]);
+      conditionsGuard = { filesZeroItems: g.rows[0].zero_items, rtlFilesMissingContract: g.rows[0].no_contract };
+    } catch (e) { conditionsGuard = { error: e.message }; }
+  }
   // Liveness: 200 unless the caller explicitly asked for a strict DB gate.
   const code = (strict && dbStatus !== 'up') ? 503 : 200;
   res.status(code).json({
@@ -87,6 +111,7 @@ app.get('/api/health', async (req, res) => {
     // SharePoint one-way sync status (config + last reconciliation pass; cheap —
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
+    ...(conditionsGuard ? { conditionsGuard } : {}),
     ts: Date.now(),
   });
 });

@@ -39,7 +39,17 @@ router.post('/', async (req, res) => {
     const b = await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship)
        VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
+       ON CONFLICT (email) DO UPDATE SET
+         -- A real submitted name heals a placeholder row; never a real one.
+         first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
+                          AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
+                         THEN EXCLUDED.first_name ELSE borrowers.first_name END,
+         last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')
+                         AND lower(btrim(EXCLUDED.last_name)) NOT IN ('','unknown')
+                        THEN EXCLUDED.last_name ELSE borrowers.last_name END,
+         cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
+         citizenship=COALESCE(borrowers.citizenship,EXCLUDED.citizenship),
+         updated_at=now() RETURNING id`,
       [p.firstName || p.b1First || 'Unknown', p.lastName || p.b1Last || 'Unknown', email,
        p.cellPhone || p.b1Phone || null, p.citizenship || p.b1Citizen || null]);
     const borrowerId = b.rows[0].id;
@@ -78,7 +88,10 @@ router.post('/', async (req, res) => {
     // create a DUPLICATE application.
     res.status(201).json({ ok: true, borrowerId, applicationId: appId, assigned: !!officerId });
     try {
-      await generateChecklist(appId, borrowerId, p.program || p.dealType, p.loanType || p.purpose);
+      // Invariant chokepoint (root fix 2026-07-14): derives program/loan
+      // type/assignment from the SAVED row — this caller used to pass no opts
+      // at all, so an intake assignment deal never got its assignment condition.
+      await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'intake' });
       // Create + link the ClickUp task in the correct folder the moment a file is
       // started from the public website form too (#92) — the same create-on-start
       // wired into the staff + borrower origination paths. Best-effort.

@@ -512,7 +512,11 @@ router.post('/applications', async (req, res) => {
     // Assignment purchases: capture the underlying price + fee (like the
     // borrower path) so leverage/pricing size off seller price + fee and the
     // assignment doc is generated.
-    const isAssignment = !!b.isAssignment && Number(b.underlyingContractPrice) > 0;
+    // The TICKED flag is the truth (root fix 2026-07-14): requiring the
+    // underlying price too silently stored is_assignment=false when staff
+    // ticked assignment without typing the price yet — so the assignment
+    // condition never generated. The price is its own field, filled when known.
+    const isAssignment = !!b.isAssignment;
     const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
     const assignFee = isAssignment ? (b.assignmentFee || null) : null;
     const purchasePrice = isAssignment
@@ -535,8 +539,15 @@ router.post('/applications', async (req, res) => {
        processorId, isAssignment, underlying, assignFee]);
     const appId = ins.rows[0].id;
 
-    try { await require('./borrower').generateChecklist(appId, borrowerId, b.program, b.loanType, { isAssignment }); }
-    catch (e) { console.error('[staff-origination] checklist failed:', db.describeError(e)); }
+    try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'staff_create' }); }
+    catch (e) {
+      // NEVER silent (root fix 2026-07-14): a staff file with no checklist was
+      // a 201 + a console line nobody saw. It still must not fail the create,
+      // but it now leaves an audit trail; the db/095 boot reconciler + the
+      // zero-item health tripwire catch anything that slips through.
+      console.error('[staff-origination] checklist failed:', db.describeError(e));
+      try { await audit(req, 'conditions_generation_failed', 'application', appId, { error: String(e.message || e).slice(0, 300) }); } catch (_) {}
+    }
     // Optionally add a CO-BORROWER right at creation (#98) — same identity-graph
     // linking as adding one later. A bad co-borrower payload must not fail the
     // whole file (it's already created); surface it as a soft warning instead.
@@ -681,8 +692,12 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
         `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
          ON CONFLICT (email) DO UPDATE SET
-           first_name=COALESCE(NULLIF(borrowers.first_name,''),EXCLUDED.first_name),
-           last_name=COALESCE(NULLIF(borrowers.last_name,''),EXCLUDED.last_name),
+           -- Staff-typed identity beats a PLACEHOLDER ('Unknown'/'Co-Borrower' are
+           -- our own not-null fillers, never data) — but never a real stored name.
+           first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown','co-borrower')
+                           THEN EXCLUDED.first_name ELSE borrowers.first_name END,
+           last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','co-borrower')
+                          THEN EXCLUDED.last_name ELSE borrowers.last_name END,
            cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
            date_of_birth=COALESCE(borrowers.date_of_birth,EXCLUDED.date_of_birth),
            ssn_encrypted=COALESCE(borrowers.ssn_encrypted,EXCLUDED.ssn_encrypted),

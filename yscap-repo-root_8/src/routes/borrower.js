@@ -276,7 +276,8 @@ router.post('/applications', async (req, res) => {
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
-  await generateChecklist(appId, me(req), b.program, b.loanType, { isAssignment: !!b.isAssignment });
+  // Invariant chokepoint (root fix 2026-07-14) — inputs derive from the saved row.
+  await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'borrower_create' });
   // Auto-apply the saved appraisal card to this new file (no tap) when the
   // borrower previously chose "save to next file". Best-effort; never blocks.
   try { await apprCard.autoApplySavedCardIfOptedIn(appId, me(req)); } catch (_) {}
@@ -2419,7 +2420,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
     } catch (e) { console.error('[apply] co-borrower invite failed:', db.describeError(e)); }
   }
 
-  await generateChecklist(appId, me(req), b.program, b.loanType, { isAssignment: !!b.isAssignment });
+  // Invariant chokepoint (root fix 2026-07-14) — inputs derive from the saved row.
+  await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'draft_submit' });
   // Auto-apply the saved appraisal card to this new file (no tap) when the
   // borrower previously chose "save to next file". Best-effort; never blocks.
   try { await apprCard.autoApplySavedCardIfOptedIn(appId, me(req)); } catch (_) {}

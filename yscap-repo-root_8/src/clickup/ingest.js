@@ -51,7 +51,17 @@ function buildMaskedSnapshot(read, extra = {}) {
     borrower: { ...b, ssn: ssn4 ? `***-**-${ssn4}` : undefined },
     llc: read.llc || {},
     unmapped: read.extra || {},
-    coBorrower: read.coBorrowerFlagYes || undefined,
+    // The co-borrower READ is preserved (masked) so audits can tell what
+    // ClickUp actually carried — previously only the boolean flag survived,
+    // which made "why is the co-borrower Unknown" undiagnosable after the fact.
+    coBorrower: read.coBorrower
+      ? {
+          first_name: read.coBorrower.first_name || null,
+          last_name: read.coBorrower.last_name || null,
+          email: read.coBorrower.email ? String(read.coBorrower.email).replace(/^(..).*(@.*)$/, '$1***$2') : null,
+          phone_last4: read.coBorrower.cell_phone ? String(read.coBorrower.cell_phone).replace(/\D/g, '').slice(-4) : null,
+        }
+      : (read.coBorrowerFlagYes || undefined),
     loanOfficerEmail: extra.loanOfficerEmail || read.loanOfficerEmail || null,
     processorEmail: extra.processorEmail || read.processorEmail || null,
     portalFileId: read.portalFileId || null,
@@ -78,6 +88,39 @@ async function recordContacts(borrowerId, borrower, taskId) {
  * borrowers. Anything weaker creates a DISTINCT profile (safe over-split; a human
  * can merge) rather than risk a wrong-merge that cross-contaminates PII/loans.
  */
+/* Heal-on-match (root fix, 2026-07-14): resolveBorrower used to be a pure
+   identity MATCHER — no resolution path ever wrote profile fields back, so a
+   row created before ClickUp carried the name stayed "Unknown Unknown"
+   FOREVER (re-syncs matched the row and discarded the now-present name).
+   Every resolution now fills NULL/empty/PLACEHOLDER fields from the inbound
+   read. Real values already stored (human-entered or earlier-synced) are
+   NEVER overwritten — this only ever replaces nothing-or-placeholder with
+   something. Best-effort: a heal hiccup never blocks ingest. */
+async function healBorrowerFields(borrowerId, b) {
+  if (!borrowerId || !b) return;
+  const nn = (v) => { const s = String(v == null ? '' : v).trim(); return s ? s : null; };
+  const name = (v) => (transforms.isPlaceholderName(v) ? null : nn(v));   // never heal WITH a placeholder
+  try {
+    await db.query(
+      `UPDATE borrowers SET
+          first_name      = CASE WHEN $2::text IS NOT NULL AND lower(btrim(coalesce(first_name,''))) IN ('','unknown','co-borrower') THEN $2 ELSE first_name END,
+          last_name       = CASE WHEN $3::text IS NOT NULL AND lower(btrim(coalesce(last_name ,''))) IN ('','unknown','co-borrower') THEN $3 ELSE last_name  END,
+          cell_phone      = COALESCE(cell_phone, $4),
+          date_of_birth   = COALESCE(date_of_birth, $5::date),
+          citizenship     = COALESCE(citizenship, $6),
+          fico            = COALESCE(fico, $7::int),
+          current_address = COALESCE(current_address, $8::jsonb),
+          marital_status  = COALESCE(marital_status, $9),
+          employment_type = COALESCE(employment_type, $10),
+          employer        = COALESCE(employer, $11),
+          updated_at      = now()
+        WHERE id=$1`,
+      [borrowerId, name(b.first_name), name(b.last_name), nn(b.cell_phone), nn(b.date_of_birth),
+       nn(b.citizenship), b.fico || null, b.current_address ? JSON.stringify(b.current_address) : null,
+       nn(b.marital_status), nn(b.employment_type), nn(b.employer)]);
+  } catch (e) { console.warn('[ingest] borrower heal skipped:', e.message); }
+}
+
 async function resolveBorrower(read, taskId) {
   const b = read.borrower || {};
   const ssnHash = identity.ssnHash(b.ssn, cfg.ssnMatchKey);
@@ -91,7 +134,11 @@ async function resolveBorrower(read, taskId) {
   // 1) strong: exact SSN-hash
   if (ssnHash) {
     const r = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 LIMIT 1`, [ssnHash]);
-    if (r.rows[0]) { await recordContacts(r.rows[0].id, b, taskId); return { borrowerId: r.rows[0].id, created: false }; }
+    if (r.rows[0]) {
+      await healBorrowerFields(r.rows[0].id, b);
+      await recordContacts(r.rows[0].id, b, taskId);
+      return { borrowerId: r.rows[0].id, created: false };
+    }
   }
   // 2) email exact — a strong-ish signal, but NOT proof of the same person on its
   //    own. Require corroboration by a second identity field before merging:
@@ -112,6 +159,7 @@ async function resolveBorrower(read, taskId) {
         { lastName: ex.last_name, phone: ex.cell_phone, dob: ex.date_of_birth });
       if (!ssnConflict && (ssnAgree || corroborated)) {
         if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, ex.id]);
+        await healBorrowerFields(ex.id, b);
         await recordContacts(ex.id, b, taskId);
         return { borrowerId: ex.id, created: false };
       }
@@ -139,6 +187,10 @@ async function resolveBorrower(read, taskId) {
      b.current_address ? JSON.stringify(b.current_address) : null, b.marital_status || null,
      b.employment_type || null, b.employer || null, ssnHash]);
   const borrowerId = ins.rows[0].id;
+  // The ON CONFLICT path returns a PRE-EXISTING row (same real email, or the
+  // same task's shadow email on a re-sync) — heal it too, or the very row this
+  // sync created with 'Unknown' can never pick the name up later.
+  await healBorrowerFields(borrowerId, b);
   if (b.ssn) { try { await db.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1 AND ssn_encrypted IS NULL`,
     [borrowerId, C.encryptSSN(String(b.ssn)), String(b.ssn).replace(/\D/g, '').slice(-4)]); } catch (_) {} }
   await recordContacts(borrowerId, b, taskId);
@@ -450,13 +502,14 @@ async function descopeFlipped(taskId) {
  */
 async function ensureRtlChecklist(appId) {
   try {
-    const has = await db.query(`SELECT 1 FROM checklist_items WHERE application_id=$1 LIMIT 1`, [appId]);
-    if (has.rows[0]) return;                      // already has a checklist — the boot backfill fills any gaps
-    const row = await db.query(
-      `SELECT borrower_id, program, loan_type FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
-    const a = row.rows[0];
-    if (!a) return;
-    await require('../routes/borrower').generateChecklist(appId, a.borrower_id, a.program, a.loan_type, {});
+    // ROOT FIX (2026-07-14): the old "has ANY checklist item → skip" guard was
+    // the missing-conditions breach. The vesting rewrite (2026-07-09) started
+    // inserting the rtl_p1_llc condition BEFORE this ran, so every ClickUp
+    // file with an LLC (or co-borrower) had "an item" and silently skipped the
+    // other ~39 — purchase contract, credit report, the whole internal
+    // checklist. ensureFileConditions is idempotent per (owner, template), so
+    // it is ALWAYS called: it only ever fills genuine gaps.
+    await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'clickup_ingest' });
   } catch (e) { console.error('[ingest] ensureRtlChecklist failed', appId, e.message); }
 }
 
@@ -491,6 +544,19 @@ async function ingestTask(task, options = {}, opts = {}) {
           const full = await client.getTask(pick.id);
           const subRead = mapper.readTaskFields(full, options);
           const sb = subRead.borrower || {};
+          // Name fallback (root fix 2026-07-14): on many boards the co-borrower's
+          // name lives only in the SUBTASK TITLE — the *Borrower Name custom
+          // field is empty — so the enrichment used to hand back {email/ssn}
+          // with no name and the profile materialized as "Unknown Unknown".
+          // Parse the title (minus any "Co-Borrower:"-style prefix) when the
+          // field is empty.
+          if (!sb.first_name && pick.name) {
+            const t = String(pick.name).replace(/^\s*(co.?borrower|borrower\s*2|second\s*borrower|guarantor)\s*[:—–-]?\s*/i, '').trim();
+            if (t && !transforms.isPlaceholderName(t)) {
+              const p = transforms.splitName(t);
+              if (p.first) { sb.first_name = p.first; sb.last_name = sb.last_name || p.last; }
+            }
+          }
           if (sb.first_name || sb.email || sb.ssn) {
             read.coBorrower = { ...(read.coBorrower || {}), ...sb };  // subtask wins (richer)
             coBorrowerTaskId = pick.id;
@@ -620,6 +686,11 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     property_taxes: a.property_taxes, property_insurance: a.property_insurance,
     property_hoa: a.property_hoa, rental_income: a.rental_income,
     prepayment_penalty: a.prepayment_penalty,
+    // Assignment data was READ by the mapper but never persisted — so a
+    // ClickUp assignment deal never set is_assignment and the assignment
+    // condition never generated (root fix 2026-07-14).
+    is_assignment: a.is_assignment, underlying_contract_price: a.underlying_contract_price,
+    assignment_fee: a.assignment_fee,
     title_company: a.title_company, title_company_contact: a.title_company_contact,
     insurance_company: a.insurance_company, insurance_company_contact: a.insurance_company_contact,
     first_lien: a.first_lien, second_lien: a.second_lien,
@@ -663,11 +734,27 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
               deleted_at = CASE WHEN sync_state='descoped' THEN NULL ELSE deleted_at END,
               clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
       [targetId, ...vals, task.id]);
-    // Co-borrower: fill ONLY when the file has none yet — never clobber an
-    // existing link (a staff-set/corrected co-borrower stays put). The subtask id
-    // is recorded alongside (also fill-only) for the future outbound sync.
+    // Co-borrower: fill when the file has none yet — never clobber a link a
+    // human set to a REAL person. ONE exception (root fix 2026-07-14): when the
+    // current link points at a SYNC-CREATED PLACEHOLDER profile (shadow email,
+    // placeholder name, clickup origin, no login), the corrected profile the
+    // hardened resolver split off was previously stranded forever in the dedup
+    // queue while the file kept showing "Unknown Unknown" — that placeholder
+    // link may be re-pointed. The subtask id is recorded alongside (fill-only).
     if (coBorrowerId) {
-      try { await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1 AND co_borrower_id IS NULL`, [targetId, coBorrowerId]); } catch (_) {}
+      try {
+        await db.query(
+          `UPDATE applications a SET co_borrower_id=$2, updated_at=now()
+            WHERE a.id=$1 AND a.co_borrower_id IS DISTINCT FROM $2
+              AND (a.co_borrower_id IS NULL OR EXISTS (
+                    SELECT 1 FROM borrowers cb
+                     WHERE cb.id=a.co_borrower_id
+                       AND cb.origin='clickup_backfill'
+                       AND cb.email LIKE 'noemail+%@clickup.local'
+                       AND lower(btrim(coalesce(cb.first_name,''))) IN ('','unknown','co-borrower')
+                       AND NOT EXISTS (SELECT 1 FROM borrower_auth ba WHERE ba.borrower_id=cb.id)))`,
+          [targetId, coBorrowerId]);
+      } catch (_) {}
     }
     if (coBorrowerTaskId) {
       try { await db.query(`UPDATE applications SET co_borrower_task_id=COALESCE(co_borrower_task_id,$2), updated_at=now() WHERE id=$1`, [targetId, coBorrowerTaskId]); } catch (_) {}
