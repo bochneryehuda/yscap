@@ -62,16 +62,26 @@ SELECT a.id, a.processor_id, 'processor', true, NULL
 CREATE OR REPLACE FUNCTION sync_primary_assignee() RETURNS trigger AS $$
 BEGIN
   IF (TG_OP = 'INSERT') OR (NEW.loan_officer_id IS DISTINCT FROM OLD.loan_officer_id) THEN
+    -- retire the current active primary if it is someone else
     UPDATE application_assignees SET is_primary=false, removed_at=now()
       WHERE application_id=NEW.id AND role='loan_officer' AND is_primary=true AND removed_at IS NULL
         AND staff_id IS DISTINCT FROM NEW.loan_officer_id;
     IF NEW.loan_officer_id IS NOT NULL THEN
-      UPDATE application_assignees SET is_primary=true, removed_at=NULL
-        WHERE application_id=NEW.id AND role='loan_officer' AND staff_id=NEW.loan_officer_id;
-      INSERT INTO application_assignees (application_id, staff_id, role, is_primary)
-      SELECT NEW.id, NEW.loan_officer_id, 'loan_officer', true
-       WHERE NOT EXISTS (SELECT 1 FROM application_assignees
-                          WHERE application_id=NEW.id AND role='loan_officer' AND staff_id=NEW.loan_officer_id);
+      -- 1) promote the new primary's ACTIVE row (assistant or already-primary) if any
+      UPDATE application_assignees SET is_primary=true
+        WHERE application_id=NEW.id AND role='loan_officer' AND staff_id=NEW.loan_officer_id AND removed_at IS NULL;
+      IF NOT FOUND THEN
+        -- 2) else reactivate ONE previously-removed row (the newest) as primary
+        UPDATE application_assignees SET is_primary=true, removed_at=NULL
+          WHERE ctid = (SELECT ctid FROM application_assignees
+                         WHERE application_id=NEW.id AND role='loan_officer' AND staff_id=NEW.loan_officer_id
+                         ORDER BY added_at DESC LIMIT 1);
+        IF NOT FOUND THEN
+          -- 3) else there is no row at all: insert a fresh primary
+          INSERT INTO application_assignees (application_id, staff_id, role, is_primary)
+          VALUES (NEW.id, NEW.loan_officer_id, 'loan_officer', true);
+        END IF;
+      END IF;
     END IF;
   END IF;
   IF (TG_OP = 'INSERT') OR (NEW.processor_id IS DISTINCT FROM OLD.processor_id) THEN
@@ -79,12 +89,18 @@ BEGIN
       WHERE application_id=NEW.id AND role='processor' AND is_primary=true AND removed_at IS NULL
         AND staff_id IS DISTINCT FROM NEW.processor_id;
     IF NEW.processor_id IS NOT NULL THEN
-      UPDATE application_assignees SET is_primary=true, removed_at=NULL
-        WHERE application_id=NEW.id AND role='processor' AND staff_id=NEW.processor_id;
-      INSERT INTO application_assignees (application_id, staff_id, role, is_primary)
-      SELECT NEW.id, NEW.processor_id, 'processor', true
-       WHERE NOT EXISTS (SELECT 1 FROM application_assignees
-                          WHERE application_id=NEW.id AND role='processor' AND staff_id=NEW.processor_id);
+      UPDATE application_assignees SET is_primary=true
+        WHERE application_id=NEW.id AND role='processor' AND staff_id=NEW.processor_id AND removed_at IS NULL;
+      IF NOT FOUND THEN
+        UPDATE application_assignees SET is_primary=true, removed_at=NULL
+          WHERE ctid = (SELECT ctid FROM application_assignees
+                         WHERE application_id=NEW.id AND role='processor' AND staff_id=NEW.processor_id
+                         ORDER BY added_at DESC LIMIT 1);
+        IF NOT FOUND THEN
+          INSERT INTO application_assignees (application_id, staff_id, role, is_primary)
+          VALUES (NEW.id, NEW.processor_id, 'processor', true);
+        END IF;
+      END IF;
     END IF;
   END IF;
   RETURN NEW;
