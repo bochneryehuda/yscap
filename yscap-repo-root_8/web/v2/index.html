@@ -69,7 +69,10 @@
 .m-sechead .meta{max-width:34ch;color:var(--mk-inksoft);font-size:16px;line-height:1.55;}
 
 /* ---- HERO ---- */
-.m-hero{background:var(--mk-paper);padding:70px 0 44px;overflow:hidden;}
+/* Top padding clears the FIXED nav (~84px) so the hero's first row — the
+   "5.0 on Google" chip — sits fully below the header instead of tucking under
+   it and getting clipped (owner-reported 2026-07-14). */
+.m-hero{background:var(--mk-paper);padding:124px 0 48px;overflow:hidden;}
 .m-hero .hero-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:60px;align-items:center;}
 .m-hero .kicker{display:inline-flex;align-items:center;gap:14px;margin-bottom:22px;flex-wrap:wrap;}
 .m-hero .chip{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;background:var(--mk-card);border:1px solid var(--mk-line);border-radius:100px;padding:7px 14px;color:var(--mk-ink);text-decoration:none;}
