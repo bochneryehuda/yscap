@@ -1908,6 +1908,14 @@ router.post('/documents', async (req, res) => {
           applicationId: b.applicationId,
           link: `/internal/app/${b.applicationId}`,
           ctaLabel: 'Review the document',
+          // Attach the document itself so the loan team can review it straight
+          // from the email (owner-directed). Always LIST the file; attach the
+          // bytes only when small enough for the mail providers (Graph caps inline
+          // attachments ~3 MB) — larger files are still one tap away in the portal.
+          files: [b.filename],
+          attachments: buf.length <= 3 * 1024 * 1024
+            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: b.dataBase64 }]
+            : undefined,
         };
         const targets = new Set([row.loan_officer_id, row.processor_id].filter(Boolean));
         for (const sid of targets) await notify.notifyStaff(sid, opts);
