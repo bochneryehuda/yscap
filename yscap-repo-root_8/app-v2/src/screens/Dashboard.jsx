@@ -119,7 +119,7 @@ export default function Dashboard() {
     <Link to={`/app/${a.id}`} key={a.id} className="panel" style={{ textDecoration: 'none', color: 'inherit' }}>
       <div className="row" style={{ marginBottom: 10 }}>
         <span className={`pill ${a.status}`}>{String(a.status || 'new').replace(/_/g, ' ')}</span>
-        {unread[a.id] && <span className="chat-badge" style={{ marginLeft: 8 }} title="New messages">💬 {unread[a.id]}</span>}
+        {unread[a.id] && <span className="chat-badge" style={{ marginLeft: 8 }} title="New messages">{unread[a.id]}</span>}
         <div className="spacer" />
         <span className="muted small">{a.ys_loan_number || 'Pending #'}</span>
       </div>
@@ -141,7 +141,7 @@ export default function Dashboard() {
       {a.status === 'funded' && (
         <button className="btn primary" style={{ marginTop: 12, width: '100%' }}
           disabled={drawBusy === a.id} onClick={e => requestDraw(e, a.id)}>
-          {drawBusy === a.id ? 'Sending…' : '💰 Request a draw'}
+          {drawBusy === a.id ? 'Sending…' : 'Request a draw'}
         </button>
       )}
     </Link>
@@ -169,7 +169,7 @@ export default function Dashboard() {
             <div className="next-item ok"><span className="ni-l">✓ You're all caught up — nothing outstanding right now.</span></div>
           )}
           {unreadTotal > 0 && (
-            <div className="next-item"><span className="ni-n">💬 {unreadTotal}</span><span className="ni-l">new message{unreadTotal === 1 ? '' : 's'} from your loan team</span></div>
+            <div className="next-item"><span className="ni-n">{unreadTotal}</span><span className="ni-l">new message{unreadTotal === 1 ? '' : 's'} from your loan team</span></div>
           )}
           <div className="next-item next-clickable" role="button" tabIndex={0}
             onClick={scrollToLoans}

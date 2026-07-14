@@ -119,7 +119,7 @@ export default function StaffChat() {
           {totalUnread > 0 && <span className="chat-badge" style={{ marginLeft: 8 }}>{totalUnread}</span>}
           <div className="spacer" />
           <span style={{ position: 'relative' }}>
-            <button className="btn ghost small" title="Set your status" onClick={() => setStatusOpen(!statusOpen)}>☺ Status</button>
+            <button className="btn ghost small" title="Set your status" onClick={() => setStatusOpen(!statusOpen)}>Status</button>
             {statusOpen && <StatusPicker onClose={() => setStatusOpen(false)} />}
           </span>
         </div>
@@ -135,7 +135,7 @@ export default function StaffChat() {
           {rows == null && <p className="muted small" style={{ padding: 12 }}>Loading conversations…</p>}
           {rows != null && groups.length === 0 && (
             <p className="muted small" style={{ padding: 12 }}>
-              {filter === 'unread' ? "You're all caught up 🎉" : 'No conversations match.'}
+              {filter === 'unread' ? "You're all caught up." : 'No conversations match.'}
             </p>
           )}
           {groups.map(g => (
@@ -152,7 +152,7 @@ export default function StaffChat() {
                 return (
                   <button key={c.id} className={`cv-item ${c.id === openId ? 'active' : ''} ${c.unread ? 'unread' : ''}`}
                     onClick={() => openChat(c.id)}>
-                    <span className="cv-item-emoji">{c.emoji || '💬'}</span>
+                    <span className="cv-item-ava" aria-hidden="true">{c.borrower_visible ? initials(c.name) : '#'}</span>
                     <div className="cv-item-main">
                       <div className="cv-item-top">
                         <span className="cv-item-name">{c.name}</span>
@@ -168,10 +168,10 @@ export default function StaffChat() {
                         <span className="muted small">{ago(c.last_at)}</span>
                       </div>
                       <div className="cv-item-prev">
-                        {c.borrower_visible && <span className="cv-eye" title="Visible to the borrower">👁</span>}
+                        {c.borrower_visible && <span className="cv-eye" title="Visible to the borrower" aria-hidden="true" />}
                         <span className={p.draft ? 'cv-draft' : p.system ? 'muted' : ''} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.text}</span>
                         <div className="spacer" />
-                        {muted && <span title="Muted">🔕</span>}
+                        {muted && <span className="cv-muted-tag" title="Muted">Muted</span>}
                         {c.unread > 0 && <span className={`chat-badge ${c.borrower_visible ? '' : 'gold'}`}>{c.unread}</span>}
                       </div>
                     </div>
@@ -202,7 +202,7 @@ export default function StaffChat() {
           </>
         ) : (
           <div className="cv-empty">
-            <div style={{ fontSize: 40 }}>💬</div>
+            <div className="cv-empty-mark" aria-hidden="true" />
             <h3>Pick a conversation</h3>
             <p className="muted small">Every loan file has a borrower chat, a Loan Team chat, and an Officer ↔ Processor chat —
               plus any group chats you create. Unread rises to the top.</p>
