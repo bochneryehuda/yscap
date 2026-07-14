@@ -246,32 +246,39 @@ function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
 
   // Draft AUTO-SAVE (owner-directed 2026-07-14). Anything typed is saved as you
   // go so a partial lead is never lost — but WITHOUT the "new record per
-  // keystroke" bug: we CREATE the draft exactly ONCE, adopt its id, and PATCH the
-  // same row on every later change (the frozen create-once + adopt-server-id
-  // pattern). A single in-flight guard stops two fast debounces from both POSTing.
+  // keystroke" bug: the draft is CREATED exactly ONCE and every later change
+  // (and the final "Add lead" click) PATCHes that SAME row.
+  //
+  // The create-once guarantee is a single shared PROMISE: `ensureDraft()` starts
+  // the POST at most once and hands the SAME promise to every caller — the
+  // debounced auto-save AND the "Add lead" button. So even if the user clicks
+  // "Add lead" while the auto-save's create is still in flight, both await the
+  // one POST and then PATCH the one row — a second lead can never be created.
   const draftId = useRef(null);
-  const creating = useRef(false);
+  const draftPromise = useRef(null);
   const lastSaved = useRef('');
+  const ensureDraft = () => {
+    if (draftId.current) return Promise.resolve(draftId.current);
+    if (!draftPromise.current) {
+      draftPromise.current = api.staffCreateLead(payload(f))
+        .then((r) => { draftId.current = r.leadId; return r.leadId; })
+        .catch((e) => { draftPromise.current = null; throw e; });   // allow a retry on failure
+    }
+    return draftPromise.current;
+  };
   useEffect(() => {
     if (busy) return undefined;                       // final submit in progress
     if (!meaningful(f)) return undefined;             // nothing worth saving yet
     const snapshot = JSON.stringify(f);
     if (snapshot === lastSaved.current) return undefined;   // no real change
     const t = setTimeout(async () => {
-      if (creating.current) return;                   // a create is mid-flight
       try {
         setAutoState('saving');
-        if (!draftId.current) {
-          creating.current = true;
-          const r = await api.staffCreateLead(payload(f));   // CREATE once
-          draftId.current = r.leadId;
-          creating.current = false;
-        } else {
-          await api.staffUpdateLead(draftId.current, payload(f));   // UPDATE the same row
-        }
+        const id = await ensureDraft();               // create-once (shared promise)
+        await api.staffUpdateLead(id, payload(f));     // sync the latest values to the one row
         lastSaved.current = snapshot;
         setAutoState('saved');
-      } catch (_) { creating.current = false; setAutoState(''); /* a later change retries */ }
+      } catch (_) { setAutoState(''); /* a later change retries */ }
     }, 800);   // debounce — never per-keystroke
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -282,15 +289,11 @@ function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
     if (!meaningful(f)) return onErr('Enter at least a name, email, or phone.');
     setBusy(true);
     try {
-      // If the draft already exists (auto-saved), just finalize it with the
-      // latest values — do NOT create a second lead.
-      if (draftId.current) {
-        await api.staffUpdateLead(draftId.current, payload(f));
-        onCreated(draftId.current);
-      } else {
-        const r = await api.staffCreateLead(payload(f));
-        onCreated(r.leadId);
-      }
+      // Finalize the ONE draft (creating it if the auto-save hasn't yet, or
+      // joining its in-flight create) — never a second lead.
+      const id = await ensureDraft();
+      await api.staffUpdateLead(id, payload(f));
+      onCreated(id);
     } catch (e) { onErr(e.message || 'Could not add lead'); setBusy(false); }
   }
   return (
