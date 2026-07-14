@@ -155,7 +155,10 @@ export const api = {
 
   verifyEmail:        (b) => req('POST', '/auth/borrower/verify', b),          // {token} or {email,code}
   resendVerification: (email) => req('POST', '/auth/borrower/resend-verification', { email }),
-  forgotPassword:     (email) => req('POST', '/auth/borrower/forgot', { email }),
+  // scope ('borrower' | 'staff') tells the shared endpoint which login the user
+  // clicked "Forgot password?" on, so a dual account (staff who also borrowed)
+  // gets ONE reset email routed to the right login instead of two.
+  forgotPassword:     (email, scope) => req('POST', '/auth/borrower/forgot', scope ? { email, scope } : { email }),
   resetPassword:      (token, password) => req('POST', '/auth/borrower/reset', { token, password }),
   acceptInvite:       (b) => req('POST', '/auth/accept', b),                   // {token,password,fullName?}
 

@@ -295,33 +295,50 @@ router.post('/borrower/resend-verification', async (req, res) => {
 
 // Request a password reset. Always 200 (no account enumeration).
 router.post('/borrower/forgot', async (req, res) => {
-  const { email } = req.body || {};
+  const { email, scope } = req.body || {};
   try {
     if (email) {
-      // Borrower self-service reset (needs an existing portal account).
-      const r = await db.query(
+      // The borrower login AND the staff console share this ONE "Forgot
+      // password?" endpoint. An email can belong to BOTH a borrower portal
+      // account and a staff account (a team member who also took a loan) — and
+      // the old code fired both a borrower reset (/reset) AND a staff reset
+      // (/accept) with no else between them, so that person received TWO
+      // different reset emails. That is confusing and wrong: a reset request
+      // must produce exactly ONE email.
+      //
+      // Resolve both possible identities, then pick a single target:
+      //   • `scope` ('borrower' | 'staff') — the originating login page tells us
+      //     which login the user clicked "Forgot password?" on, so a dual account
+      //     is routed to the login they actually meant;
+      //   • without a usable scope (older cached client, or scoped to an account
+      //     type that doesn't exist) prefer the STAFF account when one exists — a
+      //     dual account is always a staff member who also borrowed, and the
+      //     console is their primary work login. A pure borrower (no staff
+      //     account) still gets the borrower reset exactly as before.
+      const br = await db.query(
         `SELECT b.id, b.first_name FROM borrowers b
            JOIN borrower_auth ba ON ba.borrower_id=b.id WHERE b.email=$1 LIMIT 1`, [email]);
-      const b = r.rows[0];
-      if (b) {
+      const b = br.rows[0];
+      const s = await db.query(
+        `SELECT id, email, full_name, role FROM staff_users
+          WHERE lower(email)=lower($1) AND is_active=true LIMIT 1`, [email]);
+      const su = s.rows[0];
+
+      let target = null; // 'borrower' | 'staff' — send at most one
+      if (scope === 'borrower' && b) target = 'borrower';
+      else if (scope === 'staff' && su) target = 'staff';
+      else if (su) target = 'staff';
+      else if (b) target = 'borrower';
+
+      if (target === 'borrower') {
         const { token } = await issueEmailToken({
           borrowerId: b.id, email, kind: 'reset', ttlMin: 60, withToken: true });
         await mail.send('passwordReset', email, {
           firstName: b.first_name,
           resetUrl: mail.link('/reset?token=' + token), minutes: 60 });
-      }
-      // STAFF self-service reset. The staff console login AND the borrower login
-      // share this one "Forgot password?" endpoint, but it previously checked
-      // borrowers ONLY — so a staffer who entered their own email got NOTHING
-      // (no email was ever sent; delivery was fine, the send never happened).
-      // Now, when the email belongs to an active staff user, issue a console-
-      // reset link too. Mirrors admin.js /staff/:id/reset-email exactly: an
-      // invite_tokens 'staff' row + the staffPasswordReset email -> /accept.
-      const s = await db.query(
-        `SELECT id, email, full_name, role FROM staff_users
-          WHERE lower(email)=lower($1) AND is_active=true LIMIT 1`, [email]);
-      const su = s.rows[0];
-      if (su) {
+      } else if (target === 'staff') {
+        // Mirrors admin.js /staff/:id/reset-email: an invite_tokens 'staff' row
+        // + the staffPasswordReset email -> /accept.
         const stoken = C.randomToken(24);
         await db.query(
           `INSERT INTO invite_tokens (token_hash,kind,email,role,created_by,expires_at)
