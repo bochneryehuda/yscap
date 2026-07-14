@@ -4,6 +4,7 @@ import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { Brand } from './Layout.jsx';
+import ChatBubble from './ChatBubble.jsx';
 
 const ROLE_LABEL = {
   super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter',
@@ -139,6 +140,7 @@ export default function StaffLayout({ children }) {
           YS Capital Group · NMLS #2609746 · Internal console · Business-purpose lending only.
         </footer>
       </main>
+      <ChatBubble mode="staff" unread={unread} />
     </div>
   );
 }

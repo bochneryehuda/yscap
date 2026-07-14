@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import ChatBubble from './ChatBubble.jsx';
 
 export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'PILOT by YS Capital' }) {
   return (
@@ -79,6 +80,7 @@ export default function Layout({ children }) {
       <footer className="wrap small muted" style={{ padding: '20px', borderTop: '1px solid var(--line)' }}>
         YS Capital Group · NMLS #2609746 · Brooklyn, NY · Business-purpose lending only.
       </footer>
+      <ChatBubble mode="borrower" />
     </div>
   );
 }
