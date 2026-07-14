@@ -95,11 +95,14 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
 router.get('/profile', async (req, res) => {
   const r = await db.query(
     `SELECT id,first_name,last_name,email,cell_phone,date_of_birth,ssn_last4,fico,
-            current_address,mailing_address,years_at_residence,months_at_residence,
+            current_address,mailing_address,years_at_residence,months_at_residence,residence_since,
             housing_status,housing_payment,citizenship,marital_status,
             photo_id_document_id,contact_type,tier
      FROM borrowers WHERE id=$1`, [me(req)]);
-  res.json(r.rows[0] || {});
+  // Live residence duration from the anchored move-in date (owner-directed
+  // 2026-07-14) — the stored years/months are recomputed to "now" so a profile
+  // opened months after the count was entered shows the real elapsed time.
+  res.json(require('../lib/residence').withLiveResidence(r.rows[0]) || {});
 });
 
 // Update the borrower's canonical profile. The client sends camelCase keys and
@@ -122,6 +125,14 @@ router.put('/profile', async (req, res) => {
   if (b.maritalStatus !== undefined) fields.marital_status = clean(b.maritalStatus);
   if (b.yearsAtResidence !== undefined) fields.years_at_residence = (b.yearsAtResidence === '' || b.yearsAtResidence == null) ? null : Number(b.yearsAtResidence);
   if (b.monthsAtResidence !== undefined) fields.months_at_residence = (b.monthsAtResidence === '' || b.monthsAtResidence == null) ? null : parseInt(b.monthsAtResidence, 10);
+  // Anchor the move-in DATE whenever a fresh count is entered (owner-directed
+  // 2026-07-14): the count is a snapshot as of NOW; storing residence_since lets
+  // every later read compute the live duration without the borrower re-typing.
+  if (b.yearsAtResidence !== undefined || b.monthsAtResidence !== undefined) {
+    const y = fields.years_at_residence != null ? fields.years_at_residence : null;
+    const m = fields.months_at_residence != null ? fields.months_at_residence : null;
+    fields.residence_since = (y || m) ? require('../lib/residence').moveInFrom(y, m) : null;
+  }
   if (b.housingStatus !== undefined) fields.housing_status = clean(b.housingStatus);
   if (b.housingPayment !== undefined) fields.housing_payment = (b.housingPayment === '' || b.housingPayment == null) ? null : Number(String(b.housingPayment).replace(/[^0-9.]/g, '')) || null;
   if (b.currentAddress !== undefined) fields.current_address = b.currentAddress ? JSON.stringify(b.currentAddress) : null;

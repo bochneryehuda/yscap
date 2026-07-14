@@ -2225,7 +2225,7 @@ router.get('/borrowers/:id', async (req, res) => {
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.date_of_birth,
               b.ssn_last4, b.fico, b.citizenship, b.marital_status, b.dependents_count, b.tier,
-              b.current_address, b.mailing_address, b.years_at_residence, b.months_at_residence,
+              b.current_address, b.mailing_address, b.years_at_residence, b.months_at_residence, b.residence_since,
               b.housing_status, b.housing_payment, b.contact_type, b.primary_officer_id,
               b.photo_id_document_id, b.created_at, b.last_seen_at,
               (SELECT last_login_at FROM borrower_auth WHERE borrower_id=b.id) AS last_login_at,
@@ -2236,7 +2236,8 @@ router.get('/borrowers/:id', async (req, res) => {
         WHERE b.id=$1`,
       [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-    res.json(r.rows[0]);
+    // Live residence duration from the anchored move-in date (owner-directed 2026-07-14).
+    res.json(require('../lib/residence').withLiveResidence(r.rows[0]));
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

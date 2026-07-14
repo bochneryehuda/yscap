@@ -537,21 +537,25 @@ async function ingestTask(task, options = {}, opts = {}) {
       const subs = (withSubs && withSubs.subtasks) || [];
       if (subs.length) {
         const coName = read.coBorrower ? `${read.coBorrower.first_name || ''} ${read.coBorrower.last_name || ''}`.trim().toLowerCase() : '';
-        const pick = (coName && subs.find((s) => String(s.name || '').toLowerCase().includes(coName)))
-          || subs.find((s) => /co.?borrow|borrower\s*2|second\s*borrow|guarantor/i.test(String(s.name || '')))
-          || (subs.length === 1 ? subs[0] : null);
+        const byName = coName && subs.find((s) => String(s.name || '').toLowerCase().includes(coName));
+        const byLabel = subs.find((s) => /co.?borrow|borrower\s*2|second\s*borrow|guarantor/i.test(String(s.name || '')));
+        // A lone subtask MIGHT be the co-borrower, but its title is unreliable
+        // (could be "Order appraisal") — usable for field enrichment, but NEVER
+        // as a NAME source (finding #2, 2026-07-14). Only a name/label match
+        // authorizes parsing the title into a co-borrower name.
+        const titleTrusted = !!(byName || byLabel);
+        const pick = byName || byLabel || (subs.length === 1 ? subs[0] : null);
         if (pick && pick.id) {
           const full = await client.getTask(pick.id);
           const subRead = mapper.readTaskFields(full, options);
           const sb = subRead.borrower || {};
           // Name fallback (root fix 2026-07-14): on many boards the co-borrower's
           // name lives only in the SUBTASK TITLE — the *Borrower Name custom
-          // field is empty — so the enrichment used to hand back {email/ssn}
-          // with no name and the profile materialized as "Unknown Unknown".
-          // Parse the title (minus any "Co-Borrower:"-style prefix) when the
-          // field is empty.
-          if (!sb.first_name && pick.name) {
-            const t = String(pick.name).replace(/^\s*(co.?borrower|borrower\s*2|second\s*borrower|guarantor)\s*[:—–-]?\s*/i, '').trim();
+          // field is empty — so parse the title (minus any "Co-Borrower:" prefix)
+          // ONLY when the subtask was matched as the co-borrower (name/label),
+          // never for a bare single-subtask fallback.
+          if (!sb.first_name && titleTrusted && pick.name) {
+            const t = String(pick.name).replace(/^\s*(co.?borrower|borrower\s*2|second\s*borrower|guarantor)\b\s*[:—–-]?\s*/i, '').trim();
             if (t && !transforms.isPlaceholderName(t)) {
               const p = transforms.splitName(t);
               if (p.first) { sb.first_name = p.first; sb.last_name = sb.last_name || p.last; }

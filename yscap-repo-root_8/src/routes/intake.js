@@ -13,7 +13,7 @@ const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const cfg = require('../config');
 const { redactPII } = require('../lib/redact');
-const { generateChecklist } = require('./borrower');
+// (checklist generation now flows through the ensureFileConditions chokepoint)
 
 router.post('/', async (req, res) => {
   // Fail CLOSED: with no key configured this endpoint would accept anonymous
@@ -69,16 +69,22 @@ router.post('/', async (req, res) => {
       if (o.rows[0]) officerId = o.rows[0].id;
     }
     // 3) create the application (distinct property address)
+    // Assignment fields flow through so ensureFileConditions generates the
+    // assignment condition on an intake assignment deal (audit finding #3).
+    const isAssign = !!(p.isAssignment || p.assignment);
     const a = await client.query(
       `INSERT INTO applications
          (borrower_id,loan_officer_id,loan_officer_name,program,loan_type,property_address,property_type,units,
-          purchase_price,as_is_value,arv,rehab_budget,loan_amount,ltv,source,raw_intake,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'website_form',$15,'new',now()) RETURNING id`,
+          purchase_price,as_is_value,arv,rehab_budget,loan_amount,ltv,
+          is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'website_form',$18,'new',now()) RETURNING id`,
       [borrowerId, officerId, officerName, p.program || p.dealType || null, p.loanType || p.purpose || null,
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
        num(p.purchasePrice || p.price), num(p.asIsValue || p.asIs), num(p.arv),
-       num(p.rehabBudget || p.rehab), num(p.loanAmount), num(p.ltv), JSON.stringify(redactPII(p))]);
+       num(p.rehabBudget || p.rehab), num(p.loanAmount), num(p.ltv),
+       isAssign, num(p.underlyingContractPrice || p.underlyingPrice), num(p.assignmentFee),
+       JSON.stringify(redactPII(p))]);
     const appId = a.rows[0].id;
     await client.query('COMMIT');
 
