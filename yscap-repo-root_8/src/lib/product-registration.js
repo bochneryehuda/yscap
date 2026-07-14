@@ -116,14 +116,14 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
             rate_pct=$3,
             ltv=$4,
             -- requested_exp_* is the borrower's CLAIMED experience (what the
-            -- experience condition requires). buildInputs prices NON-admin
-            -- registrations off VERIFIED counts (claim overrides are stripped for
-            -- borrower/LO), so inputs.exp* here is the verified count (often 0) —
-            -- writing it verbatim ZEROED the claim and reverted the condition to
-            -- "No experience required" (#121). Never LOWER the claim on register:
-            -- GREATEST preserves what the borrower entered on the application, and
-            -- still lets an admin who raised experience in the studio push it up.
-            -- The claim is otherwise owned by the application form / details edit.
+            -- experience condition requires). Sizing now prices off the CLAIMED
+            -- count (loadFileForPricing.exp = requested_exp ?? verified, #85), so
+            -- for a non-admin inputs.exp* equals the stored claim and this GREATEST
+            -- is a no-op; for an admin who RAISED experience in the studio it pushes
+            -- the claim up. Never LOWER the claim on register — GREATEST preserves
+            -- what the borrower entered (a stripped/zeroed override could otherwise
+            -- revert the condition to "No experience required", #121). The claim is
+            -- otherwise owned by the application form / details edit.
             requested_exp_flips=GREATEST(COALESCE(requested_exp_flips,0), $5),
             requested_exp_holds=GREATEST(COALESCE(requested_exp_holds,0), $6),
             requested_exp_ground=GREATEST(COALESCE(requested_exp_ground,0), $7),
