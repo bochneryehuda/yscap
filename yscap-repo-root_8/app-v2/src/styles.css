@@ -1399,6 +1399,13 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   height:100vh;overflow-y:auto;scrollbar-width:none;z-index:60}
 .app-sidebar::-webkit-scrollbar{display:none}
 .app-brandrow{padding:6px 10px 18px;margin-bottom:6px;border-bottom:1px solid var(--surface-soft)}
+/* Sidebar masthead: stack the PILOT lockup OVER the console label so
+   "Admin console" can't clip inside the 248px rail. The shared .brand base is a
+   horizontal row with a divider before .sub (borrower header) — overridden ONLY
+   inside the staff sidebar here, so the borrower header is untouched. */
+.app .app-brandrow .brand{flex-direction:column;align-items:flex-start;gap:8px;min-width:0}
+.app .app-brandrow .brand .sub{border-left:0;margin-left:0;padding-left:0;
+  letter-spacing:.18em;white-space:normal}
 .sb-sec{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-muted);
   font-weight:700;padding:15px 12px 7px;opacity:.75}
 .sb-link{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:6px;
@@ -1406,8 +1413,13 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   border-left:3px solid transparent;transition:background .15s,color .15s;white-space:nowrap}
 .sb-link:hover{background:var(--surface-soft);color:var(--text);text-decoration:none}
 .sb-link.active{background:var(--surface-soft);color:var(--text);font-weight:600;border-left-color:var(--gold)}
-.sb-link .ic{width:16px;height:16px;flex:none;border-radius:3px;background:var(--border);opacity:.85}
-.sb-link.active .ic{background:var(--gold);opacity:1}
+/* Icon slot holds an 18px inline line-icon (currentColor stroke) — NOT a filled
+   swatch. Muted by default, ink on hover, gold when the row is active. */
+.sb-link .ic{width:18px;height:18px;flex:none;display:inline-flex;align-items:center;
+  justify-content:center;color:var(--text-soft)}
+.sb-link .ic svg{width:100%;height:100%;display:block}
+.sb-link:hover .ic{color:var(--text)}
+.sb-link.active .ic{color:var(--gold)}
 .sb-link .sb-badge{margin-left:auto;font-size:11px;font-weight:700;min-width:20px;text-align:center;
   padding:1px 6px;border-radius:999px;background:var(--gold);color:#fff}
 .sb-spacer{flex:1}
@@ -1418,8 +1430,14 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   display:flex;align-items:center;gap:16px;padding:0 28px;position:sticky;top:0;z-index:50}
 .app-topbar::before{content:'';position:absolute;left:0;right:0;top:0;height:2px;
   background:linear-gradient(90deg,var(--primary-border),var(--gold) 55%,var(--primary-border))}
-.app-search{flex:1;max-width:420px;background:var(--surface-soft);border:1px solid var(--border);
-  border-radius:100px;padding:9px 16px;font-size:14px;color:var(--text-soft)}
+/* Global search: a real-looking pill field (leading magnifier), balanced in the
+   bar via auto side-margins rather than hugging the far-left edge. Sidebar owns
+   the brand, so the topbar centres the search and pins the user cluster right. */
+.app-search{display:flex;align-items:center;gap:10px;flex:0 1 auto;width:min(440px,42vw);
+  margin:0 auto;background:var(--surface-soft);border:1px solid var(--border);
+  border-radius:100px;padding:9px 18px;font-size:14px;color:var(--text-soft);min-width:0}
+.app-search .app-search-ic{width:16px;height:16px;flex:none;color:var(--text-muted)}
+.app-search span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .app-topbar .user-pill{display:flex;align-items:center;gap:10px;margin-left:auto}
 .app-navtoggle{display:none}
 
@@ -1473,6 +1491,20 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   margin-top:8px;font-weight:600}
 .app .kpi .d{font-size:12.5px;color:var(--text-muted);margin-top:6px}
 .app .kpi:hover{transform:none;border:0}
+/* "Needs attention" KPI: tint the figure when the count is live (staff .v, not
+   the borrower .kpi-v the base rule targets) so a stalled count reads urgent. */
+.app .kpi.alert .v{color:var(--danger)}
+.app a.kpi{transition:box-shadow .15s}
+.app a.kpi:hover{box-shadow:inset 0 -2px 0 var(--gold)}
+
+/* Production / Portfolio-health stats reuse .kpi-v/.kpi-k but sit inside a
+   panel, NOT a .kpi tile — the base rules are `.kpi .kpi-v`, so without these
+   the figures/labels would fall back to plain body text. Scoped to the staff
+   shell so the borrower dashboard's own .kpi rules are untouched. */
+.app .kpi-v{font-family:var(--serif);font-weight:500;letter-spacing:-.01em;line-height:1.05;
+  color:var(--text);font-variant-numeric:tabular-nums}
+.app .kpi-k{font-size:11.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--text-muted);
+  margin-top:6px;font-weight:600}
 
 /* ---- panels: header / body split (ds.css) ---- */
 /* Padded by DEFAULT (safe if :has is unsupported → content stays inset, never
@@ -1519,6 +1551,10 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .app .pill.alert{background:#F6E7DE;color:#B4522A}
 .app .pill.crit{background:var(--danger-soft);color:var(--danger)}
 .app .pill.mut{background:var(--surface-soft);color:var(--text-muted)}
+/* `bad` is emitted by StaffBorrowerDetail.statusPill() for declined/withdrawn/
+   cancelled files — alias it to the danger tone so those statuses read red
+   instead of falling through to the neutral base pill. */
+.app .pill.bad{background:var(--danger-soft);color:var(--danger)}
 
 /* ---- progress bar (ds.css) ---- */
 .prog-bar{height:6px;border-radius:100px;background:var(--surface-soft);overflow:hidden}
@@ -1736,6 +1772,11 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .app .due.today{color:var(--warning);border-color:transparent;background:var(--warning-soft)}
 
 /* ---- reconciliation: small page-local classes referenced by screen JSX ---- */
+/* Standalone helper text (password-policy hints on Team + Borrowers set-password
+   rows). The only `.hint` base rule is scoped `.cl-item .hint`, so a bare .hint
+   outside a checklist item was rendering at full body size — restore the muted
+   small helper treatment inside the staff shell. */
+.app .hint{font-size:13px;color:var(--text-muted);line-height:1.5}
 .app .q-table{display:block}                       /* pipeline grid "table" wrapper */
 .app .whenn{white-space:nowrap;font-variant-numeric:tabular-nums}  /* archived date cell */
 .app .files-c{white-space:nowrap}                  /* vendors file-count cell (num handles alignment) */
