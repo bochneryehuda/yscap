@@ -4,7 +4,7 @@
  * the email status on the row so nothing is lost if the provider is down/absent.
  *
  * The in-app row stores the plain title/body (unchanged). The email is rendered
- * through src/lib/email/template.js into deep-ink/teal branded HTML + a
+ * through src/lib/email/template.js into the light PILOT-branded HTML + a
  * plaintext fallback, with an absolute CTA link back into the portal.
  */
 const db = require('../db');

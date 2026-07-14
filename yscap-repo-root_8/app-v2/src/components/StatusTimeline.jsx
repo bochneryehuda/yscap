@@ -17,6 +17,8 @@ const PATH = [
 const IDX = Object.fromEntries(PATH.map((p, i) => [p.s, i]));
 const TERMINAL = { declined: 'Declined', withdrawn: 'Withdrawn' };
 const fmt = (d) => d ? new Date(d).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+// A full timestamp (date + time) for each status milestone (owner-directed 2026-07-14).
+const fmtTs = (d) => d ? `${fmt(d)} · ${new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
 
 export default function StatusTimeline({ appId, status, createdAt, expectedClosing, actualClosing }) {
   const [hist, setHist] = useState(null);
@@ -44,7 +46,7 @@ export default function StatusTimeline({ appId, status, createdAt, expectedClosi
               <span className="tl-dot" />
               <div className="tl-body">
                 <div className="tl-label">{p.label}</div>
-                {reachedAt[p.s] && <div className="muted small">{fmt(reachedAt[p.s])}</div>}
+                {reachedAt[p.s] && <div className="muted small">{fmtTs(reachedAt[p.s])}</div>}
                 {current && <div className="muted small">In progress</div>}
               </div>
             </li>
