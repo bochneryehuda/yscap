@@ -763,6 +763,35 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
   }
 });
 
+// #30 — inline-fill the CO-BORROWER's missing identity fields from the file's
+// separate "Co-borrower completeness" section, mirroring /complete-fields for
+// the primary borrower. Partial update of the linked co-borrower's `borrowers`
+// row; SSN + email stay in the Co-borrower panel (secure/link flows), so this
+// only handles name / phone / date of birth.
+router.post('/applications/:id/co-borrower-fields', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const ar = await db.query(`SELECT co_borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+    if (!ar.rows[0]) return res.status(404).json({ error: 'not found' });
+    const coId = ar.rows[0].co_borrower_id;
+    if (!coId) return res.status(409).json({ error: 'no co-borrower on this file' });
+    const vals = [coId]; const sets = [];
+    const put = (col, v) => { vals.push(v); sets.push(`${col}=$${vals.length}`); };
+    if (typeof b.co_name === 'string' && b.co_name.trim()) {
+      const parts = b.co_name.trim().split(/\s+/);
+      const first = parts.shift();
+      put('first_name', first); put('last_name', parts.join(' ') || first);
+    }
+    if (typeof b.co_phone === 'string' && b.co_phone.trim()) put('cell_phone', b.co_phone.trim());
+    if (b.co_dob) put('date_of_birth', b.co_dob);
+    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+    sets.push('updated_at=now()');
+    await db.query(`UPDATE borrowers SET ${sets.join(', ')} WHERE id=$1`, vals);
+    await audit(req, 'complete_co_borrower_fields', 'application', req.params.id, { fields: sets.length - 1, coBorrowerId: coId });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
 // #81 — the subject vesting LLC's borrower-owners and each one's ownership %.
 // On a co-borrower file both borrowers own the entity; this reads / sets their
 // stakes and keeps the entity linked to both.
