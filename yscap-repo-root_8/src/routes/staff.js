@@ -76,9 +76,8 @@ async function canTouchApp(req, appId) {
   // an assigned officer could keep mutating (conditions/messages/post-closing)
   // a file an admin soft-deleted.
   const r = await db.query(
-    `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL
-        AND (loan_officer_id=$2 OR processor_id=$2
-             OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))`,
+    `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL
+        AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
     [appId, req.actor.id]);
   return !!r.rows[0];
 }
@@ -98,9 +97,17 @@ async function audit(req, action, entity_type, entity_id, detail) {
 // PLUS: a staffer may be granted access to specific loan officers' files (their
 // visible_officer_ids). The uncorrelated subquery reads that list off the actor's
 // staff row, so this stays a SINGLE-param ($SCOPE) clause — no caller changes.
+// A staffer may reach a file when they are the primary LO/processor, OR are on
+// the primary's visible_officer_ids delegation list, OR are an active assignee
+// (primary OR full-access ASSISTANT — #64) via application_assignees. The
+// assignee EXISTS also covers the primary (backfilled + trigger-synced), so this
+// term is behavior-identical until assistants are actually added. Single-param
+// ($p repeated) — no caller changes. Requires ${alias}.id to be selectable.
 const VISIBLE_OFFICERS_SQL = (alias, p) =>
   `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
-  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p}))`;
+  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
+  ` OR EXISTS (SELECT 1 FROM application_assignees aa` +
+  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL))`;
 function scopeClause(req, alias = 'a') {
   if (seesAll(req)) return { where: '', params: [] };
   return { where: `AND ${VISIBLE_OFFICERS_SQL(alias, '$SCOPE')}`, params: [req.actor.id] };
@@ -115,9 +122,8 @@ router.use('/applications/:id', async (req, res, next) => {
     // A soft-deleted file is inaccessible to non-privileged staff (admins can
     // still reach it to restore); this blocks open/mutate-by-direct-link.
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL
-          AND (loan_officer_id=$2 OR processor_id=$2
-               OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))`,
+      `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL
+          AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
       [req.params.id, req.actor.id]);
     if (!r.rows[0]) return res.status(403).json({ error: 'forbidden' });
     next();
@@ -135,8 +141,11 @@ function dashboardScope(req) {
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const mine = req.query.mine === '1' || req.query.mine === 'true';
   const officerId = UUID.test(String(req.query.officerId || '')) ? String(req.query.officerId) : null;
-  if (!seesAll(req)) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$1))`, params: [req.actor.id] };
-  if (mine) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1)`, params: [req.actor.id] };
+  // Scoped user: their full book (incl. files they're an assistant on, #64).
+  if (!seesAll(req)) return { where: `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`, params: [req.actor.id] };
+  // seesAll user narrowing to "my files": include assistant assignments so the
+  // dashboard numbers match the (assistant-inclusive) pipeline list.
+  if (mine) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1 OR EXISTS (SELECT 1 FROM application_assignees aa WHERE aa.application_id=a.id AND aa.staff_id=$1 AND aa.removed_at IS NULL))`, params: [req.actor.id] };
   if (officerId) return { where: `AND (a.loan_officer_id=$1 OR a.processor_id=$1)`, params: [officerId] };
   return { where: '', params: [] };
 }
@@ -403,7 +412,7 @@ router.get('/search', async (req, res) => {
     // delegation) so a file an officer can open is also findable here.
     const loanParams = [like];
     let loanScope = '';
-    if (!seesAll(req)) { loanParams.push(meId); loanScope = 'AND (a.loan_officer_id=$2 OR a.processor_id=$2 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))'; }
+    if (!seesAll(req)) { loanParams.push(meId); loanScope = 'AND ' + VISIBLE_OFFICERS_SQL('a', '$2'); }
     const loans = await db.query(
       `SELECT a.id, a.ys_loan_number, a.status, a.program, a.loan_amount, a.property_address,
               b.first_name, b.last_name
@@ -420,8 +429,7 @@ router.get('/search', async (req, res) => {
     if (!seesAllBorrowers(req)) {
       bParams.push(meId);
       bScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=b.id
-                              AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2
-                                OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))`;
+                              AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})`;
     }
     const borrowers = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone
@@ -438,8 +446,7 @@ router.get('/search', async (req, res) => {
     if (!seesAllBorrowers(req)) {
       lParams.push(meId);
       lScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=l.borrower_id
-                              AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2
-                                OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))`;
+                              AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})`;
     }
     const llcs = await db.query(
       `SELECT l.id, l.llc_name, l.ein, l.borrower_id, b.first_name, b.last_name
@@ -455,8 +462,7 @@ router.get('/search', async (req, res) => {
     if (!seesAllBorrowers(req)) {
       trParams.push(meId);
       trScope = `AND EXISTS (SELECT 1 FROM applications a WHERE a.borrower_id=t.borrower_id
-                               AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2
-                                 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))`;
+                               AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})`;
     }
     const trackRecords = await db.query(
       `SELECT t.id, t.borrower_id, t.property_address, t.deal_type, b.first_name, b.last_name
@@ -473,7 +479,7 @@ router.get('/search', async (req, res) => {
     // ---- tasks / reminders (title), scoped to files the staffer can reach ----
     const tkParams = [like];
     let tkScope = '';
-    if (!seesAll(req)) { tkParams.push(meId); tkScope = 'AND (a.loan_officer_id=$2 OR a.processor_id=$2 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))'; }
+    if (!seesAll(req)) { tkParams.push(meId); tkScope = 'AND ' + VISIBLE_OFFICERS_SQL('a', '$2'); }
     const tasks = await db.query(
       `SELECT r.id, r.title, r.kind, r.status, r.application_id, b.first_name, b.last_name,
               a.property_address
@@ -485,7 +491,7 @@ router.get('/search', async (req, res) => {
     // ---- chats (conversation name), scoped to files the staffer can reach ----
     const cvParams = [like];
     let cvScope = '';
-    if (!seesAll(req)) { cvParams.push(meId); cvScope = 'AND (a.loan_officer_id=$2 OR a.processor_id=$2 OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))'; }
+    if (!seesAll(req)) { cvParams.push(meId); cvScope = 'AND ' + VISIBLE_OFFICERS_SQL('a', '$2'); }
     const chats = await db.query(
       `SELECT c.id, c.name, c.application_id, b.first_name, b.last_name
          FROM conversations c JOIN applications a ON a.id=c.application_id
@@ -704,7 +710,7 @@ router.post('/applications', async (req, res) => {
     let crossBorrower = false;
     if (!br.rows[0].created && !seesAll(req)) {
       const rel = await db.query(
-        `SELECT 1 FROM applications WHERE borrower_id=$1 AND id<>$3 AND (loan_officer_id=$2 OR processor_id=$2) LIMIT 1`,
+        `SELECT 1 FROM applications a WHERE a.borrower_id=$1 AND a.id<>$3 AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`,
         [borrowerId, req.actor.id, appId]);
       crossBorrower = !rel.rows[0];
     }
@@ -2057,12 +2063,10 @@ router.patch('/checklist/:itemId', async (req, res) => {
       `SELECT 1 FROM checklist_items ci
         LEFT JOIN applications a ON a.id=ci.application_id
         WHERE ci.id=$1 AND (
-          (a.id IS NOT NULL AND a.deleted_at IS NULL AND (a.loan_officer_id=$2 OR a.processor_id=$2
-             OR a.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))
+          (a.id IS NOT NULL AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})
           OR (ci.llc_id IS NOT NULL AND EXISTS (
                 SELECT 1 FROM applications ap
-                 WHERE ap.llc_id=ci.llc_id AND ap.deleted_at IS NULL AND (ap.loan_officer_id=$2 OR ap.processor_id=$2
-                   OR ap.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2)))))`,
+                 WHERE ap.llc_id=ci.llc_id AND ap.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('ap', '$2')})))`,
       [req.params.itemId, req.actor.id]);
     if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
   }
@@ -2248,10 +2252,9 @@ async function canSeeBorrowerId(req, borrowerId) {
     // co-borrower is a party on the staffer's file, so an assigned loan officer /
     // processor may see (and invite) them. Fails-safe: still requires the staffer
     // be assigned to a file the borrower is actually on.
-    `SELECT 1 FROM applications
-      WHERE (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL
-        AND (loan_officer_id=$2 OR processor_id=$2
-             OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))
+    `SELECT 1 FROM applications a
+      WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL
+        AND ${VISIBLE_OFFICERS_SQL('a', '$2')}
       LIMIT 1`,
     [borrowerId, req.actor.id]);
   return !!r.rows[0];
@@ -2294,7 +2297,7 @@ router.get('/borrowers/search', async (req, res) => {
       params.push(req.actor.id);
       scope = `AND EXISTS (SELECT 1 FROM applications a
                             WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
-                              AND (a.loan_officer_id=$2 OR a.processor_id=$2))`;
+                              AND ${VISIBLE_OFFICERS_SQL('a', '$2')})`;
     }
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone,
@@ -2324,7 +2327,7 @@ router.get('/borrowers', async (req, res) => {
       params.push(req.actor.id);
       scope = `WHERE EXISTS (SELECT 1 FROM applications a
                               WHERE a.borrower_id=b.id AND a.deleted_at IS NULL
-                                AND (a.loan_officer_id=$1 OR a.processor_id=$1))`;
+                                AND ${VISIBLE_OFFICERS_SQL('a', '$1')})`;
     }
     const r = await db.query(
       `SELECT b.id, b.first_name, b.last_name, b.email, b.cell_phone, b.tier, b.created_at,
@@ -3698,7 +3701,7 @@ router.post('/messages/:mid/react', async (req, res) => {
     if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!seesAll(req)) {
       const own = await db.query(
-        `SELECT 1 FROM applications WHERE id=$1 AND (loan_officer_id=$2 OR processor_id=$2)`,
+        `SELECT 1 FROM applications a WHERE a.id=$1 AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
         [m.rows[0].application_id, req.actor.id]);
       if (!own.rows[0]) return res.status(403).json({ error: 'forbidden' });
     }
@@ -4622,9 +4625,8 @@ async function canSeeDocument(req, doc) {
     // officer on App1 could reach App2 of the same borrower. (A shared-officer
     // grant still applies per-application via the visible_officer_ids expansion.)
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL
-          AND (loan_officer_id=$2 OR processor_id=$2
-               OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))`,
+      `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL
+          AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
       [doc.application_id, req.actor.id]);
     return !!r.rows[0];
   }
@@ -4632,9 +4634,8 @@ async function canSeeDocument(req, doc) {
     // Only borrower/llc-scoped documents (no application_id) use the
     // borrower-wide fallback.
     const r = await db.query(
-      `SELECT 1 FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL
-          AND (loan_officer_id=$2 OR processor_id=$2
-               OR loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=$2))
+      `SELECT 1 FROM applications a WHERE a.borrower_id=$1 AND a.deleted_at IS NULL
+          AND ${VISIBLE_OFFICERS_SQL('a', '$2')}
         LIMIT 1`,
       [doc.borrower_id, req.actor.id]);
     if (r.rows[0]) return true;
