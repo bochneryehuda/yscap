@@ -30,13 +30,14 @@ function shape(row) {
     phone: row.phone || null,
     cell: row.cell || null,
     ext: row.ext || null,
+    nmls: row.nmls || null,   // individual NMLS for licensed MLOs (else null)
     department: row.department || null,
   };
 }
 
 async function load() {
   const r = await db.query(
-    `SELECT email, full_name, role, title, department, phone, cell, ext
+    `SELECT email, full_name, role, title, department, phone, cell, ext, nmls
        FROM staff_users
       WHERE is_active = true AND site_selectable = true
       ORDER BY sort_order, full_name`);
