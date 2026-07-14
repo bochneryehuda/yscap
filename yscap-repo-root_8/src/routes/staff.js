@@ -2237,6 +2237,69 @@ router.post('/applications/:id/assign', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---------------- multi-assignee team (#64): full-access assistants ----------------
+// The team = the PRIMARY LO/processor (mirrored from applications) plus any
+// full-access ASSISTANTS. All three routes sit under the /applications/:id path
+// middleware, so only someone who can already reach the file (an assignee or a
+// seesAll staffer) gets here. Managing ASSISTANTS is a team-collaboration action
+// any assignee may take (assistants have full access); the PRIMARY is changed
+// only through /assign (admin-gated) — removing a primary here is refused, and
+// assistants are portal-only (never pushed to ClickUp, so no enqueueClickupPush).
+router.get('/applications/:id/assignees', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT aa.staff_id, aa.role, aa.is_primary, aa.added_at,
+              s.full_name, s.title, s.role AS staff_role, s.email
+         FROM application_assignees aa JOIN staff_users s ON s.id=aa.staff_id
+        WHERE aa.application_id=$1 AND aa.removed_at IS NULL
+        ORDER BY aa.role, aa.is_primary DESC, s.full_name`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/assignees', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const role = b.role === 'processor' ? 'processor' : b.role === 'loan_officer' ? 'loan_officer' : null;
+    const staffId = b.staffId;
+    if (!role || !staffId) return res.status(400).json({ error: 'staffId and role (loan_officer|processor) required' });
+    // Active + role-appropriate (mirrors the /assign validation): a processor
+    // assistant must actually hold the processor role.
+    const s = await db.query(`SELECT id, full_name, role FROM staff_users WHERE id=$1 AND is_active=true`, [staffId]);
+    if (!s.rows[0]) return res.status(404).json({ error: 'staff member not found' });
+    if (role === 'processor' && s.rows[0].role !== 'processor')
+      return res.status(400).json({ error: 'A processor assistant must be a staffer with the processor role.' });
+    const dup = await db.query(
+      `SELECT is_primary FROM application_assignees WHERE application_id=$1 AND role=$2 AND staff_id=$3 AND removed_at IS NULL`,
+      [req.params.id, role, staffId]);
+    if (dup.rows[0]) return res.status(409).json({ error: dup.rows[0].is_primary ? 'Already the primary for this role on this file.' : 'Already an assistant on this file.' });
+    await db.query(
+      `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by) VALUES ($1,$2,$3,false,$4)`,
+      [req.params.id, staffId, role, req.actor.id]);
+    await notify.notifyStaff(staffId, {
+      type: 'assignment', title: 'You were added to a file',
+      applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
+    await audit(req, 'add_assignee', 'application', req.params.id, { staffId, role });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete('/applications/:id/assignees/:staffId', async (req, res) => {
+  try {
+    const role = req.query.role === 'processor' ? 'processor' : 'loan_officer';
+    const row = await db.query(
+      `SELECT is_primary FROM application_assignees WHERE application_id=$1 AND role=$2 AND staff_id=$3 AND removed_at IS NULL`,
+      [req.params.id, role, req.params.staffId]);
+    if (!row.rows[0]) return res.status(404).json({ error: 'not an active assignee on this file' });
+    if (row.rows[0].is_primary) return res.status(400).json({ error: 'Reassign the primary through Assign — a primary can’t be removed here.' });
+    await db.query(
+      `UPDATE application_assignees SET removed_at=now() WHERE application_id=$1 AND role=$2 AND staff_id=$3 AND removed_at IS NULL`,
+      [req.params.id, role, req.params.staffId]);
+    await audit(req, 'remove_assignee', 'application', req.params.id, { staffId: req.params.staffId, role });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---------------- borrower profile view + SSN reveal (audited) ----------------
 // A non-privileged staffer (loan_officer / processor) may only see a borrower
 // they actually work with — i.e. one on a file they are assigned to. admins,

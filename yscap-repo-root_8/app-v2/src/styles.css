@@ -156,6 +156,11 @@ textarea{min-height:90px;resize:vertical}
 .fld .muted{font-weight:400}
 @media (max-width:720px){.rem-grid{grid-template-columns:1fr !important}}
 .metrow{display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-top:1px solid var(--line)}
+/* Loan-team assignee chips (#64) */
+.asg-chip{display:inline-flex;align-items:center;gap:5px;background:var(--surface-soft,var(--ink-2));border:1px solid var(--border,var(--line));border-radius:999px;padding:3px 10px;font-size:.82rem;font-weight:600}
+.asg-badge{background:var(--gold,#AE8746);color:#fff;border-radius:999px;padding:1px 7px;font-size:.62rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.asg-x{border:none;background:none;color:var(--muted);cursor:pointer;font-size:1.05rem;line-height:1;padding:0 1px}
+.asg-x:hover{color:var(--danger,#c0563f)}
 .metrow:first-child{border-top:none}
 .metrow .k{color:var(--muted);font-size:13px}
 /* A long unbroken value (an email like BOCHNERYEHUDA@GMAIL.COM, an entity name,
