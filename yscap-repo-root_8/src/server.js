@@ -138,9 +138,20 @@ app.get('/link/:kind', (req, res, next) => {
   res.set('Location', `${portal}/#${route}${qs ? '?' + qs : ''}`).status(302).end();
 });
 
-// --- Static site (your existing build drops into web/) ---
+// --- Static site ---
+// V2 / PILOT IS THE DEFAULT (owner-directed 2026-07-14): the V2 tree (web/v2 —
+// reskinned marketing, tools, and the PILOT portal bundle) serves at the ROOT,
+// so every visitor lands on version 2 — homepage, /tools/*, /suite.html, and
+// the /portal SPA. Version 1 is NOT deleted:
+//   • /v1/**  — the original design, browsable in full (incl. /v1/portal/).
+//   • the plain web/ mount stays as a fallthrough, so any file V2 doesn't
+//     carry (v1 portal assets, legacy /v2/* bookmark URLs, uploads under
+//     web/…) keeps resolving exactly as before.
 const webDir = path.join(__dirname, '..', cfg.webDir);
-app.use(express.static(webDir));
+const v2Dir = path.join(webDir, 'v2');
+app.use(express.static(v2Dir));            // V2 wins at the root
+app.use('/v1', express.static(webDir));    // version 1, kept browsable
+app.use(express.static(webDir));           // fallthrough: v1 assets + legacy /v2/* URLs
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/auth')) return next();
   // A missing FILE (anything with an extension — .css/.js/.png…) must 404, not
@@ -148,13 +159,17 @@ app.get('*', (req, res, next) => {
   // stale index.html referencing a purged bundle "unstyled" the whole portal —
   // and service workers then cache that poisoned response.
   if (/\.[a-z0-9]{2,8}$/i.test(req.path)) return res.status(404).type('text/plain').send('not found');
-  // A deep link under /portal/ (e.g. a hard refresh, or a link without the #)
-  // must boot the SPA shell, not the marketing homepage — otherwise the portal
-  // "disappears" into the public site on refresh.
-  const shell = req.path.startsWith('/portal')
+  // A deep link under /portal/ (hard refresh, or a link without the #) must
+  // boot the matching SPA shell, not a marketing homepage. /portal (and legacy
+  // /v2/portal) boot the PILOT shell; /v1/portal boots the version-1 shell.
+  const shell = req.path.startsWith('/v1/portal')
     ? path.join(webDir, 'portal', 'index.html')
-    : path.join(webDir, 'index.html');
-  res.sendFile(shell, (err) => err && res.sendFile(path.join(webDir, 'index.html'), (e2) => e2 && next()));
+    : (req.path.startsWith('/portal') || req.path.startsWith('/v2/portal'))
+      ? path.join(v2Dir, 'portal', 'index.html')
+      : req.path.startsWith('/v1')
+        ? path.join(webDir, 'index.html')
+        : path.join(v2Dir, 'index.html');
+  res.sendFile(shell, (err) => err && res.sendFile(path.join(v2Dir, 'index.html'), (e2) => e2 && next()));
 });
 
 // 404 for unmatched API routes
