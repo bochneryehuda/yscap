@@ -264,6 +264,18 @@ main,.topbar,.suite-footer{ position:relative; z-index:2; }
 .sf-top .sf-tag{ font-family:var(--font-d); font-style:italic; color:var(--teal); }
 .sf-top .sf-marks{ margin-left:auto; display:flex; gap:1.1rem; }
 .sf-top .sf-marks img{ height:58px; width:auto; opacity:.9; }
+/* Compliance marks (Equal Housing Lender / NMLS) are light line-art, so on the
+   white-first tools they wash out. Force them BLACK on light, WHITE on dark so
+   they read on any background (owner-directed 2026-07-14). Alt-based so it
+   catches every layout — .sf-marks, a bare <img>, or a .compliance-mark. */
+:root[data-theme="light"] img[alt="Equal Housing Lender"],
+:root[data-theme="light"] img[alt^="NMLS"],
+:root[data-theme="light"] .sf-marks img,
+:root[data-theme="light"] .compliance-mark{ filter:brightness(0); opacity:.72; }
+:root:not([data-theme="light"]) img[alt="Equal Housing Lender"],
+:root:not([data-theme="light"]) img[alt^="NMLS"],
+:root:not([data-theme="light"]) .sf-marks img,
+:root:not([data-theme="light"]) .compliance-mark{ filter:brightness(0) invert(1); opacity:.9; }
 .sf-meta{ color:var(--muted); font-size:.86rem; margin-top:1.2rem; }
 .sf-meta a:hover{ color:var(--teal-br); }
 .sf-disc{ color:var(--muted-2); font-size:.76rem; line-height:1.6; margin-top:1.5rem; padding-top:1.5rem; border-top:1px solid var(--line); max-width:none; }
