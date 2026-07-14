@@ -1082,12 +1082,29 @@ async function loadFileForPricing(appId) {
   const tr = await db.query(
     `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
        FROM track_records WHERE borrower_id = ANY($1::uuid[]) AND is_verified=true AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [expBorrowerIds]);
-  const exp = { flips: 0, holds: 0, ground: 0 };
+  const verified = { flips: 0, holds: 0, ground: 0 };
   for (const row of tr.rows) {
-    if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
-    else if (row.dt.indexOf('flip') > -1) exp.flips += row.n;
-    else exp.holds += row.n;   // fix-and-hold, rental, anything else
+    if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) verified.ground += row.n;
+    else if (row.dt.indexOf('flip') > -1) verified.flips += row.n;
+    else verified.holds += row.n;   // fix-and-hold, rental, anything else
   }
+  // Owner-directed 2026-07-14: the loan SIZES on the borrower's CLAIMED experience
+  // of record (requested_exp_*) — the loan they qualify for on their STATED
+  // experience — exactly as the Term Sheet Studio's what-if display already does
+  // (requested_exp ?? verified). Funding stays gated by the experience CONDITION
+  // (clear-to-close blocks until the claim is VERIFIED), so this never over-lends;
+  // it only stops the registered loan from silently landing BELOW what the studio
+  // showed. Previously sized verified-only, so a NON-ADMIN registration (whose
+  // claimed-experience override is stripped) persisted a SMALLER loan than the
+  // studio displayed — e.g. a 187,500 quote landed as 174,921 on the pipeline. A
+  // non-admin still can't inflate: the studio override stays stripped and the base
+  // is the APPLICATION's attested claim, editable only through the (audited) form.
+  const claimed = (v, fb) => (v != null ? (Number(v) || 0) : fb);
+  const exp = {
+    flips:  claimed(app.requested_exp_flips,  verified.flips),
+    holds:  claimed(app.requested_exp_holds,  verified.holds),
+    ground: claimed(app.requested_exp_ground, verified.ground),
+  };
   return { app, exp };
 }
 
