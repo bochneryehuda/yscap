@@ -126,7 +126,7 @@ export default function Dashboard() {
       <h3 style={{ marginBottom: 10 }}>{addrLine(a.property_address)}</h3>
       <div className="metrow"><span className="k">Program</span><span className="v">{a.program || '—'}</span></div>
       <div className="metrow"><span className="k">Loan type</span><span className="v">{a.loan_type || '—'}</span></div>
-      <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(a.loan_amount)}</span></div>
+      <div className="metrow"><span className="k">Loan amount</span><span className="v ln-amount">{money(a.loan_amount)}</span></div>
       <div className="metrow"><span className="k">Officer</span><span className="v">{a.loan_officer_name || 'Lead Capture'}</span></div>
       {a.borrower_total > 0 && (
         <div style={{ marginTop: 12 }}>

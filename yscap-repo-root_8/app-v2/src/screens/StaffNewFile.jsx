@@ -276,22 +276,26 @@ export default function StaffNewFile() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 16 }}>
-        <Link to="/internal" className="btn link">← Pipeline</Link>
-        <div className="spacer" />
-        {savedAt && <span className="savechip"><span className="dot done" />Draft saved — nothing you type is lost</span>}
+      <div className="page-head">
+        <div>
+          <h1>New loan file</h1>
+          <div className="sub">Open a file from your side — the borrower doesn't need an account. You can invite them
+            to this file at any time; once they join they'll see everything and can message you.</div>
+        </div>
+        <div className="page-head-actions">
+          {savedAt && <span className="savechip"><span className="dot done" />Draft saved — nothing you type is lost</span>}
+          <Link to="/internal" className="btn btn-ghost btn-sm">← Pipeline</Link>
+        </div>
       </div>
-      <h1 style={{ marginBottom: 4 }}>New loan file</h1>
-      <p className="muted small" style={{ marginBottom: 18 }}>
-        Open a file from your side — the borrower doesn't need an account. You can invite them
-        to this file at any time; once they join they'll see everything and can message you.
-      </p>
 
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
 
       <form onSubmit={submit}>
-        <div className="panel" style={{ marginBottom: 16 }}>
-          <h3 style={{ marginBottom: 12 }}>Borrower</h3>
+        <div className="form-grid">
+          <div className="form-col">
+        <div className="panel">
+          <div className="panel-h"><div className="grp-h"><span className="n">01</span><h3>Borrower</h3></div><span className="pill mut">Primary contact</span></div>
+          <div className="panel-b">
           <div className="grid cols-2">
             <div className="field" ref={nameBox} style={{ position: 'relative' }}>
               <label>First name *</label>
@@ -357,10 +361,12 @@ export default function StaffNewFile() {
               <CoBorrowerPicker value={co} onChange={setCo} />
             </div>
           )}
+          </div>
         </div>
 
-        <div className="panel" style={{ marginBottom: 16 }}>
-          <h3 style={{ marginBottom: 12 }}>Property</h3>
+        <div className="panel">
+          <div className="panel-h"><div className="grp-h"><span className="n">02</span><h3>Property</h3></div><span className="pill mut">Subject collateral</span></div>
+          <div className="panel-b">
           <div className="field"><label>Street address</label>
             <AddressAutocomplete value={addr.street} onChange={v => setA('street', v)} onPick={pickAddr}
               placeholder="Start typing the property address…" /></div>
@@ -382,10 +388,12 @@ export default function StaffNewFile() {
             <div className="field"><label>Units</label>
               <input className="input" type="number" min="1" value={f.units} onChange={e => set('units', e.target.value)} /></div>
           </div>
+          </div>
         </div>
 
-        <div className="panel" style={{ marginBottom: 16 }}>
-          <h3 style={{ marginBottom: 12 }}>Loan</h3>
+        <div className="panel">
+          <div className="panel-h"><div className="grp-h"><span className="n">03</span><h3>Loan</h3></div><span className="pill mut">Loan structure</span></div>
+          <div className="panel-b">
           <div className="grid cols-2">
             <div className="field"><label>Program</label>
               <select className="input" value={f.program} onChange={e => set('program', e.target.value)}>
@@ -424,10 +432,12 @@ export default function StaffNewFile() {
               <input className="input" type="number" min="0" value={f.requestedExpGround} onChange={e => set('requestedExpGround', e.target.value)} /></div>
           </div>
           <p className="muted small">Final pricing and leverage are confirmed against program guidelines — these figures start the file.</p>
+          </div>
         </div>
 
-        <div className="panel" style={{ marginBottom: 16 }}>
-          <h3 style={{ marginBottom: 12 }}>Assignment</h3>
+        <div className="panel">
+          <div className="panel-h"><div className="grp-h"><span className="n">04</span><h3>Assignment</h3></div><span className="pill mut">Desk routing</span></div>
+          <div className="panel-b">
           <div className="grid cols-2">
             <div className="field"><label>Loan officer</label>
               <select className="input" value={f.loanOfficerId} onChange={e => set('loanOfficerId', e.target.value)}>
@@ -441,12 +451,31 @@ export default function StaffNewFile() {
               </select></div>
           </div>
           {!seesAll && <p className="muted small">Left unassigned, this file lands on your pipeline.</p>}
+          </div>
         </div>
 
-        <div className="row" style={{ gap: 10 }}>
-          <button className="btn primary" disabled={busy}>{busy ? 'Creating…' : 'Create file'}</button>
-          <Link to="/internal" className="btn ghost">Cancel</Link>
-        </div>
+          </div>{/* /.form-col */}
+
+          <aside className="summary">
+            <div className="panel">
+              <div className="panel-h"><h3>File summary</h3><span className="pill mut">Draft</span></div>
+              <div className="panel-b">
+                <div className="metrow"><span className="k">Borrower</span><span className="v">{[f.firstName, f.lastName].filter(Boolean).join(' ') || '—'}</span></div>
+                <div className="metrow"><span className="k">Property</span><span className="v">{[addr.street, addr.city, addr.state].filter(Boolean).join(', ') || '—'}</span></div>
+                <div className="metrow"><span className="k">Program</span><span className="v">{f.program || '—'}</span></div>
+                <div className="metrow"><span className="k">Loan type</span><span className="v">{f.loanType || '—'}</span></div>
+                <div className="metrow"><span className="k">Purchase price</span><span className="v">{f.purchasePrice ? '$' + f.purchasePrice : '—'}</span></div>
+                <div className="metrow"><span className="k">ARV</span><span className="v">{f.arv ? '$' + f.arv : '—'}</span></div>
+                <div className="sum-actions">
+                  <button className="btn primary btn-block" disabled={busy}>{busy ? 'Creating…' : 'Create file'}</button>
+                  <Link to="/internal" className="btn ghost btn-block">Cancel</Link>
+                </div>
+                <p className="sum-note muted small">A file number is issued on creation; the borrower is invited to the portal if you left the invite checked.</p>
+              </div>
+            </div>
+          </aside>
+
+        </div>{/* /.form-grid */}
       </form>
     </>
   );

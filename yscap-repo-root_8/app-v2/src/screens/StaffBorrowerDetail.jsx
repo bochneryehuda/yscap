@@ -49,17 +49,17 @@ export default function StaffBorrowerDetail() {
   const load = () => api.staffBorrower(id).then(setB).catch(e => setErr(e.message || 'Could not load borrower'));
   useEffect(() => { setB(null); setErr(''); load(); /* eslint-disable-next-line */ }, [id]);
 
-  if (err) return <div className="wrap"><div role="alert" className="notice err">{err}</div><p><Link to="/internal/borrowers">← Back to borrowers</Link></p></div>;
-  if (!b) return <div className="wrap"><p className="muted">Loading…</p></div>;
+  if (err) return <><div role="alert" className="notice err">{err}</div><p><Link to="/internal/borrowers">← Back to borrowers</Link></p></>;
+  if (!b) return <p className="muted">Loading…</p>;
 
   const name = `${b.first_name || ''} ${b.last_name || ''}`.trim() || '(no name)';
   return (
-    <div className="wrap">
+    <>
       <p style={{ marginTop: 0 }}><Link to="/internal/borrowers" className="small">← Borrowers</Link></p>
       <Header b={b} name={name} onChanged={load} />
-      <div className="row" style={{ gap: 6, flexWrap: 'wrap', margin: '16px 0 12px' }}>
+      <div className="tabs" style={{ margin: '18px 0 14px' }}>
         {TABS.map(t => (
-          <button key={t} className={`btn small ${tab === t ? 'primary' : 'ghost'}`} onClick={() => setTab(t)}>{t}</button>
+          <button key={t} className={`tab ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>{t}</button>
         ))}
       </div>
       {tab === 'Overview' && <Overview b={b} onChanged={load} />}
@@ -71,7 +71,7 @@ export default function StaffBorrowerDetail() {
       {tab === 'Documents' && <Documents id={id} />}
       {tab === 'Activity' && <Activity id={id} />}
       {tab === 'Notes' && <Notes id={id} />}
-    </div>
+    </>
   );
 }
 
@@ -107,14 +107,21 @@ function Header({ b, name, onChanged }) {
     <div className="panel">
       <div className="row" style={{ alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 220 }}>
-          <h1 style={{ margin: 0 }}>{name}
-            {b.tier ? <span className="pill" style={{ marginLeft: 10 }}>Tier {b.tier}</span> : null}
-          </h1>
-          <div className="muted small" style={{ marginTop: 4 }}>
-            {b.email || 'no email'}{b.cell_phone ? ` · ${b.cell_phone}` : ''}
-            {b.primary_officer_name ? ` · Officer: ${b.primary_officer_name}` : ''}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+            <span className="mono" style={{ width: 46, height: 46, fontSize: 16 }}>
+              {(name.match(/\b[A-Za-z]/g) || []).slice(0, 2).join('').toUpperCase() || '—'}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <h1 style={{ margin: 0 }}>{name}
+                {b.tier ? <span className="pill" style={{ marginLeft: 10 }}>Tier {b.tier}</span> : null}
+              </h1>
+              <div className="muted small" style={{ marginTop: 4 }}>
+                {b.email || 'no email'}{b.cell_phone ? ` · ${b.cell_phone}` : ''}
+                {b.primary_officer_name ? ` · Officer: ${b.primary_officer_name}` : ''}
+              </div>
+            </div>
           </div>
-          <div className="small" style={{ marginTop: 6 }}>
+          <div className="small" style={{ marginTop: 10 }}>
             {b.has_account === false ? <span className="pill">No PILOT account</span>
               : <span className="pill ok">PILOT active{b.last_login_at ? ` · ${ago(b.last_login_at)}` : ''}</span>}
             {b.fico ? <span className="pill" style={{ marginLeft: 6 }}>FICO {b.fico}</span> : null}
@@ -259,7 +266,7 @@ function Files({ id }) {
   if (!rows.length) return <div className="panel"><Empty t="No loan files for this borrower." /></div>;
   return (
     <div className="panel" style={{ padding: 0, overflowX: 'auto' }}>
-      <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead><tr style={{ textAlign: 'left' }}>
           {['Property', 'Loan #', 'Program', 'Amount', 'Status', 'Officer', 'Role', ''].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
         </tr></thead>
@@ -327,7 +334,7 @@ function TrackRecord({ id }) {
   if (!rows.length) return <div className="panel"><Empty t="No track-record entries." /></div>;
   return (
     <div className="panel" style={{ padding: 0, overflowX: 'auto' }}>
-      <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead><tr style={{ textAlign: 'left' }}>
           {['Property', 'Type', 'Entity', 'Purchase', 'Sale/Value', 'Verified', ''].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
         </tr></thead>
@@ -448,7 +455,7 @@ function Documents({ id }) {
   if (!rows.length) return <div className="panel"><Empty t="No documents on file for this borrower." /></div>;
   return (
     <div className="panel" style={{ padding: 0, overflowX: 'auto' }}>
-      <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <table className="tbl" style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead><tr style={{ textAlign: 'left' }}>
           {['File', 'Kind', 'Loan #', 'Added', ''].map(h => <th key={h} style={{ padding: '10px 12px' }}>{h}</th>)}
         </tr></thead>

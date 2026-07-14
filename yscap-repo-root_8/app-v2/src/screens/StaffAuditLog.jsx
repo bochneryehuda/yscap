@@ -125,18 +125,23 @@ export default function StaffAuditLog() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
-        <h1 style={{ margin: 0 }}>Audit log</h1>
-        <div className="spacer" />
-        {anyFilter && <button className="btn ghost small" onClick={reset}>Clear filters</button>}
+      <div className="page-head">
+        <div>
+          <h1>Audit log</h1>
+          <div className="sub">Every action across every loan file and borrower — who did it, what changed, and when.</div>
+          <span className="lock-note"><span className="shield" aria-hidden="true" />GLBA · PII access trail · append-only</span>
+        </div>
+        <div className="page-head-actions">
+          {anyFilter && <button className="btn btn-ghost btn-sm" onClick={reset}>Clear filters</button>}
+        </div>
       </div>
-      <p className="muted small" style={{ marginTop: 0, marginBottom: 14 }}>
-        Every action across every loan file and borrower — who did it, what changed, and when.
+      <p className="muted small" style={{ marginTop: 2, marginBottom: 16, maxWidth: '76ch' }}>
         Search by borrower, property, officer or action; click a name to jump to the file or profile.
       </p>
 
       {/* Filter bar */}
       <div className="panel" style={{ marginBottom: 14 }}>
+        <div className="panel-b">
         <div className="grid cols-2" style={{ gap: 10 }}>
           <div style={{ gridColumn: '1 / -1' }}>
             <label className="muted small">Search</label>
@@ -183,19 +188,31 @@ export default function StaffAuditLog() {
             <input className="input" type="date" value={to} onChange={e => setTo(e.target.value)} />
           </div>
         </div>
+        </div>
       </div>
 
       {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
 
       {rows == null
-        ? <div className="panel muted">Loading the audit trail…</div>
+        ? <div className="panel pad muted">Loading the audit trail…</div>
         : shown.length === 0
-          ? <div className="panel muted">No activity matches these filters.</div>
+          ? <div className="empty-state"><h3>No activity</h3><div>No activity matches these filters.</div></div>
           : (
-            <div style={{ display: 'grid', gap: 8 }}>
-              {shown.map(r => <AuditRow key={r.id} r={r} expanded={expanded === r.id}
-                onToggle={() => setExpanded(expanded === r.id ? null : r.id)}
-                onActor={() => { if (r.actor_kind === 'staff' && r.actor_id) { setActorId(r.actor_id); setActorKind('staff'); } }} />)}
+            <div className="panel">
+              <div className="panel-h">
+                <h3>Access events</h3>
+                <div className="audit-legend">
+                  <span className="lg"><span className="sw" style={{ background: CAT_COLOR.pii }} />SSN / PII</span>
+                  <span className="lg"><span className="sw" style={{ background: CAT_COLOR.document }} />Document</span>
+                  <span className="lg"><span className="sw" style={{ background: CAT_COLOR.borrower }} />Borrower</span>
+                  <span className="lg"><span className="sw" style={{ background: CAT_COLOR.auth }} />Auth</span>
+                </div>
+              </div>
+              <div className="panel-b" style={{ paddingTop: 6, paddingBottom: 6 }}>
+                {shown.map(r => <AuditRow key={r.id} r={r} expanded={expanded === r.id}
+                  onToggle={() => setExpanded(expanded === r.id ? null : r.id)}
+                  onActor={() => { if (r.actor_kind === 'staff' && r.actor_id) { setActorId(r.actor_id); setActorKind('staff'); } }} />)}
+              </div>
             </div>
           )}
 
@@ -230,7 +247,7 @@ function AuditRow({ r, expanded, onToggle, onActor }) {
   }
 
   return (
-    <div className="panel" style={{ padding: '10px 12px' }}>
+    <div className="audit-row">
       <div className="row" style={{ alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
         <span title={r.category} style={{ width: 10, height: 10, borderRadius: '50%', background: color, marginTop: 6, flex: '0 0 auto' }} />
         <div style={{ flex: 1, minWidth: 240 }}>

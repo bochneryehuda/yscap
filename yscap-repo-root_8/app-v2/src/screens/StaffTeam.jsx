@@ -17,6 +17,9 @@ const blankForm = () => ({
   fullName: '', email: '', role: 'loan_officer', title: '', department: 'sales',
   phone: '', cell: '', ext: '', siteSelectable: true, provision: 'invite', password: '',
 });
+// Presentational only: monogram initials + role-pill tier class for the roster.
+const initials = (s) => (String(s || '').trim().split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()) || '—';
+const roleClass = (role) => role === 'super_admin' ? 'role t1' : role === 'admin' ? 'role t2' : 'role';
 
 export default function StaffTeam() {
   const { can } = useAuth();
@@ -113,14 +116,18 @@ export default function StaffTeam() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 16 }}>
-        <h1 style={{ margin: 0 }}>Team</h1>
-        <div className="spacer" />
-        <button className="btn ghost" disabled={mailBusy === 'all'} title="Email a welcome (with set-up link) to everyone who can't log in yet"
-          onClick={async () => { if (mailBusy) return; setMailBusy('all'); setErr(''); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
-          Send welcome to all
-        </button>
-        <span className="muted small" style={{ marginLeft: 10 }}>{rows ? `${rows.length} team members` : ''}</span>
+      <div className="page-head">
+        <div>
+          <h1>Team</h1>
+          <div className="sub">Roster, roles and access across the YS Capital desk.</div>
+        </div>
+        <div className="page-head-actions">
+          <span className="muted small">{rows ? `${rows.length} team members` : ''}</span>
+          <button className="btn btn-ghost btn-sm" disabled={mailBusy === 'all'} title="Email a welcome (with set-up link) to everyone who can't log in yet"
+            onClick={async () => { if (mailBusy) return; setMailBusy('all'); setErr(''); flash('Sending welcome emails…'); try { const r = await api.adminWelcomeAll(false); flash(`Welcome emails: ${r.sent} sent${r.failed ? `, ${r.failed} failed` : ''} (of ${r.total} without a login).`); } catch (e) { setErr(e.message); } finally { setMailBusy(null); } }}>
+            Send welcome to all
+          </button>
+        </div>
       </div>
 
       {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
@@ -128,7 +135,8 @@ export default function StaffTeam() {
 
       {/* ---- add new staff ---- */}
       <div className="panel" style={{ marginBottom: 20 }}>
-        <h3 style={{ marginBottom: 4 }}>Add a team member</h3>
+        <div className="panel-h"><h3>Add a team member</h3></div>
+        <div className="panel-b">
         <p className="muted small" style={{ marginBottom: 14 }}>
           They immediately become assignable to files. Sales members marked “Show on site” also
           appear on the public “select your loan officer” list. Choose how they get login access.
@@ -175,24 +183,29 @@ export default function StaffTeam() {
             <button className="btn primary" disabled={busy}>{busy ? 'Adding…' : 'Add team member'}</button>
           </div>
         </form>
+        </div>
       </div>
 
       {/* ---- roster ---- */}
-      {rows == null ? <div className="panel muted">Loading…</div> : groups.map(g => {
+      {rows == null ? <div className="panel muted pad">Loading…</div> : groups.map(g => {
         const list = byDept(g.key);
         if (!list.length) return null;
         return (
           <div className="panel" key={g.label} style={{ marginBottom: 16 }}>
-            <h3 style={{ marginBottom: 12 }}>{g.label} <span className="muted small">({list.length})</span></h3>
+            <div className="panel-h"><h3>{g.label}</h3><span className="pill mut">{list.length}</span></div>
+            <div className="panel-b" style={{ paddingTop: 4, paddingBottom: 4 }}>
             {list.map(s => (
               <div key={s.id} className="checkitem" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <div style={{ fontWeight: 600 }}>{s.full_name} <span className="muted small">· {ROLE_LABEL[s.role] || s.role}</span></div>
-                  <div className="muted small">{s.title || '—'} · {s.email}{s.phone ? ` · ${s.phone}` : ''}{s.ext ? ` x${s.ext}` : ''}</div>
-                  <div className="muted small">
-                    {s.has_login ? 'Has login' : 'No login yet'}
-                    {s.last_login_at ? ` · last in ${new Date(s.last_login_at).toLocaleDateString()}` : ''}
-                    {s.mfa_enabled ? ' · MFA on' : ''}
+                <div className="who" style={{ flex: 1, minWidth: 220, alignItems: 'flex-start' }}>
+                  <span className="mono" aria-hidden="true">{initials(s.full_name)}</span>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="nm">{s.full_name} <span className={roleClass(s.role)}>{ROLE_LABEL[s.role] || s.role}</span></div>
+                    <div className="muted small">{s.title || '—'} · {s.email}{s.phone ? ` · ${s.phone}` : ''}{s.ext ? ` x${s.ext}` : ''}</div>
+                    <div className="muted small">
+                      {s.has_login ? 'Has login' : 'No login yet'}
+                      {s.last_login_at ? ` · last in ${new Date(s.last_login_at).toLocaleDateString()}` : ''}
+                      {s.mfa_enabled ? ' · MFA on' : ''}
+                    </div>
                   </div>
                 </div>
                 <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -305,6 +318,7 @@ export default function StaffTeam() {
                 )}
               </div>
             ))}
+            </div>
           </div>
         );
       })}

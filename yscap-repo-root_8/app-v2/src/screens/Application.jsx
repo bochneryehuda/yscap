@@ -742,7 +742,7 @@ export default function Application() {
           </span></div>
           <div className="metrow"><span className="k">ARV</span><span className="v">{money(app.arv)}</span></div>
           <div className="metrow"><span className="k">Rehab budget</span><span className="v">{money(app.rehab_budget)}</span></div>
-          <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
+          <div className="metrow"><span className="k">Loan amount</span><span className="v ln-amount">{money(app.loan_amount)}</span></div>
         </div>
       </div>
       </Section>

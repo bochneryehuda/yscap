@@ -162,7 +162,10 @@ export default function Profile() {
       {/* Personal (required on applications) */}
       <div className="panel">
         <h3 style={{ marginBottom: 4 }}>Personal information</h3>
-        <p className="muted small" style={{ marginBottom: 12 }}>Required on every application — stored securely here so applications can skip it. Your SSN is encrypted and only its last 4 digits are ever shown.</p>
+        <div className="secure-strip">
+          <span className="lock" aria-hidden="true">🔒</span>
+          <div>Required on every application — stored securely here so applications can skip it. <b>Your SSN is encrypted and only its last 4 digits are ever shown.</b></div>
+        </div>
         <div className="grid cols-3">
           <div className="field"><label>Date of birth</label>
             <input className="input" type="date" value={p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : ''} onChange={e => set('date_of_birth', e.target.value)} /></div>

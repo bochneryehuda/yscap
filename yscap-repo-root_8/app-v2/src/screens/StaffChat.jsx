@@ -125,9 +125,9 @@ export default function StaffChat() {
         </div>
         <input className="input" style={{ marginBottom: 8 }} value={q} onChange={e => setQ(e.target.value)}
           placeholder="Search chats, borrowers, addresses…" />
-        <div className="row" style={{ gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+        <div className="tabs" style={{ marginBottom: 10 }}>
           {KIND_FILTERS.map(([k, label]) => (
-            <button key={k} className={`btn small ${filter === k ? 'primary' : 'ghost'}`} onClick={() => setFilter(k)}>{label}</button>
+            <button key={k} className={`tab ${filter === k ? 'on' : ''}`} onClick={() => setFilter(k)}>{label}</button>
           ))}
         </div>
 

@@ -52,37 +52,57 @@ export default function StaffLayout({ children }) {
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
   const canViewAudit = can('view_audit_log');
+  const roleLabel = ROLE_LABEL[role] || role || 'Internal';
   return (
-    <div className="shell">
-      <header className="header">
-        <div className="wrap">
+    <div className="app">
+      <aside className={`app-sidebar ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
+        <div className="app-brandrow">
           <Brand to="/internal" ariaLabel="PILOT by YS Capital — Internal" console={consoleLabel} />
-          <button className="nav-toggle" aria-label={menuOpen ? 'Close menu' : 'Open menu'}
-            aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>{menuOpen ? '✕' : '☰'}</button>
-          {menuOpen && <div className="nav-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
-          <nav className={`nav ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
-            <NavLink to="/internal" end>Pipeline</NavLink>
-            <NavLink to="/internal/tasks">My tasks</NavLink>
-            <NavLink to="/internal/chat" style={{ position: 'relative' }}>
-              Chat{unread > 0 && <span className="chat-badge nav">{unread > 99 ? '99+' : unread}</span>}
-            </NavLink>
-            <NavLink to="/internal/leads">Leads</NavLink>
-            <NavLink to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login">Borrowers</NavLink>
-            {canManageConditions && <NavLink to="/internal/conditions" title="Condition Center — the global condition library & rules">Conditions</NavLink>}
-            {canManageTeam && <NavLink to="/internal/team">Team</NavLink>}
-            {canManageVendors && <NavLink to="/internal/vendors" title="Title & insurance vendor directory">Vendors</NavLink>}
-            {canDeleteFiles && <NavLink to="/internal/archived" title="Archived files — restore or delete permanently">Archived</NavLink>}
-            {canPlatformSetup && <NavLink to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill">ClickUp</NavLink>}
-            {canViewAudit && <NavLink to="/internal/audit" title="System audit log — every action across every file & borrower">Audit log</NavLink>}
-            <span className="pill" title="Your role">{ROLE_LABEL[role] || role || 'Internal'}</span>
-            <button className="btn ghost small" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
-          </nav>
+        </div>
+        <div className="sb-sec">Main</div>
+        <NavLink className="sb-link" to="/internal" end><span className="ic" aria-hidden="true" />Pipeline</NavLink>
+        <NavLink className="sb-link" to="/internal/tasks"><span className="ic" aria-hidden="true" />My tasks</NavLink>
+        <NavLink className="sb-link" to="/internal/chat">
+          <span className="ic" aria-hidden="true" />Chat
+          {unread > 0 && <span className="sb-badge">{unread > 99 ? '99+' : unread}</span>}
+        </NavLink>
+        <NavLink className="sb-link" to="/internal/leads"><span className="ic" aria-hidden="true" />Leads</NavLink>
+
+        <div className="sb-sec">Files</div>
+        <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><span className="ic" aria-hidden="true" />Borrowers</NavLink>
+        {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><span className="ic" aria-hidden="true" />Conditions</NavLink>}
+        {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><span className="ic" aria-hidden="true" />Vendors</NavLink>}
+        {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><span className="ic" aria-hidden="true" />Archived</NavLink>}
+
+        {(canManageTeam || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}
+        {canManageTeam && <NavLink className="sb-link" to="/internal/team"><span className="ic" aria-hidden="true" />Team</NavLink>}
+        {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><span className="ic" aria-hidden="true" />ClickUp</NavLink>}
+        {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><span className="ic" aria-hidden="true" />Audit log</NavLink>}
+
+        <div className="sb-spacer" />
+        <div className="sb-foot">
+          <span className="pill" title="Your role">{roleLabel}</span>
+          <button className="btn ghost small" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
+        </div>
+      </aside>
+      {menuOpen && <div className="app-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}
+
+      <header className="app-topbar">
+        <button className="app-navtoggle" aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={menuOpen} onClick={() => setMenuOpen(o => !o)}>{menuOpen ? '✕' : '☰'}</button>
+        <div className="app-search" aria-hidden="true">Search loans, borrowers, LLCs…</div>
+        <div className="user-pill">
+          <NavLink className="btn btn-gold btn-sm" to="/internal/new">+ New file</NavLink>
+          <span className="chip" title="Your role">{roleLabel}</span>
         </div>
       </header>
-      <main className="content"><div className="wrap">{children}</div></main>
-      <footer className="wrap small muted" style={{ padding: '20px', borderTop: '1px solid var(--line)' }}>
-        YS Capital Group · NMLS #2609746 · Internal console · Business-purpose lending only.
-      </footer>
+
+      <main className="app-main">
+        <div className="wrap">{children}</div>
+        <footer className="wrap app-foot small muted">
+          YS Capital Group · NMLS #2609746 · Internal console · Business-purpose lending only.
+        </footer>
+      </main>
     </div>
   );
 }

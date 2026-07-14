@@ -89,76 +89,86 @@ export default function StaffBorrowers() {
   }, [rows, q, sortKey, officer]);
 
   return (
-    <div className="wrap">
-      <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
-        <h1 style={{ margin: 0 }}>Borrowers</h1>
-        <div className="spacer" />
-        <select className="input" value={officer} onChange={e => setOfficer(e.target.value)} style={{ maxWidth: 200 }} title="Show only this loan officer's clients">
-          <option value="all">All loan officers</option>
-          {officers.map(o => <option key={o} value={o}>{o}</option>)}
-          {hasUnassigned && <option value="__none__">(Unassigned)</option>}
-        </select>
-        <select className="input" value={sortKey} onChange={e => setSortKey(e.target.value)} style={{ maxWidth: 180, marginLeft: 8 }} title="Sort borrowers">
-          <option value="recent">Most recent login</option>
-          <option value="name">Name (A–Z)</option>
-          <option value="officer">Loan officer</option>
-          <option value="files"># of files</option>
-          <option value="portal">PILOT status</option>
-          <option value="created">Newest added</option>
-        </select>
-        <input className="input" placeholder="Search name, email, phone, officer…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 280, marginLeft: 8 }} />
+    <>
+      <div className="page-head">
+        <div>
+          <h1>Borrowers</h1>
+          <div className="sub">Your borrowers across the book — open one for their full CRM profile, or invite to PILOT, email a reset, or set a password.</div>
+        </div>
+        <div className="page-head-actions">
+          <select className="input" value={officer} onChange={e => setOfficer(e.target.value)} style={{ maxWidth: 200 }} title="Show only this loan officer's clients">
+            <option value="all">All loan officers</option>
+            {officers.map(o => <option key={o} value={o}>{o}</option>)}
+            {hasUnassigned && <option value="__none__">(Unassigned)</option>}
+          </select>
+          <select className="input" value={sortKey} onChange={e => setSortKey(e.target.value)} style={{ maxWidth: 180 }} title="Sort borrowers">
+            <option value="recent">Most recent login</option>
+            <option value="name">Name (A–Z)</option>
+            <option value="officer">Loan officer</option>
+            <option value="files"># of files</option>
+            <option value="portal">PILOT status</option>
+            <option value="created">Newest added</option>
+          </select>
+          <input className="input" placeholder="Search name, email, phone, officer…" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 280 }} />
+        </div>
       </div>
-      <p className="muted small" style={{ marginTop: 0 }}>
-        Your borrowers — open a borrower to see their full CRM profile, or invite them to PILOT, email a password reset, or set a password. Last login shows their most recent PILOT sign-in.
-      </p>
       {msg && <div className="notice ok">{msg}</div>}
       {err && <div role="alert" className="notice err">{err}</div>}
 
       {filtered == null ? <p className="muted">Loading…</p>
-        : filtered.length === 0 ? <p className="muted">{q ? 'No borrowers match your search.' : 'No borrowers on your files yet.'}</p>
+        : filtered.length === 0 ? <div className="empty-state"><h3>No borrowers</h3><p>{q ? 'No borrowers match your search.' : 'No borrowers on your files yet.'}</p></div>
         : (
-        <div className="panel" style={{ padding: 0, overflowX: 'auto' }}>
-          <table className="table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <div className="panel">
+          <div className="panel-h">
+            <h3>Directory</h3>
+            <span className="pill mut">{filtered.length} of {rows.length}</span>
+          </div>
+          <div className="tbl-scroll">
+          <table className="tbl">
             <thead>
-              <tr style={{ textAlign: 'left' }}>
-                <th style={{ padding: '10px 12px' }}>Borrower</th>
-                <th style={{ padding: '10px 12px' }}>Contact</th>
-                <th style={{ padding: '10px 12px' }}>Loan officer</th>
-                <th style={{ padding: '10px 12px' }}>Files</th>
-                <th style={{ padding: '10px 12px' }}>PILOT</th>
-                <th style={{ padding: '10px 12px' }}>Last login</th>
-                <th style={{ padding: '10px 12px', textAlign: 'right' }}>Actions</th>
+              <tr>
+                <th>Borrower</th>
+                <th>Contact</th>
+                <th>Loan officer</th>
+                <th className="num">Files</th>
+                <th>PILOT</th>
+                <th>Last login</th>
+                <th style={{ textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map(b => {
                 const name = `${b.first_name || ''} ${b.last_name || ''}`.trim() || '(no name)';
+                const ini = `${(b.first_name || ' ')[0] || ''}${(b.last_name || ' ')[0] || ''}`.trim().toUpperCase() || '—';
                 const last = ago(b.last_login_at);
                 return (
                   <React.Fragment key={b.id}>
-                    <tr style={{ borderTop: '1px solid var(--line, rgba(127,169,176,.2))' }}>
-                      <td style={{ padding: '10px 12px', fontWeight: 600 }}>
-                        <Link to={`/internal/borrowers/${b.id}`}>{name}</Link>
+                    <tr>
+                      <td>
+                        <span className="off">
+                          <span className="mono">{ini}</span>
+                          <Link className="lead" to={`/internal/borrowers/${b.id}`}>{name}</Link>
+                        </span>
                       </td>
-                      <td style={{ padding: '10px 12px' }}>
+                      <td>
                         <div className="small">{b.email || '—'}</div>
                         <div className="muted small">{b.cell_phone || ''}</div>
                       </td>
-                      <td style={{ padding: '10px 12px' }} className="small">{b.loan_officer_name || <span className="muted">—</span>}</td>
-                      <td style={{ padding: '10px 12px' }}>
+                      <td className="mut">{b.loan_officer_name || <span className="muted">—</span>}</td>
+                      <td className="num">
                         {b.latest_file_id
                           ? <Link to={`/internal/app/${b.latest_file_id}`} title="Open the most recent file">{b.files}</Link>
                           : b.files}
                       </td>
-                      <td style={{ padding: '10px 12px' }}>
+                      <td>
                         {b.has_account
-                          ? <span className="pill" style={{ borderColor: 'var(--ok)', color: 'var(--ok)' }}>Active</span>
-                          : <span className="pill">No account</span>}
+                          ? <span className="pill ok">Active</span>
+                          : <span className="pill mut">No account</span>}
                       </td>
-                      <td style={{ padding: '10px 12px' }}>
+                      <td className="mut">
                         {b.has_account ? (last || <span className="muted">never</span>) : <span className="muted">—</span>}
                       </td>
-                      <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                         {!b.has_account && (
                           <button className="btn primary small" disabled={busy === 'invite:' + b.id || !b.email}
                             title={b.email ? 'Email a set-password invite for their latest file' : 'No email on file'}
@@ -195,8 +205,9 @@ export default function StaffBorrowers() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

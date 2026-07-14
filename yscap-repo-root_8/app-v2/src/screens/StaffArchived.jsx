@@ -44,12 +44,16 @@ export default function StaffArchived() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 8, alignItems: 'baseline' }}>
-        <h1 style={{ margin: 0 }}>Archived files</h1>
-        <div className="spacer" />
-        <span className="muted small">{rows ? `${rows.length} archived` : ''}</span>
+      <div className="page-head">
+        <div>
+          <h1>Archived files</h1>
+          <div className="sub">Out of the pipeline and every dashboard figure — restore or delete permanently.</div>
+        </div>
+        <div className="page-head-actions">
+          {rows && <span className="chip">{rows.length} archived</span>}
+        </div>
       </div>
-      <p className="muted" style={{ marginTop: 2, marginBottom: 14 }}>
+      <p className="muted small" style={{ marginTop: 2, marginBottom: 18, maxWidth: '72ch' }}>
         Archived files are out of the pipeline and excluded from every dashboard figure. Restore one to
         bring it back, or delete it permanently — a permanent delete removes the file and everything under
         it and cannot be undone.
@@ -57,27 +61,37 @@ export default function StaffArchived() {
       {msg && <div className="notice ok" style={{ marginBottom: 12 }}>{msg}</div>}
       {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
 
-      {rows == null ? <div className="panel muted">Loading…</div>
-        : rows.length === 0 ? <div className="panel muted">No archived files. Archiving a file from its page moves it here.</div>
-        : (
-          <div className="panel" style={{ padding: 0 }}>
-            <div className="table-scroll">
-              <table>
+      {rows == null ? <div className="panel pad muted">Loading…</div>
+        : rows.length === 0 ? (
+          <div className="empty-state">
+            <h3>No archived files</h3>
+            <div>Archiving a file from its page moves it here.</div>
+          </div>
+        ) : (
+          <div className="panel">
+            <div className="panel-h">
+              <h3>Archived files</h3>
+              <span className="pill mut">Restore or delete</span>
+            </div>
+            <div className="tbl-scroll">
+              <table className="tbl">
                 <thead>
-                  <tr><th>Loan #</th><th>Borrower</th><th>Property</th><th>Program</th><th>Loan amount</th><th>Archived</th><th></th></tr>
+                  <tr><th>Loan #</th><th>Deal / Borrower · Address</th><th>Program</th><th className="num">Amount</th><th>Archived</th><th></th></tr>
                 </thead>
                 <tbody>
                   {rows.map((a) => (
                     <tr key={a.id}>
                       <td><Link to={`/internal/app/${a.id}`}>{a.ys_loan_number || '—'}</Link></td>
-                      <td>{[a.first_name, a.last_name].filter(Boolean).join(' ') || a.email || '—'}</td>
-                      <td>{addrLine(a.property_address)}</td>
+                      <td className="cell-deal">
+                        <div className="lead">{[a.first_name, a.last_name].filter(Boolean).join(' ') || a.email || '—'}</div>
+                        <div className="addr">{addrLine(a.property_address)}</div>
+                      </td>
                       <td>{a.program || '—'}</td>
-                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{money(a.loan_amount)}</td>
-                      <td className="muted small">{a.deleted_at ? new Date(a.deleted_at).toLocaleDateString() : '—'}</td>
+                      <td className="num">{money(a.loan_amount)}</td>
+                      <td className="mut whenn">{a.deleted_at ? new Date(a.deleted_at).toLocaleDateString() : '—'}</td>
                       <td>
                         <div className="row" style={{ gap: 8, justifyContent: 'flex-end' }}>
-                          <button className="btn ghost small" disabled={busy === a.id} onClick={() => restore(a)}>Restore</button>
+                          <button className="btn btn-ghost btn-sm" disabled={busy === a.id} onClick={() => restore(a)}>Restore</button>
                           <button className="btn link small" style={{ color: 'var(--danger,#e06666)' }} disabled={busy === a.id} onClick={() => purge(a)}>Delete permanently</button>
                         </div>
                       </td>
