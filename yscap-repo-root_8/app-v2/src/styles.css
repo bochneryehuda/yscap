@@ -1900,40 +1900,24 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .shell .file-nav a{font-weight:600;font-size:13.5px;color:var(--text-muted)}
 .shell .file-nav a.active{color:var(--text);font-weight:700}
 
-/* — Status timeline → horizontal stepper (blueprint tl-track). StatusTimeline
-     is borrower-only; :has(.tl-step) targets ONLY it, never Apply's .timeline
-     (no .tl-step children), and degrades to the vertical list if :has is
-     unsupported — first-paint safe. — */
-/* Steps must never shrink below their label — otherwise, if this horizontal
-   track is ever forced into a cramped container (a blown-up layout viewport, or
-   a client that skipped the max-width:720px vertical fallback), the labels
-   overflow their column and LAP onto the next step. flex:1 0 auto + a per-step
-   min-width means the 7 steps either fit-and-grow, or the track scrolls
-   horizontally — but they can never overlap. (owner-directed 2026-07-14) */
-.shell .timeline:has(.tl-step){display:flex;align-items:flex-start;gap:0;padding:8px 0 2px;
-  overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
-.shell .timeline:has(.tl-step)::-webkit-scrollbar{display:none}
-.shell .timeline:has(.tl-step) .tl-step{flex:1 0 auto;min-width:80px;flex-direction:column;align-items:center;
-  text-align:center;gap:8px;padding:0 6px}
-.shell .timeline:has(.tl-step) .tl-step::before{display:none}
-.shell .timeline:has(.tl-step) .tl-step:not(:last-child)::after{content:'';position:absolute;top:8px;left:50%;
-  width:100%;height:2px;background:var(--border);z-index:0}
-.shell .timeline:has(.tl-step) .tl-step.done:not(:last-child)::after,
-.shell .timeline:has(.tl-step) .tl-step.current:not(:last-child)::after{background:var(--primary)}
-.shell .timeline:has(.tl-step) .tl-dot{margin:0;z-index:1}
+/* — Status timeline: a VERTICAL stacked stepper on the portal at ALL widths
+     (owner-directed 2026-07-14). Don't squeeze 7 steps side-to-side in the
+     half-width overview column — there's plenty of vertical room, so stack them
+     "one under the other", each with its dot, label and a timestamp. :has(.tl-step)
+     targets ONLY StatusTimeline (never Apply's .timeline, which has no .tl-step
+     children), and degrades to the base vertical list if :has is unsupported —
+     first-paint safe. A vertical list can never overlap, at any width. — */
+.shell .timeline:has(.tl-step){display:block;padding:0}
+.shell .timeline:has(.tl-step) .tl-step{flex-direction:row;align-items:flex-start;text-align:left;
+  gap:12px;padding:7px 0;position:relative}
+.shell .timeline:has(.tl-step) .tl-step:not(:last-child)::before{content:'';display:block;position:absolute;
+  left:7px;top:22px;bottom:-7px;width:2px;background:var(--border)}
+.shell .timeline:has(.tl-step) .tl-step.done:not(:last-child)::before,
+.shell .timeline:has(.tl-step) .tl-step.current:not(:last-child)::before{background:var(--primary)}
+.shell .timeline:has(.tl-step) .tl-dot{margin:1px 0 0;z-index:1}
 .shell .timeline:has(.tl-step) .tl-body{min-width:0}
-.shell .timeline:has(.tl-step) .tl-label{font-size:11px;line-height:1.2;overflow-wrap:break-word}
-/* On phones the 7-step horizontal track can't fit — flip back to a clean vertical list. */
-@media(max-width:720px){
-  .shell .timeline:has(.tl-step){display:block;padding:0}
-  .shell .timeline:has(.tl-step) .tl-step{flex-direction:row;align-items:flex-start;text-align:left;gap:12px;padding:6px 0}
-  .shell .timeline:has(.tl-step) .tl-step::after{display:none}
-  .shell .timeline:has(.tl-step) .tl-step:not(:last-child)::before{content:'';display:block;position:absolute;left:7px;top:20px;bottom:-6px;width:2px;background:var(--border)}
-  .shell .timeline:has(.tl-step) .tl-step.done:not(:last-child)::before,
-  .shell .timeline:has(.tl-step) .tl-step.current:not(:last-child)::before{background:var(--primary)}
-  .shell .timeline:has(.tl-step) .tl-label{font-size:13.5px}
-  .shell .timeline:has(.tl-step) .tl-body .small{display:block}
-}
+.shell .timeline:has(.tl-step) .tl-label{font-size:14px;line-height:1.25}
+.shell .timeline:has(.tl-step) .tl-body .small{display:block}
 
 /* — Dashboard: editorial next-steps strip (tiles laid on a hairline grid) and
      calmer loan cards, matching the blueprint dashboard. .next-strip is a

@@ -100,7 +100,7 @@ module.exports = {
   // An explicit EMAIL_PROVIDER always wins.
   emailProvider: resolveEmailProvider(),
   notifyFrom:    process.env.NOTIFY_FROM || 'YS Capital Group <no-reply@yscapgroup.com>',
-  appUrl:        (process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,''),  // base for links in emails
+  appUrl:        (process.env.APP_URL || 'https://www.yscapgroup.com').replace(/\/+$/,''),  // base for links in emails (live custom domain)
   // The borrower/staff SPA is mounted under this path (vite base '/portal/',
   // HashRouter). Email + notification deep links must include it, or they land
   // on the marketing site instead of the portal.
@@ -111,7 +111,7 @@ module.exports = {
   // baked onto white so it reads on the light email header. Override with
   // EMAIL_LOGO_URL if hosted elsewhere.
   emailLogoUrl:  process.env.EMAIL_LOGO_URL ||
-                 ((process.env.APP_URL || 'https://portal.yscapgroup.com').replace(/\/+$/,'') + '/assets/brand/pilot-lockup-email.png'),
+                 ((process.env.APP_URL || 'https://www.yscapgroup.com').replace(/\/+$/,'') + '/assets/brand/pilot-lockup-email.png'),
   notifyAdmins:  (process.env.NOTIFY_ADMINS || '').split(',').map(s => s.trim()).filter(Boolean),
   // Microsoft Graph (Outlook) provider:
   msTenantId:    process.env.MS_TENANT_ID,

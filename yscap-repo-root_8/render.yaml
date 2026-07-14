@@ -51,10 +51,13 @@ services:
         value: auto
       - key: NOTIFY_FROM
         value: YS Capital Group <no-reply@yscapgroup.com>
-      # Base URL used for links inside emails (verify/reset). Set to the portal's
-      # public URL, e.g. https://yscap.onrender.com or your custom domain.
+      # Base URL used for links inside emails (verify/reset) AND the email logo.
+      # This is the live custom domain (owner-directed 2026-07-14) so every
+      # notification link opens www.yscapgroup.com, not the onrender subdomain.
+      # NOTE: if APP_URL is ALSO set in the Render dashboard it overrides this —
+      # update it there too.
       - key: APP_URL
-        value: https://yscap.onrender.com
+        value: https://www.yscapgroup.com
       # Paste your Resend API key in the dashboard (kept out of git). NOTIFY_FROM's
       # domain (yscapgroup.com) must be a verified domain in your Resend account.
       - key: RESEND_API_KEY
