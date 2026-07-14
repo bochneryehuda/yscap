@@ -254,21 +254,32 @@ async function _deliver(row, { lead } = {}) {
 // fired_at / reminded_at stamps stop a row from being sent twice.
 async function dispatchDue(client = db) {
   let fired = 0;
+  // A reminder/task on a file that is funded, on hold, declined or withdrawn is
+  // no longer active work (owner-directed 2026-07-14) — it must NOT fire a
+  // notification. We DON'T stamp those rows, so they stay scheduled and simply
+  // pause: if the file later comes off hold (or is otherwise reactivated) the
+  // reminder becomes eligible again and fires. The row is always visible inside
+  // the file. (A reminder with no linked application still fires normally.)
+  const NOT_MUTED = `(a.id IS NULL OR a.status NOT IN ('funded','on_hold','declined','withdrawn'))`;
   // 1) Pre-due nudges (tasks with remind_at reached, not yet nudged, not fired).
   const leads = await client.query(
-    `SELECT * FROM reminders
-      WHERE status='scheduled' AND remind_at IS NOT NULL AND reminded_at IS NULL
-        AND fired_at IS NULL AND remind_at <= now() AND due_at > now()
-      ORDER BY remind_at LIMIT 100`);
+    `SELECT r.* FROM reminders r
+       LEFT JOIN applications a ON a.id=r.application_id
+      WHERE r.status='scheduled' AND r.remind_at IS NOT NULL AND r.reminded_at IS NULL
+        AND r.fired_at IS NULL AND r.remind_at <= now() AND r.due_at > now()
+        AND ${NOT_MUTED}
+      ORDER BY r.remind_at LIMIT 100`);
   for (const row of leads.rows) {
     await _deliver(row, { lead: true });
     await client.query(`UPDATE reminders SET reminded_at=now(), updated_at=now() WHERE id=$1`, [row.id]);
   }
   // 2) Due firings.
   const due = await client.query(
-    `SELECT * FROM reminders
-      WHERE status='scheduled' AND fired_at IS NULL AND due_at <= now()
-      ORDER BY due_at LIMIT 100`);
+    `SELECT r.* FROM reminders r
+       LEFT JOIN applications a ON a.id=r.application_id
+      WHERE r.status='scheduled' AND r.fired_at IS NULL AND r.due_at <= now()
+        AND ${NOT_MUTED}
+      ORDER BY r.due_at LIMIT 100`);
   for (const row of due.rows) {
     await _deliver(row, {});
     // A one-shot reminder is 'sent' once fired; a task stays actionable (still

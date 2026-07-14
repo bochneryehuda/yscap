@@ -41,6 +41,15 @@ const seesAll = (req) => can(req.actor, 'see_all_files');
 // borrowers they've done a loan for. File-level access (/applications/:id) is
 // unchanged — a processor still opens individual files only where assigned.
 const seesAllBorrowers = (req) => seesAll(req) || (req.actor && req.actor.role === 'processor');
+// A file that is NOT actionable work: funded/closed (done), declined/withdrawn
+// (dead), or ON HOLD (paused — owner-directed 2026-07-14). None of these should
+// surface as active tasks, reminders, doc-prompts, or stale-file nags, or inflate
+// the live-pipeline metrics — their open items stay INSIDE the file but fall off
+// every "what's on my plate" surface. (Post-closing items are the sole exception
+// on funded files; that carve-out is applied where it matters.) Kept as one SQL
+// IN-list so every active-work query shares a single definition — extends the #24
+// funded-muting to on_hold.
+const INACTIVE_FILE_STATUSES = "('funded','declined','withdrawn','on_hold')";
 // The standard post-closing trailing-doc set, seeded when a file funds.
 const POST_CLOSING_SET = [
   ['note', 'Final executed note'],
@@ -140,7 +149,7 @@ router.get('/dashboard', async (req, res) => {
     // funded; cancelled = withdrawn/declined. These drive the dashboard so a held
     // or closed file never inflates the live pipeline. NOTE: at the `status` level
     // ClickUp 'cancelled/trash/recalled' all map to 'withdrawn' (see clickup/status.js).
-    const ACTIVE_SQL = `status NOT IN ('funded','declined','withdrawn')`;
+    const ACTIVE_SQL = `status NOT IN ${INACTIVE_FILE_STATUSES}`;
     const CANCELLED_SQL = `status IN ('declined','withdrawn')`;
     // A genuinely NEW file is a real portal/staff intake this week — NOT a row the
     // ClickUp backfill just inserted (those default created_at=now() and would make
@@ -268,11 +277,15 @@ router.get('/applications', async (req, res) => {
     if (q.status) {
       where.push(`a.status = ${add(String(q.status))}`);
     } else if (q.group === 'active') {
-      where.push(`a.status NOT IN ('funded','declined','withdrawn')`);
+      where.push(`a.status NOT IN ${INACTIVE_FILE_STATUSES}`);
     } else if (q.group === 'cancelled') {
       where.push(`a.status IN ('declined','withdrawn')`);
     } else if (q.group === 'closed') {
       where.push(`a.status = 'funded'`);
+    } else if (q.group === 'on_hold') {
+      // Held files no longer live in the 'active' bucket (they're paused, not
+      // being worked), so give them their own reachable bucket.
+      where.push(`a.status = 'on_hold'`);
     }
     // 'all'/absent group with no status → no status predicate.
 
@@ -322,7 +335,7 @@ router.get('/applications', async (req, res) => {
     // Ops flags — mirror the dashboard's stale (active + untouched > 5 days) and
     // its dateless-funded (K1) bucket.
     if (q.flag === 'stalled') {
-      where.push(`a.status NOT IN ('funded','declined','withdrawn') AND a.updated_at < now() - interval '5 days'`);
+      where.push(`a.status NOT IN ${INACTIVE_FILE_STATUSES} AND a.updated_at < now() - interval '5 days'`);
     } else if (q.flag === 'nodate') {
       where.push(`a.status = 'funded' AND a.actual_closing IS NULL`);
     }
@@ -472,14 +485,14 @@ router.get('/exceptions', async (req, res) => {
   try {
     const r = await db.query(
       `SELECT
-         count(*) FILTER (WHERE a.loan_officer_id IS NULL AND a.status NOT IN ('funded','declined','withdrawn'))::int AS unassigned,
+         count(*) FILTER (WHERE a.loan_officer_id IS NULL AND a.status NOT IN ${INACTIVE_FILE_STATUSES})::int AS unassigned,
          -- Funded/terminal files stay quiet in every outside-the-file rollup
          -- (owner-directed 2026-07-14); their conditions remain inside the file.
-         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
-         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
-         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
+         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
+         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
+         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
          count(*) FILTER (WHERE EXISTS(SELECT 1 FROM messages m WHERE m.application_id=a.id AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL))::int AS unread_messages,
-         count(*) FILTER (WHERE a.status NOT IN ('funded','declined','withdrawn') AND EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
+         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
          count(*) FILTER (WHERE EXISTS(SELECT 1 FROM post_closing_items p WHERE p.application_id=a.id AND p.status='exception'))::int AS post_closing_exceptions
        FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params);
     res.json(r.rows[0]);
@@ -501,11 +514,11 @@ router.get('/my-tasks', async (req, res) => {
        JOIN borrowers b ON b.id=a.borrower_id
       WHERE a.deleted_at IS NULL
         AND ci.status NOT IN ('satisfied')
-        -- FUNDED/terminal files stay quiet OUTSIDE the file (owner-directed
-        -- 2026-07-14): their open conditions remain visible INSIDE the file,
-        -- but they never populate the task list again. Post-closing items are
-        -- the one exception — they stay live even after funding.
-        AND (a.status NOT IN ('funded','declined','withdrawn')
+        -- FUNDED/terminal/ON-HOLD files stay quiet OUTSIDE the file (owner-
+        -- directed 2026-07-14): their open conditions remain visible INSIDE the
+        -- file, but they never populate the task list again. Post-closing items
+        -- are the one exception — they stay live even after funding.
+        AND (a.status NOT IN ${INACTIVE_FILE_STATUSES}
              OR ci.phase = 'post_closing' OR ci.category = 'post_closing')
         AND (ci.assignee_staff_id=$1
              OR (ci.assignee_staff_id IS NULL AND ci.role_scope='loan_officer' AND a.loan_officer_id=$1)
