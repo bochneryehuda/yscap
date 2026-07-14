@@ -455,4 +455,8 @@ export const api = {
 
   // ---- Condition Center: borrower answers an information condition ----
   submitInfoCondition: (appId, itemId, value) => req('POST', `/api/borrower/applications/${appId}/checklist/${itemId}/info`, { value }),
+
+  // ---- Pricing Admin Center (manage_pricing): company-wide markup/fee defaults ----
+  adminPricingGet: () => req('GET', '/api/admin/pricing'),
+  adminPricingPut: (b) => req('PUT', '/api/admin/pricing', b),
 };

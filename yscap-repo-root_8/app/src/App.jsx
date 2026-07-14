@@ -25,6 +25,7 @@ import StaffTasks from './screens/StaffTasks.jsx';
 import StaffApplication from './screens/StaffApplication.jsx';
 import StaffTeam from './screens/StaffTeam.jsx';
 import StaffConditionStudio from './screens/StaffConditionStudio.jsx';
+import StaffCompanyPricing from './screens/StaffCompanyPricing.jsx';
 import StaffArchived from './screens/StaffArchived.jsx';
 import StaffLeads from './screens/StaffLeads.jsx';
 import StaffBorrowers from './screens/StaffBorrowers.jsx';
@@ -100,6 +101,7 @@ export default function App() {
           <Route path="/internal/app/:id" element={<StaffPrivate><StaffApplication /></StaffPrivate>} />
           <Route path="/internal/team" element={<StaffPrivate><StaffTeam /></StaffPrivate>} />
           <Route path="/internal/conditions" element={<StaffPrivate><StaffConditionStudio /></StaffPrivate>} />
+          <Route path="/internal/pricing" element={<StaffPrivate><StaffCompanyPricing /></StaffPrivate>} />
           <Route path="/internal/archived" element={<StaffPrivate><StaffArchived /></StaffPrivate>} />
           <Route path="/internal/leads" element={<StaffPrivate><StaffLeads /></StaffPrivate>} />
           <Route path="/internal/borrowers" element={<StaffPrivate><StaffBorrowers /></StaffPrivate>} />

@@ -117,6 +117,16 @@ app.get('/api/health', async (req, res) => {
 });
 app.use('/auth', require('./auth').router);
 app.use('/api/roster', require('./routes/roster'));   // public team roster (site dropdown + ?lo branding)
+// Public company pricing defaults — the marketing term-sheet generator + the
+// portal studio read these live so a company-wide fee/markup change reaches
+// every not-yet-registered term sheet. Never 500s the site (empty → the tool
+// keeps its literals).
+app.get('/api/pricing-defaults', async (req, res) => {
+  try {
+    const d = await require('./lib/pricing-settings').load();
+    res.set('Cache-Control', 'public, max-age=60').json(d);
+  } catch (e) { res.set('Cache-Control', 'no-store').json({}); }
+});
 app.use('/api/address', require('./routes/address')); // address autocomplete/verification proxy (key stays server-side)
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/intake', require('./routes/intake'));
@@ -128,6 +138,7 @@ app.use('/api/staff', require('./routes/staff'));
 {
   const { requireAuth, requirePermission } = require('./auth');
   app.use('/api/admin/conditions', requireAuth, requirePermission('manage_conditions'), require('./routes/admin-conditions'));
+  app.use('/api/admin/pricing', requireAuth, requirePermission('manage_pricing'), require('./routes/admin-pricing'));
 }
 // ClickUp Control Center (health, dry-run/backfill, activity, per-file re-sync).
 // The router applies its own requireAuth + platform_setup guards.

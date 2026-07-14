@@ -23,6 +23,7 @@ const NAV_ICON = {
   leads: <><circle cx="9" cy="8" r="3.5" /><path d="M3.5 19a5.5 5.5 0 0 1 11 0" /><path d="M18.5 7.5v5M21 10h-5" /></>,
   borrowers: <><circle cx="12" cy="8" r="4" /><path d="M5 20a7 7 0 0 1 14 0" /></>,
   conditions: <><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V6H9V4.5Z" /><path d="m9 13 2 2 4-4" /></>,
+  pricing: <><circle cx="12" cy="12" r="9" /><path d="M12 7v10" /><path d="M14.5 9.2c-.6-.7-1.6-1-2.6-1-1.4 0-2.4.8-2.4 1.9 0 2.6 5.2 1.4 5.2 4 0 1.2-1.1 2-2.6 2-1.1 0-2.1-.4-2.7-1.1" /></>,
   vendors: <><rect x="3" y="7.5" width="18" height="12.5" rx="2" /><path d="M8.5 7.5V6a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v1.5" /><path d="M3 12.5h18" /></>,
   archived: <><rect x="3.5" y="4" width="17" height="4.5" rx="1" /><path d="M5 8.5V19a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8.5" /><path d="M10 12.5h4" /></>,
   team: <><circle cx="9" cy="8.5" r="3.2" /><path d="M3 19a6 6 0 0 1 12 0" /><path d="M16 5.6a3.2 3.2 0 0 1 0 5.8" /><path d="M17 14.2A6 6 0 0 1 21 19" /></>,
@@ -75,6 +76,7 @@ export default function StaffLayout({ children }) {
     ? 'Admin console' : `${ROLE_LABEL[role] || 'Internal'} console`;
   const canManageTeam = can('manage_team');
   const canManageConditions = can('manage_conditions');
+  const canManagePricing = can('manage_pricing');
   const canManageVendors = can('manage_vendors');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
@@ -101,8 +103,9 @@ export default function StaffLayout({ children }) {
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
         {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><NavIcon name="archived" />Archived</NavLink>}
 
-        {(canManageTeam || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}
+        {(canManageTeam || canManagePricing || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}
         {canManageTeam && <NavLink className="sb-link" to="/internal/team"><NavIcon name="team" />Team</NavLink>}
+        {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}
 

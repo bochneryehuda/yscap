@@ -21,6 +21,12 @@
 
   var LENDER = { name: "YS Capital Group", nmls: "2609746", email: "sales@yscapgroup.com", phone: "718-831-2168" };
   var FEES = { lender: 2195, credit: 150, appraisal: 800 };   // flat third-party estimates (origination % comes from the engine / admin field)
+  // Company-wide pricing defaults (Pricing Admin Center, owner-directed
+  // 2026-07-14): seeded to the historic literals, then overwritten live from
+  // /api/pricing-defaults so a company fee/markup change reaches every new term
+  // sheet on the marketing generator AND the portal studio. The admin studio
+  // fields still override per session; a per-file registration still snapshots.
+  var CO = { markupStd: 0.5, markupGold: 0.5, origStd: 1.25, origGold: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -533,19 +539,31 @@
   function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : dflt; }
   // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
   function syncAdminMarkup() {
-    var std = adminNum("tsYspStd", 0.5), gold = adminNum("tsYspGold", 0.5);
+    var std = adminNum("tsYspStd", CO.markupStd), gold = adminNum("tsYspGold", CO.markupGold);
     try { if (typeof YSP !== "undefined" && YSP.setMarkup) YSP.setMarkup(std / 100); } catch (e) {}
     try { if (typeof GSP !== "undefined" && GSP && GSP.setMarkup) GSP.setMarkup(gold / 100); } catch (e) {}
   }
   // Admin fee/origination overrides. Defaults reproduce current behavior exactly.
-  function adminOrigPct(prog) { return adminNum(prog === "gold" ? "tsOrigGold" : "tsOrigStd", 1.25) / 100; }  // fraction
-  function adminFeeUW() { return adminNum("tsFeeUW", FEES.lender); }
-  function adminFeeCredit() { return adminNum("tsFeeCredit", FEES.credit); }
-  function adminFeeAppr() { return adminNum("tsFeeAppr", FEES.appraisal); }
-  function adminTitle() { var e = el("tsFeeTitle"); if (!e) return null; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : null; }  // null = use estimate
+  function adminOrigPct(prog) { return adminNum(prog === "gold" ? "tsOrigGold" : "tsOrigStd", prog === "gold" ? CO.origGold : CO.origStd) / 100; }  // fraction
+  function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
+  function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
+  function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
+  function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(e.value) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
   function origPtStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + (p === 1 ? " pt" : " pts"); }
   function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
+  // Fill the (blank) admin fee/markup inputs from the company defaults for
+  // DISPLAY only. Never overwrite a value already present — a non-blank field is
+  // an explicit per-file override (typed by staff or restored by the studio's
+  // applyState) and must win. Pricing reads CO for any blank field via adminNum,
+  // so the math is already correct before this ever runs.
+  function seedAdminDefaults() {
+    var s = function (id, v) { var e = el(id); if (e && String(e.value).trim() === "") e.value = v; };
+    s("tsYspStd", String(CO.markupStd)); s("tsYspGold", String(CO.markupGold));
+    s("tsOrigStd", String(CO.origStd)); s("tsOrigGold", String(CO.origGold));
+    s("tsFeeUW", String(CO.lender)); s("tsFeeCredit", String(CO.credit)); s("tsFeeAppr", String(CO.appraisal));
+    if (CO.title != null) s("tsFeeTitle", String(CO.title));
+  }
   function manualOn() { var e = el("tsManualOn"); return !!(e && e.checked); }
   function wireAdmin() {
     var trig = el("tsAdminTrigger"), lock = el("tsAdminLock"), panel = el("tsAdminPanel"),
@@ -561,8 +579,8 @@
     function manualVis() { var on = manualOn(); var mf = el("tsManualFields"), mh = el("tsManualHint"); if (mf) mf.hidden = !on; if (mh) mh.hidden = !on; }
     function lockDown() {
       if (panel) panel.hidden = true; if (lock) lock.hidden = true; trig.hidden = false; trig.setAttribute("aria-expanded", "false");
-      setVal("tsYspStd", "0.5"); setVal("tsYspGold", "0.5"); setVal("tsOrigStd", "1.25"); setVal("tsOrigGold", "1.25");
-      setVal("tsFeeUW", "2195"); setVal("tsFeeCredit", "150"); setVal("tsFeeAppr", "800"); setVal("tsFeeTitle", "");
+      setVal("tsYspStd", String(CO.markupStd)); setVal("tsYspGold", String(CO.markupGold)); setVal("tsOrigStd", String(CO.origStd)); setVal("tsOrigGold", String(CO.origGold));
+      setVal("tsFeeUW", String(CO.lender)); setVal("tsFeeCredit", String(CO.credit)); setVal("tsFeeAppr", String(CO.appraisal)); setVal("tsFeeTitle", CO.title != null ? String(CO.title) : "");
       var mo = el("tsManualOn"); if (mo) mo.checked = false;
       setVal("tsMLtv", ""); setVal("tsMArv", ""); setVal("tsMLtc", ""); setVal("tsMRate", ""); setVal("tsMIr", "");
       manualVis();
@@ -1542,7 +1560,24 @@
       if (t) { ev.preventDefault(); ev.stopPropagation(); t.classList.toggle("tip-open"); }
     });
     wireAdmin();
-    recompute();
+    // Pull company-wide pricing defaults, then recompute. Best-effort: on any
+    // failure the tool keeps its seeded literals (never blocks the sheet).
+    (function(){
+      try {
+        fetch("/api/pricing-defaults").then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
+          if (d && typeof d === "object") {
+            if (d.markupStdPct != null) CO.markupStd = Number(d.markupStdPct);
+            if (d.markupGoldPct != null) CO.markupGold = Number(d.markupGoldPct);
+            if (d.origStdPct != null) CO.origStd = Number(d.origStdPct);
+            if (d.origGoldPct != null) CO.origGold = Number(d.origGoldPct);
+            if (d.lenderFee != null) CO.lender = Number(d.lenderFee);
+            if (d.creditFee != null) CO.credit = Number(d.creditFee);
+            if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
+            CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
+          }
+        }).catch(function(){}).then(function(){ seedAdminDefaults(); recompute(); });
+      } catch (e) { recompute(); }
+    })();
   }
   window.TS = { exportPdf: exportPdf, exportLetter: exportLetter, exportXlsx: exportXlsx, importXlsx: importXlsx, share: function (b) { try { YS.shareLink(b); } catch (e) {} },
     _calc: calc, _calcGold: calcGold, _xlsxSections: xlsxSections, _gather: gather, _manualOn: manualOn };

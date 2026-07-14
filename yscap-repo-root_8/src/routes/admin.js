@@ -89,7 +89,7 @@ function roleGuard(req, currentRole, newRole) {
 // granting any of them is exactly how "manage team" could become a path to every
 // power, so they are gated ABOVE the manage_team capability itself. view_audit_log
 // is included because it exposes the company-wide PII trail across every file.
-const POWERFUL_CAPS = ['manage_team', 'platform_setup', 'delete_files', 'see_all_files', 'manage_conditions', 'view_audit_log'];
+const POWERFUL_CAPS = ['manage_team', 'platform_setup', 'delete_files', 'see_all_files', 'manage_conditions', 'manage_pricing', 'view_audit_log'];
 // UUIDs are case-insensitive/canonicalizing in Postgres, so a self-vs-target id
 // compare MUST be case-folded — otherwise the same actor's own id in a different
 // case slips past the self-escalation block (audit DEFECT 1).
