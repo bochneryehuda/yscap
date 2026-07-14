@@ -939,11 +939,12 @@
       function header() {
         doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 76, "F");
         doc.setFillColor.apply(doc, GOLD); doc.rect(0, 76, W, 2.2, "F");
+        doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(0, 79.4, W, 79.4);   // fine warm hairline beneath the gold rule
         var lg = logoData(); if (lg) { var h = 30, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 23, w, h); } catch (e) {} }
         doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(18); doc.text("Preliminary Term Sheet", W - M, 35, { align: "right" });
         doc.setFont("times", "italic"); doc.setFontSize(9.5); doc.setTextColor(174, 135, 70); doc.text(progName + " \u00b7 business-purpose bridge financing", W - M, 51, { align: "right" });
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
-        doc.text(LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Issued " + fmtD(today), W - M, 65, { align: "right" });
+        doc.text(LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Issued " + fmtD(today), W - M, 65, { align: "right", charSpace: 0.3 });
       }
       function footer() {
         var _ob = window.YSBRAND;
@@ -958,18 +959,20 @@
       function brk(need) { if (y + need > H - 54) { footer(); doc.addPage(); header(); y = 92; } }
       function cardHead(x, w, title, yy) {
         doc.setFillColor.apply(doc, TEAL); doc.roundedRect(x, yy, w, 17, 2.5, 2.5, "F");
-        doc.setFont("helvetica", "bold"); doc.setFontSize(8.2); doc.setTextColor(255, 255, 255);
-        doc.text(pdfSafe(title.toUpperCase()), x + 7, yy + 11.5); return yy + 23;
+        doc.setFillColor.apply(doc, GOLD); doc.rect(x + 4, yy + 4, 2.2, 9, "F");   // gold accent tab
+        doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(255, 255, 255);
+        doc.text(pdfSafe(title.toUpperCase()), x + 11, yy + 11.5, { charSpace: 0.6 }); return yy + 23;
       }
       function rowIn(x, w, k, v, yy, opts) {
         opts = opts || {};
+        if (opts.accent) { doc.setFillColor(248, 245, 238); doc.rect(x, yy - 1.5, w, 13.6, "F"); }   // soft ivory band behind headline totals
         doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setFontSize(opts.bold ? 8.5 : 7.9);
         doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(k), x + 2, yy + 8, { maxWidth: w * 0.62 });
         doc.setFont("helvetica", "bold"); doc.setFontSize(opts.bold ? 8.7 : 7.9);
         doc.setTextColor.apply(doc, opts.accent ? GOLD : DARK); doc.text(pdfSafe(String(v)), x + w - 2, yy + 8, { align: "right" });
         yy += 14.4; doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.4); doc.line(x + 2, yy - 3.4, x + w - 2, yy - 3.4); return yy;
       }
-      function band(t) { brk(30); doc.setFillColor.apply(doc, TEAL); doc.roundedRect(M, y, W - 2 * M, 17, 2.5, 2.5, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(8.2); doc.setTextColor(255, 255, 255); doc.text(pdfSafe(t.toUpperCase()), M + 7, y + 11.5); y += 23; }
+      function band(t) { brk(30); doc.setFillColor.apply(doc, TEAL); doc.roundedRect(M, y, W - 2 * M, 17, 2.5, 2.5, "F"); doc.setFillColor.apply(doc, GOLD); doc.rect(M + 4, y + 4, 2.2, 9, "F"); doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(255, 255, 255); doc.text(pdfSafe(t.toUpperCase()), M + 11, y + 11.5, { charSpace: 0.6 }); y += 23; }
       function rowFull(k, v, opts) { opts = opts || {}; brk(16); doc.setFont("helvetica", opts.bold ? "bold" : "normal"); doc.setFontSize(8.4); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(k), M + 3, y + 8); doc.setFont("helvetica", "bold"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, opts.accent ? GOLD : DARK); doc.text(pdfSafe(String(v)), W - M - 3, y + 8, { align: "right" }); y += 15; doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.4); doc.line(M + 3, y - 3.5, W - M - 3, y - 3.5); }
       function para(t, size, lead) { var ls = doc.splitTextToSize(pdfSafe(t), W - 2 * M - 6); var lh = lead || (size === 7 ? 9 : 10.5); brk(ls.length * lh + 4); doc.setFont("helvetica", "normal"); doc.setFontSize(size || 8); doc.setTextColor(70, 78, 82); doc.text(ls, M + 3, y + 8); y += ls.length * lh + 6; }
 
@@ -978,9 +981,10 @@
       var who = val("borrowerName") || "Prospective Borrower";
       var prog = dealType() + " \u00b7 " + d.inp.loanType + (d.inp.cashOut ? " (cash-out)" : "");
       var where = chk("addrTBD") ? "Property: To be determined" : ("Property: " + (val("propAddr") || "\u2014") + (val("propState") ? ", " + val("propState") : ""));
-      doc.setFont("helvetica", "bold"); doc.setFontSize(10.5); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(who), M, y);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(who), M, y);
       doc.setFont("helvetica", "normal"); doc.setFontSize(8.3); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(prog), W - M, y, { align: "right" });
       y += 13; doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y); y += 14;
+      doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(M, y - 4, W - M, y - 4);   // fine rule closing the recipient block
 
       if (d.status === "MANUAL") {
         // Say WHY manual review is needed, right in the banner \u2014 the engine's own MANUAL
@@ -1003,17 +1007,18 @@
       }
 
       // HERO
-      var heroH = 60;
+      var heroH = 64;
       doc.setFillColor.apply(doc, DARK); doc.roundedRect(M, y, W - 2 * M, heroH, 4, 4, "F");
       doc.setFillColor.apply(doc, GOLD); doc.rect(M, y + 4, 3.5, heroH - 8, "F");
-      doc.setFont("helvetica", "normal"); doc.setFontSize(7.8); doc.setTextColor(176, 184, 186); doc.text("ESTIMATED TOTAL LOAN AMOUNT", M + 16, y + 16);
-      doc.setFont("times", "bold"); doc.setFontSize(25); doc.setTextColor(244, 240, 231); doc.text(sized ? money(d.totalLoan) : "\u2014", M + 16, y + 40);
-      doc.setFont("helvetica", "bold"); doc.setFontSize(8.4); doc.setTextColor.apply(doc, d.pricingReady ? pillC : [150, 156, 150]); doc.text(pdfSafe(d.pricingReady ? stTxt : "Awaiting FICO score"), M + 16, y + 53);
+      doc.setDrawColor(64, 74, 82); doc.setLineWidth(0.6); doc.line(W - M - 172, y + 15, W - M - 172, y + heroH - 15);   // hairline between amount + rate
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.4); doc.setTextColor(176, 184, 186); doc.text("ESTIMATED TOTAL LOAN AMOUNT", M + 16, y + 17, { charSpace: 0.7 });
+      doc.setFont("times", "bold"); doc.setFontSize(26); doc.setTextColor(244, 240, 231); doc.text(sized ? money(d.totalLoan) : "\u2014", M + 16, y + 43);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(8.4); doc.setTextColor.apply(doc, d.pricingReady ? pillC : [150, 156, 150]); doc.text(pdfSafe(d.pricingReady ? stTxt : "Awaiting FICO score"), M + 16, y + 55);
       var rx = W - M - 16;
-      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186); doc.text("NOTE RATE (INTEREST-ONLY)", rx, y + 16, { align: "right" });
-      doc.setFont("times", "bold"); doc.setFontSize(16); doc.setTextColor(244, 240, 231); doc.text((d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : "\u2014", rx, y + 36, { align: "right" });
-      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(176, 184, 186); doc.text(d.term + "-month term \u00b7 " + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + " origination", rx, y + 51, { align: "right" });
-      y += heroH + 14;
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.2); doc.setTextColor(176, 184, 186); doc.text("NOTE RATE (INTEREST-ONLY)", rx, y + 17, { align: "right", charSpace: 0.5 });
+      doc.setFont("times", "bold"); doc.setFontSize(17); doc.setTextColor(244, 240, 231); doc.text((d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : "\u2014", rx, y + 40, { align: "right" });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(176, 184, 186); doc.text(d.term + "-month term \u00b7 " + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + " origination", rx, y + 55, { align: "right" });
+      y += heroH + 16;
 
       // TWO COLUMNS
       var colGap = 16, colW = (W - 2 * M - colGap) / 2, xL = M, xR = M + colW + colGap, yL = y, yR = y;
@@ -1129,7 +1134,9 @@
       if (!d.gold && lad.eligible && lad.rows.length) {
         doc.addPage(); header(); y = 92;
         doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
-        doc.text("Your pricing at every leverage level", M, y); y += 16;
+        doc.text("Your pricing at every leverage level", M, y);
+        doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(1.3); doc.line(M, y + 5.5, M + 42, y + 5.5);   // gold rule under the heading
+        y += 16;
         para("Lower leverage means less risk to the lender \u2014 so it earns a lower rate. The table shows the loan amount, cash to close and note rate at each leverage step this scenario supports. The highlighted row is the option you selected; taking less leverage trades a smaller loan for a better rate.");
         var tW = W - 2 * M;
         var cols = [
@@ -1142,9 +1149,10 @@
         brk(30 + lad.rows.length * 20);
         var hy = y;
         doc.setFillColor.apply(doc, INK); doc.rect(M, hy, tW, 22, "F");
-        doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); doc.setTextColor(244, 240, 231);
+        doc.setFillColor.apply(doc, GOLD); doc.rect(M, hy, tW, 1.6, "F");   // gold cap rule atop the header row
+        doc.setFont("helvetica", "bold"); doc.setFontSize(8.3); doc.setTextColor(244, 240, 231);
         var cx = M;
-        cols.forEach(function (c) { var w = c.w * tW; doc.text(c.t, c.a === "r" ? cx + w - 7 : cx + 7, hy + 14, { align: c.a === "r" ? "right" : "left" }); cx += w; });
+        cols.forEach(function (c) { var w = c.w * tW; doc.text(c.t, c.a === "r" ? cx + w - 7 : cx + 7, hy + 14, { align: c.a === "r" ? "right" : "left", charSpace: 0.3 }); cx += w; });
         var ry = hy + 22;
         var selLtc = chosenLTC || lad.rows[0].ltc;
         lad.rows.forEach(function (r, i) {
@@ -1233,13 +1241,14 @@
       // ---- letterhead ----
       doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 92, "F");
       doc.setFillColor.apply(doc, GOLD); doc.rect(0, 92, W, 2.4, "F");
+      doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(0, 95.6, W, 95.6);   // fine warm hairline beneath the gold rule
       var lg = logoData(); if (lg) { var h = 34, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 30, w, h); } catch (e) {} }
       doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(11.5);
-      doc.text("PRIVATE MORTGAGE BANKING", W - M, 41, { align: "right" });
+      doc.text("PRIVATE MORTGAGE BANKING", W - M, 41, { align: "right", charSpace: 1 });
       doc.setFont("times", "italic"); doc.setFontSize(9); doc.setTextColor(174, 135, 70);
       doc.text("Business-purpose real estate finance", W - M, 56, { align: "right" });
       doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
-      doc.text("NMLS " + LENDER.nmls + "   \u00b7   " + LENDER.phone + "   \u00b7   " + LENDER.email, W - M, 73, { align: "right" });
+      doc.text("NMLS " + LENDER.nmls + "   \u00b7   " + LENDER.phone + "   \u00b7   " + LENDER.email, W - M, 73, { align: "right", charSpace: 0.3 });
 
       var y = 126;
       doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor.apply(doc, DARK);
@@ -1283,8 +1292,9 @@
       doc.setFillColor.apply(doc, SOFT); doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.9);
       doc.roundedRect(boxX, y, boxW, boxH, 4, 4, "FD");
       doc.setFillColor.apply(doc, TEAL); doc.roundedRect(boxX, y, boxW, headH, 4, 4, "F"); doc.rect(boxX, y + 12, boxW, headH - 12, "F");
+      doc.setFillColor.apply(doc, GOLD); doc.rect(boxX + 5, y + 6, 2.4, headH - 12, "F");   // gold accent tab
       doc.setFont("helvetica", "bold"); doc.setFontSize(8.3); doc.setTextColor(255, 255, 255);
-      doc.text("SUMMARY OF INDICATIVE TERMS", boxX + 13, y + 13.5);
+      doc.text("SUMMARY OF INDICATIVE TERMS", boxX + 14, y + 13.5, { charSpace: 0.6 });
       var yy = y + headH + 15;
       for (var r = 0; r < rows.length; r++) {
         doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor.apply(doc, GRAY);
@@ -1383,11 +1393,12 @@
     // header
     doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 66, "F");
     doc.setFillColor.apply(doc, GOLD); doc.rect(0, 66, W, 2, "F");
+    doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(0, 69.2, W, 69.2);   // fine warm hairline beneath the gold rule
     var lg = logoData(); if (lg) { var h = 27, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 20, w, h); } catch (e) {} }
     doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(11.5);
     doc.text(pdfSafe(title), W - M, 33, { align: "right" });
     doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
-    doc.text(LENDER.name + "  \u00b7  NMLS " + LENDER.nmls, W - M, 48, { align: "right" });
+    doc.text(LENDER.name + "  \u00b7  NMLS " + LENDER.nmls, W - M, 48, { align: "right", charSpace: 0.3 });
 
     var y = 92;
     if (intro) {
@@ -1397,13 +1408,13 @@
     }
     function section(label, rows) {
       doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor.apply(doc, TEAL);
-      doc.text(pdfSafe(label.toUpperCase()), M, y);
-      doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(1.1); doc.line(M, y + 4, M + 26, y + 4);
+      doc.text(pdfSafe(label.toUpperCase()), M, y, { charSpace: 0.8 });
+      doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(1.3); doc.line(M, y + 4, M + 30, y + 4);
       y += 16;
       for (var r = 0; r < rows.length; r++) {
         if (!rows[r]) continue;
         var kind = rows[r][2] || "", isTot = kind === "tot", isSub = kind === "sub";
-        if (isTot) { doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.7); doc.line(M, y - 9, W - M, y - 9); }
+        if (isTot) { doc.setFillColor(248, 245, 238); doc.rect(M, y - 10.5, W - 2 * M, 15, "F"); doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.7); doc.line(M, y - 9, W - M, y - 9); }
         doc.setFont("helvetica", isTot ? "bold" : "normal"); doc.setFontSize(isSub ? 8 : 8.9); doc.setTextColor.apply(doc, isSub ? GRAY : (isTot ? DARK : BODY));
         doc.text(pdfSafe(rows[r][0]), M + (isSub ? 12 : 0), y);
         doc.setFont("helvetica", "bold"); doc.setFontSize(isSub ? 8 : 8.9); doc.setTextColor.apply(doc, isTot ? TEAL : DARK);
