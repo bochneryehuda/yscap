@@ -1441,16 +1441,42 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   display:flex;align-items:center;gap:16px;padding:0 28px;position:sticky;top:0;z-index:50}
 .app-topbar::before{content:'';position:absolute;left:0;right:0;top:0;height:2px;
   background:linear-gradient(90deg,var(--primary-border),var(--gold) 55%,var(--primary-border))}
-/* Global search: a real-looking pill field (leading magnifier), balanced in the
-   bar via auto side-margins rather than hugging the far-left edge. Sidebar owns
-   the brand, so the topbar centres the search and pins the user cluster right. */
-.app-search{display:flex;align-items:center;gap:10px;flex:0 1 auto;width:min(440px,42vw);
+/* Global search: a real, working omnibox (leading magnifier + live results),
+   generously sized so it's easy to use, balanced in the bar via auto
+   side-margins. Sidebar owns the brand, so the topbar centres the search and
+   pins the user cluster right. */
+.app-search{position:relative;display:flex;align-items:center;gap:10px;flex:1 1 auto;
+  width:min(620px,52vw);max-width:620px;
   margin:0 auto;background:var(--surface-soft);border:1px solid var(--border);
-  border-radius:100px;padding:9px 18px;font-size:14px;color:var(--text-soft);min-width:0}
-.app-search .app-search-ic{width:16px;height:16px;flex:none;color:var(--text-muted)}
-.app-search span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  border-radius:100px;padding:0 18px;font-size:14px;color:var(--text-soft);min-width:0}
+.app-search:focus-within{border-color:var(--gold);box-shadow:0 0 0 3px rgba(174,135,70,.14)}
+.app-search .app-search-ic{width:17px;height:17px;flex:none;color:var(--text-muted)}
+.app-search .app-search-in{flex:1 1 auto;min-width:0;border:0;outline:0;background:transparent;
+  font:inherit;color:var(--text);padding:11px 0;line-height:1.2}
+.app-search .app-search-in::placeholder{color:var(--text-muted)}
+.app-search .app-search-in::-webkit-search-cancel-button{cursor:pointer}
+/* Results dropdown */
+.app-search-panel{position:absolute;left:0;right:0;top:calc(100% + 8px);z-index:60;
+  background:var(--surface);border:1px solid var(--border);border-radius:14px;
+  box-shadow:0 18px 44px rgba(20,27,34,.16);padding:6px;max-height:min(70vh,520px);overflow:auto}
+.app-search-panel .ass-empty{padding:14px 12px;color:var(--text-muted);font-size:13px}
+.app-search-panel .ass-group+.ass-group{margin-top:2px;border-top:1px solid var(--border);padding-top:2px}
+.app-search-panel .ass-h{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--text-muted);padding:8px 12px 4px}
+.app-search-panel .ass-item{display:flex;flex-direction:column;gap:1px;width:100%;text-align:left;
+  border:0;background:transparent;cursor:pointer;padding:8px 12px;border-radius:9px;color:inherit}
+.app-search-panel .ass-item.on,.app-search-panel .ass-item:hover{background:var(--surface-soft)}
+.app-search-panel .ass-t{font-weight:600;color:var(--text);font-size:14px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.app-search-panel .ass-s{font-size:12.5px;color:var(--text-muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .app-topbar .user-pill{display:flex;align-items:center;gap:10px;margin-left:auto}
 .app-navtoggle{display:none}
+/* Pipeline filter bar: the primary search reads bigger/bolder; the secondary
+   amount/date filters stay compact so the search gets the room. */
+.q-search{font-weight:500}
+.q-search::placeholder{color:var(--text-muted);font-weight:400}
+.flt-sm{font-size:12.5px;padding-top:7px;padding-bottom:7px}
 
 .app-main{grid-area:main;min-width:0;padding:30px 0 60px}
 .app .wrap{max-width:min(1620px,96vw);padding:0 40px}
@@ -1553,6 +1579,8 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .tbl-scroll .tbl{min-width:640px}
 .cell-deal .lead{font-weight:600}
 .cell-deal .mut,.cell-deal .prog{font-size:12.5px;color:var(--text-muted);margin-top:3px}
+/* Property address reads bold like the borrower name so it's easy to scan. */
+.cell-deal .q-addr{font-weight:600;color:var(--text);font-size:13px;margin-top:2px}
 
 /* ---- status pills: add the blueprint status dot + extra semantics, scoped ---- */
 .app .pill{gap:6px;letter-spacing:.02em}
@@ -1701,7 +1729,7 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 }
 
 /* ---- Archived (pilot-staff-archived): address subline in the deal cell ---- */
-.app .cell-deal .addr{font-size:12.5px;color:var(--text-muted);margin-top:3px}
+.app .cell-deal .addr{font-size:12.5px;color:var(--text);font-weight:600;margin-top:3px}
 
 /* ---- Audit log (pilot-staff-audit): compliance note · legend · event rows ---- */
 .app .lock-note{display:inline-flex;align-items:center;gap:9px;margin-top:12px;font-size:12.5px;font-weight:600;

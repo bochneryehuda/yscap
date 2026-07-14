@@ -245,7 +245,7 @@ function Row({ a }) {
     <Link to={`/internal/app/${a.id}`} className="q-row">
       <div className="cell-deal">
         <div className="lead">{a.first_name} {a.last_name}</div>
-        <div className="mut">{addrLine(a.property_address)}</div>
+        <div className="q-addr">{addrLine(a.property_address)}</div>
         <div className="mut">
           {a.ys_loan_number || 'Loan # pending'} · {a.loan_type || '—'}
           {a.internal_status ? ` · ClickUp: ${a.internal_status}` : ''}
@@ -473,8 +473,9 @@ export default function StaffQueue() {
               </button>
             ))}
           </div>
-          <input className="input" style={{ maxWidth: 240 }} type="search" value={searchInput}
-            placeholder="Search name, loan #, address"
+          <input className="input q-search" style={{ flex: '1 1 320px', minWidth: 240, maxWidth: 460 }}
+            type="search" value={searchInput}
+            placeholder="Search borrower name, loan #, or address…"
             onChange={e => setSearchInput(e.target.value)}
             title="Search by borrower name, YS loan number, or property address" />
           <select className="input" style={{ maxWidth: 180 }} value={statusF} onChange={e => setParam({ status: e.target.value, group: '' })}
@@ -496,21 +497,23 @@ export default function StaffQueue() {
               {programOpts.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           )}
-          <div className="row" style={{ gap: 4 }} title="Loan amount range">
-            <input className="input" style={{ maxWidth: 110 }} type="number" min="0" inputMode="numeric" placeholder="Min $"
+          {/* Less-frequent filters are kept compact so the main search field
+              gets the room. */}
+          <div className="row" style={{ gap: 3 }} title="Loan amount range">
+            <input className="input flt-sm" style={{ width: 84 }} type="number" min="0" inputMode="numeric" placeholder="Min $"
               value={minAmount} onChange={e => setParam({ minAmount: e.target.value })} />
             <span className="muted small">–</span>
-            <input className="input" style={{ maxWidth: 110 }} type="number" min="0" inputMode="numeric" placeholder="Max $"
+            <input className="input flt-sm" style={{ width: 84 }} type="number" min="0" inputMode="numeric" placeholder="Max $"
               value={maxAmount} onChange={e => setParam({ maxAmount: e.target.value })} />
           </div>
-          <div className="row" style={{ gap: 4 }} title="Date range">
-            <select className="input" style={{ maxWidth: 130 }} value={dateBasis} onChange={e => setDateBasis(e.target.value)}>
+          <div className="row" style={{ gap: 3 }} title="Date range">
+            <select className="input flt-sm" style={{ width: 100 }} value={dateBasis} onChange={e => setDateBasis(e.target.value)}>
               <option value="created">Created</option>
               <option value="funded">Funded</option>
             </select>
-            <input className="input" style={{ maxWidth: 150 }} type="date" value={dateFrom} onChange={e => setParam({ [fromKey]: e.target.value })} />
+            <input className="input flt-sm" style={{ width: 132 }} type="date" value={dateFrom} onChange={e => setParam({ [fromKey]: e.target.value })} title="From date" />
             <span className="muted small">–</span>
-            <input className="input" style={{ maxWidth: 150 }} type="date" value={dateTo} onChange={e => setParam({ [toKey]: e.target.value })} />
+            <input className="input flt-sm" style={{ width: 132 }} type="date" value={dateTo} onChange={e => setParam({ [toKey]: e.target.value })} title="To date" />
           </div>
           <select className="input" style={{ maxWidth: 170 }} value={sortF} onChange={e => setParam({ sort: e.target.value })}
             title="Sort the pipeline">
