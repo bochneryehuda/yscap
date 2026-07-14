@@ -21,16 +21,18 @@
   "use strict";
 
   /* ---- Roster: code = email local-part, lowercased. Keep in sync with the
-     sales grid in index.html. Individual NMLS is intentionally omitted for
-     coordinators (business-purpose lending; the company NMLS is the lender). */
+     sales grid in index.html. The lender is always YS Capital Group (company
+     NMLS); an unlicensed coordinator carries no individual NMLS. A LICENSED
+     MLO carries their own `nmls` here, which is shown as a contact credential
+     (not as a separate lender). */
   var TEAM = {
     yehuda:   { name: "Yehuda Bochner",      role: "President",        email: "Yehuda@yscapgroup.com" },
     mendelb:  { name: "Mendel Bochner",      role: "Sales Manager",    email: "Mendelb@yscapgroup.com", cell: "929-454-2924" },
     solomon:  { name: "Solomon Katz",        role: "Loan Coordinator", email: "Solomon@yscapgroup.com", direct: "718-247-8703", ext: "103", cell: "845-324-3818" },
     yosef:    { name: "Yosef Cohen",         role: "Loan Coordinator", email: "Yosef@yscapgroup.com",   direct: "718-247-8704", ext: "104", cell: "347-461-8924" },
     moshe:    { name: "Moshe Mermelstein",   role: "Loan Coordinator", email: "Moshe@yscapgroup.com",   direct: "718-247-8706", ext: "106", cell: "929-214-7102" },
-    shia:     { name: "Shia Kaff",           role: "Loan Coordinator", email: "Shia@yscapgroup.com",    direct: "718-247-8707", ext: "107", cell: "718-501-5654" },
-    joshua:   { name: "Joshua Friedlander",  role: "Loan Coordinator", email: "Joshua@yscapgroup.com",  direct: "718-247-8708", ext: "108", cell: "347-768-4596" },
+    shia:     { name: "Shia Kaff",           role: "MLO & Loan Coordinator", nmls: "2723073", email: "Shia@yscapgroup.com",    direct: "718-247-8707", ext: "107", cell: "718-501-5654" },
+    joshua:   { name: "Joshua Friedlander",  role: "MLO & Loan Coordinator", nmls: "2762861", email: "Joshua@yscapgroup.com",  direct: "718-247-8708", ext: "108", cell: "347-768-4596" },
     abraham:  { name: "Abraham Eisen",       role: "Loan Coordinator", email: "Abraham@yscapgroup.com", direct: "718-307-4316", ext: "116", cell: "347-324-7762" },
     mendel:   { name: "Mendel Schwimmer",    role: "Loan Coordinator", email: "Mendel@yscapgroup.com",  direct: "718-247-8759", ext: "113", cell: "845-745-5595" },
     sol:      { name: "Solomon Weiss",       role: "Loan Coordinator", email: "Sol@yscapgroup.com",     direct: "718-307-4314", ext: "114", cell: "929-486-3939" },
@@ -129,7 +131,7 @@
         '<span class="lo-ava" aria-hidden="true">' + esc(initials(o.name)) + '</span>' +
         '<span class="lo-meta">' +
           '<span class="lo-name">' + esc(o.name) + '</span>' +
-          '<span class="lo-role">' + esc(o.role) + ' \u00b7 YS Capital Group</span>' +
+          '<span class="lo-role">' + esc(o.role) + ' \u00b7 YS Capital Group' + (o.nmls ? ' \u00b7 NMLS #' + esc(o.nmls) : '') + '</span>' +
         '</span>' +
         '<span class="lo-contact">' +
           (ph ? '<a href="tel:' + tel + '">' + esc(ph) + '</a>' : '') +
