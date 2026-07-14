@@ -93,7 +93,9 @@ function normalizeValue(field, raw) {
     const s = String(raw).replace(/[^0-9-]/g, '');
     if (s === '') return null;
     const n = parseInt(s, 10);
-    return Number.isFinite(n) ? String(n) : null;
+    // units (the only INT field) is a positive count — reject 0 / negative so a
+    // borrower can't propose (and a reviewer accidentally approve) units < 1.
+    return Number.isFinite(n) && n >= 1 ? String(n) : null;
   }
   return String(raw).trim();
 }

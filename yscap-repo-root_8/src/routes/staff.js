@@ -779,8 +779,11 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     const put = (col, v) => { vals.push(v); sets.push(`${col}=$${vals.length}`); };
     if (typeof b.co_name === 'string' && b.co_name.trim()) {
       const parts = b.co_name.trim().split(/\s+/);
-      const first = parts.shift();
-      put('first_name', first); put('last_name', parts.join(' ') || first);
+      put('first_name', parts.shift());
+      // Only set last_name when a second token was actually given — a single-word
+      // entry shouldn't duplicate the first name into the last (it would falsely
+      // read as a complete name; leaving last_name keeps completeness flagging it).
+      if (parts.length) put('last_name', parts.join(' '));
     }
     if (typeof b.co_phone === 'string' && b.co_phone.trim()) put('cell_phone', b.co_phone.trim());
     if (b.co_dob) put('date_of_birth', b.co_dob);
