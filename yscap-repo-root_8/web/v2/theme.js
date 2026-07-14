@@ -30,17 +30,15 @@
   var SUN='<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 1.8v2.2M12 20v2.2M4 12H1.8M22.2 12H20M5.7 5.7 4.1 4.1M19.9 19.9l-1.6-1.6M18.3 5.7l1.6-1.6M4.1 19.9l1.6-1.6"/></svg>';
   var MOON='<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 13.2A8.4 8.4 0 1 1 10.8 3.5a6.6 6.6 0 0 0 9.7 9.7Z"/></svg>';
 
+  // The visible dark/light TOGGLE button was removed (owner-directed 2026-07-14):
+  // the site + tools are white-first, so the toggle was unnecessary and the dark
+  // pill in the header read as unprofessional. We keep the light-forcing + logo
+  // swap above (that's what guarantees white-first paint); we just no longer
+  // inject the button. If a stale toggle exists in cached markup, strip it so the
+  // header shows a clean gap between the left and right sections instead.
   function build(){
-    if(document.querySelector(".ys-theme-toggle")) return;
-    var btn=document.createElement("button");
-    btn.className="ys-theme-toggle"; btn.type="button";
-    btn.setAttribute("aria-label","Switch between light and dark theme");
-    function paint(){ var t=get(); /* show the theme you'd switch TO */ btn.innerHTML=(t==="light"?MOON:SUN)+'<span class="ys-theme-lbl">'+(t==="light"?"Dark":"Light")+'</span>'; btn.title=(t==="light"?"Switch to dark":"Switch to light"); }
-    paint();
-    btn.addEventListener("click",function(){ var t=get()==="light"?"dark":"light"; save(t); apply(t); swapLogos(t); paint(); });
-    var host=document.querySelector(".topbar-actions")||document.querySelector(".nav-actions");
-    if(host){ host.insertBefore(btn, host.firstChild); }
-    else { btn.classList.add("ys-theme-floating"); document.body.appendChild(btn); }
+    var existing=document.querySelector(".ys-theme-toggle");
+    if(existing && existing.parentNode) existing.parentNode.removeChild(existing);
     swapLogos(get());
   }
   if(document.readyState==="loading") document.addEventListener("DOMContentLoaded", build); else build();
