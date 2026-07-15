@@ -133,7 +133,8 @@ export default function StaffNewFile() {
     firstName: '', lastName: '', email: '', phone: '',
     program: '', loanType: '', propertyType: '', units: '',
     purchasePrice: '', asIsValue: '', arv: '', rehabBudget: '', rehabType: '', sqftPre: '', sqftPost: '',
-    requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '',
+    isAssignment: false, underlyingContractPrice: '',
+    requestedExpFlips: '', requestedExpHolds: '', requestedExpGround: '', requestedExpReo: '',
     loanOfficerId: '', processorId: '', inviteBorrower: true,
     ...(_d && _d.f ? _d.f : {}),
   });
@@ -245,6 +246,9 @@ export default function StaffNewFile() {
         program: f.program || undefined,
         loanType: f.loanType || undefined,
         purchasePrice: numOrNull(f.purchasePrice),
+        isAssignment: !!f.isAssignment,
+        underlyingContractPrice: f.isAssignment ? numOrNull(f.underlyingContractPrice) : undefined,
+        assignmentFee: f.isAssignment ? Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)) : undefined,
         asIsValue: numOrNull(f.asIsValue),
         arv: numOrNull(f.arv),
         rehabBudget: numOrNull(f.rehabBudget),
@@ -254,6 +258,7 @@ export default function StaffNewFile() {
         requestedExpFlips: f.requestedExpFlips ? Number(f.requestedExpFlips) : 0,
         requestedExpHolds: f.requestedExpHolds ? Number(f.requestedExpHolds) : 0,
         requestedExpGround: f.requestedExpGround ? Number(f.requestedExpGround) : 0,
+        requestedExpReo: f.requestedExpReo ? Number(f.requestedExpReo) : 0,
         loanOfficerId: f.loanOfficerId || undefined,
         processorId: f.processorId || undefined,
         inviteBorrower: !!f.inviteBorrower,
@@ -411,6 +416,23 @@ export default function StaffNewFile() {
               </select></div>
             <div className="field"><label>Purchase price</label>
               <MoneyInput value={f.purchasePrice} onChange={v => set('purchasePrice', v)} /></div>
+            <div className="field" style={{ gridColumn: '1 / -1' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, textTransform: 'none', letterSpacing: 0, fontWeight: 500 }}>
+                <input type="checkbox" checked={f.isAssignment} onChange={e => set('isAssignment', e.target.checked)} />
+                This is an assignment purchase
+              </label>
+              {f.isAssignment && (
+                <div className="grid cols-2" style={{ gap: 12, marginTop: 8 }}>
+                  <div className="field"><label>Original (underlying) purchase price</label>
+                    <MoneyInput value={f.underlyingContractPrice} onChange={v => set('underlyingContractPrice', v)} /></div>
+                  <div className="field"><label>Assignment fee (auto)</label>
+                    <div className="input" style={{ background: 'var(--soft, #f4f1ea)', display: 'flex', alignItems: 'center' }}>
+                      ${Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)).toLocaleString('en-US')}
+                    </div></div>
+                  <div className="hint" style={{ gridColumn: '1 / -1' }}>The fee is the total purchase price minus the original contract price.</div>
+                </div>
+              )}
+            </div>
             <div className="field"><label>As-is value</label>
               <MoneyInput value={f.asIsValue} onChange={v => set('asIsValue', v)} /></div>
             <div className="field"><label>ARV</label>
@@ -429,14 +451,17 @@ export default function StaffNewFile() {
             </>}
           </div>
           <h3 style={{ margin: '12px 0 8px' }}>Experience used for this request</h3>
-          <div className="grid cols-3">
+          <div className="grid cols-2">
             <div className="field"><label>Fix &amp; flip deals</label>
               <input className="input" type="number" min="0" value={f.requestedExpFlips} onChange={e => set('requestedExpFlips', e.target.value)} /></div>
             <div className="field"><label>Fix &amp; hold deals</label>
               <input className="input" type="number" min="0" value={f.requestedExpHolds} onChange={e => set('requestedExpHolds', e.target.value)} /></div>
             <div className="field"><label>Ground-up deals</label>
               <input className="input" type="number" min="0" value={f.requestedExpGround} onChange={e => set('requestedExpGround', e.target.value)} /></div>
+            <div className="field"><label>General REO owned</label>
+              <input className="input" type="number" min="0" value={f.requestedExpReo} onChange={e => set('requestedExpReo', e.target.value)} /></div>
           </div>
+          <p className="muted small" style={{ marginTop: 4 }}>General REO (rentals/properties owned) usually doesn't count toward program experience tiers, but it's captured on the file.</p>
           <p className="muted small">Final pricing and leverage are confirmed against program guidelines — these figures start the file.</p>
           </div>
         </div>

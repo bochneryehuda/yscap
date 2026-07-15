@@ -1,5 +1,5 @@
 /**
- * DPR / clean-file export (#148; layout reworked owner-directed 2026-07-13).
+ * TPR / clean-file export (#148; layout reworked owner-directed 2026-07-13).
  * Packages ONLY the clean set — accepted + current documents — into a
  * property-centric ZIP whose subject folder is organized BY CONDITION NAME,
  * mirroring the SharePoint "YS portal syncing" folder layout:
@@ -411,7 +411,7 @@ async function buildTprExport(appId) {
 
   // Human-readable index.
   const lines = [
-    `YS CAPITAL GROUP — CLEAN FILE / DPR PACKAGE`,
+    `YS CAPITAL GROUP — CLEAN FILE / TPR PACKAGE`,
     `Loan: ${app.ys_loan_number || '(pending)'}   Borrower: ${borrowerName}   Property: ${propLabel}`,
     `Generated: ${generatedAt}`, '',
     `PACKAGE LAYOUT:`,
@@ -430,7 +430,7 @@ async function buildTprExport(appId) {
   }
   files.push({ name: '00_INDEX.txt', data: Buffer.from(lines.join('\n'), 'utf8') });
 
-  const filename = `DPR_${sanitize(app.ys_loan_number || app.last_name || 'file')}_${generatedAt.slice(0, 10)}.zip`;
+  const filename = `TPR_${sanitize(app.ys_loan_number || app.last_name || 'file')}_${generatedAt.slice(0, 10)}.zip`;
   return { zip: zip(files), filename, includedCount: manifestDocs.length, missing };
 }
 
