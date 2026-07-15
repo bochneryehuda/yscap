@@ -21,6 +21,9 @@ const REASON_COPY = {
   clickup_dob_differs_from_portal: 'ClickUp and PILOT carry different dates of birth and neither is provably wrong — a person must decide.',
   dob_same_but_impossible: 'Both systems carry the SAME date of birth — but it cannot be right (see the note next to the value). Correct the DOB on the borrower’s file, then dismiss this row.',
   pii_overwrite_blocked: 'A bulk repush wanted to overwrite this borrower-identity value in ClickUp. Bulk pushes may only fill blanks — nothing was written.',
+  file_not_materialized_ambiguous: 'This ClickUp task could not be matched to a PILOT file — its identity signals (loan number / address / stamp) point at more than one existing file or at another borrower’s loan. The sync retries it automatically on every pass; fix the conflicting value in ClickUp (usually a loan number copied by the duplicate-a-task workflow) and this row closes itself. Dismiss only hides the row.',
+  file_not_materialized_duplicate_pending: 'This task looks like a fresh ClickUp duplicate that still shows the source deal’s address, so PILOT is deliberately waiting rather than creating a twin file. Update the task’s address to the new property and the file appears on the next sync (this row then closes itself). A genuine same-address second deal is unblocked from the Control Center’s ClickUp manual-review queue.',
+  copied_loan_number_needs_assignment: 'This file came from a duplicated ClickUp task that still carries the SOURCE deal’s YS loan number, so the copied number was NOT imported (a loan number belongs to exactly one loan). Enter the correct loan number on the task in ClickUp — it syncs in automatically and this row closes itself.',
 };
 
 // COMMON-SENSE annotation for a DOB value (owner-directed 2026-07-15): a review
@@ -41,8 +44,12 @@ const FIELD_LABELS = {
   actual_closing: 'Actual closing', acquisition_date: 'Acquisition date',
   ssn: 'Social Security number', first_name: 'Borrower name', email: 'Borrower email',
   cell_phone: 'Borrower cell', current_address: 'Borrower home address', status: 'File status',
+  file_link: 'File not in PILOT', ys_loan_number: 'YS loan number',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
+// 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are
+// visibility rows — the fix happens in ClickUp (or the Control Center
+// force-create) and the row closes itself on the next sync.
 const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing', 'acquisition_date', 'ssn', 'status']);
 const showVal = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? fmtDay(v) : (v == null || v === '' ? '—' : String(v)));
 

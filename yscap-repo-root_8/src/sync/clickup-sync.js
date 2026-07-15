@@ -126,6 +126,38 @@ async function recoverUnlinkedFilesOnce() {
   return recovered;
 }
 
+// A task that failed to MATERIALIZE (match_status 'ambiguous' or
+// 'duplicate_pending') only ever got re-examined when ClickUp happened to send
+// another webhook or the task fell inside the reconcile window — so a task
+// stuck on a since-FIXED root cause stayed invisible in the portal forever
+// (Asher Salamon, 2026-07-15: a copied YS-loan-number from the duplicate-a-task
+// workflow kept the Dennis Pl task 'ambiguous' long after the resolver learned
+// to handle copied numbers). This boot one-shot deliberately re-drives every
+// stuck task through the CURRENT resolver so each root-cause fix heals the
+// whole backlog on the next deploy, not just tasks that happen to change.
+// Bounds: non-materialized rows only (application_id IS NULL), newest first,
+// 200 per boot; per-task failures are isolated. Idempotent: a task that
+// materializes gets application_id set and drops out of the next run's SELECT;
+// one that is still genuinely ambiguous just refreshes its match_detail (and
+// its ingest now queues a visible 'file_link' review row instead of silence).
+async function retryStuckTasksOnce() {
+  const r = await db.query(
+    `SELECT task_id, match_status FROM clickup_task_index
+      WHERE match_status IN ('ambiguous','duplicate_pending')
+        AND application_id IS NULL
+      ORDER BY snapshot_at DESC NULLS LAST LIMIT 200`).catch(() => ({ rows: [] }));
+  if (!r.rows.length) return 0;
+  let materialized = 0, still = 0, failed = 0;
+  for (const row of r.rows) {
+    try {
+      const res = await ingestOne(row.task_id);
+      if (res && res.applicationId) materialized++; else still++;
+    } catch (e) { failed++; console.error('[clickup-sync] stuck-task retry failed', row.task_id, e.message); }
+  }
+  console.log(`[clickup-sync] stuck-task retry: ${materialized} materialized, ${still} still waiting, ${failed} failed (of ${r.rows.length})`);
+  return materialized;
+}
+
 // ---- dirty sweep (RETIRED — do not reintroduce) ---------------------------
 // The old dirty-sweep did a FULL, unscoped push of every "dirty" file. That is
 // exactly the behavior that caused the ClickUp-overwrite incident (it pushed
@@ -664,6 +696,11 @@ function start() {
     // identity), give any still-unlinked recent portal file its one bounded
     // create retry — the recovery path for a failed create-at-file-start.
     recoverUnlinkedFilesOnce().catch((e) => console.error('[clickup-sync] unlinked-recovery', e.message));
+    // And re-drive every NON-materialized task ('ambiguous'/'duplicate_pending')
+    // through the current resolver, so a root-cause fix (like copied-loan-number
+    // handling) heals the entire stuck backlog on deploy — not only the tasks
+    // that happen to receive a new webhook.
+    retryStuckTasksOnce().catch((e) => console.error('[clickup-sync] stuck-task retry', e.message));
   }, cfg.clickupRunBackfill ? 120000 : 15000);
 
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
@@ -694,4 +731,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };
