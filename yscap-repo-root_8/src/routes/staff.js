@@ -2704,15 +2704,51 @@ router.patch('/borrowers/:id', async (req, res) => {
     if (b.currentAddress !== undefined) put('current_address', b.currentAddress ? JSON.stringify(b.currentAddress) : null);
     if (b.mailingAddress !== undefined) put('mailing_address', b.mailingAddress ? JSON.stringify(b.mailingAddress) : null);
     if (b.primaryOfficerId !== undefined) put('primary_officer_id', b.primaryOfficerId || null);
-    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
-    sets.push('updated_at=now()');
-    try {
-      await db.query(`UPDATE borrowers SET ${sets.join(', ')} WHERE id=$1`, vals);
-    } catch (e) {
-      if (e.code === '23505') return res.status(409).json({ error: 'that email is already in use by another borrower' });
-      throw e;
+    // DOB from the borrower-profile edit (owner-directed 2026-07-15 night: DOB
+    // must be fully editable from PILOT — the profile screen previously showed
+    // it read-only with no way to add or fix it). Validated as a real adult
+    // birth date, then applied through the ONE canonical applier below —
+    // portal + every linked ClickUp task, journaled, audited, stale reviews
+    // auto-closed. Not added to `sets`: adoptDobEverywhere owns the write.
+    let dobDay;
+    if (b.dob !== undefined && b.dob !== null && b.dob !== '') {
+      dobDay = require('../lib/fields').sanitizeDob(b.dob);
+      if (dobDay == null) return res.status(400).json({ error: 'date of birth must be a real adult birth date (YYYY-MM-DD, 4-digit year)' });
     }
-    await audit(req, 'update_borrower', 'borrower', req.params.id, { fields: sets.slice(0, -1).map((s) => s.split('=')[0]) });
+    if (!sets.length && !dobDay) return res.status(400).json({ error: 'nothing to update' });
+    if (sets.length) {
+      sets.push('updated_at=now()');
+      try {
+        await db.query(`UPDATE borrowers SET ${sets.join(', ')} WHERE id=$1`, vals);
+      } catch (e) {
+        if (e.code === '23505') return res.status(409).json({ error: 'that email is already in use by another borrower' });
+        throw e;
+      }
+    }
+    let dobResult;
+    if (dobDay) {
+      dobResult = await require('../lib/sync-autoresolve').adoptDobEverywhere({
+        borrowerId: req.params.id, day: dobDay,
+        why: 'staff_profile_edit', source: 'staff_edit', actorId: req.actor.id });
+    }
+    // Identity edits made HERE now reach ClickUp like every other edit — a
+    // scoped push per linked active file, carrying only the changed keys
+    // (previously this route wrote the portal and silently never propagated).
+    const pushKeys = [];
+    if (b.email != null) pushKeys.push('email');
+    if (b.cellPhone != null) pushKeys.push('cell_phone');
+    if (b.currentAddress !== undefined) pushKeys.push('current_address');
+    if (pushKeys.length) {
+      try {
+        const apps = (await db.query(
+          `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`,
+          [req.params.id])).rows;
+        for (const a of apps) enqueueClickupPush(a.id, pushKeys).catch(() => {});
+      } catch (_) { /* best-effort */ }
+    }
+    await audit(req, 'update_borrower', 'borrower', req.params.id, {
+      fields: sets.filter((s) => !s.startsWith('updated_at')).map((s) => s.split('=')[0]).concat(dobDay ? ['date_of_birth'] : []),
+      ...(dobResult ? { dob: dobResult } : {}) });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -3804,8 +3840,12 @@ async function completeFields(req, res, borrowerScoped) {
       // Borrower identity fields (DOB / cell / FICO / citizenship) now propagate
       // to ClickUp immediately, like app fields always did — the owner-reported
       // gap where a DOB "added after the application" never reached ClickUp
-      // until an unrelated full repush.
-      enqueueClickupPush(req.params.id, brKeys).catch(() => {});
+      // until an unrelated full repush. A typed DOB is marked as the HUMAN
+      // decision so the outbound DOB gate writes it through instead of parking
+      // the staffer's own edit in the review queue (owner-directed 2026-07-15
+      // night: DOB fully editable from PILOT).
+      enqueueClickupPush(req.params.id, brKeys,
+        { humanEditKeys: brKeys.filter((k) => k === 'date_of_birth') }).catch(() => {});
     }
     if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brKeys, before: brBefore || undefined });
     res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length });

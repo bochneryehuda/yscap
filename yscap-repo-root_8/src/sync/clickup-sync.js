@@ -70,7 +70,10 @@ async function pushOutboxOnce() {
       // skipped rather than pushed, so it can NEVER fall back to a full-payload
       // overwrite. Full pushes happen only via the explicit admin repush.
       const only = job.payload && Array.isArray(job.payload.only) ? job.payload.only.filter(Boolean) : [];
-      if (only.length) await orchestrator.pushApplication(job.entity_id, { force: true, only });
+      // Keys a human typed directly into a portal form ride along so the DOB
+      // gate can recognize the deliberate human decision it exists to demand.
+      const humanEditKeys = job.payload && Array.isArray(job.payload.humanEditKeys) ? job.payload.humanEditKeys.filter(Boolean) : [];
+      if (only.length) await orchestrator.pushApplication(job.entity_id, { force: true, only, humanEditKeys });
     }
     await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
     // A push landing means the file's outbound path works again — any open

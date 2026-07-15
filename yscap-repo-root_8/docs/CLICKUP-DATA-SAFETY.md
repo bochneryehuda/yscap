@@ -239,6 +239,24 @@ doesn't know, trigger the review."
   borrower's active files) with a deep link to `/internal/sync-reviews`; the
   screen and resolve endpoints are already scoped so LOs resolve their own
   files' rows. `notified_at` prevents double-sends.
+- **HUMAN-EDIT-WINS: a DOB changed AT THE SOURCE is adopted, never parked**
+  (Shalom Elbaum, 2026-07-15 night: ClickUp's 1/10/91 was corrupted to 1/9/91,
+  the owner FIXED it in ClickUp, hit resync — and the portal kept the wrong
+  day because two plausible differing DOBs go to review). When the task's
+  stored snapshot proves ClickUp's DOB CHANGED since the last ingest and the
+  new value is a plausible adult DOB, a human deliberately edited it at the
+  source: `adoptDobEverywhere` applies it to BOTH systems (journaled
+  `source='clickup_human_edit'`) and the stale reviews close. Our own pushes
+  can't trip it (a value we wrote equals the portal's → 'agree').
+- **DOB is fully editable FROM PILOT** (owner-directed the same night): the
+  file screen's inline DOB row and the borrower-profile edit form both accept
+  it (`sanitizeDob`-validated). The profile edit applies through
+  `adoptDobEverywhere` (both systems at once); the file-screen edit rides the
+  queue with `payload.humanEditKeys=['date_of_birth']` — the outbound DOB gate
+  recognizes the deliberate human decision and writes through (journaled,
+  breaker-limited) instead of parking the staffer's own edit in review. The
+  profile edit also propagates email / cell / home-address changes as scoped
+  pushes to every linked file (previously it wrote the portal only).
 - **A CLEARED ClickUp DOB is looked at too** (Leifer, 2026-07-15: the disputed
   DOB was deleted in ClickUp and the review row sat open forever because the
   heal flow only ran when a value came in). A blank inbound DOB still can never

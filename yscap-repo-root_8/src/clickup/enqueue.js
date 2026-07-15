@@ -16,11 +16,21 @@ const cfg = require('../config');
 // ClickUp fields those keys resolve to, so an edit can never rewrite the rest of
 // the task. Callers should always pass the changed keys; an empty set enqueues
 // nothing (there's nothing specific to propagate).
-async function enqueueClickupPush(appId, only = []) {
+// opts.humanEditKeys: the subset of `only` that a HUMAN typed directly into an
+// authenticated portal form (owner-directed 2026-07-15 night: "we need to be
+// able to edit every single ClickUp field from PILOT including DOB"). The
+// outbound DOB gate blocks AUTOMATED changes pending review — but a staff
+// member typing the DOB IS the human decision the gate exists to demand, so
+// these keys ride the queue and bypass that one gate (still journaled,
+// no-op-suppressed, breaker-limited like every write). Merged as a union so a
+// human edit is never lost when jobs coalesce.
+async function enqueueClickupPush(appId, only = [], opts = {}) {
   if (!appId || !cfg.clickupSyncEnabled) return;
   const keys = Array.isArray(only) ? [...new Set(only.map(String).filter(Boolean))] : [];
   if (!keys.length) return;
   const keysJson = JSON.stringify(keys);
+  const humanKeys = Array.isArray(opts.humanEditKeys) ? [...new Set(opts.humanEditKeys.map(String).filter(Boolean))] : [];
+  const humanJson = JSON.stringify(humanKeys);
   try {
     // Merge the changed-field set into an existing QUEUED job (union), so rapid
     // successive edits accumulate into ONE scoped push (push reads live data at
@@ -37,17 +47,23 @@ async function enqueueClickupPush(appId, only = []) {
                   SELECT jsonb_array_elements_text(COALESCE(payload->'only','[]'::jsonb)) AS e
                   UNION
                   SELECT jsonb_array_elements_text($2::jsonb) AS e
+                ) u WHERE e IS NOT NULL AND e <> '')),
+              'humanEditKeys', to_jsonb(ARRAY(
+                SELECT DISTINCT e FROM (
+                  SELECT jsonb_array_elements_text(COALESCE(payload->'humanEditKeys','[]'::jsonb)) AS e
+                  UNION
+                  SELECT jsonb_array_elements_text($3::jsonb) AS e
                 ) u WHERE e IS NOT NULL AND e <> ''))),
               updated_at = now()
         WHERE target='clickup' AND direction='push' AND entity_type='application'
           AND entity_id=$1 AND status='queued'
         RETURNING id`,
-      [appId, keysJson]);
+      [appId, keysJson, humanJson]);
     if (merged.rowCount > 0) return;
     await db.query(
       `INSERT INTO sync_queue (entity_type, entity_id, target, direction, op, status, payload, run_after)
-       VALUES ('application', $1, 'clickup', 'push', 'update', 'queued', jsonb_build_object('only', $2::jsonb), now())`,
-      [appId, keysJson]);
+       VALUES ('application', $1, 'clickup', 'push', 'update', 'queued', jsonb_build_object('only', $2::jsonb, 'humanEditKeys', $3::jsonb), now())`,
+      [appId, keysJson, humanJson]);
   } catch (_) { /* best-effort */ }
 }
 
