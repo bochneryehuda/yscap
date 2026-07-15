@@ -1402,12 +1402,10 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         (quote.liquidity ?? quote.liquidityRequired) != null ? { label: 'Liquidity to verify', value: money2(quote.liquidity ?? quote.liquidityRequired) } : null,
       ].filter(Boolean));
       const body = `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate}${quote.status !== 'ELIGIBLE' ? ' (' + quote.status.toLowerCase() + ')' : ''} on ${ctx ? ctx.label : 'the file'} · cash to close ${money2(quote.cashToClose)} · liquidity ${money2(quote.liquidity ?? quote.liquidityRequired)}`;
-      for (const sid of [row.loan_officer_id, row.processor_id]) {
-        if (sid && sid !== req.actor.id) await notify.notifyStaff(sid, {
+      await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants), minus the actor
           type: 'product_registered', title: 'Product registered on ' + (row.ys_loan_number || 'a file'),
           body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
-          link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file' });
-      }
+          link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file', exceptStaffId: req.actor.id });
     } catch (_) { /* notification is best-effort */ }
 
     res.status(201).json({ ok: true, registrationId: regId, quote });
@@ -3815,11 +3813,9 @@ router.patch('/applications/:id', async (req, res) => {
         body: `Your application has moved to "${label}". Sign in to see the latest.`,
         applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
         major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
-      const team = new Set([cur.rows[0].loan_officer_id, cur.rows[0].processor_id].filter(Boolean).filter(x => x !== req.actor.id));
-      for (const sid of team)
-        await notify.notifyStaff(sid, {
+      await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants), minus the actor
           type: 'status_change', title: `File moved to ${label}`,
-          applicationId: req.params.id, link: `/internal/app/${req.params.id}` });
+          applicationId: req.params.id, link: `/internal/app/${req.params.id}`, exceptStaffId: req.actor.id });
     } catch (_) { /* notify best-effort */ }
     res.json({ ok: true, status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }

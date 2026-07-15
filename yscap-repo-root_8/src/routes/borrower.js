@@ -290,10 +290,8 @@ router.post('/applications/:id/request-draw', async (req, res) => {
   }
   const addr = (a.property_address && (a.property_address.oneLine || a.property_address.line1 || a.property_address.street)) || 'your property';
   const borrowerName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
-  const team = [...new Set([a.loan_officer_id, a.processor_id].filter(Boolean))];
   try {
-    for (const sid of team)
-      await notify.notifyStaff(sid, {
+    await notify.notifyAppStaff(a.id, {   // #113: whole team (primary + assistants)
         type: 'draw_request', title: 'Draw setup requested',
         body: `${borrowerName || 'The borrower'} requested draw setup on ${addr}.`,
         applicationId: a.id, link: `/internal/app/${a.id}`, ctaLabel: 'Open the file' });
@@ -687,14 +685,12 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         sz.ltcPct != null ? { label: 'LTC / LTV / ARV', value: `${(sz.ltcPct * 100).toFixed(1)}% / ${(sz.acqLtvPct * 100).toFixed(1)}% / ${(sz.arvPct * 100).toFixed(1)}%` } : null,
       ].filter(Boolean));
       const body = `${pricing.PROGRAM_LABEL[program]} registered by the borrower on ${ctx ? ctx.label : (row.ys_loan_number || 'a file')}: ${money(total)} @ ${rate} · cash to close ${money(quote.cashToClose)} · liquidity to verify ${money(quote.liquidity ?? quote.liquidityRequired)}.`;
-      for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
-        await notify.notifyStaff(sid, {
+      await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants)
           type: 'product_registered',
           title: 'Borrower registered a product on ' + (row.ys_loan_number || 'a file'),
           body, applicationId: appId, meta: (ctx && ctx.meta) || undefined,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file',
         });
-      }
     } catch (_) {}
 
     res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote) });
@@ -850,13 +846,11 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
     if (row) {
       const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
       const ctx = await notify.fileContext(req.params.id);
-      for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
-        await notify.notifyStaff(sid, {
+      await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants)
           type: 'tool_submitted', title: `${who} answered "${item.borrower_label || item.label}"`,
           body: `${ctx ? ctx.label : 'A file'} — the condition is ready for review.`,
           meta: (ctx && ctx.meta) || undefined,
           applicationId: req.params.id, link: `/internal/app/${req.params.id}`, ctaLabel: 'Review the file' });
-      }
     }
   } catch (_) { /* best-effort */ }
   res.json({ ok: true, status: 'received', value: saved.value });
@@ -961,13 +955,11 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
       const extra = it.rows[0].tool_key === 'rehab_budget' && isFinite(Number(payload.total))
         ? ` — total $${Math.round(Number(payload.total)).toLocaleString('en-US')}` : '';
       const ctx = await notify.fileContext(req.params.id);
-      for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
-        await notify.notifyStaff(sid, {
+      await notify.notifyAppStaff(req.params.id, {   // #113: whole team (primary + assistants)
           type: 'tool_submitted', title: `${who} submitted their ${label}`,
           body: `${ctx ? ctx.label : (row.ys_loan_number || 'A file')}${extra}. Fresh exports are attached to the condition.`,
           meta: (ctx && ctx.meta) || undefined,
           applicationId: req.params.id, link: `/internal/app/${req.params.id}`, ctaLabel: 'Review the scope of work' });
-      }
     }
   } catch (_) { /* notification is best-effort */ }
   // Always 200 — the SOW saved (as a draft on a mismatch). `mismatch` tells the
@@ -1216,8 +1208,7 @@ async function notifyAppraisalCardAdded(appId, brand, last4) {
     if (!row) return;
     const who = [row.first_name, row.last_name].filter(Boolean).join(' ') || 'The borrower';
     const ctxCard = await notify.fileContext(appId);
-    for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean)))
-      await notify.notifyStaff(sid, {
+    await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants)
         type: 'condition_added', title: `${who} added the appraisal card`,
         body: `${ctxCard ? ctxCard.label : (row.ys_loan_number || 'A file')} — ${brand} ending ${last4}. The appraisal can be ordered.`,
         meta: (ctxCard && ctxCard.meta) || undefined,
@@ -1398,14 +1389,12 @@ async function notifyTeamOfChangeRequests(appId, requested) {
     // being asked without opening the file.
     const changeLines = requested.map((r) => changeRequests.describeChange(r)).join('; ');
     const ctx = await notify.fileContext(appId);
-    for (const sid of new Set([row.loan_officer_id, row.processor_id].filter(Boolean))) {
-      await notify.notifyStaff(sid, {
+    await notify.notifyAppStaff(appId, {   // #113: whole team (primary + assistants)
         type: 'change_request',
         title: `${who} requested a change to ${fields}`,
         body: `${ctx ? ctx.label : 'A file'} — ${changeLines}. Review and approve or reject it.`,
         meta: (ctx && ctx.meta) || undefined,
         applicationId: appId, link: `/internal/app/${appId}`, ctaLabel: 'Review the change' });
-    }
   } catch (_) { /* best-effort */ }
 }
 
@@ -1808,16 +1797,13 @@ router.post('/track-records/:id/documents', async (req, res) => {
           WHERE ci.id=$1`, [reqItemId]);
       const row = it.rows[0];
       if (row) {
-        const targets = new Set([row.loan_officer_id, row.processor_id].filter(Boolean));
-        for (const sid of targets) {
-          await notify.notifyStaff(sid, {
-            type: 'doc_uploaded', title: 'Requested track-record document uploaded',
-            body: `"${b.filename}" was uploaded for "${row.label}".`,
-            applicationId: row.application_id || null,
-            link: row.application_id ? `/internal/app/${row.application_id}` : '/internal',
-            ctaLabel: 'Review the document',
-          });
-        }
+        if (row.application_id) await notify.notifyAppStaff(row.application_id, {   // #113: whole team
+          type: 'doc_uploaded', title: 'Requested track-record document uploaded',
+          body: `"${b.filename}" was uploaded for "${row.label}".`,
+          applicationId: row.application_id,
+          link: `/internal/app/${row.application_id}`,
+          ctaLabel: 'Review the document',
+        });
       }
     } catch (_) { /* never fail the upload on a notify hiccup */ }
   }
@@ -1978,11 +1964,18 @@ router.post('/documents', async (req, res) => {
       if (row) {
         const who = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'A borrower';
         const apps = await db.query(
-          `SELECT id, loan_officer_id, processor_id FROM applications
+          `SELECT id FROM applications
             WHERE llc_id=$1 AND deleted_at IS NULL
               AND status NOT IN ('funded','declined','withdrawn')`, [b.llcId]);
-        const targets = new Set();
-        for (const a of apps.rows) { if (a.loan_officer_id) targets.add(a.loan_officer_id); if (a.processor_id) targets.add(a.processor_id); }
+        // #113: notify the WHOLE team (primary + assistants) across every active
+        // application that uses this LLC, de-duplicated.
+        const tRows = await db.query(
+          `SELECT DISTINCT aa.staff_id FROM application_assignees aa
+             JOIN applications a ON a.id=aa.application_id
+            WHERE a.llc_id=$1 AND a.deleted_at IS NULL
+              AND a.status NOT IN ('funded','declined','withdrawn')
+              AND aa.removed_at IS NULL AND aa.staff_id IS NOT NULL`, [b.llcId]);
+        const targets = new Set(tRows.rows.map((r) => r.staff_id));
         if (!targets.size && row.primary_officer_id) targets.add(row.primary_officer_id);
         let slotLabel = '';
         if (b.checklistItemId) {
@@ -2037,8 +2030,7 @@ router.post('/documents', async (req, res) => {
             ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: b.dataBase64 }]
             : undefined,
         };
-        const targets = new Set([row.loan_officer_id, row.processor_id].filter(Boolean));
-        for (const sid of targets) await notify.notifyStaff(sid, opts);
+        await notify.notifyAppStaff(b.applicationId, opts);   // #113: whole team (primary + assistants)
       }
     } catch (_) { /* never fail the upload on a notify hiccup */ }
   }
