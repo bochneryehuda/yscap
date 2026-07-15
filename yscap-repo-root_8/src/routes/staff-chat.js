@@ -234,10 +234,15 @@ router.post('/conversations/:cid/members', async (req, res) => {
 
 router.delete('/conversations/:cid/members/:staffId', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
-  // Default-chat rosters follow the file's assignments; only custom chats have
-  // a hand-managed roster. (Removing the LO from the borrower chat would just
-  // re-add them on the next ensure pass — block it explicitly instead.)
-  if (conv.kind !== 'custom') return res.status(400).json({ error: 'members of default chats follow the file assignment' });
+  // #75 — member management is allowed on EVERY chat now, including the default
+  // Loan Team / Officer↔Processor / borrower chats (owner: "make groups fully
+  // customizable… add people, remove people" on the default chats too). This is
+  // safe because ensureConversationsForApp uses ON CONFLICT DO NOTHING — a
+  // soft-removed member (removed_at set) is NEVER resurrected by the assignment
+  // re-sync, so a manual removal sticks. The assigned LO/processor still retain
+  // ACCESS to their file's chats via staffCanAccess (assignment check), so
+  // removing them from the roster only drops them from the member list and
+  // unread/notification fan-out, it can never lock the owning officer out.
   const r = await db.query(
     `UPDATE conversation_members SET removed_at=now()
       WHERE conversation_id=$1 AND member_kind='staff' AND member_id=$2 AND removed_at IS NULL
