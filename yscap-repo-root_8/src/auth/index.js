@@ -186,12 +186,14 @@ router.post('/borrower/register', async (req, res) => {
 
     // Welcome + email verification (outside the txn; never blocks the response).
     try {
-      const { token, code } = await issueEmailToken({
-        borrowerId: id, email, kind: 'verify', ttlMin: 1440, withToken: true, withCode: true });
+      // #94: activation is a ONE-CLICK auto-verifying URL — no 6-digit code to
+      // type, and a comfortable 7-day window (not the old tight 24h). The
+      // /verify page auto-posts the token from the link, so clicking activates.
+      const { token } = await issueEmailToken({
+        borrowerId: id, email, kind: 'verify', ttlMin: 10080, withToken: true, withCode: false });
       await mail.send('welcome', email, {
         firstName: firstName || '',
-        verifyUrl: mail.link('/verify?token=' + token),
-        code });
+        verifyUrl: mail.link('/verify?token=' + token) });
     } catch (mailErr) { console.error('[register] welcome email failed:', mailErr.message); }
 
     res.status(201).json({ token: borrowerToken(id, 0), borrowerId: id });
@@ -281,12 +283,12 @@ router.post('/borrower/resend-verification', async (req, res) => {
           WHERE b.email=$1 LIMIT 1`, [email]);
       const b = r.rows[0];
       if (b && !b.email_verified) {
-        const { token, code } = await issueEmailToken({
-          borrowerId: b.id, email, kind: 'verify', ttlMin: 1440,
-          withToken: true, withCode: true });
+        const { token } = await issueEmailToken({    // #94: one-click URL, no code, 7-day
+          borrowerId: b.id, email, kind: 'verify', ttlMin: 10080,
+          withToken: true, withCode: false });
         await mail.send('verifyEmail', email, {
           firstName: b.first_name,
-          verifyUrl: mail.link('/verify?token=' + token), code });
+          verifyUrl: mail.link('/verify?token=' + token) });
       }
     }
   } catch (e) { /* swallow — never reveal state */ }
