@@ -30,7 +30,8 @@ const REASON_COPY = {
   identity_mismatch_audit: 'The portfolio audit found the two systems carrying DIFFERENT values for this borrower-identity field. Nothing was changed anywhere (identity fields never overwrite silently) — compare the sides and adopt the correct one; it is applied to both systems. If both are fine (e.g. an old phone number), dismiss and this stays closed.',
   sharepoint_match_uncertain: 'The SharePoint mirror was NOT SURE which folder this file’s documents belong in (an ambiguous folder match, or no officer yet), so it filed into a safe, clearly-marked new folder — shown under “In PILOT”. If that is the wrong tree: merge or rename the folders IN SharePoint (the mirror never moves or renames anything itself), then click Re-match. Dismiss keeps the new folder.',
   sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the last error is recorded on the row. Usually a permissions problem, a folder issue, or an unreadable file. Fix the cause, then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
-  borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: the name on this file’s ClickUp task and the name on the PILOT profile disagree, and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either name — that would rename the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
+  borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: this file’s ClickUp task and the PILOT profile disagree on identity (name, phone, or SSN), and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either value — that would change the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
+  shared_email_needs_reassignment: 'TWO SEPARATE BORROWERS are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). An email must belong to exactly ONE borrower — until it does, the system deliberately refuses to link any file by this email (it cannot know whose file it would be), and each borrower stays with their own loan officer. Fix: give one of the two their OWN email — edit it on their borrower screen in PILOT, or correct it on the ClickUp task and resync. This card closes itself the moment each borrower carries their own email.',
 };
 // FILE-LEVEL resolution options per reason (mirrors REASON_ACTIONS in
 // src/lib/sync-file-review.js — the server validates; this only renders).
@@ -95,6 +96,7 @@ const FIELD_LABELS = {
   sharepoint_folder: 'SharePoint filing', sharepoint_doc: 'SharePoint document sync',
   borrower_identity: 'Borrower identity — one profile, two people',
   co_borrower_identity: 'Co-borrower identity — one profile, two people',
+  shared_email: 'Shared email — two borrowers',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are

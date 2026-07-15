@@ -144,6 +144,18 @@ router.post('/', async (req, res) => {
           body: `A website application from "${(p.firstName || p.b1First || '')} ${(p.lastName || p.b1Last || '')}" used an email that already belongs to a different person's profile. ` +
             `The new file was created on its OWN profile (placeholder email); the submitted email is saved as an additional contact. Review the pair and fix the primary email.`,
           link: `/internal/borrowers/${borrowerId}` });
+        // Owner-directed 2026-07-15 night: a shared email is ITS OWN review
+        // card in Sync review — "assign this email to ONE borrower". The boot
+        // sweep re-produces and auto-closes it; this makes it immediate.
+        const key = 'dedup:' + [String(borrowerId), String(dupOfBorrowerId)].sort().join(':');
+        const other = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [dupOfBorrowerId])).rows[0] || {};
+        await require('../lib/sync-review').queueReview({
+          borrowerId, taskId: key, direction: 'inbound',
+          fieldKey: 'shared_email', reason: 'shared_email_needs_reassignment',
+          suppressIfRejected: true,
+          rawValue: JSON.stringify({ b1: borrowerId, b2: dupOfBorrowerId, source: 'intake' }).slice(0, 300),
+          clickupValue: String(email).toLowerCase().trim().slice(0, 160),
+          portalValue: `${[submittedFirst, submittedLast].filter(Boolean).join(' ')} AND ${[other.first_name, other.last_name].filter(Boolean).join(' ')}`.slice(0, 160) });
       } catch (dupErr) { console.error('[intake] dedup bookkeeping failed:', db.describeError(dupErr)); }
     }
     try {
