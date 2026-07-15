@@ -5537,10 +5537,10 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
 router.post('/sync-reviews/:id/resolve', async (req, res) => {
   try {
     const winner = String((req.body && req.body.winner) || '');
-    if (!['clickup', 'portal'].includes(winner)) return res.status(400).json({ error: "winner must be 'clickup' or 'portal'" });
+    if (!['clickup', 'portal', 'custom'].includes(winner)) return res.status(400).json({ error: "winner must be 'clickup', 'portal', or 'custom' (with a value)" });
     const row = await loadReviewFor(req, res);
     if (!row) return;
-    const out = await require('../lib/sync-autoresolve').applyReviewWinner(row, winner);
+    const out = await require('../lib/sync-autoresolve').applyReviewWinner(row, winner, req.body && req.body.value);
     await db.query(
       `UPDATE sync_review_queue SET status='resolved', winner=$2, resolved_by=$3, resolved_at=now(), resolution_note=$4
         WHERE id=$1 AND status='open'`,
@@ -5587,6 +5587,57 @@ router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
       row.application_id || out.applicationId || row.borrower_id, { reviewId: row.id, reason: row.reason, action, note: out.note });
     res.json({ ok: true, ...out });
   } catch (e) { return sendReviewActionError(res, e); }
+});
+
+// BULK resolution (mega-audit enhancement #4): boot heal passes can queue
+// dozens of identical-reason rows — one selection instead of fifty clicks.
+// Each row goes through the SAME per-row scope check and the SAME guarded
+// applier as a single resolve; per-row outcomes come back so one bad row
+// never blocks the batch. Bounded to 100 ids per call.
+router.post('/sync-reviews/bulk', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const ids = Array.isArray(b.ids) ? b.ids.slice(0, 100) : [];
+    const action = String(b.action || '');
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    if (!['reject', 'resolve'].includes(action)) return res.status(400).json({ error: "action must be 'reject' or 'resolve'" });
+    const winner = String(b.winner || '');
+    if (action === 'resolve' && !['clickup', 'portal'].includes(winner)) {
+      return res.status(400).json({ error: "bulk resolve needs winner 'clickup' or 'portal' (custom values are per-row)" });
+    }
+    const results = [];
+    for (const id of ids) {
+      try {
+        const r = await db.query(`SELECT * FROM sync_review_queue WHERE id=$1`, [id]);
+        const row = r.rows[0];
+        if (!row) { results.push({ id, ok: false, error: 'not found' }); continue; }
+        if (row.status !== 'open') { results.push({ id, ok: false, error: 'already resolved' }); continue; }
+        if (!seesAll(req)) {
+          const ok = row.application_id
+            ? await db.query(`SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`, [row.application_id, req.actor.id])
+            : (row.borrower_id
+                ? await db.query(`SELECT 1 FROM applications a WHERE a.borrower_id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`, [row.borrower_id, req.actor.id])
+                : { rows: [] });
+          if (!ok.rows[0]) { results.push({ id, ok: false, error: 'forbidden' }); continue; }
+        }
+        if (action === 'reject') {
+          await db.query(
+            `UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='bulk dismiss' WHERE id=$1 AND status='open'`,
+            [row.id, req.actor.id]);
+          results.push({ id, ok: true });
+        } else {
+          const out = await require('../lib/sync-autoresolve').applyReviewWinner(row, winner);
+          await db.query(
+            `UPDATE sync_review_queue SET status='resolved', winner=$2, resolved_by=$3, resolved_at=now(), resolution_note='bulk resolve' WHERE id=$1 AND status='open'`,
+            [row.id, winner, req.actor.id]);
+          results.push({ id, ok: true, ...out });
+        }
+      } catch (e) { results.push({ id, ok: false, error: e.expose ? e.message : (e.status ? `ClickUp upstream ${e.status}` : 'failed') }); }
+    }
+    await audit(req, 'sync_review_bulk', 'application', null,
+      { action, winner: winner || undefined, total: ids.length, ok: results.filter((x) => x.ok).length });
+    res.json({ results });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
 router.post('/sync-reviews/:id/reject', async (req, res) => {

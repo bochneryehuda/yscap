@@ -498,6 +498,15 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options) {
       }
       return false;  // unknown object shape — always write
     }
+    // PHONE fields: '347-9070483', '+13479070483', '(347) 907-0483' are the
+    // SAME number (owner-reported 2026-07-15 night, Asher Salamon — a repush
+    // saw a formatting difference, the PII shield read it as an overwrite,
+    // and a pointless review row landed). Compare by the last 10 digits;
+    // shorter/garbled values fall through to the exact-string compare.
+    if (fieldId === F.SHARED.borrowerCell || fieldId === F.PIPELINE.secondBorrowerCell || fieldId === F.CRM.phoneNumber) {
+      const od = String(oldVal).replace(/\D/g, ''), nd = String(newVal == null ? '' : newVal).replace(/\D/g, '');
+      if (od.length >= 10 && nd.length >= 10) return od.slice(-10) === nd.slice(-10);
+    }
     return String(oldVal).trim() === String(newVal).trim();
   } catch (_) { return false; }
 }

@@ -78,6 +78,7 @@ const FIELD_LABELS = {
   ssn: 'Social Security number', first_name: 'Borrower name', email: 'Borrower email',
   cell_phone: 'Borrower cell', current_address: 'Borrower home address', status: 'File status',
   file_link: 'File not syncing', ys_loan_number: 'YS loan number', push_job: 'ClickUp push failed',
+  co_first_name: 'Co-borrower name', co_cell_phone: 'Co-borrower cell',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are
@@ -102,6 +103,24 @@ export default function SyncReviews() {
   const [err, setErr] = useState('');
   const [busyId, setBusyId] = useState(null);
   const [linkTarget, setLinkTarget] = useState({});   // rowId -> chosen candidate application id
+  const [customVal, setCustomVal] = useState({});     // rowId -> reviewer-typed correct value
+  const [selected, setSelected] = useState({});       // rowId -> checked (bulk actions)
+  const [bulkMsg, setBulkMsg] = useState('');
+
+  async function bulk(action, winner) {
+    const ids = Object.keys(selected).filter((id) => selected[id]);
+    if (!ids.length) return;
+    setBusyId('bulk'); setErr(''); setBulkMsg('');
+    try {
+      const r = await api.post('/api/staff/sync-reviews/bulk', { ids, action, winner });
+      const ok = (r.results || []).filter((x) => x.ok).length;
+      const bad = (r.results || []).filter((x) => !x.ok);
+      setBulkMsg(`${ok} done${bad.length ? `, ${bad.length} failed (${bad.slice(0, 3).map((b) => b.error).join('; ')}${bad.length > 3 ? '…' : ''})` : ''}`);
+      setSelected({});
+      await load();
+    } catch (e) { setErr(e.message || 'Bulk action failed'); }
+    finally { setBusyId(null); }
+  }
   const load = useCallback(async () => {
     setErr('');
     try { setRows((await api.get(`/api/staff/sync-reviews?status=${status}`)).reviews || []); }
@@ -135,6 +154,21 @@ export default function SyncReviews() {
         Dismiss keeps both sides as they are.
       </p>
       {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+      {bulkMsg && <div className="notice ok" style={{ marginBottom: 10 }}>{bulkMsg}</div>}
+      {status === 'open' && Object.values(selected).some(Boolean) && (
+        <div className="panel" style={{ marginBottom: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <strong>{Object.values(selected).filter(Boolean).length} selected</strong>
+          <button className="btn primary btn-sm" disabled={busyId === 'bulk'}
+            title="Apply ClickUp's current value to BOTH systems for every selected row that supports it"
+            onClick={() => bulk('resolve', 'clickup')}>Adopt ClickUp for selected</button>
+          <button className="btn primary btn-sm" disabled={busyId === 'bulk'}
+            title="Apply PILOT's current value to BOTH systems for every selected row that supports it"
+            onClick={() => bulk('resolve', 'portal')}>Adopt PILOT for selected</button>
+          <button className="btn ghost btn-sm" disabled={busyId === 'bulk'}
+            onClick={() => bulk('reject')}>Dismiss selected</button>
+          <button className="btn ghost btn-sm" onClick={() => setSelected({})}>Clear</button>
+        </div>
+      )}
       {rows == null ? <p className="muted small">Loading…</p> : rows.length === 0 ? (
         <div className="panel"><p className="muted small" style={{ margin: 0 }}>
           {status === 'open' ? 'Nothing needs review — provable conflicts are auto-resolved, and no ambiguous ones are waiting.' : `No ${status} items.`}
@@ -152,6 +186,10 @@ export default function SyncReviews() {
         return (
           <div className="panel" key={r.id} style={{ marginBottom: 10 }}>
             <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+              {status === 'open' && (
+                <input type="checkbox" checked={!!selected[r.id]} aria-label="Select for bulk action"
+                  onChange={(e) => setSelected((m) => ({ ...m, [r.id]: e.target.checked }))} />
+              )}
               <strong>{FIELD_LABELS[r.field_key] || r.field_key}</strong>
               <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT'}</span>
               <span className="muted small">{new Date(r.created_at).toLocaleString()}</span>
@@ -167,7 +205,7 @@ export default function SyncReviews() {
                 : (REASON_COPY[r.reason] || r.reason)}
             </p>
             {status === 'open' && canResolve && (
-              <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
                   title="Apply ClickUp's current value to BOTH systems (re-read live, audited)"
                   onClick={() => act(r.id, 'resolve', { winner: 'clickup' })}>{busyId === r.id ? '…' : 'Adopt ClickUp value → both'}</button>
@@ -177,6 +215,18 @@ export default function SyncReviews() {
                 <button className="btn ghost btn-sm" disabled={busyId === r.id}
                   title="Close this without writing anything anywhere"
                   onClick={() => act(r.id, 'reject')}>Dismiss</button>
+                {/* THIRD OPTION: neither side is right — type the correct value;
+                    it runs the same sanitizers and applies to BOTH systems. */}
+                <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                  <input className="input" style={{ maxWidth: 180 }}
+                    type={isDob || /closing|acquisition/.test(r.field_key) ? 'date' : 'text'}
+                    placeholder="Or type the correct value…" aria-label="Type the correct value"
+                    value={customVal[r.id] || ''} disabled={busyId === r.id}
+                    onChange={(e) => setCustomVal((m) => ({ ...m, [r.id]: e.target.value }))} />
+                  <button className="btn ghost btn-sm" disabled={busyId === r.id || !(customVal[r.id] || '').trim()}
+                    title="Apply the typed value to BOTH systems (validated, audited)"
+                    onClick={() => act(r.id, 'resolve', { winner: 'custom', value: customVal[r.id] })}>Apply typed → both</button>
+                </span>
               </div>
             )}
             {status === 'open' && !canResolve && fileActions && (
@@ -219,8 +269,13 @@ export default function SyncReviews() {
             )}
             {status !== 'open' && (
               <p className="muted small" style={{ margin: 0 }}>
-                {r.winner ? `Adopted the ${r.winner === 'clickup' ? 'ClickUp' : 'PILOT'} value on both systems. ` : ''}
-                {r.resolution_note ? `Note: ${r.resolution_note}` : ''}
+                {/* The record of WHAT settled it (owner-directed): auto-closed
+                    rows say so explicitly with the value that resolved them —
+                    "fixed outside PILOT" still leaves a visible explanation. */}
+                {r.auto_resolved ? '✓ Resolved automatically — no clicks needed. ' :
+                  r.winner === 'custom' ? 'A reviewer typed the correct value; it was applied to both systems. ' :
+                  r.winner ? `Adopted the ${r.winner === 'clickup' ? 'ClickUp' : 'PILOT'} value on both systems. ` : ''}
+                {r.resolution_note ? `${r.resolution_note}` : ''}
               </p>
             )}
           </div>

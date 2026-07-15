@@ -165,4 +165,104 @@ async function closeStaleReviews({ borrowerId, taskId, applicationId, fieldKey, 
   } catch (e) { console.warn('[sync-review] stale-close skipped:', e.message); return 0; }
 }
 
-module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, FIELD_LABELS };
+/**
+ * AGING + ESCALATION (mega-audit enhancement #2; db/112): "nothing is silent"
+ * must be a STANDING guarantee, not a point-in-time one. A row still open
+ * after 3 days re-notifies the file's loan officer once (reminded_at); after
+ * 7 days it escalates once to every active admin (escalated_at). Runs on boot
+ * and daily; bounded and best-effort — never breaks the sync.
+ */
+async function remindStaleReviewsOnce() {
+  const notify = require('./notify');
+  let reminded = 0, escalated = 0;
+  try {
+    const remind = await db.query(
+      `SELECT id FROM sync_review_queue
+        WHERE status='open' AND reminded_at IS NULL AND created_at < now() - interval '3 days'
+        ORDER BY created_at ASC LIMIT 50`);
+    for (const row of remind.rows) {
+      try {
+        // Re-run the standard LO notification for the row (it targets the
+        // file's LO / the borrower's LOs); notified_at gates only the FIRST
+        // send, so clear our own gate by calling notify directly per row.
+        await db.query(`UPDATE sync_review_queue SET notified_at=NULL WHERE id=$1`, [row.id]);
+        await notifyLoanOfficer(row.id);
+        await db.query(`UPDATE sync_review_queue SET reminded_at=now() WHERE id=$1`, [row.id]);
+        reminded++;
+      } catch (_) { /* per-row best-effort */ }
+    }
+    const esc = await db.query(
+      `SELECT q.id, q.field_key, b.first_name || ' ' || b.last_name AS borrower_name
+         FROM sync_review_queue q LEFT JOIN borrowers b ON b.id=q.borrower_id
+        WHERE q.status='open' AND q.escalated_at IS NULL AND q.created_at < now() - interval '7 days'
+        ORDER BY q.created_at ASC LIMIT 25`);
+    if (esc.rows.length) {
+      const admins = (await db.query(
+        `SELECT id, email FROM staff_users WHERE is_active AND role IN ('admin','super_admin')`)).rows;
+      const lines = esc.rows.map((r) => `• ${FIELD_LABELS[r.field_key] || r.field_key}${r.borrower_name ? ` — ${r.borrower_name}` : ''}`).join('\n');
+      for (const a of admins) {
+        try {
+          await notify.notifyStaff(a.id, {
+            type: 'sync_review',
+            title: `${esc.rows.length} sync review item(s) open for over a week`,
+            body: `These have been waiting more than 7 days with no decision:\n${lines}\n\nOpen the Sync review screen to settle them.`,
+            link: '/internal/sync-reviews', emailTo: a.email || undefined,
+          });
+        } catch (_) { /* per-admin best-effort */ }
+      }
+      await db.query(`UPDATE sync_review_queue SET escalated_at=now() WHERE id = ANY($1)`, [esc.rows.map((r) => r.id)]);
+      escalated = esc.rows.length;
+    }
+  } catch (e) { console.warn('[sync-review] aging sweep skipped:', e.message); }
+  if (reminded || escalated) console.log(`[sync-review] aging: ${reminded} reminded, ${escalated} escalated`);
+  return { reminded, escalated };
+}
+
+/**
+ * WEEKLY DIGEST (mega-audit enhancement #5): proof the review system is being
+ * worked + early warning when a producer starts flooding. Emails active
+ * admins a 7-day summary; self-gates via an audit_log stamp so it sends at
+ * most once every 6 days regardless of how often the caller fires.
+ */
+async function sendReviewDigestOnce() {
+  try {
+    const already = await db.query(
+      `SELECT 1 FROM audit_log WHERE action='sync_review_digest_sent' AND created_at > now() - interval '6 days' LIMIT 1`);
+    if (already.rows[0]) return false;
+    const stats = (await db.query(
+      `SELECT
+         count(*) FILTER (WHERE created_at > now() - interval '7 days') AS opened,
+         count(*) FILTER (WHERE status='resolved' AND auto_resolved AND resolved_at > now() - interval '7 days') AS auto_closed,
+         count(*) FILTER (WHERE status IN ('resolved','approved') AND NOT auto_resolved AND resolved_at > now() - interval '7 days') AS human_resolved,
+         count(*) FILTER (WHERE status='rejected' AND resolved_at > now() - interval '7 days') AS dismissed,
+         count(*) FILTER (WHERE status='open') AS open_now,
+         count(*) FILTER (WHERE status='open' AND created_at < now() - interval '14 days') AS open_14d
+       FROM sync_review_queue`)).rows[0];
+    const byReason = (await db.query(
+      `SELECT reason, count(*)::int AS n FROM sync_review_queue
+        WHERE created_at > now() - interval '7 days' GROUP BY reason ORDER BY n DESC LIMIT 8`)).rows;
+    const notify = require('./notify');
+    const admins = (await db.query(
+      `SELECT id, email FROM staff_users WHERE is_active AND role IN ('admin','super_admin')`)).rows;
+    const reasonLines = byReason.map((r) => `• ${r.reason}: ${r.n}`).join('\n') || '• (none)';
+    for (const a of admins) {
+      try {
+        await notify.notifyStaff(a.id, {
+          type: 'sync_review',
+          title: `Sync review weekly digest — ${stats.open_now} open now`,
+          body: `Last 7 days: ${stats.opened} opened, ${stats.auto_closed} auto-closed by the system, ` +
+                `${stats.human_resolved} resolved by a person, ${stats.dismissed} dismissed.\n` +
+                `Open now: ${stats.open_now} (${stats.open_14d} older than 14 days).\n\nTop reasons this week:\n${reasonLines}`,
+          link: '/internal/sync-reviews', emailTo: a.email || undefined,
+        });
+      } catch (_) { /* per-admin best-effort */ }
+    }
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+       VALUES ('system',NULL,'sync_review_digest_sent','application',NULL,$1)`,
+      [JSON.stringify(stats)]).catch(() => {});
+    return true;
+  } catch (e) { console.warn('[sync-review] digest skipped:', e.message); return false; }
+}
+
+module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, remindStaleReviewsOnce, sendReviewDigestOnce, FIELD_LABELS };

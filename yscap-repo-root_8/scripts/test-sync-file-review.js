@@ -115,6 +115,17 @@ async function expectHttp(status, fn) {
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'file_unlinked_no_task', application_id: null }, action: 'create_task' })));
 
+  // ---- custom-value resolution: validation fires BEFORE any write ----------
+  const AR = require('../src/lib/sync-autoresolve');
+  await ta('custom resolve: empty value → 400', () =>
+    expectHttp(400, () => AR.applyReviewWinner({ field_key: 'date_of_birth', borrower_id: 'b1' }, 'custom', '   ')));
+  await ta('custom resolve: garbage DOB → 422', () =>
+    expectHttp(422, () => AR.applyReviewWinner({ field_key: 'date_of_birth', borrower_id: 'b1' }, 'custom', 'not-a-date')));
+  await ta('custom resolve: toddler DOB → 422 (adult plausibility holds)', () =>
+    expectHttp(422, () => AR.applyReviewWinner({ field_key: 'date_of_birth', borrower_id: 'b1' }, 'custom', '2022-12-11')));
+  await ta('custom resolve: partial SSN → 422', () =>
+    expectHttp(422, () => AR.applyReviewWinner({ field_key: 'ssn', borrower_id: 'b1' }, 'custom', '123-45')));
+
   // ---- UI drift check: every server reason/action has screen copy ----------
   t('SyncReviews.jsx carries copy + buttons for every reason and action', () => {
     const jsx = fs.readFileSync(path.join(__dirname, '..', 'app-v2', 'src', 'screens', 'SyncReviews.jsx'), 'utf8');
