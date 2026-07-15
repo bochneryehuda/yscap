@@ -1022,12 +1022,10 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     const m = await findExistingApp(task, read, borrowerId, { allowCreate, forceCreate });
     if (m && m.ambiguous) return { applicationId: null, matchStatus: 'ambiguous', detail: m.detail };
     copiedLoanNumber = (m && m.copiedLoanNumber) || null;
-    // A loan number COPIED from another live task of the same borrower is a
-    // stale duplicate-workflow artifact — NEVER import it (a real loan number
-    // is globally unique; importing would collide on the unique index). The
-    // file materializes without it and the officer gets a review row to assign
-    // the correct number in ClickUp (which then fills in via COALESCE).
-    if (copiedLoanNumber) cols.ys_loan_number = null;
+    // NOTE: the copied number is deliberately NOT nulled out of `cols` here —
+    // the universal guard below adjudicates OWNERSHIP (reassign vs flag) for
+    // every path, create included. findExistingApp's copiedLoanNumber remains
+    // the matching-layer signal ("don't treat the number as identity").
     // Fresh ClickUp duplicate whose address hasn't been updated yet — do NOT
     // create a same-address twin file; the officer's address edit re-triggers
     // ingest and the file materializes cleanly then. Admin force-create is the
@@ -1041,20 +1039,76 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // findExistingApp) while ClickUp STILL carries the copied number — and the
   // COALESCE update would try to import it, collide on the partial unique
   // index (db/048), and break the ENTIRE inbound update for the file on every
-  // pass. So: a number already carried by ANOTHER live application is never
-  // importable, period. It also keeps `copiedLoanNumber` truthy on every pass
-  // until the officer actually assigns a fresh number in ClickUp — which is
-  // exactly when the review row should auto-close (not one webhook after
-  // materialization, when the task was still carrying the stale copy).
+  // pass. A number already carried by ANOTHER live application is never
+  // blind-imported. WHO rightfully owns it is ADJUDICATED, not first-claim-
+  // wins (owner-reported live 2026-07-15, Abraham Gruber: the NEWER duplicate
+  // task got processed first and imported the number, so the ORIGINAL closed
+  // deal got flagged as "the copy" forever — exactly backwards):
+  //   1. Read the OTHER task's loan-number field live. If it no longer
+  //      carries this number (the officer resolved the duplication by
+  //      clearing/renumbering it there) or the task is deleted, the other
+  //      app's stored copy is STALE → REASSIGN: clear it there (audited) and
+  //      import here. That's also how the review rows self-close after the
+  //      human fixes ClickUp — the pull's blank-never-clears COALESCE would
+  //      otherwise preserve the stale copy forever.
+  //   2. Both tasks still claim it → the OLDER task (ClickUp creation date)
+  //      is the original and wins; the newer one is the duplicate to flag.
+  //   3. Can't confirm (fetch error, unlinked holder, missing dates) →
+  //      conservative: don't import, flag the current task (a wrong flag is
+  //      recoverable; a wrong reassignment on a live deal is not).
   if (cols.ys_loan_number != null) {
     const own = await db.query(
-      `SELECT id, clickup_pipeline_task_id FROM applications
+      `SELECT id, borrower_id, clickup_pipeline_task_id FROM applications
         WHERE lower(btrim(ys_loan_number))=lower(btrim($1)) AND deleted_at IS NULL AND id IS DISTINCT FROM $2 LIMIT 1`,
       [cols.ys_loan_number, targetId]).catch(() => ({ rows: [] }));
     if (own.rows[0]) {
-      copiedLoanNumber = copiedLoanNumber ||
-        { number: cols.ys_loan_number, ofApplication: own.rows[0].id, boundToTask: own.rows[0].clickup_pipeline_task_id };
-      cols.ys_loan_number = null;   // COALESCE keeps the portal's (blank or own) number
+      const holder = own.rows[0];
+      let reassign = false, holderStillClaims = null;
+      if (holder.clickup_pipeline_task_id) {
+        try {
+          const ht = await require('./client').getTask(holder.clickup_pipeline_task_id);
+          const hf = ((ht && ht.custom_fields) || []).find((c) => c.id === F.PIPELINE.ysLoanNumber);
+          const hNum = hf && hf.value != null ? String(hf.value).trim().toLowerCase() : '';
+          holderStillClaims = hNum === String(cols.ys_loan_number).trim().toLowerCase();
+          if (!holderStillClaims) reassign = true;                       // fixed at the source — stale portal copy
+          else {
+            const curCreated = Number(task.date_created || 0);
+            const holderCreated = Number(ht.date_created || 0);
+            if (curCreated && holderCreated && curCreated < holderCreated) reassign = true;   // older task IS the original
+          }
+        } catch (e) { if (e && e.status === 404) reassign = true; /* holder's task deleted — claim gone; other errors: conservative */ }
+      }
+      if (reassign) {
+        await db.query(`UPDATE applications SET ys_loan_number=NULL, updated_at=now() WHERE id=$1`, [holder.id]).catch(() => {});
+        await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           VALUES ('system',NULL,'loan_number_reassigned','application',$1,$2)`,
+          [holder.id, JSON.stringify({ number: cols.ys_loan_number, toApplication: targetId || null,
+            fromTask: holder.clickup_pipeline_task_id, toTask: task.id,
+            why: holderStillClaims === false ? 'holder task no longer carries the number in ClickUp'
+              : holderStillClaims === true ? 'this task is OLDER — it is the original; the holder is the duplicate'
+              : 'holder task deleted' })]).catch(() => {});
+        // The rightful owner keeps its number — do NOT flag the current task.
+        copiedLoanNumber = null;
+        // The holder (the actual duplicate) gets ITS flag when both tasks
+        // still claim the number — its own next ingest would also self-flag,
+        // but queue it now so the officer sees it immediately.
+        if (holderStillClaims) {
+          try {
+            await review.queueReview({
+              applicationId: holder.id, borrowerId: holder.borrower_id || null,
+              taskId: holder.clickup_pipeline_task_id, direction: 'inbound',
+              fieldKey: 'ys_loan_number', reason: 'copied_loan_number_needs_assignment',
+              suppressIfRejected: true, clickupValue: cols.ys_loan_number, portalValue: null,
+              rawValue: JSON.stringify({ copiedFrom: task.id, reassignedToApplication: targetId || null }).slice(0, 300) });
+          } catch (_) { /* best-effort */ }
+        }
+        // cols.ys_loan_number stays SET → imports onto the rightful file.
+      } else {
+        copiedLoanNumber = copiedLoanNumber ||
+          { number: cols.ys_loan_number, ofApplication: holder.id, boundToTask: holder.clickup_pipeline_task_id };
+        cols.ys_loan_number = null;   // COALESCE keeps the portal's (blank or own) number
+      }
     }
   }
 
