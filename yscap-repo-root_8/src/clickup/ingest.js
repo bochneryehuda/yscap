@@ -167,12 +167,23 @@ async function healBorrowerFields(borrowerId, b, taskId) {
     //  * portal DOB IMPOSSIBLE (not an adult's date) → wipe-don't-guess: both
     //    systems agreed the value was wrong (ClickUp cleared it), so NULL the
     //    portal copy too rather than preserving provable garbage — audited.
+    // EVIDENCE GATE (pre-merge audit): "cleared" requires this task to have
+    // PREVIOUSLY carried a DOB (its stored snapshot from the last ingest) —
+    // a task that never had one is absence-of-information, not a clear, and
+    // must not vacate a live conflict another task is still asserting.
     try {
-      const cur = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
+      const prev = taskId
+        ? (await db.query(`SELECT snapshot FROM clickup_task_index WHERE task_id=$1`, [taskId])).rows[0] : null;
+      const prevDob = prev && prev.snapshot && prev.snapshot.borrower ? prev.snapshot.borrower.date_of_birth : null;
+      const cur = prevDob
+        ? (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {} : {};
       const portalDay = cur.date_of_birth ? String(cur.date_of_birth) : null;
-      if (portalDay) {
+      if (prevDob && portalDay) {
         const FLD = require('../lib/fields');
-        if (FLD.sanitizeDob(portalDay)) {
+        // STRICT plausibility for the stored value: it must already be a real
+        // in-window calendar date. (sanitizeDob alone would PIVOT a stored
+        // '0026-…' artifact to 1926 and call it plausible — audit nit.)
+        if (FLD.sanitizeDateOnly(portalDay) && FLD.sanitizeDob(portalDay)) {
           await review.closeStaleReviews({ borrowerId, fieldKey: 'date_of_birth',
             note: 'auto-closed — the ClickUp DOB was cleared at the source; PILOT keeps ' + portalDay });
         } else {
@@ -792,13 +803,37 @@ async function ingestTask(task, options = {}, opts = {}) {
     // number fills in via COALESCE and the row auto-closes too.
     try {
       if (!applicationId && (matchStatus === 'ambiguous' || matchStatus === 'duplicate_pending')) {
+        const reason = 'file_not_materialized_' + matchStatus;
+        // A task can TRANSITION between stuck states (ambiguous \u2194 duplicate_
+        // pending); the open row must describe the CURRENT one, so a row with
+        // a different reason is superseded rather than left stale (audit nit).
+        await db.query(
+          `UPDATE sync_review_queue SET status='resolved', auto_resolved=true, resolved_at=now(),
+                  resolution_note='superseded \u2014 the task moved to a different stuck state'
+            WHERE status='open' AND task_id=$1 AND field_key='file_link' AND reason<>$2`,
+          [String(task.id), reason]).catch(() => {});
+        // Enrich the forensic detail with LINKABLE candidate summaries so the
+        // review screen can offer "link to this existing file" as an option.
+        let rawDetail = matchDetail || null;
+        if (rawDetail && Array.isArray(rawDetail.candidates) && rawDetail.candidates.length) {
+          try {
+            const cs = await db.query(
+              `SELECT id, property_address->>'oneLine' AS address, ys_loan_number AS "loanNumber"
+                 FROM applications WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL LIMIT 4`,
+              [rawDetail.candidates.slice(0, 4).map(String)]);
+            rawDetail = { ...rawDetail, candidates: cs.rows };
+          } catch (_) { /* enrichment is optional */ }
+        }
         await review.queueReview({
           borrowerId, taskId: task.id, direction: 'inbound', fieldKey: 'file_link',
-          reason: 'file_not_materialized_' + matchStatus,
+          reason, suppressIfRejected: true,
           clickupValue: String(task.name || '').slice(0, 120), portalValue: null,
-          rawValue: matchDetail ? JSON.stringify(matchDetail).slice(0, 300) : null });
+          rawValue: rawDetail ? JSON.stringify(rawDetail).slice(0, 1000) : null });
       } else if (applicationId) {
+        // Close BOTH keyings: rows for this task, and app-keyed rows (the
+        // synthetic app:<id> unlinked-file rows) \u2014 the file syncs now.
         await review.closeStaleReviews({ taskId: task.id, fieldKey: 'file_link', note: 'auto-closed \u2014 the file is now in PILOT' });
+        await review.closeStaleReviews({ applicationId, fieldKey: 'file_link', note: 'auto-closed \u2014 the file is linked and syncing' });
       }
       if (applicationId && res.copiedLoanNumber) {
         await review.queueReview({

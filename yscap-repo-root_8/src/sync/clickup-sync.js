@@ -73,6 +73,16 @@ async function pushOutboxOnce() {
       if (only.length) await orchestrator.pushApplication(job.entity_id, { force: true, only });
     }
     await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
+    // A push landing means the file's outbound path works again — any open
+    // "push failed" review row for this file is stale; close it, no clicks
+    // needed (one indexed UPDATE, hits only when such a row exists).
+    if (job.entity_type === 'application') {
+      try {
+        await require('../lib/sync-review').closeStaleReviews({
+          applicationId: job.entity_id, fieldKey: 'push_job',
+          note: 'auto-closed — a later push for this file succeeded' });
+      } catch (_) { /* best-effort */ }
+    }
   } catch (e) {
     const attempts = job.attempts + 1;
     // OUTAGE-CLASS retries (post-merge audit finding #3): a circuit-breaker
@@ -91,6 +101,23 @@ async function pushOutboxOnce() {
     await db.query(
       `UPDATE sync_queue SET status=$1, attempts=$2, last_error=$3, run_after=now()+($4||' seconds')::interval, updated_at=now() WHERE id=$5`,
       [dead ? 'dead' : 'queued', attempts, String(e.message).slice(0, 500), backoff, job.id]);
+    // DEAD-LETTERED = a user's edit silently stopped reaching ClickUp — that
+    // must never be invisible (owner-directed 2026-07-15 night: anything stuck
+    // goes to manual review, with options). The row offers "Retry push"; it
+    // auto-closes when any later push for the file succeeds.
+    if (dead && job.entity_type === 'application') {
+      try {
+        const app = (await db.query(
+          `SELECT clickup_pipeline_task_id, borrower_id FROM applications WHERE id=$1`, [job.entity_id])).rows[0] || {};
+        const only = (job.payload && Array.isArray(job.payload.only) ? job.payload.only : []).filter(Boolean);
+        await require('../lib/sync-review').queueReview({
+          applicationId: job.entity_id, borrowerId: app.borrower_id || null,
+          taskId: app.clickup_pipeline_task_id || require('../lib/sync-file-review').syntheticTaskKey(job.entity_id),
+          direction: 'outbound', fieldKey: 'push_job', reason: 'push_dead_lettered',
+          portalValue: only.join(', ') || null, clickupValue: null,
+          rawValue: JSON.stringify({ jobId: job.id, only, error: String(e.message).slice(0, 300) }) });
+      } catch (qe) { console.warn('[clickup-sync] dead-letter review skipped:', qe.message); }
+    }
   }
   return true;
 }
@@ -126,6 +153,41 @@ async function recoverUnlinkedFilesOnce() {
   return recovered;
 }
 
+// A portal file with NO ClickUp task that is OLDER than the auto-recovery
+// window (recoverUnlinkedFilesOnce stops at 30 days) cannot sync at all and
+// was previously invisible — nothing listed it anywhere (owner-directed
+// 2026-07-15 night: any file that can't sync goes to manual review, with
+// options). One review row per file ("Create its ClickUp task" / dismiss),
+// deduped via the synthetic app:<id> task key, auto-closed by ingest the
+// moment the file links. Bounded: 100 files per boot, 180-day lookback so
+// ancient pre-sync archives don't flood the queue on the first deploy.
+async function flagUnsyncableFilesOnce() {
+  const SFR = require('../lib/sync-file-review');
+  const review = require('../lib/sync-review');
+  const r = await db.query(
+    `SELECT id, borrower_id, property_address->>'oneLine' AS one_line FROM applications
+      WHERE clickup_pipeline_task_id IS NULL AND deleted_at IS NULL
+        AND (sync_state IS NULL OR sync_state NOT IN ('descoped','dead','manual_review'))
+        AND created_at <= now() - interval '30 days'
+        AND created_at >  now() - interval '180 days'
+      ORDER BY created_at DESC LIMIT 100`).catch(() => ({ rows: [] }));
+  let queued = 0;
+  for (const row of r.rows) {
+    try {
+      await review.queueReview({
+        applicationId: row.id, borrowerId: row.borrower_id || null,
+        taskId: SFR.syntheticTaskKey(row.id),
+        direction: 'outbound', fieldKey: 'file_link', reason: 'file_unlinked_no_task',
+        suppressIfRejected: true,   // this sweep re-runs every boot — a dismiss must stick
+        clickupValue: null, portalValue: row.one_line || null,
+        rawValue: JSON.stringify({ applicationId: row.id }) });
+      queued++;
+    } catch (e) { console.warn('[clickup-sync] unsyncable-flag skipped', row.id, e.message); }
+  }
+  if (r.rows.length) console.log(`[clickup-sync] unsyncable-file sweep: ${queued}/${r.rows.length} review rows ensured`);
+  return queued;
+}
+
 // A task that failed to MATERIALIZE (match_status 'ambiguous' or
 // 'duplicate_pending') only ever got re-examined when ClickUp happened to send
 // another webhook or the task fell inside the reconcile window — so a task
@@ -141,11 +203,18 @@ async function recoverUnlinkedFilesOnce() {
 // one that is still genuinely ambiguous just refreshes its match_detail (and
 // its ingest now queues a visible 'file_link' review row instead of silence).
 async function retryStuckTasksOnce() {
+  // Without inbound creation the retry could only DEMOTE visibility (a re-
+  // ingest that can't create resolves 'skipped', overwriting the ambiguous/
+  // duplicate_pending flag that keeps the task in the manual-review queues).
+  if (!cfg.clickupInboundCreateFiles) { console.log('[clickup-sync] stuck-task retry skipped (inbound create OFF)'); return 0; }
+  // Oldest-first so a backlog wider than one boot's cap ROTATES instead of
+  // starving the tail (a retried-but-still-stuck task refreshes snapshot_at,
+  // sending it to the back of the line for the next boot).
   const r = await db.query(
     `SELECT task_id, match_status FROM clickup_task_index
       WHERE match_status IN ('ambiguous','duplicate_pending')
         AND application_id IS NULL
-      ORDER BY snapshot_at DESC NULLS LAST LIMIT 200`).catch(() => ({ rows: [] }));
+      ORDER BY snapshot_at ASC NULLS FIRST LIMIT 200`).catch(() => ({ rows: [] }));
   if (!r.rows.length) return 0;
   let materialized = 0, still = 0, failed = 0;
   for (const row of r.rows) {
@@ -153,6 +222,10 @@ async function retryStuckTasksOnce() {
       const res = await ingestOne(row.task_id);
       if (res && res.applicationId) materialized++; else still++;
     } catch (e) { failed++; console.error('[clickup-sync] stuck-task retry failed', row.task_id, e.message); }
+    // Pace the pass — each retry costs multiple ClickUp reads and the client
+    // has no 429 backoff; a big backlog must not exhaust the API rate limit
+    // while the webhook inbox is draining (pre-merge audit should-fix).
+    await new Promise((res2) => setTimeout(res2, 400));
   }
   console.log(`[clickup-sync] stuck-task retry: ${materialized} materialized, ${still} still waiting, ${failed} failed (of ${r.rows.length})`);
   return materialized;
@@ -306,7 +379,19 @@ async function resolveOrphans(orphans, liveTaskIds) {
       const u = await q(
         `UPDATE applications SET sync_state='manual_review', updated_at=now()
           WHERE id=$1 AND deleted_at IS NULL AND sync_state <> 'manual_review' RETURNING id`, [o.id]);
-      if (u.length) { flagged++; await auditSystem('clickup_orphan_flagged', o.id, { task: o.task_id, docs, reason: 'no_live_sibling' }); }
+      if (u.length) {
+        flagged++; await auditSystem('clickup_orphan_flagged', o.id, { task: o.task_id, docs, reason: 'no_live_sibling' });
+        // Owner-directed 2026-07-15 night: a stuck FILE goes to the review
+        // queue with options, not only the Control Center. The reviewer
+        // chooses: archive the file, or keep it (relink later).
+        try {
+          await require('../lib/sync-review').queueReview({
+            applicationId: o.id, borrowerId: o.borrower_id || null, taskId: o.task_id,
+            direction: 'inbound', fieldKey: 'file_link', reason: 'task_deleted_needs_decision',
+            clickupValue: null, portalValue: o.one_line || null,
+            rawValue: JSON.stringify({ deletedTask: o.task_id, docs }) });
+        } catch (qe) { console.warn('[clickup-sync] orphan review skipped:', qe.message); }
+      }
     }
   }
   return { archived, merged, flagged };
@@ -701,6 +786,10 @@ function start() {
     // handling) heals the entire stuck backlog on deploy — not only the tasks
     // that happen to receive a new webhook.
     retryStuckTasksOnce().catch((e) => console.error('[clickup-sync] stuck-task retry', e.message));
+    // Files that CANNOT sync (no task, older than the recovery window) become
+    // visible review rows with a "create the task" option — after the recovery
+    // pass above has had its chance to link/create the recent ones.
+    flagUnsyncableFilesOnce().catch((e) => console.error('[clickup-sync] unsyncable sweep', e.message));
   }, cfg.clickupRunBackfill ? 120000 : 15000);
 
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
@@ -731,4 +820,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };

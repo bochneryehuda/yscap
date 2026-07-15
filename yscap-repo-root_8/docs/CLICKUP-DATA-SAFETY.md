@@ -111,9 +111,48 @@ sync now handles the full lifecycle:
    non-materialized (`ambiguous` / `duplicate_pending`) queues a visible
    `file_link` review row saying WHY and what fixes it; the row auto-closes the
    moment the file materializes. And a boot one-shot (`retryStuckTasksOnce`)
-   re-drives every stuck task through the CURRENT resolver (≤200/boot), so a
-   root-cause fix heals the whole backlog on deploy — not only tasks that
-   happen to receive a new webhook.
+   re-drives the stuck backlog through the CURRENT resolver (oldest-first,
+   ≤200/boot with 400 ms pacing, rotating a larger backlog across boots; only
+   when inbound creation is ON), so a root-cause fix heals stuck tasks on
+   deploy — not only ones that happen to receive a new webhook.
+
+### File-level review — EVERY stuck sync state, with resolution OPTIONS
+### (owner-directed 2026-07-15 night)
+
+"Not only a field that is wrong — entire files. Anything you can't sync,
+anything stuck, goes to manual review, with options how to resolve it."
+
+The stuck states and their reviewer actions (`src/lib/sync-file-review.js`
+`REASON_ACTIONS` is the single source of truth; endpoint
+`POST /api/staff/sync-reviews/:id/resolve-file {action}`):
+
+| Stuck state (reason) | Producer | Options |
+|---|---|---|
+| `file_not_materialized_ambiguous` | every ambiguous ingest (candidates enriched with address/loan summaries) | Create as its own file · Link to a candidate file · Dismiss |
+| `file_not_materialized_duplicate_pending` | every deferred duplicate ingest | Create the file now (deliberate override) · Dismiss |
+| `task_deleted_needs_decision` | orphan reconcile flags a file whose task was deleted, no live sibling | Archive the file (reversible) · Keep it in PILOT · Dismiss |
+| `push_dead_lettered` | an outbound queue job exhausts its retry budget | Retry the push · Dismiss (auto-closes when any later push succeeds) |
+| `file_unlinked_no_task` | boot sweep: active file with no task, 30–180 days old (`flagUnsyncableFilesOnce`, ≤100/boot) | Create its ClickUp task · Dismiss |
+
+Design rules baked in:
+- **Actions run the sync's own guarded machinery** (`ingestOne`/forceCreate,
+  `createForNewFile`, the queue's normal retry) — no review action bypasses a
+  write guard, journals, or the circuit breaker. Everything is audited
+  (`sync_review_force_create` / `_link_existing` / `_archive_orphan` /
+  `_keep_orphan` / `_retry_push` / `_create_task`).
+- **A dismiss STICKS**: file-level rows are re-produced by every sync pass, so
+  `queueReview({suppressIfRejected})` refuses to respawn a row the reviewer
+  explicitly dismissed (same task+field+reason).
+- **Rows keyed to a FILE with no task** dedupe via the synthetic
+  `task_id='app:<uuid>'` key (the queue's unique index is per-task);
+  `closeStaleReviews({applicationId})` closes them without knowing the key.
+- **Auto-close on recovery, always**: materialize → `file_link` rows close
+  (both task- and app-keyed); a successful push closes `push_job` rows; a
+  reason transition (ambiguous ↔ duplicate_pending) supersedes the stale row.
+- **The LO sees what the LO is emailed**: scoped staff see rows on their files
+  AND application-less rows for borrowers they have an active file with (the
+  same fan-out the notification uses); file-level emails describe the
+  situation + options, never "choose which value wins".
 
 ### Follow-up hardening (post-merge audit)
 
