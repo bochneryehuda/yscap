@@ -54,9 +54,11 @@ router.post('/', async (req, res) => {
        p.cellPhone || p.b1Phone || null, p.citizenship || p.b1Citizen || null]);
     const borrowerId = b.rows[0].id;
     if (p.ssn || p.b1Ssn) {
-      const ssn = p.ssn || p.b1Ssn;
-      await client.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1`,
-        [borrowerId, C.encryptSSN(ssn), String(ssn).replace(/\D/g, '').slice(-4)]);
+      // #91/#92: only persist a real 9-digit SSN, canonically (digits only). A
+      // partial/garbage value from the public form is skipped, never stored.
+      const s = C.ssnForStorage(p.ssn || p.b1Ssn);
+      if (s) await client.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1`,
+        [borrowerId, s.encrypted, s.last4]);
     }
     // 2) resolve loan officer (by email or name) -> may be null (Lead Capture)
     let officerId = null, officerName = p.loOfficer || p.loanOfficerName || null;

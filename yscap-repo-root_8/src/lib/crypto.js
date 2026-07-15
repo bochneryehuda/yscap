@@ -125,6 +125,19 @@ function decryptSSN(buf) {
   } catch { return null; }
 }
 
+// #91/#92 — the SINGLE chokepoint for persisting an SSN. Normalizes to the 9
+// digits and returns { encrypted, last4, digits } — or NULL when the value isn't a
+// full 9-digit SSN. Every write path should go through this instead of hand-rolling
+// encryptSSN(raw) + slice(-4): the ad-hoc form stored an encrypted dash-formatted
+// string and a wrong/blank last4 on a partial or non-numeric value (audit #234).
+// Encrypting the CLEAN digits also makes the ciphertext canonical regardless of the
+// input's formatting. (fields.js has no requires, so this can't create a cycle.)
+function ssnForStorage(raw) {
+  const digits = require('./fields').sanitizeSsnDigits(raw);
+  if (!digits) return null;
+  return { encrypted: encryptSSN(digits), last4: digits.slice(-4), digits };
+}
+
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 const randomToken = (n = 32) => crypto.randomBytes(n).toString('base64url');
 
@@ -190,7 +203,7 @@ module.exports = {
   hashPassword, verifyPassword,
   signJwt, verifyJwt,
   newTotpSecret, verifyTotp, totpUri,
-  encryptSSN, decryptSSN,
+  encryptSSN, decryptSSN, ssnForStorage,
   sha256, randomToken,
   passwordProblem, PASSWORD_MIN, PASSWORD_MAX,
   newBackupCodes, hashBackupCode, normalizeBackupCode,

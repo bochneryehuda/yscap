@@ -144,7 +144,14 @@ router.put('/profile', async (req, res) => {
 
   const sets = [], vals = []; let i = 1;
   for (const [k, v] of Object.entries(fields)) { sets.push(`${k}=$${i++}`); vals.push(v); }
-  if (b.ssn) { sets.push(`ssn_encrypted=$${i++}`); vals.push(C.encryptSSN(b.ssn)); sets.push(`ssn_last4=$${i++}`); vals.push(String(b.ssn).replace(/\D/g, '').slice(-4)); }
+  if (b.ssn) {
+    // #91/#92: validate server-side (the "Add SSN" button gates to 9 digits, but a
+    // direct/old-client caller must not persist a partial or non-numeric SSN).
+    const s = C.ssnForStorage(b.ssn);
+    if (!s) return res.status(400).json({ error: 'Enter a valid 9-digit SSN.' });
+    sets.push(`ssn_encrypted=$${i++}`); vals.push(s.encrypted);
+    sets.push(`ssn_last4=$${i++}`); vals.push(s.last4);
+  }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(me(req));
   await db.query(`UPDATE borrowers SET ${sets.join(',')} WHERE id=$${i}`, vals);
@@ -2433,10 +2440,13 @@ async function syncProfileFromApplication(borrowerId, b) {
      currentAddress, isFinite(yearsAtResidence) ? yearsAtResidence : null,
      monthsAtResidence, p.housingStatus || '', housingPayment]);
   if (b.ssn) {
-    await db.query(
+    // #91/#92: never persist a partial/garbage SSN from the application; just skip
+    // an invalid one (don't fail the submit over it). COALESCE keeps any real SSN.
+    const s = C.ssnForStorage(b.ssn);
+    if (s) await db.query(
       `UPDATE borrowers SET ssn_encrypted = COALESCE(ssn_encrypted, $2),
               ssn_last4 = COALESCE(ssn_last4, $3), updated_at=now() WHERE id=$1`,
-      [borrowerId, C.encryptSSN(b.ssn), String(b.ssn).replace(/\D/g, '').slice(-4)]);
+      [borrowerId, s.encrypted, s.last4]);
   }
 }
 

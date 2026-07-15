@@ -193,11 +193,11 @@ async function resolveBorrower(read, taskId) {
   // same task's shadow email on a re-sync) — heal it too, or the very row this
   // sync created with 'Unknown' can never pick the name up later.
   await healBorrowerFields(borrowerId, b);
-  // #91: only accept a real 9-digit SSN from ClickUp, and store it canonically
-  // (digits only), matching every other write path.
-  const ssnD = require('../lib/fields').sanitizeSsnDigits(b.ssn);
-  if (ssnD) { try { await db.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1 AND ssn_encrypted IS NULL`,
-    [borrowerId, C.encryptSSN(ssnD), ssnD.slice(-4)]); } catch (_) {} }
+  // #91: only accept a real 9-digit SSN from ClickUp, stored canonically through
+  // the single chokepoint (digits only) — matching every other write path.
+  const ssnStore = C.ssnForStorage(b.ssn);
+  if (ssnStore) { try { await db.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1 AND ssn_encrypted IS NULL`,
+    [borrowerId, ssnStore.encrypted, ssnStore.last4]); } catch (_) {} }
   await recordContacts(borrowerId, b, taskId);
   // "Possible duplicate — please check": the email pointed at an existing borrower
   // we could not corroborate, so we created a DISTINCT profile (safe over-split).
