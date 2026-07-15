@@ -280,8 +280,11 @@ export default function StaffLayout({ children }) {
   // and missing today's screens — while a freshly-reloaded admin saw the
   // current build; "I see one date of birth and the loan officer sees
   // another"). Every few minutes (and whenever the tab regains focus) the
-  // CURRENT index.html is fetched cache-busted; if it references a different
-  // build than the one running, a banner asks for one click to refresh.
+  // server's DEPLOYED bundle hash is read from /api/health — deliberately an
+  // /api/ path because the service worker never intercepts those (a direct
+  // index.html fetch was answered from the SW's own cache, which by
+  // construction references the RUNNING bundle — the check compared the
+  // running build against itself and never fired; post-merge audit #271).
   const [staleBuild, setStaleBuild] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -291,12 +294,11 @@ export default function StaffLayout({ children }) {
       return m ? m[1] : null;
     })();
     if (!running) return undefined;
-    const check = () => fetch('/portal/index.html', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.text() : ''))
-      .then((html) => {
-        if (!alive || !html) return;
-        const m = html.match(/index-([\w-]+)\.js/);
-        if (m && m[1] !== running) setStaleBuild(true);
+    const check = () => fetch('/api/health', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((h) => {
+        if (!alive || !h || !h.bundle) return;
+        if (h.bundle !== running) setStaleBuild(true);
       }).catch(() => {});
     check();
     const t = setInterval(check, 5 * 60 * 1000);

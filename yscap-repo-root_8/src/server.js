@@ -39,6 +39,25 @@ app.use('/api/leads', rateLimit({ bucket: 'leads', windowMs: 60000, max: 20 }));
 app.use('/api/address', rateLimit({ bucket: 'address', windowMs: 60000, max: 120 })); // autocomplete is chatty
 
 // --- API ---
+// The DEPLOYED V2 bundle hash, read from the portal's index.html on disk (the
+// file changes atomically on deploy). Cached ~60s. The stale-build watchdog in
+// StaffLayout compares this against the bundle a tab is RUNNING — it must come
+// from /api/* because the service worker never intercepts /api/ (its
+// cache-first asset branch was silently answering a direct index.html fetch
+// from cache, defeating the watchdog — post-merge audit #271).
+let _v2Bundle = null;
+function v2BundleHash() {
+  if (_v2Bundle && Date.now() - _v2Bundle.at < 60000) return _v2Bundle.hash;
+  let hash = null;
+  try {
+    const html = require('fs').readFileSync(path.join(__dirname, '..', 'web', 'v2', 'portal', 'index.html'), 'utf8');
+    const m = html.match(/index-([\w-]+)\.js/);
+    hash = m ? m[1] : null;
+  } catch (_) { /* portal bundle absent (bare API deploy) */ }
+  _v2Bundle = { hash, at: Date.now() };
+  return hash;
+}
+
 // LIVENESS health check (Render points healthCheckPath here). It reports 200 as
 // long as THIS PROCESS can answer — it does NOT fail on a database blip. That is
 // deliberate: a transient DB hiccup must not make the platform kill a perfectly
@@ -112,6 +131,7 @@ app.get('/api/health', async (req, res) => {
     // no live Graph call on the health path).
     sharepointSync: (() => { try { return require('./lib/sharepoint-backup').health(); } catch (e) { return { enabled: false, error: e.message }; } })(),
     ...(conditionsGuard ? { conditionsGuard } : {}),
+    bundle: v2BundleHash(),   // deployed V2 bundle hash — the stale-build watchdog's truth
     ts: Date.now(),
   });
 });
@@ -227,7 +247,11 @@ if (PILOT_LOGIN_HOSTS.size) {
 const staticOpts = {
   setHeaders(res, filePath) {
     if (/\.html?$/.test(filePath)) res.set('Cache-Control', 'no-cache, must-revalidate');
-    else if (/[/\\]assets[/\\]/.test(filePath)) res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    // ONLY the portal's build assets are content-hashed (safe to cache forever).
+    // web/(v2/)assets/* are FIXED-NAME brand files regenerated in place (e.g.
+    // the email lockup PNG) — immutable there would pin the old file for a
+    // year (post-merge audit #271).
+    else if (/[/\\]portal[/\\]assets[/\\]/.test(filePath)) res.set('Cache-Control', 'public, max-age=31536000, immutable');
   },
 };
 app.use(express.static(v2Dir, staticOpts));            // V2 wins at the root
@@ -250,6 +274,7 @@ app.get('*', (req, res, next) => {
       : req.path.startsWith('/v1')
         ? path.join(webDir, 'index.html')
         : path.join(v2Dir, 'index.html');
+  res.set('Cache-Control', 'no-cache, must-revalidate');   // HTML entries never cache (same rule as staticOpts)
   res.sendFile(shell, (err) => err && res.sendFile(path.join(v2Dir, 'index.html'), (e2) => e2 && next()));
 });
 

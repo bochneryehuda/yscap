@@ -991,7 +991,15 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     }
 
     const coId = await attachCoBorrowerToApp(appId, app.borrower_id, b);
-    await audit(req, 'set_co_borrower', 'application', appId, { coBorrowerId: coId });
+    // Detail carries the FIELD NAMES the attach touched (esp. 'date_of_birth')
+    // so the DOB backdating provenance check can see this human entry
+    // (post-merge audit #271, provenance hole #3).
+    await audit(req, 'set_co_borrower', 'application', appId, {
+      coBorrowerId: coId,
+      fields: ['first_name', b.phone ? 'cell_phone' : null,
+        require('../lib/fields').sanitizeDob(b.dob) ? 'date_of_birth' : null,
+        b.ssn ? 'ssn' : null].filter(Boolean),
+    });
     res.json({ ok: true, coBorrowerId: coId });
   } catch (e) {
     if (e.status) return res.status(e.status).json({ error: e.message });
