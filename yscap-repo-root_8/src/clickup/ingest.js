@@ -29,6 +29,13 @@ const RTL_PROGRAMS = new Set(['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up
 // program to descope. Matched case-insensitively against read.rawProgram.
 const UNSET_PROGRAM_LABELS = new Set(['not sure yet']);
 const CLOSED_STATUSES = (s) => statusMap.externalFor(s) === 'funded';
+// A 'YYYY-MM-DD' day with a sane year, else null (2026-07-15 incident: raw
+// mapper dates written into track_records bypassed the applications year guard).
+const saneDay = (v) => {
+  if (v == null || v === '') return null;
+  const y = Number(String(v).slice(0, 4));
+  return y >= 1900 && y <= 2100 ? v : null;
+};
 
 function identityFrom(read) {
   const b = read.borrower || {}, a = read.app || {};
@@ -303,7 +310,7 @@ async function upsertTrackRecord(borrowerId, read, taskId) {
                                  is_verified, origin, source_task_id, inferred, address_key, notes)
        VALUES ($1,$2,$3,$4,$5,$6,false,'clickup_backfill',$7,$8,$9,$10) RETURNING id`,
       [borrowerId, a.property_address ? JSON.stringify(a.property_address) : null, dealType,
-       a.purchase_price || null, a.acquisition_date || null, a.actual_closing || null,
+       a.purchase_price || null, saneDay(a.acquisition_date), saneDay(a.actual_closing),
        taskId, inferred, key, 'Auto-derived from ClickUp; unverified']);
     return r.rows[0].id;
   } catch (e) {

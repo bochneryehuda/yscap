@@ -5114,7 +5114,7 @@ router.get('/sync-reviews', async (req, res) => {
          LEFT JOIN applications a ON a.id = q.application_id
          LEFT JOIN borrowers b ON b.id = COALESCE(q.borrower_id, a.borrower_id)
         WHERE q.status = $1
-          ${scoped ? `AND a.id IS NOT NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}` : ''}
+          ${scoped ? `AND a.id IS NOT NULL AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}` : ''}
         ORDER BY q.created_at DESC LIMIT 500`,
       scoped ? [status, req.actor.id] : [status]);
     res.json({ reviews: r.rows });
@@ -5173,7 +5173,8 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
         { reviewId: row.id, field: row.field_key, direction: 'outbound', pushed: out && out.fields, reason: row.reason });
     }
     await db.query(
-      `UPDATE sync_review_queue SET status='approved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
+      `UPDATE sync_review_queue SET status='approved', resolved_by=$2, resolved_at=now(), resolution_note=$3
+        WHERE id=$1 AND status='open'`,
       [row.id, req.actor.id, (req.body && req.body.note) || null]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
@@ -5184,7 +5185,8 @@ router.post('/sync-reviews/:id/reject', async (req, res) => {
     const row = await loadReviewFor(req, res);
     if (!row) return;
     await db.query(
-      `UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
+      `UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note=$3
+        WHERE id=$1 AND status='open'`,
       [row.id, req.actor.id, (req.body && req.body.note) || null]);
     await audit(req, 'sync_review_reject', row.application_id ? 'application' : 'borrower',
       row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, reason: row.reason });

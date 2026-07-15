@@ -25,16 +25,32 @@
  * a field, never touches a field it can't classify, verifies every write by
  * re-reading the task, and journals every write to clickup_write_log.
  *
+ * PORTAL HEALING (--apply also covers the portal side, owner-directed 2026-07-15
+ * "the pilot portal should not stay with the corrupted information"):
+ *   * portal value has a GARBAGE year while ClickUp's day is sane → the portal
+ *     column is fixed from ClickUp's day (audited with the before value).
+ *   * BOTH sides garbage (the year-0026 typing artifact pushed and re-pulled) →
+ *     nothing is guessed; a sync_review_queue row carries the auto-pivoted
+ *     proposal (26 → 2026) for one-click human approval at /internal/sync-reviews.
+ *   * portal vs ClickUp DAY DISAGREEMENT on a DOB (both sane) → review queue,
+ *     never auto-applied. Closings need no script pass: the normal reconcile
+ *     pull already overwrites the portal from (now-corrected) ClickUp.
+ *
  * RUN (Render shell or any env with prod credentials):
  *   node scripts/clickup-date-restore.js                       # report only
  *   node scripts/clickup-date-restore.js --csv report.csv      # report to file
- *   node scripts/clickup-date-restore.js --apply               # fix ClickUp
+ *   node scripts/clickup-date-restore.js --apply               # fix ClickUp + portal
  *   node scripts/clickup-date-restore.js --apply --only dob    # one field kind
  */
 const db = require('../src/db');
 const clickup = require('../src/clickup/client');
 const T = require('../src/clickup/transforms');
 const F = require('../src/clickup/fields');
+const syncReview = require('../src/lib/sync-review');
+
+// Portal columns the heal pass may write (date-only columns; submitted_at is a
+// timestamptz instant and is never healed from a date field).
+const PORTAL_HEAL_COLS = new Set(['date_of_birth', 'expected_closing', 'acquisition_date', 'actual_closing']);
 
 const ACTUAL_CLOSING = '0846edc7-8619-4ee6-827e-a673570d3057';
 const DATE_FIELDS = [
@@ -100,19 +116,60 @@ async function main() {
       portal = portal || null;
       const agrees = portal != null && cuDay != null ? String(portal) === String(cuDay) : null;
 
+      const saneYear = (d) => { const y = Number(String(d || '').slice(0, 4)); return y >= 1900 && y <= 2100; };
+      const portalGarbage = portal != null && !saneYear(portal);
+      const cuSane = cuDay != null && saneYear(cuDay) && cls !== 'garbage-year' && cls !== 'unparseable';
+
       let action = 'none', newEpoch = null, verified = null;
       if (cls === 'portal-utc-midnight' && f.restorable) {
         // Same calendar day, correct convention — restores the display the team
         // originally saw. The day itself is trusted: it IS the portal's value
         // (agrees), or when the DB moved on since, the DB day wins.
-        const day = agrees === false && portal ? portal : cuDay;
+        const day = agrees === false && portal && !portalGarbage ? portal : cuDay;
         newEpoch = T.dateOnlyToClickUpEpoch(day);
         action = newEpoch == null ? 'flag-unrestorable' : (APPLY ? 'rewrite' : 'would-rewrite');
-      } else if (cls === 'garbage-year' && f.restorable) {
-        newEpoch = portal ? T.dateOnlyToClickUpEpoch(portal) : null;
+      } else if (cls === 'garbage-year' && f.restorable && portal && !portalGarbage) {
+        newEpoch = T.dateOnlyToClickUpEpoch(portal);
         action = newEpoch == null ? 'flag-no-portal-value' : (APPLY ? 'rewrite' : 'would-rewrite');
-      } else if (cls === 'garbage-year' || cls === 'other-offset' || cls === 'unparseable') {
+      } else if (cls === 'garbage-year' && portalGarbage) {
+        // BOTH sides garbage (the year-0026 typing artifact pushed then re-pulled):
+        // never guess — queue the auto-pivoted proposal for human approval.
+        action = APPLY ? 'queue-review' : 'would-queue-review';
+        if (APPLY) {
+          await syncReview.queueReview({
+            applicationId: app.id, borrowerId: f.col === 'date_of_birth' ? app.borrower_id : null,
+            taskId: app.task_id, direction: 'inbound', fieldKey: f.col,
+            currentValue: portal, proposedValue: T.pivotSuspectYear(cuDay, f.key === 'dob' ? 'dob' : 'closing'),
+            rawValue: String(raw), reason: 'clickup_year_out_of_range' });
+        }
+      } else if (cls === 'garbage-year' || cls === 'unparseable') {
         action = 'flag-review';
+      } else if (cuSane && portalGarbage && PORTAL_HEAL_COLS.has(f.col)) {
+        // The PORTAL holds the garbage (the typing artifact persisted DB-side)
+        // while ClickUp's day is sane — heal the portal column from ClickUp.
+        action = APPLY ? 'heal-portal' : 'would-heal-portal';
+        if (APPLY) {
+          if (f.table === 'b') {
+            await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [app.borrower_id, cuDay]);
+          } else {
+            await db.query(`UPDATE applications SET ${f.col}=$2::date, updated_at=now() WHERE id=$1`, [app.id, cuDay]);
+          }
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system', NULL, 'clickup_date_restore_portal', $1, $2, $3)`,
+            [f.table === 'b' ? 'borrower' : 'application', f.table === 'b' ? app.borrower_id : app.id,
+             JSON.stringify({ taskId: app.task_id, field: f.col, from: String(portal), to: cuDay })]);
+          verified = true;
+        }
+      } else if (cuSane && f.col === 'date_of_birth' && agrees === false && !portalGarbage) {
+        // DOB day disagreement with both sides sane: a human decides, never a script.
+        action = APPLY ? 'queue-review' : 'would-queue-review';
+        if (APPLY) {
+          await syncReview.queueReview({
+            applicationId: app.id, borrowerId: app.borrower_id, taskId: app.task_id,
+            direction: 'inbound', fieldKey: 'date_of_birth', currentValue: portal,
+            proposedValue: cuDay, rawValue: String(raw), reason: 'clickup_dob_differs_from_portal' });
+        }
       }
 
       if (APPLY && action === 'rewrite') {
@@ -132,7 +189,8 @@ async function main() {
              VALUES ('system', NULL, 'clickup_date_restore', 'application', $1, $2)`,
             [app.id, JSON.stringify({ taskId: app.task_id, field: f.key, from: String(raw), to: String(newEpoch), day: T.fromEpochMs(newEpoch) })]);
         } catch (e) { console.error(`[restore] setField ${app.task_id} ${f.key} failed: ${e.message}`); failed++; }
-      } else if (action.startsWith('flag')) flagged++;
+      } else if (action === 'heal-portal') restored++;
+      else if (action.startsWith('flag') || action.includes('queue-review')) flagged++;
 
       if (cls !== 'native-4am' || agrees === false) {
         rows.push([app.task_id, app.id, `${app.first_name || ''} ${app.last_name || ''}`.trim(), f.key,
