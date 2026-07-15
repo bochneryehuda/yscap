@@ -53,6 +53,28 @@ async function expectHttp(status, fn) {
     assert.ok(SFR.syntheticTaskKey('x').startsWith('app:'));
   });
 
+  // ---- terminal-status classification (the successor-deal exception) -------
+  // Root-caused 2026-07-15 (Shulom Eisenberg / 521 Bayway): a funded successor
+  // task sat 'duplicate_pending' forever behind its CANCELLED predecessor —
+  // the defer must only wait on siblings whose deal is still ACTIVE.
+  t('isTerminal: finished deals free their address for a successor', () => {
+    const S = require('../src/clickup/status');
+    assert.strictEqual(S.isTerminal('closed (6-email funded)'), true, 'funded is terminal');
+    assert.strictEqual(S.isTerminal('cancelled & reconciled'), true, 'cancelled & reconciled is terminal');
+    assert.strictEqual(S.isTerminal('cancelled'), true);
+    assert.strictEqual(S.isTerminal('Declined'), true, 'case-insensitive');
+    assert.strictEqual(S.isTerminal('trash'), true);
+    assert.strictEqual(S.isTerminal('refinanced'), true);
+    assert.strictEqual(S.isTerminal('non del closed reconciled'), true);
+    assert.strictEqual(S.isTerminal('file being worked'), false, 'active deal is NOT terminal');
+    assert.strictEqual(S.isTerminal('starting'), false);
+    assert.strictEqual(S.isTerminal('inactive / on hold'), false, 'on-hold still owns its address');
+    assert.strictEqual(S.isTerminal('scheduling closing'), false);
+    assert.strictEqual(S.isTerminal('in underwriting'), false);
+    assert.strictEqual(S.isTerminal(''), false, 'blank status is not terminal');
+    assert.strictEqual(S.isTerminal(null), false);
+  });
+
   // ---- validation rejections (all fire BEFORE any DB/API work) -------------
   await ta('unknown action → 400', () =>
     expectHttp(400, () => SFR.applyFileReviewAction({ row: { reason: 'push_dead_lettered' }, action: 'create_file' })));

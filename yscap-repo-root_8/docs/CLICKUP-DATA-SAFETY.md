@@ -86,6 +86,15 @@ sync now handles the full lifecycle:
    Control Center manual-review queue. No same-address twin file, no old-deal
    data materialized mid-cleanup. (Deferral also applies when the borrower has
    any live-task file at the same normalized address.)
+   **Successor-deal exception** (root-caused 2026-07-15, Shulom Eisenberg /
+   521 Bayway): the defer only waits on a same-address sibling whose deal is
+   still **ACTIVE**. A sibling in a TERMINAL status (`status.isTerminal`:
+   funded / declined / withdrawn-cancelled) will never be re-addressed — a new
+   task at a finished deal's address is the property's NEXT deal (a
+   re-origination after a cancellation, a refi after funding) and materializes
+   immediately. Applies to both defer signals (same-address sibling AND
+   copied-stamp source; the stamp path requires the source task be confirmed
+   live+terminal — unreachable keeps deferring).
 3. The officer cleans the task and updates the address → the webhook re-ingests
    → the new portal file is created **from the cleaned task**, linked to it.
 4. The **`portal_stamp` scoped push re-stamps the task** with its own file's

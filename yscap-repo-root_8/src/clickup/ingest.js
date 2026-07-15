@@ -547,10 +547,23 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
     for (const o of other.rows) {
       const on = identity.normalizeIdentity({ address: _addrOf(o.property_address) });
       if (!on.address || on.address !== tn.address) continue;
-      let dead = false;
-      try { await require('./client').getTask(o.clickup_pipeline_task_id); }
+      let dead = false, sibTerminal = false;
+      try {
+        const sib = await require('./client').getTask(o.clickup_pipeline_task_id);
+        sibTerminal = statusMap.isTerminal(sib && sib.status && sib.status.status);
+      }
       catch (e) { if (e && e.status === 404) dead = true; }
       if (dead) return { id: o.id, how: 'relinked_dead_task', detail: { fromTask: o.clickup_pipeline_task_id }, copiedLoanNumber };
+      // SUCCESSOR DEAL (root-caused 2026-07-15 evening, Shulom Eisenberg / 521
+      // Bayway): the same-address sibling's deal is TERMINAL — funded,
+      // declined, or cancelled. Its task will never be re-addressed, so the
+      // defer below would wait FOREVER; and a new task at the address of a
+      // finished deal is the property's NEXT deal (a re-origination after a
+      // cancellation, a refi after funding), not a mid-cleanup duplicate.
+      // Fall through and let it materialize as its own file. If it later
+      // turns out to be a duplicate the officer re-addresses, the linked file
+      // follows the task's address edit — self-correcting either way.
+      if (sibTerminal) continue;
       // Duplicate-in-progress DEFER (owner-directed 2026-07-15): this borrower
       // already has a portal file at the SAME property bound to a LIVE other
       // task — this task is almost certainly a fresh ClickUp duplicate whose
@@ -577,11 +590,23 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
   // own address before materializing the new file.
   if (opts.allowCreate && !opts.forceCreate && staleStampAppId) {
     const src = await db.query(
-      `SELECT property_address FROM applications WHERE id=$1`, [staleStampAppId]).catch(() => ({ rows: [] }));
+      `SELECT property_address, clickup_pipeline_task_id FROM applications WHERE id=$1`, [staleStampAppId]).catch(() => ({ rows: [] }));
     const srcAddr = src.rows[0]
       ? identity.normalizeIdentity({ address: _addrOf(src.rows[0].property_address) }).address : null;
     if (!tn.address || (srcAddr && tn.address === srcAddr)) {
-      return { duplicatePending: true, detail: { copiedStampOf: staleStampAppId }, copiedLoanNumber };
+      // Same successor-deal exception as the address defer above: a stamp
+      // copied from a TERMINAL deal's file (funded/declined/cancelled, task
+      // confirmed live) can never be "mid-cleanup" — nothing on that finished
+      // deal will ever change — so waiting would be forever. Unreachable/
+      // deleted source tasks keep deferring (conservative: never risk a twin).
+      let srcTerminal = false;
+      if (src.rows[0] && src.rows[0].clickup_pipeline_task_id) {
+        try {
+          const st = await require('./client').getTask(src.rows[0].clickup_pipeline_task_id);
+          srcTerminal = statusMap.isTerminal(st && st.status && st.status.status);
+        } catch (_) { /* can't confirm → keep the defer */ }
+      }
+      if (!srcTerminal) return { duplicatePending: true, detail: { copiedStampOf: staleStampAppId }, copiedLoanNumber };
     }
   }
   return copiedLoanNumber ? { copiedLoanNumber } : null;
