@@ -118,6 +118,10 @@ export default function Apply() {
             housingPayment: cur.housingPayment || p.housing_payment || '',
           };
           if (data.ssnOnFile === undefined) data.ssnOnFile = !!p.ssn_last4;
+          // #104: the individual applicant's name prefills the term sheet's
+          // Borrower slot (separate from the vesting entity, which comes from the
+          // LlcPicker into form.entityName).
+          if (!data.applicantName) data.applicantName = [p.first_name, p.last_name].filter(Boolean).join(' ');
           // #98 LO stickiness: prefill the borrower's OWNING officer (loan
           // officer of record) so a returning borrower's new file stays tied to
           // their LO, and default the "work with an officer?" answer to Yes.
@@ -357,8 +361,11 @@ export default function Apply() {
   const studioPrefill = useMemo(() => {
     if (step !== 4 || !form) return null;
     const pa = form.propertyAddress || {};
+    const co = form.coBorrower || {};
     return buildStudioState({
-      borrowerName: form.entityName || '',
+      entityName: form.entityName || '',
+      borrowerName: form.applicantName || '',
+      coBorrowerName: form.hasCoBorrower ? ([co.firstName, co.lastName].filter(Boolean).join(' ') || '') : '',
       address: pa.oneLine || '',
       state: pa.state || '',
       loanType: form.loanType, program: form.program,

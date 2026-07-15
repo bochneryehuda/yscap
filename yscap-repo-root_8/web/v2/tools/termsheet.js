@@ -34,6 +34,12 @@
   var val = function (id) { var e = el(id); return e ? String(e.value).trim() : ""; };
   var num = function (id) { return YS.num(id); };
   function chk(id) { var e = el(id); return !!(e && e.checked); }
+  // #104: the loan is made to the borrowing ENTITY when one is named (the vesting
+  // LLC — business-purpose loans are to the entity, guaranteed by the individual);
+  // otherwise to the individual borrower. This is the "who the loan is to" name
+  // used on the term sheet / letter / filename. The individual borrower is still
+  // tracked separately (guarantor / signatory).
+  function borrowerOfRecord() { return val("entityName") || val("borrowerName"); }
 
   // Leverage choice: null = the deal's maximum achievable leverage (default).
   // Otherwise an LTC bucket the borrower has dialled down to for a better rate.
@@ -825,7 +831,7 @@
       ["Property state", val("propState") || EM],
       ["Property type", val("propType") === "2-4" ? "2-4 units" : "Single-family"],
       ["Property address", chk("addrTBD") ? "To be determined" : (val("propAddr") || EM)],
-      ["Borrower / entity", val("borrowerName") || EM]
+      ["Borrower / entity", borrowerOfRecord() || EM]
     ];
     var costs = [
       ["Purchase price", num("price") ? money(num("price")) : EM],
@@ -941,7 +947,7 @@
     t.textContent = msg; t.classList.add("show"); clearTimeout(flash._t); flash._t = setTimeout(function () { t.classList.remove("show"); }, 2800);
   }
   function fileStem() {
-    var nm = (val("borrowerName") || "Applicant").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "Applicant";
+    var nm = (borrowerOfRecord() || "Applicant").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "Applicant";
     return "YS_Term_Sheet_" + nm + "_" + new Date().toISOString().slice(0, 10);
   }
   function money(n) { return YS.fmtUSD(n); }
@@ -1008,7 +1014,7 @@
 
       header();
       var y = 92;
-      var who = val("borrowerName") || "Prospective Borrower";
+      var who = borrowerOfRecord() || "Prospective Borrower";
       var prog = dealType() + " \u00b7 " + d.inp.loanType + (d.inp.cashOut ? " (cash-out)" : "");
       var where = chk("addrTBD") ? "Property: To be determined" : ("Property: " + (val("propAddr") || "\u2014") + (val("propState") ? ", " + val("propState") : ""));
       doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(who), M, y);
@@ -1143,7 +1149,14 @@
       } else {
         para("5.  Validity & acceptance.  This term sheet is valid through " + fmtD(exp) + (d.inp.state ? (" for a property located in " + d.inp.state) : "") + ". It is not binding unless and until it is accepted in writing by the borrower" + (coBorrowerName ? " and co-borrower" : "") + " below and countersigned by an authorized representative of " + LENDER.name + ".", 7.5);
         brk(coBorrowerName ? 200 : 110); band("Acceptance & signatures"); brk(86);
-        sigBlock(sx1, val("borrowerName") || "Borrower", "Borrower / authorized signatory");
+        // #104: when a borrowing entity is named, the entity is the borrower of
+        // record and the individual signs as its authorized signatory / guarantor.
+        var _tsEntity = (val("entityName") || "").trim(), _tsIndiv = (val("borrowerName") || "").trim();
+        var _primaryName = _tsEntity || _tsIndiv || "Borrower";
+        var _primarySub = _tsEntity
+          ? (_tsIndiv ? ("Borrower (entity) — by " + _tsIndiv + ", authorized signatory / guarantor") : "Borrower (entity) / authorized signatory")
+          : "Borrower / authorized signatory";
+        sigBlock(sx1, _primaryName, _primarySub);
         // When the file has TWO borrowers, the term sheet carries a second
         // signature line for the co-borrower (owner-directed #137) side-by-side
         // with the borrower; the lender line drops to the next row.
@@ -1206,7 +1219,7 @@
         footer();
       }
 
-      if (d && (d.pricingReady || d.totalLoan > 0 || (val("borrowerName") || "").trim())) drawDerivationPage(doc, d, "Inputs & Loan Derivation", "This term sheet was generated from the inputs below, entered through the YS Capital Term Sheet Studio. This page records exactly what was provided and how the loan amount and leverage were determined.");
+      if (d && (d.pricingReady || d.totalLoan > 0 || (borrowerOfRecord() || "").trim())) drawDerivationPage(doc, d, "Inputs & Loan Derivation", "This term sheet was generated from the inputs below, entered through the YS Capital Term Sheet Studio. This page records exactly what was provided and how the loan amount and leverage were determined.");
       doc.save(fileStem() + ".pdf");
       flash("Term sheet downloaded.");
     } catch (e) {
@@ -1235,8 +1248,8 @@
   // ============ Proof of Funds / Pre-Qualification letter (bank-grade, one page) ============
   async function exportLetter(btn) {
     var label = btn ? btn.textContent : "";
-    var borrower0 = (val("borrowerName") || "").trim();
-    if (!borrower0) { flash("Enter the borrower / entity name to generate the letter."); var bn = el("borrowerName"); if (bn) { bn.focus(); bn.classList.add("field-flag"); setTimeout(function(){ bn.classList.remove("field-flag"); }, 2400); } return; }
+    var borrower0 = (borrowerOfRecord() || "").trim();
+    if (!borrower0) { flash("Enter the borrowing entity or borrower name to generate the letter."); var bn = el("entityName") || el("borrowerName"); if (bn) { bn.focus(); bn.classList.add("field-flag"); setTimeout(function(){ bn.classList.remove("field-flag"); }, 2400); } return; }
     if (btn) { btn.textContent = "Building letter\u2026"; btn.disabled = true; }
     try {
       await ensurePDF();
@@ -1395,7 +1408,7 @@
     }
     var d = (chosenProgram === "gold") ? (calcGold() || calc()) : calc();
     var summary = {
-      email: email, borrower: (val("borrowerName") || "").trim(),
+      email: email, borrower: (borrowerOfRecord() || "").trim(),
       program: (chosenProgram === "gold") ? "Gold Standard Program" : "Standard Program",
       state: val("propState") || "", property: chk("addrTBD") ? "TBD" : (val("propAddr") || ""),
       loanAmount: (d && d.totalLoan) || 0, rate: (d && d.pricingReady && d.rate) ? d.rate : null,
@@ -1455,7 +1468,7 @@
       y += 9;
     }
 
-    var borrower = (val("borrowerName") || "").trim() || "Not provided";
+    var borrower = (borrowerOfRecord() || "").trim() || "Not provided";
     var ficoV = num("fico") > 0 ? String(num("fico")) : "\u2014";
     var expBits = [];
     if (num("expFlips") > 0) expBits.push(num("expFlips") + " fix & flip");
@@ -1463,8 +1476,13 @@
     if (num("expGround") > 0) expBits.push(num("expGround") + " ground-up");
     if (num("expRentals") > 0) expBits.push(num("expRentals") + " rentals owned");
 
+    // #104: the "all inputs on the last page" summary lists the borrowing entity,
+    // the individual borrower and any co-borrower as SEPARATE rows.
+    var _dpEntity = (val("entityName") || "").trim(), _dpIndiv = (val("borrowerName") || "").trim(), _dpCo = (val("coBorrowerName") || "").trim();
     section("Borrower & credit (as entered)", [
-      ["Borrower / entity", borrower],
+      _dpEntity ? ["Borrowing entity", _dpEntity] : null,
+      [_dpEntity ? "Borrower (individual)" : "Borrower / entity", _dpEntity ? (_dpIndiv || "\u2014") : (borrower)],
+      _dpCo ? ["Co-borrower", _dpCo] : null,
       ["Credit score used", ficoV],
       d.tierLabel ? ["Experience tier", d.tierLabel] : null,
       ["Experience entered", expBits.length ? expBits.join("  \u00b7  ") : "None entered"]

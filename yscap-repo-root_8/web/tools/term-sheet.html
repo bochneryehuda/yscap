@@ -275,8 +275,12 @@
             <h2><span class="panel-num"><svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/></svg></span> Deal &amp; property</h2>
             <p class="panel-note">Who and where. Don't have an address yet? Mark it TBD and we'll build indicative terms now.</p>
             <div class="field">
-                <label for="borrowerName">Borrower / entity name <em>(optional)</em></label>
-                <div class="input"><input id="borrowerName" type="text" placeholder="e.g. Klein Holdings LLC"></div>
+                <label for="entityName">Borrowing entity / vesting name <em>(optional)</em></label>
+                <div class="input"><input id="entityName" type="text" placeholder="e.g. Klein Holdings LLC"></div>
+            </div>
+            <div class="field">
+                <label for="borrowerName">Borrower name <em>(optional — the individual / guarantor)</em></label>
+                <div class="input"><input id="borrowerName" type="text" placeholder="e.g. David Klein"></div>
             </div>
             <div class="field">
                 <label for="coBorrowerName">Co-borrower name <em>(optional — adds a second signature line)</em></label>
@@ -627,7 +631,7 @@
 <script src="standard-program.js?v=admin13"></script>
 <script src="gold-standard.js?v=admin13"></script>
 <script src="title-cost.js?v=admin8"></script>
-<script src="termsheet.js?v=cob3-pricing"></script>
+<script src="termsheet.js?v=cob4-entity"></script>
 <script src="../float-actions.js?v=admin8"></script>
 </body>
 </html>

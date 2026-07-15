@@ -119,6 +119,16 @@ function buildInputs(app, experience, overrides) {
     heavyRehab: /heavy|gut|ground/i.test(clean(app.rehab_type)),
     sqftAddition: /square|sf|addition|ground/i.test(clean(app.rehab_type)) || num(app.sqft_post) > num(app.sqft_pre),
     targetLTC: 0,
+    // Sticky per-file markup (#101): once a file is registered with a per-file
+    // markup override it is persisted on the application (db/109) and re-applied to
+    // EVERY subsequent quote — staff live, borrower live, AND borrower register — so
+    // a borrower can never reprice below the markup the file was structured at. A
+    // live STAFF override (in `overrides`) still supersedes it below (staff has
+    // authority); the borrower path never sends a markup, so the sticky value fully
+    // governs their pricing. NULL/absent → falls through to the company default →
+    // engine, exactly as before (unregistered / no-override files are unchanged).
+    ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
+    ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
   };
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
