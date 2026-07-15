@@ -568,6 +568,42 @@ async function dryRunBackfill({ samplePerFolder = 8 } = {}) {
 }
 
 // ---- loops ----------------------------------------------------------------
+// ---- one-shot: link staff to their ClickUp user id by email (#89) ----------
+// The db/045 backfill linked only 18 named staffers; anyone created since (esp.
+// PROCESSORS) has a NULL clickup_user_id, so their officer/processor field never
+// syncs OUTBOUND (the mapper omits a null-id users field). Fill (never overwrite)
+// the id from the live workspace members, matched by email — so PREVIOUS files pick
+// up their officer/processor on the next push/reconcile, and every FUTURE assignment
+// resolves too. Idempotent, bounded (one API call + one UPDATE per unlinked staffer),
+// best-effort. "Previous and future" per the repo rule.
+async function backfillMemberLinksOnce() {
+  const byEmail = new Map();
+  try {
+    const data = await clickup.getTeams();
+    for (const team of (data && data.teams) || []) {
+      if (String(team.id) !== String(cfg.clickupTeamId)) continue;
+      for (const m of (team.members || [])) {
+        const u = m.user || {};
+        if (u.email && u.id != null) byEmail.set(String(u.email).toLowerCase(), Number(u.id));
+      }
+    }
+  } catch (e) { console.error('[clickup-sync] member-link backfill: member fetch failed', e.message); return 0; }
+  if (!byEmail.size) return 0;
+  const staff = await db.query(
+    `SELECT id, email FROM staff_users WHERE clickup_user_id IS NULL AND email IS NOT NULL AND is_active=true`);
+  let linked = 0;
+  for (const s of staff.rows) {
+    const cu = byEmail.get(String(s.email).toLowerCase());
+    if (cu == null) continue;
+    const r = await db.query(
+      `UPDATE staff_users SET clickup_user_id=$2 WHERE id=$1 AND clickup_user_id IS NULL`, [s.id, cu]
+    ).catch(() => ({ rowCount: 0 }));
+    if (r.rowCount) linked++;
+  }
+  if (linked) console.log(`[clickup-sync] member-link backfill: linked ${linked} staffer(s) to ClickUp by email`);
+  return linked;
+}
+
 function start() {
   // Stage 0 — DRY-RUN validation boot mode. Read-only: fetch a sample of real
   // tasks, run the mapper, and dump what WOULD happen to the logs. Runs even
@@ -591,6 +627,11 @@ function start() {
   // pushes silently dropped dropdown fields).
   optionMap().then(() => console.log('[clickup-sync] option cache warmed'))
     .catch((e) => console.error('[clickup-sync] option cache warm failed', e.message));
+
+  // Link any not-yet-linked staff (esp. processors created after the db/045 backfill)
+  // to their ClickUp user id by email, so their officer/processor assignment syncs
+  // outbound (#89). One-shot, best-effort; the push path also self-heals per-staffer.
+  backfillMemberLinksOnce().catch((e) => console.error('[clickup-sync] member-link backfill', e.message));
 
   // Stage 1 — one-shot inbound backfill on boot (identity graph, and RTL files
   // when mode='full'). Inbound only; writes to the portal, never to ClickUp.
@@ -653,4 +694,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };
