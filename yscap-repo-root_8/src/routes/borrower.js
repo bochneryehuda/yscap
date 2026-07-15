@@ -150,7 +150,7 @@ router.put('/profile', async (req, res) => {
     // Real calendar date, sane year — and a typed 2-DIGIT year resolves to the
     // real one (26 → the century that makes an adult), so the portal and
     // ClickUp always read the same date. Truly invalid input still 400s.
-    const dob = require('../lib/fields').normalizeTypedDate(fields.date_of_birth, 'dob');
+    const dob = require('../lib/fields').sanitizeDob(fields.date_of_birth);
     if (dob == null) {
       return res.status(400).json({ error: 'date of birth must be a valid YYYY-MM-DD' });
     }
@@ -1361,7 +1361,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
       if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
         // a typed 2-digit year resolves to the real year (DOB → adult century).
-        v = require('../lib/fields').normalizeTypedDate(v, 'dob');
+        v = require('../lib/fields').sanitizeDob(v);
         if (v == null) continue;
       }
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`); brKeys.push(k);
@@ -2459,7 +2459,7 @@ async function syncProfileFromApplication(borrowerId, b) {
        updated_at      = now()
      WHERE id=$1`,
     [borrowerId, p.cellPhone || '',
-     require('../lib/fields').normalizeTypedDate(p.dateOfBirth, 'dob') || '',   // typed '26' resolves; fill-only DOB still year-guarded
+     require('../lib/fields').sanitizeDob(p.dateOfBirth) || '',   // typed '26' resolves; fill-only DOB still year-guarded
      p.citizenship || '', p.maritalStatus || '',
      require('../lib/fields').sanitizeFico(p.fico),
      currentAddress, isFinite(yearsAtResidence) ? yearsAtResidence : null,

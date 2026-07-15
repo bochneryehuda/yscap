@@ -951,7 +951,7 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
            updated_at=now()
          RETURNING id`,
         [first, last, email, b.phone || null,
-         require('../lib/fields').normalizeTypedDate(b.dob, 'dob'),   // typed '26' resolves to the real year; garbage never persists
+         require('../lib/fields').sanitizeDob(b.dob),   // typed '26' resolves to the real year; garbage never persists
          ssnEnc, ssnLast4, ssnHash]);
       coId = ins.rows[0].id;
     }
@@ -1023,7 +1023,7 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     }
     if (typeof b.co_phone === 'string' && b.co_phone.trim()) put('cell_phone', b.co_phone.trim());
     if (b.co_dob) {
-      const dob = require('../lib/fields').normalizeTypedDate(b.co_dob, 'dob');   // typed '26' resolves; garbage rejected
+      const dob = require('../lib/fields').sanitizeDob(b.co_dob);   // typed '26' resolves; garbage rejected
       if (dob == null) return res.status(400).json({ error: 'co-borrower date of birth must be a valid YYYY-MM-DD with a 4-digit year' });
       put('date_of_birth', dob);
     }
@@ -3724,7 +3724,7 @@ async function completeFields(req, res, borrowerScoped) {
       if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
       if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
         // a typed 2-digit year resolves to the real year (DOB → adult century).
-        v = require('../lib/fields').normalizeTypedDate(v, 'dob');
+        v = require('../lib/fields').sanitizeDob(v);
         if (v == null) continue;
       }
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`); brKeys.push(k);

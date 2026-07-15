@@ -102,4 +102,18 @@ function normalizeTypedDate(v, kind = 'generic') {
   return sanitizeDateOnly(`${String(y).padStart(4, '0')}-${mm[2]}-${mm[3]}`);
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate };
+// A DATE OF BIRTH must belong to an ADULT (owner-directed 2026-07-15, after a
+// portal profile carried 12/11/2022 — a three-year-old "borrower" — which the
+// plain 1900–2100 window happily accepted and the restore tooling then treated
+// as a trustworthy value). Wraps normalizeTypedDate('dob') and additionally
+// requires age 18–120 by birth year. Returns 'YYYY-MM-DD' or null.
+function sanitizeDob(v) {
+  const d = normalizeTypedDate(v, 'dob');
+  if (d == null) return null;
+  const y = Number(d.slice(0, 4));
+  const nowY = new Date().getUTCFullYear();
+  if (y > nowY - 18 || y < nowY - 120) return null;
+  return d;
+}
+
+module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate, sanitizeDob };
