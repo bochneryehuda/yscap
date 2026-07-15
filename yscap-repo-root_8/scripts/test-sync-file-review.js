@@ -29,14 +29,18 @@ async function expectHttp(status, fn) {
 
 (async () => {
   // ---- contract shape ------------------------------------------------------
-  t('REASON_ACTIONS lists the eight stuck states', () => {
+  t('REASON_ACTIONS lists the nine stuck states', () => {
     const keys = Object.keys(SFR.REASON_ACTIONS).sort();
     assert.deepStrictEqual(keys, [
       'file_not_materialized_ambiguous', 'file_not_materialized_duplicate_pending',
       'file_unlinked_no_task', 'push_dead_lettered', 'task_deleted_needs_decision',
-      'sharepoint_match_uncertain', 'sharepoint_mirror_failed', 'borrower_identity_conflict'].sort());
+      'sharepoint_match_uncertain', 'sharepoint_mirror_failed', 'borrower_identity_conflict',
+      'shared_email_needs_reassignment'].sort());
     for (const k of keys) assert.ok(SFR.REASON_ACTIONS[k].length >= 1, `${k} has at least one action`);
   });
+  await ta('allow_shared_email without the pair reference → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'shared_email_needs_reassignment', raw_value: 'not-json' }, action: 'allow_shared_email' })));
   // ---- split_borrower (the wrong-officer merge repair) ----------------------
   t('borrower_identity_conflict offers ONLY split_borrower', () => {
     assert.strictEqual(SFR.isActionAllowed('borrower_identity_conflict', 'split_borrower'), true);

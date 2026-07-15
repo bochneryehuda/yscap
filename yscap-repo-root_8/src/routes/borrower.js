@@ -28,6 +28,21 @@ const { enqueueChecklistStatusPush } = require('../clickup/enqueue');
 
 router.use(requireAuth, requireBorrower);
 const me = (req) => req.actor.id;
+// THE one definition of "my files" for the borrower portal (owner-directed
+// 2026-07-15 night, Reuven Steimetz): a file is mine when I am its borrower,
+// its co-borrower, or when its borrower/co-borrower is a profile LINKED to
+// mine (borrower_profile_links, written by the staff "Allow — same email for
+// both" review action for spouses / same-person duplicate profiles sharing an
+// email). A login on either profile then sees BOTH people's files. Links are
+// staff-granted only, symmetric (both directions stored), and audited.
+// Profile-scoped data (LLC library, track record, profile edits) deliberately
+// stays per-profile — only FILE access flows through this predicate.
+const OWN_FILE_SQL = (alias, p) => {
+  const a = alias ? alias + '.' : '';
+  return `(${a}borrower_id=${p} OR ${a}co_borrower_id=${p}` +
+    ` OR ${a}borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p})` +
+    ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))`;
+};
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 async function audit(req, action, entity_type, entity_id, detail) {
   await db.query(
@@ -223,7 +238,7 @@ router.post('/profile/photo-id', async (req, res) => {
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   let appId = null, appItemId = null;
   if (b.applicationId) {
-    const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
+    const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [b.applicationId, me(req)]);
     if (!own.rows[0]) return res.status(404).json({ error: 'application not found' });
     appId = b.applicationId;
     const it = await db.query(
@@ -247,7 +262,7 @@ router.post('/profile/photo-id', async (req, res) => {
       `UPDATE checklist_items SET status='received', updated_at=now()
         WHERE template_id=(SELECT id FROM checklist_templates WHERE code='rtl_p1_id')
           AND status NOT IN ('satisfied')
-          AND application_id IN (SELECT id FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1)`,
+          AND application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$1")})`,
       [me(req)]);
     await audit(req, 'upload_photo_id', 'borrower', me(req));
     try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
@@ -262,7 +277,7 @@ router.get('/applications', async (req, res) => {
             a.loan_officer_name,a.submitted_at,a.created_at,a.llc_id,a.draw_setup_requested_at,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both')) AS borrower_total,
             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('received','satisfied')) AS borrower_done
-     FROM applications a WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND a.deleted_at IS NULL ORDER BY a.created_at DESC`, [me(req)]);
+     FROM applications a WHERE (${OWN_FILE_SQL("a", "$1")}) AND a.deleted_at IS NULL ORDER BY a.created_at DESC`, [me(req)]);
   res.json(r.rows);
 });
 
@@ -274,7 +289,7 @@ router.post('/applications/:id/request-draw', async (req, res) => {
             a.draw_setup_requested_at,
             b.first_name,b.last_name,b.email
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
-      WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`, [req.params.id, me(req)]);
+      WHERE a.id=$1 AND (${OWN_FILE_SQL("a", "$2")})`, [req.params.id, me(req)]);
   const a = own.rows[0];
   if (!a) return res.status(404).json({ error: 'not found' });
   if (a.status !== 'funded') return res.status(400).json({ error: 'Draws can be requested once your loan is funded.' });
@@ -390,7 +405,7 @@ router.get('/applications/:id', async (req, res) => {
           WHERE application_id=a.id AND is_current
           ORDER BY created_at DESC LIMIT 1
        ) pr ON true
-      WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND a.deleted_at IS NULL`, [req.params.id, me(req)]);
+      WHERE a.id=$1 AND (${OWN_FILE_SQL("a", "$2")}) AND a.deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   // SECURITY / privacy: this is a borrower-facing response built from SELECT a.*,
   // so strip every internal/staff-only column before sending. Above all `lender`
@@ -407,7 +422,7 @@ router.get('/applications/:id', async (req, res) => {
 router.get('/applications/:id/officer', async (req, res) => {
   const own = await db.query(
     `SELECT loan_officer_id FROM applications
-      WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+      WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`,
     [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const oid = own.rows[0].loan_officer_id;
@@ -501,7 +516,7 @@ async function loadFileForPricing(appId, borrowerId) {
     `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
        LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
-      WHERE a.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND a.deleted_at IS NULL`,
+      WHERE a.id=$1 AND (${OWN_FILE_SQL("a", "$2")}) AND a.deleted_at IS NULL`,
     [appId, borrowerId]);
   const app = a.rows[0];
   if (!app) return null;
@@ -699,7 +714,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
 
 // Borrower-safe file activity feed (never internal chat/notes/conditions).
 router.get('/applications/:id/activity', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   try { res.json(await require('../lib/activity').fileActivity(req.params.id, true)); }
   catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -707,7 +722,7 @@ router.get('/applications/:id/activity', async (req, res) => {
 
 // Borrower-visible conditions (object model) — open/unresolved, borrower wording.
 router.get('/applications/:id/conditions', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   // Borrower-facing wording ONLY — never fall back to the internal title/detail
   // (which can carry underwriting / capital-partner context). A borrower/both
@@ -727,7 +742,7 @@ router.get('/applications/:id/conditions', async (req, res) => {
 
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
 router.get('/applications/:id/checklist', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   try { await syncExperienceChecklistForApplication(req.params.id); } catch (_) { /* best-effort */ }
   const r = await db.query(
@@ -793,7 +808,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
 // real application/borrower field (whitelisted in the field registry), the
 // condition moves to 'received', and the rule engine re-checks the file.
 router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const it = await db.query(
     `SELECT id, field_key, status, borrower_label, label FROM checklist_items
@@ -859,7 +874,7 @@ router.post('/applications/:id/checklist/:itemId/info', async (req, res) => {
 // Borrower-safe loan timeline: which milestones the file has reached and when.
 // Only the destination status + date (no staff identity, no forced flag).
 router.get('/applications/:id/status-history', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
     `SELECT to_status, created_at FROM application_status_history WHERE application_id=$1 ORDER BY created_at`, [req.params.id]);
@@ -870,7 +885,7 @@ router.get('/applications/:id/status-history', async (req, res) => {
 // portal. Stores the exported payload and moves the item to 'received' so staff
 // can verify and sign off. The borrower is doing "their part" of the file here.
 router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const it = await db.query(
     `SELECT id,tool_key FROM checklist_items
@@ -974,7 +989,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
 // while the borrower works — reopening the tool restores exactly where they
 // left off. Submitting (POST …/tool above) snapshots the state + exports.
 router.get('/applications/:id/checklist/:itemId/tool-state', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
     `SELECT tool_state, tool_payload, status FROM checklist_items
@@ -986,7 +1001,7 @@ router.get('/applications/:id/checklist/:itemId/tool-state', async (req, res) =>
   res.json({ state, status: row.status, submitted: !!row.tool_payload });
 });
 router.put('/applications/:id/checklist/:itemId/tool-state', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const state = (req.body && typeof req.body.state === 'object') ? req.body.state : null;
   if (!state) return res.status(400).json({ error: 'state required' });
@@ -1018,7 +1033,7 @@ router.get('/llcs/:id', async (req, res) => {
   const mine = own.rows[0].borrower_id === me(req);
   if (!mine) {
     const linked = await db.query(
-      `SELECT 1 FROM applications WHERE llc_id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL LIMIT 1`,
+      `SELECT 1 FROM applications WHERE llc_id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL LIMIT 1`,
       [req.params.id, me(req)]);
     if (!linked.rows[0]) {
       // Layered entities: the vesting LLC's OWNING entities render nested
@@ -1026,7 +1041,7 @@ router.get('/llcs/:id', async (req, res) => {
       // the ownership chain of any LLC vesting on their files.
       const vested = await db.query(
         `SELECT DISTINCT llc_id FROM applications
-          WHERE llc_id IS NOT NULL AND (borrower_id=$1 OR co_borrower_id=$1) AND deleted_at IS NULL`, [me(req)]);
+          WHERE llc_id IS NOT NULL AND (${OWN_FILE_SQL("", "$1")}) AND deleted_at IS NULL`, [me(req)]);
       let inChain = false;
       for (const row of vested.rows) {
         if ((await llcLib.getAncestorEntityIds(row.llc_id)).includes(String(req.params.id))) { inChain = true; break; }
@@ -1166,7 +1181,7 @@ router.post('/applications/:id/link-llc', async (req, res) => {
   if (!b.llcId) return res.status(400).json({ error: 'llcId required' });
   const app = await db.query(
     `SELECT id, llc_id, status, borrower_id FROM applications
-      WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+      WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`,
     [req.params.id, me(req)]);
   if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
   // S2-10: the vesting entity is the LLC taking title on the loan — a CO-borrower
@@ -1216,7 +1231,7 @@ async function notifyAppraisalCardAdded(appId, brand, last4) {
   } catch (_) { /* best-effort */ }
 }
 router.post('/applications/:id/appraisal-card', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   // Validate + save through the shared chokepoint (#107) so the borrower route and
   // the staff route behave identically. The card OWNER is the file's borrower.
@@ -1244,7 +1259,7 @@ router.post('/applications/:id/appraisal-card', async (req, res) => {
 });
 // Masked view for the borrower's own condition row.
 router.get('/applications/:id/appraisal-card', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
     `SELECT last4, brand, exp_month, exp_year, billing_zip, updated_at
@@ -1256,7 +1271,7 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
 // number + expiry for the borrower to confirm. The image is NOT persisted and
 // card data is never logged. (Owner chose a hosted OCR API over on-device.)
 router.post('/applications/:id/scan-card', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const b = req.body || {};
   if (!b.dataBase64) return res.status(400).json({ error: 'no image provided' });
@@ -1286,7 +1301,7 @@ router.get('/saved-appraisal-card', async (req, res) => {
 // copy logic lives in src/lib/appraisal-card.js so an authorized-staff route
 // can reuse the exact same path.)
 router.post('/applications/:id/appraisal-card/from-saved', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   try {
     const out = await apprCard.applySavedCardToApplication({
@@ -1307,7 +1322,7 @@ const B_COMPLETE_APP = { program: 'text', loan_type: 'text', property_type: 'tex
 const B_COMPLETE_BORROWER = { cell_phone: 'text', date_of_birth: 'date', fico: 'int', citizenship: 'text' };
 router.post('/applications/:id/complete-fields', async (req, res) => {
   const own = await db.query(
-    `SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+    `SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`,
     [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const bid = own.rows[0].borrower_id;
@@ -1411,7 +1426,7 @@ async function notifyTeamOfChangeRequests(appId, requested) {
 // other borrower-facing text so no capital-partner name can slip through.
 router.get('/applications/:id/change-requests', async (req, res) => {
   const own = await db.query(
-    `SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+    `SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`,
     [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
@@ -1445,7 +1460,7 @@ router.post('/contacts', async (req, res) => {
   if (!b.companyName && !b.contactName && !b.email && !b.phone)
     return res.status(400).json({ error: 'enter at least one contact detail' });
   if (b.applicationId) {
-    const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
+    const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [b.applicationId, me(req)]);
     if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
   }
   let contactId = b.contactId || null;
@@ -1477,7 +1492,7 @@ router.post('/contacts', async (req, res) => {
     await db.query(
       `UPDATE checklist_items SET status='received', updated_at=now()
         WHERE id=$1 AND audience IN ('borrower','both')
-          AND application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)`,
+          AND application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")})`,
       [b.checklistItemId, me(req)]);
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   }
@@ -1491,7 +1506,7 @@ router.post('/contacts', async (req, res) => {
 // application_service_contacts (MANY per file). Shared across the file.
 const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
 router.get('/applications/:id/file-contacts', async (req, res) => {
-  const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
   const r = await db.query(
     `SELECT l.id AS link_id, sc.id AS contact_id, sc.contact_type, sc.custom_type,
@@ -1505,7 +1520,7 @@ router.get('/applications/:id/file-contacts', async (req, res) => {
 });
 router.post('/applications/:id/file-contacts', async (req, res) => {
   const b = req.body || {};
-  const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
   const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
   const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
@@ -1526,7 +1541,7 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
 router.delete('/file-contacts/:linkId', async (req, res) => {
   const r = await db.query(
     `DELETE FROM application_service_contacts l USING applications a
-      WHERE l.id=$1 AND l.application_id=a.id AND (a.borrower_id=$2 OR a.co_borrower_id=$2) RETURNING l.id`,
+      WHERE l.id=$1 AND l.application_id=a.id AND (${OWN_FILE_SQL("a", "$2")}) RETURNING l.id`,
     [req.params.linkId, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
   res.json({ ok: true });
@@ -1856,7 +1871,7 @@ router.post('/documents', async (req, res) => {
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   // ownership check for whichever owner is supplied
   if (b.applicationId) {
-    const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
+    const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [b.applicationId, me(req)]);
     if (!o.rows[0]) return res.status(404).json({ error: 'application not found' });
   }
   if (b.llcId) {
@@ -1882,7 +1897,7 @@ router.post('/documents', async (req, res) => {
     const o = await db.query(
       `SELECT ci.llc_id, ci.track_record_id FROM checklist_items ci
         WHERE ci.id=$1 AND (ci.borrower_id=$2
-           OR ci.application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)
+           OR ci.application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")})
            OR ci.llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`,
       [b.checklistItemId, me(req)]);
     if (!o.rows[0]) return res.status(404).json({ error: 'checklist item not found' });
@@ -1965,7 +1980,7 @@ router.post('/documents', async (req, res) => {
     // S2-09: only a BORROWER-FACING item may be flipped by a borrower — never a
     // staff-only condition (the id is borrower-supplied, so ownership alone is not
     // enough). Mirrors the audience guard on the tool/info endpoints.
-    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND audience IN ('borrower','both') AND (application_id IN (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
+    await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1 AND audience IN ('borrower','both') AND (application_id IN (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")}) OR borrower_id=$2 OR llc_id IN (SELECT id FROM llcs WHERE borrower_id=$2))`, [b.checklistItemId, me(req)]);
     enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
   }
   // An LLC document changed — recompute the LLC condition on every open file
@@ -2088,9 +2103,9 @@ router.get('/documents/:id/download', async (req, res) => {
   const r = await db.query(
     `SELECT id,filename,content_type,storage_ref FROM documents
       WHERE id=$1 AND visibility='borrower' AND (borrower_id=$2 OR application_id IN
-        (SELECT id FROM applications WHERE borrower_id=$2 OR co_borrower_id=$2)
+        (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$2")})
         OR (llc_id IS NOT NULL AND llc_id IN
-          (SELECT llc_id FROM applications WHERE (borrower_id=$2 OR co_borrower_id=$2) AND llc_id IS NOT NULL)))
+          (SELECT llc_id FROM applications WHERE (${OWN_FILE_SQL("", "$2")}) AND llc_id IS NOT NULL)))
       -- Co-borrower privacy (#82): having access to the shared FILE does not grant
       -- access to the OTHER borrower's PERSONAL uploads (their government ID, bank
       -- statements, etc.). Only serve a document that is the caller's own, is not
@@ -2182,7 +2197,7 @@ router.get('/messages', async (req, res) => {
       WHERE m.channel='borrower'                     -- internal team notes are NEVER shown to borrowers
         AND ($2::uuid IS NULL OR m.application_id=$2)
         AND (m.borrower_id=$1 OR m.application_id IN
-             (SELECT id FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1))
+             (SELECT id FROM applications WHERE ${OWN_FILE_SQL("", "$1")}))
       ORDER BY m.created_at DESC LIMIT 500`,
     [me(req), req.query.applicationId || null]);
   r.rows.reverse();   // newest-500 window, still rendered oldest-first
@@ -2211,7 +2226,7 @@ router.post('/messages', async (req, res) => {
   if (!b.applicationId) return res.status(400).json({ error: 'applicationId required' });
   // Must be the borrower's own file — never let a borrower post onto another
   // borrower's file by guessing its id.
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [b.applicationId, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'application not found' });
 
   // Legacy contract, new engine: delegate onto the file's borrower chat so the
@@ -2239,7 +2254,7 @@ router.post('/messages/:mid/react', async (req, res) => {
   if (!emoji) return res.status(400).json({ error: 'emoji required' });
   const m = await db.query(
     `SELECT 1 FROM messages m JOIN applications a ON a.id=m.application_id
-      WHERE m.id=$1 AND m.channel='borrower' AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`,
+      WHERE m.id=$1 AND m.channel='borrower' AND (${OWN_FILE_SQL("a", "$2")})`,
     [req.params.mid, me(req)]);
   if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
   const del = await db.query(
@@ -2266,7 +2281,7 @@ router.patch('/messages/:mid', async (req, res) => {
   const m = await db.query(
     `SELECT m.created_at, m.deleted_at FROM messages m JOIN applications a ON a.id=m.application_id
       WHERE m.id=$1 AND m.channel='borrower' AND m.sender_kind='borrower' AND m.sender_id=$2
-        AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`, [req.params.mid, me(req)]);
+        AND (${OWN_FILE_SQL("a", "$2")})`, [req.params.mid, me(req)]);
   if (!m.rows[0] || m.rows[0].deleted_at) return res.status(404).json({ error: 'not found' });
   if ((Date.now() - new Date(m.rows[0].created_at).getTime()) > 15 * 60 * 1000)
     return res.status(403).json({ error: 'this message can no longer be edited' });
@@ -2290,7 +2305,7 @@ router.delete('/messages/:mid', async (req, res) => {
   const m = await db.query(
     `SELECT 1 FROM messages m JOIN applications a ON a.id=m.application_id
       WHERE m.id=$1 AND m.channel='borrower' AND m.sender_kind='borrower' AND m.sender_id=$2
-        AND (a.borrower_id=$2 OR a.co_borrower_id=$2)`, [req.params.mid, me(req)]);
+        AND (${OWN_FILE_SQL("a", "$2")})`, [req.params.mid, me(req)]);
   if (!m.rows[0]) return res.status(404).json({ error: 'not found' });
   // Tombstone with the pre-delete body preserved in the revision trail.
   await db.query(
@@ -2309,7 +2324,7 @@ router.delete('/messages/:mid', async (req, res) => {
 // What the borrower can mention: their team, their visible tasks, their
 // documents, and their own applications/properties.
 router.get('/applications/:id/mentionables', async (req, res) => {
-  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
+  const own = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const [users, tasks, docs, apps] = await Promise.all([
     db.query(`SELECT s.id, s.full_name AS label FROM applications a
@@ -2325,7 +2340,7 @@ router.get('/applications/:id/mentionables', async (req, res) => {
                      OR uploaded_by_kind='staff' OR source_type='system')
               ORDER BY created_at DESC LIMIT 100`, [req.params.id, me(req)]),
     db.query(`SELECT id, COALESCE(property_address->>'oneLine', property_address->>'street', 'Application') AS label
-                FROM applications WHERE borrower_id=$1 OR co_borrower_id=$1`, [me(req)]),
+                FROM applications WHERE ${OWN_FILE_SQL("", "$1")}`, [me(req)]),
   ]);
   res.json({ users: users.rows, tasks: tasks.rows, documents: docs.rows, applications: apps.rows });
 });
@@ -2344,7 +2359,7 @@ router.get('/chat/inbox', async (req, res) => {
        LEFT JOIN LATERAL (SELECT body, sender_kind, created_at FROM messages m
                            WHERE m.application_id=a.id AND m.channel='borrower' AND m.deleted_at IS NULL
                            ORDER BY created_at DESC LIMIT 1) lm ON true
-      WHERE a.borrower_id=$1 OR a.co_borrower_id=$1
+      WHERE ${OWN_FILE_SQL("a", "$1")}
       ORDER BY lm.created_at DESC NULLS LAST`, [me(req)]);
   res.json(r.rows.map((row) => scrubFields(row, ['last_body'])));
 });

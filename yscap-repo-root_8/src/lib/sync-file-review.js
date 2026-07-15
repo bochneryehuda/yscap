@@ -52,6 +52,13 @@ const REASON_ACTIONS = {
   // could see the other person's data). split_borrower gives the file's person
   // their OWN fresh profile built from the ClickUp task and re-points the file.
   borrower_identity_conflict: ['split_borrower'],
+  // Two borrower profiles using ONE email. Sometimes that is legitimate
+  // (spouses on the same files; a same-person pair the split created) —
+  // allow_shared_email LINKS the two profiles so a login on either sees BOTH
+  // people's files, and this pair never flags again. The other fix (give one
+  // of them their own email) stays: edit the email on the borrower screen and
+  // the card closes itself.
+  shared_email_needs_reassignment: ['allow_shared_email'],
 };
 
 // Rows with no ClickUp task (an unlinked FILE) still need a dedup identity in
@@ -337,6 +344,33 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
         `“${[old.first_name, old.last_name].filter(Boolean).join(' ')}” keeps the original profile untouched` +
         (possiblyPolluted.length ? ` — REVIEW the original profile's ${possiblyPolluted.join(', ')}: those values match the split-off person and may have been synced in by the merge` : ''),
       applicationId: app.id };
+  }
+
+  if (action === 'allow_shared_email') {
+    // Owner-directed (Reuven Steimetz, 2026-07-15 night): sharing one email is
+    // sometimes RIGHT — a spouse pair, or a same-person duplicate profile. The
+    // allowance LINKS the two profiles (both directions) so a login on either
+    // sees BOTH people's files (borrower.js OWN_FILE_SQL), settles the dedup
+    // candidate, and stops this pair from ever flagging again. It never merges
+    // the profiles — each person keeps their own identity and officer.
+    let b1 = null, b2 = null;
+    try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; b1 = raw && raw.b1; b2 = raw && raw.b2; } catch (_) { /* forensic */ }
+    if (!b1 || !b2) throw httpError(409, 'this row does not reference the two profiles');
+    const both = (await db.query(
+      `SELECT id, first_name, last_name FROM borrowers WHERE id = ANY($1::uuid[])`, [[b1, b2]])).rows;
+    if (both.length !== 2) throw httpError(409, 'one of the two profiles no longer exists');
+    await db.query(
+      `INSERT INTO borrower_profile_links (borrower_id, linked_borrower_id, reason, created_by)
+       VALUES ($1,$2,'shared_email_allowed',$3), ($2,$1,'shared_email_allowed',$3)
+       ON CONFLICT (borrower_id, linked_borrower_id) DO NOTHING`, [b1, b2, actorId || null]);
+    await db.query(
+      `UPDATE borrower_dedup_candidates SET status='reviewed', resolved_at=now(), resolved_by=$3
+        WHERE status='open'
+          AND ((borrower_id=$1 AND matched_borrower_id=$2) OR (borrower_id=$2 AND matched_borrower_id=$1))`,
+      [b1, b2, actorId || null]).catch(() => {});
+    const names = both.map((x) => [x.first_name, x.last_name].filter(Boolean).join(' ')).join(' and ');
+    await audit('shared_email_allowed', row.application_id, actorId, { reviewId: row.id, borrowerIds: [b1, b2] });
+    return { note: `shared email allowed for ${names} — the profiles are linked; a login on either now sees both people's files (nothing was merged; each keeps their own profile and officer)`, applicationId: row.application_id };
   }
 
   if (action === 'create_task') {

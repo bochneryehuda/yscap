@@ -31,7 +31,7 @@ const REASON_COPY = {
   sharepoint_match_uncertain: 'The SharePoint mirror was NOT SURE which folder this file’s documents belong in (an ambiguous folder match, or no officer yet), so it filed into a safe, clearly-marked new folder — shown under “In PILOT”. If that is the wrong tree: merge or rename the folders IN SharePoint (the mirror never moves or renames anything itself), then click Re-match. Dismiss keeps the new folder.',
   sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the last error is recorded on the row. Usually a permissions problem, a folder issue, or an unreadable file. Fix the cause, then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
   borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: this file’s ClickUp task and the PILOT profile disagree on identity (name, phone, or SSN), and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either value — that would change the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
-  shared_email_needs_reassignment: 'TWO SEPARATE BORROWERS are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). An email must belong to exactly ONE borrower — until it does, the system deliberately refuses to link any file by this email (it cannot know whose file it would be), and each borrower stays with their own loan officer. Fix: give one of the two their OWN email — edit it on their borrower screen in PILOT, or correct it on the ClickUp task and resync. This card closes itself the moment each borrower carries their own email.',
+  shared_email_needs_reassignment: 'TWO BORROWER PROFILES are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). Two ways to settle it: (1) if the sharing is RIGHT — spouses on the same deals, or the same person twice — click Allow: the two profiles are LINKED, whoever logs in with the email sees BOTH sets of files, and this never flags again (nothing is merged; each keeps their own profile and officer). (2) If they are unrelated people, give one of them their OWN email — edit it on their borrower screen in PILOT or on the ClickUp task — and this card closes itself. Until settled, the system deliberately refuses to link files by this email.',
 };
 // FILE-LEVEL resolution options per reason (mirrors REASON_ACTIONS in
 // src/lib/sync-file-review.js — the server validates; this only renders).
@@ -62,6 +62,9 @@ const REASON_FILE_ACTIONS = {
   ],
   borrower_identity_conflict: [
     { action: 'split_borrower', label: 'Split — give this file’s person their own profile', title: 'Un-merge: rebuild this file’s person from the ClickUp task on a fresh profile and re-point the file; the other person keeps the original profile untouched' },
+  ],
+  shared_email_needs_reassignment: [
+    { action: 'allow_shared_email', label: 'Allow — same email for both', title: 'Link the two profiles: whoever logs in with this email sees BOTH people’s files. Nothing is merged; each keeps their own profile and officer, and this pair never flags again' },
   ],
 };
 // Candidate files the matcher surfaced (enriched into raw_value at queue time).

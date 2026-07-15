@@ -538,14 +538,27 @@ async function sharedEmailReviewSweepOnce() {
        JOIN borrowers x ON x.id = c.borrower_id
        JOIN borrowers y ON y.id = c.matched_borrower_id
       WHERE c.status = 'open' AND c.reason = 'shared_email_uncorroborated'
+        -- an ALLOWED pair (staff clicked "Allow — same email for both") never flags again
+        AND NOT EXISTS (SELECT 1 FROM borrower_profile_links pl
+                         WHERE pl.borrower_id = c.borrower_id AND pl.linked_borrower_id = c.matched_borrower_id)
       ORDER BY c.created_at DESC LIMIT 200`).catch(() => ({ rows: [] }));
   if (!r.rows.length) return 0;
+  const identity = require('../clickup/identity');
   let queued = 0, closedN = 0;
   for (const row of r.rows) {
     const key = 'dedup:' + [String(row.b1), String(row.b2)].sort().join(':');
     const n1 = [row.f1, row.l1].filter(Boolean).join(' ') || 'first person';
     const n2 = [row.f2, row.l2].filter(Boolean).join(' ') || 'second person';
     try {
+      // A pair with a NAMELESS side is not human-decidable ("give one of
+      // Unknown and Unknown their own email"?) — owner-reported noise. No
+      // card; close any card an earlier pass queued. The husk fills from
+      // ClickUp automatically and the pair becomes reviewable when it does.
+      if (!identity.nameToken(row.f1) || !identity.nameToken(row.f2)) {
+        closedN += await review.closeStaleReviews({ taskId: key, fieldKey: 'shared_email',
+          note: 'auto-closed — one side of this pair is a nameless placeholder profile (it fills from ClickUp automatically); nothing to decide yet' });
+        continue;
+      }
       if (!isPlaceholder(row.e1) && !isPlaceholder(row.e2)) {
         // Each person now carries their own real email (primary emails are
         // unique, so two real emails are necessarily two different emails) —
