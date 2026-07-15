@@ -23,6 +23,7 @@
  *   presence:diff        {key, kind, id, online, lastSeenAt}
  *   unread:update        {conversationId, unread, totalUnread}
  *   conversation:updated {conversationId}               — rename / members / archive
+ *   track_record:updated {borrowerId}                   — a borrower's track record changed
  *   notify               {title, body, link}            — in-app toast (urgent re-ping)
  */
 const db = require('../db');
@@ -173,6 +174,39 @@ function disconnectUser(kind, id) {
   return closed;
 }
 
+/**
+ * A borrower's track record changed — a line added/edited/removed/verified, or a
+ * supporting document uploaded/reviewed/deleted. Tell everyone who might be
+ * VIEWING that borrower's record to pull the fresh truth in: the borrower
+ * themselves and the staff who can see them (assigned to any of the borrower's
+ * files — primary or co-borrower — or a see-all role). The payload carries only
+ * the borrower id (no PII); each open Track Record tool reloads iff it is showing
+ * that borrower. `actor` (the user who made the change) is excluded so their own
+ * tab does not echo-reload on top of the edit they just made. Fire-and-forget;
+ * never throws — a missed live refresh must never fail the underlying write.
+ */
+async function publishTrackRecordUpdate(borrowerId, actor = null) {
+  if (!borrowerId) return;
+  const data = { borrowerId: String(borrowerId) };
+  const skip = actor && actor.kind && actor.id ? keyOf(actor.kind, actor.id) : null;
+  const emit = (kind, id) => { if (id && keyOf(kind, id) !== skip) publishToUser(kind, id, 'track_record:updated', data); };
+  emit('borrower', borrowerId);
+  try {
+    const r = await db.query(
+      `SELECT s.id FROM staff_users s
+        WHERE s.is_active = true
+          AND ( s.role IN ('super_admin','admin','underwriter')
+             OR EXISTS (
+                  SELECT 1 FROM applications a
+                    LEFT JOIN application_assignees aa
+                      ON aa.application_id = a.id AND aa.removed_at IS NULL AND aa.staff_id = s.id
+                   WHERE (a.borrower_id = $1 OR a.co_borrower_id = $1)
+                     AND (a.loan_officer_id = s.id OR a.processor_id = s.id OR aa.staff_id IS NOT NULL)
+                ) )`, [borrowerId]);
+    for (const row of r.rows) emit('staff', row.id);
+  } catch (_) { /* the borrower still got it; a staff-fanout miss is non-fatal */ }
+}
+
 /** Direct fan-out to one user's connections (badges, urgent pings). */
 function publishToUser(kind, id, event, data) {
   const key = keyOf(kind, id);
@@ -190,7 +224,7 @@ setInterval(() => {
 
 module.exports = {
   addClient, setOpenConversation,
-  publishToConversation, publishToUser,
+  publishToConversation, publishToUser, publishTrackRecordUpdate,
   disconnectUser,
   isOnline, onlineKeys, keyOf,
 };

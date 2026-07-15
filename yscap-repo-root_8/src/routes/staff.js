@@ -2908,6 +2908,9 @@ router.post('/borrowers/:id/track-records', async (req, res) => {
     allVals);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(req.params.id); } catch (_) {}
   await audit(req, 'staff_add_track_record', 'track_record', r.rows[0].id);
+  // Live cross-user refresh (#112): the borrower + other staff viewing this
+  // record reload; the acting staffer's own tab is excluded from the echo.
+  require('../lib/events').publishTrackRecordUpdate(req.params.id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.status(201).json({ ok: true, trackRecordId: r.rows[0].id, missing: trackRecordMissing(b) });
 });
 router.put('/track-records/:id', async (req, res) => {
@@ -2933,6 +2936,7 @@ router.put('/track-records/:id', async (req, res) => {
     [req.params.id, ...vals]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   await audit(req, 'staff_edit_track_record', 'track_record', req.params.id);
+  require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.json({ ok: true, missing: trackRecordMissing(b) });
 });
 router.delete('/track-records/:id', async (req, res) => {
@@ -2945,6 +2949,7 @@ router.delete('/track-records/:id', async (req, res) => {
     [tr.rows[0].borrower_id]);
   try { await require('../lib/experience').syncExperienceChecklistForBorrower(tr.rows[0].borrower_id); } catch (_) {}
   await audit(req, 'staff_delete_track_record', 'track_record', req.params.id);
+  require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.json({ ok: true });
 });
 // The borrower's saved STATIC COPY of their track record (self-contained HTML
@@ -3017,6 +3022,7 @@ router.post('/track-records/:id/documents', async (req, res) => {
   }
   await audit(req, 'staff_upload_track_record_doc', 'track_record', req.params.id, { filename: b.filename });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+  require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 });
 router.get('/borrowers/:id/ssn', async (req, res) => {
@@ -3347,6 +3353,9 @@ router.post('/track-records/:id/verify', async (req, res) => {
   } else {
     await audit(req, 'verify_track_record', 'track_record', req.params.id, { status });
   }
+  // Live cross-user refresh (#112): the borrower + other staff see the new
+  // verification badge / revoke on the line item immediately.
+  require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.json({ ok: true, status, revoked: isRevoke });
 });
 
@@ -3374,6 +3383,7 @@ router.post('/track-records/:id/raise-issue', async (req, res) => {
     const name = addressLabel(tr.rows[0].property_address) || 'a past project';
     const out = await raiseEntityIssue({ appId, entityKind: 'track_record', entityId: req.params.id, entityName: name, reason: b.reason, actorId: req.actor.id });
     await audit(req, 'raise_track_record_issue', 'track_record', req.params.id, { applicationId: appId, reason: String(b.reason).slice(0, 500) });
+    require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
@@ -3401,6 +3411,7 @@ router.post('/track-records/:id/request-doc', async (req, res) => {
     // A fresh ask reopens the line's doc state (an open 'issue' stays issue).
     await db.query(`UPDATE track_records SET docs_status='requested', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','received','satisfied')`, [req.params.id]);
     await audit(req, 'request_track_record_doc', 'track_record', req.params.id, { applicationId: appId, label: ask.slice(0, 500) });
+    require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, ...out });
   } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'server error' }); }
 });
@@ -4806,6 +4817,9 @@ router.post('/documents/:id/review', async (req, res) => {
           ctaLabel: 'Upload a new version' });
       } catch (_) {}
     }
+    // Live cross-user refresh (#112): a verdict on a track-record line-item doc
+    // (accept badge / rejection) shows on the borrower's + other staff's view now.
+    if (doc.track_record_id) require('../lib/events').publishTrackRecordUpdate(doc.borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, review_status: status });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -4890,6 +4904,9 @@ router.delete('/documents/:id', async (req, res) => {
     }
     await audit(req, 'delete_document', 'document', doc.id,
       { filename: doc.filename, wasMirrored: !!doc.sharepoint_backed_up_at, llcId: doc.llc_id, trackRecordId: doc.track_record_id });
+    // Live cross-user refresh (#112): a deleted track-record line-item doc leaves
+    // the borrower's + other staff's view immediately.
+    if (doc.track_record_id) require('../lib/events').publishTrackRecordUpdate(doc.borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
     res.json({ ok: true, deleted: true, wasMirrored: !!doc.sharepoint_backed_up_at });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

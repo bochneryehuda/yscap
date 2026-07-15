@@ -1,7 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { subscribeChat } from '../lib/chatEvents.js';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
+
+// Ask every embedded Track Record tool on the page to pull the server's fresh
+// truth in (#112 live cross-user refresh). The tool ignores this while the local
+// user is mid-edit, so it never clobbers in-progress work.
+function reloadTrackRecordFrames() {
+  document.querySelectorAll('iframe').forEach((f) => {
+    try { if (f.contentWindow) f.contentWindow.postMessage({ type: 'ys-tr-reload' }, window.location.origin); }
+    catch { /* cross-origin frame — not ours */ }
+  });
+}
 
 /* The borrower's general Track Record section — one live record per borrower,
    not tied to any single file. It IS the static Track Record builder, served
@@ -53,6 +64,24 @@ export default function TrackRecordScreen() {
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
   }, [appId]);
+
+  // #112 live cross-user refresh: when a staffer changes THIS borrower's track
+  // record, the server pushes a track_record:updated event. Reload the embedded
+  // tool and refresh the requirement counts so the borrower sees it without a
+  // page reload. (Our own edits are excluded server-side, so this never fires on
+  // top of what we just typed — and the tool defers if a form is open.)
+  useEffect(() => {
+    const unsub = subscribeChat((event) => {
+      if (event !== 'track_record:updated') return;
+      api.trackRecords().then((rows) => {
+        const c = { flips: 0, holds: 0, ground: 0, total: 0 };
+        for (const r of rows || []) { c[bucketOf(r.deal_type)]++; c.total++; }
+        setCounts(c);
+      }).catch(() => {});
+      reloadTrackRecordFrames();
+    });
+    return unsub;
+  }, []);
 
   // The sheet takes the page over — the portal chrome behind it must not scroll.
   useEffect(() => {
