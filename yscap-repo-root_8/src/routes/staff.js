@@ -3241,6 +3241,10 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
 // ---------------- advance application status ----------------
 const APP_STATUS = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
 const STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+// #88: the DECISION milestones a borrower should be emailed about. Every status
+// change still posts in-app; only these also email (the in-between progress moves —
+// in_review / processing / underwriting — are in-app only, to keep the inbox quiet).
+const MAJOR_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined', 'withdrawn']);
 // Conditions-to-close gating. Reaching "clear to close" requires every open
 // prior-to-docs (and standard) condition cleared/waived and every gate item
 // signed off; "funded" additionally requires prior-to-funding conditions.
@@ -3407,7 +3411,8 @@ router.post('/applications/:id/nudge', async (req, res) => {
     await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
-      applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items' });
+      applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items',
+      major: true });   // #88: the staff "Remind" nudge is an explicit reach-out — it emails
     await audit(req, 'nudge_borrower', 'application', req.params.id, { count: list.length });
     res.json({ ok: true, count: list.length });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -3603,7 +3608,8 @@ router.patch('/applications/:id', async (req, res) => {
       await notify.notifyAppBorrowers(req.params.id, {
         type: 'status_change', title: `Your loan status: ${label}`,
         body: `Your application has moved to "${label}". Sign in to see the latest.`,
-        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
+        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
+        major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
       const team = new Set([cur.rows[0].loan_officer_id, cur.rows[0].processor_id].filter(Boolean).filter(x => x !== req.actor.id));
       for (const sid of team)
         await notify.notifyStaff(sid, {
