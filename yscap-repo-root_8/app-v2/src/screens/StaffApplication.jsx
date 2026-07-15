@@ -2714,8 +2714,12 @@ export default function StaffApplication() {
       <ChatPanel appId={id} onTaskCreated={load} />
       </Section>
 
-      <Section id="sec-activity" title="Activity"
-        info="The audited history of everything on this file — status changes, uploads, sign-offs, reveals.">
+      {/* #81 — the audit history is long and low-urgency, so the whole Activity
+          section stays COLLAPSED by default (matching the borrower file) and only
+          opens when an officer clicks to see it. "An alone file of old activity
+          within… always collapsed, open it if you want." */}
+      <Section id="sec-activity" title="Activity" collapsible defaultOpen={false}
+        info="The audited history of everything on this file — status changes, uploads, sign-offs, reveals. Collapsed by default; open it when you need the full trail.">
       <ActivityFeed fetcher={activityFetcher} title="File activity" />
       </Section>
 
