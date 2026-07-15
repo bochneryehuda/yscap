@@ -35,6 +35,7 @@ import StaffVendors from './screens/StaffVendors.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
+import SyncReviews from './screens/SyncReviews.jsx';
 
 /* Borrower-only area. Internal users who land here are bounced to their console.
    An unauthenticated hit carries the intended route through sign-in (`from`) so
@@ -120,6 +121,7 @@ export default function App() {
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />
+          <Route path="/internal/sync-reviews" element={<StaffPrivate><SyncReviews /></StaffPrivate>} />
 
           {/* legacy /staff/* deep links (old emails, bookmarks) → /internal/* */}
           <Route path="/staff" element={<LegacyStaffRedirect />} />
