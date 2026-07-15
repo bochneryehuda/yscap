@@ -227,6 +227,13 @@ async function buildTprExport(appId) {
         AND d.review_status='accepted' AND d.is_current=true
         AND d.source_type <> 'chat_attachment'
         AND (ci.tpr_exclude IS NOT TRUE)
+        -- #83: a Certificate of Good Standing goes stale after 30 days. An
+        -- EXPIRED CoGS behaves like empty everywhere (the LLC stays verified —
+        -- good standing never gated it), so it must NOT ship in the buyer's
+        -- clean file. Mirrors llcSlots() presenting the expired slot as empty.
+        AND NOT (d.created_at < now() - interval '30 days'
+                 AND ci.template_id IN (SELECT id FROM checklist_templates
+                                         WHERE code='rtl_llc_goodstanding' AND scope='llc'))
         -- S4-03: never ship a document a staffer marked truly INTERNAL to the note
         -- buyer. We deliberately KEEP 'staff_only' here — the buyer's clean file
         -- needs the staff-managed loan documents (appraisal, title, insurance),
