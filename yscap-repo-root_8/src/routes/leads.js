@@ -76,11 +76,26 @@ router.post('/', async (req, res) => {
     if (email) meta.push({ label: 'Email', value: email });
     if (phone) meta.push({ label: 'Phone', value: phone });
     meta.push({ label: 'Tool', value: label });
+    // #99: the marketing tools attach their generated PDF/Excel so the routed
+    // officer receives the ACTUAL files server-side — no more ugly .eml draft the
+    // visitor has to open and send. Cap count + size defensively (public,
+    // email-sending endpoint); the provider layer gates further and, when a file
+    // is too big to attach, the email still lists it by name.
+    const atts = (Array.isArray(b.attachments) ? b.attachments : [])
+      .filter(a => a && a.filename && a.dataBase64)
+      .slice(0, 4)
+      .map(a => ({
+        filename: String(a.filename).slice(0, 180),
+        contentType: a.contentType || 'application/octet-stream',
+        content: String(a.dataBase64).replace(/^data:[^,]*,/, ''),
+      }))
+      .filter(a => a.content.length > 0 && a.content.length < 8 * 1024 * 1024);
     const notifyOpts = {
       type: 'new_lead',
       title: `New ${label.toLowerCase()} from ${name || email || 'a visitor'}`,
       body: b.message || `A visitor submitted the ${label.toLowerCase()} on the site.`,
       meta, link: '/internal/leads', ctaLabel: 'Open leads',
+      attachments: atts, files: atts.map(a => a.filename),
     };
 
     // Notify the routed officer, else the admin desk (in-app + branded email).

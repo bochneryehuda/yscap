@@ -620,7 +620,7 @@ const RB = (function(){
         '<button class="rb-btn" onclick="RB.emailLO(this)">Email to loan officer ✉</button>'+
         '<button class="rb-btn" onclick="RB.share(this)">Copy share link 🔗</button></div>'+
       '<p class="rb-underwrite-note"><b>To underwrite your rehab budget, YS needs the Excel file — not the PDF.</b> The PDF is a branded copy for your records; our team underwrites from the Excel export. “Email to loan officer” sends both.</p>'+
-      '<p class="rb-note">Your link already saved this scope of work — bookmark it to come back, or send it to your loan officer. The Excel export can be re-imported here to keep editing. <b>Email to loan officer</b> lets you pick the exact person on the YS team and sends with both files <b>attached</b>: on a phone it uses the share sheet, and on a computer it downloads a ready-to-send draft (.eml) that already has the PDF and Excel attached — just open it and hit send.</p>'+
+      '<p class="rb-note">Your link already saved this scope of work — bookmark it to come back, or send it to your loan officer. The Excel export can be re-imported here to keep editing. <b>Email to loan officer</b> lets you pick the exact person on the YS team and sends it to them <b>with both files attached</b>: on a phone it uses the share sheet, and on a computer it goes straight through our system — no draft to open or files to fumble with.</p>'+
       '<p class="rb-note" style="margin-top:.6rem">Already closed this loan with YS? Once your renovation is underway, <a href="https://portal.sitewire.co/login/YSCapitalGroup" target="_blank" rel="noopener">request a draw →</a> to be reimbursed from your rehab holdback as work is completed and verified.</p>'+
     '</div>';
   }
@@ -1040,7 +1040,11 @@ const RB = (function(){
       g.people.map(p=>'<button class="rb-ov-person" data-e="'+esc(p.e)+'" data-n="'+esc(p.n)+'"><span class="rb-ov-nm">'+esc(p.n)+'</span><span class="rb-ov-rl">'+esc(p.r)+'</span></button>').join("")+'</div>').join("");
     ov.innerHTML='<div class="rb-ov-box"><button class="rb-ov-x" aria-label="Close">✕</button>'+
       '<h3>Email your scope of work</h3>'+
-      '<p>Pick who it goes to. On a phone the PDF + Excel attach right to the message; on a computer you\'ll get a ready-to-send draft (.eml) with both files already attached.</p>'+
+      '<p>Add your details so we can send it straight to your loan officer with the PDF &amp; Excel attached — they\'ll follow up with you.</p>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px">'+
+        '<input id="rb-em-name" placeholder="Your name" autocomplete="name" style="flex:1;min-width:140px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">'+
+        '<input id="rb-em-email" type="email" placeholder="Your email" autocomplete="email" style="flex:1;min-width:140px;padding:10px 12px;border:1px solid var(--line,#d8d2c4);border-radius:8px;font-size:16px">'+
+      '</div>'+
       '<div class="rb-ov-list">'+groups+'</div></div>';
     document.body.appendChild(ov); document.body.style.overflow="hidden";
     const close=()=>{ ov.remove(); document.body.style.overflow=""; document.removeEventListener("keydown",onKey); };
@@ -1048,19 +1052,46 @@ const RB = (function(){
     document.addEventListener("keydown",onKey);
     ov.addEventListener("click",e=>{ if(e.target===ov) close(); });
     ov.querySelector(".rb-ov-x").onclick=close;
-    ov.querySelectorAll(".rb-ov-person").forEach(b=> b.onclick=()=>{ close(); emailTo({n:b.dataset.n,e:b.dataset.e}); });
+    // Capture the visitor's contact BEFORE close() removes the overlay.
+    ov.querySelectorAll(".rb-ov-person").forEach(b=> b.onclick=()=>{
+      const nm=((ov.querySelector("#rb-em-name")||{}).value||"").trim();
+      const em=((ov.querySelector("#rb-em-email")||{}).value||"").trim();
+      close(); emailTo({n:b.dataset.n,e:b.dataset.e}, nm, em);
+    });
   }
   // Called synchronously off the person click so navigator.share keeps its gesture.
-  function emailTo(person){
+  function emailTo(person, name, vemail){
     const f=_emailFiles||{}; const files=[f.pdf,f.xls].filter(Boolean);
     const subj="Scope of Work — "+(S.address||"property"); const body=emailBody(person);
+    // Phone: the native share sheet attaches the real files — keep it (not an .eml).
     if(files.length && navigator.canShare && navigator.canShare({files:files})){
       navigator.share({ files:files, title:subj, text:body })
         .then(function(){ flash("Pick Mail in the share sheet — the PDF & Excel are attached."); })
-        .catch(function(err){ if(!(err&&err.name==="AbortError")) emailFallback(person,subj,body,files); });
+        .catch(function(err){ if(!(err&&err.name==="AbortError")) backendOrEml(person,name,vemail,subj,body,files); });
       return;
     }
-    emailFallback(person,subj,body,files);
+    // Computer: send it SERVER-SIDE straight to the officer (no ugly .eml).
+    backendOrEml(person,name,vemail,subj,body,files);
+  }
+  // #99: POST to the backend so the officer gets a real branded email with the
+  // PDF + Excel attached — no .eml the visitor has to open and send. Falls back to
+  // the .eml/mailto draft only when offline or the visitor gave no email.
+  function backendOrEml(person,name,vemail,subj,body,files){
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(vemail||"")){ emailFallback(person,subj,body,files); return; }
+    sendViaBackend(person,name,vemail,subj,body,files)
+      .then(function(){ flash("Sent to "+person.n+" — they have your scope of work (PDF & Excel) and will follow up."); })
+      .catch(function(e){ if(window.console) console.error(e); emailFallback(person,subj,body,files); });
+  }
+  async function sendViaBackend(person,name,vemail,subj,body,files){
+    const atts=[];
+    for(let i=0;i<files.length;i++){ const fl=files[i]; atts.push({ filename:fl.name, contentType:fl.type||"application/octet-stream", dataBase64: await fileToB64(fl) }); }
+    const code=String(person.e||"").split("@")[0];
+    const r=await fetch("/api/leads",{ method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ tool:"rehab_budget", officerCode:code, name:name||undefined, email:vemail,
+        subject:subj, message:body, attachments:atts,
+        payload:{ address:S.address, total:grand(), contingency:contingency(), gcFee:gcFeeAmt() } }) });
+    if(!r.ok) throw new Error("send "+r.status);
+    return r.json();
   }
   async function emailFallback(person,subj,body,files){
     if(files.length){

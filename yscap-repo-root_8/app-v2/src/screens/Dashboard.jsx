@@ -2,6 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 
+// Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
+// ON-HOLD loans never nag in the cross-file "to complete" rollup or the per-loan
+// outstanding badge (#109) — their items stay visible inside the file itself.
+// Mirrors the staff-side inactive set (funded/declined/withdrawn/on_hold).
+const QUIET_STATUSES = ['funded', 'closed', 'on_hold', 'declined', 'withdrawn', 'cancelled'];
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city, a.state].filter(Boolean).join(', ') || '—');
 const dstr = (s) => s ? new Date(s).toLocaleDateString() : '';
@@ -61,7 +66,7 @@ export default function Dashboard() {
     let live = true;
     const DONE = ['received', 'satisfied', 'waived', 'cleared', 'accepted'];
     apps
-      .filter(a => !['declined', 'withdrawn'].includes(a.status) && (a.borrower_total || 0) > (a.borrower_done || 0))
+      .filter(a => !QUIET_STATUSES.includes(a.status) && (a.borrower_total || 0) > (a.borrower_done || 0))
       .forEach(a => api.checklist(a.id)
         .then(items => { if (live) setOutByLoan(m => ({ ...m, [a.id]: (items || []).filter(i => !DONE.includes(i.status)) })); })
         .catch(() => {}));
@@ -118,11 +123,10 @@ export default function Dashboard() {
 
   // Cross-file "what's next" roll-up, computed from the list we already loaded.
   const activeApps = (apps || []).filter(a => !['declined', 'withdrawn'].includes(a.status));
-  // Funded/terminal files are muted OUTSIDE the file (owner-directed
-  // 2026-07-14): their remaining items stay visible inside the file but never
-  // count toward the borrower's cross-file "to complete" rollup.
-  const quietStatuses = ['funded', 'closed', 'declined', 'withdrawn', 'cancelled'];
-  const outstanding = (apps || []).filter(a => !quietStatuses.includes(a.status))
+  // Funded/terminal AND on-hold files are muted OUTSIDE the file (owner-directed
+  // 2026-07-14, #109): their remaining items stay visible inside the file but
+  // never count toward the borrower's cross-file "to complete" rollup.
+  const outstanding = (apps || []).filter(a => !QUIET_STATUSES.includes(a.status))
     .reduce((s, a) => s + Math.max(0, (a.borrower_total || 0) - (a.borrower_done || 0)), 0);
   const unreadTotal = Object.values(unread).reduce((s, n) => s + n, 0);
   // Borrower dashboard order (owner-directed #149/#150): lead with the loans —
