@@ -286,20 +286,46 @@ async function auditIdentityMismatchesOnce() {
         && digitsOf(sb.cell_phone).slice(-10) && digitsOf(sb.cell_phone).slice(-10) === digitsOf(row.co_cell).slice(-10)));
     if (looksLikeCo) continue;
     const checks = [];
+    // CONTACT INFO IS ADDITIVE, never a conflict (owner-directed 2026-07-15
+    // night: "additional phone numbers, additional email addresses — just add
+    // them to the borrower profile; it's not about replacing the old one").
+    // A different email/phone on another of the borrower's files ACCUMULATES
+    // into borrower_contacts (deduped) — the profile primary stays, each
+    // task keeps its own contact, and no review card is ever raised for it.
+    const addContact = async (kind, value) => {
+      try {
+        await db.query(
+          `INSERT INTO borrower_contacts (borrower_id, kind, value, source)
+           VALUES ($1,$2,$3,$4) ON CONFLICT (borrower_id, kind, value) DO NOTHING`,
+          [row.borrower_id, kind, String(value).toLowerCase().trim(), `clickup:${row.task_id}`]);
+      } catch (_) { /* best-effort */ }
+    };
+    const closeContactRow = async (fk, note) => {
+      if (openSet.has(`${row.task_id}|${fk}`)) {
+        closed += await review.closeStaleReviews({ taskId: row.task_id, fieldKey: fk, note });
+      }
+    };
     if (sb.email && row.email && !isShadowEmail(sb.email)) {
       if (isShadowEmail(row.email)) {
         // Placeholder vs real is NOT a disagreement — the heal upgrades it;
         // close any noise row already queued for it.
-        if (openSet.has(`${row.task_id}|email`)) {
-          closed += await review.closeStaleReviews({ taskId: row.task_id, fieldKey: 'email',
-            note: 'auto-closed — PILOT held our own placeholder email, not a real value; it upgrades from ClickUp automatically' });
-        }
+        await closeContactRow('email', 'auto-closed — PILOT held our own placeholder email, not a real value; it upgrades from ClickUp automatically');
+      } else if (lc(sb.email) !== lc(row.email)) {
+        await addContact('email', sb.email);
+        await closeContactRow('email', 'auto-closed — recorded as an ADDITIONAL email on the borrower profile (contact info accumulates; nothing was replaced)');
       } else {
-        checks.push({ key: 'email', differ: lc(sb.email) !== lc(row.email), cu: sb.email, p: row.email });
+        await closeContactRow('email', 'auto-closed — the two systems now agree');
       }
     }
     const cp = digitsOf(sb.cell_phone), pp = digitsOf(row.cell_phone);
-    if (cp.length >= 10 && pp.length >= 10) checks.push({ key: 'cell_phone', differ: cp.slice(-10) !== pp.slice(-10), cu: sb.cell_phone, p: row.cell_phone });
+    if (cp.length >= 10 && pp.length >= 10) {
+      if (cp.slice(-10) !== pp.slice(-10)) {
+        await addContact('phone', sb.cell_phone);
+        await closeContactRow('cell_phone', 'auto-closed — recorded as an ADDITIONAL phone on the borrower profile (contact info accumulates; nothing was replaced)');
+      } else {
+        await closeContactRow('cell_phone', 'auto-closed — the two systems now agree');
+      }
+    }
     const cuFirst = sbFirst;
     const pFirst = lc(String(row.first_name || '').split(/\s+/)[0]);
     if (cuFirst && pFirst && !transforms.isPlaceholderName(sb.first_name) && !transforms.isPlaceholderName(row.first_name)) {
@@ -307,7 +333,33 @@ async function auditIdentityMismatchesOnce() {
         cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
     }
     const same = sameStreet(addrText(sb.current_address), addrText(row.current_address));
-    if (same !== null) checks.push({ key: 'current_address', differ: !same, cu: addrText(sb.current_address), p: addrText(row.current_address) });
+    if (same === true) {
+      // UNITS ARE ADDITIVE (owner-directed 2026-07-15 night: "a unit is just
+      // an addition, not an override — if one side has it, add it to the
+      // other"). Same street, one side missing the unit → enrich that side.
+      const unitOf = (t) => (String(t || '').toLowerCase().match(/\b(?:unit|apt|apartment|suite|ste)\s*#?\s*([\w-]+)/) || [])[1] || '';
+      const cuUnit = unitOf(addrText(sb.current_address)), pUnit = unitOf(addrText(row.current_address));
+      try {
+        if (cuUnit && !pUnit && sb.current_address && typeof sb.current_address === 'object') {
+          // ClickUp's Google-canonical form carries the unit — adopt it into
+          // the profile (same place, fuller text; audited).
+          await db.query(`UPDATE borrowers SET current_address=$2::jsonb, updated_at=now() WHERE id=$1`,
+            [row.borrower_id, JSON.stringify(sb.current_address)]);
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system',NULL,'address_unit_enriched','borrower',$1,$2)`,
+            [row.borrower_id, JSON.stringify({ taskId: row.task_id, unit: cuUnit,
+              adopted: addrText(sb.current_address), was: addrText(row.current_address) })]).catch(() => {});
+        } else if (pUnit && !cuUnit) {
+          // The portal carries the unit — push the fuller address to ClickUp
+          // through the normal scoped path (guarded; skips without coords).
+          await require('../clickup/enqueue').enqueueClickupPush(row.id, ['current_address']);
+        }
+      } catch (_) { /* enrichment is best-effort */ }
+      await closeContactRow('current_address', 'auto-closed — same address (a missing unit is added, never a conflict)');
+    } else if (same === false) {
+      checks.push({ key: 'current_address', differ: true, cu: addrText(sb.current_address), p: addrText(row.current_address) });
+    }
     const cuS = sbLast4;
     if (cuS && row.ssn_last4) checks.push({ key: 'ssn', differ: cuS !== String(row.ssn_last4), cu: '✱✱✱-✱✱-' + cuS, p: '✱✱✱-✱✱-' + row.ssn_last4 });
     for (const c of checks) {

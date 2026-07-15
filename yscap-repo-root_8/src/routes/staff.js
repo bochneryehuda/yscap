@@ -2695,8 +2695,14 @@ router.get('/borrowers/:id', async (req, res) => {
         WHERE b.id=$1`,
       [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    // ADDITIONAL contact info accumulated across the borrower's files
+    // (owner-directed 2026-07-15 night: every synced file may bring more
+    // phones/emails — they ADD to the profile, never replace the primary).
+    const contacts = (await db.query(
+      `SELECT kind, value, source, created_at FROM borrower_contacts
+        WHERE borrower_id=$1 ORDER BY created_at DESC LIMIT 50`, [req.params.id]).catch(() => ({ rows: [] }))).rows;
     // Live residence duration from the anchored move-in date (owner-directed 2026-07-14).
-    res.json(require('../lib/residence').withLiveResidence(r.rows[0]));
+    res.json({ ...require('../lib/residence').withLiveResidence(r.rows[0]), contacts });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -5520,7 +5526,7 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
         WHERE id=$1 AND status='open'`,
       [row.id, req.actor.id, (req.body && req.body.note) || null]);
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+  } catch (e) { return sendReviewActionError(res, e); }   // same upstream shielding as resolve/resolve-file (mega-audit nit)
 });
 
 // TWO-SIDED resolution (owner-directed 2026-07-15 evening): the reviewer picks

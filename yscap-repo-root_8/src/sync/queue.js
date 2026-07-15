@@ -16,6 +16,16 @@ async function firstListId(folderId) {
 }
 
 async function handleApplicationCreate(row) {
+  // PERMANENTLY RETIRED (mega-audit 2026-07-15): this legacy handler was the
+  // ONE task-create path outside the orchestrator's guarded createForNewFile
+  // (no dedup against existing tasks, no journal, no breaker). It is dormant
+  // (this worker is not started by server.js and nothing enqueues op='create')
+  // and now throws so it can never be silently re-wired. Task creation goes
+  // through orchestrator.createForNewFile ONLY.
+  throw new Error(`legacy queue create path is retired — use orchestrator.createForNewFile (job ${row && row.id})`);
+}
+// eslint-disable-next-line no-unused-vars
+async function _retiredHandleApplicationCreate(row) {
   const { intake, routing } = row.payload;
   const listId = await firstListId(routing.pipelineFolderId);
   if (!listId) throw new Error('no list in pipeline folder ' + routing.pipelineFolderId);

@@ -269,6 +269,24 @@ async function pushApplication(appId, opts = {}) {
       // and breaker-limited like every write (owner-directed 2026-07-15
       // night: DOB must be fully editable from PILOT).
       const humanDobEdit = Array.isArray(opts.humanEditKeys) && opts.humanEditKeys.includes('date_of_birth');
+      // BLIND-WRITE GUARD (mega-audit should-fix #1): a FULL repush proceeds
+      // warn-only when its pre-read failed (before == null) — but with no
+      // before-image the DOB gate below can't evaluate, and the write would
+      // go through UN-GATED, potentially overwriting a differing ClickUp DOB
+      // with no proof and no review. A DOB change is ALWAYS a human decision:
+      // with no before-image and no human authorization, it stops here like
+      // the PII shield does — journaled blocked + queued for review.
+      if (!scoped && before == null && !opts.approvedReview && !humanDobEdit && c.id === F.SHARED.borrowerDOB) {
+        journalStats.blocked++;
+        await journalFieldWrite(appId, id, c.id, null, c.value, source, { blocked: true });
+        await logSync('dob_blind_write_blocked', appId, id, { fieldId: c.id, to: String(c.value) });
+        await require('../lib/sync-review').queueReview({
+          applicationId: appId, taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
+          proposedValue: T.fromEpochMs(c.value), rawValue: String(c.value),
+          reason: 'dob_change_blocked_pending_review',
+          clickupValue: null, portalValue: T.fromEpochMs(c.value) });
+        continue;
+      }
       if (!opts.approvedReview && !humanDobEdit && c.id === F.SHARED.borrowerDOB) {
         const oldLoose = T.epochToDayLoose(old);            // sees artifact years the windowed read hides
         const newDay = T.fromEpochMs(c.value);

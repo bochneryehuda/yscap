@@ -242,7 +242,11 @@ async function applyReviewWinner(row, winner) {
     if (taskId && cfg.clickupOutboundEnabled) {
       const epoch = T.dateOnlyToClickUpEpoch(day);
       if (epoch != null) {
-        try { await clickup.setField(taskId, fieldId, epoch); await journalResolveWrite(appId, taskId, fieldId, fieldKey, before && before[fieldKey], epoch, false); }
+        try {
+          require('../clickup/orchestrator').circuitCheck(appId, taskId, 1);   // every ClickUp write counts into the ONE breaker
+          await clickup.setField(taskId, fieldId, epoch);
+          await journalResolveWrite(appId, taskId, fieldId, fieldKey, before && before[fieldKey], epoch, false);
+        }
         catch (e) { console.warn('[sync-autoresolve] resolve ClickUp write failed', taskId, e.message); }
       }
     }
@@ -271,6 +275,7 @@ async function applyReviewWinner(row, winner) {
       try { digits = sanitizeSsnDigits(C.decryptSSN(b.ssn_encrypted)); } catch (_) { digits = null; }
       if (!digits) throw httpError(422, "PILOT's stored SSN could not be read — adopt ClickUp's value instead");
       if (taskId && cfg.clickupOutboundEnabled) {
+        require('../clickup/orchestrator').circuitCheck(appId, taskId, 1);   // breaker-counted like every write
         await clickup.setField(taskId, F.SHARED.borrowerSSN, digits);
         await journalResolveWrite(appId, taskId, F.SHARED.borrowerSSN, 'ssn', '✱✱✱', '✱✱✱', true);
       }
