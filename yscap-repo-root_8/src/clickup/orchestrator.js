@@ -42,6 +42,51 @@ async function withCoords(addr) {
   return addr;
 }
 
+// ── Officer/processor ClickUp user-id resolution (#89) ──────────────────────
+// The officer/processor "users" fields need a NUMERIC ClickUp user id. Historically
+// that id came ONLY from staff_users.clickup_user_id, populated by the one-shot
+// db/045 backfill for 18 named staffers — so a processor created/assigned after that
+// (or any staffer never in the backfill) had a NULL id, the field was silently
+// omitted from the push, and the change never reached ClickUp ("officer syncs,
+// processor doesn't"). Fix: when the stored id is missing, resolve it from the live
+// ClickUp workspace members BY EMAIL and PERSIST it back (create-once-then-adopt) so
+// every staffer syncs, present and future — mirroring how inbound already resolves
+// staff by the "Processor Email" field. Cached ~10 min; only hit when an id is
+// missing, so the 18 linked staffers never trigger an API call.
+let _memberCache = { at: 0, byEmail: null };
+const MEMBER_TTL_MS = 10 * 60 * 1000;
+async function clickupMembersByEmail() {
+  const now = Date.now();
+  if (_memberCache.byEmail && (now - _memberCache.at) < MEMBER_TTL_MS) return _memberCache.byEmail;
+  const map = new Map();
+  try {
+    const data = await clickup.getTeams();
+    for (const team of (data && data.teams) || []) {
+      if (String(team.id) !== String(cfg.clickupTeamId)) continue;
+      for (const m of (team.members || [])) {
+        const u = m.user || {};
+        if (u.email && u.id != null) map.set(String(u.email).toLowerCase(), Number(u.id));
+      }
+    }
+  } catch (e) { /* best effort — an empty map just omits the field (never clears it) */ }
+  if (map.size) _memberCache = { at: now, byEmail: map };
+  return _memberCache.byEmail || map;
+}
+// Resolve a staffer's ClickUp numeric user id: the stored id if present, else a live
+// member lookup by email (persisted back for next time). Returns a Number or null.
+async function resolveClickupUserId({ storedId, staffId, email }) {
+  if (storedId != null) return Number(storedId);
+  if (!email) return null;
+  const map = await clickupMembersByEmail();
+  const cu = map && map.get(String(email).toLowerCase());
+  if (cu == null) return null;
+  // Self-heal: fill (never overwrite) staff_users.clickup_user_id so the next push
+  // uses the stored id with no API call. Best-effort; failure just means we resolve
+  // by email again next time.
+  if (staffId) db.query(`UPDATE staff_users SET clickup_user_id=$2 WHERE id=$1 AND clickup_user_id IS NULL`, [staffId, cu]).catch(() => {});
+  return cu;
+}
+
 /** Load everything the mapper needs to build a task from an application. */
 async function loadPushContext(appId) {
   const r = await db.query(
@@ -50,7 +95,9 @@ async function loadPushContext(appId) {
             b.employment_type, b.employer, b.dependents_count, b.years_at_residence, b.housing_status, b.housing_payment,
             l.llc_name, l.ein,
             lo.clickup_user_id AS officer_cuid, lo.full_name AS officer_name,
+            lo.email AS officer_email, lo.id AS officer_staff_id,
             pr_s.clickup_user_id AS processor_cuid,
+            pr_s.email AS processor_email, pr_s.id AS processor_staff_id,
             reg.program AS registered_program
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
@@ -89,10 +136,12 @@ async function loadPushContext(appId) {
     llc: row.llc_name ? { llc_name: row.llc_name, ein: row.ein } : null,
     registeredProgram: row.registered_program || 'none',
     externalStatus: row.status,
-    // ClickUp "users" fields need a NUMERIC id; node-pg returns bigint as a
-    // string, so coerce or the assignment write is silently rejected.
-    officerClickupId: row.officer_cuid != null ? Number(row.officer_cuid) : null,
-    processorClickupId: row.processor_cuid != null ? Number(row.processor_cuid) : null,
+    // ClickUp "users" fields need a NUMERIC id. Prefer the stored clickup_user_id;
+    // if it's missing, resolve BY EMAIL from the live workspace members and persist
+    // it (#89 — so a processor/officer not in the db/045 backfill still syncs). node-pg
+    // returns bigint as a string, so resolveClickupUserId coerces to Number.
+    officerClickupId: await resolveClickupUserId({ storedId: row.officer_cuid, staffId: row.officer_staff_id, email: row.officer_email }),
+    processorClickupId: await resolveClickupUserId({ storedId: row.processor_cuid, staffId: row.processor_staff_id, email: row.processor_email }),
     officerName: row.officer_name || row.loan_officer_name || null,
     portalAppId: appId,
     portalFileLink: `${cfg.appUrl}${cfg.portalPath}/#/internal/app/${appId}`,

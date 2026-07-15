@@ -131,6 +131,12 @@ const setField = (taskId, fieldId, value) => {
   return call(`/task/${taskId}/field/${fieldId}`, { method: 'POST', body: { value } });
 };
 
+// Workspaces (teams) the token can see, each with its `members[].user` (id +
+// email). Read-only. Used to resolve a staffer's ClickUp numeric user id by email
+// when staff_users.clickup_user_id isn't populated — so the officer/processor
+// people-fields sync outbound for EVERY staffer, not only the db/045 backfilled 18.
+const getTeams = () => call(`/team`);
+
 const getFolderLists = (folderId) => call(`/folder/${folderId}/list`);
 const addComment = (taskId, comment_text) =>
   call(`/task/${taskId}/comment`, { method: 'POST', body: { comment_text } });
@@ -199,7 +205,7 @@ function verifyWebhookSignature(rawBody, signature, secret) {
 }
 
 module.exports = {
-  call, createTask, updateTask, setField, getFolderLists, addComment,
+  call, createTask, updateTask, setField, getFolderLists, addComment, getTeams,
   getTask, getListFields, getFilteredTeamTasks,
   addTaskToList, removeTaskFromList,
   createWebhook, listWebhooks, updateWebhook, deleteWebhook, verifyWebhookSignature,
