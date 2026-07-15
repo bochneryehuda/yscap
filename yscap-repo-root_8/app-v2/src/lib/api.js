@@ -454,6 +454,9 @@ export const api = {
   staffUpdateConversation: (cid, b) => req('PATCH', `/api/staff/conversations/${cid}`, b),
   staffConvAddMember:      (cid, staffId) => req('POST', `/api/staff/conversations/${cid}/members`, { staffId }),
   staffConvRemoveMember:   (cid, staffId) => req('DELETE', `/api/staff/conversations/${cid}/members/${staffId}`),
+  // #75 external EMAIL guests (partner/secretary): add by email, remove by id.
+  staffConvAddExternal:    (cid, b) => req('POST', `/api/staff/conversations/${cid}/external`, b),
+  staffConvRemoveExternal: (cid, id) => req('DELETE', `/api/staff/conversations/${cid}/external/${id}`),
   staffChatSearch:         (q, cid) => req('GET', `/api/staff/chat/search?q=${encodeURIComponent(q)}${cid ? `&conversationId=${cid}` : ''}`),
   staffSetChatStatus:      (b) => req('PUT', '/api/staff/chat/status', b),
   staffClearChatStatus:    () => req('DELETE', '/api/staff/chat/status'),

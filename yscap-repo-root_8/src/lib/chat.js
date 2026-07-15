@@ -18,6 +18,7 @@
  * member — those reads never touch watermarks, so oversight is invisible in
  * receipts (a compliance requirement, not an accident).
  */
+const crypto = require('crypto');
 const db = require('../db');
 const cfg = require('./../config');
 const events = require('./events');
@@ -25,7 +26,6 @@ const pii = require('./pii-guard');
 const notify = require('./notify');
 const email = require('./email');
 const storage = require('./storage');
-const { link: portalLink } = require('./email/catalog');
 const { can } = require('./permissions');
 const { scrubText } = require('./borrower-safe');
 
@@ -160,6 +160,107 @@ async function membersOf(cid) {
   }));
 }
 
+/* ---------------------------------------------- external email participants */
+/* #75 — an outside person (partner / secretary / attorney) added to a chat by
+   EMAIL. They are NOT a portal user: they receive each message as a branded
+   email and reply to a unique reply-to that routes back into the thread. They
+   may later accept an invite to sign up as a chat-only portal guest; email keeps
+   flowing regardless. */
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Active external participants on a conversation (for the roster + fan-out). */
+async function externalParticipantsOf(cid) {
+  const r = await db.query(
+    `SELECT id, email, name, reply_key, guest_borrower_id, signed_up_at, added_at
+       FROM conversation_external_participants
+      WHERE conversation_id=$1 AND removed_at IS NULL
+      ORDER BY added_at`, [cid]);
+  return r.rows;
+}
+
+/** Add (or un-remove) an external email participant. Returns the row or throws
+    a message the caller can surface. Idempotent on (conversation_id, email). */
+async function addExternalParticipant(cid, { email, name }, invitedBy) {
+  const e = String(email || '').trim().toLowerCase();
+  if (!EMAIL_RE.test(e)) throw new Error('a valid email is required');
+  const nm = name ? String(name).trim().slice(0, 120) : null;
+  const key = crypto.randomBytes(18).toString('base64url');
+  const r = await db.query(
+    `INSERT INTO conversation_external_participants (conversation_id, email, name, reply_key, invited_by_kind, invited_by_id)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (conversation_id, email) DO UPDATE
+       SET removed_at=NULL, name=COALESCE(EXCLUDED.name, conversation_external_participants.name)
+     RETURNING id, email, name, reply_key`,
+    [cid, e, nm, key, invitedBy ? invitedBy.kind : null, invitedBy ? invitedBy.id : null]);
+  return r.rows[0];
+}
+
+async function removeExternalParticipant(cid, id) {
+  const r = await db.query(
+    `UPDATE conversation_external_participants SET removed_at=now()
+      WHERE conversation_id=$1 AND id=$2 AND removed_at IS NULL RETURNING email`, [cid, id]);
+  return r.rows[0] || null;
+}
+
+/** The unique reply-to address for a participant, or null when no inbound
+    domain is configured (email still sends, just without a reply-to). */
+function replyToFor(replyKey) {
+  return cfg.chatReplyDomain ? `chat+${replyKey}@${cfg.chatReplyDomain}` : null;
+}
+
+/** Email every active external participant a single message as it's posted, with
+    their unique reply-to. Skips the participant who SENT it (inbound echo) and
+    is best-effort (a failed send never breaks posting). Borrower-visible chats
+    are scrubbed of any capital-partner name per the frozen rule. */
+async function emailExternalParticipants(conv, message, senderName) {
+  if (!message || message.kind !== 'text') return;
+  const externals = await externalParticipantsOf(conv.id).catch(() => []);
+  if (!externals.length) return;
+  const ctx = await notify.fileContext(conv.application_id).catch(() => null);
+  const scrub = conv.borrower_visible ? scrubText : (t) => String(t || '');
+  const bodyLine = message.body ? `“${scrub(message.body)}”`
+    : (message.attachment_kind ? 'shared an attachment (open the portal to view it)' : 'sent a message');
+  const canReply = !!cfg.chatReplyDomain;
+  for (const ep of externals) {
+    if (message.sender_kind === 'external' && message.sender_id === ep.id) continue;   // no echo
+    const msg = notify.buildEmail({
+      title: `New message in ${scrub(conv.name)}`,
+      body: `${scrub(senderName || 'The team')} wrote${ctx ? ` on ${ctx.addr}` : ''}:`,
+      lines: [`${scrub(senderName || 'The team')}: ${bodyLine}`],
+      // Reply-by-email is the participant's channel — no CTA button, the action IS
+      // replying. When no inbound domain is configured, the reply line is omitted.
+      note: canReply
+        ? 'You were added to this conversation by the YS Capital team. Just reply to this email and your message goes straight back into the chat.'
+        : 'You were added to this conversation by the YS Capital team. They will follow up with you here.',
+    }, 'staff');
+    email.sendMail({ to: [ep.email], subject: msg.subject, text: msg.text, html: msg.html,
+      replyTo: replyToFor(ep.reply_key) }).catch(() => {});
+    db.query(`UPDATE conversation_external_participants SET last_emailed_seq=GREATEST(last_emailed_seq,$2) WHERE id=$1`,
+      [ep.id, message.seq]).catch(() => {});
+  }
+}
+
+/** Post an inbound email reply from an external participant back into the chat.
+    Matches the opaque reply_key (the address secret). Returns the posted message
+    or null if the key is unknown/removed. */
+async function postExternalReply(replyKey, body) {
+  const text = String(body || '').trim();
+  if (!text) return null;
+  const r = await db.query(
+    `SELECT ep.id, ep.conversation_id, ep.email, ep.name
+       FROM conversation_external_participants ep
+      WHERE ep.reply_key=$1 AND ep.removed_at IS NULL`, [String(replyKey || '')]);
+  const ep = r.rows[0];
+  if (!ep) return null;
+  const conv = await getConversation(ep.conversation_id);
+  if (!conv || conv.app_deleted_at || conv.archived_at) return null;
+  const { message } = await postMessage({
+    conv, actor: { kind: 'external', id: ep.id }, body: text.slice(0, 8000),
+  });
+  return message;
+}
+
 /* --------------------------------------------------------------- messages */
 
 // One shared projection so REST responses and SSE payloads carry the same shape.
@@ -178,11 +279,13 @@ const MESSAGE_SELECT = `
                     WHERE r.message_id=m.id), '[]'::json) AS reactions,
          CASE WHEN m.sender_kind='staff' THEN s.full_name
               WHEN m.sender_kind='borrower' THEN (b.first_name || ' ' || b.last_name)
+              WHEN m.sender_kind='external' THEN COALESCE(NULLIF(btrim(ep.name), ''), ep.email, 'Guest')
               ELSE 'System' END AS sender_name,
          ci.label AS task_label, ci.status AS task_status
     FROM messages m
     LEFT JOIN staff_users s ON s.id=m.sender_id AND m.sender_kind='staff'
     LEFT JOIN borrowers  b ON b.id=m.sender_id AND m.sender_kind='borrower'
+    LEFT JOIN conversation_external_participants ep ON ep.id=m.sender_id AND m.sender_kind='external'
     LEFT JOIN checklist_items ci ON ci.id=m.checklist_item_id
     LEFT JOIN documents d ON d.id=m.attachment_document_id`;
 
@@ -348,7 +451,9 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
 
   // A sender who isn't on the roster yet (seesAll staff jumping in) joins it —
   // their receipts and unread need a home. Watermark starts at their own send.
-  if (actor.kind !== 'system') {
+  // External email participants are NOT conversation_members (member_kind is
+  // borrower/staff only) — they carry no watermark, so skip this for them.
+  if (actor.kind !== 'system' && actor.kind !== 'external') {
     await db.query(
       `INSERT INTO conversation_members (conversation_id, member_kind, member_id, role_label, last_read_seq, last_delivered_seq, last_read_at)
        VALUES ($1,$2,$3,$4,$5,$5,now())
@@ -386,6 +491,12 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
   // window (the sweeper checks the watermark). Muted members get neither.
   if (kind === 'text' && actor.kind !== 'system') {
     queueMessageNotifications({ conv, actor, message, members: members.rows }).catch(() => {});
+  }
+
+  // #75 — external EMAIL participants get every message immediately (email is
+  // their only channel), with their unique reply-to. Skips the one who sent it.
+  if (kind === 'text' && actor.kind !== 'system') {
+    emailExternalParticipants(conv, message, message.sender_name).catch(() => {});
   }
 
   return { message, seq };
@@ -712,6 +823,8 @@ function startSweeper() {
 module.exports = {
   ensureConversationsForApp, getConversation, getMessage,
   staffCanAccess, borrowerCanAccess, isMember, membersOf,
+  externalParticipantsOf, addExternalParticipant, removeExternalParticipant,
+  emailExternalParticipants, postExternalReply, replyToFor,
   fetchMessages, postMessage, postSystemMessage,
   markRead, markUnread, markDelivered, recountUnread, totalUnread, pushUnreadUpdate,
   runNotificationJobs, startSweeper, SEES_ALL_ROLES,
