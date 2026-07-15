@@ -294,6 +294,31 @@ async function resolveSyncFolder(ctx) {
 
   const out = { driveId, syncFolderId: sync.id, webUrl: sync.webUrl, fullPath, details };
   _memCache.set(ctx.scopeKey, out);
+  // SHAREPOINT UNCERTAINTY → SYNC REVIEW (owner-directed 2026-07-15 night:
+  // "when it finds something it's not sure is the correct one, it should come
+  // up for manual review with options"). The resolver never guesses — an
+  // ambiguous fuzzy match creates a fresh marked folder and an officer-less
+  // scope files into Unfiled — but those SAFE choices were silent. Now they
+  // queue a review row (deduped per scope via the synthetic sp:<scope> key,
+  // dismiss sticks) telling the officer exactly where documents are filing
+  // and how to fix it: merge/rename the folders IN SharePoint (the mirror
+  // never moves or renames anything) and use Re-match, or dismiss to keep
+  // the new folder. Auto-closes when a later resolve is fully confident.
+  try {
+    const uncertain = (details.flags || []).filter((f) => /ambiguous|unfiled/.test(f));
+    const review = require('./sync-review');
+    if (uncertain.length) {
+      await review.queueReview({
+        applicationId: ctx.applicationId || null, borrowerId: ctx.borrowerId || null,
+        taskId: `sp:${ctx.scopeKey}`, direction: 'outbound', fieldKey: 'sharepoint_folder',
+        reason: 'sharepoint_match_uncertain', suppressIfRejected: true,
+        clickupValue: null, portalValue: String(fullPath).slice(0, 200),
+        rawValue: JSON.stringify({ scopeKey: ctx.scopeKey, flags: uncertain, created: details.created }).slice(0, 500) });
+    } else {
+      await review.closeStaleReviews({ taskId: `sp:${ctx.scopeKey}`, fieldKey: 'sharepoint_folder',
+        note: `auto-closed — the folder match is now confident (${String(fullPath).slice(0, 120)})` });
+    }
+  } catch (_) { /* visibility is best-effort — never blocks the mirror */ }
   return out;
 }
 

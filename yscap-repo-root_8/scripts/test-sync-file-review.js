@@ -29,13 +29,17 @@ async function expectHttp(status, fn) {
 
 (async () => {
   // ---- contract shape ------------------------------------------------------
-  t('REASON_ACTIONS lists the five stuck states', () => {
+  t('REASON_ACTIONS lists the six stuck states', () => {
     const keys = Object.keys(SFR.REASON_ACTIONS).sort();
     assert.deepStrictEqual(keys, [
       'file_not_materialized_ambiguous', 'file_not_materialized_duplicate_pending',
-      'file_unlinked_no_task', 'push_dead_lettered', 'task_deleted_needs_decision'].sort());
+      'file_unlinked_no_task', 'push_dead_lettered', 'task_deleted_needs_decision',
+      'sharepoint_match_uncertain'].sort());
     for (const k of keys) assert.ok(SFR.REASON_ACTIONS[k].length >= 1, `${k} has at least one action`);
   });
+  await ta('sp_rematch without a scope reference → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'sharepoint_match_uncertain', raw_value: 'not-json' }, action: 'sp_rematch' })));
   t('isActionAllowed enforces the per-reason list', () => {
     assert.strictEqual(SFR.isActionAllowed('file_not_materialized_ambiguous', 'create_file'), true);
     assert.strictEqual(SFR.isActionAllowed('file_not_materialized_ambiguous', 'link_existing'), true);
