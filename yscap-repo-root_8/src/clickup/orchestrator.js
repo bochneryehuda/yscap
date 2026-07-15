@@ -192,7 +192,11 @@ async function pushApplication(appId, opts = {}) {
       // shields can evaluate — so a scoped push errors and the queue retries
       // with backoff instead of writing blind. An explicit admin full repush
       // (a human watching the response) keeps the previous warn-and-proceed.
-      if (scoped) { e.message = 'pre-write read failed — failing closed for a scoped push (queue retries): ' + e.message; throw e; }
+      if (scoped) {
+        e.message = 'pre-write read failed — failing closed for a scoped push (queue retries): ' + e.message;
+        if (!e.code) e.code = 'CLICKUP_PREREAD_FAILED';   // outage class: the queue retries patiently instead of dead-lettering (see pushOutboxOnce)
+        throw e;
+      }
       console.warn('[clickup] pre-write read failed (full repush proceeds without no-op suppression):', e.message);
     }
     journalStats = { written: 0, suppressed: 0, blocked: 0 };

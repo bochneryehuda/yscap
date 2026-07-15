@@ -75,13 +75,55 @@ async function pushOutboxOnce() {
     await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
   } catch (e) {
     const attempts = job.attempts + 1;
-    const dead = attempts >= 8;
-    const backoff = Math.min(2 ** attempts, 3600);
+    // OUTAGE-CLASS retries (post-merge audit finding #3): a circuit-breaker
+    // rejection or a fail-closed pre-write read means ClickUp (or our own
+    // volume cap) is temporarily unavailable — NOT that the job is bad. The
+    // default budget (dead at 8 attempts ≈ 4 minutes of backoff) is SHORTER
+    // than the breaker's own 10-minute window, so a legitimate user edit could
+    // dead-letter during a breaker opening or a brief API outage and be lost
+    // (there is no dead-job requeue path). These classes retry patiently:
+    // fixed 10-minute spacing, dead only after 40 attempts (~7 hours). A task
+    // deleted upstream resolves sooner anyway — the orphan reconcile archives
+    // its file, and a push to an archived file completes as a skip.
+    const outage = e && (e.code === 'CLICKUP_CIRCUIT_OPEN' || e.code === 'CLICKUP_PREREAD_FAILED');
+    const dead = attempts >= (outage ? 40 : 8);
+    const backoff = outage ? 600 : Math.min(2 ** attempts, 3600);
     await db.query(
       `UPDATE sync_queue SET status=$1, attempts=$2, last_error=$3, run_after=now()+($4||' seconds')::interval, updated_at=now() WHERE id=$5`,
       [dead ? 'dead' : 'queued', attempts, String(e.message).slice(0, 500), backoff, job.id]);
   }
   return true;
+}
+
+// ---- unlinked-file recovery (post-merge audit finding #4) ------------------
+// createForNewFile is fire-and-forget: one transient ClickUp error at
+// file-start used to leave the portal file permanently unlinked, because the
+// scoped-push-never-creates guard (correctly) stops later edits from creating
+// the task. This boot-time one-shot is the deliberate, bounded recovery path:
+// recent, live, still-unlinked files get one explicit createForNewFile retry.
+// Bounds: portal-origin states only (never descoped/dead/manual_review), file
+// older than 10 minutes (gives the inbound reconcile every chance to LINK an
+// existing task first — identity matching runs before any create), younger
+// than 30 days, 50 files per boot. Idempotent: a successful create links the
+// file, dropping it from the next run's SELECT.
+async function recoverUnlinkedFilesOnce() {
+  if (!cfg.clickupOutboundEnabled) return 0;
+  const r = await db.query(
+    `SELECT id FROM applications
+      WHERE clickup_pipeline_task_id IS NULL AND deleted_at IS NULL
+        AND (sync_state IS NULL OR sync_state NOT IN ('descoped','dead','manual_review'))
+        AND created_at < now() - interval '10 minutes'
+        AND created_at > now() - interval '30 days'
+      ORDER BY created_at DESC LIMIT 50`).catch(() => ({ rows: [] }));
+  let recovered = 0;
+  for (const row of r.rows) {
+    try {
+      const out = await orchestrator.createForNewFile(row.id);
+      if (out && out.taskId) recovered++;
+    } catch (e) { console.error('[clickup-sync] unlinked-file recovery failed', row.id, e.message); }
+  }
+  if (r.rows.length) console.log(`[clickup-sync] unlinked-file recovery: ${recovered}/${r.rows.length} linked`);
+  return recovered;
 }
 
 // ---- dirty sweep (RETIRED — do not reintroduce) ---------------------------
@@ -577,6 +619,10 @@ function start() {
   // idempotent. Delayed so the option cache + any boot backfill settle first.
   setTimeout(() => {
     reconcileLinkedProgramsOnce().catch((e) => console.error('[clickup-sync] reconcile-programs', e.message));
+    // AFTER the reconcile pass (which links files to their EXISTING tasks by
+    // identity), give any still-unlinked recent portal file its one bounded
+    // create retry — the recovery path for a failed create-at-file-start.
+    recoverUnlinkedFilesOnce().catch((e) => console.error('[clickup-sync] unlinked-recovery', e.message));
   }, cfg.clickupRunBackfill ? 120000 : 15000);
 
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
@@ -607,4 +653,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, canMaterialize, PIPELINE_FOLDERS };

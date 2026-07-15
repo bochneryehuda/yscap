@@ -167,5 +167,23 @@ eq('valid date passes through', normalizeTypedDate('2026-07-17'), '2026-07-17');
 eq('valid DOB passes through', normalizeTypedDate('1972-02-26', 'dob'), '1972-02-26');
 eq('garbage still rejected', normalizeTypedDate('26'), null);
 
+// ---- 9. object-value equivalence (post-merge audit #2) -----------------------
+// An IDENTICAL borrower address must be recognized as a no-op, or every full
+// repush blocks it via the PII shield and queues a pointless review row.
+{
+  const feq = mapper.fieldValueEquivalent;
+  const ADDR = F.SHARED.borrowerAddress;
+  const cuLoc = (lat, lng, fa) => ({ location: { lat, lng }, formatted_address: fa, place_id: 'x' });
+  const ourLoc = (lat, lng, fa) => ({ location: { lat, lng }, formatted_address: fa });
+  eq('loc: identical coords equivalent', feq(ADDR, cuLoc(40.6980404, -73.956911, '74 Kent Ave'), ourLoc(40.6980404, -73.956911, '74 Kent Ave')), true);
+  eq('loc: near-identical coords equivalent (~10m)', feq(ADDR, cuLoc(40.69805, -73.95692, 'x'), ourLoc(40.69804, -73.95691, 'y')), true);
+  eq('loc: different address NOT equivalent', feq(ADDR, cuLoc(40.69, -73.95, 'a'), ourLoc(41.23, -75.91, 'b')), false);
+  eq('loc: formatted fallback matches', feq(ADDR, { formatted_address: '74 Kent Ave, Brooklyn, NY' }, ourLoc(40.69, -73.95, '74 Kent Ave Brooklyn NY')), true);
+  const USERS = F.SHARED.loanOfficer;
+  eq('users: already assigned = no-op', feq(USERS, [{ id: 81537660 }], { add: [81537660] }), true);
+  eq('users: new assignee NOT equivalent', feq(USERS, [{ id: 111 }], { add: [81537660] }), false);
+  eq('unknown object shape always writes', feq('f1', 'old', { some: 'thing' }), false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
