@@ -32,4 +32,24 @@ function sanitizeLoanType(v) {
   return /^\s*ground/i.test(String(v)) ? null : v;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType };
+// Assignment-purchase normalization (#96) — ONE definition used by EVERY create
+// path (staff new-file, borrower application draft-submit, borrower direct
+// create) so is_assignment / underlying_contract_price / assignment_fee /
+// purchase_price can never drift between surfaces. The ticked flag is the truth:
+// underlying + fee are hard-nulled unless the file is an assignment, and the
+// stored purchase price is the underlying + the (client-derived) fee so
+// leverage/pricing size off seller price + fee and the row is self-consistent
+// regardless of what a stale or hand-rolled client sends. Returns the exact
+// bind values the INSERTs use.
+function assignmentFields(b) {
+  b = b || {};
+  const isAssignment = !!b.isAssignment;
+  const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
+  const assignFee = isAssignment ? (b.assignmentFee || null) : null;
+  const purchasePrice = isAssignment
+    ? (Number(b.underlyingContractPrice || 0) + Number(b.assignmentFee || 0))
+    : (b.purchasePrice || null);
+  return { isAssignment, underlying, assignFee, purchasePrice };
+}
+
+module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields };

@@ -663,12 +663,10 @@ router.post('/applications', async (req, res) => {
     // underlying price too silently stored is_assignment=false when staff
     // ticked assignment without typing the price yet — so the assignment
     // condition never generated. The price is its own field, filled when known.
-    const isAssignment = !!b.isAssignment;
-    const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
-    const assignFee = isAssignment ? (b.assignmentFee || null) : null;
-    const purchasePrice = isAssignment
-      ? (Number(b.underlyingContractPrice || 0) + Number(b.assignmentFee || 0))
-      : (b.purchasePrice || null);
+    // Shared with the borrower create paths (#96) so the assignment invariant
+    // has ONE definition and can never drift between staff and borrower surfaces.
+    const { isAssignment, underlying, assignFee, purchasePrice } =
+      require('../lib/fields').assignmentFields(b);
 
     const ins = await db.query(
       `INSERT INTO applications

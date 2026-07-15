@@ -288,6 +288,11 @@ router.post('/applications', async (req, res) => {
   if (!b.propertyAddress) return res.status(400).json({ error: 'propertyAddress required' });
   if (b.llcId) { const o = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [b.llcId, me(req)]); if (!o.rows[0]) b.llcId = null; }
   if (!b.llcId && b.entityName) { try { b.llcId = await resolveEntityByName(me(req), b.entityName); } catch (_) { /* best-effort */ } }
+  // Assignment invariant (mirrors the staff create, #96): the ticked flag is the
+  // truth; underlying/fee are hard-nulled off an assignment, and the stored
+  // purchase price is the underlying + the (derived) fee so leverage/pricing
+  // size off seller price + fee and the record is internally consistent.
+  const asg = require('../lib/fields').assignmentFields(b);
   const r = await db.query(
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
@@ -296,11 +301,11 @@ router.post('/applications', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), b.purchasePrice || null, b.asIsValue || null,   // #95: never a program
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
      b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-     !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b))]);
+     asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b))]);
   const appId = r.rows[0].id;
   // Invariant chokepoint (root fix 2026-07-14) — inputs derive from the saved row.
   await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'borrower_create' });
@@ -2443,6 +2448,10 @@ router.post('/drafts/:id/submit', async (req, res) => {
   }
   if (officerRow) officerId = officerRow.id;
 
+  // Assignment invariant (mirrors the staff create via the shared helper, #96):
+  // hard-null underlying/fee off an assignment and store purchase = underlying +
+  // (derived) fee, so the submitted file is internally consistent.
+  const asg = require('../lib/fields').assignmentFields(b);
   const ins = await db.query(
     `INSERT INTO applications
        (borrower_id,llc_id,property_address,property_type,units,program,loan_type,
@@ -2456,11 +2465,11 @@ router.post('/drafts/:id/submit', async (req, res) => {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), b.purchasePrice || null, b.asIsValue || null,   // #95: never a program
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), asg.purchasePrice, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
      b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-     !!b.isAssignment, b.underlyingContractPrice || null, b.assignmentFee || null, JSON.stringify(redactPII(b)),
+     asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
      intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice), b.acquisitionDate || null,
      moneyField(b.irAmount)]);
