@@ -13,7 +13,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
-import { MoneyInput } from '../components/FormattedInputs.jsx';
+import { MoneyInput, PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
@@ -163,8 +163,7 @@ function CardCondition({ it, appId, onSaved }) {
           <input className="input" inputMode="numeric" placeholder="CVC" maxLength={4} value={f.cvc}
             onChange={e => setF({ ...f, cvc: e.target.value.replace(/\D/g, '') })} /></div>
         <div className="field"><label>Billing ZIP</label>
-          <input className="input" inputMode="numeric" placeholder="ZIP" maxLength={10} value={f.zip}
-            onChange={e => setF({ ...f, zip: e.target.value })} /></div>
+          <ZipInput value={f.zip} onChange={v => setF({ ...f, zip: v })} /></div>
       </div>
       <label className="row" style={{ gap: 8, alignItems: 'flex-start', margin: '4px 0 12px', cursor: 'pointer' }}>
         <input type="checkbox" checked={!!f.saveForReuse} onChange={e => setF({ ...f, saveForReuse: e.target.checked })} style={{ marginTop: 3 }} />
@@ -341,7 +340,7 @@ function ContactCondition({ it, appId, onSaved }) {
         <div className="field"><label>Email</label>
           <input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
         <div className="field"><label>Phone</label>
-          <input className="input" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></div>
+          <PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></div>
       </div>
       {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
       <button className="btn primary" onClick={submit} disabled={busy}>{busy ? 'Saving…' : 'Save & submit'}</button>

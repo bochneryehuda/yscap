@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
-import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
+import { MoneyInput, PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
 import Entities from '../components/Entities.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
 import TwoFactorPanel from '../components/TwoFactorPanel.jsx';
@@ -219,7 +219,7 @@ export default function Profile() {
           <div className="field"><label>State</label>
             <input className="input" autoComplete="off" maxLength={2} value={phys.state} onChange={e => setPhysF('state', e.target.value.toUpperCase())} placeholder="NY" /></div>
           <div className="field"><label>ZIP</label>
-            <input className="input" autoComplete="off" value={phys.zip} onChange={e => setPhysF('zip', e.target.value)} /></div>
+            <ZipInput value={phys.zip} onChange={v => setPhysF('zip', v)} /></div>
         </div>
         <div className="grid cols-3" style={{ marginTop: 4 }}>
           <div className="field"><label>Housing status</label>
@@ -258,7 +258,7 @@ export default function Profile() {
             <div className="field"><label>State</label>
               <input className="input" autoComplete="off" maxLength={2} value={mail.state} onChange={e => setMailF('state', e.target.value.toUpperCase())} placeholder="NY" /></div>
             <div className="field"><label>ZIP</label>
-              <input className="input" autoComplete="off" value={mail.zip} onChange={e => setMailF('zip', e.target.value)} /></div>
+              <ZipInput value={mail.zip} onChange={v => setMailF('zip', v)} /></div>
           </div>
         </div>
       )}

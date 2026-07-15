@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { PhoneInput } from '../components/FormattedInputs.jsx';
 import { fmtDay } from '../lib/dates.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
@@ -319,7 +320,7 @@ function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
           <label className="field"><span>Company / entity</span><input className="input" value={f.company} onChange={e => set('company', e.target.value)} placeholder="Acme Holdings LLC" /></label>
           <div className="grid cols-2">
             <label className="field"><span>Email</span><input className="input" type="email" value={f.email} onChange={e => set('email', e.target.value)} /></label>
-            <label className="field"><span>Phone</span><input className="input" value={f.phone} onChange={e => set('phone', e.target.value)} /></label>
+            <label className="field"><span>Phone</span><PhoneInput value={f.phone} onChange={v => set('phone', v)} /></label>
           </div>
           <div className="grid cols-2">
             <label className="field"><span>Source</span>
@@ -394,7 +395,7 @@ function InviteToPortalModal({ officers, seesAll, onClose, onDone, onErr }) {
             <input className="input" value={f.lastName} onChange={set('lastName')} /></div>
         </div>
         <div className="field"><label>Phone <span className="muted small">(optional)</span></label>
-          <input className="input" value={f.phone} onChange={set('phone')} /></div>
+          <PhoneInput value={f.phone} onChange={v => setF(p => ({ ...p, phone: v }))} /></div>
         {seesAll && (
           <div className="field"><label>Assign to officer</label>
             <select className="input" value={f.officerId} onChange={set('officerId')}>

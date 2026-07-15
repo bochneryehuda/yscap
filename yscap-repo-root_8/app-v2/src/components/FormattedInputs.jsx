@@ -53,3 +53,18 @@ export function PhoneInput({ value, onChange, placeholder, ...rest }) {
       onChange={(e) => onChange(formatPhone(e.target.value))} {...rest} />
   );
 }
+
+/* ZIP input: US postal codes are digits only — 5 (12345) or ZIP+4 (12345-6789).
+   Constrain to digits, cap at 9, and hyphenate the +4 as it's typed so a zip box
+   can never hold letters or an over-long value (#92 field-validation sweep). */
+export function formatZip(v) {
+  const d = String(v ?? '').replace(/\D/g, '').slice(0, 9);
+  return d.length <= 5 ? d : `${d.slice(0, 5)}-${d.slice(5)}`;
+}
+export function ZipInput({ value, onChange, placeholder, ...rest }) {
+  return (
+    <input className="input" inputMode="numeric" autoComplete="off" value={formatZip(value)}
+      placeholder={placeholder || '12345'}
+      onChange={(e) => onChange(formatZip(e.target.value))} {...rest} />
+  );
+}

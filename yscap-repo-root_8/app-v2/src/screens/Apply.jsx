@@ -7,7 +7,7 @@ import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import { US_STATES } from '../components/LlcManager.jsx';
-import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
+import { MoneyInput, PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
 import TermSheetStudio, {
   buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64,
 } from '../components/TermSheetStudio.jsx';
@@ -513,7 +513,7 @@ export default function Apply() {
                   <option value="">Select…</option>{US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
                 </select></div>
               <div className="field"><label>ZIP</label>
-                <input className="input" autoComplete="off" value={a.zip || ''} onChange={e => setAddr('zip', e.target.value)} /></div>
+                <ZipInput value={a.zip || ''} onChange={v => setAddr('zip', v)} /></div>
             </div>
             <div className="grid cols-2">
               <div className="field"><label>Property type *</label>
@@ -705,7 +705,7 @@ export default function Apply() {
                   <div className="field"><label>State</label>
                     <input className="input" maxLength={2} value={(p.currentAddress && p.currentAddress.state) || ''} onChange={e => setPersonalAddr('state', e.target.value.toUpperCase())} /></div>
                   <div className="field"><label>ZIP</label>
-                    <input className="input" value={(p.currentAddress && p.currentAddress.zip) || ''} onChange={e => setPersonalAddr('zip', e.target.value)} /></div>
+                    <ZipInput value={(p.currentAddress && p.currentAddress.zip) || ''} onChange={v => setPersonalAddr('zip', v)} /></div>
                   <div className="field"><label>Housing payment</label>
                     <MoneyInput value={p.housingPayment || ''} onChange={v => setPersonal('housingPayment', v)} /></div>
                 </div>

@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
-import { MoneyInput } from '../components/FormattedInputs.jsx';
+import { MoneyInput, PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -107,7 +107,7 @@ function CoBorrowerPicker({ value, onChange }) {
         <div className="field"><label>Co-borrower email</label>
           <input className="input" type="email" value={co.email} onChange={e => setField('email', e.target.value)} placeholder="coborrower@email.com" /></div>
         <div className="field"><label>Co-borrower cell phone</label>
-          <input className="input" value={co.phone} onChange={e => setField('phone', e.target.value)} placeholder="Optional" /></div>
+          <PhoneInput value={co.phone} onChange={v => setField('phone', v)} placeholder="Optional" /></div>
       </div>
       {co.borrowerId && (
         <p className="muted small" style={{ marginTop: 6 }}>
@@ -338,7 +338,7 @@ export default function StaffNewFile() {
               <input className="input" type="email" value={f.email} onChange={e => setBorrowerField('email', e.target.value)} required
                 placeholder="borrower@email.com" /></div>
             <div className="field"><label>Cell phone</label>
-              <input className="input" value={f.phone} onChange={e => setBorrowerField('phone', e.target.value)} placeholder="Optional" /></div>
+              <PhoneInput value={f.phone} onChange={v => setBorrowerField('phone', v)} placeholder="Optional" /></div>
           </div>
           {borrowerId && (
             <p className="muted small" style={{ marginTop: 6 }}>
@@ -389,7 +389,7 @@ export default function StaffNewFile() {
             <div className="field"><label>State</label>
               <input className="input" maxLength={2} value={addr.state} onChange={e => setA('state', e.target.value.toUpperCase())} placeholder="NY" /></div>
             <div className="field"><label>ZIP</label>
-              <input className="input" value={addr.zip} onChange={e => setA('zip', e.target.value)} /></div>
+              <ZipInput value={addr.zip} onChange={v => setA('zip', v)} /></div>
           </div>
           <div className="grid cols-2">
             <div className="field"><label>Property type</label>

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
+import { PhoneInput } from '../components/FormattedInputs.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, SOURCES, PROGRAMS, TOOL_LABEL, ACTIVITY_TYPES,
@@ -159,10 +160,10 @@ export default function StaffLeadDetail() {
               <label className="field"><span>Company / entity</span><input className="input" value={form.company} onChange={e => setField('company', e.target.value)} placeholder="Acme Holdings LLC" /></label>
               <div className="grid cols-2">
                 <label className="field"><span>Email</span><input className="input" type="email" value={form.email} onChange={e => setField('email', e.target.value)} /></label>
-                <label className="field"><span>Phone</span><input className="input" value={form.phone} onChange={e => setField('phone', e.target.value)} /></label>
+                <label className="field"><span>Phone</span><PhoneInput value={form.phone} onChange={v => setField('phone', v)} /></label>
               </div>
               <div className="grid cols-2">
-                <label className="field"><span>Alt phone</span><input className="input" value={form.phoneAlt} onChange={e => setField('phoneAlt', e.target.value)} /></label>
+                <label className="field"><span>Alt phone</span><PhoneInput value={form.phoneAlt} onChange={v => setField('phoneAlt', v)} /></label>
                 <label className="field"><span>Source</span>
                   <select className="input" value={form.leadSource} onChange={e => setField('leadSource', e.target.value)}>
                     <option value="">—</option>
