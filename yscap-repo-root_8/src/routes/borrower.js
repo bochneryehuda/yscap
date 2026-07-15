@@ -2415,12 +2415,14 @@ async function syncProfileFromApplication(borrowerId, b) {
 async function inviteCoBorrower(appId, primaryName, co) {
   if (!co || !co.email) return null;
   // #97: capture the co-borrower's FICO from the application (sanitized to a
-  // valid 3-digit score). COALESCE on conflict so a blank never wipes an
-  // existing co-borrower's score.
+  // valid 3-digit score). Fill only when the co-borrower has NO score yet —
+  // COALESCE(existing, new) keeps their OWN canonical FICO (they're a full
+  // borrower shared by email), so a primary borrower's guess never overwrites a
+  // co-borrower's real score, and a blank never wipes one either.
   const cb = await db.query(
     `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
      VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (email) DO UPDATE SET updated_at=now(), fico=COALESCE(EXCLUDED.fico, borrowers.fico) RETURNING id`,
+     ON CONFLICT (email) DO UPDATE SET updated_at=now(), fico=COALESCE(borrowers.fico, EXCLUDED.fico) RETURNING id`,
     [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null,
      require('../lib/fields').sanitizeFico(co.fico)]);
   const coId = cb.rows[0].id;

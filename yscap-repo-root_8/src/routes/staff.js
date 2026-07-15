@@ -649,12 +649,13 @@ router.post('/applications', async (req, res) => {
     // than falling to Lead Capture. An explicit pick and the creating-LO default
     // both still win — this only fills a remaining blank.
     if (!officerId && borrowerId) {
-      const own = await db.query(`SELECT primary_officer_id FROM borrowers WHERE id=$1`, [borrowerId]);
-      if (own.rows[0] && own.rows[0].primary_officer_id) {
-        officerId = own.rows[0].primary_officer_id;
-        const nm = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [officerId]);
-        officerName = (nm.rows[0] && nm.rows[0].full_name) || officerName;
-      }
+      // Only inherit an ACTIVE owning officer (mirrors the borrower path) — a
+      // deactivated officer must never silently receive new files.
+      const own = await db.query(
+        `SELECT s.id, s.full_name FROM borrowers b
+           JOIN staff_users s ON s.id=b.primary_officer_id AND s.is_active=true
+          WHERE b.id=$1`, [borrowerId]);
+      if (own.rows[0]) { officerId = own.rows[0].id; officerName = own.rows[0].full_name; }
     }
     let processorId = null;
     if (b.processorId) {
