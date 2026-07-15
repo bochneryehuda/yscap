@@ -116,4 +116,29 @@ async function notifyLoanOfficer(reviewId) {
   await db.query(`UPDATE sync_review_queue SET notified_at=now() WHERE id=$1`, [reviewId]).catch(() => {});
 }
 
-module.exports = { queueReview, notifyLoanOfficer, FIELD_LABELS };
+/**
+ * Auto-close OPEN review rows whose underlying disagreement no longer exists
+ * (owner-directed 2026-07-15: "once it's fixed in ClickUp, the review should
+ * go away on the next sync, even if you don't click anything"). Called by the
+ * sync whenever it observes the two systems AGREEING (or auto-adopts a
+ * canonical value) for a field that has open rows. Closed as
+ * status='resolved' + auto_resolved=true with an explanatory note — kept as
+ * history, never deleted. A NEW conflict later simply queues a new row.
+ */
+async function closeStaleReviews({ borrowerId, taskId, fieldKey, note }) {
+  if (!fieldKey || (!borrowerId && !taskId)) return 0;
+  try {
+    const r = await db.query(
+      `UPDATE sync_review_queue
+          SET status='resolved', auto_resolved=true, resolved_at=now(),
+              resolution_note=$1
+        WHERE status='open' AND field_key=$2
+          AND (($3::uuid IS NOT NULL AND borrower_id=$3) OR ($4::text IS NOT NULL AND task_id=$4))
+        RETURNING id`,
+      [note || 'auto-closed — the two systems now agree (fixed at the source)',
+       fieldKey, borrowerId || null, taskId || null]);
+    return r.rowCount || 0;
+  } catch (e) { console.warn('[sync-review] stale-close skipped:', e.message); return 0; }
+}
+
+module.exports = { queueReview, notifyLoanOfficer, closeStaleReviews, FIELD_LABELS };
