@@ -16,6 +16,7 @@ const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
 const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
+const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
@@ -77,6 +78,19 @@ function stripToolAttachments(payload) {
 }
 async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, attachments }) {
   if (!attachments || !attachments.length) return [];
+  // Validate/decode FIRST (strict decode — a data:-URL prefix or non-base64
+  // junk must never garble stored bytes), and only supersede the previous
+  // exports when at least one valid replacement exists: a submission whose
+  // attachments all fail must not strip the condition of its current documents.
+  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  const valid = [];
+  for (const a of attachments) {
+    let buf;
+    try { ({ buf } = decodeUploadBase64(a.dataBase64)); } catch (_) { continue; }
+    if (!buf.length || buf.length > maxBytes) continue;
+    valid.push({ a, buf });
+  }
+  if (!valid.length) return [];
   await db.query(
     `UPDATE documents
         SET is_current=false,
@@ -88,10 +102,7 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
     [itemId, borrowerId]);
 
   const out = [];
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  for (const a of attachments) {
-    const buf = Buffer.from(a.dataBase64, 'base64');
-    if (!buf.length || buf.length > maxBytes) continue;
+  for (const { a, buf } of valid) {
     const { ref, provider } = await storage.save(buf, { filename: a.filename });
     const r = await db.query(
       `INSERT INTO documents
@@ -232,8 +243,9 @@ router.put('/profile', async (req, res) => {
 router.post('/profile/photo-id', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   let appId = null, appItemId = null;
@@ -1790,8 +1802,9 @@ router.post('/track-records/:id/documents', async (req, res) => {
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
@@ -1915,8 +1928,9 @@ router.post('/documents', async (req, res) => {
       if (v.rows[0] && v.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before replacing documents' });
     }
   }
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   // Optional kind tag. 'term_sheet' marks the registered-product term sheet
@@ -2067,8 +2081,10 @@ router.post('/documents', async (req, res) => {
           // bytes only when small enough for the mail providers (Graph caps inline
           // attachments ~3 MB) — larger files are still one tap away in the portal.
           files: [b.filename],
+          // Re-encode the DECODED bytes (never the raw client payload): the
+          // stored document and the emailed copy must be the same bytes.
           attachments: buf.length <= 3 * 1024 * 1024
-            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: b.dataBase64 }]
+            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: buf.toString('base64') }]
             : undefined,
         };
         await notify.notifyAppStaff(b.applicationId, opts);   // #113: whole team (primary + assistants)

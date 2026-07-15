@@ -13,6 +13,7 @@ const notify = require('../lib/notify');
 const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
 const { serveDocument } = require('../lib/serve-document');
+const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const cfg = require('../config');
 const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
@@ -1577,17 +1578,29 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
-  // A resubmission outdates the previous exports: the old PDF/Excel are
-  // superseded and the fresh ones become the current versions on the condition.
-  await db.query(
-    `UPDATE documents SET is_current=false,
-        review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-      WHERE checklist_item_id=$1 AND source_type='system' AND is_current=true`, [req.params.itemId]);
-  const out = [];
+  // Validate/decode the replacement exports FIRST (strict decode — a data:-URL
+  // prefix or non-base64 junk must never garble stored bytes), and only
+  // supersede the previous exports when at least one valid replacement exists:
+  // a submission whose attachments all fail must not strip the condition of
+  // its current documents.
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  const valid = [];
   for (const a of attachments) {
-    const buf = Buffer.from(a.dataBase64, 'base64');
+    let buf;
+    try { ({ buf } = decodeUploadBase64(a.dataBase64)); } catch (_) { continue; }
     if (!buf.length || buf.length > maxBytes) continue;
+    valid.push({ a, buf });
+  }
+  if (valid.length) {
+    // A resubmission outdates the previous exports: the old PDF/Excel are
+    // superseded and the fresh ones become the current versions on the condition.
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE checklist_item_id=$1 AND source_type='system' AND is_current=true`, [req.params.itemId]);
+  }
+  const out = [];
+  for (const { a, buf } of valid) {
     const { ref, provider } = await storage.save(buf, { filename: a.filename });
     const r = await db.query(
       `INSERT INTO documents
@@ -3111,8 +3124,9 @@ router.post('/track-records/:id/documents', async (req, res) => {
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
@@ -3272,8 +3286,9 @@ router.post('/llcs/:id/documents', async (req, res) => {
       const ci = await db.query(`SELECT id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, req.params.id]);
       if (!ci.rows[0]) return res.status(404).json({ error: 'checklist item not found on this entity' });
     }
-    const buf = Buffer.from(b.dataBase64, 'base64');
-    if (!buf.length) return res.status(400).json({ error: 'empty file' });
+    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     const maxBytes = cfg.maxUploadMb * 1024 * 1024;
     if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
     const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
@@ -4586,8 +4601,9 @@ router.post('/leads/:id/documents', async (req, res) => {
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   try {
     if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
-    const buf = Buffer.from(b.dataBase64, 'base64');
-    if (!buf.length) return res.status(400).json({ error: 'empty file' });
+    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     const maxBytes = cfg.maxUploadMb * 1024 * 1024;
     if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
     const { ref, provider } = await storage.save(buf, { filename: b.filename });
@@ -4764,8 +4780,9 @@ router.post('/applications/:id/documents', async (req, res) => {
   // borrower: store the document staff-only and skip the borrower notification.
   const staffOnly = itemAudience === 'staff';
   const docVisibility = staffOnly ? 'staff_only' : 'borrower';
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;

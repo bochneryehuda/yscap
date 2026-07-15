@@ -169,6 +169,7 @@ app.use('/api/staff', require('./routes/staff'));
 // ClickUp Control Center (health, dry-run/backfill, activity, per-file re-sync).
 // The router applies its own requireAuth + platform_setup guards.
 app.use('/api/admin/clickup', require('./routes/admin-clickup'));
+app.use('/api/admin/sharepoint', require('./routes/admin-sharepoint'));
 app.use('/api/admin', require('./routes/admin'));
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
 // routers: EventSource can't send an Authorization header, so this route does
