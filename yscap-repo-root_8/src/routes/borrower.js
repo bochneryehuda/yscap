@@ -178,6 +178,10 @@ router.post('/profile/photo-id', async (req, res) => {
     appItemId = it.rows[0] ? it.rows[0].id : null;
   }
   try {
+    const dupPhoto = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+      filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
+      applicationId: appId, checklistItemId: appItemId });
+    if (dupPhoto) return res.status(201).json({ ok: true, documentId: dupPhoto, deduped: true });
     const { ref, provider } = await storage.save(buf, { filename: b.filename });
     const d = await db.query(
       `INSERT INTO documents (borrower_id,application_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
@@ -1684,6 +1688,10 @@ router.post('/track-records/:id/documents', async (req, res) => {
         AND status IN ('outstanding','requested','issue')
       ORDER BY created_at LIMIT 1`, [req.params.id]);
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
+  const dupTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
+    trackRecordId: req.params.id, checklistItemId: reqItemId });
+  if (dupTr) return res.status(201).json({ ok: true, documentId: dupTr, deduped: true });
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$1,'track_record_doc') RETURNING id`,
@@ -1803,6 +1811,15 @@ router.post('/documents', async (req, res) => {
   // Optional slot: a condition holds several coexisting documents, each in its
   // own named slot. Re-uploading a slot supersedes only that slot's versions.
   const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  // Idempotency (#87): a double-submitted upload (React double-invoke, a drop
+  // firing twice, a client retry) must not create a second document row + a
+  // second "New document uploaded" email. Collapse a byte-identical re-upload to
+  // the same context within the window onto the already-saved document.
+  const dupId = await require('../lib/doc-dedup').recentDuplicateDocId({
+    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
+    applicationId: b.applicationId || null, checklistItemId: b.checklistItemId || null,
+    llcId: b.llcId || null, trackRecordId, slotLabel: slot });
+  if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
     `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)

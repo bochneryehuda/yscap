@@ -2833,6 +2833,10 @@ router.post('/track-records/:id/documents', async (req, res) => {
         AND status IN ('outstanding','requested','issue')
       ORDER BY created_at LIMIT 1`, [req.params.id]);
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
+  const dupStaffTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    trackRecordId: req.params.id, checklistItemId: reqItemId });
+  if (dupStaffTr) return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'track_record_doc') RETURNING id`,
@@ -2948,6 +2952,10 @@ router.post('/llcs/:id/documents', async (req, res) => {
     const maxBytes = cfg.maxUploadMb * 1024 * 1024;
     if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
     const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    const dupLlc = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+      filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+      llcId: req.params.id, checklistItemId: b.checklistItemId || null, slotLabel: slot });
+    if (dupLlc) return res.status(201).json({ ok: true, documentId: dupLlc, deduped: true });
     const { ref, provider } = await storage.save(buf, { filename: b.filename });
     const r = await db.query(
       `INSERT INTO documents (checklist_item_id,llc_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,slot_label,visibility)
@@ -4364,6 +4372,11 @@ router.post('/applications/:id/documents', async (req, res) => {
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
   const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
+    llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot });
+  if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
     `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,
