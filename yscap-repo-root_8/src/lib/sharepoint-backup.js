@@ -377,6 +377,11 @@ async function mirrorRowInner(row, scopeKey) {
 
   const target = await map.resolveSyncFolder({
     scopeKey,
+    // For the uncertainty review row (owner-directed 2026-07-15 night): a
+    // fuzzy-match the resolver wasn't SURE about surfaces in the sync review
+    // queue, scoped to the file/borrower so the right people see it.
+    applicationId: row.app_id || null,
+    borrowerId: row.borrower_id || null,
     officerName: row.officer_name || null,
     borrowerFirst: row.borrower_first || '',
     borrowerLast: row.borrower_last || '',

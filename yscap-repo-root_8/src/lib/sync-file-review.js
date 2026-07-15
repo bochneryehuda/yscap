@@ -37,6 +37,10 @@ const REASON_ACTIONS = {
   push_dead_lettered: ['retry_push'],
   // A portal file older than the auto-recovery window with no ClickUp task.
   file_unlinked_no_task: ['create_task'],
+  // The SharePoint mirror filed somewhere it wasn't SURE about (ambiguous
+  // fuzzy match / officer-less Unfiled). Fix the folders IN SharePoint (the
+  // mirror never moves or renames anything), then re-match.
+  sharepoint_match_uncertain: ['sp_rematch'],
 };
 
 // Rows with no ClickUp task (an unlinked FILE) still need a dedup identity in
@@ -171,6 +175,18 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
     const jobIds = u.rows.map((r) => r.id);
     await audit('sync_review_retry_push', row.application_id, actorId, { jobIds, reviewId: row.id });
     return { note: `${jobIds.length} dead push job(s) re-queued (${jobIds.join(', ')})`, applicationId: row.application_id };
+  }
+
+  if (action === 'sp_rematch') {
+    // Clear the scope's folder cache so the NEXT document sync re-runs the
+    // fuzzy match — used after the human merges/renames the folders in
+    // SharePoint (the mirror itself never moves or renames anything).
+    let scopeKey = null;
+    try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; scopeKey = raw && raw.scopeKey; } catch (_) {}
+    if (!scopeKey) throw httpError(409, 'this row does not reference a SharePoint scope');
+    await require('./sharepoint-map').invalidateScope(scopeKey);
+    await audit('sync_review_sp_rematch', row.application_id, actorId, { scopeKey, reviewId: row.id });
+    return { note: 'folder cache cleared — the next document sync re-matches the folders (fix them in SharePoint first; the mirror never moves anything itself)', applicationId: row.application_id };
   }
 
   if (action === 'create_task') {

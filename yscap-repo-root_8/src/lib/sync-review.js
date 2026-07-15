@@ -29,6 +29,7 @@ const FIELD_LABELS = {
   // FILE-LEVEL rows (owner-directed 2026-07-15 night: "not only a field that is
   // wrong — entire files; anything stuck goes to manual review, with options"):
   file_link: 'File not syncing', ys_loan_number: 'YS loan number', push_job: 'ClickUp push failed',
+  co_first_name: 'Co-borrower name', co_cell_phone: 'Co-borrower cell', sharepoint_folder: 'SharePoint filing',
 };
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
@@ -116,7 +117,7 @@ async function notifyLoanOfficer(reviewId) {
   // FILE-LEVEL rows aren't a value disagreement — the email must say what the
   // situation is and that the review screen offers ACTIONS, not sides
   // (pre-merge audit #257 should-fix: the two-sided copy misdirected LOs).
-  const fileLevel = row.field_key === 'file_link' || row.field_key === 'push_job' || row.field_key === 'ys_loan_number';
+  const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'co_first_name', 'co_cell_phone'].includes(row.field_key);
   const body = fileLevel
     ? `A file${who} needs a decision: ${label.toLowerCase()}` +
       (row.clickup_value ? ` (${row.clickup_value})` : '') + '. ' +
