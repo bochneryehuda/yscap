@@ -4941,7 +4941,10 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
   const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
   if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
-  const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+  // Don't add a contact (or, now, complete its condition) on a soft-deleted file
+  // (audit #236 hardening — an admin's canTouchApp short-circuits seesAll, so
+  // guard the lookup itself).
+  const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
   const sc = await db.query(
     `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,phone,address,notes,added_by_staff_id,last_used_at)
