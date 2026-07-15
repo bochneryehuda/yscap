@@ -26,6 +26,11 @@ const TOOL_LABEL = {
 };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Newsletter/updates subscriptions notify ONLY this single inbox (owner-directed
+// 2026-07-15 — the whole admin desk was getting them and it made the team nervous).
+// A plain routing address, not a secret; env-overridable without a code change.
+const SUBSCRIBE_NOTIFY_TO = process.env.SUBSCRIBE_NOTIFY_TO || 'pilot@yscapgroup.com';
+
 // Lightweight in-memory per-IP rate limit — this endpoint is public and sends
 // email, so cap bursts. (Per-process; fine for a single-instance service.)
 const HITS = new Map();
@@ -101,8 +106,17 @@ router.post('/', async (req, res) => {
     };
 
     // Notify the routed officer, else the admin desk (in-app + branded email).
+    // EXCEPTION — a newsletter/updates SUBSCRIPTION is low-signal and was pinging
+    // the whole admin desk (owner-directed 2026-07-15: "making everybody nervous").
+    // It now goes to a SINGLE inbox (pilot@yscapgroup.com) as email only — no
+    // fan-out, no in-app rows for every admin. The lead is still stored and shows
+    // on the Leads desk for anyone who looks.
     try {
       if (officerId) { await notify.notifyStaff(officerId, { ...notifyOpts, emailTo: officerRow.email }); }
+      else if (tool === 'subscribe') {
+        const built = notify.buildEmail(notifyOpts, 'staff');
+        await require('../lib/email').sendMail({ to: [SUBSCRIBE_NOTIFY_TO], subject: built.subject, text: built.text, html: built.html }).catch(() => {});
+      }
       else { await notify.notifyAdmins(notifyOpts); }
       await db.query(`UPDATE leads SET emailed_officer=true WHERE id=$1`, [leadId]);
     } catch (_) { /* never fail the submission on a notify hiccup */ }
