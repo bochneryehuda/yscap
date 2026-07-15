@@ -742,13 +742,20 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
           <div className="row" style={{ marginBottom: 8 }}>
             <strong>Members ({members.length})</strong>
             <div className="spacer" />
-            {A.addMember && (conv.kind === 'custom'
-              ? <button className="btn ghost small" onClick={async () => {
-                  setAddingMember(!addingMember);
-                  if (!team) { try { setTeam(await api.staffTeam()); } catch { /* ignore */ } }
-                }}>+ Add</button>
-              : <span className="muted small">roster follows the file assignment</span>)}
+            {/* #75 — add/remove members on EVERY chat (default Loan Team /
+                Officer↔Processor / borrower chats too), not just custom groups. */}
+            {A.addMember && (
+              <button className="btn ghost small" onClick={async () => {
+                setAddingMember(!addingMember);
+                if (!team) { try { setTeam(await api.staffTeam()); } catch { /* ignore */ } }
+              }}>+ Add</button>
+            )}
           </div>
+          {A.addMember && conv.kind !== 'custom' && (
+            <p className="muted small" style={{ marginTop: -2, marginBottom: 8 }}>
+              The assigned team joins automatically — add or remove anyone here.
+            </p>
+          )}
           {addingMember && team && (
             <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
               {team.filter(s => !members.some(m => m.member_kind === 'staff' && m.member_id === s.id)).map(s => (
@@ -768,7 +775,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                 </div>
                 <div className="muted small">{m.online ? '● online now' : m.last_seen_at ? `last seen ${ago(m.last_seen_at)}` : 'not seen yet'}</div>
               </div>
-              {A.removeMember && conv.kind === 'custom' && m.member_kind === 'staff' && m.member_id !== me.id && (
+              {A.removeMember && m.member_kind === 'staff' && m.member_id !== me.id && (
                 <button className="btn link small" onClick={async () => { try { await A.removeMember(m.member_id); } catch (e) { setErr(e.message); } }}>Remove</button>
               )}
             </div>
