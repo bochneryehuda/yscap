@@ -80,7 +80,7 @@ garbage year can never reach ClickUp again even if a client bypasses the UI.
 
 ## Guardrails now in place (bidirectional sync preserved)
 
-1. **Write journal** (`clickup_write_log`, db/107): every outbound field write —
+1. **Write journal** (`clickup_write_log`, db/107; review queue db/108): every outbound field write —
    create, scoped push, full repush, restore — with the value ClickUp held
    immediately before. SSN/card masked. The missing "API history" now exists.
 2. **No-op suppression**: before an update push the task is read once and fields

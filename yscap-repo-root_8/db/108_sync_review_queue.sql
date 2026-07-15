@@ -1,5 +1,5 @@
 -- ============================================================================
--- 107_sync_review_queue.sql — human review gate for suspicious sync changes
+-- 108_sync_review_queue.sql — human review gate for suspicious sync changes
 --
 -- Owner-directed (2026-07-15 date incident): a cross-system change that looks
 -- like corruption must COME UP FOR REVIEW instead of being silently applied or

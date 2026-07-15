@@ -1,5 +1,5 @@
 -- ============================================================================
--- 106_clickup_write_journal.sql — append-only journal of every ClickUp write
+-- 107_clickup_write_journal.sql — append-only journal of every ClickUp write
 --
 -- 2026-07-15 DOB incident: the sync pushed day-shifted dates into ClickUp and
 -- the only outbound trail was an audit_log row with a FIELD COUNT — no field
