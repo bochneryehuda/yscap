@@ -93,7 +93,7 @@ router.post('/', async (req, res) => {
     const notifyOpts = {
       type: 'new_lead',
       title: `New ${label.toLowerCase()} from ${name || email || 'a visitor'}`,
-      body: b.message || `A visitor submitted the ${label.toLowerCase()} on the site.`,
+      body: (b.message ? String(b.message).slice(0, 4000) : null) || `A visitor submitted the ${label.toLowerCase()} on the site.`,
       meta, link: '/internal/leads', ctaLabel: 'Open leads',
       attachments: atts, files: atts.map(a => a.filename),
     };
