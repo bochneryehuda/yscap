@@ -54,9 +54,22 @@ export default function ToolModal({ url, title, onClose }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') saveAndClose(); };
     document.addEventListener('keydown', onKey);
-    document.body.style.overflow = 'hidden';
-    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
+    return () => document.removeEventListener('keydown', onKey);
   }, [saveAndClose]);
+
+  // Scroll-lock the page behind the sheet, but REMEMBER the list position we
+  // opened from and RESTORE it on exit (#108) — otherwise closing the tool
+  // re-renders the file and the condition list jumps back to the top, losing the
+  // borrower/officer's place. Mount-only so it captures the position once (before
+  // overflow:hidden) and restores after the close re-render (rAF = next paint).
+  useEffect(() => {
+    const y = window.scrollY || window.pageYOffset || 0;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = '';
+      requestAnimationFrame(() => window.scrollTo(0, y));
+    };
+  }, []);
 
   // Theme + reveal on DOM-ready rather than the full `load` event — a stalled
   // third-party resource (fonts CDN) must not leave the tool hidden/unthemed.

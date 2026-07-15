@@ -288,12 +288,19 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   }, [appId, mode]);
 
   // Sheet mechanics: lock the page scroll behind it; Escape saves & closes.
+  // Remember the position we opened from and restore it on exit (#108) so the
+  // file/condition list doesn't jump to the top when the studio closes.
   useEffect(() => {
     if (!openStudio) return undefined;
     const onKey = (e) => { if (e.key === 'Escape') closeStudio(); };
     document.addEventListener('keydown', onKey);
+    const y = window.scrollY || window.pageYOffset || 0;
     document.body.style.overflow = 'hidden';
-    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = ''; };
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = '';
+      requestAnimationFrame(() => window.scrollTo(0, y));
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openStudio]);
 
