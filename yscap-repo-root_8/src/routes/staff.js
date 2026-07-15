@@ -5360,7 +5360,7 @@ async function loadReviewFor(req, res) {
     // borrower any of whose active files is theirs.
     const ok = row.application_id
       ? await db.query(
-          `SELECT 1 FROM applications a WHERE a.id=$1 AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
+          `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
           [row.application_id, req.actor.id])
       : (row.borrower_id
           ? await db.query(
@@ -5435,11 +5435,18 @@ router.post('/sync-reviews/:id/resolve', async (req, res) => {
     await audit(req, 'sync_review_resolve', row.application_id ? 'application' : 'borrower',
       row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, winner, ...out });
     res.json({ ok: true, ...out });
-  } catch (e) {
-    if (e && e.status) return res.status(e.status).json({ error: e.message });
-    res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
-  }
+  } catch (e) { return sendReviewActionError(res, e); }
 });
+
+// Only OUR OWN validation errors (`expose`) relay their status verbatim. A
+// ClickUp client error also carries `.status` — ClickUp's HTTP status — and
+// relaying it is harmful: an upstream 401 (rotated ClickUp token) would read
+// as session-expiry and the SPA logs the staff user out. Upstream → 502.
+function sendReviewActionError(res, e) {
+  if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
+  if (e && e.status) return res.status(502).json({ error: `ClickUp did not accept the request (upstream ${e.status}) — nothing was changed; try again shortly` });
+  return res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+}
 
 // FILE-LEVEL resolution (owner-directed 2026-07-15 night): a stuck FILE's
 // review row is resolved by choosing an ACTION — create the file from the
@@ -5466,10 +5473,7 @@ router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
     await audit(req, 'sync_review_resolve_file', row.application_id || out.applicationId ? 'application' : 'borrower',
       row.application_id || out.applicationId || row.borrower_id, { reviewId: row.id, reason: row.reason, action, note: out.note });
     res.json({ ok: true, ...out });
-  } catch (e) {
-    if (e && e.status) return res.status(e.status).json({ error: e.message });
-    res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
-  }
+  } catch (e) { return sendReviewActionError(res, e); }
 });
 
 router.post('/sync-reviews/:id/reject', async (req, res) => {

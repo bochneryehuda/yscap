@@ -51,7 +51,13 @@ function isActionAllowed(reason, action) {
   return Array.isArray(list) && list.includes(action);
 }
 
-function httpError(status, message) { const e = new Error(message); e.status = status; return e; }
+// `expose` marks OUR OWN validation errors — the route relays only these to
+// the client verbatim. Errors from the ClickUp client also carry a `.status`
+// (ClickUp's HTTP status), and relaying those is actively harmful: a ClickUp
+// 401 (rotated token) would masquerade as an endpoint 401 and the SPA treats
+// any 401 as session-expiry, logging the staff user out (post-merge audit
+// should-fix #1). The route maps non-expose statuses to 502.
+function httpError(status, message) { const e = new Error(message); e.status = status; e.expose = true; return e; }
 
 async function audit(action, entityId, actorId, detail) {
   try {
@@ -149,17 +155,22 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
   }
 
   if (action === 'retry_push') {
-    // Re-arm the dead-lettered queue job — the push re-runs through every
-    // normal guard (journal, no-op suppression, circuit breaker).
-    let jobId = null;
-    try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; jobId = raw && raw.jobId; } catch (_) {}
-    if (!jobId) throw httpError(409, 'this row does not reference a queue job');
+    // Re-arm EVERY dead-lettered job for this file, not only the one the row
+    // recorded (post-merge audit should-fix #2: while a push_job row is open,
+    // a SECOND edit dead-lettering for the same file dedupes into the same
+    // row and its jobId is recorded nowhere — retrying only the recorded job
+    // would silently strand the later edit forever). The pushes re-run
+    // through every normal guard (journal, no-op suppression, breaker).
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
     const u = await db.query(
       `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
-        WHERE id=$1 AND status='dead' RETURNING id`, [jobId]);
-    if (!u.rows[0]) throw httpError(409, 'the push job is no longer dead-lettered (already retried or completed)');
-    await audit('sync_review_retry_push', row.application_id, actorId, { jobId, reviewId: row.id });
-    return { note: `push job ${jobId} re-queued`, applicationId: row.application_id };
+        WHERE entity_type='application' AND entity_id=$1
+          AND target='clickup' AND direction='push' AND status='dead'
+        RETURNING id`, [row.application_id]);
+    if (!u.rows.length) throw httpError(409, 'no dead-lettered pushes remain for this file (already retried or completed)');
+    const jobIds = u.rows.map((r) => r.id);
+    await audit('sync_review_retry_push', row.application_id, actorId, { jobIds, reviewId: row.id });
+    return { note: `${jobIds.length} dead push job(s) re-queued (${jobIds.join(', ')})`, applicationId: row.application_id };
   }
 
   if (action === 'create_task') {

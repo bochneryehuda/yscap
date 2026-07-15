@@ -104,6 +104,12 @@ function isKnownInternal(internalStatus) {
  * task sat 'duplicate_pending' forever behind its cancelled predecessor).
  */
 function isTerminal(internalStatus) {
+  // KNOWN statuses only — the keyword fallback (fallbackExternal) exists for
+  // borrower-facing DISPLAY, not for a materialization gate: a future ClickUp
+  // status like "funding scheduled" would keyword-match 'funded' and wrongly
+  // disable the duplicate-defer. Unknown → NOT terminal → the defer stays
+  // (conservative: never risk a same-address twin against an active deal).
+  if (!isKnownInternal(internalStatus)) return false;
   const e = externalFor(internalStatus);
   return e === 'funded' || e === 'declined' || e === 'withdrawn';
 }
