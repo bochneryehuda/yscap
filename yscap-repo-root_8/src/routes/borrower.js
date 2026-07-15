@@ -147,13 +147,14 @@ router.put('/profile', async (req, res) => {
   // malformed string never persists (pre-merge audit #2: the round-trip check
   // catches impossible days the regex alone lets through).
   if (fields.date_of_birth != null) {
-    const s = String(fields.date_of_birth);
-    const y = Number(s.slice(0, 4));
-    const d = new Date(s + 'T00:00:00Z');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !(y >= 1900 && y <= 2100) ||
-        isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) {
+    // Real calendar date, sane year — and a typed 2-DIGIT year resolves to the
+    // real one (26 → the century that makes an adult), so the portal and
+    // ClickUp always read the same date. Truly invalid input still 400s.
+    const dob = require('../lib/fields').normalizeTypedDate(fields.date_of_birth, 'dob');
+    if (dob == null) {
       return res.status(400).json({ error: 'date of birth must be a valid YYYY-MM-DD' });
     }
+    fields.date_of_birth = dob;
   }
   const sets = [], vals = []; let i = 1;
   for (const [k, v] of Object.entries(fields)) { sets.push(`${k}=$${i++}`); vals.push(v); }
@@ -184,7 +185,11 @@ router.put('/profile', async (req, res) => {
   // borrower has that is ALREADY linked to a task (a profile edit must never
   // materialize a brand-new ClickUp task as a side effect — hence the filter).
   {
-    const MAPPED = ['date_of_birth', 'cell_phone', 'fico', 'citizenship', 'years_at_residence', 'housing_status', 'housing_payment'];
+    // current_address included (owner-directed 2026-07-15): the borrower's own
+    // home-address correction must reach ClickUp as a SCOPED push — the PII
+    // overwrite shield deliberately stops full repushes from rewriting it, so
+    // this scoped path is the ONLY way a differing address updates ClickUp.
+    const MAPPED = ['date_of_birth', 'cell_phone', 'fico', 'citizenship', 'years_at_residence', 'housing_status', 'housing_payment', 'current_address'];
     const pushKeys = MAPPED.filter((k) => k in fields);
     if (pushKeys.length) {
       try {
@@ -1354,10 +1359,10 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
       if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
-      if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds
-        const s = String(v);
-        const y = Number(s.slice(0, 4));
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !(y >= 1900 && y <= 2100)) continue;
+      if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
+        // a typed 2-digit year resolves to the real year (DOB → adult century).
+        v = require('../lib/fields').normalizeTypedDate(v, 'dob');
+        if (v == null) continue;
       }
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`); brKeys.push(k);
     }
@@ -1659,12 +1664,15 @@ function trackRecordCols(b) {
     purchase_price: moneyField(b.purchasePrice),
     sale_price: moneyField(b.salePrice),
     rehab_amount: moneyField(b.rehabAmount),
-    purchase_date: b.purchaseDate || null,
-    sale_date: b.saleDate || null,
+    // Exit/entry dates feed the experience-window math — a 2-digit-year date
+    // must never persist (2026-07-15 audit #5). sanitizeDateOnly: real calendar
+    // date, year 1900–2100, else null.
+    purchase_date: require('../lib/fields').normalizeTypedDate(b.purchaseDate),
+    sale_date: require('../lib/fields').normalizeTypedDate(b.saleDate),
     rent_amount: moneyField(b.rentAmount),
-    rent_date: b.rentDate || null,
+    rent_date: require('../lib/fields').normalizeTypedDate(b.rentDate),
     refi_amount: moneyField(b.refiAmount),
-    refi_date: b.refiDate || null,
+    refi_date: require('../lib/fields').normalizeTypedDate(b.refiDate),
     current_value: moneyField(b.currentValue),
     notes: b.notes ? String(b.notes).slice(0, 1000) : null,
     property_type: b.propertyType ? String(b.propertyType).slice(0, 60) : null,
@@ -2450,7 +2458,9 @@ async function syncProfileFromApplication(borrowerId, b) {
        housing_payment = COALESCE(housing_payment, $11),
        updated_at      = now()
      WHERE id=$1`,
-    [borrowerId, p.cellPhone || '', p.dateOfBirth || '', p.citizenship || '', p.maritalStatus || '',
+    [borrowerId, p.cellPhone || '',
+     require('../lib/fields').normalizeTypedDate(p.dateOfBirth, 'dob') || '',   // typed '26' resolves; fill-only DOB still year-guarded
+     p.citizenship || '', p.maritalStatus || '',
      require('../lib/fields').sanitizeFico(p.fico),
      currentAddress, isFinite(yearsAtResidence) ? yearsAtResidence : null,
      monthsAtResidence, p.housingStatus || '', housingPayment]);
@@ -2581,7 +2591,8 @@ router.post('/drafts/:id/submit', async (req, res) => {
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
      asg.isAssignment, asg.underlying, asg.assignFee, JSON.stringify(redactPII(b)),
      b.termMonths ? String(b.termMonths) : null, intField(b.irMonths),
-     intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice), b.acquisitionDate || null,
+     intField(b.requestedExpReo), moneyField(b.payoffAmount), moneyField(b.originalPurchasePrice),
+     require('../lib/fields').normalizeTypedDate(b.acquisitionDate),   // typed '26' resolves to 2026; garbage never persists
      moneyField(b.irAmount)]);
   const appId = ins.rows[0].id;
   // If the borrower linked an LLC, ensure its document requirements exist.

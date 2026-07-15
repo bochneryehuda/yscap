@@ -121,6 +121,17 @@ async function pushApplication(appId, opts = {}) {
   if (ctx._row.deleted_at) return { skipped: 'portal-deleted (ClickUp left untouched)' };
 
   const taskId = ctx._row.clickup_pipeline_task_id || null;
+  // GUARD (owner-directed 2026-07-15): a SCOPED push — the enqueue-on-write job a
+  // field edit creates — may NEVER create a task. An unlinked file that should
+  // have been linked (a lost/stolen binding) would otherwise silently spawn a
+  // NEAR-DUPLICATE ClickUp task on the next edit. Task creation is reserved for
+  // the explicit create-at-file-start (createForNewFile) and the admin repush,
+  // both of which call without opts.only.
+  const scopedRequested = Array.isArray(opts.only) && opts.only.length > 0;
+  if (!taskId && scopedRequested) {
+    await logSync('push_skipped_unlinked', appId, null, { only: opts.only.slice(0, 20) });
+    return { skipped: 'unlinked file — a scoped push never creates a ClickUp task' };
+  }
   const listId = taskId ? null : await resolveTargetList(ctx);
   const options = await registry.optionMap(listId || ctx._row.clickup_list_id).catch(() => ({}));
   const ysProgramFieldId = null; // set once the "YS Program" field is created + re-pulled
@@ -147,6 +158,7 @@ async function pushApplication(appId, opts = {}) {
   let journalStats = null;
   if (!id) {
     if (!listId) throw new Error('no target list for application ' + appId);
+    circuitCheck(appId, null, built.customFields.length);   // creates count toward the volume breaker too
     const task = await clickup.createTask(listId, { name: built.name, status: built.statusName || undefined, custom_fields: built.customFields });
     id = task.id;
     // Journal the create as a full write (no before values — the task is new).
@@ -174,8 +186,21 @@ async function pushApplication(appId, opts = {}) {
       before = {};
       for (const c of (t && t.custom_fields) || []) before[c.id] = c.value;
       before.__status = t && t.status && (typeof t.status === 'object' ? t.status.status : t.status);
-    } catch (e) { console.warn('[clickup] pre-write read failed (writing without no-op suppression):', e.message); }
+    } catch (e) {
+      // FAIL CLOSED for queue-driven scoped pushes (owner-directed 2026-07-15):
+      // without the before-image, neither the no-op suppression nor the DOB/PII
+      // shields can evaluate — so a scoped push errors and the queue retries
+      // with backoff instead of writing blind. An explicit admin full repush
+      // (a human watching the response) keeps the previous warn-and-proceed.
+      if (scoped) {
+        e.message = 'pre-write read failed — failing closed for a scoped push (queue retries): ' + e.message;
+        if (!e.code) e.code = 'CLICKUP_PREREAD_FAILED';   // outage class: the queue retries patiently instead of dead-lettering (see pushOutboxOnce)
+        throw e;
+      }
+      console.warn('[clickup] pre-write read failed (full repush proceeds without no-op suppression):', e.message);
+    }
     journalStats = { written: 0, suppressed: 0, blocked: 0 };
+    let overwrites = 0;   // writes that REPLACED an existing ClickUp value (not fills)
     const source = scoped ? 'scoped_push' : 'full_repush';
     for (const c of chosen) {
       const old = before ? before[c.id] : undefined;
@@ -193,11 +218,44 @@ async function pushApplication(appId, opts = {}) {
           reason: 'dob_one_day_shift_blocked' });
         continue;
       }
+      // PII OVERWRITE SHIELD (owner-directed 2026-07-15, layered on the DOB
+      // guard above): a FULL repush may FILL a blank identity field on ClickUp
+      // but never REWRITE a differing one — bulk pushes can no longer clobber
+      // ClickUp-side borrower identity (SSN / email / phone / name / home
+      // address). A deliberate portal edit of that exact field still flows: it
+      // arrives as a SCOPED push carrying only that field (scoped pushes only
+      // ever contain their own scoped fields, so they never trip this), and a
+      // queued review's approval re-pushes with opts.approvedReview. DOB is
+      // governed by the dedicated day-shift guard above, not this shield.
+      const oldBlank = old == null || old === '' || (Array.isArray(old) && !old.length);
+      if (!scoped && !opts.approvedReview && PII_OVERWRITE_SHIELD.has(c.id) && (before == null || !oldBlank)) {
+        journalStats.blocked++;
+        await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
+        await logSync('pii_overwrite_blocked', appId, id, { fieldId: c.id, fieldKey: PII_REVIEW_KEY[c.id] || null });
+        await require('../lib/sync-review').queueReview({
+          applicationId: appId, taskId: id, direction: 'outbound', fieldKey: PII_REVIEW_KEY[c.id] || c.id,
+          currentValue: reviewPreview(c.id, old), proposedValue: reviewPreview(c.id, c.value),
+          rawValue: reviewPreview(c.id, c.value), reason: 'pii_overwrite_blocked' });
+        continue;
+      }
       try {
+        circuitCheck(appId, id, 1);   // mass-write breaker (see below)
+        if (!oldBlank && before != null) overwrites++;
         await clickup.setField(id, c.id, c.value);
         journalStats.written++;
         await journalFieldWrite(appId, id, c.id, old, c.value, source);
-      } catch (e) { console.error('[clickup] setField failed', c.id, e.message); }
+      } catch (e) {
+        if (e && e.code === 'CLICKUP_CIRCUIT_OPEN') throw e;   // stop the whole push, queue retries later
+        console.error('[clickup] setField failed', c.id, e.message);
+      }
+    }
+    // OVERWRITE-STORM ALARM: one push rewriting many existing values is the
+    // signature of the incident class (a wrong-file link / bulk clobber). Not
+    // blocked — a legitimate admin repush after big portal edits exists — but
+    // LOUD, so it can never happen silently again.
+    if (overwrites > 10) {
+      console.warn(`[clickup] OVERWRITE STORM: push rewrote ${overwrites} existing values on task ${id} (app ${appId})`);
+      await logSync('push_overwrite_storm', appId, id, { overwrites, scoped: !!scoped });
     }
     if (pushStatus && built.statusName && (!before || before.__status !== built.statusName)) {
       try {
@@ -228,6 +286,62 @@ const T = require('./transforms');
 const F = require('./fields');
 const { fieldValueEquivalent, isSuspectDobShift } = mapper;
 const MASKED_FIELDS = new Set([F.SHARED.borrowerSSN, F.EXTRA.card]);
+
+// ---- PII overwrite shield (owner-directed 2026-07-15) -----------------------
+// Borrower-IDENTITY fields a FULL repush may fill but never rewrite. DOB is
+// deliberately NOT here — it has its own dedicated day-shift guard + review
+// flow above (and the restore tooling applies approved DOBs via full repush).
+const PII_OVERWRITE_SHIELD = new Set([
+  F.SHARED.borrowerName, F.SHARED.borrowerSSN, F.SHARED.borrowerEmail,
+  F.SHARED.borrowerCell, F.SHARED.borrowerAddress,
+]);
+// ClickUp field id → the logical key a sync-review APPROVAL re-pushes
+// (resolveOnly maps each of these back to the exact ClickUp field).
+const PII_REVIEW_KEY = {
+  [F.SHARED.borrowerName]: 'first_name',
+  [F.SHARED.borrowerSSN]: 'ssn',
+  [F.SHARED.borrowerEmail]: 'email',
+  [F.SHARED.borrowerCell]: 'cell_phone',
+  [F.SHARED.borrowerAddress]: 'current_address',
+};
+// Short, SSN-masked preview for the review queue (display only — an approval
+// re-pushes from the live DB, never from these strings).
+function reviewPreview(fieldId, v) {
+  if (v == null) return null;
+  const s = typeof v === 'string' ? v : JSON.stringify(v);
+  if (fieldId === F.SHARED.borrowerSSN) return T.maskSSN(s);
+  return s.slice(0, 120);
+}
+
+// ---- outbound volume circuit breaker (owner-directed 2026-07-15) ------------
+// The ultimate anti-mass-write guard: no matter what upstream logic does, the
+// integration cannot write more than CLICKUP_MAX_FIELD_WRITES_10MIN field
+// values (default 300) in any rolling 10-minute window. Beyond the cap every
+// push THROWS (queue jobs retry after backoff; an admin repush surfaces the
+// error) and one loud audit row marks the circuit opening. Normal operation —
+// scoped single-field edits, the occasional repush — never comes near the cap;
+// only a runaway loop or a mass-clobber bug does, and that is exactly what
+// must stop hard instead of continuing.
+const CIRCUIT_WINDOW_MS = 10 * 60 * 1000;
+const CIRCUIT_MAX_WRITES = Math.max(50, parseInt(process.env.CLICKUP_MAX_FIELD_WRITES_10MIN || '300', 10) || 300);
+let _writeTimes = [];
+let _circuitAudited = 0;
+function circuitCheck(appId, taskId, n = 1) {
+  const now = Date.now();
+  if (_writeTimes.length > CIRCUIT_MAX_WRITES * 2) _writeTimes = _writeTimes.slice(-CIRCUIT_MAX_WRITES);
+  _writeTimes = _writeTimes.filter((t) => now - t < CIRCUIT_WINDOW_MS);
+  if (_writeTimes.length + n > CIRCUIT_MAX_WRITES) {
+    if (now - _circuitAudited > 60 * 1000) {   // audit at most once a minute
+      _circuitAudited = now;
+      logSync('outbound_circuit_open', appId, taskId, { writesInWindow: _writeTimes.length, cap: CIRCUIT_MAX_WRITES }).catch(() => {});
+      console.error(`[clickup] OUTBOUND CIRCUIT OPEN: ${_writeTimes.length} field writes in 10 min (cap ${CIRCUIT_MAX_WRITES}) — refusing further writes`);
+    }
+    const e = new Error(`ClickUp outbound circuit open (${_writeTimes.length} writes in 10 min, cap ${CIRCUIT_MAX_WRITES})`);
+    e.code = 'CLICKUP_CIRCUIT_OPEN';
+    throw e;
+  }
+  for (let i = 0; i < n; i++) _writeTimes.push(now);
+}
 
 /** Append-only journal of every ClickUp field write (before + after). PII rule:
  *  SSN / card values are masked before they land in the journal. Best-effort —
@@ -299,4 +413,7 @@ async function createForNewFile(appId) {
   }
 }
 
-module.exports = { pushApplication, createForNewFile, loadPushContext, resolveTargetList, firstListId, logSync };
+module.exports = {
+  pushApplication, createForNewFile, loadPushContext, resolveTargetList, firstListId, logSync,
+  PII_OVERWRITE_SHIELD, PII_REVIEW_KEY, // exported for the write-safety tests
+};
