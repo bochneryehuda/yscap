@@ -65,7 +65,7 @@ router.post('/', async (req, res) => {
         [p.loOfficerEmail || p.loanOfficerEmail]);
       if (o.rows[0]) { officerId = o.rows[0].id; officerName = o.rows[0].full_name; }
     } else if (officerName) {
-      const o = await client.query(`SELECT id FROM staff_users WHERE full_name ILIKE $1 AND is_active=true LIMIT 1`, [officerName]);
+      const o = await client.query(`SELECT id FROM staff_users WHERE full_name ILIKE $1 AND is_active=true ORDER BY created_at ASC, id ASC LIMIT 1`, [officerName]);
       if (o.rows[0]) officerId = o.rows[0].id;
     }
     // 3) create the application (distinct property address)

@@ -55,7 +55,8 @@ router.post('/', async (req, res) => {
     if (code) {
       const o = await db.query(
         `SELECT id, full_name, email FROM staff_users
-          WHERE lower(split_part(email,'@',1))=$1 AND is_active=true LIMIT 1`, [code]);
+          WHERE lower(split_part(email,'@',1))=$1 AND is_active=true
+          ORDER BY created_at ASC, id ASC LIMIT 1`, [code]);
       if (o.rows[0]) { officerRow = o.rows[0]; officerId = o.rows[0].id; }
     }
 
