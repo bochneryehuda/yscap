@@ -2395,6 +2395,25 @@ router.get('/applications/:id/appraisal-card', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
+// #107: the LO / processor / admin can ENTER the appraisal payment card on the
+// borrower's behalf (some borrowers give it over the phone). Same validation +
+// at-rest encryption + condition completion as the borrower route, through the
+// shared chokepoint — stored against the file's borrower as the card owner.
+router.post('/applications/:id/appraisal-card', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+  if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
+  const apprCard = require('../lib/appraisal-card');
+  const v = apprCard.validateCardInput(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  try {
+    const { last4, brand } = await apprCard.saveApplicationCard({
+      appId: req.params.id, borrowerId: app.rows[0].borrower_id,
+      number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip });
+    await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4, enteredByStaff: true });
+    res.status(201).json({ ok: true, last4, brand });
+  } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
+});
 // Borrower name typeahead for staff origination (StaffNewFile): match prior
 // borrowers by name so a new file can LINK to the existing borrower instead of
 // creating a duplicate, and known contact info can be pre-filled. Registered
@@ -4922,7 +4941,10 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : 'other';
   const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
   if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
-  const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
+  // Don't add a contact (or, now, complete its condition) on a soft-deleted file
+  // (audit #236 hardening — an admin's canTouchApp short-circuits seesAll, so
+  // guard the lookup itself).
+  const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!app.rows[0]) return res.status(404).json({ error: 'not found' });
   const sc = await db.query(
     `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,phone,address,notes,added_by_staff_id,last_used_at)
@@ -4934,6 +4956,29 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
      ON CONFLICT (application_id,service_contact_id) DO UPDATE SET contact_type=EXCLUDED.contact_type RETURNING id`,
     [req.params.id, sc.rows[0].id, type, req.actor.id]);
   await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
+  // #107: entering the title / insurance contact completes the borrower's contact
+  // CONDITION too — the LO / processor / admin can satisfy it on the borrower's
+  // behalf, the same 'received' transition the borrower's own form submission makes
+  // (sign-off stays separate). An explicit checklistItemId targets one item; else
+  // it auto-resolves the open condition by tool_key from the contact type. Never
+  // reopens an already-satisfied/waived condition. Best-effort: the contact is
+  // already saved, so a condition hiccup never fails the request.
+  const CONTACT_CONDITION = { title_company: 'title_contact', insurance_agent: 'insurance_contact', flood_insurance: 'insurance_contact' };
+  const toolKey = CONTACT_CONDITION[type];
+  if (toolKey) {
+    try {
+      const upd = b.checklistItemId
+        ? await db.query(
+            `UPDATE checklist_items SET status='received', updated_at=now()
+              WHERE id=$1 AND application_id=$2 AND tool_key=$3 AND status NOT IN ('satisfied','waived') RETURNING id`,
+            [b.checklistItemId, req.params.id, toolKey])
+        : await db.query(
+            `UPDATE checklist_items SET status='received', updated_at=now()
+              WHERE application_id=$1 AND tool_key=$2 AND status NOT IN ('satisfied','waived') RETURNING id`,
+            [req.params.id, toolKey]);
+      for (const row of upd.rows) enqueueChecklistStatusPush(row.id).catch(() => {});
+    } catch (_) { /* condition completion is best-effort */ }
+  }
   res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: sc.rows[0].id });
 });
 router.delete('/file-contacts/:linkId', async (req, res) => {

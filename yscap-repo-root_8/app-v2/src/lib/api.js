@@ -475,6 +475,7 @@ export const api = {
   staffDelFileContact: (linkId) => req('DELETE', `/api/staff/file-contacts/${linkId}`),
   staffBorrowerContacts: (borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/contacts`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
+  staffSaveAppraisalCard:(appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-card`, b),
 
   // ---- admin: team / staff management ----
   adminStaff:        () => req('GET', '/api/admin/staff'),

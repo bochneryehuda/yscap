@@ -1497,6 +1497,40 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   );
 }
 
+// #107: the LO / processor / admin can ENTER the appraisal payment card on the
+// borrower's behalf (often taken over the phone). Same validation + at-rest
+// encryption + condition completion as the borrower's own form, via the staff
+// endpoint. An inline, toggle-open form — never persists anything until Save.
+function StaffCardEntry({ appId, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+  async function save() {
+    setBusy(true); setErr('');
+    try {
+      await api.staffSaveAppraisalCard(appId, f);
+      setOpen(false); setF({ number: '', expMonth: '', expYear: '', cvc: '', zip: '' });
+      if (onSaved) await onSaved();
+    } catch (e) { setErr(e.message || 'Could not save the card.'); }
+    finally { setBusy(false); }
+  }
+  if (!open) return <button className="btn ghost small" onClick={() => setOpen(true)}>Enter card</button>;
+  return (
+    <div className="small" style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'flex-end' }}>
+      <input className="input" style={{ maxWidth: 170 }} inputMode="numeric" placeholder="Card number" value={f.number} onChange={set('number')} />
+      <input className="input" style={{ maxWidth: 56 }} inputMode="numeric" placeholder="MM" value={f.expMonth} onChange={set('expMonth')} />
+      <input className="input" style={{ maxWidth: 72 }} inputMode="numeric" placeholder="YYYY" value={f.expYear} onChange={set('expYear')} />
+      <input className="input" style={{ maxWidth: 64 }} inputMode="numeric" placeholder="CVC" value={f.cvc} onChange={set('cvc')} />
+      <input className="input" style={{ maxWidth: 84 }} inputMode="numeric" placeholder="ZIP" value={f.zip} onChange={set('zip')} />
+      <button className="btn small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save card'}</button>
+      <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
+      {err && <span style={{ color: 'var(--bad, #c0392b)', flexBasis: '100%', textAlign: 'right' }}>{err}</span>}
+    </div>
+  );
+}
+
 function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
@@ -1721,9 +1755,12 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 return <button className="btn ghost small" onClick={() => setTrOpen(app.borrower_id)}>Open track record</button>;
               })()}
               {it.tool_key === 'appraisal_card' && (
-                <button className="btn ghost small" disabled={cardBusy} onClick={revealCard}>
-                  {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
-                </button>
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <button className="btn ghost small" disabled={cardBusy} onClick={revealCard}>
+                    {cardBusy ? '…' : card ? 'Hide card' : 'Reveal card'}
+                  </button>
+                  <StaffCardEntry appId={appId} onSaved={onChanged} />
+                </div>
               )}
               {!it.tool_key && onUploadTo && (
                 <button className="btn ghost small"
