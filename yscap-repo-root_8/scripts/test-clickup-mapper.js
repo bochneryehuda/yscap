@@ -72,6 +72,21 @@ eq('read lender label', read.app.lender, 'Blue Lake');
 eq('read extra capture', read.extra['Clear File Notes'], 'note text');
 eq('read status', read.internalStatus, 'self procesing');
 
+// ---- task-title borrower-name fallback (the "Unknown Unknown" root fix) ----
+// The *Borrower Name FIELD wins when present; a BLANK field falls back to the
+// task title's pre-dash part — hard-guarded so CRM stubs never become people.
+const titleRead = M.readTaskFields({ status: 'starting', name: 'Dovid Fried - 12 Main St, Monsey, NY 10952, USA', custom_fields: [] });
+eq('title fallback: name parsed from the task title', [titleRead.borrower.first_name, titleRead.borrower.last_name], ['Dovid', 'Fried']);
+const fieldWins = M.readTaskFields({ status: 'starting', name: 'Dovid Fried - 12 Main St', custom_fields: [
+  { id: F.SHARED.borrowerName, value: 'Shaindel Schwimmer' }] });
+eq('title fallback: the FIELD wins when present', [fieldWins.borrower.first_name, fieldWins.borrower.last_name], ['Shaindel', 'Schwimmer']);
+eq('title fallback: bare surname never becomes a person',
+  M.readTaskFields({ status: 'x', name: 'Stauber', custom_fields: [] }).borrower.first_name, undefined);
+eq('title fallback: a phone-number title never becomes a person',
+  M.readTaskFields({ status: 'x', name: '347-453-9663', custom_fields: [] }).borrower.first_name, undefined);
+eq('title fallback: digits in the head are rejected',
+  M.readTaskFields({ status: 'x', name: '12 Main St - Dovid Fried', custom_fields: [] }).borrower.first_name, undefined);
+
 // ---- status returned as an OBJECT (real ClickUp v2 shape) must normalize ----
 const objTask = { status: { status: 'ctc (4-email)', color: '#fff', orderindex: 5, type: 'custom' }, custom_fields: [
   { id: F.SHARED.loanOfficerEmail, type: 'email', value: 'Simcha@YSCapGroup.com' },

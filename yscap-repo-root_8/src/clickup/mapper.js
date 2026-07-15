@@ -332,6 +332,23 @@ function readTaskFields(task, options = {}) {
   // specials (read)
   const nm = m[F.SHARED.borrowerName];
   if (nm && nm.value) { const p = T.splitName(nm.value); out.borrower.first_name = p.first; out.borrower.last_name = p.last; }
+  // TASK-TITLE FALLBACK (owner-reported 2026-07-15 night: "why do we have
+  // Unknown Unknown?!"). Pipeline tasks are named "<Borrower Name> - <address>"
+  // — when the *Borrower Name FIELD was left blank, the name is still sitting
+  // right there in the title, but the read produced a nameless borrower and
+  // the resolver minted an "Unknown Unknown" profile. Parse the title's
+  // pre-dash part as the name, guarded hard: at least two word tokens, must
+  // contain letters, no digits (a CRM task titled "347-453-9663" or a bare
+  // surname "Stauber" never becomes a person), not a placeholder. The custom
+  // field always wins when present.
+  if (!out.borrower.first_name && task && task.name) {
+    const head = String(task.name).split(' - ')[0].trim();
+    if (head && head.length <= 60 && !/\d/.test(head) && /[a-z]/i.test(head)
+        && head.split(/\s+/).length >= 2 && !T.isPlaceholderName(head)) {
+      const p = T.splitName(head);
+      if (p.first && p.last) { out.borrower.first_name = p.first; out.borrower.last_name = p.last; }
+    }
+  }
   const ssn = m[F.SHARED.borrowerSSN];
   if (ssn && ssn.value) out.borrower.ssn = String(ssn.value);           // orchestrator encrypts
   const bAddr = m[F.SHARED.borrowerAddress];
