@@ -330,8 +330,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     // The last working scenario (autosaved) wins — reopening resumes it.
     if (savedStudio && savedStudio.v) return savedStudio;
     const name = isStaff
-      ? ([app.first_name, app.last_name].filter(Boolean).join(' ') || app.entity_name || '')
+      ? ([app.first_name, app.last_name].filter(Boolean).join(' ') || '')
       : ([profile && profile.first_name, profile && profile.last_name].filter(Boolean).join(' ') || '');
+    // #104: the borrowing ENTITY (vesting name) prefills its own slot, separate
+    // from the individual borrower name — no longer folded into borrowerName.
+    const entity = isStaff ? (app.entity_name || '') : ((profile && profile.entity_name) || '');
     // Co-borrower name (staff view has it on the app) → prefills the term
     // sheet's second signature line (#137).
     const coName = (isStaff && app.co_borrower_id)
@@ -340,7 +343,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     let st;
     if (cur && cur.inputs) {
       const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : cur.inputs;
-      st = buildStudioState(scenarioFromEngineInputs(inp, { borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address) }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address) }));
       if (isStaff) {
         const adm = adminStateFromEngineInputs(inp);
         st = { v: { ...st.v, ...adm.v }, c: { ...st.c, ...adm.c } };
@@ -351,7 +354,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // over the verified track-record counts for the what-if display.
       const inp = data.quote.inputs;
       st = buildStudioState(scenarioFromEngineInputs(inp, {
-        borrowerName: name, coBorrowerName: coName,
+        entityName: entity, borrowerName: name, coBorrowerName: coName,
         address: inp.address || addrLine(app.property_address),
         expFlips: app.requested_exp_flips ?? inp.expFlips,
         expHolds: app.requested_exp_holds ?? inp.expHolds,
@@ -360,7 +363,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       }));
     } else {
       st = buildStudioState({
-        borrowerName: name, coBorrowerName: coName,
+        entityName: entity, borrowerName: name, coBorrowerName: coName,
         address: addrLine(app.property_address),
         state: (app.property_address && app.property_address.state) || '',
         loanType: app.loan_type,

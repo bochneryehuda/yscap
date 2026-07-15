@@ -77,6 +77,7 @@ export function buildStudioState(x) {
   // server-side pricing input builder applies.
   const asIs = rawNum(x.asIsValue) || price;
   const v = {
+    entityName: x.entityName || '',
     borrowerName: x.borrowerName || '',
     coBorrowerName: x.coBorrowerName || '',
     propAddr: x.address || '',
@@ -125,7 +126,7 @@ function readSnapshot(win) {
   return {
     program, ready, missing, std, gold, d,
     fields: {
-      borrowerName: val('borrowerName'), coBorrowerName: val('coBorrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
+      entityName: val('entityName'), borrowerName: val('borrowerName'), coBorrowerName: val('coBorrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
       dealPurpose: val('dealPurpose'), dealType: val('dealType'),
       propState: val('propState'), propType: val('propType'),
       price: val('price'), isAssign: chk('isAssign'), origPrice: val('origPrice'),
