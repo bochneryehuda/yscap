@@ -1995,6 +1995,8 @@ export default function StaffApplication() {
   const [cForm, setCForm] = useState({ title: '', audience: 'staff', severity: 'standard' });
   const [ssnFull, setSsnFull] = useState('');
   const [ssnBusy, setSsnBusy] = useState(false);
+  const [ssnEditing, setSsnEditing] = useState(false);
+  const [ssnDraft, setSsnDraft] = useState('');
   const [inviteBusy, setInviteBusy] = useState(false);
   // One in-flight action at a time: double-clicking Assign/Remind/Accept/Request
   // used to double-assign, double-email the borrower, or create duplicate items.
@@ -2080,6 +2082,19 @@ export default function StaffApplication() {
     setSsnBusy(true);
     try { const r = await api.staffBorrowerSsn(app.borrower_id); setSsnFull(r.ssn || ''); }
     catch (e) { setErr(e.message || 'Could not reveal SSN'); }
+    finally { setSsnBusy(false); }
+  }
+
+  // Add / correct the SSN inline (owner-directed 2026-07-15 night: LOs and
+  // processors set it on their own files; audited server-side, scoped push
+  // propagates it to the linked ClickUp task).
+  async function saveSsn() {
+    if (!app?.borrower_id || ssnDraft.replace(/\D/g, '').length !== 9) return;
+    setSsnBusy(true);
+    try {
+      await api.post(`/api/staff/borrowers/${app.borrower_id}/ssn`, { ssn: ssnDraft });
+      setSsnEditing(false); setSsnDraft(''); setSsnFull(''); await load();
+    } catch (e) { setErr(e.message || 'Could not save the SSN'); }
     finally { setSsnBusy(false); }
   }
 
@@ -2452,16 +2467,27 @@ export default function StaffApplication() {
             <div className="metrow"><span className="k">Tier</span><span className="v">{borrower.tier || '—'}</span></div>
             <div className="metrow"><span className="k">SSN</span>
               <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-                <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '.02em' }}>
-                  {ssnFull || (borrower.ssn_last4 ? `•••-••-${borrower.ssn_last4}` : '—')}
-                </span>
-                {borrower.ssn_last4 && (
-                  <button className="eye-btn" onClick={revealSsn} disabled={ssnBusy}
-                    aria-label={ssnFull ? 'Hide the full Social Security number' : 'Reveal the full Social Security number'}
-                    title={ssnFull ? 'Hide the full number' : 'Reveal the full number (logged)'}>
-                    {ssnBusy ? '…' : (ssnFull ? EyeOff : Eye)}
-                  </button>
-                )}
+                {ssnEditing ? <>
+                  <input className="input" type="password" inputMode="numeric" autoComplete="off"
+                    placeholder="•••-••-••••" value={ssnDraft} disabled={ssnBusy} style={{ maxWidth: 150 }}
+                    onChange={(e) => setSsnDraft(formatSSN(e.target.value))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') saveSsn(); if (e.key === 'Escape') setSsnEditing(false); }} />
+                  <button className="btn ghost" onClick={saveSsn} disabled={ssnBusy || ssnDraft.replace(/\D/g, '').length !== 9}>{ssnBusy ? '…' : 'Save'}</button>
+                </> : <>
+                  <span style={{ fontVariantNumeric: 'tabular-nums', letterSpacing: '.02em' }}>
+                    {ssnFull || (borrower.ssn_last4 ? `•••-••-${borrower.ssn_last4}` : '—')}
+                  </span>
+                  {borrower.ssn_last4 && (
+                    <button className="eye-btn" onClick={revealSsn} disabled={ssnBusy}
+                      aria-label={ssnFull ? 'Hide the full Social Security number' : 'Reveal the full Social Security number'}
+                      title={ssnFull ? 'Hide the full number' : 'Reveal the full number (logged)'}>
+                      {ssnBusy ? '…' : (ssnFull ? EyeOff : Eye)}
+                    </button>
+                  )}
+                  <button className="eye-btn" onClick={() => { setSsnDraft(''); setSsnEditing(true); }}
+                    title={borrower.ssn_last4 ? 'Correct the Social Security number (audited, syncs to ClickUp)' : 'Add the Social Security number (audited, syncs to ClickUp)'}
+                    aria-label="Add or edit Social Security number">✎</button>
+                </>}
               </span>
             </div>
             <CoBorrowerBlock appId={id} app={app} onChanged={load} />

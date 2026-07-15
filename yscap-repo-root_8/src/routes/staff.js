@@ -3153,6 +3153,39 @@ router.post('/borrowers/:id/llcs', async (req, res) => {
   res.status(existed ? 200 : 201).json({ ok: true, llcId, existed });
 });
 
+// Set / correct a borrower's Social Security number (owner-directed 2026-07-15
+// night: LOs and processors must be able to ADD an SSN on their own files —
+// there was a reveal endpoint but no set). Scoped by canSeeBorrower (assigned
+// LO / processor / assistants; admins everywhere), a full 9-digit number only,
+// cross-borrower collision-checked (an SSN is one person), audited with
+// masked before/after, and propagated to every linked PRIMARY-borrower task
+// as a scoped 'ssn' push (the staff-typed value IS the human decision;
+// journaled + no-op-suppressed like every write).
+router.post('/borrowers/:id/ssn', async (req, res) => {
+  try {
+    if (!(await canSeeBorrower(req))) return res.status(403).json({ error: 'forbidden' });
+    const store = C.ssnForStorage((req.body || {}).ssn);
+    if (!store) return res.status(400).json({ error: 'a full 9-digit Social Security number is required' });
+    const hash = require('../clickup/identity').ssnHash(store.digits, cfg.ssnMatchKey);
+    const clash = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 AND id<>$2 LIMIT 1`, [hash, req.params.id]);
+    if (clash.rows[0]) return res.status(409).json({ error: 'another borrower already carries this Social Security number — check for a duplicate profile' });
+    const before = (await db.query(`SELECT ssn_last4 FROM borrowers WHERE id=$1`, [req.params.id])).rows[0];
+    if (!before) return res.status(404).json({ error: 'not found' });
+    await db.query(
+      `UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3, ssn_hash=$4, updated_at=now() WHERE id=$1`,
+      [req.params.id, store.encrypted, store.last4, hash]);
+    await audit(req, 'set_borrower_ssn', 'borrower', req.params.id,
+      { beforeLast4: before.ssn_last4 || null, afterLast4: store.last4 });
+    try {
+      const apps = (await db.query(
+        `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`,
+        [req.params.id])).rows;
+      for (const a of apps) enqueueClickupPush(a.id, ['ssn']).catch(() => {});
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, last4: store.last4 });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // Fill in / correct an entity's details on the borrower's behalf. Mirrors the
 // borrower's PATCH /llcs/:id, including the verified-lock: a verified entity
 // must be unlocked (POST /llcs/:id/verify {verified:false}) before edits.

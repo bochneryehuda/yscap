@@ -254,6 +254,22 @@ async function healBorrowerFields(borrowerId, b, taskId) {
       }
     } catch (e) { console.warn('[ingest] cleared-DOB check skipped:', e.message); }
   }
+  // SSN fill-only, at the ONE heal chokepoint (owner-reported 2026-07-15
+  // night, Shalom Elbaum: ClickUp carried the SSN but the file never got it —
+  // the encrypted fill previously ran ONLY on the borrower-CREATE path, so a
+  // profile that resolved by SSN-hash or email match, or was created before
+  // the SSN was typed into ClickUp, could never pick it up later). Fill-only:
+  // an existing stored SSN is never overwritten here — a DIFFERING ClickUp
+  // SSN surfaces through the identity-mismatch audit as a resolvable row.
+  try {
+    const ssnStore = require('../lib/crypto').ssnForStorage(b.ssn);
+    if (ssnStore) {
+      await db.query(
+        `UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3, ssn_hash=COALESCE(ssn_hash,$4), updated_at=now()
+          WHERE id=$1 AND ssn_encrypted IS NULL`,
+        [borrowerId, ssnStore.encrypted, ssnStore.last4, identity.ssnHash(b.ssn, cfg.ssnMatchKey)]);
+    }
+  } catch (e) { console.warn('[ingest] ssn fill skipped:', e.message); }
   try {
     await db.query(
       `UPDATE borrowers SET
