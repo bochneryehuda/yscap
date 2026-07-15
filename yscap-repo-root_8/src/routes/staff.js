@@ -5278,7 +5278,7 @@ router.get('/audit-log/facets', async (req, res) => {
 // rows on their own files only.
 router.get('/sync-reviews', async (req, res) => {
   try {
-    const status = ['open', 'approved', 'rejected'].includes(String(req.query.status)) ? String(req.query.status) : 'open';
+    const status = ['open', 'approved', 'rejected', 'resolved'].includes(String(req.query.status)) ? String(req.query.status) : 'open';
     const scoped = !seesAll(req);
     const r = await db.query(
       `SELECT q.*, a.deleted_at,
@@ -5352,6 +5352,31 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
       [row.id, req.actor.id, (req.body && req.body.note) || null]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
+// TWO-SIDED resolution (owner-directed 2026-07-15 evening): the reviewer picks
+// which SIDE wins — 'clickup' or 'portal' — and the chosen value is applied to
+// BOTH systems. Values are re-read LIVE from the winning side at resolve time
+// (the row's stored values are display-only; SSNs are never stored in the
+// queue). Scoped like approve/reject: the file's LO can resolve their own rows.
+router.post('/sync-reviews/:id/resolve', async (req, res) => {
+  try {
+    const winner = String((req.body && req.body.winner) || '');
+    if (!['clickup', 'portal'].includes(winner)) return res.status(400).json({ error: "winner must be 'clickup' or 'portal'" });
+    const row = await loadReviewFor(req, res);
+    if (!row) return;
+    const out = await require('../lib/sync-autoresolve').applyReviewWinner(row, winner);
+    await db.query(
+      `UPDATE sync_review_queue SET status='resolved', winner=$2, resolved_by=$3, resolved_at=now(), resolution_note=$4
+        WHERE id=$1 AND status='open'`,
+      [row.id, winner, req.actor.id, (req.body && req.body.note) || null]);
+    await audit(req, 'sync_review_resolve', row.application_id ? 'application' : 'borrower',
+      row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, winner, ...out });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+  }
 });
 
 router.post('/sync-reviews/:id/reject', async (req, res) => {

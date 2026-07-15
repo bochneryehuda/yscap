@@ -117,27 +117,35 @@ async function healBorrowerFields(borrowerId, b, taskId) {
   //    sees it and decides (approve = portal takes ClickUp's value, audited).
   let dobIn = nn(b.date_of_birth);
   if (dobIn) {
-    // sanitizeDob = real calendar date AND adult plausibility (age 18–120,
-    // owner-directed 2026-07-15: a "12/11/2022" toddler DOB passed the plain
-    // year window and was then treated as trustworthy). Garbage/implausible →
-    // review with the auto-pivoted proposal (itself vetted), never filled.
-    const vetted = require('../lib/fields').sanitizeDob(dobIn);
-    if (!vetted) {
-      const pivot = transforms.pivotSuspectYear(dobIn, 'dob');
-      await review.queueReview({ borrowerId, taskId, direction: 'inbound', fieldKey: 'date_of_birth',
-        proposedValue: require('../lib/fields').sanitizeDob(pivot), rawValue: dobIn, reason: 'clickup_dob_implausible' });
-      dobIn = null;
-    } else {
-      dobIn = vetted;
-      try {
-        const cur = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
-        if (cur && cur.date_of_birth && String(cur.date_of_birth) !== dobIn) {
-          await review.queueReview({ borrowerId, taskId, direction: 'inbound', fieldKey: 'date_of_birth',
-            currentValue: String(cur.date_of_birth), proposedValue: dobIn, rawValue: dobIn,
-            reason: 'clickup_dob_differs_from_portal' });
-        }
-      } catch (_) { /* visibility is best-effort */ }
-    }
+    // ONE decision function for every DOB conflict (owner-directed 2026-07-15
+    // evening): the auto-resolution engine settles the PROVABLE cases itself —
+    // same day in different storage forms, an implausible value (the
+    // "12/11/2022 toddler" class) losing to a plausible one, a typed 2-digit-
+    // year ClickUp artifact beating a sync-derived profile value — applying
+    // the canonical DOB to BOTH systems, journaled. Only genuine ambiguity
+    // (two plausible adult DOBs with human provenance) queues a TWO-SIDED
+    // review, and the file's loan officer is emailed. Resolver hiccups fall
+    // back to strict fill-only semantics — a heal must never break ingest.
+    const rawDob = dobIn;
+    const FLD = require('../lib/fields');
+    try {
+      const cur = (await db.query(`SELECT date_of_birth, origin FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
+      const portalDay = cur.date_of_birth ? String(cur.date_of_birth) : null;
+      const AR = require('../lib/sync-autoresolve');
+      const d = AR.decideDob({ clickupDay: rawDob, portalDay, portalOrigin: cur.origin || null });
+      if (d.outcome === 'adopt') {
+        await AR.adoptDobEverywhere({ borrowerId, day: d.value, why: d.why, source: 'auto_resolve_inbound' });
+        dobIn = null;   // adoption already wrote both sides — nothing left to fill
+      } else if (d.outcome === 'review') {
+        await review.queueReview({ borrowerId, taskId, direction: 'inbound', fieldKey: 'date_of_birth',
+          currentValue: portalDay, proposedValue: FLD.sanitizeDob(rawDob) || d.proposal || null, rawValue: rawDob,
+          reason: portalDay ? 'clickup_dob_differs_from_portal' : 'clickup_dob_implausible',
+          clickupValue: rawDob, portalValue: portalDay });
+        dobIn = null;
+      } else {
+        dobIn = null;   // 'agree' — the portal already holds this day
+      }
+    } catch (e) { dobIn = FLD.sanitizeDob(rawDob); /* strict fill-only fallback */ }
   }
   try {
     await db.query(
@@ -223,7 +231,9 @@ async function resolveBorrower(read, taskId) {
                             marital_status,employment_type,employer,ssn_hash,origin)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'clickup_backfill')
      ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
-    [first, last, email, b.cell_phone || null, b.date_of_birth || null, b.citizenship || null,
+    [first, last, email, b.cell_phone || null,
+     require('../lib/fields').sanitizeDob(b.date_of_birth),   // NEW-borrower path vets too: garbage/toddler DOBs never insert raw
+     b.citizenship || null,
      require('../lib/fields').sanitizeFico(b.fico),   // #90: FICO 300–850 or null
      b.current_address ? JSON.stringify(b.current_address) : null, b.marital_status || null,
      b.employment_type || null, b.employer || null, ssnHash]);

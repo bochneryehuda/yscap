@@ -138,6 +138,33 @@ journaled under `source='date_restore'`). Now locked down everywhere:
   `SELECT created_at, task_id, old_value, new_value FROM clickup_write_log
     WHERE source='date_restore' AND field_key='dob' ORDER BY created_at;`
 
+### Auto-resolution + the full two-sided review (2026-07-15 evening, owner-directed)
+
+"The system should know how to handle issues like this — and only when it
+doesn't know, trigger the review."
+
+- **`src/lib/sync-autoresolve.js` `decideDob()`** is the ONE decision function
+  consulted by all three DOB-conflict sites (inbound heal, outbound push gate,
+  restore script). Provable verdicts settle silently, applied to BOTH systems
+  (`adoptDobEverywhere`: portal profile + every linked task, journaled
+  `source='auto_resolve_*'`, audited `sync_dob_auto_resolve`):
+  same-day/different-form (artifact pivots, convention offsets); an implausible
+  value losing to a plausible adult DOB (the 12/11/2022 toddler class); a typed
+  2-digit-year ClickUp artifact beating a portal value whose provenance is the
+  sync itself (`borrowers.origin='clickup_backfill'` — the Shaindel class).
+  Two plausible adult DOBs with human provenance = genuine ambiguity → review.
+- **Two-sided review** (db/110): every row carries `clickup_value` AND
+  `portal_value`; the reviewer sees "In ClickUp" vs "In PILOT" and adopts a
+  winner — `POST /sync-reviews/:id/resolve {winner}` re-reads the winning side
+  LIVE and applies it to **both systems** (dates, DOB, SSN — never stored in
+  the queue, masked display only — and file status). Legacy approve/reject
+  remain for unsupported field keys.
+- **The loan officer owns the queue**: every new review row emails + in-app
+  notifies the file's LO (borrower-level rows notify every LO across the
+  borrower's active files) with a deep link to `/internal/sync-reviews`; the
+  screen and resolve endpoints are already scoped so LOs resolve their own
+  files' rows. `notified_at` prevents double-sends.
+
 ## 5. One way to read a typed date, system-wide
 
 `lib/fields.sanitizeDateOnly` (real calendar date, 4-digit year 1900–2100) and

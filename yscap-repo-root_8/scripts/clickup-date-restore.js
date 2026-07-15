@@ -48,6 +48,7 @@ const T = require('../src/clickup/transforms');
 const F = require('../src/clickup/fields');
 const syncReview = require('../src/lib/sync-review');
 const FIELDS_LIB = require('../src/lib/fields');
+const AUTORESOLVE = require('../src/lib/sync-autoresolve');
 
 // Portal columns the heal pass may write (date-only columns; submitted_at is a
 // timestamptz instant and is never healed from a date field).
@@ -85,7 +86,7 @@ const csvEsc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.te
 async function main() {
   const apps = (await db.query(`
     SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.expected_closing, a.actual_closing,
-           a.acquisition_date, a.submitted_at, b.id AS borrower_id, b.date_of_birth,
+           a.acquisition_date, a.submitted_at, b.id AS borrower_id, b.date_of_birth, b.origin AS b_origin,
            b.first_name, b.last_name
       FROM applications a JOIN borrowers b ON b.id = a.borrower_id
      WHERE a.clickup_pipeline_task_id IS NOT NULL AND a.deleted_at IS NULL
@@ -140,19 +141,29 @@ async function main() {
       const portalGarbage = portal != null && !saneYear(portal);
       const cuSane = cuDay != null && saneYear(cuDay) && cls !== 'garbage-year' && cls !== 'unparseable';
 
-      // A DOB CHANGE is NEVER the script's decision (owner-directed 2026-07-15,
+      // A DOB CHANGE is NEVER the script's own guess (owner-directed 2026-07-15,
       // after the garbage-year branch rewrote a borrower's DOB across all her
       // files from a wrong portal value — the "Shaindel Schwimmer" incident).
-      // Any branch that would write a DIFFERENT calendar day into a ClickUp DOB
-      // queues an OUTBOUND review instead: approve = the deliberate human push.
+      // The shared AUTO-RESOLUTION engine decides: provable verdicts (artifact
+      // pivots, plausibility, provenance) apply to BOTH systems journaled;
+      // genuine ambiguity queues a TWO-SIDED review (which emails the LO).
       // Same-day convention re-anchors (display fix only) remain allowed.
-      const queueDobDecision = async (proposalDay) => {
+      const queueDobDecision = async () => {
+        const looseCu = T.epochToDayLoose(raw);
+        const d = AUTORESOLVE.decideDob({ clickupDay: looseCu, portalDay: portal, portalOrigin: app.b_origin || null });
+        if (d.outcome === 'agree') return 'none';
+        if (d.outcome === 'adopt') {
+          if (!APPLY) return 'would-auto-resolve';
+          await AUTORESOLVE.adoptDobEverywhere({ borrowerId: app.borrower_id, day: d.value, why: d.why, source: 'auto_resolve_restore' });
+          return 'auto-resolved';
+        }
         if (!APPLY) return 'would-queue-review';
         await syncReview.queueReview({
           applicationId: app.id, borrowerId: app.borrower_id, taskId: app.task_id,
           direction: 'outbound', fieldKey: 'date_of_birth',
-          currentValue: cuDay, proposedValue: FIELDS_LIB.sanitizeDob(proposalDay),
-          rawValue: String(raw), reason: 'dob_restore_needs_review' });
+          currentValue: looseCu, proposedValue: FIELDS_LIB.sanitizeDob(portal) || d.proposal || null,
+          rawValue: String(raw), reason: 'dob_restore_needs_review',
+          clickupValue: looseCu, portalValue: portal });
         return 'queue-review';
       };
       let action = 'none', newEpoch = null, verified = null;
@@ -162,7 +173,7 @@ async function main() {
         // (agrees); a DISAGREEING day is a data decision: DOBs go to review,
         // other fields keep the DB-day-wins behavior.
         if (f.col === 'date_of_birth' && agrees === false && portal && !portalGarbage) {
-          action = await queueDobDecision(portal);
+          action = await queueDobDecision();
         } else {
           const day = agrees === false && portal && !portalGarbage ? portal : cuDay;
           newEpoch = T.dateOnlyToClickUpEpoch(day);
@@ -170,7 +181,7 @@ async function main() {
         }
       } else if (cls === 'garbage-year' && f.restorable && portal && !portalGarbage) {
         if (f.col === 'date_of_birth') {
-          action = await queueDobDecision(portal);
+          action = await queueDobDecision();
         } else {
           newEpoch = T.dateOnlyToClickUpEpoch(portal);
           action = newEpoch == null ? 'flag-no-portal-value' : (APPLY ? 'rewrite' : 'would-rewrite');
