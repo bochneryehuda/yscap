@@ -17,6 +17,7 @@ import Application from './screens/Application.jsx';
 import Profile from './screens/Profile.jsx';
 import EntitiesScreen from './screens/EntitiesScreen.jsx';
 import TrackRecordScreen from './screens/TrackRecordScreen.jsx';
+import PricingStudio from './screens/PricingStudio.jsx';
 import NotificationSettings from './screens/NotificationSettings.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
@@ -102,6 +103,7 @@ export default function App() {
           <Route path="/profile" element={<Private><Profile /></Private>} />
           <Route path="/entities" element={<Private><EntitiesScreen /></Private>} />
           <Route path="/track-record" element={<Private><TrackRecordScreen /></Private>} />
+          <Route path="/pricing" element={<Private><PricingStudio /></Private>} />
           <Route path="/settings/notifications" element={<Private><NotificationSettings /></Private>} />
 
           {/* internal console */}
