@@ -1230,6 +1230,8 @@ export default function Application() {
           )}
         </div>
 
+        <CoBorrowerRail app={app} onChanged={load} />
+
         <div className="panel rail-callout">
           <div className="rail-callout-lbl">Next step</div>
           <p className="small" style={{ margin: 0 }}>
@@ -1266,6 +1268,62 @@ export default function Application() {
           onClose={() => setPreviewDoc(null)} />
       )}
     </>
+  );
+}
+
+/* #110: invite a co-borrower to an EXISTING file from the overview — only the
+   PRIMARY borrower, only when the file has no co-borrower yet. When one is
+   already on the file, this just shows who. */
+function CoBorrowerRail({ app, onChanged }) {
+  const { actor } = useAuth();
+  const isPrimary = actor?.id && app.borrower_id === actor.id;
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ firstName: '', lastName: '', email: '', phone: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const coName = [app.co_borrower_first_name, app.co_borrower_last_name].filter(Boolean).join(' ');
+  async function submit() {
+    if (busy) return; setErr('');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((f.email || '').trim())) { setErr('Enter a valid email address.'); return; }
+    setBusy(true);
+    try { await api.inviteCoBorrowerToFile(app.id, f); setOpen(false); setF({ firstName: '', lastName: '', email: '', phone: '' }); await onChanged(); }
+    catch (e) { setErr(e.message || 'Could not invite the co-borrower.'); }
+    finally { setBusy(false); }
+  }
+  if (app.co_borrower_id) {
+    return (
+      <div className="panel">
+        <h3 style={{ marginBottom: 8 }}>Co-borrower</h3>
+        <div className="rail-team"><span className="rail-ava" aria-hidden="true" />
+          <div className="rail-who"><div className="rail-n">{coName || 'Invited'}</div>
+            <div className="rail-r muted small">On this loan with you</div></div></div>
+      </div>
+    );
+  }
+  if (!isPrimary) return null;
+  return (
+    <div className="panel">
+      <h3 style={{ marginBottom: 8 }}>Co-borrower</h3>
+      {!open ? (
+        <>
+          <p className="muted small" style={{ marginBottom: 10 }}>Applying with someone else? Invite them to PILOT — they add their own information and documents.</p>
+          <button className="btn ghost small" onClick={() => setOpen(true)}>+ Invite a co-borrower</button>
+        </>
+      ) : (
+        <>
+          <div className="grid cols-2" style={{ gap: 8 }}>
+            <input className="input" placeholder="First name" value={f.firstName} onChange={e => setF(s => ({ ...s, firstName: e.target.value }))} />
+            <input className="input" placeholder="Last name" value={f.lastName} onChange={e => setF(s => ({ ...s, lastName: e.target.value }))} />
+          </div>
+          <input className="input" style={{ marginTop: 8 }} type="email" placeholder="Email" value={f.email} onChange={e => setF(s => ({ ...s, email: e.target.value }))} />
+          {err && <div role="alert" className="notice err small" style={{ marginTop: 8 }}>{err}</div>}
+          <div className="row" style={{ gap: 8, marginTop: 10 }}>
+            <button className="btn primary small" disabled={busy} onClick={submit}>{busy ? 'Inviting…' : 'Send invite'}</button>
+            <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

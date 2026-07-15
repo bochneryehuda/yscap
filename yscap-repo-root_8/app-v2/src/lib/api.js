@@ -190,6 +190,7 @@ export const api = {
   applications: () => req('GET', '/api/borrower/applications'),
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
   fileOfficer:  (id) => req('GET', `/api/borrower/applications/${id}/officer`),
+  inviteCoBorrowerToFile: (id, b) => req('POST', `/api/borrower/applications/${id}/co-borrower`, b),
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
   borrowerPricingQuote: (appId, overrides) => req('POST', `/api/borrower/applications/${appId}/pricing/quote`, { overrides }),
