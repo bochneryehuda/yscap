@@ -218,9 +218,21 @@ if (PILOT_LOGIN_HOSTS.size) {
   });
 }
 
-app.use(express.static(v2Dir));            // V2 wins at the root
-app.use('/v1', express.static(webDir));    // version 1, kept browsable
-app.use(express.static(webDir));           // fallthrough: v1 assets + legacy /v2/* URLs
+// HTML entry points must NEVER be cached (owner-reported 2026-07-15 night:
+// an officer's long-lived tab / cached shell ran YESTERDAY'S bundle — old
+// date rendering displayed a shifted DOB, and the new screens were missing —
+// while an admin who reloaded saw today's. Hashed build assets stay
+// long-cached (their names change every build); the HTML that POINTS at them
+// must always revalidate so a reload always lands on the current build).
+const staticOpts = {
+  setHeaders(res, filePath) {
+    if (/\.html?$/.test(filePath)) res.set('Cache-Control', 'no-cache, must-revalidate');
+    else if (/[/\\]assets[/\\]/.test(filePath)) res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  },
+};
+app.use(express.static(v2Dir, staticOpts));            // V2 wins at the root
+app.use('/v1', express.static(webDir, staticOpts));    // version 1, kept browsable
+app.use(express.static(webDir, staticOpts));           // fallthrough: v1 assets + legacy /v2/* URLs
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/auth')) return next();
   // A missing FILE (anything with an extension — .css/.js/.png…) must 404, not

@@ -265,6 +265,45 @@ export default function StaffLayout({ children }) {
   const nav = useNavigate();
   const [unread, setUnread] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Open sync-review count (scoped server-side: an LO sees THEIR rows' count).
+  const [reviewCount, setReviewCount] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const poll = () => api.get('/api/staff/sync-reviews/count')
+      .then(r => { if (alive) setReviewCount(r.open || 0); }).catch(() => {});
+    poll();
+    const t = setInterval(poll, 120000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+  // STALE-BUILD WATCHDOG (owner-reported 2026-07-15 night: an officer's
+  // long-lived tab ran yesterday's bundle — displaying a timezone-shifted DOB
+  // and missing today's screens — while a freshly-reloaded admin saw the
+  // current build; "I see one date of birth and the loan officer sees
+  // another"). Every few minutes (and whenever the tab regains focus) the
+  // CURRENT index.html is fetched cache-busted; if it references a different
+  // build than the one running, a banner asks for one click to refresh.
+  const [staleBuild, setStaleBuild] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const running = (() => {
+      const s = document.querySelector('script[src*="/assets/index-"]');
+      const m = s && s.src && s.src.match(/index-([\w-]+)\.js/);
+      return m ? m[1] : null;
+    })();
+    if (!running) return undefined;
+    const check = () => fetch('/portal/index.html', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.text() : ''))
+      .then((html) => {
+        if (!alive || !html) return;
+        const m = html.match(/index-([\w-]+)\.js/);
+        if (m && m[1] !== running) setStaleBuild(true);
+      }).catch(() => {});
+    check();
+    const t = setInterval(check, 5 * 60 * 1000);
+    const onFocus = () => check();
+    window.addEventListener('focus', onFocus);
+    return () => { alive = false; clearInterval(t); window.removeEventListener('focus', onFocus); };
+  }, []);
   useEffect(() => {
     let alive = true;
     const poll = () => api.staffConversations()
@@ -305,6 +344,15 @@ export default function StaffLayout({ children }) {
   const roleLabel = ROLE_LABEL[role] || role || 'Internal';
   return (
     <div className="app">
+      {staleBuild && (
+        <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000,
+          background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
+          <span>PILOT was updated — refresh to get the latest screens and fixes.</span>
+          <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
+            onClick={() => window.location.reload()}>Refresh now</button>
+        </div>
+      )}
       <aside className={`app-sidebar ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)}>
         <div className="app-brandrow">
           <Brand to="/internal" ariaLabel="PILOT by YS Capital — Internal" console={consoleLabel} />
@@ -329,7 +377,8 @@ export default function StaffLayout({ children }) {
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}
-        <NavLink className="sb-link" to="/internal/sync-reviews" title="Sync review — suspicious PILOT ⇄ ClickUp changes held for human approval before anything is rewritten"><NavIcon name="audit" />Sync review</NavLink>
+        <NavLink className="sb-link" to="/internal/sync-reviews" title="Sync review — suspicious PILOT ⇄ ClickUp changes held for human approval before anything is rewritten"><NavIcon name="audit" />Sync review
+          {reviewCount > 0 && <span className="sb-badge">{reviewCount > 99 ? '99+' : reviewCount}</span>}</NavLink>
 
         <div className="sb-spacer" />
         <div className="sb-foot">

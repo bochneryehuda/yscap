@@ -197,6 +197,84 @@ async function flagUnsyncableFilesOnce() {
   return queued;
 }
 
+// FULL-PORTFOLIO IDENTITY MISMATCH AUDIT (owner-directed 2026-07-15 night:
+// "a real audit on every single mismatch"). The inbound heal is deliberately
+// fill-only for borrower identity (email / cell / name / home address / SSN),
+// so a DISAGREEMENT between the two systems on those fields was silent by
+// design — nothing overwrote, but nothing surfaced it either. This boot
+// one-shot compares every linked file's borrower profile against the task's
+// LAST-INGEST SNAPSHOT (zero extra ClickUp API calls; it runs after the
+// reconcile pass has refreshed snapshots) and queues a TWO-SIDED, RESOLVABLE
+// review row per genuine mismatch. Common-sense comparators keep the noise
+// down (NOT too strict — owner's words): emails compare case-folded, phones
+// by their last 10 digits, names by FIRST token only (middle names and
+// suffixes never flag), addresses by the same normalized street identity the
+// dedup matcher uses, SSNs by last-4 (masked display). Fill-only cases (one
+// side blank) never flag — they aren't mismatches. Dismissals stick
+// (suppressIfRejected); rows self-close here when the systems agree again.
+async function auditIdentityMismatchesOnce() {
+  const review = require('../lib/sync-review');
+  const identity = require('../clickup/identity');
+  const transforms = require('../clickup/transforms');
+  const KEYS = ['email', 'cell_phone', 'first_name', 'current_address', 'ssn'];
+  const r = await db.query(
+    `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
+            b.email, b.cell_phone, b.first_name, b.last_name, b.current_address, b.ssn_last4,
+            i.snapshot
+       FROM applications a
+       JOIN borrowers b ON b.id = a.borrower_id
+       JOIN clickup_task_index i ON i.task_id = a.clickup_pipeline_task_id
+      WHERE a.clickup_pipeline_task_id IS NOT NULL AND a.deleted_at IS NULL
+        AND (a.sync_state IS NULL OR a.sync_state NOT IN ('descoped','manual_review','dead'))
+        AND i.snapshot IS NOT NULL
+      ORDER BY a.updated_at DESC LIMIT 500`).catch(() => ({ rows: [] }));
+  if (!r.rows.length) return 0;
+  // Close-only-what's-open: one upfront read instead of per-field UPDATEs.
+  const open = await db.query(
+    `SELECT task_id, field_key FROM sync_review_queue WHERE status='open' AND field_key = ANY($1)`,
+    [KEYS]).catch(() => ({ rows: [] }));
+  const openSet = new Set(open.rows.map((o) => `${o.task_id}|${o.field_key}`));
+  const digitsOf = (v) => String(v == null ? '' : v).replace(/\D/g, '');
+  const lc = (v) => String(v == null ? '' : v).trim().toLowerCase();
+  const addrOf = (v) => { try { return identity.normalizeIdentity({ address: v && (v.formatted_address || v.oneLine || v.line1) }).address || null; } catch { return null; } };
+  const addrText = (v) => (v && (v.formatted_address || v.oneLine || v.line1)) || '';
+  let queued = 0, closed = 0;
+  for (const row of r.rows) {
+    const sb = (row.snapshot && row.snapshot.borrower) || {};
+    const checks = [];
+    if (sb.email && row.email) checks.push({ key: 'email', differ: lc(sb.email) !== lc(row.email), cu: sb.email, p: row.email });
+    const cp = digitsOf(sb.cell_phone), pp = digitsOf(row.cell_phone);
+    if (cp.length >= 10 && pp.length >= 10) checks.push({ key: 'cell_phone', differ: cp.slice(-10) !== pp.slice(-10), cu: sb.cell_phone, p: row.cell_phone });
+    const cuFirst = lc(String(sb.first_name || '').split(/\s+/)[0]);
+    const pFirst = lc(String(row.first_name || '').split(/\s+/)[0]);
+    if (cuFirst && pFirst && !transforms.isPlaceholderName(sb.first_name) && !transforms.isPlaceholderName(row.first_name)) {
+      checks.push({ key: 'first_name', differ: cuFirst !== pFirst,
+        cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
+    }
+    const cuA = addrOf(sb.current_address), pA = addrOf(row.current_address);
+    if (cuA && pA) checks.push({ key: 'current_address', differ: cuA !== pA, cu: addrText(sb.current_address), p: addrText(row.current_address) });
+    const cuS = (String(sb.ssn || '').match(/(\d{4})\s*$/) || [])[1];
+    if (cuS && row.ssn_last4) checks.push({ key: 'ssn', differ: cuS !== String(row.ssn_last4), cu: '✱✱✱-✱✱-' + cuS, p: '✱✱✱-✱✱-' + row.ssn_last4 });
+    for (const c of checks) {
+      try {
+        if (c.differ) {
+          await review.queueReview({
+            applicationId: row.id, borrowerId: row.borrower_id, taskId: row.task_id,
+            direction: 'inbound', fieldKey: c.key, reason: 'identity_mismatch_audit',
+            suppressIfRejected: true,
+            clickupValue: String(c.cu).slice(0, 160), portalValue: String(c.p).slice(0, 160) });
+          queued++;
+        } else if (openSet.has(`${row.task_id}|${c.key}`)) {
+          closed += await review.closeStaleReviews({ taskId: row.task_id, fieldKey: c.key,
+            note: 'auto-closed — the two systems now agree' });
+        }
+      } catch (_) { /* per-field best-effort */ }
+    }
+  }
+  if (queued || closed) console.log(`[clickup-sync] identity mismatch audit: ${queued} queued, ${closed} auto-closed`);
+  return queued;
+}
+
 // A task that failed to MATERIALIZE (match_status 'ambiguous' or
 // 'duplicate_pending') only ever got re-examined when ClickUp happened to send
 // another webhook or the task fell inside the reconcile window — so a task
@@ -785,7 +863,12 @@ function start() {
   // existed or outside the reconcile poll's window. Portal-only, ClickUp untouched,
   // idempotent. Delayed so the option cache + any boot backfill settle first.
   setTimeout(() => {
-    reconcileLinkedProgramsOnce().catch((e) => console.error('[clickup-sync] reconcile-programs', e.message));
+    reconcileLinkedProgramsOnce()
+      .catch((e) => console.error('[clickup-sync] reconcile-programs', e.message))
+      // The mismatch audit reads each task's LAST-INGEST snapshot, so it runs
+      // after the reconcile pass above has refreshed them portfolio-wide.
+      .then(() => auditIdentityMismatchesOnce())
+      .catch((e) => console.error('[clickup-sync] identity mismatch audit', e.message));
     // AFTER the reconcile pass (which links files to their EXISTING tasks by
     // identity), give any still-unlinked recent portal file its one bounded
     // create retry — the recovery path for a failed create-at-file-start.
@@ -832,4 +915,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };

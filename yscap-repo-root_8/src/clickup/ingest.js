@@ -156,7 +156,36 @@ async function healBorrowerFields(borrowerId, b, taskId) {
           dobIn = null; handled = true;
         }
       }
-      const d = handled ? null : AR.decideDob({ clickupDay: rawDob, portalDay, portalOrigin: cur.origin || null });
+      // BACKDATING provenance (owner-directed 2026-07-15 night: "backdate
+      // everything — all other files that were messed up should read the
+      // correct thing that was updated in ClickUp"): for a sync-created
+      // profile (origin clickup_backfill) whose DOB differs from ClickUp's,
+      // PROVE from the audit trail whether any human ever touched the DOB in
+      // the portal. Never touched → the portal value is a sync artifact of
+      // the incident era and ClickUp's plausible current value wins
+      // (decideDob's clickup_current_beats_sync_derived_profile). Any human
+      // fingerprint (profile edit, complete-fields, a review resolution) →
+      // review, exactly as before. Errors → unknown → review (conservative).
+      let portalHumanEdited = null;
+      if (!handled && cur.origin === 'clickup_backfill' && portalDay
+          && FLD.sanitizeDob(rawDob) && FLD.sanitizeDob(portalDay)
+          && FLD.sanitizeDob(rawDob) !== FLD.sanitizeDob(portalDay)) {
+        try {
+          const he = await db.query(
+            `SELECT 1 FROM audit_log al
+              WHERE al.actor_kind IN ('staff','borrower')
+                AND (
+                     (al.entity_type='borrower' AND al.entity_id=$1)
+                  OR (al.entity_type='application' AND EXISTS (
+                        SELECT 1 FROM applications a2
+                         WHERE a2.id = al.entity_id AND (a2.borrower_id=$1 OR a2.co_borrower_id=$1)))
+                )
+                AND (al.action = 'sync_dob_auto_resolve' OR al.detail::text ILIKE '%date_of_birth%')
+              LIMIT 1`, [borrowerId]);
+          portalHumanEdited = !!he.rows[0];
+        } catch (_) { portalHumanEdited = null; }
+      }
+      const d = handled ? null : AR.decideDob({ clickupDay: rawDob, portalDay, portalOrigin: cur.origin || null, portalHumanEdited });
       if (handled) { /* adopted the human's source edit — nothing else to decide */ }
       else if (d.outcome === 'adopt') {
         await AR.adoptDobEverywhere({ borrowerId, day: d.value, why: d.why, source: 'auto_resolve_inbound' });
