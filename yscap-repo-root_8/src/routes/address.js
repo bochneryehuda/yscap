@@ -19,6 +19,21 @@ const { parseAddress, normalizeAddress, splitUnit } = require('../lib/address');
 const US_STATE_ABBR = { alabama:'AL',alaska:'AK',arizona:'AZ',arkansas:'AR',california:'CA',colorado:'CO',connecticut:'CT',delaware:'DE','district of columbia':'DC',florida:'FL',georgia:'GA',hawaii:'HI',idaho:'ID',illinois:'IL',indiana:'IN',iowa:'IA',kansas:'KS',kentucky:'KY',louisiana:'LA',maine:'ME',maryland:'MD',massachusetts:'MA',michigan:'MI',minnesota:'MN',mississippi:'MS',missouri:'MO',montana:'MT',nebraska:'NE',nevada:'NV','new hampshire':'NH','new jersey':'NJ','new mexico':'NM','new york':'NY','north carolina':'NC','north dakota':'ND',ohio:'OH',oklahoma:'OK',oregon:'OR',pennsylvania:'PA','rhode island':'RI','south carolina':'SC','south dakota':'SD',tennessee:'TN',texas:'TX',utah:'UT',vermont:'VT',virginia:'VA',washington:'WA','west virginia':'WV',wisconsin:'WI',wyoming:'WY' };
 const stateAbbr = (s) => !s ? '' : (s.length === 2 ? s.toUpperCase() : (US_STATE_ABBR[s.toLowerCase()] || s));
 
+// NYC quirk (#93): geocoders label ALL FIVE boroughs with the municipality
+// "New York" (Google `locality`, OSM `city`), but USPS — and residents — use the
+// BOROUGH as the mailing city: Brooklyn, Bronx, Staten Island, Queens. The one
+// exception is Manhattan, whose mailing city really is "New York". So when the
+// municipality is New York and a distinct borough component is present, prefer the
+// borough (stripping a leading "The " from "The Bronx"); otherwise keep the city.
+// Narrowly gated on locality === "New York", so no ordinary city is affected.
+function preferBorough(locality, borough) {
+  const city = String(locality || '').trim();
+  const b = String(borough || '').replace(/^the\s+/i, '').trim();
+  if (!city) return b;                                    // no municipality → borough/sublocality fallback
+  if (/^(city of )?new york$/i.test(city) && b && !/^manhattan$/i.test(b)) return b;
+  return city;
+}
+
 // small TTL cache + a min-interval throttle (Nominatim asks for <=1 req/sec)
 const cache = new Map();
 const TTL = 5 * 60 * 1000;
@@ -57,7 +72,7 @@ function osmAddress(a = {}) {
   return normalizeAddress({
     line1: line1 || a.neighbourhood || '',
     unit: '',
-    city: a.city || a.town || a.village || a.hamlet || '',
+    city: preferBorough(a.city || a.town || a.village || a.hamlet || '', a.borough || a.city_district || a.suburb),
     state: stateAbbr(a.state || ''),
     zip: a.postcode || '',
     county: (a.county || '').replace(/\s+County$/i, ''),  // kept for backend only
@@ -99,7 +114,9 @@ async function googleDetails(placeId) {
   return normalizeAddress({
     line1: [num && num.long_name, route && route.long_name].filter(Boolean).join(' '),
     unit: (get('subpremise') || {}).long_name || '',
-    city: (get('locality') || get('sublocality') || get('postal_town') || {}).long_name || '',
+    city: preferBorough((get('locality') || {}).long_name || '',
+      (get('sublocality_level_1') || get('sublocality') || {}).long_name)
+      || (get('postal_town') || {}).long_name || '',
     state: (get('administrative_area_level_1') || {}).short_name || '',
     zip: (get('postal_code') || {}).long_name || '',
     county: ((get('administrative_area_level_2') || {}).long_name || '').replace(/\s+County$/i, ''),
