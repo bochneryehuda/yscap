@@ -126,6 +126,14 @@ async function adoptDobEverywhere({ borrowerId, day, why, source = 'auto_resolve
      VALUES ($1,$2,'sync_dob_auto_resolve','borrower',$3,$4)`,
     [actorId ? 'staff' : 'system', actorId, borrowerId,
      JSON.stringify({ day, why, source, ...out })]).catch(() => {});
+  // The disagreement is settled — any OPEN review rows for this borrower's DOB
+  // are now stale; close them so a fix at the source clears the queue with no
+  // clicks (owner-directed 2026-07-15).
+  try {
+    await require('./sync-review').closeStaleReviews({
+      borrowerId, fieldKey: 'date_of_birth',
+      note: `auto-closed — resolved to ${day} (${why}, ${source})` });
+  } catch (_) { /* best-effort */ }
   return out;
 }
 

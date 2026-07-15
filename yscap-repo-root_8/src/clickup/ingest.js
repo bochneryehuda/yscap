@@ -149,6 +149,11 @@ async function healBorrowerFields(borrowerId, b, taskId) {
         dobIn = null;
       } else {
         dobIn = null;   // 'agree' — the portal already holds this day
+        // Both systems agree now — any open DOB review for this borrower is
+        // stale (fixed at the source); close it, no clicks needed.
+        if (portalDay) {
+          try { await review.closeStaleReviews({ borrowerId, fieldKey: 'date_of_birth', note: 'auto-closed — both systems now agree on ' + portalDay }); } catch (_) {}
+        }
       }
     } catch (e) { dobIn = FLD.sanitizeDob(rawDob); /* strict fill-only fallback */ }
   }
@@ -859,6 +864,11 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     if (!(y >= 1900 && y <= 2100)) {
       pendingYearReviews.push({ fieldKey: dk, raw: String(v), proposed: transforms.pivotSuspectYear(String(v), 'closing') });
       cols[dk] = null;                 // COALESCE keeps the current portal value
+    } else {
+      // The ClickUp value is sane now — an open year-guard review for this
+      // task+field is stale (fixed at the source); close it, no clicks needed
+      // (owner-directed 2026-07-15). Best-effort; the pull proceeds regardless.
+      try { await review.closeStaleReviews({ taskId: task.id, fieldKey: dk, note: 'auto-closed — ClickUp now carries a valid date (' + String(v) + ')' }); } catch (_) {}
     }
   }
 
