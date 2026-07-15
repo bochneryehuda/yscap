@@ -777,6 +777,87 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
   return { emailed: true, hasAccount: !!hasAuth.rows[0], inviteToken: token };
 }
 
+// #102: invite ANY email to the portal — no file required. The person becomes a
+// borrower profile AUTO-ASSIGNED to the inviting loan officer (owning officer of
+// record, #98), the portal invite email goes out, and a CRM lead is opened for the
+// inviting officer so the relationship is tracked from first touch (officer + lead
+// CRM). Any active staffer may invite; only a seesAll admin may assign the owning
+// officer to someone other than themselves.
+router.post('/invite-to-portal', async (req, res) => {
+  const b = req.body || {};
+  const email = String(b.email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'a valid email is required' });
+  const first = String(b.firstName || '').trim();
+  const last = String(b.lastName || '').trim();
+  const phone = String(b.phone || '').trim() || null;
+  // Owning officer = the inviting staffer, unless an admin explicitly assigns another
+  // active loan officer / processor.
+  let officerId = req.actor.id;
+  if (b.officerId && seesAll(req)) {
+    const o = await db.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true`, [b.officerId]);
+    if (o.rows[0]) officerId = o.rows[0].id;
+  }
+  try {
+    // 1) upsert the borrower profile by email; set the owning officer only when the
+    // borrower doesn't already have one (never steal an existing relationship).
+    const bor = await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,primary_officer_id)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (email) DO UPDATE SET
+         first_name=CASE WHEN lower(btrim(coalesce(borrowers.first_name,''))) IN ('','unknown')
+                          AND lower(btrim(EXCLUDED.first_name)) NOT IN ('','unknown')
+                         THEN EXCLUDED.first_name ELSE borrowers.first_name END,
+         last_name=CASE WHEN lower(btrim(coalesce(borrowers.last_name,''))) IN ('','unknown','')
+                         AND lower(btrim(EXCLUDED.last_name)) NOT IN ('','unknown')
+                        THEN EXCLUDED.last_name ELSE borrowers.last_name END,
+         cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
+         primary_officer_id=COALESCE(borrowers.primary_officer_id,EXCLUDED.primary_officer_id),
+         updated_at=now()
+       RETURNING id, (xmax=0) AS created, primary_officer_id`,
+      [first || 'Unknown', last || '', email, phone, officerId]);
+    const borrowerId = bor.rows[0].id;
+    // 2) portal invite — existing login → /login, else a fresh 14-day accept token.
+    const hasAuth = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [borrowerId]);
+    let token = null, acceptUrl;
+    if (hasAuth.rows[0]) acceptUrl = mail.link('/login');
+    else {
+      token = C.randomToken(24);
+      await db.query(`INSERT INTO invite_tokens (token_hash,kind,email,created_by,expires_at)
+                      VALUES ($1,'borrower',$2,$3, now() + interval '14 days')`, [C.sha256(token), email, req.actor.id]);
+      acceptUrl = mail.link('/accept?token=' + token);
+    }
+    const inviter = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+    try {
+      await mail.send('borrowerInvite', email, {
+        firstName: first,
+        propertyLabel: 'the YS Capital borrower portal',
+        loanNumber: null,
+        inviter: inviter.rows[0]?.full_name || null,
+        acceptUrl, hasAccount: !!hasAuth.rows[0],
+      });
+    } catch (_) { /* invite email is best-effort; the profile + lead are already saved */ }
+    // 3) open a CRM lead for the owning officer so the relationship is tracked from
+    // first touch — unless one already exists for this email + officer (idempotent).
+    let leadId = null;
+    try {
+      const dup = await db.query(`SELECT id FROM leads WHERE lower(email)=$1 AND officer_id=$2 LIMIT 1`, [email, officerId]);
+      if (dup.rows[0]) leadId = dup.rows[0].id;
+      else {
+        const name = [first, last].filter(Boolean).join(' ') || email;
+        const lr = await db.query(
+          `INSERT INTO leads (tool,source,lead_source,name,first_name,last_name,email,phone,status,officer_id,created_by_staff_id,last_activity_at)
+           VALUES ('manual','portal_invite','portal_invite',$1,$2,$3,$4,$5,'new',$6,$7,now()) RETURNING id`,
+          [name, first || null, last || null, email, phone, officerId, req.actor.id]);
+        leadId = lr.rows[0].id;
+        await db.query(`INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body) VALUES ($1,$2,'system','Invited to portal',$3)`,
+          [leadId, req.actor.id, 'Invited ' + email + ' to the borrower portal']);
+      }
+    } catch (_) { /* the CRM lead is best-effort */ }
+    await audit(req, 'invite_to_portal', 'borrower', borrowerId, { email, officerId, leadId, created: !!bor.rows[0].created });
+    res.status(201).json({ ok: true, borrowerId, leadId, emailed: true, hasAccount: !!hasAuth.rows[0], created: !!bor.rows[0].created });
+  } catch (e) { console.error('[invite-to-portal] failed:', db.describeError(e)); res.status(500).json({ error: 'could not send the invite' }); }
+});
+
 // Invite the borrower to an existing file (guarded by the /applications/:id
 // access middleware below).
 router.post('/applications/:id/invite-borrower', async (req, res) => {

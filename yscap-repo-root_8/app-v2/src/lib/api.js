@@ -275,6 +275,7 @@ export const api = {
   staffExceptions:  () => req('GET', '/api/staff/exceptions'),
   staffCreateFile:  (b) => req('POST', '/api/staff/applications', b),
   staffInviteBorrower: (appId) => req('POST', `/api/staff/applications/${appId}/invite-borrower`),
+  staffInviteToPortal: (b) => req('POST', '/api/staff/invite-to-portal', b),
   staffLeadCapture: () => req('GET', '/api/staff/lead-capture'),
   staffApplication: (id) => req('GET', `/api/staff/applications/${id}`),
   staffSetCoBorrower: (id, body) => req('POST', `/api/staff/applications/${id}/co-borrower`, body),
