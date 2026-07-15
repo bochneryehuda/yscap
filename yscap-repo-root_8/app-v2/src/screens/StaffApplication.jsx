@@ -4,6 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
+import { formatSSN } from '../lib/validators.js';
 import { useAuth } from '../lib/auth.jsx';
 import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
@@ -1442,7 +1443,7 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
           <label style={{ gridColumn: '1 / -1' }}><span>Email</span><input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></label>
           <label><span>Phone</span><input className="input" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></label>
           <label><span>Date of birth</span><input className="input" type="date" value={f.dob} onChange={e => setF({ ...f, dob: e.target.value })} /></label>
-          <label style={{ gridColumn: '1 / -1' }}><span>SSN (stored encrypted)</span><input className="input" value={f.ssn} onChange={e => setF({ ...f, ssn: e.target.value })} placeholder="XXX-XX-XXXX" /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>SSN (stored encrypted)</span><input className="input" inputMode="numeric" value={f.ssn} onChange={e => setF({ ...f, ssn: formatSSN(e.target.value) })} placeholder="XXX-XX-XXXX" /></label>
         </div>
         {err && <div role="alert" className="notice err" style={{ marginTop: 6 }}>{err}</div>}
         <div className="row" style={{ gap: 8, marginTop: 8 }}>

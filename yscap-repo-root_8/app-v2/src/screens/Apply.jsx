@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
@@ -621,10 +622,11 @@ export default function Apply() {
                 </div>
                 <div className="grid cols-3">
                   <div className="field"><label>Social Security Number</label>
-                    <input className="input" autoComplete="off" value={form.ssn || ''} onChange={e => set('ssn', e.target.value)}
+                    <input className="input" autoComplete="off" inputMode="numeric" value={form.ssn || ''} onChange={e => set('ssn', formatSSN(e.target.value))}
                       placeholder={form.ssnOnFile ? 'On file — leave blank' : '•••-••-••••'} /></div>
                   <div className="field"><label>Estimated FICO</label>
-                    <input className="input" type="number" min="300" max="850" value={p.fico || ''} onChange={e => setPersonal('fico', e.target.value)} placeholder="e.g. 720" /></div>
+                    <input className="input" type="text" inputMode="numeric" maxLength={3} value={p.fico || ''} onChange={e => setPersonal('fico', cleanFICO(e.target.value))} placeholder="e.g. 720" />
+                    {p.fico && !ficoValid(p.fico) && <span className="hint err">FICO must be between 300 and 850.</span>}</div>
                   <div className="field"><label>Citizenship</label>
                     <select className="input" value={p.citizenship || ''} onChange={e => setPersonal('citizenship', e.target.value)}>
                       <option value="">Select…</option>{CITIZENSHIP.map(c => <option key={c}>{c}</option>)}

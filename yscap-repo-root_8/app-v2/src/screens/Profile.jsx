@@ -8,6 +8,7 @@ import { BorrowerContacts } from '../components/FileContacts.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import TwoFactorPanel from '../components/TwoFactorPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
+import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { Link } from 'react-router-dom';
 
 /* Canonical borrower profile — the single home for personal information so the
@@ -172,10 +173,11 @@ export default function Profile() {
           <div className="field"><label>Date of birth</label>
             <input className="input" type="date" value={p.date_of_birth ? String(p.date_of_birth).slice(0, 10) : ''} onChange={e => set('date_of_birth', e.target.value)} /></div>
           <div className="field"><label>Social Security Number</label>
-            <input className="input" autoComplete="off" value={ssn} onChange={e => { edited.current = true; setSsn(e.target.value); }}
+            <input className="input" autoComplete="off" inputMode="numeric" value={ssn} onChange={e => { edited.current = true; setSsn(formatSSN(e.target.value)); }}
               placeholder={p.ssn_last4 ? `On file ••• ${p.ssn_last4}` : '•••-••-••••'} /></div>
           <div className="field"><label>Estimated FICO</label>
-            <input className="input" type="number" min="300" max="850" value={p.fico || ''} onChange={e => set('fico', e.target.value)} placeholder="e.g. 720" /></div>
+            <input className="input" type="text" inputMode="numeric" maxLength={3} value={p.fico || ''} onChange={e => set('fico', cleanFICO(e.target.value))} placeholder="e.g. 720" />
+            {p.fico && !ficoValid(p.fico) && <span className="hint err">FICO must be between 300 and 850.</span>}</div>
           <div className="field"><label>Citizenship</label>
             <select className="input" value={p.citizenship || ''} onChange={e => set('citizenship', e.target.value)}>
               <option value="">Select…</option>{CITIZENSHIP.map(c => <option key={c}>{c}</option>)}

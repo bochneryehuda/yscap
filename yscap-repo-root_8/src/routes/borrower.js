@@ -120,7 +120,7 @@ router.put('/profile', async (req, res) => {
   if (b.lastName !== undefined && String(b.lastName).trim()) fields.last_name = String(b.lastName).trim();
   if (b.cellPhone !== undefined) fields.cell_phone = clean(b.cellPhone);
   if (b.dateOfBirth !== undefined) fields.date_of_birth = clean(b.dateOfBirth);
-  if (b.fico !== undefined) fields.fico = (b.fico === '' || b.fico == null) ? null : (parseInt(b.fico, 10) || null);
+  if (b.fico !== undefined) fields.fico = require('../lib/fields').sanitizeFico(b.fico);  // #90: 3-digit, 300–850
   if (b.citizenship !== undefined) fields.citizenship = clean(b.citizenship);
   if (b.maritalStatus !== undefined) fields.marital_status = clean(b.maritalStatus);
   if (b.yearsAtResidence !== undefined) fields.years_at_residence = (b.yearsAtResidence === '' || b.yearsAtResidence == null) ? null : Number(b.yearsAtResidence);
@@ -1282,7 +1282,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'int') { v = parseInt(v, 10); if (!Number.isFinite(v)) continue; }
+      if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
     }
     if (brSets.length) { brSets.push('updated_at=now()'); await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals); }
@@ -2368,7 +2368,7 @@ async function syncProfileFromApplication(borrowerId, b) {
        updated_at      = now()
      WHERE id=$1`,
     [borrowerId, p.cellPhone || '', p.dateOfBirth || '', p.citizenship || '', p.maritalStatus || '',
-     p.fico ? parseInt(p.fico, 10) || null : null,
+     require('../lib/fields').sanitizeFico(p.fico),
      currentAddress, isFinite(yearsAtResidence) ? yearsAtResidence : null,
      monthsAtResidence, p.housingStatus || '', housingPayment]);
   if (b.ssn) {

@@ -924,7 +924,7 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     if (typeof b.co_phone === 'string' && b.co_phone.trim()) put('cell_phone', b.co_phone.trim());
     if (b.co_dob) put('date_of_birth', b.co_dob);
     // #60 — parity with the primary borrower's inline-add fields.
-    if (b.co_fico !== undefined && b.co_fico !== '' && Number.isFinite(Number(b.co_fico))) put('fico', Math.trunc(Number(b.co_fico)));
+    if (b.co_fico !== undefined && b.co_fico !== '') { const cf = require('../lib/fields').sanitizeFico(b.co_fico); if (cf != null) put('fico', cf); }  // #90: 3-digit, 300–850
     if (typeof b.co_citizenship === 'string' && b.co_citizenship.trim()) put('citizenship', b.co_citizenship.trim());
     if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
     sets.push('updated_at=now()');
@@ -3548,7 +3548,7 @@ async function completeFields(req, res, borrowerScoped) {
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'int') { v = parseInt(v, 10); if (!Number.isFinite(v)) continue; }
+      if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
     }
     if (brSets.length) {
