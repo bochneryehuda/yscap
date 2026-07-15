@@ -73,6 +73,21 @@ async function expectHttp(status, fn) {
     assert.strictEqual(S.isTerminal('in underwriting'), false);
     assert.strictEqual(S.isTerminal(''), false, 'blank status is not terminal');
     assert.strictEqual(S.isTerminal(null), false);
+    // UNKNOWN statuses are never terminal — the keyword fallback is for
+    // borrower-facing display only, not the materialization gate (a future
+    // "funding scheduled" status must keep the duplicate-defer working).
+    assert.strictEqual(S.isTerminal('funding scheduled'), false, 'unknown status → not terminal even if it keyword-matches funded');
+    assert.strictEqual(S.isTerminal('recall pending review'), false, 'unknown status → not terminal even if it keyword-matches withdrawn');
+  });
+
+  await ta('review-action errors are marked expose (upstream ClickUp statuses are not relayed)', async () => {
+    // The route relays a status verbatim ONLY when expose=true — a ClickUp
+    // client error also carries .status and must map to 502, or an upstream
+    // 401 would read as session-expiry and log the staff user out.
+    try {
+      await SFR.applyFileReviewAction({ row: { reason: 'push_dead_lettered' }, action: 'nope' });
+      throw new Error('expected a throw');
+    } catch (e) { assert.strictEqual(e.status, 400); assert.strictEqual(e.expose, true); }
   });
 
   // ---- validation rejections (all fire BEFORE any DB/API work) -------------

@@ -149,7 +149,11 @@ const APP_DATE_FIELDS = {
   actual_closing: () => ACTUAL_CLOSING_FIELD,
 };
 
-function httpError(status, message) { const e = new Error(message); e.status = status; return e; }
+// `expose` = OUR validation error, safe to relay verbatim. A ClickUp client
+// error also carries `.status` (ClickUp's own HTTP status) and must NOT be
+// relayed — an upstream 401 would read as session-expiry and log the staff
+// user out of PILOT. Routes map non-expose statuses to 502.
+function httpError(status, message) { const e = new Error(message); e.status = status; e.expose = true; return e; }
 
 async function journalResolveWrite(appId, taskId, fieldId, fieldKey, oldVal, newVal, masked) {
   await db.query(

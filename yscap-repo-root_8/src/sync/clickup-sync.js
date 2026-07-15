@@ -165,11 +165,17 @@ async function flagUnsyncableFilesOnce() {
   const SFR = require('../lib/sync-file-review');
   const review = require('../lib/sync-review');
   const r = await db.query(
-    `SELECT id, borrower_id, property_address->>'oneLine' AS one_line FROM applications
+    `SELECT id, borrower_id, property_address->>'oneLine' AS one_line FROM applications a
       WHERE clickup_pipeline_task_id IS NULL AND deleted_at IS NULL
         AND (sync_state IS NULL OR sync_state NOT IN ('descoped','dead','manual_review'))
         AND created_at <= now() - interval '30 days'
         AND created_at >  now() - interval '180 days'
+        -- Files that ALREADY have their row (open, or dismissed-for-good)
+        -- must not hold LIMIT slots — otherwise a backlog wider than one
+        -- boot's cap starves the tail forever (post-merge audit #3).
+        AND NOT EXISTS (SELECT 1 FROM sync_review_queue q
+                         WHERE q.task_id = 'app:' || a.id::text
+                           AND q.field_key='file_link' AND q.status IN ('open','rejected'))
       ORDER BY created_at DESC LIMIT 100`).catch(() => ({ rows: [] }));
   let queued = 0;
   for (const row of r.rows) {
@@ -780,16 +786,19 @@ function start() {
     // AFTER the reconcile pass (which links files to their EXISTING tasks by
     // identity), give any still-unlinked recent portal file its one bounded
     // create retry — the recovery path for a failed create-at-file-start.
-    recoverUnlinkedFilesOnce().catch((e) => console.error('[clickup-sync] unlinked-recovery', e.message));
+    // Files that CANNOT sync (no task, older than the recovery window) become
+    // visible review rows with a "create the task" option — chained so it
+    // truly runs AFTER the recovery pass has had its chance to link/create
+    // the recent ones (their age windows are disjoint, but keep it ordered).
+    recoverUnlinkedFilesOnce()
+      .catch((e) => console.error('[clickup-sync] unlinked-recovery', e.message))
+      .then(() => flagUnsyncableFilesOnce())
+      .catch((e) => console.error('[clickup-sync] unsyncable sweep', e.message));
     // And re-drive every NON-materialized task ('ambiguous'/'duplicate_pending')
     // through the current resolver, so a root-cause fix (like copied-loan-number
     // handling) heals the entire stuck backlog on deploy — not only the tasks
     // that happen to receive a new webhook.
     retryStuckTasksOnce().catch((e) => console.error('[clickup-sync] stuck-task retry', e.message));
-    // Files that CANNOT sync (no task, older than the recovery window) become
-    // visible review rows with a "create the task" option — after the recovery
-    // pass above has had its chance to link/create the recent ones.
-    flagUnsyncableFilesOnce().catch((e) => console.error('[clickup-sync] unsyncable sweep', e.message));
   }, cfg.clickupRunBackfill ? 120000 : 15000);
 
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
