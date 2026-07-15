@@ -366,7 +366,11 @@ const _addrOf = (v) => (v && (v.formatted_address || v.oneLine)) || null;
  *      ambiguous (Manual Review); none -> null (create).
  * Returns { id, how, detail } | { ambiguous, detail } | null.
  */
-async function findExistingApp(task, read, borrowerId) {
+async function findExistingApp(task, read, borrowerId, opts = {}) {
+  // Set when the task carries a COPIED stamp (a duplicate of an already-bound
+  // task) — the definitive "this is a duplicated task" signal, used by the
+  // duplicate-in-progress defer below.
+  let staleStampAppId = null;
   if (read.portalFileId) {
     const s = await db.query(
       `SELECT id, clickup_pipeline_task_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [read.portalFileId]
@@ -374,6 +378,7 @@ async function findExistingApp(task, read, borrowerId) {
     if (s.rows[0]) {
       const linked = s.rows[0].clickup_pipeline_task_id;
       if (!linked || linked === task.id) return { id: s.rows[0].id, how: 'linked_stamp', detail: { stamp: read.portalFileId } };
+      staleStampAppId = s.rows[0].id;
       // The stamp resolves to an app that is already bound to a DIFFERENT, live
       // task — so this stamp is a stale COPY, not an authoritative binding.
       // Root cause of "a second file for the same borrower re-syncs forever but
@@ -408,24 +413,29 @@ async function findExistingApp(task, read, borrowerId) {
       return { ambiguous: true, detail: { ysLoanNumber: read.app.ys_loan_number, boundToTask: linked } };
     }
   }
+  const tn = identity.normalizeIdentity({
+    address: _addrOf(read.app.property_address), loanNumber: read.app.ys_loan_number, purchasePrice: read.app.purchase_price,
+  });
   const cand = await db.query(
     `SELECT id, property_address, ys_loan_number, purchase_price FROM applications
       WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NULL
         AND program IN ('Fix & Flip w/ Construction','Bridge','Ground-Up Construction')`, [borrowerId]
   ).catch(() => ({ rows: [] }));
-  if (!cand.rows.length) return null;
-  const tn = identity.normalizeIdentity({
-    address: _addrOf(read.app.property_address), loanNumber: read.app.ys_loan_number, purchasePrice: read.app.purchase_price,
-  });
-  const strong = [];
-  for (const c of cand.rows) {
-    const cn = identity.normalizeIdentity({ address: _addrOf(c.property_address), loanNumber: c.ys_loan_number, purchasePrice: c.purchase_price });
-    const addr = tn.address && tn.address === cn.address;
-    const loan = tn.loanNumber && tn.loanNumber === cn.loanNumber;
-    if (addr || loan) strong.push({ id: c.id, addr: !!addr, loan: !!loan });
+  // NOTE (2026-07-15 audit): the unlinked-candidate scan is gated on having
+  // candidates, but the heal + duplicate-defer scans below must run REGARDLESS —
+  // an early `return null` here made them unreachable in the canonical
+  // duplicated-task scenario (a borrower whose files are all linked).
+  if (cand.rows.length) {
+    const strong = [];
+    for (const c of cand.rows) {
+      const cn = identity.normalizeIdentity({ address: _addrOf(c.property_address), loanNumber: c.ys_loan_number, purchasePrice: c.purchase_price });
+      const addr = tn.address && tn.address === cn.address;
+      const loan = tn.loanNumber && tn.loanNumber === cn.loanNumber;
+      if (addr || loan) strong.push({ id: c.id, addr: !!addr, loan: !!loan });
+    }
+    if (strong.length === 1) return { id: strong[0].id, how: 'linked_identity', detail: strong[0] };
+    if (strong.length > 1)  return { ambiguous: true, detail: { candidates: strong.map((s) => s.id) } };
   }
-  if (strong.length === 1) return { id: strong[0].id, how: 'linked_identity', detail: strong[0] };
-  if (strong.length > 1)  return { ambiguous: true, detail: { candidates: strong.map((s) => s.id) } };
 
   // Delete+recreate heal (prevents the #1 duplication path). A ClickUp task can be
   // deleted and a NEW task created for the same deal. The old portal file is still
@@ -448,8 +458,39 @@ async function findExistingApp(task, read, borrowerId) {
       if (!on.address || on.address !== tn.address) continue;
       let dead = false;
       try { await require('./client').getTask(o.clickup_pipeline_task_id); }
-      catch (e) { if (e && e.status === 404) dead = true; else continue; }
+      catch (e) { if (e && e.status === 404) dead = true; }
       if (dead) return { id: o.id, how: 'relinked_dead_task', detail: { fromTask: o.clickup_pipeline_task_id } };
+      // Duplicate-in-progress DEFER (owner-directed 2026-07-15): this borrower
+      // already has a portal file at the SAME property bound to a LIVE other
+      // task — this task is almost certainly a fresh ClickUp duplicate whose
+      // address hasn't been updated to the new deal yet ("duplicate a task to
+      // start a new file" is the documented workflow). Creating now would
+      // materialize a same-address TWIN file carrying the old deal's data.
+      // Skip this pass instead; the officer's address edit re-triggers ingest
+      // via the webhook (and any later edit via the reconcile poll), and the
+      // file is created cleanly the moment the duplicate has its own address —
+      // then the stamp switch-over re-points the task at its own new file.
+      // (An unconfirmable liveness check defers too — never risk a twin. A
+      // GENUINE second deal at the same address surfaces in the Manual Review
+      // queue, where force-create unblocks it deliberately.) Only relevant when
+      // creation is even possible: without allowCreate the caller returns
+      // 'skipped' exactly as before, and forceCreate is the human override.
+      if (opts.allowCreate && !opts.forceCreate) {
+        return { duplicatePending: true, detail: { sameAddressAs: o.id, boundToTask: o.clickup_pipeline_task_id, alive: !dead } };
+      }
+    }
+  }
+  // Same defer via the OTHER duplicate signal: the task carries a COPIED stamp
+  // (bound to a different live task) and still shows the SOURCE file's address —
+  // or no usable address at all. Wait for the officer to give the duplicate its
+  // own address before materializing the new file.
+  if (opts.allowCreate && !opts.forceCreate && staleStampAppId) {
+    const src = await db.query(
+      `SELECT property_address FROM applications WHERE id=$1`, [staleStampAppId]).catch(() => ({ rows: [] }));
+    const srcAddr = src.rows[0]
+      ? identity.normalizeIdentity({ address: _addrOf(src.rows[0].property_address) }).address : null;
+    if (!tn.address || (srcAddr && tn.address === srcAddr)) {
+      return { duplicatePending: true, detail: { copiedStampOf: staleStampAppId } };
     }
   }
   return null;
@@ -646,8 +687,22 @@ async function ingestTask(task, options = {}, opts = {}) {
   let applicationId = null, matchStatus = isRtl ? null : 'data_only', matchDetail = null;
   if (isRtl) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
-      { allowCreate: opts.createFile === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId, coBorrowerTaskId });
+      { allowCreate: opts.createFile === true, forceCreate: opts.forceCreate === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId, coBorrowerTaskId });
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
+    // Stamp switch-over (owner-directed 2026-07-15): when a link was newly
+    // ESTABLISHED this pass (created / identity / stamp / loan-number /
+    // dead-task relink — anything but the steady-state 'linked_task'), the
+    // ClickUp task may still carry a stale copied "YS Portal File ID/Link"
+    // (a duplicated task inherits the source file's copyable stamp) or none at
+    // all. Enqueue a SCOPED push of just the two stamp fields so the task
+    // points at ITS OWN portal file. This is the ONE narrow pull-side enqueue
+    // exception: portal-owned metadata, non-PII, idempotent (the push's no-op
+    // suppression skips equal stamps), and it fires only on the
+    // unlinked→linked transition — the next ingest matches byTask
+    // ('linked_task') and does not re-enqueue, so it can never echo-loop.
+    if (applicationId && matchStatus && matchStatus !== 'linked_task') {
+      try { await require('./enqueue').enqueueClickupPush(applicationId, ['portal_stamp']); } catch (_) { /* best-effort */ }
+    }
     // Co-borrower government-ID condition follows the file's ACTUAL linked
     // co-borrower (a manual link is preserved by fill-only-if-null above).
     if (applicationId) {
@@ -719,7 +774,7 @@ async function ingestTask(task, options = {}, opts = {}) {
  * Returns { applicationId, matchStatus, detail }.
  */
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
-  const { allowCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
+  const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
   const a = read.app || {};
   const lo = await resolveStaffByEmail(loanOfficerEmail);
   const pr = await resolveStaffByEmail(processorEmail);
@@ -772,7 +827,7 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // queue instead, with the auto-pivoted proposal (26 → 2026) for one-click
   // human approval. The rest of the pull proceeds normally.
   const pendingYearReviews = [];
-  for (const dk of ['expected_closing', 'actual_closing']) {
+  for (const dk of ['expected_closing', 'actual_closing', 'acquisition_date']) {   // acquisition_date pulls 'both' too (2026-07-15 audit)
     const v = cols[dk];
     if (v == null || v === '') continue;
     const y = Number(String(v).slice(0, 4));
@@ -787,8 +842,13 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   const byTask = await db.query(`SELECT id FROM applications WHERE clickup_pipeline_task_id=$1 LIMIT 1`, [task.id]);
   if (byTask.rows[0]) { targetId = byTask.rows[0].id; matchStatus = 'linked_task'; }
   else {
-    const m = await findExistingApp(task, read, borrowerId);
+    const m = await findExistingApp(task, read, borrowerId, { allowCreate, forceCreate });
     if (m && m.ambiguous) return { applicationId: null, matchStatus: 'ambiguous', detail: m.detail };
+    // Fresh ClickUp duplicate whose address hasn't been updated yet — do NOT
+    // create a same-address twin file; the officer's address edit re-triggers
+    // ingest and the file materializes cleanly then. Admin force-create is the
+    // deliberate override for a genuine same-address second deal.
+    if (m && m.duplicatePending) return { applicationId: null, matchStatus: 'duplicate_pending', detail: m.detail };
     if (m && m.id) { targetId = m.id; matchStatus = m.how; detail = m.detail || null; }
   }
 

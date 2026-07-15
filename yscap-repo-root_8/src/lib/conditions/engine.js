@@ -322,8 +322,11 @@ async function writeFieldValue(appId, borrowerId, fieldKey, rawValue, by = {}) {
     if (fieldKey === 'requested_ir_months' && (value < 0 || value > 24)) { const err = new Error('interest reserve must be 0–24 months'); err.status = 400; throw err; }
     if (/^(requested_exp|units|sqft)/.test(fieldKey)) value = Math.round(value);
   } else if (f.type === 'date') {
-    value = String(rawValue).slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) { const err = new Error(`${f.label} must be a YYYY-MM-DD date`); err.status = 400; throw err; }
+    // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
+    // [1900, 2100] — a shape-only regex accepted '0026-07-17' here, which is the
+    // exact 2026-07-15 incident class on a borrower-facing typed-date surface.
+    value = require('../fields').normalizeTypedDate(rawValue);   // typed '26' resolves to 2026 system-wide
+    if (value == null) { const err = new Error(`${f.label} must be a valid YYYY-MM-DD date with a 4-digit year (1900–2100)`); err.status = 400; throw err; }
   } else if (f.type === 'enum') {
     if (!(f.options || []).some((o) => o.v === rawValue)) { const err = new Error(`${f.label}: pick one of the listed options`); err.status = 400; throw err; }
     value = rawValue;

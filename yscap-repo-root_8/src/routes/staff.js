@@ -865,7 +865,9 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
            ssn_hash=COALESCE(borrowers.ssn_hash,EXCLUDED.ssn_hash),
            updated_at=now()
          RETURNING id`,
-        [first, last, email, b.phone || null, b.dob || null, ssnEnc, ssnLast4, ssnHash]);
+        [first, last, email, b.phone || null,
+         require('../lib/fields').normalizeTypedDate(b.dob, 'dob'),   // typed '26' resolves to the real year; garbage never persists
+         ssnEnc, ssnLast4, ssnHash]);
       coId = ins.rows[0].id;
     }
   }
@@ -935,7 +937,11 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
       if (parts.length) put('last_name', parts.join(' '));
     }
     if (typeof b.co_phone === 'string' && b.co_phone.trim()) put('cell_phone', b.co_phone.trim());
-    if (b.co_dob) put('date_of_birth', b.co_dob);
+    if (b.co_dob) {
+      const dob = require('../lib/fields').normalizeTypedDate(b.co_dob, 'dob');   // typed '26' resolves; garbage rejected
+      if (dob == null) return res.status(400).json({ error: 'co-borrower date of birth must be a valid YYYY-MM-DD with a 4-digit year' });
+      put('date_of_birth', dob);
+    }
     // #60 — parity with the primary borrower's inline-add fields.
     if (b.co_fico !== undefined && b.co_fico !== '') { const cf = require('../lib/fields').sanitizeFico(b.co_fico); if (cf != null) put('fico', cf); }  // #90: 3-digit, 300–850
     if (typeof b.co_citizenship === 'string' && b.co_citizenship.trim()) put('citizenship', b.co_citizenship.trim());
@@ -3392,8 +3398,11 @@ router.patch('/applications/:id/details', async (req, res) => {
   }
   for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = b[k] === '' ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
-    const v = b[k] === '' || b[k] == null ? null : String(b[k]).slice(0, 10);
-    if (v != null && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return res.status(400).json({ error: `${k} must be a YYYY-MM-DD date` });
+    // sanitizeDateOnly enforces a REAL calendar date with a 4-digit year in
+    // [1900, 2100] — a 2-digit year ('0026-…') is rejected here instead of
+    // persisting and syncing out (2026-07-15 incident class).
+    const v = b[k] === '' || b[k] == null ? null : require('../lib/fields').normalizeTypedDate(b[k]);
+    if (b[k] && v == null) return res.status(400).json({ error: `${k} must be a valid YYYY-MM-DD date with a 4-digit year (1900–2100)` });
     sets.push(`${col}=$${i++}`); vals.push(v); touchedCols.push(col);
   }
   if ('isAssignment' in b) { sets.push(`is_assignment=$${i++}`); vals.push(!!b.isAssignment); touchedCols.push('is_assignment'); }
@@ -3545,20 +3554,19 @@ router.post('/applications/:id/closing-date', async (req, res) => {
   const sets = [], vals = []; let i = 1;
   // Reject not just bad format but impossible calendar dates (2026-13-45), which
   // would otherwise reach Postgres and surface as an opaque 500.
-  const bad = (v) => {
-    if (!v) return false;
-    const s = String(v);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return true;
-    const d = new Date(s + 'T00:00:00Z');
-    if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return true;
-    // Server-side year bounds (2026-07-15 incident): a mid-typing artifact like
-    // year 0026 must never persist even if a client bypasses the UI guard.
-    const y = Number(s.slice(0, 4));
-    return !(y >= 1900 && y <= 2100);
-  };
-  if (bad(b.expectedClosing) || bad(b.actualClosing)) return res.status(400).json({ error: 'dates must be a valid YYYY-MM-DD' });
-  if ('expectedClosing' in b) { sets.push(`expected_closing=$${i++}`); vals.push(b.expectedClosing || null); }
-  if ('actualClosing' in b) { sets.push(`actual_closing=$${i++}`); vals.push(b.actualClosing || null); }
+  // Server-side year bounds (2026-07-15 incident): a mid-typing artifact like
+  // year 0026 must never persist even if a client bypasses the UI guard. A
+  // typed 2-DIGIT year ("26" → browser sends 0026-…) RESOLVES to the real year
+  // (normalizeTypedDate → 2026) instead of erroring — one way to read a date,
+  // system-wide. Truly invalid input (bad shape, impossible day, year 0203) 400s.
+  const { normalizeTypedDate } = require('../lib/fields');
+  const normExpected = 'expectedClosing' in b && b.expectedClosing ? normalizeTypedDate(b.expectedClosing) : null;
+  const normActual = 'actualClosing' in b && b.actualClosing ? normalizeTypedDate(b.actualClosing) : null;
+  if ((b.expectedClosing && !normExpected) || (b.actualClosing && !normActual)) {
+    return res.status(400).json({ error: 'dates must be a valid YYYY-MM-DD with a real year (1900–2100)' });
+  }
+  if ('expectedClosing' in b) { sets.push(`expected_closing=$${i++}`); vals.push(normExpected); }
+  if ('actualClosing' in b) { sets.push(`actual_closing=$${i++}`); vals.push(normActual); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {
@@ -3575,7 +3583,7 @@ router.post('/applications/:id/closing-date', async (req, res) => {
     if (b.expectedClosing) {
       const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
       if (a.rows[0] && a.rows[0].borrower_id) {
-        const nice = new Date(b.expectedClosing + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        const nice = new Date(normExpected + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
         await notify.notifyAppBorrowers(req.params.id, {
           type: 'closing_date', title: 'Estimated closing date set',
           body: `Your loan is now targeting ${nice}. We'll keep you posted as it approaches.`,
@@ -3629,11 +3637,10 @@ async function completeFields(req, res, borrowerScoped) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
       if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
-      if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds
-        const s = String(v);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) continue;
-        const y = Number(s.slice(0, 4));
-        if (!(y >= 1900 && y <= 2100)) continue;
+      if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds;
+        // a typed 2-digit year resolves to the real year (DOB → adult century).
+        v = require('../lib/fields').normalizeTypedDate(v, 'dob');
+        if (v == null) continue;
       }
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`); brKeys.push(k);
     }
