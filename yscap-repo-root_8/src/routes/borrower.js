@@ -1741,11 +1741,21 @@ router.delete('/track-records/:id', async (req, res) => {
 });
 // Supporting documents on ONE track-record entry (closing statement, deed,
 // lease…) — what staff verify against.
+// #112: the optional document TYPE a track-record supporting doc can be tagged with
+// (stored in documents.slot_label). Kept in sync with the tool's dropdown in
+// web/tools/track-record-portal.js. `trackDocType(v)` returns a valid label or null.
+const TRACK_RECORD_DOC_TYPES = [
+  'Closing statement (HUD)', 'Deed', 'Recorded mortgage', 'Payoff statement',
+  'Lease', 'Property profile report', 'Other',
+];
+const TRACK_RECORD_DOC_TYPE_SET = new Set(TRACK_RECORD_DOC_TYPES);
+const trackDocType = (v) => (TRACK_RECORD_DOC_TYPE_SET.has(String(v || '').trim()) ? String(v).trim() : null);
+
 router.get('/track-records/:id/documents', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   const r = await db.query(
-    `SELECT id,filename,content_type,size_bytes,created_at,review_status,rejection_reason FROM documents
+    `SELECT id,filename,content_type,size_bytes,created_at,review_status,rejection_reason,slot_label AS doc_type FROM documents
       WHERE track_record_id=$1 AND visibility='borrower' AND is_current ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
 });
@@ -1773,9 +1783,9 @@ router.post('/track-records/:id/documents', async (req, res) => {
     trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
   if (dupTr) return res.status(201).json({ ok: true, documentId: dupTr, deduped: true });
   const r = await db.query(
-    `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$1,'track_record_doc') RETURNING id`,
-    [me(req), req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref]);
+    `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$1,'track_record_doc',$9) RETURNING id`,
+    [me(req), req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, trackDocType(b.docType)]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
   if (reqItemId) {
     await db.query(

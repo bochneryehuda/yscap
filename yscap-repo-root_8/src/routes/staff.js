@@ -2970,10 +2970,17 @@ router.get('/track-records/:id/documents', async (req, res) => {
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
   const r = await db.query(
     `SELECT id,filename,content_type,size_bytes,uploaded_by_kind,created_at,
-            review_status,rejection_reason,reviewed_at FROM documents
+            review_status,rejection_reason,reviewed_at,slot_label AS doc_type FROM documents
       WHERE track_record_id=$1 AND is_current ORDER BY created_at`, [req.params.id]);
   res.json(r.rows);
 });
+// #112: valid track-record supporting-doc TYPEs (stored in documents.slot_label),
+// kept in sync with the borrower route + the tool's dropdown.
+const TR_DOC_TYPE_SET = new Set([
+  'Closing statement (HUD)', 'Deed', 'Recorded mortgage', 'Payoff statement',
+  'Lease', 'Property profile report', 'Other',
+]);
+const trDocType = (v) => (TR_DOC_TYPE_SET.has(String(v || '').trim()) ? String(v).trim() : null);
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
@@ -2998,9 +3005,9 @@ router.post('/track-records/:id/documents', async (req, res) => {
     trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
   if (dupStaffTr) return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
   const r = await db.query(
-    `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'track_record_doc') RETURNING id`,
-    [tr.rows[0].borrower_id, req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
+    `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'track_record_doc',$10) RETURNING id`,
+    [tr.rows[0].borrower_id, req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, trDocType(b.docType)]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
   if (reqItemId) {
     await db.query(

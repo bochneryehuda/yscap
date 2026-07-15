@@ -481,7 +481,10 @@
       return newId;
     });
   }
-  function uploadFilesToRecord(p, files, done) {
+  // #112: the optional supporting-document TYPE per line item. MUST match the
+  // whitelist in src/routes/borrower.js + staff.js (TRACK_RECORD_DOC_TYPES).
+  var TR_DOC_TYPES = ["Closing statement (HUD)", "Deed", "Recorded mortgage", "Payoff statement", "Lease", "Property profile report", "Other"];
+  function uploadFilesToRecord(p, files, done, docType) {
     var list = Array.prototype.slice.call(files || []).filter(Boolean);
     if (!list.length) { if (done) done(); return; }
     ensureRecordSaved(p).catch(function () { return p.id; }).then(function (sid) {
@@ -500,6 +503,7 @@
           api("POST", docsUrl(sid), {
             filename: file.name, contentType: file.type || "application/octet-stream",
             dataBase64: s.slice(s.indexOf(",") + 1),
+            docType: docType || undefined,
           }).then(function () { okCount++; next(); })
             .catch(function (e) { flash(e.message || ('Upload failed — "' + file.name + '"')); next(); });
         };
@@ -514,8 +518,11 @@
     strip.className = "tr-docstrip";
     var reqs = (p._requests || []).filter(function (rq) { return rq && rq.status !== "satisfied" && rq.status !== "received"; });
     var docs = p._docs || [];
+    var typeOpts = '<option value="">Document type… (optional)</option>' +
+      TR_DOC_TYPES.map(function (t) { return '<option value="' + escA(t) + '">' + escA(t) + '</option>'; }).join("");
     var html = '<div class="tr-docstrip-h"><span class="tr-docstrip-l">Documents</span>' +
-      '<button type="button" class="tr-doc-add" title="Closing statement, deed, lease… — or drag files onto this card">+ Add document</button>' +
+      '<select class="tr-doc-type input" style="padding:4px 8px;min-height:0;font-size:.78rem;max-width:210px" title="Tag this document — closing statement, deed, recorded mortgage, property profile report…">' + typeOpts + '</select>' +
+      '<button type="button" class="tr-doc-add" title="Recorded mortgage, deed, closing statement, property profile report… — or drag files onto this card">+ Add document</button>' +
       '<span style="font-size:.72rem;color:var(--muted-2)">or drag &amp; drop onto the card</span></div>';
     reqs.forEach(function (rq) {
       html += '<div class="tr-doc-req">⚠ ' + (staffMode ? "Requested from the borrower: " : "Requested by your loan team: ") + escA(rq.label || "a document") + '</div>';
@@ -523,9 +530,10 @@
     if (docs.length) {
       html += '<div class="tr-doc-chips">' + docs.map(function (d) {
         var st = d.review_status === "accepted" ? "accepted" : (d.review_status === "rejected" ? "rejected" : "pending");
+        var typeTag = d.doc_type ? '<span class="ty" style="opacity:.7;font-size:.7rem;margin-left:4px">· ' + escA(d.doc_type) + '</span>' : '';
         return '<button type="button" class="tr-doc-chip ' + st + '" data-dl="' + escA(d.id) + '" data-fn="' + escA(d.filename) + '" title="' +
-          (st === "rejected" ? "Rejected — please replace this document. " : (st === "accepted" ? "Accepted. " : "")) + 'Click to download">' +
-          '<span class="st"></span><span class="fn">' + escA(d.filename) + '</span></button>';
+          (d.doc_type ? escA(d.doc_type) + ' — ' : '') + (st === "rejected" ? "Rejected — please replace this document. " : (st === "accepted" ? "Accepted. " : "")) + 'Click to download">' +
+          '<span class="st"></span><span class="fn">' + escA(d.filename) + '</span>' + typeTag + '</button>';
       }).join("") + '</div>';
     }
     strip.innerHTML = html;
@@ -533,10 +541,11 @@
     input.type = "file"; input.multiple = true; input.style.display = "none";
     strip.appendChild(input);
     var addBtn = strip.querySelector(".tr-doc-add");
+    var typeSel = strip.querySelector(".tr-doc-type");
     addBtn.onclick = function () { input.click(); };
     input.onchange = function () {
       addBtn.classList.add("busy"); addBtn.textContent = "Uploading…";
-      uploadFilesToRecord(p, input.files, function () { addBtn.classList.remove("busy"); addBtn.textContent = "+ Add document"; });
+      uploadFilesToRecord(p, input.files, function () { addBtn.classList.remove("busy"); addBtn.textContent = "+ Add document"; }, typeSel && typeSel.value);
       input.value = "";
     };
     strip.querySelectorAll("[data-dl]").forEach(function (b) {
@@ -552,7 +561,10 @@
         card.addEventListener(ev, function (e) { e.preventDefault(); e.stopPropagation(); card.classList.remove("tr-dropping"); });
       });
       card.addEventListener("drop", function (e) {
-        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) uploadFilesToRecord(p, e.dataTransfer.files);
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+          var sel = card.querySelector(".tr-doc-type");
+          uploadFilesToRecord(p, e.dataTransfer.files, null, sel && sel.value);
+        }
       });
     }
     main.appendChild(strip);
