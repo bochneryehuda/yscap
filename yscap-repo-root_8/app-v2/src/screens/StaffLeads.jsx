@@ -29,6 +29,7 @@ export default function StaffLeads() {
   const [sourceF, setSourceF] = useState('');
   const [scope, setScope] = useState('open');     // open | all
   const [addOpen, setAddOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   const load = () => api.staffLeads().then(setRows).catch(e => setErr(e.message));
   useEffect(() => { load(); api.staffTeam().then(setTeam).catch(() => {}); }, []);
@@ -83,6 +84,8 @@ export default function StaffLeads() {
             <button className={`tab ${view === 'board' ? 'on' : ''}`} onClick={() => setView('board')}>Board</button>
             <button className={`tab ${view === 'list' ? 'on' : ''}`} onClick={() => setView('list')}>List</button>
           </div>
+          <button className="btn btn-line btn-sm" onClick={() => setInviteOpen(true)}
+            title="Invite anyone by email to the borrower portal — they're auto-assigned to you and opened as a lead">Invite to portal ✉</button>
           <button className="btn btn-gold btn-sm" onClick={() => setAddOpen(true)}>+ Add lead</button>
         </div>
       </div>
@@ -132,6 +135,10 @@ export default function StaffLeads() {
       {addOpen && <AddLeadModal officers={officers} seesAll={seesAll}
         onClose={() => setAddOpen(false)}
         onCreated={(leadId) => { setAddOpen(false); nav(`/internal/leads/${leadId}`); }} onErr={setErr} />}
+
+      {inviteOpen && <InviteToPortalModal officers={officers} seesAll={seesAll}
+        onClose={() => setInviteOpen(false)}
+        onDone={(r) => { setInviteOpen(false); load(); flash(r && r.leadId ? 'Invite sent — lead opened.' : 'Invite sent.'); }} onErr={setErr} />}
     </>
   );
 }
@@ -346,6 +353,58 @@ function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
           </span>
           <button className="btn btn-ghost" onClick={onClose}>Close</button>
           <button className="btn btn-gold" disabled={busy} onClick={create}>{busy ? 'Adding…' : 'Add lead'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// #102: invite ANY email to the borrower portal. The person becomes a borrower
+// profile auto-assigned to the inviting loan officer (owning officer of record),
+// an invite email goes out, and a CRM lead is opened for the officer.
+function InviteToPortalModal({ officers, seesAll, onClose, onDone, onErr }) {
+  const [f, setF] = useState({ email: '', firstName: '', lastName: '', phone: '', officerId: '' });
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim());
+  async function send() {
+    if (!emailOk) return;
+    setBusy(true);
+    try {
+      const body = { email: f.email.trim(), firstName: f.firstName.trim(), lastName: f.lastName.trim(), phone: f.phone.trim() };
+      if (seesAll && f.officerId) body.officerId = f.officerId;
+      const r = await api.staffInviteToPortal(body);
+      onDone(r);
+    } catch (e) { if (onErr) onErr(e.message || 'Could not send the invite.'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="cv-modal-back" onClick={onClose}>
+      <div className="cv-modal" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Invite to portal">
+        <h3 style={{ marginTop: 0 }}>Invite to portal</h3>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          They get a portal invite and are auto-assigned to {seesAll && f.officerId ? 'the chosen officer' : 'you'} as their loan officer, with a lead opened in the CRM.
+        </p>
+        <div className="field"><label>Email</label>
+          <input className="input" type="email" autoComplete="off" value={f.email} onChange={set('email')} placeholder="them@example.com" /></div>
+        <div className="grid cols-2">
+          <div className="field"><label>First name <span className="muted small">(optional)</span></label>
+            <input className="input" value={f.firstName} onChange={set('firstName')} /></div>
+          <div className="field"><label>Last name <span className="muted small">(optional)</span></label>
+            <input className="input" value={f.lastName} onChange={set('lastName')} /></div>
+        </div>
+        <div className="field"><label>Phone <span className="muted small">(optional)</span></label>
+          <input className="input" value={f.phone} onChange={set('phone')} /></div>
+        {seesAll && (
+          <div className="field"><label>Assign to officer</label>
+            <select className="input" value={f.officerId} onChange={set('officerId')}>
+              <option value="">Me</option>
+              {officers.map((o) => <option key={o.id} value={o.id}>{o.full_name}</option>)}
+            </select></div>
+        )}
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-gold" disabled={busy || !emailOk} onClick={send}>{busy ? 'Sending…' : 'Send invite'}</button>
         </div>
       </div>
     </div>
