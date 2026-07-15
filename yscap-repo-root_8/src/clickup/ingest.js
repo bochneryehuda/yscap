@@ -361,6 +361,18 @@ async function resolveBorrower(read, taskId) {
     }
   }
   // 3) weak / none -> create a DISTINCT profile (never a blind single-field merge).
+  // NO-IDENTITY GUARD (owner-reported 2026-07-15 night: "why do we have
+  // Unknown Unknown?!"): NEVER mint a profile for a "person" with no name, no
+  // SSN, and no DOB — a task carrying only an email/phone (a CRM stub, an
+  // unfilled *Borrower Name field, an email-only co-borrower slot) produced
+  // nameless husk profiles that polluted the borrowers list and spawned
+  // undecidable "Unknown Unknown" shared-email cards. Matching ABOVE may
+  // still find a real person by SSN/email; creating a husk helps nobody. The
+  // caller treats null as "no person on this task yet" — file materialization
+  // holds (with a visible review card) until ClickUp carries a name.
+  if (!identity.nameToken(b.first_name) && !ssnHash && !require('../lib/fields').sanitizeDob(b.date_of_birth)) {
+    return { borrowerId: null, created: false, noIdentity: true };
+  }
   const first = b.first_name || 'Unknown', last = b.last_name || 'Unknown';
   // CRITICAL: if the email match was declined above (different person, or
   // uncorroborated), do NOT reuse it here — the INSERT's ON CONFLICT (email) DO
@@ -949,8 +961,10 @@ async function ingestTask(task, options = {}, opts = {}) {
       }
     } catch (_) { /* co-borrower is best-effort */ }
   }
-  const llcId = await upsertLlc(borrowerId, read.llc.llc_name, read.llc.ein, task.id);
-  if (CLOSED_STATUSES(read.internalStatus)) { try { await upsertTrackRecord(borrowerId, read, task.id); } catch (_) {} }
+  // borrowerId may be null (no-identity guard): no LLC / track-record rows
+  // can hang off a person who does not exist yet.
+  const llcId = borrowerId ? await upsertLlc(borrowerId, read.llc.llc_name, read.llc.ein, task.id) : null;
+  if (borrowerId && CLOSED_STATUSES(read.internalStatus)) { try { await upsertTrackRecord(borrowerId, read, task.id); } catch (_) {} }
 
   // Loan officer comes from the PIPELINE folder (or the Loan Officer Email field);
   // processor from the Processor Email field. Both resolve to a staff_users id.
@@ -1474,6 +1488,16 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     return { applicationId: targetId, matchStatus, detail, copiedLoanNumber };
   }
   if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };
+  // No person, no file: a task whose borrower has no name/SSN/DOB (the
+  // no-identity guard returned null) cannot materialize — applications
+  // .borrower_id is NOT NULL, and a file for "Unknown Unknown" is exactly the
+  // pollution the guard exists to stop. Ambiguous keeps it VISIBLE: the
+  // file_link review card + the boot retry re-drive it the moment ClickUp
+  // carries a borrower name (usually just filling the *Borrower Name field).
+  if (!borrowerId) {
+    return { applicationId: null, matchStatus: 'ambiguous',
+      detail: { reason: 'no_borrower_identity', hint: 'the ClickUp task carries no borrower name, SSN, or DOB — fill the *Borrower Name field (or the task title) and resync' } };
+  }
 
   // Create (race-safe: the partial unique index on clickup_pipeline_task_id makes
   // a concurrent duplicate INSERT resolve to the existing row instead of a dup).
