@@ -205,17 +205,23 @@ async function pushApplication(appId, opts = {}) {
     for (const c of chosen) {
       const old = before ? before[c.id] : undefined;
       if (before && fieldValueEquivalent(c.id, old, c.value, options)) { journalStats.suppressed++; continue; }
-      if (scoped && !opts.approvedReview && isSuspectDobShift(c.id, old, c.value)) {
+      // ANY change to an existing ClickUp DOB — any magnitude, scoped OR full
+      // repush — stops at the review queue (owner-directed 2026-07-15, widened
+      // from the original ±1-day-only guard after a month+year-off DOB sailed
+      // through). A blank DOB may still be FILLED; an approved review applies
+      // via the re-push bypass (opts.approvedReview).
+      if (!opts.approvedReview && isDobChange(c.id, old, c.value)) {
         journalStats.blocked++;
-        console.error('[clickup] BLOCKED suspect DOB day-shift push', { appId, taskId: id, from: old, to: c.value });
+        const reason = isSuspectDobShift(c.id, old, c.value) ? 'dob_one_day_shift_blocked' : 'dob_change_blocked_pending_review';
+        console.error('[clickup] BLOCKED DOB change push', { appId, taskId: id, from: old, to: c.value, reason });
         await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
-        await logSync('dob_shift_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value) });
+        await logSync('dob_change_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value), reason });
         // Surface the refusal in the staff "Sync review" queue — an approver can
         // apply it deliberately (approve → re-push with opts.approvedReview).
         await require('../lib/sync-review').queueReview({
           applicationId: appId, taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
           currentValue: T.fromEpochMs(old), proposedValue: T.fromEpochMs(c.value), rawValue: String(c.value),
-          reason: 'dob_one_day_shift_blocked' });
+          reason });
         continue;
       }
       // PII OVERWRITE SHIELD (owner-directed 2026-07-15, layered on the DOB
@@ -284,7 +290,7 @@ async function pushApplication(appId, opts = {}) {
 // they're unit-tested with the rest of the mapping core; this file only journals.
 const T = require('./transforms');
 const F = require('./fields');
-const { fieldValueEquivalent, isSuspectDobShift } = mapper;
+const { fieldValueEquivalent, isSuspectDobShift, isDobChange } = mapper;
 const MASKED_FIELDS = new Set([F.SHARED.borrowerSSN, F.EXTRA.card]);
 
 // ---- PII overwrite shield (owner-directed 2026-07-15) -----------------------

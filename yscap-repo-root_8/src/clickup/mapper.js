@@ -506,6 +506,16 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options) {
  *  correcting a truly wrong DOB moves it by years (or fixes month/day digits);
  *  a conversion bug moves it by one day. Automated (scoped) pushes refuse the
  *  latter — only an explicit human-initiated full repush may apply it. */
+/** ANY change to an existing DOB (any magnitude). Every automated outbound
+ *  path review-gates on this (owner-directed 2026-07-15, after the restore
+ *  tooling rewrote DOBs across a borrower's files): a DOB may be FILLED when
+ *  blank, but changing one is always a human decision. */
+function isDobChange(fieldId, oldVal, newVal) {
+  if (fieldId !== F.SHARED.borrowerDOB) return false;
+  const oldDay = T.fromEpochMs(oldVal), newDay = T.fromEpochMs(newVal);
+  return !!oldDay && !!newDay && oldDay !== newDay;
+}
+
 function isSuspectDobShift(fieldId, oldVal, newVal) {
   if (fieldId !== F.SHARED.borrowerDOB) return false;
   const oldDay = T.fromEpochMs(oldVal), newDay = T.fromEpochMs(newVal);
@@ -514,4 +524,4 @@ function isSuspectDobShift(fieldId, oldVal, newVal) {
   return diff === 86400000;
 }
 
-module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly, fieldValueEquivalent, isSuspectDobShift };
+module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly, fieldValueEquivalent, isSuspectDobShift, isDobChange };

@@ -117,12 +117,18 @@ async function healBorrowerFields(borrowerId, b, taskId) {
   //    sees it and decides (approve = portal takes ClickUp's value, audited).
   let dobIn = nn(b.date_of_birth);
   if (dobIn) {
-    const y = Number(String(dobIn).slice(0, 4));
-    if (!(y >= 1900 && y <= 2100)) {
+    // sanitizeDob = real calendar date AND adult plausibility (age 18–120,
+    // owner-directed 2026-07-15: a "12/11/2022" toddler DOB passed the plain
+    // year window and was then treated as trustworthy). Garbage/implausible →
+    // review with the auto-pivoted proposal (itself vetted), never filled.
+    const vetted = require('../lib/fields').sanitizeDob(dobIn);
+    if (!vetted) {
+      const pivot = transforms.pivotSuspectYear(dobIn, 'dob');
       await review.queueReview({ borrowerId, taskId, direction: 'inbound', fieldKey: 'date_of_birth',
-        proposedValue: transforms.pivotSuspectYear(dobIn, 'dob'), rawValue: dobIn, reason: 'clickup_dob_year_out_of_range' });
+        proposedValue: require('../lib/fields').sanitizeDob(pivot), rawValue: dobIn, reason: 'clickup_dob_implausible' });
       dobIn = null;
     } else {
+      dobIn = vetted;
       try {
         const cur = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
         if (cur && cur.date_of_birth && String(cur.date_of_birth) !== dobIn) {

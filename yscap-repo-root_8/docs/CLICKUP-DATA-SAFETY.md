@@ -117,6 +117,27 @@ sync now handles the full lifecycle:
   portal-origin states only, outbound-gated) — restoring self-healing without
   weakening the scoped-pushes-never-create guard.
 
+### DOB lockdown (2026-07-15 evening, after the restore-script rewrite)
+
+The restore script's `garbage-year` and `portal-utc-midnight` branches could
+rewrite a ClickUp DOB from the portal DB **without review** — which propagated
+a wrong-profile DOB across all of one borrower's files (Shaindel Schwimmer,
+journaled under `source='date_restore'`). Now locked down everywhere:
+
+- **`mapper.isDobChange`** — ANY change to an existing DOB (any magnitude, not
+  just ±1 day) blocks on EVERY automated outbound path (scoped, full repush,
+  and both restore-script branches) and queues for review
+  (`dob_change_blocked_pending_review` / `dob_restore_needs_review`); approval
+  applies via the re-push bypass. Blank DOBs may still be filled.
+- **`lib/fields.sanitizeDob`** — real calendar date AND adult plausibility
+  (age 18–120) at every DOB entry point, inbound fill, and review proposal
+  (a `12/11/2022` toddler DOB passed the plain 1900–2100 window).
+- **DOB reviews dedupe per borrower** (one open row per borrower + proposal,
+  not one per linked task).
+- Damage enumeration for any restore run:
+  `SELECT created_at, task_id, old_value, new_value FROM clickup_write_log
+    WHERE source='date_restore' AND field_key='dob' ORDER BY created_at;`
+
 ## 5. One way to read a typed date, system-wide
 
 `lib/fields.sanitizeDateOnly` (real calendar date, 4-digit year 1900–2100) and

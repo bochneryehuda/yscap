@@ -47,6 +47,7 @@ const clickup = require('../src/clickup/client');
 const T = require('../src/clickup/transforms');
 const F = require('../src/clickup/fields');
 const syncReview = require('../src/lib/sync-review');
+const FIELDS_LIB = require('../src/lib/fields');
 
 // Portal columns the heal pass may write (date-only columns; submitted_at is a
 // timestamptz instant and is never healed from a date field).
@@ -139,17 +140,41 @@ async function main() {
       const portalGarbage = portal != null && !saneYear(portal);
       const cuSane = cuDay != null && saneYear(cuDay) && cls !== 'garbage-year' && cls !== 'unparseable';
 
+      // A DOB CHANGE is NEVER the script's decision (owner-directed 2026-07-15,
+      // after the garbage-year branch rewrote a borrower's DOB across all her
+      // files from a wrong portal value — the "Shaindel Schwimmer" incident).
+      // Any branch that would write a DIFFERENT calendar day into a ClickUp DOB
+      // queues an OUTBOUND review instead: approve = the deliberate human push.
+      // Same-day convention re-anchors (display fix only) remain allowed.
+      const queueDobDecision = async (proposalDay) => {
+        if (!APPLY) return 'would-queue-review';
+        await syncReview.queueReview({
+          applicationId: app.id, borrowerId: app.borrower_id, taskId: app.task_id,
+          direction: 'outbound', fieldKey: 'date_of_birth',
+          currentValue: cuDay, proposedValue: FIELDS_LIB.sanitizeDob(proposalDay),
+          rawValue: String(raw), reason: 'dob_restore_needs_review' });
+        return 'queue-review';
+      };
       let action = 'none', newEpoch = null, verified = null;
       if (cls === 'portal-utc-midnight' && f.restorable) {
         // Same calendar day, correct convention — restores the display the team
-        // originally saw. The day itself is trusted: it IS the portal's value
-        // (agrees), or when the DB moved on since, the DB day wins.
-        const day = agrees === false && portal && !portalGarbage ? portal : cuDay;
-        newEpoch = T.dateOnlyToClickUpEpoch(day);
-        action = newEpoch == null ? 'flag-unrestorable' : (APPLY ? 'rewrite' : 'would-rewrite');
+        // originally saw. The day is trusted only when it IS the portal's value
+        // (agrees); a DISAGREEING day is a data decision: DOBs go to review,
+        // other fields keep the DB-day-wins behavior.
+        if (f.col === 'date_of_birth' && agrees === false && portal && !portalGarbage) {
+          action = await queueDobDecision(portal);
+        } else {
+          const day = agrees === false && portal && !portalGarbage ? portal : cuDay;
+          newEpoch = T.dateOnlyToClickUpEpoch(day);
+          action = newEpoch == null ? 'flag-unrestorable' : (APPLY ? 'rewrite' : 'would-rewrite');
+        }
       } else if (cls === 'garbage-year' && f.restorable && portal && !portalGarbage) {
-        newEpoch = T.dateOnlyToClickUpEpoch(portal);
-        action = newEpoch == null ? 'flag-no-portal-value' : (APPLY ? 'rewrite' : 'would-rewrite');
+        if (f.col === 'date_of_birth') {
+          action = await queueDobDecision(portal);
+        } else {
+          newEpoch = T.dateOnlyToClickUpEpoch(portal);
+          action = newEpoch == null ? 'flag-no-portal-value' : (APPLY ? 'rewrite' : 'would-rewrite');
+        }
       } else if (cls === 'garbage-year' && portalGarbage && f.col !== 'submitted_at') {
         // BOTH sides garbage (the year-0026 typing artifact pushed then re-pulled):
         // never guess — queue the auto-pivoted proposal for human approval.

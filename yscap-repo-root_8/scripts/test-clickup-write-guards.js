@@ -185,5 +185,29 @@ eq('garbage still rejected', normalizeTypedDate('26'), null);
   eq('unknown object shape always writes', feq('f1', 'old', { some: 'thing' }), false);
 }
 
+// ---- 10. a DOB is a human decision and belongs to an adult -------------------
+// (owner-directed 2026-07-15 after the Shaindel Schwimmer rewrite + the
+// 12/11/2022 toddler-DOB discovery.)
+const { sanitizeDob } = require('../src/lib/fields');
+eq('dob: adult passes', sanitizeDob('1995-10-19'), '1995-10-19');
+eq('dob: toddler rejected (the 12/11/2022 class)', sanitizeDob('2022-12-11'), null);
+eq('dob: 130-year-old rejected', sanitizeDob('1890-01-01'), null);
+eq('dob: typed 2-digit pivots to adult century', sanitizeDob('0095-10-19'), '1995-10-19');
+eq('dob: typed 26 -> 1926', sanitizeDob('0026-11-19'), '1926-11-19');
+eq('dob: garbage rejected', sanitizeDob('not-a-date'), null);
+{
+  const DOB = F.SHARED.borrowerDOB;
+  eq('dobChange: any-magnitude change detected',
+     mapper.isDobChange(DOB, Date.UTC(1995, 9, 19, 8), Date.UTC(1996, 10, 19, 8)), true);
+  eq('dobChange: exactly one day also detected',
+     mapper.isDobChange(DOB, Date.UTC(1988, 11, 3, 8), Date.UTC(1988, 11, 2, 8)), true);
+  eq('dobChange: same day, different convention = no change',
+     mapper.isDobChange(DOB, Date.UTC(1995, 9, 19), Date.UTC(1995, 9, 19, 8)), false);
+  eq('dobChange: blank old = a FILL, not a change',
+     mapper.isDobChange(DOB, null, Date.UTC(1995, 9, 19, 8)), false);
+  eq('dobChange: never fires on non-DOB fields',
+     mapper.isDobChange(F.PIPELINE.loanAmount, 100, 200), false);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
