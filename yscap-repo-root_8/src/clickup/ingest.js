@@ -1186,8 +1186,19 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // it a freshly-pulled file has clickup_last_synced_at=NULL, which the outbound
   // dirty-sweep reads as "dirty" and immediately echoes back to ClickUp — a pull→
   // push loopback for every inbound-created file.
-  const keys = ['borrower_id', 'co_borrower_id', 'co_borrower_task_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', 'clickup_last_synced_at', ...Object.keys(cols)];
-  const insVals = [borrowerId, coBorrowerId, coBorrowerTaskId, llcId, task.id, 'clickup_backfill', 'linked', new Date(), ...vals];
+  // A BRAND-NEW row carries ONLY the values ClickUp actually provided — a null
+  // cols entry is omitted so the column takes its DB DEFAULT. Spreading nulls
+  // explicitly bypassed defaults and violated NOT NULL DEFAULT columns
+  // (owner-reported live 2026-07-15: `is_assignment boolean NOT NULL DEFAULT
+  // false`, db/016 — a task without the assignment checkbox read null, the
+  // INSERT wrote NULL, and EVERY inbound file-create crashed 23502 at the last
+  // step: Shulom Eisenberg's "Create the file now", Asher Salamon's boot
+  // retry, and any duplicate/stuck task being materialized). Omitting nulls
+  // fixes the class for every present and future NOT NULL DEFAULT column; the
+  // UPDATE branch is untouched (its COALESCE already treats null as "keep").
+  const presentCols = Object.keys(cols).filter((k) => cols[k] != null);
+  const keys = ['borrower_id', 'co_borrower_id', 'co_borrower_task_id', 'llc_id', 'clickup_pipeline_task_id', 'source', 'sync_state', 'clickup_last_synced_at', ...presentCols];
+  const insVals = [borrowerId, coBorrowerId, coBorrowerTaskId, llcId, task.id, 'clickup_backfill', 'linked', new Date(), ...presentCols.map((k) => cols[k])];
   const ph = insVals.map((_, i) => `$${i + 1}`).join(',');
   const r = await db.query(
     `INSERT INTO applications (${keys.join(',')}) VALUES (${ph})
