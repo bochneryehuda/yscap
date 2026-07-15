@@ -402,6 +402,21 @@ async function resolveBorrower(read, taskId) {
          ON CONFLICT (borrower_id, matched_borrower_id) DO NOTHING`,
         [borrowerId, possibleDupOfId, taskId]);
     } catch (_) { /* dedup-candidate logging is best-effort */ }
+    // Owner-directed 2026-07-15 night: a shared email is ITS OWN review card —
+    // "two separate borrowers have the same email; give it to ONE of them."
+    // Queued immediately here so the officer sees it the moment it happens
+    // (the boot sweep sharedEmailReviewSweepOnce re-produces/auto-closes it).
+    try {
+      const key = 'dedup:' + [String(borrowerId), String(possibleDupOfId)].sort().join(':');
+      const other = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [possibleDupOfId])).rows[0] || {};
+      await require('../lib/sync-review').queueReview({
+        borrowerId, taskId: key, direction: 'inbound',
+        fieldKey: 'shared_email', reason: 'shared_email_needs_reassignment',
+        suppressIfRejected: true,
+        rawValue: JSON.stringify({ b1: borrowerId, b2: possibleDupOfId, sourceTask: taskId }).slice(0, 300),
+        clickupValue: String(b.email || '').toLowerCase().trim().slice(0, 160),
+        portalValue: `${[first, last].filter(Boolean).join(' ')} AND ${[other.first_name, other.last_name].filter(Boolean).join(' ')}`.slice(0, 160) });
+    } catch (_) { /* the card is best-effort; the boot sweep re-produces it */ }
   }
   return { borrowerId, created: true };
 }
@@ -917,6 +932,12 @@ async function ingestTask(task, options = {}, opts = {}) {
     if (applicationId && borrowerId) {
       try {
         const roles = (await db.query(`SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1`, [applicationId])).rows[0];
+        const SWAP_CLOSE_KEYS = ['first_name', 'email', 'cell_phone', 'ssn', 'current_address', 'date_of_birth', 'co_first_name', 'co_cell_phone'];
+        const closeSwapRows = async (why) => {
+          for (const fk of SWAP_CLOSE_KEYS) {
+            try { await review.closeStaleReviews({ taskId: task.id, fieldKey: fk, note: `auto-closed — ${why}; the comparison was across two different people` }); } catch (_) {}
+          }
+        };
         if (roles && String(roles.borrower_id) !== String(borrowerId)
             && roles.co_borrower_id && String(roles.co_borrower_id) === String(borrowerId)) {
           await db.query(
@@ -929,9 +950,33 @@ async function ingestTask(task, options = {}, opts = {}) {
               why: 'ClickUp main task is the borrower; identity resolution proved the portal roles were reversed' })]).catch(() => {});
           // The cross-person "mismatch" rows for this task are artifacts of the
           // swap — close them; the next audit pass compares the right people.
-          for (const fk of ['first_name', 'email', 'cell_phone', 'ssn', 'current_address', 'date_of_birth']) {
-            try { await review.closeStaleReviews({ taskId: task.id, fieldKey: fk, note: 'auto-closed — the file’s borrower/co-borrower roles were aligned to ClickUp (main task = borrower); the comparison was across two different people' }); } catch (_) {}
-          }
+          await closeSwapRows('the file’s borrower/co-borrower roles were aligned to ClickUp (main task = borrower)');
+        } else if (roles && String(roles.borrower_id) !== String(borrowerId)
+            && coBorrowerId && String(coBorrowerId) === String(roles.borrower_id)
+            && (!roles.co_borrower_id
+              || String(roles.co_borrower_id) === String(coBorrowerId)
+              || String(roles.co_borrower_id) === String(roles.borrower_id))) {
+          // FULL REVERSAL, second shape (Boruch Stauber follow-up, owner
+          // 2026-07-15 night: "should be resolved by the correct logic, still
+          // not resolved"). The main task's person is NOT on the file at all —
+          // but the SUBTASK person IS the file's current borrower. Both slots
+          // are therefore proven: the main-task person takes the borrower slot
+          // and the current borrower moves to the co-borrower slot (the first
+          // shape above only fired when the main person already sat in the CO
+          // slot — a file whose co slot was empty could never self-correct and
+          // re-flagged "Shaindel vs Boruch" forever). Guarded: never displaces
+          // a DIFFERENT real co-borrower link (the co slot must be empty, the
+          // subtask person, or a self-reference). Structure, not data — same
+          // audit action, no review needed (owner ruled roles are automatic).
+          await db.query(
+            `UPDATE applications SET borrower_id=$2, co_borrower_id=$3, updated_at=now() WHERE id=$1`,
+            [applicationId, borrowerId, roles.borrower_id]);
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system',NULL,'borrower_roles_swapped','application',$1,$2)`,
+            [applicationId, JSON.stringify({ taskId: task.id, primaryNow: borrowerId, coBorrowerNow: roles.borrower_id,
+              why: 'ClickUp main task is the borrower and its SUBTASK person held the borrower slot — both roles re-seated (main person → borrower, previous borrower → co-borrower)' })]).catch(() => {});
+          await closeSwapRows('the file’s borrower/co-borrower roles were re-seated to match ClickUp (main task = borrower, subtask = co-borrower)');
         }
       } catch (e) { console.warn('[ingest] role reconciliation skipped:', e.message); }
     }

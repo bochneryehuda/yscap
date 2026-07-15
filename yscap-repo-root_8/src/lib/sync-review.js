@@ -34,6 +34,9 @@ const FIELD_LABELS = {
   // Two different people merged onto one profile (the wrong-officer incident):
   borrower_identity: 'Borrower identity — one profile, two people',
   co_borrower_identity: 'Co-borrower identity — one profile, two people',
+  // Two different people using ONE email address (owner-directed: the email
+  // must be assigned to exactly one borrower; until then it never links files):
+  shared_email: 'Shared email — two borrowers',
 };
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
@@ -129,7 +132,7 @@ async function notifyLoanOfficer(reviewId) {
   // FILE-LEVEL rows aren't a value disagreement — the email must say what the
   // situation is and that the review screen offers ACTIONS, not sides
   // (pre-merge audit #257 should-fix: the two-sided copy misdirected LOs).
-  const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'sharepoint_doc', 'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity'].includes(row.field_key);
+  const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'sharepoint_doc', 'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity', 'shared_email'].includes(row.field_key);
   const body = fileLevel
     ? `A file${who} needs a decision: ${label.toLowerCase()}` +
       (row.clickup_value ? ` (${row.clickup_value})` : '') + '. ' +

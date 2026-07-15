@@ -216,7 +216,11 @@ async function auditIdentityMismatchesOnce() {
   const review = require('../lib/sync-review');
   const identity = require('../clickup/identity');
   const transforms = require('../clickup/transforms');
-  const KEYS = ['email', 'cell_phone', 'first_name', 'current_address', 'ssn', 'borrower_identity', 'co_borrower_identity'];
+  // co_first_name / co_cell_phone were MISSING from this list, so their open
+  // rows could never auto-close (owner-reported: the Mendelovits co-cell card
+  // sat open forever) — every key the loop can queue must be listed here.
+  const KEYS = ['email', 'cell_phone', 'first_name', 'current_address', 'ssn',
+    'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity'];
   const r = await db.query(
     `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id, a.co_borrower_id, a.loan_officer_id,
             b.email, b.cell_phone, b.first_name, b.last_name, b.current_address, b.ssn_last4,
@@ -331,7 +335,43 @@ async function auditIdentityMismatchesOnce() {
         closed += await review.closeStaleReviews({ taskId: row.task_id, fieldKey: fk, note });
       }
     };
-    if (sb.email && row.email && !isShadowEmail(sb.email)) {
+    // ---- MAIN-PERSON wrong-merge check FIRST (owner incident 2026-07-15
+    // night, follow-up: "the officer still has access and I don't have the
+    // option to split"). ANY identity disagreement — name, SSN, or phone —
+    // on a profile that belongs to another officer's relationship means the
+    // profile likely holds TWO people. In that case every per-field card is
+    // meaningless cross-person noise (and the "additive" contact adoption
+    // below would stamp the other person's phone/email onto the lead's
+    // profile — pollution, not enrichment): suppress them all, close any
+    // already open, and queue ONE actionable "one profile, two people" card.
+    const pFirstTok = lc(String(row.first_name || '').split(/\s+/)[0]);
+    const namesComparable = !!(sbFirst && pFirstTok
+      && !transforms.isPlaceholderName(sb.first_name) && !transforms.isPlaceholderName(row.first_name));
+    const firstDiffer = namesComparable && sbFirst !== pFirstTok;
+    const ssnDiffer = !!(sbLast4 && row.ssn_last4 && sbLast4 !== String(row.ssn_last4));
+    const cpEarly = digitsOf(sb.cell_phone), ppEarly = digitsOf(row.cell_phone);
+    const phoneDiffer = cpEarly.length >= 10 && ppEarly.length >= 10 && cpEarly.slice(-10) !== ppEarly.slice(-10);
+    const mainMerged = (firstDiffer || ssnDiffer || phoneDiffer)
+      && await wrongMergeSignature(row.borrower_id, row.loan_officer_id);
+    if (mainMerged) {
+      try {
+        await review.queueReview({
+          applicationId: row.id, borrowerId: row.borrower_id, taskId: row.task_id,
+          direction: 'inbound', fieldKey: 'borrower_identity', reason: 'borrower_identity_conflict',
+          suppressIfRejected: true,
+          rawValue: JSON.stringify({ role: 'borrower', mergedBorrowerId: row.borrower_id,
+            evidence: { firstDiffer, ssnDiffer, phoneDiffer } }).slice(0, 300),
+          clickupValue: [sb.first_name, sb.last_name].filter(Boolean).join(' ').slice(0, 160),
+          portalValue: [row.first_name, row.last_name].filter(Boolean).join(' ').slice(0, 160) });
+        queued++;
+      } catch (_) { /* best-effort */ }
+      for (const fk of ['first_name', 'email', 'cell_phone', 'ssn', 'current_address']) {
+        try {
+          await closeContactRow(fk, 'auto-closed — this profile appears to hold TWO different people (see the “one profile, two people” card); comparing fields across two humans is meaningless');
+        } catch (_) { /* best-effort */ }
+      }
+    }
+    if (!mainMerged && sb.email && row.email && !isShadowEmail(sb.email)) {
       if (isShadowEmail(row.email)) {
         // Placeholder vs real is NOT a disagreement — the heal upgrades it;
         // close any noise row already queued for it.
@@ -343,35 +383,22 @@ async function auditIdentityMismatchesOnce() {
         await closeContactRow('email', 'auto-closed — the two systems now agree');
       }
     }
-    const cp = digitsOf(sb.cell_phone), pp = digitsOf(row.cell_phone);
-    if (cp.length >= 10 && pp.length >= 10) {
-      if (cp.slice(-10) !== pp.slice(-10)) {
+    if (!mainMerged && cpEarly.length >= 10 && ppEarly.length >= 10) {
+      if (phoneDiffer) {
         await addContact('phone', sb.cell_phone);
         await closeContactRow('cell_phone', 'auto-closed — recorded as an ADDITIONAL phone on the borrower profile (contact info accumulates; nothing was replaced)');
       } else {
         await closeContactRow('cell_phone', 'auto-closed — the two systems now agree');
       }
     }
-    const cuFirst = sbFirst;
-    const pFirst = lc(String(row.first_name || '').split(/\s+/)[0]);
-    if (cuFirst && pFirst && !transforms.isPlaceholderName(sb.first_name) && !transforms.isPlaceholderName(row.first_name)) {
-      const namesDiffer = cuFirst !== pFirst;
-      const merged = namesDiffer && await wrongMergeSignature(row.borrower_id, row.loan_officer_id);
-      if (merged) {
-        // Two people on one profile — NOT a rename decision. The row is
-        // file-scoped so it notifies the FILE's assigned officer only.
-        checks.push({ key: 'borrower_identity', reason: 'borrower_identity_conflict', differ: true,
-          raw: { role: 'borrower', mergedBorrowerId: row.borrower_id },
-          cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
-      } else {
-        checks.push({ key: 'first_name', differ: namesDiffer,
-          cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
-        // A same-person rename verdict clears any earlier merge suspicion row.
-        checks.push({ key: 'borrower_identity', differ: false,
-          cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
-      }
+    if (!mainMerged && namesComparable) {
+      checks.push({ key: 'first_name', differ: firstDiffer,
+        cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
+      // A same-person verdict clears any earlier merge-suspicion card.
+      checks.push({ key: 'borrower_identity', differ: false,
+        cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
     }
-    let same = sameStreet(addrText(sb.current_address), addrText(row.current_address));
+    let same = mainMerged ? null : sameStreet(addrText(sb.current_address), addrText(row.current_address));
     // CANONICAL fallback (owner-directed: Google Maps decides "technically the
     // same"): when the text heuristic says the addresses DIFFER, resolve both
     // through the cached place_id canonicalizer — the same property in two
@@ -411,8 +438,9 @@ async function auditIdentityMismatchesOnce() {
     } else if (same === false) {
       checks.push({ key: 'current_address', differ: true, cu: addrText(sb.current_address), p: addrText(row.current_address) });
     }
-    const cuS = sbLast4;
-    if (cuS && row.ssn_last4) checks.push({ key: 'ssn', differ: cuS !== String(row.ssn_last4), cu: '✱✱✱-✱✱-' + cuS, p: '✱✱✱-✱✱-' + row.ssn_last4 });
+    if (!mainMerged && sbLast4 && row.ssn_last4) {
+      checks.push({ key: 'ssn', differ: ssnDiffer, cu: '✱✱✱-✱✱-' + sbLast4, p: '✱✱✱-✱✱-' + row.ssn_last4 });
+    }
     // CO-BORROWER coverage (mega-audit enhancement #3): the snapshot's masked
     // coBorrower block carries enough for name + phone-last4 comparisons
     // against the SUBTASK person. Guidance-only rows (co_* keys are not side-
@@ -422,27 +450,44 @@ async function auditIdentityMismatchesOnce() {
     if (sco && row.co_borrower_id && typeof sco === 'object') {
       const scoFirst = lc(String(sco.first_name || '').split(/\s+/)[0]);
       const pcoFirst = lc(String(row.co_first || '').split(/\s+/)[0]);
-      if (scoFirst && pcoFirst && !transforms.isPlaceholderName(sco.first_name) && !transforms.isPlaceholderName(row.co_first)) {
-        const coDiffer = scoFirst !== pcoFirst;
-        const coMerged = coDiffer && await wrongMergeSignature(row.co_borrower_id, row.loan_officer_id);
-        if (coMerged) {
-          // The Mendelovits/Cohen incident shape: the file's CO-borrower slot
-          // points at a profile that is really another officer's lead — two
-          // different people merged on a shared family email + surname.
-          checks.push({ key: 'co_borrower_identity', reason: 'borrower_identity_conflict', bId: row.co_borrower_id, differ: true,
-            raw: { role: 'co_borrower', mergedBorrowerId: row.co_borrower_id },
-            cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
-        } else {
-          checks.push({ key: 'co_first_name', bId: row.co_borrower_id, differ: coDiffer,
-            cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
-          checks.push({ key: 'co_borrower_identity', bId: row.co_borrower_id, differ: false,
+      const coNamesComparable = !!(scoFirst && pcoFirst
+        && !transforms.isPlaceholderName(sco.first_name) && !transforms.isPlaceholderName(row.co_first));
+      const coNameDiffer = coNamesComparable && scoFirst !== pcoFirst;
+      const scoP4 = String(sco.phone_last4 || ''), pcoP4 = digitsOf(row.co_cell).slice(-4);
+      const coPhonesComparable = scoP4.length === 4 && pcoP4.length === 4;
+      const coPhoneDiffer = coPhonesComparable && scoP4 !== pcoP4;
+      // The Mendelovits/Cohen incident shape: the file's CO-borrower slot
+      // points at a profile that is really another officer's lead — two
+      // different people merged on a shared family email + surname. The
+      // PHONE disagreeing is merge evidence exactly like the name (the
+      // incident surfaced as a co-cell card, not a name card) — either one,
+      // on a profile with another officer's relationship, means ONE
+      // actionable split card instead of unanswerable field cards.
+      const coMerged = (coNameDiffer || coPhoneDiffer)
+        && await wrongMergeSignature(row.co_borrower_id, row.loan_officer_id);
+      if (coMerged) {
+        checks.push({ key: 'co_borrower_identity', reason: 'borrower_identity_conflict', bId: row.co_borrower_id, differ: true,
+          raw: { role: 'co_borrower', mergedBorrowerId: row.co_borrower_id,
+            evidence: { coNameDiffer, coPhoneDiffer } },
+          cu: [sco.first_name, sco.last_name].filter(Boolean).join(' ') || ('…' + scoP4),
+          p: [row.co_first, row.co_last].filter(Boolean).join(' ') || ('…' + pcoP4) });
+        for (const fk of ['co_first_name', 'co_cell_phone']) {
+          try {
+            await closeContactRow(fk, 'auto-closed — this co-borrower profile appears to hold TWO different people (see the “one profile, two people” card); comparing fields across two humans is meaningless');
+          } catch (_) { /* best-effort */ }
+        }
+      } else {
+        if (coNamesComparable) {
+          checks.push({ key: 'co_first_name', bId: row.co_borrower_id, differ: coNameDiffer,
             cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
         }
-      }
-      const scoP4 = String(sco.phone_last4 || ''), pcoP4 = digitsOf(row.co_cell).slice(-4);
-      if (scoP4.length === 4 && pcoP4.length === 4) {
-        checks.push({ key: 'co_cell_phone', bId: row.co_borrower_id, differ: scoP4 !== pcoP4,
-          cu: '…' + scoP4, p: '…' + pcoP4 });
+        if (coPhonesComparable) {
+          checks.push({ key: 'co_cell_phone', bId: row.co_borrower_id, differ: coPhoneDiffer,
+            cu: '…' + scoP4, p: '…' + pcoP4 });
+        }
+        // A same-person verdict clears any earlier merge-suspicion card.
+        checks.push({ key: 'co_borrower_identity', bId: row.co_borrower_id, differ: false,
+          cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
       }
     }
     for (const c of checks) {
@@ -466,6 +511,64 @@ async function auditIdentityMismatchesOnce() {
     }
   }
   if (queued || closed) console.log(`[clickup-sync] identity mismatch audit: ${queued} queued, ${closed} auto-closed`);
+  return queued;
+}
+
+// SHARED EMAIL = A REVIEW CARD OF ITS OWN (owner-directed 2026-07-15 night:
+// "sign up a manual review that two separate borrowers have the same email —
+// one of them needs their email changed, and the email assigned to only ONE
+// borrower; until fixed the system must not link files by that email, and the
+// borrowers stay separately assigned to their own loan officers").
+// The linking quarantine is structural: an uncorroborated shared email NEVER
+// merges (identity.emailMatchCorroborated) — the second person gets a distinct
+// profile with a placeholder email. What was MISSING was the visible to-do:
+// the pair sat silently in borrower_dedup_candidates. This sweep turns every
+// open shared-email pair into a review card telling staff exactly what to fix
+// (give one of the two their own email — in PILOT on the borrower screen, or
+// in ClickUp), and auto-closes the card (and settles the candidate row) the
+// moment each borrower carries their own real email.
+async function sharedEmailReviewSweepOnce() {
+  const review = require('../lib/sync-review');
+  const isPlaceholder = (e) => /^noemail\+.*@clickup\.local$/i.test(String(e || ''));
+  const r = await db.query(
+    `SELECT c.id AS cand_id, c.borrower_id AS b1, c.matched_borrower_id AS b2,
+            x.email AS e1, x.first_name AS f1, x.last_name AS l1,
+            y.email AS e2, y.first_name AS f2, y.last_name AS l2
+       FROM borrower_dedup_candidates c
+       JOIN borrowers x ON x.id = c.borrower_id
+       JOIN borrowers y ON y.id = c.matched_borrower_id
+      WHERE c.status = 'open' AND c.reason = 'shared_email_uncorroborated'
+      ORDER BY c.created_at DESC LIMIT 200`).catch(() => ({ rows: [] }));
+  if (!r.rows.length) return 0;
+  let queued = 0, closedN = 0;
+  for (const row of r.rows) {
+    const key = 'dedup:' + [String(row.b1), String(row.b2)].sort().join(':');
+    const n1 = [row.f1, row.l1].filter(Boolean).join(' ') || 'first person';
+    const n2 = [row.f2, row.l2].filter(Boolean).join(' ') || 'second person';
+    try {
+      if (!isPlaceholder(row.e1) && !isPlaceholder(row.e2)) {
+        // Each person now carries their own real email (primary emails are
+        // unique, so two real emails are necessarily two different emails) —
+        // the situation the card asked staff to create. Close + settle.
+        closedN += await review.closeStaleReviews({ taskId: key, fieldKey: 'shared_email',
+          note: `auto-closed — ${n1} and ${n2} each carry their own email now` });
+        await db.query(
+          `UPDATE borrower_dedup_candidates SET status='distinct', resolved_at=now()
+            WHERE id=$1 AND status='open'`, [row.cand_id]).catch(() => {});
+      } else {
+        const sharedEmail = isPlaceholder(row.e1) ? row.e2 : row.e1;
+        await review.queueReview({
+          borrowerId: row.b1, taskId: key, direction: 'inbound',
+          fieldKey: 'shared_email', reason: 'shared_email_needs_reassignment',
+          suppressIfRejected: true,
+          rawValue: JSON.stringify({ b1: row.b1, b2: row.b2 }).slice(0, 300),
+          clickupValue: String(sharedEmail || '').slice(0, 160),
+          portalValue: `${n1} AND ${n2}`.slice(0, 160) });
+        queued++;
+      }
+    } catch (_) { /* per-pair best-effort */ }
+  }
+  if (queued || closedN) console.log(`[clickup-sync] shared-email sweep: ${queued} queued, ${closedN} auto-closed`);
   return queued;
 }
 
@@ -1062,7 +1165,12 @@ function start() {
       // The mismatch audit reads each task's LAST-INGEST snapshot, so it runs
       // after the reconcile pass above has refreshed them portfolio-wide.
       .then(() => auditIdentityMismatchesOnce())
-      .catch((e) => console.error('[clickup-sync] identity mismatch audit', e.message));
+      .catch((e) => console.error('[clickup-sync] identity mismatch audit', e.message))
+      // Shared-email pairs ride the same chain: after the audit has refreshed
+      // the picture, every open pair gets its "assign this email to ONE
+      // borrower" card (and resolved pairs auto-close).
+      .then(() => sharedEmailReviewSweepOnce())
+      .catch((e) => console.error('[clickup-sync] shared-email sweep', e.message));
     // AFTER the reconcile pass (which links files to their EXISTING tasks by
     // identity), give any still-unlinked recent portal file its one bounded
     // create retry — the recovery path for a failed create-at-file-start.
@@ -1120,4 +1228,4 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };
