@@ -1231,6 +1231,53 @@ function StaffTrackRecordPanel({ app, role }) {
    issues included) — the internal checklist Item already had one; this brings
    notes to every condition on the borrower-conditions view too (#126). Notes are
    staff-only (ci.notes is never sent to the borrower). */
+// #80 — per-file EMAIL NOTIFICATION MONITOR. A read-only running list of every
+// notification written for this file (to the borrower, co-borrower, and each
+// assigned staffer) with its EMAIL delivery status — so the team can see exactly
+// what has gone out, to whom, and whether the email actually sent.
+function EmailMonitor({ appId }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState('');
+  const [open, setOpen] = useState(false);
+  const load = useCallback(() => {
+    api.staffAppEmails(appId).then((r) => setRows(Array.isArray(r) ? r : [])).catch((e) => setErr(e.message || 'Could not load the email log'));
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+  if (err) return <div className="notice err">{err}</div>;
+  if (!rows) return <p className="muted small">Loading…</p>;
+  if (!rows.length) return <p className="muted small">No notifications have been sent for this file yet.</p>;
+  const statusPill = (s) => {
+    const label = s === 'sent' ? 'Emailed' : s === 'skipped' ? 'In-app only' : s === 'error' ? 'Email failed' : 'Pending';
+    const color = s === 'sent' ? 'var(--ok)' : s === 'error' ? 'var(--danger)' : 'var(--muted-2)';
+    return <span className="pill small" style={{ borderColor: color, color }}>{label}</span>;
+  };
+  const when = (r) => { try { return new Date(r.emailed_at || r.created_at).toLocaleString(); } catch { return ''; } };
+  const shown = open ? rows : rows.slice(0, 8);
+  return (
+    <div className="panel" style={{ padding: 10 }}>
+      <div className="muted small" style={{ marginBottom: 6 }}>{rows.length} notification{rows.length === 1 ? '' : 's'} on this file · newest first.</div>
+      {shown.map((r) => (
+        <div key={r.id} className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '5px 0', borderTop: '1px solid rgba(127,169,176,.15)' }}>
+          <span className="small" style={{ flex: 1, minWidth: 200 }}>
+            <strong>{r.title}</strong>
+            <span className="muted" style={{ marginLeft: 6 }}>
+              → {r.recipient_name || r.recipient_email || (r.recipient_kind === 'staff' ? 'staff' : 'borrower')}
+              {r.recipient_email ? ` · ${r.recipient_email}` : ''}
+            </span>
+          </span>
+          {statusPill(r.email_status)}
+          <span className="muted small" style={{ minWidth: 132, textAlign: 'right' }}>{when(r)}</span>
+        </div>
+      ))}
+      {rows.length > 8 && (
+        <button className="btn ghost small" style={{ marginTop: 8 }} onClick={() => setOpen((v) => !v)}>
+          {open ? 'Show fewer' : `Show all ${rows.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function CondNote({ item, onPatch }) {
   const [v, setV] = useState(item.notes || '');
   const [saved, setSaved] = useState(false);
@@ -2670,6 +2717,11 @@ export default function StaffApplication() {
       <Section id="sec-activity" title="Activity"
         info="The audited history of everything on this file — status changes, uploads, sign-offs, reveals.">
       <ActivityFeed fetcher={activityFetcher} title="File activity" />
+      </Section>
+
+      <Section id="sec-emails" title="Email notifications"
+        info="Every notification sent for this file — to the borrower, co-borrower, and each assigned staffer — with its email delivery status (sent, in-app only, or error). A running monitor of exactly what has gone out and to whom.">
+      <EmailMonitor appId={id} />
       </Section>
 
       </FileSections>
