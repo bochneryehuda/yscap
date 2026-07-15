@@ -231,7 +231,9 @@ async function resolveBorrower(read, taskId) {
                             marital_status,employment_type,employer,ssn_hash,origin)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'clickup_backfill')
      ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
-    [first, last, email, b.cell_phone || null, b.date_of_birth || null, b.citizenship || null,
+    [first, last, email, b.cell_phone || null,
+     require('../lib/fields').sanitizeDob(b.date_of_birth),   // NEW-borrower path vets too: garbage/toddler DOBs never insert raw
+     b.citizenship || null,
      require('../lib/fields').sanitizeFico(b.fico),   // #90: FICO 300–850 or null
      b.current_address ? JSON.stringify(b.current_address) : null, b.marital_status || null,
      b.employment_type || null, b.employer || null, ssnHash]);
