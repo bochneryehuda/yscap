@@ -179,9 +179,13 @@ export default function Dashboard() {
 
   return (
     <>
-      <div className="row" style={{ marginBottom: 20 }}>
+      <div className="row" style={{ marginBottom: 20, flexWrap: 'wrap', gap: 8 }}>
         <div><h1>Your loans</h1><p className="muted small">Track every file with YS Capital in one place.</p></div>
         <div className="spacer" />
+        {/* #103: a discoverable entry point to self-service pricing right where
+            borrowers land — build a term sheet from your own numbers, save it,
+            come back to it. */}
+        <Link className="btn ghost" to="/pricing" title="Price a loan and save scenarios — build a term sheet from your own numbers">Price a loan</Link>
         <button className="btn primary" onClick={newApplication}>+ New application</button>
       </div>
       {err && <div role="alert" className="notice err">{err}
@@ -237,9 +241,13 @@ export default function Dashboard() {
           <div className="panel">
             <h3>No applications yet</h3>
             <p className="muted" style={{ margin: '8px 0 16px' }}>
-              Start your first loan application. PILOT saves your progress automatically as you go.
+              Start your first loan application, or price a scenario first to see your numbers.
+              PILOT saves your progress automatically as you go.
             </p>
-            <button className="btn primary" onClick={newApplication}>Start an application</button>
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn primary" onClick={newApplication}>Start an application</button>
+              <Link className="btn ghost" to="/pricing">Price a loan</Link>
+            </div>
           </div>
         ) : (
           <>
