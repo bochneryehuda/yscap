@@ -452,16 +452,44 @@ async function mirrorRowInner(row, scopeKey) {
       WHERE id = $1`,
     [row.id, sp.makeRef(driveId, up.item.id), up.item.webUrl || null, version, parentId]);
 
+  // A successful mirror vacates any open "mirror failed" review row for this
+  // document — fixed at the source, no clicks needed.
+  try {
+    await require('./sync-review').closeStaleReviews({
+      taskId: `spdoc:${row.id}`, fieldKey: 'sharepoint_doc',
+      note: `auto-closed — the document mirrored successfully to ${target.fullPath}/${category}` });
+  } catch (_) { /* best-effort */ }
+
   return { webUrl: up.item.webUrl, path: `${target.fullPath}/${category}${version ? `/Version ${version}` : ''}` };
 }
 
 async function recordFailure(row, err) {
-  await db.query(
+  const r = await db.query(
     `UPDATE documents SET sharepoint_backup_error=$2,
         sharepoint_backup_attempts = sharepoint_backup_attempts + 1,
         sharepoint_backup_attempted_at = now()
-      WHERE id=$1`,
+      WHERE id=$1 RETURNING sharepoint_backup_attempts`,
     [row.id, String((err && err.message) || err).slice(0, 500)]);
+  // EXHAUSTED → MANUAL REVIEW (owner-directed 2026-07-15 night: "enhance the
+  // SharePoint error handling — when it should be sent to manual review").
+  // Transient failures retry silently through the attempt budget + the daily
+  // fresh chance; a document that BURNS the whole budget is stuck on
+  // something real (permissions, a bad path, an unreadable local file) and a
+  // human must see it. One row per document (synthetic spdoc:<id> key),
+  // dismiss sticks, auto-closed by the success path when a later retry lands.
+  try {
+    const attempts = r.rows[0] ? Number(r.rows[0].sharepoint_backup_attempts) : 0;
+    if (attempts >= MAX_ATTEMPTS) {
+      await require('./sync-review').queueReview({
+        applicationId: row.app_id || null, borrowerId: row.borrower_id || null,
+        taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
+        reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
+        clickupValue: null,
+        portalValue: `${row.filename || 'document'} — ${row.item_label || row.slot_label || row.doc_kind || 'file'}`.slice(0, 160),
+        rawValue: JSON.stringify({ docId: row.id, attempts,
+          error: String((err && err.message) || err).slice(0, 300) }).slice(0, 500) });
+    }
+  } catch (_) { /* visibility is best-effort — never breaks the mirror */ }
 }
 
 // ---------------------------------------------------------------------- passes

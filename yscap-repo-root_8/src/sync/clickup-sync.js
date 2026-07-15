@@ -332,7 +332,19 @@ async function auditIdentityMismatchesOnce() {
       checks.push({ key: 'first_name', differ: cuFirst !== pFirst,
         cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
     }
-    const same = sameStreet(addrText(sb.current_address), addrText(row.current_address));
+    let same = sameStreet(addrText(sb.current_address), addrText(row.current_address));
+    // CANONICAL fallback (owner-directed: Google Maps decides "technically the
+    // same"): when the text heuristic says the addresses DIFFER, resolve both
+    // through the cached place_id canonicalizer — the same property in two
+    // formats stops flagging. Degradable: no API key / unresolvable → the
+    // heuristic verdict stands. Bounded: only runs on heuristic mismatches,
+    // and every distinct text resolves once (db/113 cache).
+    if (same === false) {
+      try {
+        const sp2 = await require('../lib/address-canon').samePlace(addrText(sb.current_address), addrText(row.current_address));
+        if (sp2 === true) same = true;
+      } catch (_) { /* canonicalization is an enhancement, never a blocker */ }
+    }
     if (same === true) {
       // UNITS ARE ADDITIVE (owner-directed 2026-07-15 night: "a unit is just
       // an addition, not an override — if one side has it, add it to the

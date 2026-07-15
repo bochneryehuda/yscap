@@ -631,7 +631,17 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
       [borrowerId, task.id]).catch(() => ({ rows: [] }));
     for (const o of other.rows) {
       const on = identity.normalizeIdentity({ address: _addrOf(o.property_address) });
-      if (!on.address || on.address !== tn.address) continue;
+      if (!on.address) continue;
+      if (on.address !== tn.address) {
+        // CANONICAL fallback (owner-directed): the strict token compare misses
+        // formatting variants of the SAME property ("St"/"Street") — before
+        // skipping this sibling, ask the cached Google place_id resolver.
+        // Degradable (no key / unresolvable → skip as before) and bounded
+        // (few siblings per borrower; every distinct text resolves once).
+        let sameProp = null;
+        try { sameProp = await require('../lib/address-canon').samePlace(_addrOf(read.app.property_address), _addrOf(o.property_address)); } catch (_) {}
+        if (sameProp !== true) continue;
+      }
       let dead = false, sibTerminal = false;
       try {
         const sib = await require('./client').getTask(o.clickup_pipeline_task_id);

@@ -29,6 +29,7 @@ const REASON_COPY = {
   file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Create its ClickUp task now, or dismiss if this file intentionally lives outside ClickUp.',
   identity_mismatch_audit: 'The portfolio audit found the two systems carrying DIFFERENT values for this borrower-identity field. Nothing was changed anywhere (identity fields never overwrite silently) — compare the sides and adopt the correct one; it is applied to both systems. If both are fine (e.g. an old phone number), dismiss and this stays closed.',
   sharepoint_match_uncertain: 'The SharePoint mirror was NOT SURE which folder this file’s documents belong in (an ambiguous folder match, or no officer yet), so it filed into a safe, clearly-marked new folder — shown under “In PILOT”. If that is the wrong tree: merge or rename the folders IN SharePoint (the mirror never moves or renames anything itself), then click Re-match. Dismiss keeps the new folder.',
+  sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the last error is recorded on the row. Usually a permissions problem, a folder issue, or an unreadable file. Fix the cause, then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
 };
 // FILE-LEVEL resolution options per reason (mirrors REASON_ACTIONS in
 // src/lib/sync-file-review.js — the server validates; this only renders).
@@ -52,6 +53,10 @@ const REASON_FILE_ACTIONS = {
   ],
   sharepoint_match_uncertain: [
     { action: 'sp_rematch', label: 'Re-match folders now', title: 'Clear the folder match so the next document sync re-runs it — fix the folders in SharePoint first (the mirror never moves anything itself)' },
+  ],
+  sharepoint_mirror_failed: [
+    { action: 'sp_retry_doc', label: 'Retry the document', title: 'Re-arm the document’s mirror retries and kick a sync pass — fix the underlying cause first' },
+    { action: 'sp_rematch', label: 'Re-match folders', title: 'Clear the folder match so the next sync re-runs it (when the folder resolution itself is the problem)' },
   ],
 };
 // Candidate files the matcher surfaced (enriched into raw_value at queue time).
@@ -83,7 +88,7 @@ const FIELD_LABELS = {
   cell_phone: 'Borrower cell', current_address: 'Borrower home address', status: 'File status',
   file_link: 'File not syncing', ys_loan_number: 'YS loan number', push_job: 'ClickUp push failed',
   co_first_name: 'Co-borrower name', co_cell_phone: 'Co-borrower cell',
-  sharepoint_folder: 'SharePoint filing',
+  sharepoint_folder: 'SharePoint filing', sharepoint_doc: 'SharePoint document sync',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are

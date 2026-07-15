@@ -41,6 +41,10 @@ const REASON_ACTIONS = {
   // fuzzy match / officer-less Unfiled). Fix the folders IN SharePoint (the
   // mirror never moves or renames anything), then re-match.
   sharepoint_match_uncertain: ['sp_rematch'],
+  // A document burned its whole mirror retry budget — something real is wrong
+  // (permissions, a bad path, an unreadable local file). Retry after fixing
+  // the cause; re-match if the FOLDER resolution itself is the problem.
+  sharepoint_mirror_failed: ['sp_retry_doc', 'sp_rematch'],
 };
 
 // Rows with no ClickUp task (an unlinked FILE) still need a dedup identity in
@@ -180,13 +184,33 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
   if (action === 'sp_rematch') {
     // Clear the scope's folder cache so the NEXT document sync re-runs the
     // fuzzy match — used after the human merges/renames the folders in
-    // SharePoint (the mirror itself never moves or renames anything).
+    // SharePoint (the mirror itself never moves or renames anything). For a
+    // mirror-failure row (no scopeKey stored), derive the scope from the
+    // file/borrower the row is on.
     let scopeKey = null;
     try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; scopeKey = raw && raw.scopeKey; } catch (_) {}
+    if (!scopeKey && row.application_id) scopeKey = `app:${row.application_id}`;
+    if (!scopeKey && row.borrower_id) scopeKey = `borrower:${row.borrower_id}`;
     if (!scopeKey) throw httpError(409, 'this row does not reference a SharePoint scope');
     await require('./sharepoint-map').invalidateScope(scopeKey);
     await audit('sync_review_sp_rematch', row.application_id, actorId, { scopeKey, reviewId: row.id });
     return { note: 'folder cache cleared — the next document sync re-matches the folders (fix them in SharePoint first; the mirror never moves anything itself)', applicationId: row.application_id };
+  }
+
+  if (action === 'sp_retry_doc') {
+    // Re-arm the document's mirror budget and kick a pass — used after the
+    // human fixes the underlying cause (permissions, a renamed folder, a
+    // restored local file). The mirror re-runs through every normal rule.
+    let docId = null;
+    try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; docId = raw && raw.docId; } catch (_) {}
+    if (!docId) throw httpError(409, 'this row does not reference a document');
+    const u = await db.query(
+      `UPDATE documents SET sharepoint_backup_attempts=0, sharepoint_backup_error=NULL
+        WHERE id=$1 AND sharepoint_backed_up_at IS NULL RETURNING id`, [docId]);
+    if (!u.rows[0]) throw httpError(409, 'the document is no longer pending (already mirrored or removed)');
+    try { require('./sharepoint-backup').kick(); } catch (_) { /* mirror may be disabled */ }
+    await audit('sync_review_sp_retry_doc', row.application_id, actorId, { docId, reviewId: row.id });
+    return { note: `document ${docId} re-queued for mirroring`, applicationId: row.application_id };
   }
 
   if (action === 'create_task') {
