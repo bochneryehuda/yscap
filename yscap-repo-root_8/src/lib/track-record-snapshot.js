@@ -18,7 +18,7 @@ const MAX_BYTES = 4 * 1024 * 1024;   // a rendered track record is tens of KB; 4
 // edit pause, and each push used to INSERT a new documents row superseding
 // the last — dozens of rows (and dozens of SharePoint Version folders) per
 // editing session. Now a push REPLACES the current snapshot in place while it
-// is still fresh (< COALESCE_WINDOW) and not yet mirrored; a new row (with
+// is still fresh (< COALESCE_SEC) and not yet mirrored; a new row (with
 // supersede) is only born when the previous snapshot already mirrored or the
 // session went quiet. Result: one row + one mirrored copy per session.
 // Must stay <= the mirror's snapshot settle window (SHAREPOINT_SNAPSHOT_SETTLE_SEC):
