@@ -6,6 +6,7 @@ import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
+import { US_STATES } from '../components/LlcManager.jsx';
 import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
 import TermSheetStudio, {
   buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64,
@@ -117,6 +118,15 @@ export default function Apply() {
             housingPayment: cur.housingPayment || p.housing_payment || '',
           };
           if (data.ssnOnFile === undefined) data.ssnOnFile = !!p.ssn_last4;
+          // #98 LO stickiness: prefill the borrower's OWNING officer (loan
+          // officer of record) so a returning borrower's new file stays tied to
+          // their LO, and default the "work with an officer?" answer to Yes.
+          // Only when this draft hasn't already picked or answered.
+          if (p.owning_officer_email && !data.loanOfficerName && !data.loanOfficerEmail && data.worksWithOfficer == null) {
+            data.loanOfficerName = p.owning_officer_name || '';
+            data.loanOfficerEmail = p.owning_officer_email || '';
+            data.worksWithOfficer = true;
+          }
         } catch { /* profile prefill is best-effort */ }
         setForm(data); setStep(stepN);
       } catch (e) { if (live) setErr(e.message); }
@@ -492,7 +502,9 @@ export default function Apply() {
             </div>
             <div className="grid cols-2">
               <div className="field"><label>State</label>
-                <input className="input" autoComplete="off" maxLength={2} value={a.state || ''} onChange={e => setAddr('state', e.target.value.toUpperCase())} placeholder="NY" /></div>
+                <select className="input" value={a.state || ''} onChange={e => setAddr('state', e.target.value)}>
+                  <option value="">Select…</option>{US_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                </select></div>
               <div className="field"><label>ZIP</label>
                 <input className="input" autoComplete="off" value={a.zip || ''} onChange={e => setAddr('zip', e.target.value)} /></div>
             </div>
@@ -736,6 +748,12 @@ export default function Apply() {
                     <input className="input" autoComplete="off" value={c.email || ''} onChange={e => setCo('email', e.target.value)} placeholder="They'll receive a PILOT invitation" /></div>
                   <div className="field"><label>Phone</label>
                     <PhoneInput value={c.phone || ''} onChange={v => setCo('phone', v)} /></div>
+                </div>
+                <div className="grid cols-2">
+                  <div className="field"><label>Estimated FICO</label>
+                    <input className="input" type="text" inputMode="numeric" maxLength={3} value={c.fico || ''}
+                      onChange={e => setCo('fico', cleanFICO(e.target.value))} placeholder="e.g. 720" />
+                    {c.fico && !ficoValid(c.fico) && <span className="muted small" style={{ color: 'var(--danger)' }}>Enter a 3-digit score (300–850).</span>}</div>
                 </div>
               </>
             ); })()}

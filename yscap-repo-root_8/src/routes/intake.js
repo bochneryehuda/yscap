@@ -71,7 +71,15 @@ router.post('/', async (req, res) => {
     // 3) create the application (distinct property address)
     // Assignment fields flow through so ensureFileConditions generates the
     // assignment condition on an intake assignment deal (audit finding #3).
-    const isAssign = !!(p.isAssignment || p.assignment);
+    // Same shared invariant as every other create path (#96): the ticked flag is
+    // truth, underlying/fee hard-null off a non-assignment, purchase = underlying
+    // + fee. The public form uses looser key names, so normalize them first.
+    const asg = require('../lib/fields').assignmentFields({
+      isAssignment: !!(p.isAssignment || p.assignment),
+      underlyingContractPrice: num(p.underlyingContractPrice || p.underlyingPrice),
+      assignmentFee: num(p.assignmentFee),
+      purchasePrice: num(p.purchasePrice || p.price),
+    });
     const a = await client.query(
       `INSERT INTO applications
          (borrower_id,loan_officer_id,loan_officer_name,program,loan_type,property_address,property_type,units,
@@ -81,9 +89,9 @@ router.post('/', async (req, res) => {
       [borrowerId, officerId, officerName, p.program || p.dealType || null, require('../lib/fields').sanitizeLoanType(p.loanType || p.purpose),   // #95: public form can't persist a program as a loan type
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
-       num(p.purchasePrice || p.price), num(p.asIsValue || p.asIs), num(p.arv),
+       asg.purchasePrice, num(p.asIsValue || p.asIs), num(p.arv),
        num(p.rehabBudget || p.rehab), num(p.loanAmount), num(p.ltv),
-       isAssign, num(p.underlyingContractPrice || p.underlyingPrice), num(p.assignmentFee),
+       asg.isAssignment, asg.underlying, asg.assignFee,
        JSON.stringify(redactPII(p))]);
     const appId = a.rows[0].id;
     await client.query('COMMIT');

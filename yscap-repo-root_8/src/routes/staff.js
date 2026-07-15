@@ -644,6 +644,18 @@ router.post('/applications', async (req, res) => {
       const meRow = await db.query(`SELECT id,full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
       if (meRow.rows[0]) { officerId = meRow.rows[0].id; officerName = meRow.rows[0].full_name; }
     }
+    // #98 LO stickiness: an admin/processor creating a file for an EXISTING
+    // borrower who already has an owning officer inherits that officer rather
+    // than falling to Lead Capture. An explicit pick and the creating-LO default
+    // both still win — this only fills a remaining blank.
+    if (!officerId && borrowerId) {
+      const own = await db.query(`SELECT primary_officer_id FROM borrowers WHERE id=$1`, [borrowerId]);
+      if (own.rows[0] && own.rows[0].primary_officer_id) {
+        officerId = own.rows[0].primary_officer_id;
+        const nm = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [officerId]);
+        officerName = (nm.rows[0] && nm.rows[0].full_name) || officerName;
+      }
+    }
     let processorId = null;
     if (b.processorId) {
       const p = await db.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [b.processorId]);
