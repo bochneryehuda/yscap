@@ -94,6 +94,7 @@ async function main() {
   const rows = [['task_id', 'application_id', 'borrower', 'field', 'clickup_epoch', 'clickup_day',
     'classification', 'portal_value', 'day_agrees', 'action', 'new_epoch', 'verified']];
   let scanned = 0, restored = 0, flagged = 0, failed = 0;
+  const wipeCandidates = [];   // deferred wipe-don't-guess (post-pass re-checks live values)
 
   for (const app of apps) {
     let task;
@@ -109,24 +110,19 @@ async function main() {
       if (raw == null || raw === '') {
         // ClickUp side is EMPTY. If the PORTAL side holds a garbage year (the
         // typing artifact persisted DB-side, e.g. a 0026 closing), the owner's
-        // rule is WIPE, DON'T GUESS: clear the portal column (audited).
+        // rule is WIPE, DON'T GUESS. Wipes are DEFERRED to a post-pass that
+        // re-reads the CURRENT value: the up-front SELECT snapshot goes stale
+        // when an earlier task in this very run HEALS the value — wiping off
+        // the stale snapshot destroyed a just-healed DOB (a borrower-level
+        // column must never be wiped on one task's empty signal while another
+        // linked task carries the real value — audit finding, 2026-07-15).
         let p = f.col === 'date_of_birth' ? app.date_of_birth : app[f.col];
         if (p instanceof Date) p = null;                     // timestamptz — never wiped
         const y = Number(String(p || '').slice(0, 4));
         if (p != null && !(y >= 1900 && y <= 2100) && PORTAL_HEAL_COLS.has(f.col)) {
-          const action = APPLY ? 'clear-portal-garbage' : 'would-clear-portal-garbage';
-          if (APPLY) {
-            if (f.table === 'b') await db.query(`UPDATE borrowers SET date_of_birth=NULL, updated_at=now() WHERE id=$1`, [app.borrower_id]);
-            else await db.query(`UPDATE applications SET ${f.col}=NULL, updated_at=now() WHERE id=$1`, [app.id]);
-            await db.query(
-              `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
-               VALUES ('system', NULL, 'clickup_date_restore_portal', $1, $2, $3)`,
-              [f.table === 'b' ? 'borrower' : 'application', f.table === 'b' ? app.borrower_id : app.id,
-               JSON.stringify({ taskId: app.task_id, field: f.col, from: String(p), to: null, rule: 'wipe_dont_guess' })]);
-            flagged++;
-          }
-          rows.push([app.task_id, app.id, `${app.first_name || ''} ${app.last_name || ''}`.trim(), f.key,
-            '', null, 'clickup-empty', p, false, action, null, APPLY || null].map(csvEsc));
+          wipeCandidates.push({ table: f.table, col: f.col, key: f.key,
+            appId: app.id, borrowerId: app.borrower_id, taskId: app.task_id,
+            name: `${app.first_name || ''} ${app.last_name || ''}`.trim(), snapshot: String(p) });
         }
         continue;
       }
@@ -154,9 +150,11 @@ async function main() {
       } else if (cls === 'garbage-year' && f.restorable && portal && !portalGarbage) {
         newEpoch = T.dateOnlyToClickUpEpoch(portal);
         action = newEpoch == null ? 'flag-no-portal-value' : (APPLY ? 'rewrite' : 'would-rewrite');
-      } else if (cls === 'garbage-year' && portalGarbage) {
+      } else if (cls === 'garbage-year' && portalGarbage && f.col !== 'submitted_at') {
         // BOTH sides garbage (the year-0026 typing artifact pushed then re-pulled):
         // never guess — queue the auto-pivoted proposal for human approval.
+        // (submitted_at is excluded: the approve endpoint has no writer for it,
+        // so a queued row would be reject-only — it flags in the CSV instead.)
         action = APPLY ? 'queue-review' : 'would-queue-review';
         if (APPLY) {
           await syncReview.queueReview({
@@ -212,7 +210,7 @@ async function main() {
              VALUES ('system', NULL, 'clickup_date_restore', 'application', $1, $2)`,
             [app.id, JSON.stringify({ taskId: app.task_id, field: f.key, from: String(raw), to: String(newEpoch), day: T.fromEpochMs(newEpoch) })]);
         } catch (e) { console.error(`[restore] setField ${app.task_id} ${f.key} failed: ${e.message}`); failed++; }
-      } else if (action === 'heal-portal') restored++;
+      } else if (action === 'heal-portal' || action === 'would-heal-portal') restored++;
       else if (action.startsWith('flag') || action.includes('queue-review')) flagged++;
 
       if (cls !== 'native-4am' || agrees === false) {
@@ -221,6 +219,41 @@ async function main() {
       }
     }
     await new Promise((r) => setTimeout(r, 700));   // stay far under ClickUp rate limits
+  }
+
+  // ---- deferred wipe-don't-guess post-pass ----------------------------------
+  // Re-read the LIVE value for every candidate: a heal earlier in this run (or
+  // any concurrent write) replaces garbage with a sane day — those are SKIPPED.
+  // Only a value that is STILL garbage right now is cleared. Deduped so one
+  // borrower/app is wiped at most once regardless of how many empty tasks
+  // pointed at it.
+  const seenWipes = new Set();
+  for (const w of wipeCandidates) {
+    const dedupeKey = `${w.table}|${w.col}|${w.table === 'b' ? w.borrowerId : w.appId}`;
+    if (seenWipes.has(dedupeKey)) continue;
+    seenWipes.add(dedupeKey);
+    const cur = w.table === 'b'
+      ? (await db.query(`SELECT date_of_birth AS v FROM borrowers WHERE id=$1`, [w.borrowerId])).rows[0]
+      : (await db.query(`SELECT ${w.col} AS v FROM applications WHERE id=$1`, [w.appId])).rows[0];
+    const live = cur && cur.v != null && !(cur.v instanceof Date) ? String(cur.v) : null;
+    const y = Number(String(live || '').slice(0, 4));
+    let action;
+    if (live == null) action = 'skip-wipe-already-empty';
+    else if (y >= 1900 && y <= 2100) action = 'skip-wipe-value-now-sane';   // healed mid-run — never destroyed
+    else {
+      action = APPLY ? 'clear-portal-garbage' : 'would-clear-portal-garbage';
+      if (APPLY) {
+        if (w.table === 'b') await db.query(`UPDATE borrowers SET date_of_birth=NULL, updated_at=now() WHERE id=$1`, [w.borrowerId]);
+        else await db.query(`UPDATE applications SET ${w.col}=NULL, updated_at=now() WHERE id=$1`, [w.appId]);
+        await db.query(
+          `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+           VALUES ('system', NULL, 'clickup_date_restore_portal', $1, $2, $3)`,
+          [w.table === 'b' ? 'borrower' : 'application', w.table === 'b' ? w.borrowerId : w.appId,
+           JSON.stringify({ taskId: w.taskId, field: w.col, from: live, to: null, rule: 'wipe_dont_guess' })]);
+        flagged++;
+      }
+    }
+    rows.push([w.taskId, w.appId, w.name, w.key, '', null, 'clickup-empty', live != null ? live : w.snapshot, false, action, null, null].map(csvEsc));
   }
 
   const csv = rows.map((r) => (Array.isArray(r) ? r.join(',') : r)).join('\n');
