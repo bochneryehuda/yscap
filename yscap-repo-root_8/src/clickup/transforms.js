@@ -42,6 +42,17 @@ function toEpochMs(v) {
   const d = new Date(s);
   return isNaN(d) ? null : d.getTime();
 }
+// LOOSE epoch → 'YYYY-MM-DD' with NO sanity window — for guard/forensic code
+// that must SEE a corrupt stored day (e.g. a literal year-0095 DOB artifact)
+// in order to classify and auto-resolve it. Never use this on a persistence
+// path; fromEpochMs (windowed) remains the ingest chokepoint.
+function epochToDayLoose(ms) {
+  if (ms == null || ms === '') return null;
+  const n = Number(ms);
+  if (!isFinite(n)) return null;
+  try { return new Date(n + 12 * 3600 * 1000).toISOString().slice(0, 10); } catch (_) { return null; }
+}
+
 function fromEpochMs(ms) {
   if (ms == null || ms === '') return null;
   const n = Number(ms);
@@ -294,7 +305,7 @@ function maskCard(number) {
 
 module.exports = {
   splitName, joinName, isPlaceholderName, isShadowEmail,
-  toEpochMs, fromEpochMs, dateOnlyToClickUpEpoch, epochAtZonedTime, zonedYmd, pivotSuspectYear,
+  toEpochMs, fromEpochMs, epochToDayLoose, dateOnlyToClickUpEpoch, epochAtZonedTime, zonedYmd, pivotSuspectYear,
   parseMoney, numToString,
   normalizePhone, phoneDigits,
   normalizeMarried, normalizeMarriedAI, portalMaritalToMarried, marriedToPortalMarital,

@@ -90,7 +90,7 @@ async function resolveClickupUserId({ storedId, staffId, email }) {
 /** Load everything the mapper needs to build a task from an application. */
 async function loadPushContext(appId) {
   const r = await db.query(
-    `SELECT a.*, b.first_name, b.last_name, b.email AS b_email, b.cell_phone, b.date_of_birth,
+    `SELECT a.*, b.first_name, b.last_name, b.email AS b_email, b.cell_phone, b.date_of_birth, b.origin AS b_origin,
             b.ssn_encrypted, b.fico AS b_fico, b.current_address, b.citizenship, b.marital_status,
             b.employment_type, b.employer, b.dependents_count, b.years_at_residence, b.housing_status, b.housing_payment,
             l.llc_name, l.ein,
@@ -143,6 +143,7 @@ async function loadPushContext(appId) {
     officerClickupId: await resolveClickupUserId({ storedId: row.officer_cuid, staffId: row.officer_staff_id, email: row.officer_email }),
     processorClickupId: await resolveClickupUserId({ storedId: row.processor_cuid, staffId: row.processor_staff_id, email: row.processor_email }),
     officerName: row.officer_name || row.loan_officer_name || null,
+    borrowerOrigin: row.b_origin || null,   // provenance for the DOB auto-resolver
     portalAppId: appId,
     portalFileLink: `${cfg.appUrl}${cfg.portalPath}/#/internal/app/${appId}`,
     _row: row,
@@ -255,23 +256,42 @@ async function pushApplication(appId, opts = {}) {
       const old = before ? before[c.id] : undefined;
       if (before && fieldValueEquivalent(c.id, old, c.value, options)) { journalStats.suppressed++; continue; }
       // ANY change to an existing ClickUp DOB — any magnitude, scoped OR full
-      // repush — stops at the review queue (owner-directed 2026-07-15, widened
-      // from the original ±1-day-only guard after a month+year-off DOB sailed
-      // through). A blank DOB may still be FILLED; an approved review applies
-      // via the re-push bypass (opts.approvedReview).
-      if (!opts.approvedReview && isDobChange(c.id, old, c.value)) {
-        journalStats.blocked++;
-        const reason = isSuspectDobShift(c.id, old, c.value) ? 'dob_one_day_shift_blocked' : 'dob_change_blocked_pending_review';
-        console.error('[clickup] BLOCKED DOB change push', { appId, taskId: id, from: old, to: c.value, reason });
-        await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
-        await logSync('dob_change_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value), reason });
-        // Surface the refusal in the staff "Sync review" queue — an approver can
-        // apply it deliberately (approve → re-push with opts.approvedReview).
-        await require('../lib/sync-review').queueReview({
-          applicationId: appId, taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
-          currentValue: T.fromEpochMs(old), proposedValue: T.fromEpochMs(c.value), rawValue: String(c.value),
-          reason });
-        continue;
+      // repush — first consults the AUTO-RESOLUTION engine (owner-directed
+      // 2026-07-15 evening): provable conflicts settle themselves (same day in
+      // a different storage form writes through; a typed-artifact/plausibility
+      // verdict for ClickUp heals the PORTAL instead of writing), and only
+      // genuine ambiguity stops at the TWO-SIDED review queue (which emails
+      // the file's loan officer). A blank DOB may still be FILLED; an approved
+      // review applies via the re-push bypass (opts.approvedReview).
+      if (!opts.approvedReview && c.id === F.SHARED.borrowerDOB) {
+        const oldLoose = T.epochToDayLoose(old);            // sees artifact years the windowed read hides
+        const newDay = T.fromEpochMs(c.value);
+        if (oldLoose && newDay && oldLoose !== newDay) {
+          const AR = require('../lib/sync-autoresolve');
+          const d = AR.decideDob({ clickupDay: oldLoose, portalDay: newDay, portalOrigin: ctx.borrowerOrigin || null });
+          if (d.outcome === 'adopt' && d.winner === 'clickup') {
+            // ClickUp's value provably wins — heal the PORTAL from it instead
+            // of overwriting ClickUp (journaled + audited by the adopter).
+            journalStats.suppressed++;
+            await logSync('dob_auto_resolved_clickup_wins', appId, id, { day: d.value, why: d.why });
+            await AR.adoptDobEverywhere({ borrowerId: ctx._row.borrower_id, day: d.value, why: d.why, source: 'auto_resolve_outbound' }).catch(() => {});
+            continue;
+          }
+          if (d.outcome === 'review') {
+            journalStats.blocked++;
+            const reason = isSuspectDobShift(c.id, old, c.value) ? 'dob_one_day_shift_blocked' : 'dob_change_blocked_pending_review';
+            console.error('[clickup] BLOCKED DOB change push', { appId, taskId: id, from: old, to: c.value, reason });
+            await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
+            await logSync('dob_change_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value), reason });
+            await require('../lib/sync-review').queueReview({
+              applicationId: appId, taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
+              currentValue: oldLoose, proposedValue: newDay, rawValue: String(c.value),
+              reason, clickupValue: oldLoose, portalValue: newDay });
+            continue;
+          }
+          // 'agree' (same vetted day, different form) or adopt-portal: the
+          // outgoing write IS the resolution — let it through.
+        }
       }
       // PII OVERWRITE SHIELD (owner-directed 2026-07-15, layered on the DOB
       // guard above): a FULL repush may FILL a blank identity field on ClickUp
