@@ -5326,6 +5326,11 @@ router.get('/sync-reviews', async (req, res) => {
   try {
     const status = ['open', 'approved', 'rejected', 'resolved'].includes(String(req.query.status)) ? String(req.query.status) : 'open';
     const scoped = !seesAll(req);
+    // Scoped access = the row's file is theirs, OR (for rows not tied to a
+    // file yet — a non-materialized task, a borrower-level DOB) any of the
+    // row's borrower's active files is theirs. Matches the notifyLoanOfficer
+    // fan-out, so the emailed LO always finds the row behind the deep link
+    // (pre-merge audit: the old scope hid application-less rows from LOs).
     const r = await db.query(
       `SELECT q.*, a.deleted_at,
               b.first_name || ' ' || b.last_name AS borrower_name,
@@ -5334,7 +5339,11 @@ router.get('/sync-reviews', async (req, res) => {
          LEFT JOIN applications a ON a.id = q.application_id
          LEFT JOIN borrowers b ON b.id = COALESCE(q.borrower_id, a.borrower_id)
         WHERE q.status = $1
-          ${scoped ? `AND a.id IS NOT NULL AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}` : ''}
+          ${scoped ? `AND ((a.id IS NOT NULL AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')})
+                       OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
+                             SELECT 1 FROM applications a2
+                              WHERE a2.borrower_id = q.borrower_id AND a2.deleted_at IS NULL
+                                AND ${VISIBLE_OFFICERS_SQL('a2', '$2')})))` : ''}
         ORDER BY q.created_at DESC LIMIT 500`,
       scoped ? [status, req.actor.id] : [status]);
     res.json({ reviews: r.rows });
@@ -5347,10 +5356,17 @@ async function loadReviewFor(req, res) {
   if (!row) { res.status(404).json({ error: 'not found' }); return null; }
   if (row.status !== 'open') { res.status(409).json({ error: 'already resolved' }); return null; }
   if (!seesAll(req)) {
-    if (!row.application_id) { res.status(403).json({ error: 'forbidden' }); return null; }
-    const ok = await db.query(
-      `SELECT 1 FROM applications a WHERE a.id=$1 AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
-      [row.application_id, req.actor.id]);
+    // Same scope as the list: their file, or (application-less row) a
+    // borrower any of whose active files is theirs.
+    const ok = row.application_id
+      ? await db.query(
+          `SELECT 1 FROM applications a WHERE a.id=$1 AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
+          [row.application_id, req.actor.id])
+      : (row.borrower_id
+          ? await db.query(
+              `SELECT 1 FROM applications a WHERE a.borrower_id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`,
+              [row.borrower_id, req.actor.id])
+          : { rows: [] });
     if (!ok.rows[0]) { res.status(403).json({ error: 'forbidden' }); return null; }
   }
   return row;
@@ -5418,6 +5434,37 @@ router.post('/sync-reviews/:id/resolve', async (req, res) => {
       [row.id, winner, req.actor.id, (req.body && req.body.note) || null]);
     await audit(req, 'sync_review_resolve', row.application_id ? 'application' : 'borrower',
       row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, winner, ...out });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' });
+  }
+});
+
+// FILE-LEVEL resolution (owner-directed 2026-07-15 night): a stuck FILE's
+// review row is resolved by choosing an ACTION — create the file from the
+// task, link the task to an existing file, retry the dead push, archive/keep
+// the orphaned file — not by adopting a field value. The action list per
+// reason lives in src/lib/sync-file-review.js (REASON_ACTIONS); every action
+// runs the sync's own guarded machinery and is audited. Scoped like the other
+// resolve endpoints (the file's LO, or borrower-level for unmaterialized).
+router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
+  try {
+    const row = await loadReviewFor(req, res);
+    if (!row) return;
+    const SFR = require('../lib/sync-file-review');
+    const action = String((req.body && req.body.action) || '');
+    const out = await SFR.applyFileReviewAction({
+      row, action,
+      targetApplicationId: (req.body && req.body.targetApplicationId) || null,
+      actorId: req.actor.id,
+    });
+    await db.query(
+      `UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3
+        WHERE id=$1 AND status='open'`,
+      [row.id, req.actor.id, out.note || action]);
+    await audit(req, 'sync_review_resolve_file', row.application_id || out.applicationId ? 'application' : 'borrower',
+      row.application_id || out.applicationId || row.borrower_id, { reviewId: row.id, reason: row.reason, action, note: out.note });
     res.json({ ok: true, ...out });
   } catch (e) {
     if (e && e.status) return res.status(e.status).json({ error: e.message });

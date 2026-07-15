@@ -94,4 +94,18 @@ function isKnownInternal(internalStatus) {
   return Object.prototype.hasOwnProperty.call(EXTERNAL_FOR, norm(internalStatus));
 }
 
-module.exports = { EXTERNAL, EXTERNAL_FOR, externalFor, isKnownInternal, norm };
+/**
+ * True when a ClickUp status means the deal is FINISHED — funded, declined, or
+ * withdrawn/cancelled. A terminal deal's task will never be re-addressed, so
+ * its property address is free for a SUCCESSOR deal (a re-origination after a
+ * cancellation, a refi/resale after funding). The duplicate-in-progress defer
+ * keys off this: it only waits on siblings whose deal is still ACTIVE
+ * (root-caused 2026-07-15, Shulom Eisenberg / 521 Bayway — a funded successor
+ * task sat 'duplicate_pending' forever behind its cancelled predecessor).
+ */
+function isTerminal(internalStatus) {
+  const e = externalFor(internalStatus);
+  return e === 'funded' || e === 'declined' || e === 'withdrawn';
+}
+
+module.exports = { EXTERNAL, EXTERNAL_FOR, externalFor, isKnownInternal, isTerminal, norm };

@@ -167,12 +167,23 @@ async function healBorrowerFields(borrowerId, b, taskId) {
     //  * portal DOB IMPOSSIBLE (not an adult's date) → wipe-don't-guess: both
     //    systems agreed the value was wrong (ClickUp cleared it), so NULL the
     //    portal copy too rather than preserving provable garbage — audited.
+    // EVIDENCE GATE (pre-merge audit): "cleared" requires this task to have
+    // PREVIOUSLY carried a DOB (its stored snapshot from the last ingest) —
+    // a task that never had one is absence-of-information, not a clear, and
+    // must not vacate a live conflict another task is still asserting.
     try {
-      const cur = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
+      const prev = taskId
+        ? (await db.query(`SELECT snapshot FROM clickup_task_index WHERE task_id=$1`, [taskId])).rows[0] : null;
+      const prevDob = prev && prev.snapshot && prev.snapshot.borrower ? prev.snapshot.borrower.date_of_birth : null;
+      const cur = prevDob
+        ? (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {} : {};
       const portalDay = cur.date_of_birth ? String(cur.date_of_birth) : null;
-      if (portalDay) {
+      if (prevDob && portalDay) {
         const FLD = require('../lib/fields');
-        if (FLD.sanitizeDob(portalDay)) {
+        // STRICT plausibility for the stored value: it must already be a real
+        // in-window calendar date. (sanitizeDob alone would PIVOT a stored
+        // '0026-…' artifact to 1926 and call it plausible — audit nit.)
+        if (FLD.sanitizeDateOnly(portalDay) && FLD.sanitizeDob(portalDay)) {
           await review.closeStaleReviews({ borrowerId, fieldKey: 'date_of_birth',
             note: 'auto-closed — the ClickUp DOB was cleared at the source; PILOT keeps ' + portalDay });
         } else {
@@ -536,10 +547,23 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
     for (const o of other.rows) {
       const on = identity.normalizeIdentity({ address: _addrOf(o.property_address) });
       if (!on.address || on.address !== tn.address) continue;
-      let dead = false;
-      try { await require('./client').getTask(o.clickup_pipeline_task_id); }
+      let dead = false, sibTerminal = false;
+      try {
+        const sib = await require('./client').getTask(o.clickup_pipeline_task_id);
+        sibTerminal = statusMap.isTerminal(sib && sib.status && sib.status.status);
+      }
       catch (e) { if (e && e.status === 404) dead = true; }
       if (dead) return { id: o.id, how: 'relinked_dead_task', detail: { fromTask: o.clickup_pipeline_task_id }, copiedLoanNumber };
+      // SUCCESSOR DEAL (root-caused 2026-07-15 evening, Shulom Eisenberg / 521
+      // Bayway): the same-address sibling's deal is TERMINAL — funded,
+      // declined, or cancelled. Its task will never be re-addressed, so the
+      // defer below would wait FOREVER; and a new task at the address of a
+      // finished deal is the property's NEXT deal (a re-origination after a
+      // cancellation, a refi after funding), not a mid-cleanup duplicate.
+      // Fall through and let it materialize as its own file. If it later
+      // turns out to be a duplicate the officer re-addresses, the linked file
+      // follows the task's address edit — self-correcting either way.
+      if (sibTerminal) continue;
       // Duplicate-in-progress DEFER (owner-directed 2026-07-15): this borrower
       // already has a portal file at the SAME property bound to a LIVE other
       // task — this task is almost certainly a fresh ClickUp duplicate whose
@@ -566,11 +590,23 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
   // own address before materializing the new file.
   if (opts.allowCreate && !opts.forceCreate && staleStampAppId) {
     const src = await db.query(
-      `SELECT property_address FROM applications WHERE id=$1`, [staleStampAppId]).catch(() => ({ rows: [] }));
+      `SELECT property_address, clickup_pipeline_task_id FROM applications WHERE id=$1`, [staleStampAppId]).catch(() => ({ rows: [] }));
     const srcAddr = src.rows[0]
       ? identity.normalizeIdentity({ address: _addrOf(src.rows[0].property_address) }).address : null;
     if (!tn.address || (srcAddr && tn.address === srcAddr)) {
-      return { duplicatePending: true, detail: { copiedStampOf: staleStampAppId }, copiedLoanNumber };
+      // Same successor-deal exception as the address defer above: a stamp
+      // copied from a TERMINAL deal's file (funded/declined/cancelled, task
+      // confirmed live) can never be "mid-cleanup" — nothing on that finished
+      // deal will ever change — so waiting would be forever. Unreachable/
+      // deleted source tasks keep deferring (conservative: never risk a twin).
+      let srcTerminal = false;
+      if (src.rows[0] && src.rows[0].clickup_pipeline_task_id) {
+        try {
+          const st = await require('./client').getTask(src.rows[0].clickup_pipeline_task_id);
+          srcTerminal = statusMap.isTerminal(st && st.status && st.status.status);
+        } catch (_) { /* can't confirm → keep the defer */ }
+      }
+      if (!srcTerminal) return { duplicatePending: true, detail: { copiedStampOf: staleStampAppId }, copiedLoanNumber };
     }
   }
   return copiedLoanNumber ? { copiedLoanNumber } : null;
@@ -792,13 +828,37 @@ async function ingestTask(task, options = {}, opts = {}) {
     // number fills in via COALESCE and the row auto-closes too.
     try {
       if (!applicationId && (matchStatus === 'ambiguous' || matchStatus === 'duplicate_pending')) {
+        const reason = 'file_not_materialized_' + matchStatus;
+        // A task can TRANSITION between stuck states (ambiguous \u2194 duplicate_
+        // pending); the open row must describe the CURRENT one, so a row with
+        // a different reason is superseded rather than left stale (audit nit).
+        await db.query(
+          `UPDATE sync_review_queue SET status='resolved', auto_resolved=true, resolved_at=now(),
+                  resolution_note='superseded \u2014 the task moved to a different stuck state'
+            WHERE status='open' AND task_id=$1 AND field_key='file_link' AND reason<>$2`,
+          [String(task.id), reason]).catch(() => {});
+        // Enrich the forensic detail with LINKABLE candidate summaries so the
+        // review screen can offer "link to this existing file" as an option.
+        let rawDetail = matchDetail || null;
+        if (rawDetail && Array.isArray(rawDetail.candidates) && rawDetail.candidates.length) {
+          try {
+            const cs = await db.query(
+              `SELECT id, property_address->>'oneLine' AS address, ys_loan_number AS "loanNumber"
+                 FROM applications WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL LIMIT 4`,
+              [rawDetail.candidates.slice(0, 4).map(String)]);
+            rawDetail = { ...rawDetail, candidates: cs.rows };
+          } catch (_) { /* enrichment is optional */ }
+        }
         await review.queueReview({
           borrowerId, taskId: task.id, direction: 'inbound', fieldKey: 'file_link',
-          reason: 'file_not_materialized_' + matchStatus,
+          reason, suppressIfRejected: true,
           clickupValue: String(task.name || '').slice(0, 120), portalValue: null,
-          rawValue: matchDetail ? JSON.stringify(matchDetail).slice(0, 300) : null });
+          rawValue: rawDetail ? JSON.stringify(rawDetail).slice(0, 1000) : null });
       } else if (applicationId) {
+        // Close BOTH keyings: rows for this task, and app-keyed rows (the
+        // synthetic app:<id> unlinked-file rows) \u2014 the file syncs now.
         await review.closeStaleReviews({ taskId: task.id, fieldKey: 'file_link', note: 'auto-closed \u2014 the file is now in PILOT' });
+        await review.closeStaleReviews({ applicationId, fieldKey: 'file_link', note: 'auto-closed \u2014 the file is linked and syncing' });
       }
       if (applicationId && res.copiedLoanNumber) {
         await review.queueReview({

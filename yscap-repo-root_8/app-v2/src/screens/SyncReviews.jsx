@@ -21,10 +21,42 @@ const REASON_COPY = {
   clickup_dob_differs_from_portal: 'ClickUp and PILOT carry different dates of birth and neither is provably wrong — a person must decide.',
   dob_same_but_impossible: 'Both systems carry the SAME date of birth — but it cannot be right (see the note next to the value). Correct the DOB on the borrower’s file, then dismiss this row.',
   pii_overwrite_blocked: 'A bulk repush wanted to overwrite this borrower-identity value in ClickUp. Bulk pushes may only fill blanks — nothing was written.',
-  file_not_materialized_ambiguous: 'This ClickUp task could not be matched to a PILOT file — its identity signals (loan number / address / stamp) point at more than one existing file or at another borrower’s loan. The sync retries it automatically on every pass; fix the conflicting value in ClickUp (usually a loan number copied by the duplicate-a-task workflow) and this row closes itself. Dismiss only hides the row.',
-  file_not_materialized_duplicate_pending: 'This task looks like a fresh ClickUp duplicate that still shows the source deal’s address, so PILOT is deliberately waiting rather than creating a twin file. Update the task’s address to the new property and the file appears on the next sync (this row then closes itself). A genuine same-address second deal is unblocked from the Control Center’s ClickUp manual-review queue.',
+  file_not_materialized_ambiguous: 'This ClickUp task could not be matched to a PILOT file — its identity signals (loan number / address / stamp) point at more than one existing file or at another borrower’s loan. Fix the conflicting value in ClickUp (usually a loan number copied by the duplicate-a-task workflow) and this row closes itself on a later sync — or resolve it right here: create it as its own new file, or link it to one of the candidate files below.',
+  file_not_materialized_duplicate_pending: 'This task looks like a fresh ClickUp duplicate that still shows another ACTIVE deal’s address, so PILOT is deliberately waiting rather than creating a twin file. Update the task’s address in ClickUp and the file appears on the next sync — or, if this genuinely is a second deal at the same address, create it now. (When the earlier deal at this address is already funded or cancelled, the file is created automatically — no action needed.)',
   copied_loan_number_needs_assignment: 'This file came from a duplicated ClickUp task that still carries the SOURCE deal’s YS loan number, so the copied number was NOT imported (a loan number belongs to exactly one loan). Enter the correct loan number on the task in ClickUp — it syncs in automatically and this row closes itself.',
+  task_deleted_needs_decision: 'This file’s ClickUp task was DELETED and no live task for the same deal exists. Decide what the file should do: archive it (reversible, ClickUp untouched), or keep it in PILOT without a task.',
+  push_dead_lettered: 'An update from PILOT could not reach ClickUp after every retry (the fields and the last error are shown above). Nothing was lost in PILOT. Retry the push once the cause is fixed — this row also closes itself when any later push for the file succeeds.',
+  file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Create its ClickUp task now, or dismiss if this file intentionally lives outside ClickUp.',
 };
+// FILE-LEVEL resolution options per reason (mirrors REASON_ACTIONS in
+// src/lib/sync-file-review.js — the server validates; this only renders).
+const REASON_FILE_ACTIONS = {
+  file_not_materialized_ambiguous: [
+    { action: 'create_file', label: 'Create as its own new file', title: 'Materialize this task as a brand-new PILOT file (all guards still apply)' },
+    { action: 'link_existing', label: 'Link to selected file', title: 'Bind this task to the selected existing file, then fill it from the task', needsTarget: true },
+  ],
+  file_not_materialized_duplicate_pending: [
+    { action: 'create_file', label: 'Create the file now', title: 'Deliberate override of the duplicate-wait: create the file from the task as it is' },
+  ],
+  task_deleted_needs_decision: [
+    { action: 'archive_file', label: 'Archive the file', title: 'Soft-archive (reversible; ClickUp untouched)' },
+    { action: 'keep_file', label: 'Keep the file', title: 'Keep it in PILOT without a ClickUp task' },
+  ],
+  push_dead_lettered: [
+    { action: 'retry_push', label: 'Retry the push', title: 'Re-queue the failed update through the normal guarded push' },
+  ],
+  file_unlinked_no_task: [
+    { action: 'create_task', label: 'Create its ClickUp task', title: 'Create the ClickUp task for this file via the normal create path' },
+  ],
+};
+// Candidate files the matcher surfaced (enriched into raw_value at queue time).
+function linkCandidates(r) {
+  try {
+    const raw = r.raw_value ? JSON.parse(r.raw_value) : null;
+    const cs = (raw && raw.candidates) || [];
+    return cs.filter((c) => c && c.id).map((c) => ({ id: String(c.id), address: c.address || '(no address)', loanNumber: c.loanNumber || null }));
+  } catch { return []; }
+}
 
 // COMMON-SENSE annotation for a DOB value (owner-directed 2026-07-15): a review
 // row must SAY what is wrong — "born in the future", "would be 3 years old" —
@@ -44,7 +76,7 @@ const FIELD_LABELS = {
   actual_closing: 'Actual closing', acquisition_date: 'Acquisition date',
   ssn: 'Social Security number', first_name: 'Borrower name', email: 'Borrower email',
   cell_phone: 'Borrower cell', current_address: 'Borrower home address', status: 'File status',
-  file_link: 'File not in PILOT', ys_loan_number: 'YS loan number',
+  file_link: 'File not syncing', ys_loan_number: 'YS loan number', push_job: 'ClickUp push failed',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are
@@ -67,6 +99,7 @@ export default function SyncReviews() {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [busyId, setBusyId] = useState(null);
+  const [linkTarget, setLinkTarget] = useState({});   // rowId -> chosen candidate application id
   const load = useCallback(async () => {
     setErr('');
     try { setRows((await api.get(`/api/staff/sync-reviews?status=${status}`)).reviews || []); }
@@ -112,6 +145,8 @@ export default function SyncReviews() {
         const sidesEqual = cu != null && p != null && String(cu) === String(p);
         const canResolve = RESOLVABLE.has(r.field_key) && !sidesEqual;
         const isDob = r.field_key === 'date_of_birth';
+        const fileActions = REASON_FILE_ACTIONS[r.reason] || null;
+        const candidates = fileActions && fileActions.some((a) => a.needsTarget) ? linkCandidates(r) : [];
         return (
           <div className="panel" key={r.id} style={{ marginBottom: 10 }}>
             <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
@@ -142,7 +177,37 @@ export default function SyncReviews() {
                   onClick={() => act(r.id, 'reject')}>Dismiss</button>
               </div>
             )}
-            {status === 'open' && !canResolve && (
+            {status === 'open' && !canResolve && fileActions && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                {fileActions.map((a) => {
+                  const needsPick = a.needsTarget;
+                  const picked = linkTarget[r.id] || '';
+                  if (needsPick && !candidates.length) return null;   // no linkable candidates surfaced
+                  return (
+                    <React.Fragment key={a.action}>
+                      {needsPick && (
+                        <select className="input" style={{ maxWidth: 320 }} value={picked} aria-label="File to link this task to"
+                          onChange={(e) => setLinkTarget((m) => ({ ...m, [r.id]: e.target.value }))}>
+                          <option value="">Choose an existing file…</option>
+                          {candidates.map((c) => (
+                            <option key={c.id} value={c.id}>{c.address}{c.loanNumber ? ` — ${c.loanNumber}` : ''}</option>
+                          ))}
+                        </select>
+                      )}
+                      <button className="btn primary btn-sm" title={a.title}
+                        disabled={busyId === r.id || (needsPick && !picked)}
+                        onClick={() => act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined })}>
+                        {busyId === r.id ? '…' : a.label}
+                      </button>
+                    </React.Fragment>
+                  );
+                })}
+                <button className="btn ghost btn-sm" disabled={busyId === r.id}
+                  title="Close this row without doing anything (it will not come back for this task)"
+                  onClick={() => act(r.id, 'reject')}>Dismiss</button>
+              </div>
+            )}
+            {status === 'open' && !canResolve && !fileActions && (
               <div className="row" style={{ gap: 8 }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id || !r.proposed_value}
                   title={r.proposed_value ? 'Apply the proposed value (audited)' : 'No valid proposal to apply — dismiss or fix manually'}

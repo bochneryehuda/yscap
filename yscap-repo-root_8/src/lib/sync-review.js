@@ -26,11 +26,25 @@ const FIELD_LABELS = {
   actual_closing: 'Actual closing date', acquisition_date: 'Acquisition date',
   ssn: 'Social Security number', first_name: 'Borrower name', email: 'Borrower email',
   cell_phone: 'Borrower cell', current_address: 'Borrower home address', status: 'File status',
+  // FILE-LEVEL rows (owner-directed 2026-07-15 night: "not only a field that is
+  // wrong — entire files; anything stuck goes to manual review, with options"):
+  file_link: 'File not syncing', ys_loan_number: 'YS loan number', push_job: 'ClickUp push failed',
 };
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
-  currentValue, proposedValue, rawValue, reason, clickupValue, portalValue }) {
+  currentValue, proposedValue, rawValue, reason, clickupValue, portalValue, suppressIfRejected }) {
   try {
+    // FILE-LEVEL rows are re-produced by every sync pass while the file stays
+    // stuck — so a reviewer's explicit DISMISS must stick (the next reconcile
+    // is 5 minutes away; without this the dismissed row respawns forever).
+    // Field-value rows don't use this: a re-blocked write is a fresh event.
+    if (suppressIfRejected) {
+      const rej = await db.query(
+        `SELECT 1 FROM sync_review_queue
+          WHERE coalesce(task_id,'') = coalesce($1,'') AND field_key=$2 AND reason=$3
+            AND status='rejected' LIMIT 1`, [taskId || null, fieldKey, reason]);
+      if (rej.rows[0]) return;
+    }
     // A DOB is a BORROWER-level fact: one open review per borrower + proposal,
     // not one per linked task (a borrower with three tasks was queueing three
     // identical rows — owner-reported noise, 2026-07-15). The task-scoped
@@ -99,14 +113,23 @@ async function notifyLoanOfficer(reviewId) {
   const notify = require('./notify');
   const label = FIELD_LABELS[row.field_key] || row.field_key;
   const who = row.borrower_name ? ` for ${row.borrower_name}` : '';
+  // FILE-LEVEL rows aren't a value disagreement — the email must say what the
+  // situation is and that the review screen offers ACTIONS, not sides
+  // (pre-merge audit #257 should-fix: the two-sided copy misdirected LOs).
+  const fileLevel = row.field_key === 'file_link' || row.field_key === 'push_job' || row.field_key === 'ys_loan_number';
+  const body = fileLevel
+    ? `A file${who} needs a decision: ${label.toLowerCase()}` +
+      (row.clickup_value ? ` (${row.clickup_value})` : '') + '. ' +
+      `Open the Sync review screen — it explains what happened and offers the resolution options (create the file, link it to an existing one, retry the push, or dismiss).`
+    : `PILOT and ClickUp disagree on the ${label.toLowerCase()}${who}. ` +
+      `In ClickUp: ${row.clickup_value || '—'}. In PILOT: ${row.portal_value || '—'}. ` +
+      `Open the Sync review screen, compare both sides, and choose which value should win — it will be applied to both systems.`;
   for (const [staffId, o] of officers) {
     try {
       await notify.notifyStaff(staffId, {
         type: 'sync_review',
         title: `Sync review needed: ${label}${who}`,
-        body: `PILOT and ClickUp disagree on the ${label.toLowerCase()}${who}. ` +
-              `In ClickUp: ${row.clickup_value || '—'}. In PILOT: ${row.portal_value || '—'}. ` +
-              `Open the Sync review screen, compare both sides, and choose which value should win — it will be applied to both systems.`,
+        body,
         applicationId: row.application_id || o.appId || null,
         link: '/internal/sync-reviews',
         emailTo: o.email || undefined,
@@ -125,18 +148,19 @@ async function notifyLoanOfficer(reviewId) {
  * status='resolved' + auto_resolved=true with an explanatory note — kept as
  * history, never deleted. A NEW conflict later simply queues a new row.
  */
-async function closeStaleReviews({ borrowerId, taskId, fieldKey, note }) {
-  if (!fieldKey || (!borrowerId && !taskId)) return 0;
+async function closeStaleReviews({ borrowerId, taskId, applicationId, fieldKey, note }) {
+  if (!fieldKey || (!borrowerId && !taskId && !applicationId)) return 0;
   try {
     const r = await db.query(
       `UPDATE sync_review_queue
           SET status='resolved', auto_resolved=true, resolved_at=now(),
               resolution_note=$1
         WHERE status='open' AND field_key=$2
-          AND (($3::uuid IS NOT NULL AND borrower_id=$3) OR ($4::text IS NOT NULL AND task_id=$4))
+          AND (($3::uuid IS NOT NULL AND borrower_id=$3) OR ($4::text IS NOT NULL AND task_id=$4)
+               OR ($5::uuid IS NOT NULL AND application_id=$5))
         RETURNING id`,
       [note || 'auto-closed — the two systems now agree (fixed at the source)',
-       fieldKey, borrowerId || null, taskId || null]);
+       fieldKey, borrowerId || null, taskId || null, applicationId || null]);
     return r.rowCount || 0;
   } catch (e) { console.warn('[sync-review] stale-close skipped:', e.message); return 0; }
 }
