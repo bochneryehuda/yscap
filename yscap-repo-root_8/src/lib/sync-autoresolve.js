@@ -108,6 +108,7 @@ async function adoptDobEverywhere({ borrowerId, day, why, source = 'auto_resolve
   const clickup = require('../clickup/client');
 
   const cur = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+  const priorPortalDay = cur && cur.date_of_birth ? String(cur.date_of_birth) : null;   // before-image for the audit row
   if (cur && String(cur.date_of_birth || '') !== day) {
     await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [borrowerId, day]);
     out.portalUpdated = true;
@@ -144,7 +145,7 @@ async function adoptDobEverywhere({ borrowerId, day, why, source = 'auto_resolve
     `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
      VALUES ($1,$2,'sync_dob_auto_resolve','borrower',$3,$4)`,
     [actorId ? 'staff' : 'system', actorId, borrowerId,
-     JSON.stringify({ day, why, source, ...out })]).catch(() => {});
+     JSON.stringify({ day, before: priorPortalDay, why, source, ...out })]).catch(() => {});   // before-image kept (audit #271 nit)
   // The disagreement is settled — any OPEN review rows for this borrower's DOB
   // are now stale; close them so a fix at the source clears the queue with no
   // clicks (owner-directed 2026-07-15).

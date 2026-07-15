@@ -1360,6 +1360,13 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     if (brSets.length) {
       brSets.push('updated_at=now()');
       await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals);
+      // AUDIT with the FIELD NAMES: the DOB backdating provenance check reads
+      // the audit trail for a human 'date_of_birth' fingerprint — without this
+      // row a borrower's own typed DOB was invisible to it, and the backdating
+      // rule could have silently overridden a human entry (post-merge audit
+      // #271, provenance hole #1).
+      await audit(req, 'complete_fields', 'application', req.params.id,
+        { borrower: brKeys, borrowerId: me(req) });
       // A DOB/phone/FICO added after submit reaches ClickUp immediately (scoped
       // push, PRIMARY borrower only — a co-borrower's own-profile values must
       // never overwrite the parent task's primary-borrower fields).
@@ -2475,6 +2482,23 @@ async function syncProfileFromApplication(borrowerId, b) {
      require('../lib/fields').sanitizeFico(p.fico),
      currentAddress, isFinite(yearsAtResidence) ? yearsAtResidence : null,
      monthsAtResidence, p.housingStatus || '', housingPayment]);
+  // Leave a HUMAN fingerprint naming the fields (esp. 'date_of_birth'): the DOB
+  // backdating provenance check reads the audit trail — the submit-time profile
+  // sync previously audited nothing itself, so a DOB the borrower typed on
+  // their loan application was invisible to it (post-merge audit #271,
+  // provenance hole #2). Best-effort — never blocks a submit.
+  try {
+    const touched = [];
+    if (require('../lib/fields').sanitizeDob(p.dateOfBirth)) touched.push('date_of_birth');
+    if (p.cellPhone) touched.push('cell_phone');
+    if (p.currentAddress) touched.push('current_address');
+    if (touched.length) {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+         VALUES ('borrower',$1,'profile_synced_from_application','borrower',$1,$2)`,
+        [borrowerId, JSON.stringify({ fields: touched })]);
+    }
+  } catch (_) { /* best-effort */ }
   if (b.ssn) {
     // #91/#92: never persist a partial/garbage SSN from the application; just skip
     // an invalid one (don't fail the submit over it). COALESCE keeps any real SSN.
