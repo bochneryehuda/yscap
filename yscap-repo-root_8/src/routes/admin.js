@@ -340,6 +340,116 @@ router.post('/staff/:id/reset-email', async (req, res) => {
   } catch (e) { res.status(502).json({ error: 'could not send reset email' }); }
 });
 
+// ---------------- per-loan manual file-access grants (#111) ----------------
+// A scoped staffer's file access is normally: files they're the primary/assistant
+// on, plus every file of the loan officers in their visible_officer_ids share.
+// This is the THIRD, finest-grained lever the admin drives from the Team screen —
+// grant a specific person access to a SPECIFIC loan file. It reuses the #64
+// application_assignees chokepoint (a non-primary "assistant" row), so EVERY access
+// gate (the /applications/:id path middleware, canTouchApp, the SSN/document reads,
+// chat access) already honors the grant from ONE definition — no new gate code.
+// Assistants are portal-only and never pushed to ClickUp (#113), so a grant can
+// never leak into the outbound sync. This whole /staff surface is manage_team-gated.
+async function adminAudit(req, action, entity_type, entity_id, detail) {
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+       VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
+      [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, detail || null]);
+  } catch (_) { /* audit is best-effort — never fail the request on a log write */ }
+}
+// Map a staffer's role to the assignee access-bucket. Access itself is role-agnostic
+// (assigneeExistsSql matches ANY active row); the bucket only keeps the row shape
+// consistent with the file-team rail + the primary-mirror trigger (db/103).
+const grantBucket = (staffRole) => (staffRole === 'loan_officer' ? 'loan_officer' : 'processor');
+
+// List the files a staffer has been manually granted (every ACTIVE assistant row —
+// whether added here or from a file's team rail), newest first, with file details.
+router.get('/staff/:id/file-grants', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT aa.application_id, aa.role, aa.added_at,
+              a.ys_loan_number, a.status, a.property_address,
+              b.first_name, b.last_name
+         FROM application_assignees aa
+         JOIN applications a ON a.id=aa.application_id AND a.deleted_at IS NULL
+         JOIN borrowers b ON b.id=a.borrower_id
+        WHERE aa.staff_id=$1 AND aa.removed_at IS NULL AND aa.is_primary=false
+        ORDER BY aa.added_at DESC`, [req.params.id]);
+    res.json(r.rows.map((row) => ({
+      applicationId: row.application_id,
+      role: row.role,
+      addedAt: row.added_at,
+      ysLoanNumber: row.ys_loan_number,
+      status: row.status,
+      address: (row.property_address && row.property_address.oneLine) || null,
+      borrowerName: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+    })));
+  } catch (e) { res.status(500).json({ error: 'could not load file grants' }); }
+});
+
+// Grant a staffer access to a specific loan file (adds a non-primary assistant row).
+router.post('/staff/:id/file-grants', async (req, res) => {
+  const staffId = req.params.id;
+  const applicationId = (req.body || {}).applicationId;
+  if (!applicationId) return res.status(400).json({ error: 'applicationId required' });
+  // No self-escalation: you can't grant yourself access (mirrors PATCH /staff/:id).
+  if (sameId(staffId, req.actor.id))
+    return res.status(403).json({ error: 'You cannot change your own file access.' });
+  try {
+    const s = await db.query(`SELECT id, full_name, role FROM staff_users WHERE id=$1 AND is_active=true`, [staffId]);
+    if (!s.rows[0]) return res.status(404).json({ error: 'staff member not found' });
+    // Editing an admin's access is super-admin-only (mirrors PATCH /staff/:id).
+    if (!isSuper(req) && s.rows[0].role === 'admin')
+      return res.status(403).json({ error: "Only a super admin can change another admin's file access." });
+    const app = await db.query(`SELECT id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [applicationId]);
+    if (!app.rows[0]) return res.status(404).json({ error: 'loan file not found' });
+    const role = grantBucket(s.rows[0].role);
+    // Already an active assignee (primary or assistant) of this role → already has access.
+    const dup = await db.query(
+      `SELECT is_primary FROM application_assignees WHERE application_id=$1 AND role=$2 AND staff_id=$3 AND removed_at IS NULL`,
+      [applicationId, role, staffId]);
+    if (dup.rows[0])
+      return res.status(409).json({ error: dup.rows[0].is_primary ? 'Already the primary on this file.' : 'Already has access to this file.' });
+    await db.query(
+      `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by) VALUES ($1,$2,$3,false,$4)`,
+      [applicationId, staffId, role, req.actor.id]);
+    try {
+      await require('../lib/notify').notifyStaff(staffId, {
+        type: 'assignment', title: 'You were given access to a file',
+        applicationId, link: `/internal/app/${applicationId}` });
+    } catch (_) { /* notification is best-effort */ }
+    await adminAudit(req, 'grant_file_access', 'application', applicationId, { staffId, role });
+    res.status(201).json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'could not grant file access' }); }
+});
+
+// Revoke a manual file grant (retire the assistant row). A PRIMARY assignee is
+// never removed here — the primary is changed through /assign — so this touches
+// only the non-primary grant rows.
+router.delete('/staff/:id/file-grants/:applicationId', async (req, res) => {
+  const staffId = req.params.id;
+  const applicationId = req.params.applicationId;
+  if (sameId(staffId, req.actor.id))
+    return res.status(403).json({ error: 'You cannot change your own file access.' });
+  try {
+    const tRole = await targetRole(staffId);
+    if (!isSuper(req) && tRole === 'admin')
+      return res.status(403).json({ error: "Only a super admin can change another admin's file access." });
+    const row = await db.query(
+      `SELECT role FROM application_assignees
+        WHERE application_id=$1 AND staff_id=$2 AND removed_at IS NULL AND is_primary=false
+        ORDER BY added_at DESC LIMIT 1`, [applicationId, staffId]);
+    if (!row.rows[0]) return res.status(404).json({ error: 'no manual grant to remove for this file' });
+    await db.query(
+      `UPDATE application_assignees SET removed_at=now()
+        WHERE application_id=$1 AND staff_id=$2 AND role=$3 AND removed_at IS NULL AND is_primary=false`,
+      [applicationId, staffId, row.rows[0].role]);
+    await adminAudit(req, 'revoke_file_access', 'application', applicationId, { staffId, role: row.rows[0].role });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'could not revoke file access' }); }
+});
+
 router.post('/staff/welcome-all', async (req, res) => {
   const onlyNoLogin = (req.body || {}).onlyWithoutLogin !== false;   // default: those who can't log in yet
   const r = await db.query(

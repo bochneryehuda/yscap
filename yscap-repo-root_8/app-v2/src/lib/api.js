@@ -484,6 +484,10 @@ export const api = {
   adminUpdateStaff:  (id, b) => req('PATCH', `/api/admin/staff/${id}`, b),
   adminSetStaffPassword: (id, password) => req('POST', `/api/admin/staff/${id}/password`, { password }),
   adminPermissionsMeta:  () => req('GET', '/api/admin/permissions-meta'),
+  // #111 per-loan manual file-access grants (backed by the #64 assignee chokepoint)
+  adminStaffFileGrants: (id) => req('GET', `/api/admin/staff/${id}/file-grants`),
+  adminGrantStaffFile:  (id, applicationId) => req('POST', `/api/admin/staff/${id}/file-grants`, { applicationId }),
+  adminRevokeStaffFile: (id, applicationId) => req('DELETE', `/api/admin/staff/${id}/file-grants/${applicationId}`),
   adminTestEmail:    (to) => req('POST', '/api/admin/test-email', { to }),
   roster:            () => req('GET', '/api/roster'),
 
