@@ -228,11 +228,13 @@ async function emailExternalParticipants(conv, message, senderName) {
       title: `New message in ${scrub(conv.name)}`,
       body: `${scrub(senderName || 'The team')} wrote${ctx ? ` on ${ctx.addr}` : ''}:`,
       lines: [`${scrub(senderName || 'The team')}: ${bodyLine}`],
-      // Reply-by-email is the participant's channel — no CTA button, the action IS
-      // replying. When no inbound domain is configured, the reply line is omitted.
+      // "Open the chat online" magic-link — the reply_key authorizes ONLY this one
+      // conversation (no login, no file access). buildEmail routes the PATH through
+      // portalLink to the full tracked portal URL. Reply-by-email keeps working too.
+      ctaLabel: 'Open the chat online', link: `/guest/${ep.reply_key}`,
       note: canReply
-        ? 'You were added to this conversation by the YS Capital team. Just reply to this email and your message goes straight back into the chat.'
-        : 'You were added to this conversation by the YS Capital team. They will follow up with you here.',
+        ? 'You were added to this conversation by the YS Capital team. Reply to this email and your message goes straight into the chat, or open it online above.'
+        : 'You were added to this conversation by the YS Capital team. Open the chat online above to reply.',
     }, 'staff');
     email.sendMail({ to: [ep.email], subject: msg.subject, text: msg.text, html: msg.html,
       replyTo: replyToFor(ep.reply_key) }).catch(() => {});
