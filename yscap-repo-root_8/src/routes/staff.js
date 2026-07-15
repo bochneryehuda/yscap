@@ -2146,7 +2146,7 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // when signing off in the same call — otherwise the UPDATE sets the `status`
   // column twice and Postgres rejects it (42601) with a 500. Push-back also owns
   // the status ('issue'), so skip the explicit one in that case too.
-  if (b.status && b.signedOff !== true && b.pushBack !== true && b.waived !== true) add('status=?', b.status);
+  if (b.status && b.signedOff !== true && b.pushBack !== true && b.waived == null) add('status=?', b.status);
   if (b.notes != null) add('notes=?', b.notes);
   if ('assigneeStaffId' in b) add('assignee_staff_id=?', b.assigneeStaffId || null);
   // Requirement toggle — e.g. the LLC's Certificate of Good Standing is
