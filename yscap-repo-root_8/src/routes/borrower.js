@@ -94,11 +94,14 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
 // ---------------- PROFILE (canonical PII, shared across applications) ----------------
 router.get('/profile', async (req, res) => {
   const r = await db.query(
-    `SELECT id,first_name,last_name,email,cell_phone,date_of_birth,ssn_last4,fico,
-            current_address,mailing_address,years_at_residence,months_at_residence,residence_since,
-            housing_status,housing_payment,citizenship,marital_status,
-            photo_id_document_id,contact_type,tier
-     FROM borrowers WHERE id=$1`, [me(req)]);
+    `SELECT b.id,b.first_name,b.last_name,b.email,b.cell_phone,b.date_of_birth,b.ssn_last4,b.fico,
+            b.current_address,b.mailing_address,b.years_at_residence,b.months_at_residence,b.residence_since,
+            b.housing_status,b.housing_payment,b.citizenship,b.marital_status,
+            b.photo_id_document_id,b.contact_type,b.tier,
+            o.full_name AS owning_officer_name, o.email AS owning_officer_email
+     FROM borrowers b
+     LEFT JOIN staff_users o ON o.id=b.primary_officer_id AND o.is_active=true
+     WHERE b.id=$1`, [me(req)]);
   // Live residence duration from the anchored move-in date (owner-directed
   // 2026-07-14) — the stored years/months are recomputed to "now" so a profile
   // opened months after the count was entered shows the real elapsed time.
@@ -344,6 +347,24 @@ router.get('/applications/:id', async (req, res) => {
   // surface (frozen session rule); also drop ClickUp/sync internals and the
   // staff-only pipeline detail fields.
   res.json(stripInternalAppFields(r.rows[0]));
+});
+
+// #100: the borrower sees THEIR loan officer's contact details on their file
+// (not generic company info). Returns the FILE's assigned officer contact, or
+// null when the file is still at Lead Capture (client falls back to the company
+// contact). Only the borrower/co-borrower on the file may read it.
+router.get('/applications/:id/officer', async (req, res) => {
+  const own = await db.query(
+    `SELECT loan_officer_id FROM applications
+      WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+    [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const oid = own.rows[0].loan_officer_id;
+  if (!oid) return res.json({ officer: null });
+  const r = await db.query(
+    `SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1 AND is_active=true`,
+    [oid]);
+  res.json({ officer: r.rows[0] || null });
 });
 
 // Columns on `applications` that must never be returned to a borrower.
@@ -2393,11 +2414,17 @@ async function syncProfileFromApplication(borrowerId, b) {
  */
 async function inviteCoBorrower(appId, primaryName, co) {
   if (!co || !co.email) return null;
+  // #97: capture the co-borrower's FICO from the application (sanitized to a
+  // valid 3-digit score). Fill only when the co-borrower has NO score yet —
+  // COALESCE(existing, new) keeps their OWN canonical FICO (they're a full
+  // borrower shared by email), so a primary borrower's guess never overwrites a
+  // co-borrower's real score, and a blank never wipes one either.
   const cb = await db.query(
-    `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
-     VALUES ($1,$2,$3,$4)
-     ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
-    [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null]);
+    `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (email) DO UPDATE SET updated_at=now(), fico=COALESCE(borrowers.fico, EXCLUDED.fico) RETURNING id`,
+    [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null,
+     require('../lib/fields').sanitizeFico(co.fico)]);
   const coId = cb.rows[0].id;
   await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1`, [appId, coId]);
   // Existing login? They already have access via co_borrower_id — just notify.
@@ -2447,6 +2474,21 @@ router.post('/drafts/:id/submit', async (req, res) => {
     officerRow = o.rows[0] || null;
   }
   if (officerRow) officerId = officerRow.id;
+  // #98 LO stickiness: when the application didn't name a matching officer,
+  // inherit the borrower's OWNING officer (loan officer of record) so a returning
+  // borrower's new file stays tied to their LO instead of silently falling to
+  // Lead Capture. The owning officer is established + backfilled in db/105.
+  // Populate officerRow too so the new-application email reaches the inherited
+  // officer (the notify branch below keys off officerRow), and set the
+  // denormalized name so the stored file is consistent.
+  if (!officerId) {
+    const own = await db.query(`SELECT primary_officer_id FROM borrowers WHERE id=$1`, [me(req)]);
+    const oid = own.rows[0] && own.rows[0].primary_officer_id;
+    if (oid) {
+      const o = await db.query(`SELECT id,email,full_name FROM staff_users WHERE id=$1 AND is_active=true`, [oid]);
+      if (o.rows[0]) { officerRow = o.rows[0]; officerId = o.rows[0].id; b.loanOfficerName = o.rows[0].full_name; }
+    }
+  }
 
   // Assignment invariant (mirrors the staff create via the shared helper, #96):
   // hard-null underlying/fee off an assignment and store purchase = underlying +

@@ -189,6 +189,7 @@ export const api = {
   uploadPhotoId:(b) => coalesceUpload('photoId', b, () => req('POST', '/api/borrower/profile/photo-id', normalizeUpload(b))),
   applications: () => req('GET', '/api/borrower/applications'),
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
+  fileOfficer:  (id) => req('GET', `/api/borrower/applications/${id}/officer`),
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
   borrowerPricingQuote: (appId, overrides) => req('POST', `/api/borrower/applications/${appId}/pricing/quote`, { overrides }),
