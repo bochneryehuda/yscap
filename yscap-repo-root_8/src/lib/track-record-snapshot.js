@@ -13,6 +13,16 @@ const storage = require('./storage');
 const DOC_KIND = 'track_record_html';
 const MAX_BYTES = 4 * 1024 * 1024;   // a rendered track record is tens of KB; 4 MB is a hard stop
 
+// Same-session autosaves COALESCE onto one row (owner-directed 2026-07-15,
+// the "Version 47" incident): the tool pushes a snapshot ~2.5s after every
+// edit pause, and each push used to INSERT a new documents row superseding
+// the last — dozens of rows (and dozens of SharePoint Version folders) per
+// editing session. Now a push REPLACES the current snapshot in place while it
+// is still fresh (< COALESCE_WINDOW) and not yet mirrored; a new row (with
+// supersede) is only born when the previous snapshot already mirrored or the
+// session went quiet. Result: one row + one mirrored copy per session.
+const COALESCE_WINDOW = '10 minutes';
+
 async function saveSnapshot(borrowerId, { html, filename, uploadedByKind, uploadedById }) {
   const text = String(html || '');
   if (!text.trim()) { const e = new Error('html required'); e.status = 400; throw e; }
@@ -20,6 +30,30 @@ async function saveSnapshot(borrowerId, { html, filename, uploadedByKind, upload
   if (buf.length > MAX_BYTES) { const e = new Error('snapshot too large'); e.status = 413; throw e; }
   const name = String(filename || 'Track_Record.html').replace(/[^\w.\- ]+/g, '_').slice(0, 120) || 'Track_Record.html';
   const { ref, provider } = await storage.save(buf, { filename: name });
+
+  const prev = (await db.query(
+    `SELECT id, storage_ref FROM documents
+      WHERE borrower_id=$1 AND doc_kind=$2 AND is_current
+        AND sharepoint_backed_up_at IS NULL
+        AND created_at > now() - interval '${COALESCE_WINDOW}'
+      ORDER BY created_at DESC LIMIT 1`,
+    [borrowerId, DOC_KIND])).rows[0];
+  if (prev) {
+    const r = await db.query(
+      `UPDATE documents SET
+          filename=$2, size_bytes=$3, storage_provider=$4, storage_ref=$5,
+          uploaded_by_kind=$6, uploaded_by_id=$7, sha256=NULL, created_at=now()
+        WHERE id=$1 RETURNING id, created_at`,
+      [prev.id, name, buf.length, provider, ref, uploadedByKind, uploadedById]);
+    // the replaced bytes are orphaned — reclaim the disk (local storage only;
+    // this never touches SharePoint)
+    if (prev.storage_ref && prev.storage_ref !== ref) {
+      try { await storage.remove(prev.storage_ref); } catch (_) { /* best-effort */ }
+    }
+    try { require('./sharepoint-backup').kick(); } catch (_) { /* mirror is best-effort */ }
+    return { documentId: r.rows[0].id, filename: name, updatedAt: r.rows[0].created_at, coalesced: true };
+  }
+
   const r = await db.query(
     `INSERT INTO documents (borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,
                             uploaded_by_kind,uploaded_by_id,doc_kind,source_type,visibility)

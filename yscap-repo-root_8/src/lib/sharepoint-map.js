@@ -293,7 +293,12 @@ async function resolveSyncFolder(ctx) {
     [ctx.scopeKey, sync.id, sync.webUrl || null, fullPath, JSON.stringify(details)]);
 
   const out = { driveId, syncFolderId: sync.id, webUrl: sync.webUrl, fullPath, details };
-  _memCache.set(ctx.scopeKey, out);
+  // An officer-less (Unfiled) resolution is NOT memory-cached: the in-memory
+  // hit would short-circuit the Unfiled→officer upgrade above for the whole
+  // process lifetime, stranding every later document in "Pilot — Unfiled"
+  // after an officer is assigned. The DB-cache read (which knows how to
+  // upgrade) is cheap.
+  if (!details.flags.includes('no-officer:unfiled')) _memCache.set(ctx.scopeKey, out);
   // SHAREPOINT UNCERTAINTY → SYNC REVIEW (owner-directed 2026-07-15 night:
   // "when it finds something it's not sure is the correct one, it should come
   // up for manual review with options"). The resolver never guesses — an

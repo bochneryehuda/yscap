@@ -34,6 +34,7 @@ const CHUNK = 5 * 1024 * 1024;
 const MAX_TRIES = 6;
 
 let _tok = { value: null, exp: 0 };
+let _tokenInflight = null;   // single-flight: concurrent callers share one token fetch
 let _drive = null;
 
 function configured() {
@@ -70,8 +71,15 @@ function certAssertion() {
 }
 
 // Token via cert first (when configured), then secret — dual auth with fallback.
+// Single-flight so a burst of Graph calls never stampedes the token endpoint.
 async function getToken() {
   if (_tok.value && Date.now() < _tok.exp - 60000) return _tok.value;
+  if (_tokenInflight) return _tokenInflight;
+  _tokenInflight = fetchTokenNow().finally(() => { _tokenInflight = null; });
+  return _tokenInflight;
+}
+
+async function fetchTokenNow() {
   if (!configured()) throw new Error('SharePoint not configured (MS_TENANT_ID/MS_CLIENT_ID + secret or cert)');
   const url = `https://login.microsoftonline.com/${cfg.msTenantId}/oauth2/v2.0/token`;
   const attempts = [];
@@ -191,6 +199,44 @@ async function itemByPath(driveId, relPath) {
   return graph(`/drives/${driveId}/root:/${enc}`);
 }
 
+const ITEM_META_SELECT = '$select=id,name,size,file,parentReference,webUrl,eTag';
+
+// Item METADATA reads (size + Graph's own content hashes) — used by the
+// integrity audit. Reading metadata is a folder-listing-class operation and
+// stays within the one-way policy: document BYTES are never downloaded.
+async function itemMeta(driveId, itemId) {
+  return graph(`/drives/${driveId}/items/${itemId}?${ITEM_META_SELECT}`);
+}
+async function itemMetaByName(driveId, parentId, name) {
+  return graph(`/drives/${driveId}/items/${parentId}:/${encodeURIComponent(name)}?${ITEM_META_SELECT}`);
+}
+
+/**
+ * Microsoft QuickXorHash — the content hash SharePoint document libraries
+ * report on every driveItem (item.file.hashes.quickXorHash). Computing it
+ * locally lets the mirror VERIFY every upload (and audit old mirrors) without
+ * ever downloading bytes back. 160-bit circular shift-XOR, 11 bits per byte,
+ * with the length XORed into the last 8 bytes; base64 of the 20-byte state.
+ * The reconciler self-calibrates against Graph's reported hash on a fresh
+ * upload before trusting mismatch verdicts (belt and suspenders against any
+ * implementation drift) — size comparison is always authoritative regardless.
+ */
+function quickXorHash(buf) {
+  const cells = new Uint8Array(20);
+  let bitPos = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const v = buf[i] << (bitPos & 7);              // ≤ 15 bits
+    const b0 = bitPos >> 3;
+    cells[b0] ^= v & 0xFF;
+    cells[(b0 + 1) % 20] ^= (v >> 8) & 0xFF;       // spill wraps 160→0
+    bitPos += 11;
+    if (bitPos >= 160) bitPos -= 160;
+  }
+  let len = buf.length;                            // 64-bit LE into bytes 12…19
+  for (let i = 0; i < 8 && len > 0; i++) { cells[12 + i] ^= len & 0xFF; len = Math.floor(len / 256); }
+  return Buffer.from(cells).toString('base64');
+}
+
 // Create-if-missing child folder. conflictBehavior 'fail' + 409 => fetch the
 // existing one (NEVER replaces or renames anything).
 async function ensureChildFolder(driveId, parentId, name) {
@@ -218,13 +264,33 @@ async function ensureChildFolder(driveId, parentId, name) {
  */
 async function uploadNew(driveId, parentId, filename, buf, contentType) {
   const name = seg(filename);
+  // A committed driveItem whose size differs from what we sent is a TRANSIT-
+  // CORRUPTED mirror copy — fail loudly so the caller retries (and never
+  // records the bad item as this document's mirror).
+  const verifySize = (item) => {
+    // STRICT: an upload result we cannot size-verify is treated as failed —
+    // never record an unverifiable item as a document's mirror. (Covers the
+    // 202-final-chunk + resolve-by-name fallback picking up a placeholder.)
+    if (!item || item.id == null || item.size == null) {
+      const err = new Error(`upload result for "${name}" is missing id/size — cannot verify integrity; treating as failed`);
+      err.transitCorruption = true;
+      throw err;
+    }
+    if (Number(item.size) !== buf.length) {
+      const err = new Error(
+        `upload integrity check failed for "${name}": SharePoint stored ${item.size} bytes, ${buf.length} were sent`);
+      err.transitCorruption = true;
+      throw err;
+    }
+    return item;
+  };
   try {
     if (buf.length <= SIMPLE_UPLOAD_MAX) {
       const item = await graph(
         `/drives/${driveId}/items/${parentId}:/${encodeURIComponent(name)}:/content?@microsoft.graph.conflictBehavior=fail`,
         { method: 'PUT', headers: { 'Content-Type': contentType || 'application/octet-stream' }, body: buf, timeout: 120000 },
       );
-      return { item };
+      return { item: verifySize(item) };
     }
     const session = await graph(
       `/drives/${driveId}/items/${parentId}:/${encodeURIComponent(name)}:/createUploadSession`,
@@ -244,10 +310,28 @@ async function uploadNew(driveId, parentId, filename, buf, contentType) {
         body: chunk,
       }, 180000);
       if (r.status === 429 || r.status === 503) {
-        if (++throttled > 20) throw new Error('SharePoint upload session throttled persistently — giving up (will retry later)');
-        const ra = parseInt(r.headers.get('retry-after') || '5', 10);
-        await sleep(Math.min(ra * 1000, 120000));
+        if (++throttled > 8) throw new Error('SharePoint upload session throttled persistently — giving up (will retry later)');
+        // Retry-After may be seconds OR an HTTP-date; a date parses to NaN and
+        // NaN must never reach sleep() (it becomes a zero-delay hot loop).
+        const raRaw = parseInt(r.headers.get('retry-after') || '', 10);
+        const ra = Number.isFinite(raRaw) && raRaw > 0 ? raRaw : 5;
+        await sleep(Math.min(Math.max(ra, 1) * 1000, 120000));
         continue; // retry the same range
+      }
+      if (r.status === 416) {
+        // "Range already received" — the server has these bytes (a retried
+        // chunk that actually landed). Ask the SESSION where to resume instead
+        // of failing the whole upload.
+        const st = await fetchWithTimeout(session.uploadUrl, { method: 'GET' }, 30000);
+        const j = await st.json().catch(() => null);
+        const next = j && Array.isArray(j.nextExpectedRanges) && j.nextExpectedRanges[0];
+        if (!next) { start = end; continue; }           // no ranges left — finalize below
+        const resumeAt = parseInt(String(next).split('-')[0], 10);
+        if (!Number.isFinite(resumeAt) || resumeAt <= start) {
+          throw new Error(`SharePoint upload session out of sync (expects ${next}, at ${start})`);
+        }
+        start = resumeAt;
+        continue;
       }
       if (![200, 201, 202].includes(r.status)) {
         const t = await r.text().catch(() => '');
@@ -257,7 +341,7 @@ async function uploadNew(driveId, parentId, filename, buf, contentType) {
       start = end;
     }
     const item = (last && last.id) ? last : await graph(`/drives/${driveId}/items/${parentId}:/${encodeURIComponent(name)}`);
-    return { item };
+    return { item: verifySize(item) };
   } catch (e) {
     if (e.status === 409 || e.graphCode === 'nameAlreadyExists') return { conflict: true };
     throw e;
@@ -302,6 +386,9 @@ module.exports = {
   resolveDrive,
   listChildren,
   itemByPath,
+  itemMeta,
+  itemMetaByName,
+  quickXorHash,
   ensureChildFolder,
   uploadNew,
   moveOwnItem,

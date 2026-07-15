@@ -91,11 +91,17 @@ router.post('/', async (req, res) => {
     const atts = (Array.isArray(b.attachments) ? b.attachments : [])
       .filter(a => a && a.filename && a.dataBase64)
       .slice(0, 4)
-      .map(a => ({
-        filename: String(a.filename).slice(0, 180),
-        contentType: a.contentType || 'application/octet-stream',
-        content: String(a.dataBase64).replace(/^data:[^,]*,/, ''),
-      }))
+      .map(a => {
+        // Strict normalize (lib/upload-bytes): junk that is not base64 becomes
+        // an empty (dropped) attachment instead of a corrupt email file.
+        let content = '';
+        try { content = require('../lib/upload-bytes').normalizeBase64String(a.dataBase64); } catch (_) { /* dropped below */ }
+        return {
+          filename: String(a.filename).slice(0, 180),
+          contentType: a.contentType || 'application/octet-stream',
+          content,
+        };
+      })
       .filter(a => a.content.length > 0 && a.content.length < 8 * 1024 * 1024);
     const notifyOpts = {
       type: 'new_lead',
