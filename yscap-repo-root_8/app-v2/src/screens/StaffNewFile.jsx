@@ -11,8 +11,14 @@ import { MoneyInput } from '../components/FormattedInputs.jsx';
    assign the team, and (optionally) invite the borrower to the portal for this
    specific file right away. */
 
-const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground Up Construction', 'DSCR Rental', 'Not sure yet'];
-const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Ground up'];
+// Ground-Up is a PROGRAM, never a loan type/purpose (a loan type is Purchase or
+// Refinance). It was wrongly listed under LOAN_TYPES here — the only such list in
+// the app — which let a file be created with loan_type='Ground up', mis-pricing it
+// (pricing keys Purchase vs Refinance off loan_type). Program label is the
+// canonical hyphenated 'Ground-Up Construction' so the ClickUp crosswalk + every
+// exact-match consumer recognize it. (#95)
+const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'DSCR Rental', 'Not sure yet'];
+const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'];
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
 
 const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
