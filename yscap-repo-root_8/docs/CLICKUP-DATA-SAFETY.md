@@ -109,11 +109,21 @@ sync now handles the full lifecycle:
    YSCAP number kept the task silently `ambiguous` forever):
    - **Same borrower**, number bound to another live task → a stale copy from
      the duplicate workflow, exactly like the copied stamp. It is **ignored for
-     matching and never imported** (a loan number belongs to one loan; importing
-     would collide on the unique index). The file materializes without it and a
-     `copied_loan_number_needs_assignment` review row tells the LO to set the
-     real number in ClickUp — which then fills in via COALESCE and the row
-     auto-closes.
+     matching**, and the universal import guard **ADJUDICATES ownership** —
+     never first-claim-wins (Abraham Gruber, 2026-07-15: the newer duplicate
+     was processed first and imported the number, so the ORIGINAL closed deal
+     got flagged as "the copy" forever):
+     1. The holder task's loan-number field is read LIVE. No longer carrying
+        this number (officer cleared/renumbered it) or task deleted → the
+        holder's portal copy is stale → **reassigned**: cleared there
+        (audited `loan_number_reassigned`) and imported here. This is also how
+        the review rows self-close after a human fixes ClickUp — COALESCE's
+        blank-never-clears would otherwise preserve the stale copy forever.
+     2. Both tasks still claim it → the **older task** (ClickUp creation date)
+        is the original and keeps/receives the number; the NEWER task's file is
+        the one flagged (`copied_loan_number_needs_assignment`).
+     3. Unconfirmable (fetch error, unlinked holder) → conservative: don't
+        import, flag the current task.
    - **Different borrower** sharing a number → a genuine cross-borrower key
      collision; stays `ambiguous` for a human.
 7. **No silent materialization failures.** Every ingest that leaves a task
