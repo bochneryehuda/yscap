@@ -296,7 +296,7 @@ router.post('/applications', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), b.purchasePrice || null, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
      b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
@@ -2455,7 +2455,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), b.purchasePrice || null, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
      b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),

@@ -22,4 +22,14 @@ function sanitizeSsnDigits(v) {
   return d.length === 9 ? d : null;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits };
+// A loan_type is a loan PURPOSE — Purchase or Refinance — never a program.
+// "Ground up"/"Ground-Up" is a program that was wrongly offered as a loan type
+// (#95); null it out at the write chokepoint so no surface (V1, V2, API, or a
+// ClickUp inbound) can persist it and mis-price the file. Any other value passes
+// through unchanged (the pricing engine already coerces non-refi → Purchase).
+function sanitizeLoanType(v) {
+  if (v == null || v === '') return null;
+  return /^\s*ground/i.test(String(v)) ? null : v;
+}
+
+module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType };

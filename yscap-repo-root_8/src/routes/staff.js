@@ -679,7 +679,7 @@ router.post('/applications', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
-       b.program || null, b.loanType || null, purchasePrice, b.asIsValue || null,
+       b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
        b.arv || null, b.rehabBudget || null, officerId, officerName,
        b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),

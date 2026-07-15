@@ -696,7 +696,7 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   const internal = read.internalStatus;
   const external = statusMap.externalFor(internal) || 'processing';
   const cols = {
-    program: a.program, loan_type: a.loan_type, property_type: a.property_type, occupancy: a.occupancy,
+    program: a.program, loan_type: require('../lib/fields').sanitizeLoanType(a.loan_type), property_type: a.property_type, occupancy: a.occupancy,   // #95: ClickUp can't re-introduce a "Ground up" loan_type
     lender: a.lender, channel: a.channel, units: a.units, term: a.term,
     loan_amount: a.loan_amount, purchase_price: a.purchase_price, as_is_value: a.as_is_value, arv: a.arv,
     rehab_budget: a.rehab_budget, rehab_type: a.rehab_type, dscr_ratio: a.dscr_ratio,
