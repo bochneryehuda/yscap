@@ -1848,6 +1848,32 @@ router.get('/applications/:id/activity', async (req, res) => {
   catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// #80 — per-file EMAIL NOTIFICATION MONITOR. Every notification we wrote for this
+// file (to any party — the borrower, co-borrower, and each assigned staffer) with
+// its EMAIL delivery status, so the team can see at a glance exactly what has been
+// sent, to whom, and whether the email actually went out (sent / in-app only /
+// error). Reads the notifications table we already fan out through; scoped to
+// anyone who can touch the file. (Inbound REPLIES are a separate integration —
+// see #68 — and are appended here once that lands.)
+router.get('/applications/:id/emails', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await db.query(
+      `SELECT n.id, n.type, n.title, n.body, n.recipient_kind, n.email_status, n.emailed_at, n.created_at,
+              CASE WHEN n.recipient_kind='staff'
+                   THEN su.full_name
+                   ELSE NULLIF(TRIM(COALESCE(bo.first_name,'') || ' ' || COALESCE(bo.last_name,'')), '') END AS recipient_name,
+              CASE WHEN n.recipient_kind='staff' THEN su.email ELSE bo.email END AS recipient_email
+         FROM notifications n
+         LEFT JOIN staff_users su ON su.id = n.staff_id
+         LEFT JOIN borrowers   bo ON bo.id = n.borrower_id
+        WHERE n.application_id = $1
+        ORDER BY n.created_at DESC
+        LIMIT 300`, [req.params.id]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---- first-class conditions (object model) ----
 router.get('/applications/:id/conditions', async (req, res) => {
   const r = await db.query(
