@@ -990,10 +990,9 @@ export default function Application() {
                 >
                   {trSnap && (
                     <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                      <button className="btn ghost small" title="Preview without downloading"
-                        onClick={() => setPreviewDoc({ id: trSnap.documentId, filename: trSnap.filename, content_type: 'text/html' })}>
-                        Preview
-                      </button>
+                      {/* #82: track-record "Preview" (stale static copy) removed —
+                          "Open Track Record" above is the live, editable, auto-saving
+                          record. The HTML export stays for a static copy on hand. */}
                       <button className="btn ghost small" disabled={dlBusy === trSnap.documentId}
                         onClick={() => downloadDoc({ id: trSnap.documentId, filename: trSnap.filename })}>
                         {dlBusy === trSnap.documentId ? '…' : '⤓ Saved copy (HTML)'}
