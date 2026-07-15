@@ -320,11 +320,16 @@ const builders = {
   staffInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, drawRequest,
 };
 
-/** Deliver an already-rendered { subject, html, text } to one/many recipients. */
-async function deliver(built, to) {
+/** Deliver an already-rendered { subject, html, text } to one/many recipients.
+    opts.replyTo (optional) sets a Reply-To — used by #68 to attach the per-file
+    shared reply-to (file+<applicationId>@<domain>) on file-scoped catalog emails.
+    Only pass it when a valid applicationId is available; omitted → no reply-to
+    (unchanged behavior for auth/transactional emails). */
+async function deliver(built, to, opts = {}) {
   if (!built) return { ok: false, error: 'no email built' };
   try {
-    const r = await provider.sendMail({ to, subject: built.subject, html: built.html, text: built.text });
+    const r = await provider.sendMail({ to, subject: built.subject, html: built.html, text: built.text,
+      replyTo: opts.replyTo || null });
     if (r && r.skipped) console.log('[email] provider=none, skipped:', built.subject, '->', to);
     return { ok: !!(r && r.ok), id: r && r.id, skipped: r && r.skipped };
   } catch (e) {
@@ -333,11 +338,12 @@ async function deliver(built, to) {
   }
 }
 
-/** Build by name + deliver in one call. Returns {ok,...}; never rejects. */
-async function send(kind, to, args) {
+/** Build by name + deliver in one call. Returns {ok,...}; never rejects.
+    opts.replyTo is forwarded to deliver (see #68 above). */
+async function send(kind, to, args, opts = {}) {
   const b = builders[kind];
   if (!b) { console.error('[email] unknown template:', kind); return { ok: false, error: 'unknown template ' + kind }; }
-  return deliver(b(args || {}), to);
+  return deliver(b(args || {}), to, opts);
 }
 
 module.exports = Object.assign({}, builders, { deliver, send, link, ROLE_LABEL });

@@ -14,6 +14,7 @@ const storage = require('../lib/storage');
 const { requireAuth, requireBorrower } = require('../auth');
 const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
+const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
@@ -327,9 +328,18 @@ router.post('/applications/:id/request-draw', async (req, res) => {
       body: `We received your request to set up draws on ${addr}. Our draws team will follow up.`,
       applicationId: a.id, link: `/app/${a.id}` });
     // Branded email to the draws desk + assigned team + borrower.
+    // `team` = the active assigned staff (primary LO/processor + assistants, #113).
+    // (This was previously an undeclared identifier — the branded draws-desk email
+    // threw ReferenceError and was silently swallowed by the surrounding try; the
+    // in-app notices above still fired, so it wasn't visible. Fixed here.)
+    const teamRows = await db.query(
+      `SELECT DISTINCT staff_id FROM application_assignees
+        WHERE application_id=$1 AND removed_at IS NULL AND staff_id IS NOT NULL`, [a.id]);
+    const team = teamRows.rows.map((r) => r.staff_id);
     const staff = team.length ? await db.query(`SELECT email FROM staff_users WHERE id = ANY($1::uuid[])`, [team]) : { rows: [] };
     const recipients = ['draws@yscapgroup.com', a.email, ...staff.rows.map(r => r.email)].filter(Boolean);
-    await mail.deliver(mail.drawRequest({ borrowerName, propertyLabel: addr, loanNumber: a.ys_loan_number }), recipients);
+    await mail.deliver(mail.drawRequest({ borrowerName, propertyLabel: addr, loanNumber: a.ys_loan_number }), recipients,
+      { replyTo: fileReplyTo(a.id) });   // #68: a reply to the draw email reaches the whole assigned team
   } catch (e) { /* in-app notice already written; email is best-effort */ }
   await audit(req, 'request_draw', 'application', a.id);
   res.json({ ok: true });
