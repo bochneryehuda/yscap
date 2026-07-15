@@ -1859,6 +1859,15 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     if (cr.status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: `this request is already ${cr.status}` }); }
     const applied = await changeRequests.applyRequest(client, cr, req.actor.id, note);
     await client.query('COMMIT');
+    // Propagate the approved value to ClickUp (#86). The governed economics fields
+    // are all mapped dir:'both', so ClickUp still holds the STALE pre-approval
+    // value — without this push the next inbound pull COALESCEs that stale value
+    // back over the approved one and silently REVERTS the change, and the
+    // still-locked borrower re-requests it forever ("re-appears after approving
+    // multiple times"). Every other governed-field write path already enqueues
+    // its touched columns; the CR-approve path was the one that forgot. Must run
+    // AFTER COMMIT so the sync worker reads the committed value, not the stale one.
+    enqueueClickupPush(cr.application_id, [applied.field]).catch(() => {});
     // The change is already committed — never let the audit/notify below turn a
     // successful apply into a 500.
     try {
