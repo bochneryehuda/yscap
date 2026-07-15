@@ -5390,6 +5390,27 @@ router.get('/sync-reviews', async (req, res) => {
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
 });
 
+// Lightweight open-row count for the sidebar badge — same scope as the list,
+// so a loan officer's badge counts THEIR rows (owner-directed 2026-07-15
+// night: reviews must be impossible to miss, without being strict).
+router.get('/sync-reviews/count', async (req, res) => {
+  try {
+    const scoped = !seesAll(req);
+    const r = await db.query(
+      `SELECT count(*)::int AS n
+         FROM sync_review_queue q
+         LEFT JOIN applications a ON a.id = q.application_id
+        WHERE q.status = 'open'
+          ${scoped ? `AND ((a.id IS NOT NULL AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')})
+                       OR (q.application_id IS NULL AND q.borrower_id IS NOT NULL AND EXISTS (
+                             SELECT 1 FROM applications a2
+                              WHERE a2.borrower_id = q.borrower_id AND a2.deleted_at IS NULL
+                                AND ${VISIBLE_OFFICERS_SQL('a2', '$1')})))` : ''}`,
+      scoped ? [req.actor.id] : []);
+    res.json({ open: r.rows[0].n });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 async function loadReviewFor(req, res) {
   const r = await db.query(`SELECT * FROM sync_review_queue WHERE id=$1`, [req.params.id]);
   const row = r.rows[0];

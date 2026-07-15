@@ -27,6 +27,7 @@ const REASON_COPY = {
   task_deleted_needs_decision: 'This file’s ClickUp task was DELETED and no live task for the same deal exists. Decide what the file should do: archive it (reversible, ClickUp untouched), or keep it in PILOT without a task.',
   push_dead_lettered: 'An update from PILOT could not reach ClickUp after every retry (the fields and the last error are shown above). Nothing was lost in PILOT. Retry the push once the cause is fixed — this row also closes itself when any later push for the file succeeds.',
   file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Create its ClickUp task now, or dismiss if this file intentionally lives outside ClickUp.',
+  identity_mismatch_audit: 'The portfolio audit found the two systems carrying DIFFERENT values for this borrower-identity field. Nothing was changed anywhere (identity fields never overwrite silently) — compare the sides and adopt the correct one; it is applied to both systems. If both are fine (e.g. an old phone number), dismiss and this stays closed.',
 };
 // FILE-LEVEL resolution options per reason (mirrors REASON_ACTIONS in
 // src/lib/sync-file-review.js — the server validates; this only renders).
@@ -82,7 +83,8 @@ const FIELD_LABELS = {
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are
 // visibility rows — the fix happens in ClickUp (or the Control Center
 // force-create) and the row closes itself on the next sync.
-const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing', 'acquisition_date', 'ssn', 'status']);
+const RESOLVABLE = new Set(['date_of_birth', 'expected_closing', 'actual_closing', 'acquisition_date', 'ssn', 'status',
+  'email', 'cell_phone', 'first_name', 'current_address']);
 const showVal = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? fmtDay(v) : (v == null || v === '' ? '—' : String(v)));
 
 // Two-sided values: rows written since the upgrade carry clickup_value /

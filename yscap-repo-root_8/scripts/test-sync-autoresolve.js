@@ -54,6 +54,23 @@ eq('review: same artifact, portal origin explicitly human',
 // ---- genuine ambiguity → review (the Moshe Friedman class) ---------------------
 eq('review: two plausible adult DOBs that differ',
    decideDob({ clickupDay: '1983-02-23', portalDay: '1986-02-23', portalOrigin: 'clickup_backfill' }).outcome, 'review');
+
+// ---- BACKDATING rule (owner-directed 2026-07-15 night): a sync-derived portal
+// profile whose DOB was PROVEN never human-touched yields to ClickUp's current
+// plausible value. Unknown/true provenance never qualifies.
+{
+  const d = decideDob({ clickupDay: '1991-01-10', portalDay: '1991-01-09', portalOrigin: 'clickup_backfill', portalHumanEdited: false });
+  eq('backdate: sync-derived + never-human-touched portal DOB yields to ClickUp', d.outcome, 'adopt');
+  eq('backdate: ClickUp side wins', d.winner, 'clickup');
+  eq('backdate: canonical value is ClickUp current', d.value, '1991-01-10');
+  eq('backdate: reason names the rule', d.why, 'clickup_current_beats_sync_derived_profile');
+}
+eq('backdate: human-touched portal DOB still goes to review',
+   decideDob({ clickupDay: '1991-01-10', portalDay: '1991-01-09', portalOrigin: 'clickup_backfill', portalHumanEdited: true }).outcome, 'review');
+eq('backdate: UNKNOWN provenance never auto-adopts (conservative)',
+   decideDob({ clickupDay: '1991-01-10', portalDay: '1991-01-09', portalOrigin: 'clickup_backfill', portalHumanEdited: null }).outcome, 'review');
+eq('backdate: non-backfill profile origin still goes to review even when never-touched',
+   decideDob({ clickupDay: '1991-01-10', portalDay: '1991-01-09', portalOrigin: 'portal', portalHumanEdited: false }).outcome, 'review');
 eq('adopt: resolvable ClickUp artifact (0072→1972) beats a toddler portal value',
    decideDob({ clickupDay: '0072-02-24', portalDay: '2022-12-11' }),
    { outcome: 'adopt', value: '1972-02-24', winner: 'clickup', why: 'portal_value_implausible' });

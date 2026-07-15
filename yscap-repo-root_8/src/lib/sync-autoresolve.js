@@ -49,7 +49,7 @@ function isArtifactDay(rawDay) {
  *   { outcome:'adopt',  value, winner, why }          — provable: apply to BOTH
  *   { outcome:'review', proposal }                    — a human decides
  */
-function decideDob({ clickupDay, portalDay, portalOrigin }) {
+function decideDob({ clickupDay, portalDay, portalOrigin, portalHumanEdited }) {
   const cu = clickupDay || null, p = portalDay || null;
   const vc = sanitizeDob(cu), vp = sanitizeDob(p);
   if (!cu && !p) return { outcome: 'agree', value: null };
@@ -67,6 +67,19 @@ function decideDob({ clickupDay, portalDay, portalOrigin }) {
     // human's typing wins over the derived copy.
     if (isArtifactDay(cu) && !isArtifactDay(p) && portalOrigin === 'clickup_backfill') {
       return { outcome: 'adopt', value: vc, winner: 'clickup', why: 'typed_artifact_beats_sync_derived_profile' };
+    }
+    // BACKDATING rule (owner-directed 2026-07-15 night: "everything should
+    // read the correct thing that was updated in ClickUp"): when the portal
+    // profile was CREATED BY THE SYNC (origin clickup_backfill) and no human
+    // has ever edited its DOB in the portal (portalHumanEdited === false —
+    // the caller PROVES this from the audit trail; unknown/null never
+    // qualifies), the portal side has zero human authority: whatever it
+    // holds is a sync artifact of the incident era. ClickUp's current,
+    // human-maintained plausible value wins and heals the whole backlog on
+    // the boot re-ingest pass. A portal value a human DID touch still goes
+    // to review — never silently overridden.
+    if (portalOrigin === 'clickup_backfill' && portalHumanEdited === false) {
+      return { outcome: 'adopt', value: vc, winner: 'clickup', why: 'clickup_current_beats_sync_derived_profile' };
     }
     return { outcome: 'review', proposal: null, kind: 'differs' };
   }
@@ -268,6 +281,64 @@ async function applyReviewWinner(row, winner) {
       await require('../clickup/orchestrator').pushApplication(appId, { only: ['status'], approvedReview: true, force: true });
     }
     return { fieldKey, winner };
+  }
+
+  // ---- Borrower identity fields (owner-directed 2026-07-15 night: the
+  // mismatch-audit rows must be RESOLVABLE, not dismiss-only). winner=portal
+  // re-pushes the field scoped with the review bypass (the same path a PII
+  // approval uses); winner=clickup re-reads the task live and writes the
+  // borrower column — audited by the route, journal-free on the portal side
+  // like every inbound pull.
+  const IDENTITY_FIELDS = {
+    email: { cu: () => F.SHARED.borrowerEmail },
+    cell_phone: { cu: () => F.SHARED.borrowerCell },
+    first_name: { cu: () => F.SHARED.borrowerName },
+    current_address: { cu: () => F.SHARED.borrowerAddress },
+  };
+  if (IDENTITY_FIELDS[fieldKey]) {
+    if (!borrowerId) throw httpError(422, 'no borrower on this review');
+    if (winner === 'portal') {
+      if (!appId) throw httpError(422, 'no application on this review');
+      await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true });
+      return { fieldKey, winner };
+    }
+    if (!taskId) throw httpError(422, 'no ClickUp task on this review');
+    const task = await clickup.getTask(taskId);
+    const cf = ((task && task.custom_fields) || []).find((c) => c.id === IDENTITY_FIELDS[fieldKey].cu());
+    const v = cf && cf.value != null ? cf.value : null;
+    if (v == null || v === '') throw httpError(422, "ClickUp's current value is blank — fix it there first, or adopt PILOT's value");
+    if (fieldKey === 'email') {
+      const email = String(v).trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw httpError(422, "ClickUp's current value is not a valid email");
+      try { await db.query(`UPDATE borrowers SET email=$2, updated_at=now() WHERE id=$1`, [borrowerId, email]); }
+      catch (e) { if (e.code === '23505') throw httpError(409, 'that email is already in use by another borrower'); throw e; }
+      return { fieldKey, winner, value: email };
+    }
+    if (fieldKey === 'cell_phone') {
+      const phone = String(v).trim();
+      if (String(phone).replace(/\D/g, '').length < 10) throw httpError(422, "ClickUp's current value is not a full phone number");
+      await db.query(`UPDATE borrowers SET cell_phone=$2, updated_at=now() WHERE id=$1`, [borrowerId, phone]);
+      return { fieldKey, winner, value: phone };
+    }
+    if (fieldKey === 'first_name') {
+      const parts = String(v).trim().split(/\s+/);
+      if (!parts[0] || require('../clickup/transforms').isPlaceholderName(String(v))) {
+        throw httpError(422, "ClickUp's current value is not a usable name");
+      }
+      const first = parts.shift(), last = parts.join(' ') || null;
+      await db.query(
+        `UPDATE borrowers SET first_name=$2, last_name=COALESCE($3, last_name), updated_at=now() WHERE id=$1`,
+        [borrowerId, first, last]);
+      return { fieldKey, winner, value: String(v).trim() };
+    }
+    // current_address: ClickUp location value → the portal's jsonb shape.
+    const addr = typeof v === 'object'
+      ? { formatted_address: v.formatted_address || null,
+          ...(v.location && Number.isFinite(Number(v.location.lat)) ? { lat: Number(v.location.lat), lng: Number(v.location.lng) } : {}) }
+      : { formatted_address: String(v) };
+    if (!addr.formatted_address) throw httpError(422, "ClickUp's current address has no readable text — fix it there first");
+    await db.query(`UPDATE borrowers SET current_address=$2::jsonb, updated_at=now() WHERE id=$1`, [borrowerId, JSON.stringify(addr)]);
+    return { fieldKey, winner, value: addr.formatted_address };
   }
 
   throw httpError(422, `resolving '${fieldKey}' two-sided is not supported yet — use approve/reject`);

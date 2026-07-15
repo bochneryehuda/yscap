@@ -257,6 +257,28 @@ doesn't know, trigger the review."
   breaker-limited) instead of parking the staffer's own edit in review. The
   profile edit also propagates email / cell / home-address changes as scoped
   pushes to every linked file (previously it wrote the portal only).
+- **BACKDATING: sync-derived portal values yield to ClickUp's current
+  human-maintained value** (owner-directed 2026-07-15 night: "backdate
+  everything — all messed-up files should read what was fixed in ClickUp").
+  For a profile the SYNC created (`origin='clickup_backfill'`) whose DOB
+  differs from ClickUp's plausible current value, the heal PROVES from the
+  audit trail whether any human ever touched the DOB in the portal (profile
+  edits, complete-fields, review resolutions — `portalHumanEdited`). Never
+  touched → the portal value is an incident-era sync artifact and ClickUp
+  wins (`clickup_current_beats_sync_derived_profile`), healing the backlog on
+  the boot re-ingest. Any human fingerprint or unknown provenance → review.
+- **FULL-PORTFOLIO IDENTITY MISMATCH AUDIT** (`auditIdentityMismatchesOnce`,
+  boot one-shot after the reconcile pass): every linked file's borrower
+  identity (email / cell / first name / home address / SSN-last4) is compared
+  against the task's last-ingest snapshot with common-sense normalizers
+  (case-folded emails, last-10-digit phones, FIRST-token names, normalized
+  street identity, masked SSNs; one-side-blank never flags). Mismatches queue
+  TWO-SIDED, RESOLVABLE rows (`identity_mismatch_audit`) — email / cell /
+  name / address now have `applyReviewWinner` appliers in both directions —
+  dismissals stick, and rows self-close when the systems agree again.
+- **The queue is impossible to miss, without being strict**: the staff
+  sidebar's Sync review item carries a live open-count badge (scoped — an LO
+  counts their own rows), on top of the per-row LO email + in-app notify.
 - **A CLEARED ClickUp DOB is looked at too** (Leifer, 2026-07-15: the disputed
   DOB was deleted in ClickUp and the review row sat open forever because the
   heal flow only ran when a value came in). A blank inbound DOB still can never
