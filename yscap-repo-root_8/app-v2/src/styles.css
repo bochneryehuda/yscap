@@ -666,7 +666,31 @@ a.checkitem:hover{transform:translateY(-1px)}
 .tl-step.current .tl-label{color:var(--gold)}
 
 /* ===== Staff deal snapshot (cockpit) ===== */
-.deal-snap{background:var(--ink-1);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:16px}
+/* File Overview cockpit — redesigned 2026-07-15 (#65) to be BIGGER and CLEARER
+   (restoring the V1 read) while keeping the V2/PILOT white-first language: a
+   prominent hero band for the three headline terms, then facts grouped into
+   labeled clusters of roomy label-left / value-right rows. */
+.deal-snap{background:var(--ink-1);border:1px solid var(--line);border-radius:12px;padding:24px 26px;margin-bottom:16px}
+/* hero: the three headline terms, large, divided */
+.snap-hero{display:flex;flex-wrap:wrap;gap:20px 0;padding-bottom:20px;margin-bottom:22px;border-bottom:1px solid var(--line)}
+.snap-stat{display:flex;flex-direction:column;gap:5px;padding:0 30px;position:relative;min-width:0}
+.snap-stat:first-child{padding-left:0}
+.snap-stat + .snap-stat::before{content:'';position:absolute;left:0;top:2px;bottom:2px;width:1px;background:var(--line)}
+.snap-stat-k{color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+.snap-stat-v{font-family:var(--serif,'Fraunces',serif);font-size:32px;font-weight:700;line-height:1.02;letter-spacing:-.01em}
+.snap-stat-v.gold{color:var(--gold)}
+.snap-stat-sub{color:var(--muted);font-size:12px;font-weight:600;margin-top:-2px}
+/* clusters: each a titled column of clear rows */
+.snap-clusters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:22px 36px}
+.snap-cluster{min-width:0}
+.snap-cluster-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--gold);
+  padding-bottom:7px;margin-bottom:2px;border-bottom:2px solid var(--gold-soft)}
+.snap-row{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-top:1px solid var(--line)}
+.snap-row:first-of-type{border-top:none}
+.snap-rk{color:var(--muted);font-size:13px;min-width:0;white-space:nowrap}
+.snap-rv{font-weight:600;font-size:14px;text-align:right;min-width:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.snap-rv.strong{font-size:15px}
+/* legacy hooks kept as aliases so nothing referencing the old class names breaks */
 .snap-terms{display:flex;gap:26px;flex-wrap:wrap;padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--line)}
 .snap-term{display:flex;flex-direction:column;gap:2px}
 .snap-term-v{font-family:var(--serif,'Fraunces',serif);font-size:24px;font-weight:700;line-height:1.1}
@@ -728,6 +752,14 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
   .kpi .kpi-v{font-size:1.4rem}
   .snap-terms{gap:16px}
   .snap-term-v{font-size:20px}
+  /* #65 File Overview cockpit on phones: tighten padding, drop the hero
+     dividers (they read wrong once the stats wrap), shrink the headline type. */
+  .deal-snap{padding:16px}
+  .snap-hero{gap:14px 0}
+  .snap-stat{padding:0 16px}
+  .snap-stat + .snap-stat::before{display:none}
+  .snap-stat-v{font-size:24px}
+  .snap-clusters{gap:16px 20px}
   .ts-hero-v{font-size:22px}
   .msg-bubble{max-width:88%}
   .rb-lines{padding-left:10px}
