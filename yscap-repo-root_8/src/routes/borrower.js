@@ -324,6 +324,7 @@ router.post('/applications', async (req, res) => {
 router.get('/applications/:id', async (req, res) => {
   const r = await db.query(
     `SELECT a.*, l.llc_name, l.is_verified AS llc_verified, l.formation_state AS llc_formation_state,
+            cb.first_name AS co_borrower_first_name, cb.last_name AS co_borrower_last_name,
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
@@ -333,6 +334,7 @@ router.get('/applications/:id', async (req, res) => {
                       AND s.last_seen_at > now() - interval '2 minutes') AS team_online
        FROM applications a
        LEFT JOIN llcs l ON l.id = a.llc_id
+       LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
        LEFT JOIN LATERAL (
          SELECT program, product_label, status, note_rate, total_loan, quote, created_at
            FROM product_registrations
@@ -1073,6 +1075,33 @@ router.put('/llcs/:id/members', async (req, res) => {
   try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
   await audit(req, 'update_llc_members', 'llc', req.params.id, { count: (parsed.members || []).length });
   res.json({ ok: true });
+});
+
+// #110: the PRIMARY borrower can invite a co-borrower to an EXISTING file from
+// the overview (not only at application time). Only the primary — not a
+// co-borrower — may add one, and only when the file has no co-borrower yet.
+router.post('/applications/:id/co-borrower', async (req, res) => {
+  const b = req.body || {};
+  const app = await db.query(
+    `SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
+  if (!app.rows[0] || app.rows[0].borrower_id !== me(req)) return res.status(404).json({ error: 'not found' });
+  if (app.rows[0].co_borrower_id) return res.status(409).json({ error: 'This file already has a co-borrower.' });
+  const email = String(b.email || '').trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'a valid co-borrower email is required' });
+  const primary = await db.query(`SELECT first_name,last_name,email FROM borrowers WHERE id=$1`, [me(req)]);
+  // A borrower can't be their own co-borrower (would set co_borrower_id = borrower_id).
+  if (String((primary.rows[0] || {}).email || '').toLowerCase() === email.toLowerCase())
+    return res.status(400).json({ error: "You can't add yourself as your own co-borrower — use a different email." });
+  const pn = primary.rows[0] ? `${primary.rows[0].first_name} ${primary.rows[0].last_name}`.trim() : '';
+  try {
+    const coId = await inviteCoBorrower(req.params.id, pn, { firstName: b.firstName, lastName: b.lastName, email, phone: b.phone, fico: b.fico });
+    // Generate the co-borrower's own checklist/conditions on the file (same as the
+    // application-time path), and remember the partner for reuse next time.
+    try { await require('../lib/conditions/ensure').ensureFileConditions(req.params.id, { reason: 'co_borrower_added' }); } catch (_) {}
+    try { await upsertPartner(me(req), { firstName: b.firstName, lastName: b.lastName, email, phone: b.phone, relationshipType: 'co_borrower' }); } catch (_) {}
+    await audit(req, 'invite_co_borrower', 'application', req.params.id, { coBorrowerId: coId });
+    res.status(201).json({ ok: true, coBorrowerId: coId });
+  } catch (e) { console.error('[co-borrower] invite failed:', db.describeError(e)); res.status(500).json({ error: 'could not invite the co-borrower' }); }
 });
 router.get('/llcs/:id/documents', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
