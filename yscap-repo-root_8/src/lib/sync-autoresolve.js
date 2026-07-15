@@ -68,11 +68,18 @@ function decideDob({ clickupDay, portalDay, portalOrigin }) {
     if (isArtifactDay(cu) && !isArtifactDay(p) && portalOrigin === 'clickup_backfill') {
       return { outcome: 'adopt', value: vc, winner: 'clickup', why: 'typed_artifact_beats_sync_derived_profile' };
     }
-    return { outcome: 'review', proposal: null };
+    return { outcome: 'review', proposal: null, kind: 'differs' };
   }
   // Neither side resolves to a plausible adult DOB → review with a vetted
-  // pivot proposal when one exists.
-  return { outcome: 'review', proposal: sanitizeDob(T.pivotSuspectYear(cu || p, 'dob')) };
+  // pivot proposal when one exists. COMMON SENSE (owner-directed 2026-07-15):
+  // when both systems carry the SAME impossible value there is no
+  // disagreement to arbitrate — the review must say "this DOB can't be
+  // right" (future-born / minor / impossibly old), not "they differ".
+  return {
+    outcome: 'review',
+    proposal: sanitizeDob(T.pivotSuspectYear(cu || p, 'dob')),
+    kind: (cu && p && cu === p) ? 'same_impossible' : 'unusable',
+  };
 }
 
 /**

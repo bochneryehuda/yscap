@@ -137,10 +137,15 @@ async function healBorrowerFields(borrowerId, b, taskId) {
         await AR.adoptDobEverywhere({ borrowerId, day: d.value, why: d.why, source: 'auto_resolve_inbound' });
         dobIn = null;   // adoption already wrote both sides — nothing left to fill
       } else if (d.outcome === 'review') {
+        // COMMON-SENSE reasons (owner-directed 2026-07-15): "they differ" only
+        // when the two sides genuinely differ. The SAME impossible value on
+        // both sides (a future birth date, a toddler) says so explicitly.
+        const reason = d.kind === 'differs' ? 'clickup_dob_differs_from_portal'
+          : d.kind === 'same_impossible' ? 'dob_same_but_impossible'
+          : 'clickup_dob_implausible';
         await review.queueReview({ borrowerId, taskId, direction: 'inbound', fieldKey: 'date_of_birth',
           currentValue: portalDay, proposedValue: FLD.sanitizeDob(rawDob) || d.proposal || null, rawValue: rawDob,
-          reason: portalDay ? 'clickup_dob_differs_from_portal' : 'clickup_dob_implausible',
-          clickupValue: rawDob, portalValue: portalDay });
+          reason, clickupValue: rawDob, portalValue: portalDay });
         dobIn = null;
       } else {
         dobIn = null;   // 'agree' — the portal already holds this day
