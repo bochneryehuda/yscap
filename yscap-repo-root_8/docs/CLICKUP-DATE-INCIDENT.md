@@ -119,6 +119,49 @@ garbage year can never reach ClickUp again even if a client bypasses the UI.
 - Staff closing-date saves push `expected_closing` immediately
   (`actual_closing` stays pull-only — ClickUp owns it).
 
+## Owner's ClickUp activity-history audit (2026-07-15) — and what it corrected
+
+The owner pulled ClickUp's own task activity history (not exposed via the API),
+which surfaced a critical forensic fact: **ClickUp NORMALIZES an epoch written
+to a no-time date field — a UTC-midnight epoch is re-dayed to the calendar day
+it falls on in the workspace's timezone (the PREVIOUS NY day) and stored at
+4 AM like a native entry.** Two consequences: (1) the damage was not merely
+display — ClickUp physically stored the wrong day; (2) the midnight-UTC
+fingerprint is erased by normalization, so a fingerprint scan undercounts —
+the activity history is the authoritative damage source.
+
+Confirmed damage (all restored or human-fixed, see restore log):
+- 10 DOBs shifted -1 day (writes Jul 6–14), 2 human-fixed before the restore.
+- Expected Closing: 1 shifted then wiped (Tzvi handler), 1 year-0026 walker
+  (Yuda Elbaum — restore needs the portal value; flagged, not guessed).
+- The Yaniv Erez Miami task: 8 fields cleared in one second + a literal
+  "undefined" string in Subject Property Address — collateral from the
+  duplicated-task bug root-fixed in f346033. Repair: admin repush from the
+  portal (journaled) once this branch is deployed.
+- Repeated no-op writes of identical values (noise) — eliminated by the
+  no-op suppression guard.
+
+## Restore log (2026-07-15, applied via ClickUp API, each verified by re-read)
+
+| Task | File | Field | Before | After |
+|---|---|---|---|---|
+| 868k1rxwd | Tzvi handler – 33 Pear St | DOB | Jul 11, 2000 | **Jul 12, 2000** |
+| 868k1rxwd | Tzvi handler – 33 Pear St | Expected Closing | (wiped) | **Jul 16, 2026** |
+| 868k2zx1y | Yeshia Aaron Berger – 56 Ball Rd | DOB | Oct 26, 1988 | **Oct 27, 1988** |
+| 868ka88vm | Pinches Lichtman – 24 Gordon Pl | DOB | Sep 14, 2000 | **Sep 15, 2000** |
+| 868k71wq8 | Simcha Lev – 2547 S Braddock | DOB | Nov 26, 1992 | **Nov 27, 1992** |
+| 868k7ckyn | Mutty Kaufman/Noach M. – 1053 Ella T Grasso | DOB | Jun 4, 2003 | **Jun 5, 2003** |
+| 868jxdbvt | Malcolm Thorpe – 145 Dover Rd | DOB | Aug 9, 1991 | **Aug 10, 1991** |
+| 868kbtqn8 | Noach Mendelovits – 1 May St | DOB | Oct 26, 2006 | **Oct 27, 2006** |
+| 868kc90cz | Yaniv Erez – Miami | DOB | Feb 25, 1972 | **Feb 26, 1972** |
+| 868kcephh | yosef c – 904 Bedford Ave | DOB | 00:00Z epoch (displayed Dec 31, 1999) | **Jan 1, 2000** (4 AM NY) |
+
+Verified already correct (human-fixed, untouched): 868jrhhzc Rochlitz Joel DOB
+= Jan 10, 1991; 868k4wrtx Yuda Elbaum DOB = Jul 21, 2006.
+Open items: Yuda Elbaum Expected Closing (year-0026 walker — restore from the
+portal value via the toolkit or the review queue); Yaniv Erez Miami field wipe
+(admin repush after deploy).
+
 ## Operational notes
 
 - Every date field ClickUp-side written before this fix still holds a 00:00Z

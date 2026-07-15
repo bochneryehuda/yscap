@@ -5076,6 +5076,103 @@ router.get('/audit-log/facets', async (req, res) => {
   }
 });
 
+// ---------------- sync review queue (2026-07-15 date incident) --------------
+// The human gate for suspicious cross-system changes (db/107): blocked outbound
+// DOB shifts, inbound out-of-range years (mid-typing / 2-digit "26"), and
+// inbound DOBs that disagree with the portal. Nothing here is applied until a
+// person approves it; rejecting closes the row. Scoped like every other list:
+// seesAll sees everything (incl. rows not tied to a file); an LO/processor sees
+// rows on their own files only.
+router.get('/sync-reviews', async (req, res) => {
+  try {
+    const status = ['open', 'approved', 'rejected'].includes(String(req.query.status)) ? String(req.query.status) : 'open';
+    const scoped = !seesAll(req);
+    const r = await db.query(
+      `SELECT q.*, a.deleted_at,
+              b.first_name || ' ' || b.last_name AS borrower_name,
+              COALESCE(a.property_address->>'oneLine', a.property_address->>'line1') AS property
+         FROM sync_review_queue q
+         LEFT JOIN applications a ON a.id = q.application_id
+         LEFT JOIN borrowers b ON b.id = COALESCE(q.borrower_id, a.borrower_id)
+        WHERE q.status = $1
+          ${scoped ? `AND a.id IS NOT NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}` : ''}
+        ORDER BY q.created_at DESC LIMIT 500`,
+      scoped ? [status, req.actor.id] : [status]);
+    res.json({ reviews: r.rows });
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
+async function loadReviewFor(req, res) {
+  const r = await db.query(`SELECT * FROM sync_review_queue WHERE id=$1`, [req.params.id]);
+  const row = r.rows[0];
+  if (!row) { res.status(404).json({ error: 'not found' }); return null; }
+  if (row.status !== 'open') { res.status(409).json({ error: 'already resolved' }); return null; }
+  if (!seesAll(req)) {
+    if (!row.application_id) { res.status(403).json({ error: 'forbidden' }); return null; }
+    const ok = await db.query(
+      `SELECT 1 FROM applications a WHERE a.id=$1 AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
+      [row.application_id, req.actor.id]);
+    if (!ok.rows[0]) { res.status(403).json({ error: 'forbidden' }); return null; }
+  }
+  return row;
+}
+
+// Approve: apply the proposed value through the NORMAL audited write path.
+//  inbound  → write the portal column (borrowers.date_of_birth / applications.*),
+//             with a before-image audit row.
+//  outbound → re-push the field to ClickUp with the review bypass (the push was
+//             blocked by the DOB-shift guard; approval is the deliberate human
+//             action the guard demands).
+const REVIEW_APP_COLS = new Set(['expected_closing', 'actual_closing', 'acquisition_date']);
+router.post('/sync-reviews/:id/approve', async (req, res) => {
+  try {
+    const row = await loadReviewFor(req, res);
+    if (!row) return;
+    if (row.direction === 'inbound') {
+      const v = row.proposed_value;
+      if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return res.status(422).json({ error: 'no valid proposed value to apply' });
+      if (row.field_key === 'date_of_birth') {
+        if (!row.borrower_id) return res.status(422).json({ error: 'no borrower on this review' });
+        const before = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [row.borrower_id])).rows[0];
+        await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [row.borrower_id, v]);
+        await audit(req, 'sync_review_apply', 'borrower', row.borrower_id,
+          { reviewId: row.id, field: 'date_of_birth', from: before && before.date_of_birth, to: v, reason: row.reason });
+      } else if (REVIEW_APP_COLS.has(row.field_key)) {
+        if (!row.application_id) return res.status(422).json({ error: 'no application on this review' });
+        const before = (await db.query(`SELECT ${row.field_key} FROM applications WHERE id=$1`, [row.application_id])).rows[0];
+        await db.query(`UPDATE applications SET ${row.field_key}=$2::date, updated_at=now() WHERE id=$1`, [row.application_id, v]);
+        await audit(req, 'sync_review_apply', 'application', row.application_id,
+          { reviewId: row.id, field: row.field_key, from: before && before[row.field_key], to: v, reason: row.reason });
+      } else {
+        return res.status(422).json({ error: `unsupported field ${row.field_key}` });
+      }
+    } else {
+      if (!row.application_id) return res.status(422).json({ error: 'no application on this review' });
+      const orch = require('../clickup/orchestrator');
+      const out = await orch.pushApplication(row.application_id, { only: [row.field_key], approvedReview: true });
+      await audit(req, 'sync_review_apply', 'application', row.application_id,
+        { reviewId: row.id, field: row.field_key, direction: 'outbound', pushed: out && out.fields, reason: row.reason });
+    }
+    await db.query(
+      `UPDATE sync_review_queue SET status='approved', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
+      [row.id, req.actor.id, (req.body && req.body.note) || null]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
+router.post('/sync-reviews/:id/reject', async (req, res) => {
+  try {
+    const row = await loadReviewFor(req, res);
+    if (!row) return;
+    await db.query(
+      `UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note=$3 WHERE id=$1`,
+      [row.id, req.actor.id, (req.body && req.body.note) || null]);
+    await audit(req, 'sync_review_reject', row.application_id ? 'application' : 'borrower',
+      row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, reason: row.reason });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
 // ---------------- chat v3: conversations, receipts, presence ----------------
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).

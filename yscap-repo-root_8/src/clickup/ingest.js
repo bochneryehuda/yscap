@@ -20,6 +20,7 @@ const statusMap = require('./status');
 const crosswalk = require('./crosswalk');
 const routing = require('./routing');
 const transforms = require('./transforms');
+const review = require('../lib/sync-review');
 const checklist = require('./checklist');
 
 const RTL_PROGRAMS = new Set(['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction']);
@@ -96,10 +97,35 @@ async function recordContacts(borrowerId, borrower, taskId) {
    read. Real values already stored (human-entered or earlier-synced) are
    NEVER overwritten — this only ever replaces nothing-or-placeholder with
    something. Best-effort: a heal hiccup never blocks ingest. */
-async function healBorrowerFields(borrowerId, b) {
+async function healBorrowerFields(borrowerId, b, taskId) {
   if (!borrowerId || !b) return;
   const nn = (v) => { const s = String(v == null ? '' : v).trim(); return s ? s : null; };
   const name = (v) => (transforms.isPlaceholderName(v) ? null : nn(v));   // never heal WITH a placeholder
+  // DOB GUARDS (2026-07-15 incident). Fill-only semantics are unchanged — these
+  // only decide what may FILL and make silent disagreements visible:
+  //  * out-of-range year (mid-typing / literal 2-digit year) never fills; it goes
+  //    to the review queue with the auto-pivoted proposal (26 -> 1926 for a DOB).
+  //  * a ClickUp DOB that DIFFERS from the portal's existing DOB was previously
+  //    dropped in silence by COALESCE — now the disagreement is queued so a human
+  //    sees it and decides (approve = portal takes ClickUp's value, audited).
+  let dobIn = nn(b.date_of_birth);
+  if (dobIn) {
+    const y = Number(String(dobIn).slice(0, 4));
+    if (!(y >= 1900 && y <= 2100)) {
+      await review.queueReview({ borrowerId, taskId, direction: 'inbound', fieldKey: 'date_of_birth',
+        proposedValue: transforms.pivotSuspectYear(dobIn, 'dob'), rawValue: dobIn, reason: 'clickup_dob_year_out_of_range' });
+      dobIn = null;
+    } else {
+      try {
+        const cur = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
+        if (cur && cur.date_of_birth && String(cur.date_of_birth) !== dobIn) {
+          await review.queueReview({ borrowerId, taskId, direction: 'inbound', fieldKey: 'date_of_birth',
+            currentValue: String(cur.date_of_birth), proposedValue: dobIn, rawValue: dobIn,
+            reason: 'clickup_dob_differs_from_portal' });
+        }
+      } catch (_) { /* visibility is best-effort */ }
+    }
+  }
   try {
     await db.query(
       `UPDATE borrowers SET
@@ -115,7 +141,7 @@ async function healBorrowerFields(borrowerId, b) {
           employer        = COALESCE(employer, $11),
           updated_at      = now()
         WHERE id=$1`,
-      [borrowerId, name(b.first_name), name(b.last_name), nn(b.cell_phone), nn(b.date_of_birth),
+      [borrowerId, name(b.first_name), name(b.last_name), nn(b.cell_phone), dobIn,
        nn(b.citizenship), require('../lib/fields').sanitizeFico(b.fico),   // #90: never persist an out-of-range FICO from ClickUp
        b.current_address ? JSON.stringify(b.current_address) : null,
        nn(b.marital_status), nn(b.employment_type), nn(b.employer)]);
@@ -136,7 +162,7 @@ async function resolveBorrower(read, taskId) {
   if (ssnHash) {
     const r = await db.query(`SELECT id FROM borrowers WHERE ssn_hash=$1 LIMIT 1`, [ssnHash]);
     if (r.rows[0]) {
-      await healBorrowerFields(r.rows[0].id, b);
+      await healBorrowerFields(r.rows[0].id, b, taskId);
       await recordContacts(r.rows[0].id, b, taskId);
       return { borrowerId: r.rows[0].id, created: false };
     }
@@ -160,7 +186,7 @@ async function resolveBorrower(read, taskId) {
         { lastName: ex.last_name, phone: ex.cell_phone, dob: ex.date_of_birth });
       if (!ssnConflict && (ssnAgree || corroborated)) {
         if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, ex.id]);
-        await healBorrowerFields(ex.id, b);
+        await healBorrowerFields(ex.id, b, taskId);
         await recordContacts(ex.id, b, taskId);
         return { borrowerId: ex.id, created: false };
       }
@@ -192,7 +218,7 @@ async function resolveBorrower(read, taskId) {
   // The ON CONFLICT path returns a PRE-EXISTING row (same real email, or the
   // same task's shadow email on a re-sync) — heal it too, or the very row this
   // sync created with 'Unknown' can never pick the name up later.
-  await healBorrowerFields(borrowerId, b);
+  await healBorrowerFields(borrowerId, b, taskId);
   // #91: only accept a real 9-digit SSN from ClickUp, and store it canonically
   // (digits only), matching every other write path.
   const ssnD = require('../lib/fields').sanitizeSsnDigits(b.ssn);
@@ -733,6 +759,22 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     clickup_created_at: task && task.date_created ? new Date(Number(task.date_created)) : null,
   };
 
+  // INBOUND YEAR GUARD (2026-07-15 incident): a ClickUp date whose year is out
+  // of range (a mid-typing artifact, or a literal 2-digit year — "26" typed as
+  // the year lands in 0026) is NEVER persisted. It goes to the sync review
+  // queue instead, with the auto-pivoted proposal (26 → 2026) for one-click
+  // human approval. The rest of the pull proceeds normally.
+  const pendingYearReviews = [];
+  for (const dk of ['expected_closing', 'actual_closing']) {
+    const v = cols[dk];
+    if (v == null || v === '') continue;
+    const y = Number(String(v).slice(0, 4));
+    if (!(y >= 1900 && y <= 2100)) {
+      pendingYearReviews.push({ fieldKey: dk, raw: String(v), proposed: transforms.pivotSuspectYear(String(v), 'closing') });
+      cols[dk] = null;                 // COALESCE keeps the current portal value
+    }
+  }
+
   // Which existing app? task_id link first, then stamp/identity.
   let targetId = null, matchStatus = null, detail = null;
   const byTask = await db.query(`SELECT id FROM applications WHERE clickup_pipeline_task_id=$1 LIMIT 1`, [task.id]);
@@ -746,12 +788,14 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
   if (targetId) {
-    // INBOUND CHANGE AUDIT (2026-07-15 date incident): whenever this pull is about
-    // to CHANGE an existing portal value on a critical field, record before→after
+    // INBOUND CHANGE AUDIT (2026-07-15 date incident; broadened to ALL mapped
+    // fields owner-directed the same day): whenever this pull is about to CHANGE
+    // an existing portal value on ANY mapped scalar column, record before→after
     // in audit_log — the previously-missing half of the cross-system API history.
     // (A null pulled value keeps the current one via COALESCE — never a change.)
     try {
-      const CRIT = ['expected_closing', 'actual_closing', 'loan_amount', 'purchase_price', 'program', 'loan_type'];
+      const AUDIT_SKIP = new Set(['property_address', 'clickup_extra', 'clickup_created_at', 'clickup_folder_id']);
+      const CRIT = Object.keys(cols).filter((k) => !AUDIT_SKIP.has(k));
       const cur = (await db.query(`SELECT ${CRIT.join(', ')} FROM applications WHERE id=$1`, [targetId])).rows[0];
       if (cur) {
         const diffs = {};
@@ -770,6 +814,10 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
         }
       }
     } catch (_) { /* audit is best-effort — never blocks the pull */ }
+    for (const p of pendingYearReviews) {
+      await review.queueReview({ applicationId: targetId, borrowerId, taskId: task.id, direction: 'inbound',
+        fieldKey: p.fieldKey, proposedValue: p.proposed, rawValue: p.raw, reason: 'clickup_year_out_of_range' });
+    }
     // Restore-on-reflip: if this file had been auto-descoped because its program
     // was previously changed to a non-RTL type, flipping it back to an RTL program
     // brings it back (clear deleted_at). We ONLY un-delete a file that WE descoped

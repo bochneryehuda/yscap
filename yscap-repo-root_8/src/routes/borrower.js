@@ -143,11 +143,15 @@ router.put('/profile', async (req, res) => {
   else if (b.mailingAddress !== undefined) fields.mailing_address = b.mailingAddress ? JSON.stringify(b.mailingAddress) : null;
 
   // 2026-07-15 incident: DOB must be a real calendar date in a sane year — a
-  // mid-typing artifact (year 0026) or malformed string never persists.
+  // mid-typing artifact (year 0026), an impossible day (2026-02-31), or a
+  // malformed string never persists (pre-merge audit #2: the round-trip check
+  // catches impossible days the regex alone lets through).
   if (fields.date_of_birth != null) {
     const s = String(fields.date_of_birth);
     const y = Number(s.slice(0, 4));
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !(y >= 1900 && y <= 2100)) {
+    const d = new Date(s + 'T00:00:00Z');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !(y >= 1900 && y <= 2100) ||
+        isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) {
       return res.status(400).json({ error: 'date of birth must be a valid YYYY-MM-DD' });
     }
   }

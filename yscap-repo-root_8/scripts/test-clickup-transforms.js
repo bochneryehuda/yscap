@@ -201,5 +201,15 @@ eq('pull legacy portal 00:00Z', t.fromEpochMs(Date.UTC(1999, 0, 15)), '1999-01-1
 eq('pull native NY 4am (EDT)', t.fromEpochMs(Date.UTC(1999, 0, 15, 9)), '1999-01-15');
 eq('pull Israel-midnight prev evening', t.fromEpochMs(Date.UTC(1999, 0, 14, 22)), '1999-01-15');
 
+// ---- 2-digit / out-of-range year pivot (review-queue proposals) -------------
+eq('pivot dob 26 -> 1926 (never future)', t.pivotSuspectYear('0026-07-18', 'dob'), '1926-07-18');
+eq('pivot dob 99 -> 1999', t.pivotSuspectYear('0099-01-15', 'dob'), '1999-01-15');
+eq('pivot dob 05 -> 2005 (adult in 20xx, keeps 20xx)', t.pivotSuspectYear('0005-03-12', 'dob'), '2005-03-12');
+eq('pivot dob 15 -> 1915 (2015 would be a minor)', t.pivotSuspectYear('0015-03-12', 'dob'), '1915-03-12');
+eq('pivot closing 26 -> 2026', t.pivotSuspectYear('0026-07-18', 'closing'), '2026-07-18');
+eq('pivot in-range year untouched', t.pivotSuspectYear('1999-01-15', 'dob'), null);
+eq('pivot 3-digit year no guess', t.pivotSuspectYear('0203-01-15', 'closing'), null);
+eq('pivot garbage null', t.pivotSuspectYear('nonsense', 'dob'), null);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

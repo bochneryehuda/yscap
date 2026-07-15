@@ -180,11 +180,17 @@ async function pushApplication(appId, opts = {}) {
     for (const c of chosen) {
       const old = before ? before[c.id] : undefined;
       if (before && fieldValueEquivalent(c.id, old, c.value, options)) { journalStats.suppressed++; continue; }
-      if (scoped && isSuspectDobShift(c.id, old, c.value)) {
+      if (scoped && !opts.approvedReview && isSuspectDobShift(c.id, old, c.value)) {
         journalStats.blocked++;
         console.error('[clickup] BLOCKED suspect DOB day-shift push', { appId, taskId: id, from: old, to: c.value });
         await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
         await logSync('dob_shift_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value) });
+        // Surface the refusal in the staff "Sync review" queue — an approver can
+        // apply it deliberately (approve → re-push with opts.approvedReview).
+        await require('../lib/sync-review').queueReview({
+          applicationId: appId, taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
+          currentValue: T.fromEpochMs(old), proposedValue: T.fromEpochMs(c.value), rawValue: String(c.value),
+          reason: 'dob_one_day_shift_blocked' });
         continue;
       }
       try {
@@ -231,7 +237,12 @@ async function journalFieldWrite(appId, taskId, fieldId, oldVal, newVal, source,
     const mask = (v) => {
       if (v == null) return null;
       if (!MASKED_FIELDS.has(fieldId)) return v;
-      return fieldId === F.SHARED.borrowerSSN ? T.maskSSN(v) : T.maskCard(String(v));
+      if (fieldId === F.SHARED.borrowerSSN) return T.maskSSN(v);
+      // Card field carries the JOINED line ("number  exp  cvv") — maskCard on the
+      // raw line would keep the CVV as part of its "last 4" (pre-merge audit #1).
+      // Parse first and mask the NUMBER only; exp/cvv never land in the journal.
+      const parsed = T.parseCardLine(String(v));
+      return parsed && parsed.number ? T.maskCard(parsed.number) : '✱✱✱✱ (card line)';
     };
     await db.query(
       `INSERT INTO clickup_write_log (application_id, task_id, field_id, field_key, old_value, new_value, changed, blocked, source)

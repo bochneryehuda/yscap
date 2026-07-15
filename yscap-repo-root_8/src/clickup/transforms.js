@@ -100,6 +100,34 @@ function epochAtZonedTime(y, m, d, hour, tz) {
 }
 
 /**
+ * A 'YYYY-MM-DD' day with an out-of-range year (mid-typing artifact, or a
+ * 2-digit year the source wrote literally — ClickUp displays "26" for 2026,
+ * and a "26" typed/imported as the actual year lands in year 0026). Propose
+ * the intended year so a human can approve it from the review queue:
+ *   kind 'dob':   00–99 pivots to the century that puts the date in the past
+ *                 (26 → 1926; a DOB can never be in the future).
+ *   other kinds:  00–99 pivots to 20xx (closings/submissions are modern).
+ * Returns the corrected 'YYYY-MM-DD' or null when no sane proposal exists.
+ */
+function pivotSuspectYear(day, kind) {
+  const m = /^(\d{1,4})-(\d{2})-(\d{2})$/.exec(String(day || '').trim());
+  if (!m) return null;
+  let y = Number(m[1]);
+  if (y >= 1900 && y <= 2100) return null;              // not suspect
+  if (y > 99) return null;                              // e.g. year 0203 — no safe guess
+  if (kind === 'dob') {
+    y += 2000;
+    // A borrower is an adult: a pivoted DOB implying age < 18 (incl. the current
+    // year — "26" in 2026 would mean a newborn) belongs a century back.
+    if (y > new Date().getUTCFullYear() - 18) y -= 100;
+  } else {
+    y += 2000;
+  }
+  if (!(y >= 1900 && y <= 2100)) return null;
+  return `${String(y).padStart(4, '0')}-${m[2]}-${m[3]}`;
+}
+
+/**
  * Portal date value → the epoch to WRITE into a ClickUp date field.
  * Accepts a 'YYYY-MM-DD' string (the pg date type-parser output), a JS Date /
  * epoch / ISO string (timestamptz like submitted_at — converted to its calendar
@@ -266,7 +294,7 @@ function maskCard(number) {
 
 module.exports = {
   splitName, joinName, isPlaceholderName, isShadowEmail,
-  toEpochMs, fromEpochMs, dateOnlyToClickUpEpoch, epochAtZonedTime, zonedYmd,
+  toEpochMs, fromEpochMs, dateOnlyToClickUpEpoch, epochAtZonedTime, zonedYmd, pivotSuspectYear,
   parseMoney, numToString,
   normalizePhone, phoneDigits,
   normalizeMarried, normalizeMarriedAI, portalMaritalToMarried, marriedToPortalMarital,
