@@ -39,6 +39,8 @@ const { rateLimit } = require('./lib/rate-limit');
 app.use('/auth', rateLimit({ bucket: 'auth', windowMs: 60000, max: 30 }));   // login/register/mfa/reset
 app.use('/api/intake', rateLimit({ bucket: 'intake', windowMs: 60000, max: 20 }));
 app.use('/api/leads', rateLimit({ bucket: 'leads', windowMs: 60000, max: 20 }));
+// #75 guest chat is magic-link (key) authenticated + public — rate-limit it.
+app.use('/api/guest', rateLimit({ bucket: 'guest', windowMs: 60000, max: 90 }));
 app.use('/api/address', rateLimit({ bucket: 'address', windowMs: 60000, max: 120 })); // autocomplete is chatty
 
 // --- API ---
@@ -152,6 +154,7 @@ app.get('/api/pricing-defaults', async (req, res) => {
 });
 app.use('/api/address', require('./routes/address')); // address autocomplete/verification proxy (key stays server-side)
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
+app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)
 app.use('/api/intake', require('./routes/intake'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/staff', require('./routes/staff'));

@@ -11,6 +11,7 @@ import Verify from './screens/Verify.jsx';
 import Forgot from './screens/Forgot.jsx';
 import Reset from './screens/Reset.jsx';
 import Accept from './screens/Accept.jsx';
+import GuestChat from './screens/GuestChat.jsx';
 import Dashboard from './screens/Dashboard.jsx';
 import Apply from './screens/Apply.jsx';
 import Application from './screens/Application.jsx';
@@ -90,6 +91,8 @@ export default function App() {
           <Route path="/forgot" element={<Forgot scope="borrower" />} />
           <Route path="/reset" element={<Reset />} />
           <Route path="/accept" element={<Accept />} />
+          {/* #75 — magic-link guest chat for external email participants (no login). */}
+          <Route path="/guest/:key" element={<GuestChat />} />
           <Route path="/internal/login" element={<StaffLogin />} />
           {/* Staff console has its OWN reset screen so a dual borrower+staff
               account is never sent two different reset emails (owner 2026-07-14). */}
