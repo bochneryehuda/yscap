@@ -176,9 +176,26 @@ The analysis produced **12 ready-to-write regression tests** (highest value: the
 
 ## 9. Industry gap analysis
 
-*(Section completed from the 6-agent research workflow — see §9 addendum below if this copy predates its landing.)*
+From a 5-topic research sweep (commercial sync engines, reliability engineering, MDM/conflict models, ClickUp API documentation, regulated-domain practice) synthesized against this codebase. Scores: 0 = at standard … 3 = critical gap.
 
-Key verdicts are integrated into §10–§11: the outbox/queue shape matches industry practice; the missing standard pieces are 429/Retry-After client behavior, a durable (DB-backed) breaker, a persisted watermark, per-field authority-as-data (the MDM "source priority + survivorship" model), actor-based loop prevention (bot identity), and CI. Practices where this codebase is **ahead** of typical industry work: the append-only write journal with before-images, the single HTTP chokepoint with structural hard-stops, the two-sided review with live re-read at resolve time, dates-as-strings with a throw-on-violation round-trip invariant, and the both-sides-survive merge discipline.
+| Dimension | Severity | Verdict |
+|---|---|---|
+| Rate-limit handling | **3** | Zero 429/Retry-After handling in the ClickUp client; ClickUp's documented limit is 100 req/min/token on Business plan; a 429 burns a dead-letter attempt. **The repo's own `sharepoint.js:105-125` already implements the exact correct pattern** — port it. |
+| Loop prevention / attribution | **3** | Industry canon (Workato): dedicated integration user + actor filtering at the trigger. ClickUp has **no app/bot actor concept** — even OAuth attributes to the authorizing human — so this requires a real "YS Portal Bot" member seat. Today the portal shares the owner's token with a second, unidentified automation. |
+| PII handling / compliance | **3** | Portal side is strong (AES-256-GCM SSN, masked journals). But **full SSNs sit in plaintext ClickUp custom fields** visible to the whole workspace; FTC Safeguards Rule (applies to mortgage brokers) expects data minimization + access limits; industry SSN practice is vault + last-4 elsewhere. Decision memo needed. |
+| Conflict resolution model | 2 | `decideDob()` is a real single-decision-function resolver — the right shape — but only DOB has it. Generalize to `decideField()` driven by a persisted authority matrix (the empty `clickup_field_mappings` table was built for exactly this). |
+| Field ownership / provenance | 2 | "Empty never overwrites" fully implemented both ways (ahead of many). Missing: per-field provenance (Informatica XREF / Reltio crosswalk pattern) so survivorship is computable and merges reversible. |
+| Identity resolution | 2 | Deterministic-only auto-merge is the standard (Reltio: suspect rules never auto-merge; Fellegi-Sunter three-zone model). Weak-key corroborations (email+phone) must suggest, never merge. |
+| Schema / migration discipline | 2 | No `schema_migrations` ledger; replay-everything rests on hand-maintained idempotence across 114 files; three number collisions already. |
+| Testing / CI | 2 | 8 real incident-derived suites exist; nothing runs them (no `npm test`, no CI). |
+| Deploy behavior | 2 | Industry: deploys are sync-neutral (persistent cursors, scheduled full re-syncs — e.g. Merge.dev's every-3-days). Here: every deploy = portfolio-wide re-ingest against a reset watermark and a reset breaker. |
+| Outbox / queue reliability | 1 | Genuinely close to standard (FOR UPDATE SKIP LOCKED, crash reclaim, dead-letter → review). Tighten: enqueue inside the caller's transaction; jitter on backoff. |
+| Observability / audit | 1 | The write journal is **better** than typical hand-rolled syncs. Missing: webhook-health probe (ClickUp silently suspends a webhook at fail_count 100) and surfacing `X-RateLimit-Remaining`. |
+| Review / stewardship UX | **0** | **At or above industry standard** — two-sided rows, live re-read resolution, file-level actions, auto-close on convergence. Polish only (group-by-reason headers). |
+
+**Where this codebase is ahead of industry practice** (validated, keep): the PII-masked before+after write journal with its provable negative ("not in the journal ⇒ the portal didn't do it"); the structural hard-stops in the HTTP client (including nested-null/NaN detection); the two-sided LO-owned review queue with live re-read; `decideDob()` provenance-aware auto-resolution; and the dates-as-strings + throw-on-violation round-trip discipline.
+
+**Strategic note:** a buy-vs-build checkpoint against Unito (the commercial product closest to a ClickUp two-way stack) is worth an hour this quarter — the honest expectation is that the custom PII guards, review queue, and duplicate-task lifecycle justify keeping the build, but the comparison keeps the decision deliberate.
 
 ---
 
