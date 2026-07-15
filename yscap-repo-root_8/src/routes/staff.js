@@ -18,7 +18,7 @@ const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
-const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL } = require('../lib/experience');
+const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } = require('../lib/experience');
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
@@ -3286,6 +3286,30 @@ router.post('/track-records/:id/verify', async (req, res) => {
   // (#126). A non-counting status (pending/docs) is a review action anyone may set.
   if (counts && !can(req.actor, 'sign_off_conditions')) {
     return res.status(403).json({ error: 'Only a processor can verify a track-record line item — it signs off the experience condition. Request documents or raise an issue instead.' });
+  }
+  // #112 verify gate — a line may be VERIFIED toward experience ONLY when it has a
+  // COMPLETED, in-window exit: no exit date is FATAL, a future-dated exit hasn't
+  // closed yet, and an exit >3 years old no longer counts (frozen 36-month window,
+  // reused from experience.js — never re-derived here). This stops a misleading
+  // "verified but counts toward nothing" line: such a row silently fails
+  // RECENT_EXIT_SQL, so it would show as verified yet contribute zero to the tier /
+  // experience / sign-off gate. Only counting statuses (verified/limited) are gated;
+  // a non-counting review status (pending/docs) is unaffected, as is any REVOKE.
+  if (counts && !isRevoke) {
+    const elig = await db.query(
+      `SELECT (${EXIT_DATE_SQL}) IS NULL AS no_exit,
+              (${EXIT_DATE_SQL}) > CURRENT_DATE AS future,
+              (${EXIT_DATE_SQL}) < (CURRENT_DATE - INTERVAL '36 months') AS expired
+         FROM track_records WHERE id=$1`, [req.params.id]);
+    const e = elig.rows[0] || {};
+    if (e.no_exit || e.future || e.expired) {
+      const msg = e.no_exit
+        ? 'This project has no completed exit date (a sale date for a flip, or a lease / refinance date for a hold). It can’t be verified toward experience until the exit is recorded — request the exit documents instead.'
+        : e.future
+          ? 'This project’s exit date is in the future — it can’t be verified until the exit has actually closed.'
+          : 'This project’s exit is more than 3 years ago, so it no longer counts toward experience (only exits within the last 36 months count). It can’t be verified toward experience.';
+      return res.status(422).json({ error: msg, code: e.no_exit ? 'no_exit_date' : e.future ? 'future_exit' : 'exit_expired' });
+    }
   }
   const reason = String((req.body && req.body.reason) || '').trim().slice(0, 500);
   if (isRevoke && !reason) {
