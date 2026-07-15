@@ -86,5 +86,24 @@ eq('read processor email (lowered)', objRead.processorEmail, 'malky@yscapgroup.c
 eq('read portal file id stamp', objRead.portalFileId, '570e422e-8d51-44c0-b112-181edd8016be');
 eq('read loan officer clickup id', objRead.loanOfficerClickupId, 87451319);
 
+// ---- write guardrails (2026-07-15 DOB incident) -----------------------------
+const F2 = require('../src/clickup/fields');
+const DOB_ID = F2.SHARED.borrowerDOB;
+// no-op suppression: equivalence is CALENDAR-DAY for dates (ClickUp holds a
+// native 4am-NY epoch, we push a 4am-NY epoch — same day == no write)
+eq('date equal across epoch conventions', M.fieldValueEquivalent(DOB_ID, String(Date.UTC(1997, 7, 19, 8)), Date.UTC(1997, 7, 19, 9), {}), true);
+eq('date different day writes', M.fieldValueEquivalent(DOB_ID, String(Date.UTC(1997, 7, 19, 8)), Date.UTC(1997, 7, 20, 9), {}), false);
+eq('unknown before writes', M.fieldValueEquivalent(DOB_ID, undefined, Date.UTC(1997, 7, 19, 9), {}), false);
+eq('empty before + value writes', M.fieldValueEquivalent(DOB_ID, null, Date.UTC(1997, 7, 19, 9), {}), false);
+const LOAN_AMT = F2.PIPELINE.loanAmount;
+eq('number equal string/num', M.fieldValueEquivalent(LOAN_AMT, '150000.00', '150000', {}), true);
+// DOB day-shift signature: ±1 day refused on scoped pushes, real corrections pass
+eq('dob shift +1 day suspect', M.isSuspectDobShift(DOB_ID, String(Date.UTC(1997, 7, 19, 8)), Date.UTC(1997, 7, 20, 9)), true);
+eq('dob shift -1 day suspect', M.isSuspectDobShift(DOB_ID, String(Date.UTC(1997, 7, 19, 8)), Date.UTC(1997, 7, 18, 9)), true);
+eq('dob same day not suspect', M.isSuspectDobShift(DOB_ID, String(Date.UTC(1997, 7, 19, 8)), Date.UTC(1997, 7, 19, 9)), false);
+eq('dob year correction not suspect', M.isSuspectDobShift(DOB_ID, String(Date.UTC(1997, 7, 19, 8)), Date.UTC(1990, 7, 19, 9)), false);
+eq('dob fill-empty not suspect', M.isSuspectDobShift(DOB_ID, null, Date.UTC(1997, 7, 19, 9)), false);
+eq('non-dob field never dob-suspect', M.isSuspectDobShift(LOAN_AMT, String(Date.UTC(1997, 7, 19, 8)), Date.UTC(1997, 7, 20, 9)), false);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

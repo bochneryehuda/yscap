@@ -120,7 +120,7 @@ function buildInputs(app, experience, overrides) {
     sqftAddition: /square|sf|addition|ground/i.test(clean(app.rehab_type)) || num(app.sqft_post) > num(app.sqft_pre),
     targetLTC: 0,
     // Sticky per-file markup (#101): once a file is registered with a per-file
-    // markup override it is persisted on the application (db/107) and re-applied to
+    // markup override it is persisted on the application (db/109) and re-applied to
     // EVERY subsequent quote — staff live, borrower live, AND borrower register — so
     // a borrower can never reprice below the markup the file was structured at. A
     // live STAFF override (in `overrides`) still supersedes it below (staff has
