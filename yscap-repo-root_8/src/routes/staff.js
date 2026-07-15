@@ -794,6 +794,10 @@ router.post('/invite-to-portal', async (req, res) => {
   // active loan officer / processor.
   let officerId = req.actor.id;
   if (b.officerId && seesAll(req)) {
+    // Validate the UUID up front: a hand-crafted non-UUID officerId would otherwise
+    // reach Postgres as a bad uuid literal (22P02) and surface as a 500 — return a
+    // clean 400 instead. (Not reachable from the UI, which only emits staff UUIDs.)
+    if (!UUID_RE.test(String(b.officerId))) return res.status(400).json({ error: 'invalid officerId' });
     const o = await db.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true`, [b.officerId]);
     if (o.rows[0]) officerId = o.rows[0].id;
   }

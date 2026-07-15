@@ -363,22 +363,25 @@ async function adminAudit(req, action, entity_type, entity_id, detail) {
 // consistent with the file-team rail + the primary-mirror trigger (db/103).
 const grantBucket = (staffRole) => (staffRole === 'loan_officer' ? 'loan_officer' : 'processor');
 
-// List the files a staffer has been manually granted (every ACTIVE assistant row —
-// whether added here or from a file's team rail), newest first, with file details.
+// List the files a staffer has been manually granted (any ACTIVE assistant row —
+// whether added here or from a file's team rail), ONE entry per file, newest first.
+// GROUP BY the application so a staffer holding BOTH a loan_officer AND a processor
+// assistant row on one file (only reachable via the file rail) shows a single,
+// unique-keyed row here — no duplicate React keys, and a single Remove fully revokes.
 router.get('/staff/:id/file-grants', async (req, res) => {
   try {
     const r = await db.query(
-      `SELECT aa.application_id, aa.role, aa.added_at,
+      `SELECT aa.application_id, max(aa.added_at) AS added_at,
               a.ys_loan_number, a.status, a.property_address,
               b.first_name, b.last_name
          FROM application_assignees aa
          JOIN applications a ON a.id=aa.application_id AND a.deleted_at IS NULL
          JOIN borrowers b ON b.id=a.borrower_id
         WHERE aa.staff_id=$1 AND aa.removed_at IS NULL AND aa.is_primary=false
-        ORDER BY aa.added_at DESC`, [req.params.id]);
+        GROUP BY aa.application_id, a.ys_loan_number, a.status, a.property_address, b.first_name, b.last_name
+        ORDER BY max(aa.added_at) DESC`, [req.params.id]);
     res.json(r.rows.map((row) => ({
       applicationId: row.application_id,
-      role: row.role,
       addedAt: row.added_at,
       ysLoanNumber: row.ys_loan_number,
       status: row.status,
@@ -411,9 +414,17 @@ router.post('/staff/:id/file-grants', async (req, res) => {
       [applicationId, role, staffId]);
     if (dup.rows[0])
       return res.status(409).json({ error: dup.rows[0].is_primary ? 'Already the primary on this file.' : 'Already has access to this file.' });
-    await db.query(
-      `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by) VALUES ($1,$2,$3,false,$4)`,
-      [applicationId, staffId, role, req.actor.id]);
+    try {
+      await db.query(
+        `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by) VALUES ($1,$2,$3,false,$4)`,
+        [applicationId, staffId, role, req.actor.id]);
+    } catch (e) {
+      // Race: a concurrent grant of the same (file, role, staffer) won the insert
+      // between our dup-check above and here, so the partial unique index (db/103
+      // uq_assignee_active) rejects ours. Treat as "already has access", not a 500.
+      if (e && e.code === '23505') return res.status(409).json({ error: 'Already has access to this file.' });
+      throw e;
+    }
     try {
       await require('../lib/notify').notifyStaff(staffId, {
         type: 'assignment', title: 'You were given access to a file',
@@ -436,16 +447,16 @@ router.delete('/staff/:id/file-grants/:applicationId', async (req, res) => {
     const tRole = await targetRole(staffId);
     if (!isSuper(req) && tRole === 'admin')
       return res.status(403).json({ error: "Only a super admin can change another admin's file access." });
-    const row = await db.query(
-      `SELECT role FROM application_assignees
-        WHERE application_id=$1 AND staff_id=$2 AND removed_at IS NULL AND is_primary=false
-        ORDER BY added_at DESC LIMIT 1`, [applicationId, staffId]);
-    if (!row.rows[0]) return res.status(404).json({ error: 'no manual grant to remove for this file' });
-    await db.query(
+    // Full revoke: retire EVERY active non-primary grant row for this (file, staffer),
+    // across BOTH role buckets (a staffer can hold a loan_officer AND a processor
+    // assistant row via the file rail). "Remove" = they lose access to the file. A
+    // PRIMARY is never touched here (is_primary=false in the WHERE).
+    const r = await db.query(
       `UPDATE application_assignees SET removed_at=now()
-        WHERE application_id=$1 AND staff_id=$2 AND role=$3 AND removed_at IS NULL AND is_primary=false`,
-      [applicationId, staffId, row.rows[0].role]);
-    await adminAudit(req, 'revoke_file_access', 'application', applicationId, { staffId, role: row.rows[0].role });
+        WHERE application_id=$1 AND staff_id=$2 AND removed_at IS NULL AND is_primary=false
+        RETURNING role`, [applicationId, staffId]);
+    if (!r.rows.length) return res.status(404).json({ error: 'no manual grant to remove for this file' });
+    await adminAudit(req, 'revoke_file_access', 'application', applicationId, { staffId, roles: r.rows.map((x) => x.role) });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: 'could not revoke file access' }); }
 });
