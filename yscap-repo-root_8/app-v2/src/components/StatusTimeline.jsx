@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
+import { fmtDay } from '../lib/dates.js';
 
 /* Borrower-facing loan timeline. Shows the milestone path and where the file
    is, with the date each milestone was reached (from the status history).
@@ -16,7 +17,7 @@ const PATH = [
 ];
 const IDX = Object.fromEntries(PATH.map((p, i) => [p.s, i]));
 const TERMINAL = { declined: 'Declined', withdrawn: 'Withdrawn' };
-const fmt = (d) => d ? new Date(d).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+const fmt = (d) => fmtDay(d, { month: 'short', day: 'numeric', year: 'numeric' });
 // A full timestamp (date + time) for each status milestone (owner-directed 2026-07-14).
 const fmtTs = (d) => d ? `${fmt(d)} · ${new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '';
 

@@ -679,7 +679,7 @@ router.post('/applications', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
-       b.program || null, b.loanType || null, purchasePrice, b.asIsValue || null,
+       b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
        b.arv || null, b.rehabBudget || null, officerId, officerName,
        b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
@@ -924,7 +924,7 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     if (typeof b.co_phone === 'string' && b.co_phone.trim()) put('cell_phone', b.co_phone.trim());
     if (b.co_dob) put('date_of_birth', b.co_dob);
     // #60 — parity with the primary borrower's inline-add fields.
-    if (b.co_fico !== undefined && b.co_fico !== '' && Number.isFinite(Number(b.co_fico))) put('fico', Math.trunc(Number(b.co_fico)));
+    if (b.co_fico !== undefined && b.co_fico !== '') { const cf = require('../lib/fields').sanitizeFico(b.co_fico); if (cf != null) put('fico', cf); }  // #90: 3-digit, 300–850
     if (typeof b.co_citizenship === 'string' && b.co_citizenship.trim()) put('citizenship', b.co_citizenship.trim());
     if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
     sets.push('updated_at=now()');
@@ -1859,6 +1859,15 @@ router.post('/change-requests/:cid/approve', async (req, res) => {
     if (cr.status !== 'pending') { await client.query('ROLLBACK'); return res.status(409).json({ error: `this request is already ${cr.status}` }); }
     const applied = await changeRequests.applyRequest(client, cr, req.actor.id, note);
     await client.query('COMMIT');
+    // Propagate the approved value to ClickUp (#86). The governed economics fields
+    // are all mapped dir:'both', so ClickUp still holds the STALE pre-approval
+    // value — without this push the next inbound pull COALESCEs that stale value
+    // back over the approved one and silently REVERTS the change, and the
+    // still-locked borrower re-requests it forever ("re-appears after approving
+    // multiple times"). Every other governed-field write path already enqueues
+    // its touched columns; the CR-approve path was the one that forgot. Must run
+    // AFTER COMMIT so the sync worker reads the committed value, not the stale one.
+    enqueueClickupPush(cr.application_id, [applied.field]).catch(() => {});
     // The change is already committed — never let the audit/notify below turn a
     // successful apply into a 500.
     try {
@@ -2833,6 +2842,10 @@ router.post('/track-records/:id/documents', async (req, res) => {
         AND status IN ('outstanding','requested','issue')
       ORDER BY created_at LIMIT 1`, [req.params.id]);
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
+  const dupStaffTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
+  if (dupStaffTr) return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'track_record_doc') RETURNING id`,
@@ -2948,6 +2961,10 @@ router.post('/llcs/:id/documents', async (req, res) => {
     const maxBytes = cfg.maxUploadMb * 1024 * 1024;
     if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
     const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+    const dupLlc = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+      filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+      llcId: req.params.id, checklistItemId: b.checklistItemId || null, slotLabel: slot });
+    if (dupLlc) return res.status(201).json({ ok: true, documentId: dupLlc, deduped: true });
     const { ref, provider } = await storage.save(buf, { filename: b.filename });
     const r = await db.query(
       `INSERT INTO documents (checklist_item_id,llc_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,slot_label,visibility)
@@ -3224,6 +3241,10 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
 // ---------------- advance application status ----------------
 const APP_STATUS = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
 const STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+// #88: the DECISION milestones a borrower should be emailed about. Every status
+// change still posts in-app; only these also email (the in-between progress moves —
+// in_review / processing / underwriting — are in-app only, to keep the inbox quiet).
+const MAJOR_STATUSES = new Set(['approved', 'clear_to_close', 'funded', 'declined', 'withdrawn']);
 // Conditions-to-close gating. Reaching "clear to close" requires every open
 // prior-to-docs (and standard) condition cleared/waived and every gate item
 // signed off; "funded" additionally requires prior-to-funding conditions.
@@ -3307,7 +3328,7 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
-  for (const [k, col] of Object.entries(STR)) if (k in b) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : String(b[k]).slice(0, 200)); touchedCols.push(col); }
+  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = b[k] === '' ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
     const v = b[k] === '' || b[k] == null ? null : String(b[k]).slice(0, 10);
     if (v != null && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return res.status(400).json({ error: `${k} must be a YYYY-MM-DD date` });
@@ -3390,7 +3411,8 @@ router.post('/applications/:id/nudge', async (req, res) => {
     await notify.notifyAppBorrowers(req.params.id, {
       type: 'reminder', title: 'A friendly reminder on your loan file',
       body: `Still needed to keep things moving: ${shown}.`,
-      applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items' });
+      applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'Complete your items',
+      major: true });   // #88: the staff "Remind" nudge is an explicit reach-out — it emails
     await audit(req, 'nudge_borrower', 'application', req.params.id, { count: list.length });
     res.json({ ok: true, count: list.length });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -3508,6 +3530,7 @@ async function completeFields(req, res, borrowerScoped) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
       if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     // S3-06 (mirror of /details): this path overwrites unconditionally, so it's
@@ -3531,7 +3554,7 @@ async function completeFields(req, res, borrowerScoped) {
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'int') { v = parseInt(v, 10); if (!Number.isFinite(v)) continue; }
+      if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
     }
     if (brSets.length) {
@@ -3586,7 +3609,8 @@ router.patch('/applications/:id', async (req, res) => {
       await notify.notifyAppBorrowers(req.params.id, {
         type: 'status_change', title: `Your loan status: ${label}`,
         body: `Your application has moved to "${label}". Sign in to see the latest.`,
-        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file' });
+        applicationId: req.params.id, link: `/app/${req.params.id}`, ctaLabel: 'View your file',
+        major: MAJOR_STATUSES.has(status) });   // #88: only decision statuses email the borrower
       const team = new Set([cur.rows[0].loan_officer_id, cur.rows[0].processor_id].filter(Boolean).filter(x => x !== req.actor.id));
       for (const sid of team)
         await notify.notifyStaff(sid, {
@@ -4364,6 +4388,11 @@ router.post('/applications/:id/documents', async (req, res) => {
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
   const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
+    llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot, docKind });
+  if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
     `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,

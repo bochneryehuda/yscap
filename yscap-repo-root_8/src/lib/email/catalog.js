@@ -13,7 +13,7 @@
 
    Usage:
      const mail = require('./catalog');
-     await mail.send('welcome', 'borrower@x.com', { firstName, verifyUrl, code });
+     await mail.send('welcome', 'borrower@x.com', { firstName, verifyUrl });
    ===================================================================== */
 'use strict';
 
@@ -69,33 +69,33 @@ const greet = (n) => (n && String(n).trim() ? String(n).trim() + ',' : '');
 
 /** Sent immediately on registration. Establishes the relationship and asks
  *  the borrower to confirm their email in the same message. */
-function welcome({ firstName, verifyUrl, code } = {}) {
+function welcome({ firstName, verifyUrl } = {}) {
   return render({
     audience: 'borrower',
     title: 'Your borrower portal is active',
-    preheader: 'Confirm your email to activate secure access to your loan files.',
+    preheader: 'Tap once to activate secure access to your loan files.',
     greeting: greet(firstName),
     intro: 'Your YS Capital Group borrower portal has been set up. This is your secure workspace for every loan request you place with us.',
     lines: [
       'From the portal you can submit new loan requests, track each file through underwriting to funding, upload conditions, and manage the entities and documents tied to your deals.',
-      'To activate access, confirm your email address below. This code expires in 24 hours.',
+      // #94: one-click activation — no code to type. The button verifies your
+      // email and signs you in. The link is valid for 7 days.
+      'Tap the button below to activate your account — that’s it. The link is valid for 7 days.',
     ],
-    code: code || '',
-    cta: verifyUrl ? { label: 'Confirm email address', url: verifyUrl } : null,
+    cta: verifyUrl ? { label: 'Activate my account', url: verifyUrl } : null,
     note: 'If you did not create this account, disregard this message and no action will be taken.',
   });
 }
 
 /** Standalone email-confirmation message (resend path). */
-function verifyEmail({ firstName, verifyUrl, code } = {}) {
+function verifyEmail({ firstName, verifyUrl } = {}) {
   return render({
     audience: 'borrower',
     title: 'Confirm your email address',
-    preheader: 'Enter this code, or use the button, to verify your portal email.',
+    preheader: 'Tap once to verify your portal email.',
     greeting: greet(firstName),
     intro: 'Please confirm the email address on file for your YS Capital Group portal account.',
-    lines: ['Enter this verification code in the portal. It expires in 24 hours.'],
-    code: code || '',
+    lines: ['Tap the button below to confirm your email — no code to enter. The link is valid for 7 days.'],
     cta: verifyUrl ? { label: 'Confirm email address', url: verifyUrl } : null,
     note: 'If you did not request this, you can safely ignore it.',
   });

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useLocation, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
+import { fmtDay } from '../lib/dates.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
@@ -842,7 +843,7 @@ export default function Application() {
           {isRefi ? <>
             <div className="metrow"><span className="k">Payoff amount</span><span className="v">{money(app.payoff_amount)}</span></div>
             <div className="metrow"><span className="k">Original purchase price</span><span className="v">{money(app.original_purchase_price)}</span></div>
-            <div className="metrow"><span className="k">Date acquired</span><span className="v">{app.acquisition_date ? String(app.acquisition_date).slice(0, 10) : '—'}</span></div>
+            <div className="metrow"><span className="k">Date acquired</span><span className="v">{app.acquisition_date ? fmtDay(app.acquisition_date) : '—'}</span></div>
           </> : (
             <div className="metrow"><span className="k">Purchase price</span><span className="v">{money(app.purchase_price)}</span></div>
           )}

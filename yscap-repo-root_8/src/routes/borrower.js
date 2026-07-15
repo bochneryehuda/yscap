@@ -120,7 +120,7 @@ router.put('/profile', async (req, res) => {
   if (b.lastName !== undefined && String(b.lastName).trim()) fields.last_name = String(b.lastName).trim();
   if (b.cellPhone !== undefined) fields.cell_phone = clean(b.cellPhone);
   if (b.dateOfBirth !== undefined) fields.date_of_birth = clean(b.dateOfBirth);
-  if (b.fico !== undefined) fields.fico = (b.fico === '' || b.fico == null) ? null : (parseInt(b.fico, 10) || null);
+  if (b.fico !== undefined) fields.fico = require('../lib/fields').sanitizeFico(b.fico);  // #90: 3-digit, 300–850
   if (b.citizenship !== undefined) fields.citizenship = clean(b.citizenship);
   if (b.maritalStatus !== undefined) fields.marital_status = clean(b.maritalStatus);
   if (b.yearsAtResidence !== undefined) fields.years_at_residence = (b.yearsAtResidence === '' || b.yearsAtResidence == null) ? null : Number(b.yearsAtResidence);
@@ -178,6 +178,10 @@ router.post('/profile/photo-id', async (req, res) => {
     appItemId = it.rows[0] ? it.rows[0].id : null;
   }
   try {
+    const dupPhoto = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+      filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
+      applicationId: appId, checklistItemId: appItemId, docKind: 'photo_id' });
+    if (dupPhoto) return res.status(201).json({ ok: true, documentId: dupPhoto, deduped: true });
     const { ref, provider } = await storage.save(buf, { filename: b.filename });
     const d = await db.query(
       `INSERT INTO documents (borrower_id,application_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
@@ -292,7 +296,7 @@ router.post('/applications', async (req, res) => {
         is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,'portal',$22,'new',now()) RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), b.purchasePrice || null, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, b.loanOfficerName || null,
      b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
@@ -1262,6 +1266,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
         } catch (_) { /* skip a bad field, keep going with the rest */ }
         continue;   // never a live write for a governed field on a locked file
       }
+      if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     if (appSets.length) {
@@ -1278,7 +1283,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
-      if (t === 'int') { v = parseInt(v, 10); if (!Number.isFinite(v)) continue; }
+      if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
       brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
     }
     if (brSets.length) { brSets.push('updated_at=now()'); await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals); }
@@ -1684,6 +1689,10 @@ router.post('/track-records/:id/documents', async (req, res) => {
         AND status IN ('outstanding','requested','issue')
       ORDER BY created_at LIMIT 1`, [req.params.id]);
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
+  const dupTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
+    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
+    trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
+  if (dupTr) return res.status(201).json({ ok: true, documentId: dupTr, deduped: true });
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'borrower',$1,'track_record_doc') RETURNING id`,
@@ -1803,6 +1812,15 @@ router.post('/documents', async (req, res) => {
   // Optional slot: a condition holds several coexisting documents, each in its
   // own named slot. Re-uploading a slot supersedes only that slot's versions.
   const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
+  // Idempotency (#87): a double-submitted upload (React double-invoke, a drop
+  // firing twice, a client retry) must not create a second document row + a
+  // second "New document uploaded" email. Collapse a byte-identical re-upload to
+  // the same context within the window onto the already-saved document.
+  const dupId = await require('../lib/doc-dedup').recentDuplicateDocId({
+    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
+    applicationId: b.applicationId || null, checklistItemId: b.checklistItemId || null,
+    llcId: b.llcId || null, trackRecordId, slotLabel: slot, docKind });
+  if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(
     `INSERT INTO documents (checklist_item_id,application_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
@@ -2351,7 +2369,7 @@ async function syncProfileFromApplication(borrowerId, b) {
        updated_at      = now()
      WHERE id=$1`,
     [borrowerId, p.cellPhone || '', p.dateOfBirth || '', p.citizenship || '', p.maritalStatus || '',
-     p.fico ? parseInt(p.fico, 10) || null : null,
+     require('../lib/fields').sanitizeFico(p.fico),
      currentAddress, isFinite(yearsAtResidence) ? yearsAtResidence : null,
      monthsAtResidence, p.housingStatus || '', housingPayment]);
   if (b.ssn) {
@@ -2438,7 +2456,7 @@ router.post('/drafts/:id/submit', async (req, res) => {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$24,$25,$26,$27,$28,$29,$30,'portal',$23,'new',now())
      RETURNING id,ys_loan_number`,
     [me(req), b.llcId || null, JSON.stringify(b.propertyAddress), b.propertyType || null, b.units || null,
-     b.program || null, b.loanType || null, b.purchasePrice || null, b.asIsValue || null,
+     b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), b.purchasePrice || null, b.asIsValue || null,   // #95: never a program
      b.arv || null, b.rehabBudget || null, officerId, b.loanOfficerName || null,
      b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
      intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),

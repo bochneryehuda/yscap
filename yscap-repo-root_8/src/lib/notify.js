@@ -96,14 +96,37 @@ const ALWAYS_IN_APP = new Set(['doc_rejected', 'condition_added', 'security', 'a
 const NOTIFY_CATEGORIES = ['messages', 'status_updates', 'documents', 'conditions', 'pricing', 'reminders', 'draws', 'other'];
 const categoryOf = (type) => CATEGORY_OF[type] || 'other';
 
+// #88: keep the borrower's inbox to MAJOR moments. These types EMAIL the borrower
+// by default; every other type is in-app ONLY unless the borrower explicitly turns
+// that category's email on. So loan-team busywork — a doc the LO uploaded, a
+// routine acceptance, a minor in-between status move, a pricing tweak — no longer
+// pings the borrower's inbox, while the things that actually matter (a rejected
+// doc they must redo, a new condition, the closing date, a registered product /
+// term sheet, a chat message, a draw, an account/security event) still do. A
+// caller may pass `opts.major` to decide per-event (status_change uses it so only
+// DECISION statuses email — see MAJOR_STATUSES in the status route).
+const BORROWER_MAJOR_EMAIL = new Set([
+  'closing_date', 'product_registered', 'term_sheet',
+  // Borrower ACTION items — something the borrower must do — always email (a
+  // requested doc, a rejected doc, a new condition, a verification that was
+  // revoked and needs redoing). These are the opposite of LO busywork.
+  'doc_rejected', 'doc_requested', 'condition_added',
+  'llc_unverified', 'track_record_unverified',
+  'message', 'draw', 'draw_request', 'security', 'account',
+]);
+
 /** Notify a borrower, respecting their per-category preferences. */
 async function notifyBorrower(borrowerId, opts) {
   const cat = categoryOf(opts.type);
-  let pref = { in_app: true, email: true };
+  // #88: email defaults ON only for major moments (or when a caller passes
+  // opts.major=true); everything else is in-app only by default. An explicit
+  // per-category borrower preference still wins over this default either way.
+  const emailDefault = (typeof opts.major === 'boolean') ? opts.major : BORROWER_MAJOR_EMAIL.has(opts.type);
+  let pref = { in_app: true, email: emailDefault };
   try {
     const pr = await db.query(`SELECT in_app,email FROM notification_prefs WHERE borrower_id=$1 AND category=$2`, [borrowerId, cat]);
     if (pr.rows[0]) pref = pr.rows[0];
-  } catch (_) { /* prefs table always exists after migration; default to on */ }
+  } catch (_) { /* prefs table always exists after migration; default per emailDefault */ }
   // Muted in-app and not a must-see? Drop it entirely — this is the borrower
   // choosing to quiet a nervous-making category.
   if (!pref.in_app && !ALWAYS_IN_APP.has(opts.type)) return null;

@@ -101,6 +101,28 @@ function normalizeUpload(b) {
   return b;
 }
 
+// Upload idempotency, client side (#87): a document upload that fires twice in
+// the same tick — a drop handler running twice, a double-clicked button, a React
+// double-invoke — must not send two POSTs (each of which becomes a duplicate
+// document + a duplicate "New document uploaded" email). Coalesce byte-identical
+// uploads to the same context that are already in flight onto ONE request/promise
+// (the server carries a matching guard for the sequential-retry case). Keyed on
+// the stable identity, never the whole base64 payload.
+const _uploadsInFlight = new Map();
+function uploadSig(tag, b) {
+  b = b || {};
+  return [tag, b.applicationId, b.checklistItemId, b.llcId, b.trackRecordId, b.slot,
+    b.docKind, b.filename, (b.dataBase64 || '').length].map((x) => (x == null ? '' : String(x))).join('|');
+}
+function coalesceUpload(tag, b, fn) {
+  const key = uploadSig(tag, b);
+  const existing = _uploadsInFlight.get(key);
+  if (existing) return existing;
+  const p = Promise.resolve().then(fn).finally(() => _uploadsInFlight.delete(key));
+  _uploadsInFlight.set(key, p);
+  return p;
+}
+
 // Build a `?a=b&c=d` query string from a params object, skipping null/undefined/
 // empty values (so callers can pass a sparse filter object and unset filters just
 // disappear). Returns '' for no/empty params, keeping bare-path callers unchanged.
@@ -164,7 +186,7 @@ export const api = {
 
   profile:      () => req('GET', '/api/borrower/profile'),
   saveProfile:  (b) => req('PUT', '/api/borrower/profile', b),
-  uploadPhotoId:(b) => req('POST', '/api/borrower/profile/photo-id', normalizeUpload(b)),
+  uploadPhotoId:(b) => coalesceUpload('photoId', b, () => req('POST', '/api/borrower/profile/photo-id', normalizeUpload(b))),
   applications: () => req('GET', '/api/borrower/applications'),
   application:  (id) => req('GET', `/api/borrower/applications/${id}`),
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
@@ -187,7 +209,7 @@ export const api = {
   mentionables: (appId) => req('GET', `/api/borrower/applications/${appId}/mentionables`),
   postMessage:  (appId, body, opts = {}) => req('POST', '/api/borrower/messages', { applicationId: appId, body, ...opts }),
   readNotif:    (id) => req('POST', `/api/borrower/notifications/${id}/read`),
-  uploadDoc:    (b) => req('POST', '/api/borrower/documents', normalizeUpload(b)),
+  uploadDoc:    (b) => coalesceUpload('uploadDoc', b, () => req('POST', '/api/borrower/documents', normalizeUpload(b))),
   documents:    (appId) => req('GET', `/api/borrower/documents${appId ? `?applicationId=${appId}` : ''}`),
   downloadDoc:  (id) => download(`/api/borrower/documents/${id}/download`),
   // borrower completes an in-portal tool task (Rehab Budget / Track Record)
@@ -294,7 +316,7 @@ export const api = {
   staffLlc:          (id) => req('GET', `/api/staff/llcs/${id}`),
   staffUpdateLlc:    (id, b) => req('PATCH', `/api/staff/llcs/${id}`, b),
   staffSaveLlcMembers: (id, members) => req('PUT', `/api/staff/llcs/${id}/members`, { members }),
-  staffUploadLlcDoc: (llcId, b) => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b)),
+  staffUploadLlcDoc: (llcId, b) => coalesceUpload('llcDoc:' + llcId, b, () => req('POST', `/api/staff/llcs/${llcId}/documents`, normalizeUpload(b))),
   staffVerifyLlc:    (id, b) => req('POST', `/api/staff/llcs/${id}/verify`, b || {}),
   staffVerifyTrackRecord:    (id, body) => req('POST', `/api/staff/track-records/${id}/verify`, body),
   // Raise an issue/request against a track-record line item or a vesting LLC — it
@@ -319,7 +341,7 @@ export const api = {
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
   staffRegisterProduct: (appId, program, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides }),
-  staffUploadAppDoc: (appId, b) => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b)),
+  staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
   staffWaiveCondition:   (cid, reason) => req('POST', `/api/staff/loan-conditions/${cid}/waive`, { reason }),
