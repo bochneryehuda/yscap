@@ -2808,6 +2808,91 @@ async function backfillRtlChecklists(version = 'v1') {
   } catch (e) { console.error('[checklist-backfill]', e.message); return { error: e.message }; }
 }
 
+// ---------------- #103 borrower self-service pricing ----------------
+// The borrower prices loans / builds term sheets in the SAME frozen Term Sheet
+// Studio tool the staff use (embedded as an iframe) — the pricing engine and
+// guidelines are never reimplemented here. This adds only the SAVE/RESTORE layer
+// around it: a borrower can save a scenario (the studio's input set) and reopen
+// it later without retyping. Pricing is computed client-side by the frozen
+// engine; we persist inputs only.
+
+// Prefill the studio from the borrower's own experience of record: the count of
+// their recorded deals in the frozen 36-month exit window, bucketed flip / hold /
+// ground — editable in the tool, but a sensible starting point (no application
+// required, so it works before they ever file). Never exposes internal margin.
+router.get('/pricing/prefill', async (req, res) => {
+  try {
+    const tr = await db.query(
+      `SELECT lower(coalesce(deal_type,'')) AS dt, count(*)::int AS n
+         FROM track_records WHERE borrower_id=$1 AND (${RECENT_EXIT_SQL}) GROUP BY 1`, [me(req)]);
+    const exp = { flips: 0, holds: 0, ground: 0 };
+    for (const row of tr.rows) {
+      if (row.dt.indexOf('ground') > -1 || row.dt.indexOf('construction') > -1) exp.ground += row.n;
+      else if (row.dt.indexOf('flip') > -1) exp.flips += row.n;
+      else exp.holds += row.n;
+    }
+    const b = await db.query(`SELECT first_name, last_name, fico FROM borrowers WHERE id=$1`, [me(req)]);
+    const row = b.rows[0] || {};
+    res.json({
+      exp,
+      fico: row.fico || null,
+      borrowerName: [row.first_name, row.last_name].filter(Boolean).join(' ') || null,
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+const scenarioLabel = (v) => String(v == null ? '' : v).trim().slice(0, 120) || 'Untitled scenario';
+const scenarioInputs = (v) => (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+
+router.get('/pricing/scenarios', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id, label, inputs, created_at, updated_at FROM borrower_pricing_scenarios
+        WHERE borrower_id=$1 ORDER BY updated_at DESC LIMIT 100`, [me(req)]);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/pricing/scenarios', async (req, res) => {
+  const b = req.body || {};
+  try {
+    const r = await db.query(
+      `INSERT INTO borrower_pricing_scenarios (borrower_id, label, inputs)
+       VALUES ($1,$2,$3::jsonb) RETURNING id, label, inputs, created_at, updated_at`,
+      [me(req), scenarioLabel(b.label), JSON.stringify(scenarioInputs(b.inputs))]);
+    res.status(201).json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.put('/pricing/scenarios/:id', async (req, res) => {
+  const b = req.body || {};
+  try {
+    // Only the borrower's own scenario, and only the fields provided.
+    const r = await db.query(
+      `UPDATE borrower_pricing_scenarios
+          SET label  = COALESCE($3, label),
+              inputs = COALESCE($4::jsonb, inputs),
+              updated_at = now()
+        WHERE id=$1 AND borrower_id=$2
+        RETURNING id, label, inputs, created_at, updated_at`,
+      [req.params.id, me(req),
+       b.label !== undefined ? scenarioLabel(b.label) : null,
+       b.inputs !== undefined ? JSON.stringify(scenarioInputs(b.inputs)) : null]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.delete('/pricing/scenarios/:id', async (req, res) => {
+  try {
+    const r = await db.query(
+      `DELETE FROM borrower_pricing_scenarios WHERE id=$1 AND borrower_id=$2 RETURNING id`,
+      [req.params.id, me(req)]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 router.generateChecklist = generateChecklist;
 router.generateLlcChecklist = generateLlcChecklist;
 module.exports = router;
