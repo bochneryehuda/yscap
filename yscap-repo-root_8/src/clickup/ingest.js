@@ -881,6 +881,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
      ON CONFLICT (clickup_pipeline_task_id) WHERE clickup_pipeline_task_id IS NOT NULL
      DO UPDATE SET clickup_last_synced_at=now(), updated_at=now() RETURNING id`, insVals);
   const newId = r.rows[0].id;
+  // Year-guard reviews for a BRAND-NEW file land immediately too (the update
+  // branch has its own insert) — a bad year must never wait for the next pass.
+  for (const p of pendingYearReviews) {
+    await review.queueReview({ applicationId: newId, borrowerId, taskId: task.id, direction: 'inbound',
+      fieldKey: p.fieldKey, proposedValue: p.proposed, rawValue: p.raw, reason: 'clickup_year_out_of_range' });
+  }
   // A freshly-created file already carries llc_id (in the INSERT above), but its LLC
   // document slots + condition are not built until we run the wiring — do it now so
   // the vesting entity is fully materialized from the first sync (force:true).
