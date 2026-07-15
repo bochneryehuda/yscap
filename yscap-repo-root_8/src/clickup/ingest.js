@@ -746,6 +746,30 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
   if (targetId) {
+    // INBOUND CHANGE AUDIT (2026-07-15 date incident): whenever this pull is about
+    // to CHANGE an existing portal value on a critical field, record before→after
+    // in audit_log — the previously-missing half of the cross-system API history.
+    // (A null pulled value keeps the current one via COALESCE — never a change.)
+    try {
+      const CRIT = ['expected_closing', 'actual_closing', 'loan_amount', 'purchase_price', 'program', 'loan_type'];
+      const cur = (await db.query(`SELECT ${CRIT.join(', ')} FROM applications WHERE id=$1`, [targetId])).rows[0];
+      if (cur) {
+        const diffs = {};
+        for (const k of CRIT) {
+          const nv = cols[k], ov = cur[k];
+          if (nv == null || ov == null) continue;
+          const same = String(ov) === String(nv) ||
+            (isFinite(Number(ov)) && isFinite(Number(nv)) && Number(ov) === Number(nv));
+          if (!same) diffs[k] = { from: ov, to: nv };
+        }
+        if (Object.keys(diffs).length) {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system', NULL, 'clickup_pull_field_change', 'application', $1, $2)`,
+            [targetId, JSON.stringify({ taskId: task.id, changes: diffs })]);
+        }
+      }
+    } catch (_) { /* audit is best-effort — never blocks the pull */ }
     // Restore-on-reflip: if this file had been auto-descoped because its program
     // was previously changed to a non-RTL type, flipping it back to an RTL program
     // brings it back (clear deleted_at). We ONLY un-delete a file that WE descoped

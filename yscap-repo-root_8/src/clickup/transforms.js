@@ -47,13 +47,88 @@ function fromEpochMs(ms) {
   const n = Number(ms);
   if (!isFinite(n)) return null;
   // The synced ClickUp fields (DOB, expected/actual closing, acquisition date)
-  // are all DATE-ONLY, meant to sit at UTC midnight. But a legacy value we wrote
-  // before the outbound midnight fix landed a few hours off midnight (it read a
-  // local-midnight JS Date), and a user editing in a non-UTC ClickUp workspace
-  // can store off-midnight too. Snapping to the NEAREST UTC day (add 12h then
-  // slice) makes any near-midnight epoch resolve to its intended calendar day,
+  // are all DATE-ONLY. ClickUp pins a no-time date to 4:00 AM in the timezone of
+  // the user who set it (developer.clickup.com/docs/general-time), so a human
+  // entry from this team sits at 08:00Z/09:00Z; our own writes sit at 4 AM
+  // workspace time too (see dateOnlyToClickUpEpoch); and a legacy pre-fix portal
+  // write sits at exactly 00:00Z. Snapping to the NEAREST UTC day (add 12h then
+  // slice) makes every one of those resolve to its intended calendar day,
   // instead of rolling back a day (the off-by-one the owner saw on closing/DOB).
   return new Date(n + 12 * 3600 * 1000).toISOString().slice(0, 10);   // YYYY-MM-DD
+}
+
+// ---- date-only ClickUp WRITE convention (incident root fix, 2026-07-15) ----
+// ClickUp renders a date field in each VIEWER's local timezone, and its own UI
+// stores a no-time date at 4:00 AM in the setter's timezone. An epoch at UTC
+// MIDNIGHT (what we used to write) is 7–8 PM the PREVIOUS evening in New York —
+// so every date the portal pushed displayed one day early to the whole team,
+// which is exactly how "the system changed the DOBs in ClickUp" looked, even
+// when the stored epoch was the "technically correct" UTC day. The fix writes
+// date-only values the same way ClickUp itself does for this team: 4 AM in the
+// workspace's home timezone (America/New_York unless CLICKUP_DATE_TZ overrides).
+// That epoch lands in the [08:00Z, 10:00Z] window, which (a) renders as the
+// intended calendar day for every viewer from US Pacific (UTC-8) through Israel
+// (UTC+3), and (b) round-trips through fromEpochMs' nearest-day snap to the very
+// same day — enforced below, so a write our own pull would misread CANNOT happen.
+const CLICKUP_DATE_TZ = process.env.CLICKUP_DATE_TZ || 'America/New_York';
+const CLICKUP_DATE_HOUR = 4;
+
+/** Offset (ms) of `tz` from UTC at the given instant (EDT → -14400000). */
+function tzOffsetMs(tz, at) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+  const p = {};
+  for (const part of dtf.formatToParts(at)) p[part.type] = part.value;
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, p.hour === '24' ? 0 : +p.hour, +p.minute, +p.second);
+  return asUtc - at.getTime();
+}
+/** Calendar {y,m,d} of an instant, as seen in `tz`. */
+function zonedYmd(tz, at) {
+  const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const p = {};
+  for (const part of dtf.formatToParts(at)) p[part.type] = part.value;
+  return { y: +p.year, m: +p.month, d: +p.day };
+}
+/** Epoch ms of Y-M-D at `hour`:00 local time in `tz` (DST-correct, two-pass). */
+function epochAtZonedTime(y, m, d, hour, tz) {
+  const guess = Date.UTC(y, m - 1, d, hour);
+  let off = tzOffsetMs(tz, new Date(guess));
+  off = tzOffsetMs(tz, new Date(guess - off));       // re-check across a DST edge
+  return guess - off;
+}
+
+/**
+ * Portal date value → the epoch to WRITE into a ClickUp date field.
+ * Accepts a 'YYYY-MM-DD' string (the pg date type-parser output), a JS Date /
+ * epoch / ISO string (timestamptz like submitted_at — converted to its calendar
+ * day IN THE WORKSPACE TZ, so a 11 PM New York submission stays on its NY day).
+ * Returns null for blanks AND for out-of-range years (a mid-typing artifact like
+ * year 0026 must never reach ClickUp again — this chokepoint refuses it even if
+ * a bad value sneaks into the DB). Throws if the produced epoch would not
+ * round-trip through fromEpochMs to the same day (structural loop-safety).
+ */
+function dateOnlyToClickUpEpoch(v, tz = CLICKUP_DATE_TZ) {
+  if (v == null || v === '') return null;
+  let y, m, d;
+  if (!(v instanceof Date)) {
+    const s = String(v).trim();
+    const mm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);   // pure date-only string
+    if (mm) { y = +mm[1]; m = +mm[2]; d = +mm[3]; }
+  }
+  if (y == null) {
+    const ms = toEpochMs(v);                          // instant-bearing value
+    if (ms == null) return null;
+    ({ y, m, d } = zonedYmd(tz, new Date(ms)));
+  }
+  if (!(y >= 1900 && y <= 2100)) return null;         // refuse garbage years
+  const epoch = epochAtZonedTime(y, m, d, CLICKUP_DATE_HOUR, tz);
+  const want = `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  if (fromEpochMs(epoch) !== want) {
+    throw new Error(`clickup date round-trip mismatch: ${want} -> ${epoch} -> ${fromEpochMs(epoch)}`);
+  }
+  return epoch;
 }
 
 // ---- money / numbers ------------------------------------------------------
@@ -191,7 +266,7 @@ function maskCard(number) {
 
 module.exports = {
   splitName, joinName, isPlaceholderName, isShadowEmail,
-  toEpochMs, fromEpochMs,
+  toEpochMs, fromEpochMs, dateOnlyToClickUpEpoch, epochAtZonedTime, zonedYmd,
   parseMoney, numToString,
   normalizePhone, phoneDigits,
   normalizeMarried, normalizeMarriedAI, portalMaritalToMarried, marriedToPortalMarital,

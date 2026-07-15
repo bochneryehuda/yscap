@@ -158,7 +158,11 @@ function writeValue(f, val, options) {
       return T.dropdownLabelToId(options[f.cu] || [], label) || undefined;
     }
     case 'currency': case 'number': return T.numToString(T.parseMoney(val) != null ? T.parseMoney(val) : val);
-    case 'date': return T.toEpochMs(val);
+    // Date-only fields write ClickUp's OWN convention (4 AM workspace time), so
+    // the calendar day renders correctly for every viewer — an epoch at UTC
+    // midnight displays as the previous day to the whole US-based team (the
+    // 2026-07-15 "portal changed the DOBs" incident). Never write toEpochMs here.
+    case 'date': return T.dateOnlyToClickUpEpoch(val);
     case 'phone': return T.normalizePhone(val);
     case 'checkbox': return val ? 'true' : 'false';
     default: return String(val);
@@ -428,4 +432,41 @@ function resolveOnly(onlyKeys) {
   return { cuIds, status, checklistFieldIds };
 }
 
-module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly };
+// ---- write guardrails (2026-07-15 DOB incident) — pure, unit-testable -------
+const FIELD_TYPE = new Map(FIELD_MAP.map((f) => [f.cu, f.type]));
+
+/** Is the value already on the task equivalent to what we're about to write?
+ *  Conservative: any doubt → NOT equivalent (the caller writes, preserving old
+ *  behavior). ClickUp reads dropdowns as orderindex INTEGERS while writes take
+ *  option UUIDs, and dates come back as epoch strings — so compare through the
+ *  same transforms the sync itself uses. */
+function fieldValueEquivalent(fieldId, oldVal, newVal, options) {
+  if (oldVal === undefined) return false;               // unknown before → write
+  if (oldVal === null || oldVal === '') return newVal == null || newVal === '';
+  const type = FIELD_TYPE.get(fieldId);
+  try {
+    if (type === 'date') return T.fromEpochMs(oldVal) === T.fromEpochMs(newVal);
+    if (type === 'currency' || type === 'number') return Number(oldVal) === Number(newVal);
+    if (type === 'checkbox') return String(oldVal) === String(newVal);
+    if (type === 'dropdown') {
+      const asId = T.dropdownIndexToId((options && options[fieldId]) || [], oldVal);
+      return asId != null && asId === newVal;
+    }
+    if (newVal && typeof newVal === 'object') return false;  // users/location — always write
+    return String(oldVal).trim() === String(newVal).trim();
+  } catch (_) { return false; }
+}
+
+/** The corruption signature: an existing DOB moved by EXACTLY one day. A human
+ *  correcting a truly wrong DOB moves it by years (or fixes month/day digits);
+ *  a conversion bug moves it by one day. Automated (scoped) pushes refuse the
+ *  latter — only an explicit human-initiated full repush may apply it. */
+function isSuspectDobShift(fieldId, oldVal, newVal) {
+  if (fieldId !== F.SHARED.borrowerDOB) return false;
+  const oldDay = T.fromEpochMs(oldVal), newDay = T.fromEpochMs(newVal);
+  if (!oldDay || !newDay || oldDay === newDay) return false;
+  const diff = Math.abs(Date.parse(oldDay + 'T00:00:00Z') - Date.parse(newDay + 'T00:00:00Z'));
+  return diff === 86400000;
+}
+
+module.exports = { FIELD_MAP, KNOWN, buildTaskFields, readTaskFields, writeValue, readValue, normalizeClickupLocation, resolveOnly, fieldValueEquivalent, isSuspectDobShift };

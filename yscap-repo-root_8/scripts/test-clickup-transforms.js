@@ -179,5 +179,27 @@ eq('blank not nonRtl', x.isNonRtlProgramLabel(''), false);
 eq('null not nonRtl', x.isNonRtlProgramLabel(null), false);
 eq('unset not nonRtl', x.isNonRtlProgramLabel('Not sure yet'), false);
 
+// ---- date-only ClickUp WRITE convention (2026-07-15 DOB incident) ----------
+// ClickUp pins a no-time date to 4 AM in the setter's timezone and renders the
+// day in each viewer's timezone. We write 4 AM America/New_York — verified live:
+// a native ClickUp entry of 1967-11-12 by this NY team stores -67446000000.
+eq('dateOnly EDT (summer)', t.dateOnlyToClickUpEpoch('2026-07-18'), Date.UTC(2026, 6, 18, 8));
+eq('dateOnly EST (winter)', t.dateOnlyToClickUpEpoch('2026-01-05'), Date.UTC(2026, 0, 5, 9));
+eq('dateOnly matches live native ClickUp value', t.dateOnlyToClickUpEpoch('1967-11-12'), -67446000000);
+eq('dateOnly round-trips through pull', t.fromEpochMs(t.dateOnlyToClickUpEpoch('1999-01-15')), '1999-01-15');
+eq('dateOnly never UTC midnight (displays -1 day in NY)', t.dateOnlyToClickUpEpoch('1999-01-15') % 86400000 === 0, false);
+// instants (timestamptz) collapse to their NEW YORK calendar day
+eq('instant late-evening NY stays on its NY day',
+  t.fromEpochMs(t.dateOnlyToClickUpEpoch(new Date('2026-07-11T03:15:00Z'))), '2026-07-10');
+// mid-typing artifacts and garbage never reach ClickUp
+eq('garbage year 0026 refused', t.dateOnlyToClickUpEpoch('0026-07-18'), null);
+eq('garbage year 9999 refused', t.dateOnlyToClickUpEpoch('9999-01-01'), null);
+eq('blank refused', t.dateOnlyToClickUpEpoch(''), null);
+eq('null refused', t.dateOnlyToClickUpEpoch(null), null);
+// legacy + foreign epochs still pull back on the intended day (nearest-day snap)
+eq('pull legacy portal 00:00Z', t.fromEpochMs(Date.UTC(1999, 0, 15)), '1999-01-15');
+eq('pull native NY 4am (EDT)', t.fromEpochMs(Date.UTC(1999, 0, 15, 9)), '1999-01-15');
+eq('pull Israel-midnight prev evening', t.fromEpochMs(Date.UTC(1999, 0, 14, 22)), '1999-01-15');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

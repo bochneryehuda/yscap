@@ -47,6 +47,42 @@ function ClosingDateField({ value, onSave }) {
   );
 }
 
+/* Inline-editable DOB row (2026-07-15 date incident follow-up): staff previously
+ * could only FILL a missing DOB (completeness panel) — a wrong one was uneditable
+ * portal-side. Same draft-commit pattern as ClosingDateField (no mid-type saves),
+ * strict year bounds, and the save propagates to ClickUp via the scoped push. */
+function DobRow({ appId, value, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const start = () => { setDraft(dayInputValue(value)); setEditing(true); };
+  async function commit() {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(draft)) return;               // incomplete → ignore
+    const y = Number(draft.slice(0, 4));
+    if (y < 1900 || y > 2100) return;                             // mid-type year → ignore
+    if (draft === dayInputValue(value)) { setEditing(false); return; }
+    setBusy(true);
+    try { await api.post(`/api/staff/applications/${appId}/complete-fields`, { date_of_birth: draft }); setEditing(false); await onSaved(); }
+    catch (_) { /* row keeps editing state so the value isn't silently lost */ }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="metrow"><span className="k">DOB</span>
+      <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+        {editing ? <>
+          <input className="input" type="date" value={draft} disabled={busy}
+            onChange={(e) => setDraft(e.target.value)} style={{ maxWidth: 170 }}
+            onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }} />
+          <button className="btn ghost" onClick={commit} disabled={busy}>{busy ? '…' : 'Save'}</button>
+        </> : <>
+          <span>{value ? fmtDay(value) : '—'}</span>
+          <button className="eye-btn" onClick={start} title="Edit date of birth (saves to the file and syncs to ClickUp)" aria-label="Edit date of birth">✎</button>
+        </>}
+      </span>
+    </div>
+  );
+}
+
 // Small inline eye toggle for the SSN reveal (revealing is server-audited).
 const Eye = (
   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2300,8 +2336,9 @@ export default function StaffApplication() {
             <div className="metrow"><span className="k">Name</span><span className="v">{app.borrower_id ? <Link to={`/internal/borrowers/${app.borrower_id}`} title="Open borrower CRM profile">{borrower.first_name} {borrower.last_name}</Link> : <>{borrower.first_name} {borrower.last_name}</>}</span></div>
             <div className="metrow"><span className="k">Email</span><span className="v">{borrower.email || '—'}</span></div>
             <div className="metrow"><span className="k">Phone</span><span className="v">{borrower.cell_phone || '—'}</span></div>
-            {/* DOB shown for the primary borrower too, to match the co-borrower panel (#99). */}
-            {borrower.date_of_birth && <div className="metrow"><span className="k">DOB</span><span className="v">{fmtDay(borrower.date_of_birth)}</span></div>}
+            {/* DOB shown for the primary borrower too, to match the co-borrower panel (#99);
+                inline-editable + immediate ClickUp sync (2026-07-15 incident follow-up). */}
+            <DobRow appId={id} value={borrower.date_of_birth} onSaved={load} />
             <div className="metrow"><span className="k">FICO</span><span className="v">{borrower.fico || '—'}</span></div>
             <div className="metrow"><span className="k">Citizenship</span><span className="v">{borrower.citizenship || '—'}</span></div>
             <div className="metrow"><span className="k">Tier</span><span className="v">{borrower.tier || '—'}</span></div>

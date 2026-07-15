@@ -144,21 +144,61 @@ async function pushApplication(appId, opts = {}) {
   }
 
   let id = taskId;
+  let journalStats = null;
   if (!id) {
     if (!listId) throw new Error('no target list for application ' + appId);
     const task = await clickup.createTask(listId, { name: built.name, status: built.statusName || undefined, custom_fields: built.customFields });
     id = task.id;
+    // Journal the create as a full write (no before values — the task is new).
+    for (const c of built.customFields) await journalFieldWrite(appId, id, c.id, undefined, c.value, 'create');
     await db.query(`UPDATE applications SET clickup_pipeline_task_id=$1, sync_state='linked', clickup_last_synced_at=now(), updated_at=now() WHERE id=$2`, [id, appId]);
   } else {
     // Field-by-field update (setField). Loop-safety on the subsequent inbound pull
     // of our own write is STRUCTURAL, not echo-based (see below): re-applying a
     // just-pushed value is an idempotent COALESCE no-op, and checklist statuses use
     // the no-downgrade/skip-equal rule — so there is no pull→push loop to suppress.
+    //
+    // GUARDRAILS (2026-07-15 DOB incident — see docs/CLICKUP-DATE-INCIDENT.md):
+    //  1. Read the task ONCE before writing and SKIP any field whose ClickUp value
+    //     is already equivalent — the sync never rewrites a field it isn't changing,
+    //     so a conversion bug can no longer silently sweep values across the board.
+    //  2. Every write that goes through is JOURNALED with the before value
+    //     (clickup_write_log) — a complete, queryable API history of what the
+    //     portal changed in ClickUp, which this incident lacked.
+    //  3. The DOB-corruption signature (an AUTOMATED scoped push moving an
+    //     existing DOB by exactly ±1 day) is REFUSED and audited loudly; only an
+    //     explicit human-initiated full repush may apply such a change.
+    let before = null;
+    try {
+      const t = await clickup.getTask(id);
+      before = {};
+      for (const c of (t && t.custom_fields) || []) before[c.id] = c.value;
+      before.__status = t && t.status && (typeof t.status === 'object' ? t.status.status : t.status);
+    } catch (e) { console.warn('[clickup] pre-write read failed (writing without no-op suppression):', e.message); }
+    journalStats = { written: 0, suppressed: 0, blocked: 0 };
+    const source = scoped ? 'scoped_push' : 'full_repush';
     for (const c of chosen) {
-      try { await clickup.setField(id, c.id, c.value); }
-      catch (e) { console.error('[clickup] setField failed', c.id, e.message); }
+      const old = before ? before[c.id] : undefined;
+      if (before && fieldValueEquivalent(c.id, old, c.value, options)) { journalStats.suppressed++; continue; }
+      if (scoped && isSuspectDobShift(c.id, old, c.value)) {
+        journalStats.blocked++;
+        console.error('[clickup] BLOCKED suspect DOB day-shift push', { appId, taskId: id, from: old, to: c.value });
+        await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
+        await logSync('dob_shift_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value) });
+        continue;
+      }
+      try {
+        await clickup.setField(id, c.id, c.value);
+        journalStats.written++;
+        await journalFieldWrite(appId, id, c.id, old, c.value, source);
+      } catch (e) { console.error('[clickup] setField failed', c.id, e.message); }
     }
-    if (pushStatus && built.statusName) { try { await clickup.updateTask(id, { status: built.statusName }); } catch (_) {} }
+    if (pushStatus && built.statusName && (!before || before.__status !== built.statusName)) {
+      try {
+        await clickup.updateTask(id, { status: built.statusName });
+        await journalFieldWrite(appId, id, null, before ? before.__status : undefined, built.statusName, source, { fieldKey: 'status' });
+      } catch (_) {}
+    }
     await db.query(`UPDATE applications SET clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`, [appId]);
   }
 
@@ -171,8 +211,36 @@ async function pushApplication(appId, opts = {}) {
   // scoped enqueue-on-write only (no dirty-sweep), so a pull never re-enqueues a
   // push. If a future NON-idempotent both-way field is added (pull value differs
   // from the pushed value), reintroduce a real, wired suppression at that point.
-  await logSync('push', appId, id, { fields: chosen.length, scoped: !!scoped });
-  return { taskId: id, fields: chosen.length, scoped: !!scoped };
+  await logSync('push', appId, id, { fields: chosen.length, scoped: !!scoped, ...(journalStats || {}) });
+  return { taskId: id, fields: chosen.length, scoped: !!scoped, ...(journalStats || {}) };
+}
+
+// ---- write guardrails (2026-07-15 DOB incident) -----------------------------
+// The pure checks (fieldValueEquivalent / isSuspectDobShift) live in mapper.js so
+// they're unit-tested with the rest of the mapping core; this file only journals.
+const T = require('./transforms');
+const F = require('./fields');
+const { fieldValueEquivalent, isSuspectDobShift } = mapper;
+const MASKED_FIELDS = new Set([F.SHARED.borrowerSSN, F.EXTRA.card]);
+
+/** Append-only journal of every ClickUp field write (before + after). PII rule:
+ *  SSN / card values are masked before they land in the journal. Best-effort —
+ *  a journal failure never blocks the push itself. */
+async function journalFieldWrite(appId, taskId, fieldId, oldVal, newVal, source, extra = {}) {
+  try {
+    const mask = (v) => {
+      if (v == null) return null;
+      if (!MASKED_FIELDS.has(fieldId)) return v;
+      return fieldId === F.SHARED.borrowerSSN ? T.maskSSN(v) : T.maskCard(String(v));
+    };
+    await db.query(
+      `INSERT INTO clickup_write_log (application_id, task_id, field_id, field_key, old_value, new_value, changed, blocked, source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [appId || null, String(taskId), fieldId, extra.fieldKey || null,
+       oldVal === undefined ? null : JSON.stringify(mask(oldVal)),
+       newVal === undefined ? null : JSON.stringify(mask(newVal)),
+       !extra.blocked, !!extra.blocked, source || null]);
+  } catch (e) { console.warn('[clickup] write-journal insert failed:', e.message); }
 }
 
 /** Resolve the destination list: officer's pipeline folder, else Lead Capture. */

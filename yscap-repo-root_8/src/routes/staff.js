@@ -3499,7 +3499,11 @@ router.post('/applications/:id/closing-date', async (req, res) => {
     const s = String(v);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return true;
     const d = new Date(s + 'T00:00:00Z');
-    return isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s;
+    if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) return true;
+    // Server-side year bounds (2026-07-15 incident): a mid-typing artifact like
+    // year 0026 must never persist even if a client bypasses the UI guard.
+    const y = Number(s.slice(0, 4));
+    return !(y >= 1900 && y <= 2100);
   };
   if (bad(b.expectedClosing) || bad(b.actualClosing)) return res.status(400).json({ error: 'dates must be a valid YYYY-MM-DD' });
   if ('expectedClosing' in b) { sets.push(`expected_closing=$${i++}`); vals.push(b.expectedClosing || null); }
@@ -3507,8 +3511,16 @@ router.post('/applications/:id/closing-date', async (req, res) => {
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   sets.push('updated_at=now()'); vals.push(req.params.id);
   try {
+    // Before-image for the audit trail (incident gap: set_closing_date logged
+    // only the NEW values, so damage could not be reconstructed from audit_log).
+    const beforeRow = (await db.query(`SELECT expected_closing, actual_closing FROM applications WHERE id=$1`, [req.params.id])).rows[0] || {};
     await db.query(`UPDATE applications SET ${sets.join(',')} WHERE id=$${i}`, vals);
-    await audit(req, 'set_closing_date', 'application', req.params.id, { expectedClosing: b.expectedClosing, actualClosing: b.actualClosing });
+    await audit(req, 'set_closing_date', 'application', req.params.id, {
+      expectedClosing: b.expectedClosing, actualClosing: b.actualClosing,
+      before: { expectedClosing: beforeRow.expected_closing || null, actualClosing: beforeRow.actual_closing || null } });
+    // Propagate the new expected closing to ClickUp right away (scoped push —
+    // only this field). actual_closing is pull-only (ClickUp owns it).
+    if ('expectedClosing' in b) enqueueClickupPush(req.params.id, ['expected_closing']).catch(() => {});
     if (b.expectedClosing) {
       const a = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
       if (a.rows[0] && a.rows[0].borrower_id) {
@@ -3561,18 +3573,32 @@ async function completeFields(req, res, borrowerScoped) {
       await db.query(`UPDATE applications SET ${appSets.join(', ')} WHERE id=$1`, appVals);
       enqueueClickupPush(req.params.id, appKeys).catch(() => {});
     }
-    const brVals = [bid]; const brSets = [];
+    const brVals = [bid]; const brSets = []; const brKeys = [];
     for (const [k, t] of Object.entries(COMPLETE_BORROWER_FIELDS)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
       if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
-      brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
+      if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds
+        const s = String(v);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) continue;
+        const y = Number(s.slice(0, 4));
+        if (!(y >= 1900 && y <= 2100)) continue;
+      }
+      brVals.push(v); brSets.push(`${k}=$${brVals.length}`); brKeys.push(k);
     }
+    let brBefore = null;
     if (brSets.length) {
+      // Before-image for the audit trail (incident gap: this audit logged a COUNT).
+      try { brBefore = (await db.query(`SELECT ${brKeys.join(', ')} FROM borrowers WHERE id=$1`, [bid])).rows[0] || null; } catch (_) {}
       brSets.push('updated_at=now()');
       await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals);
+      // Borrower identity fields (DOB / cell / FICO / citizenship) now propagate
+      // to ClickUp immediately, like app fields always did — the owner-reported
+      // gap where a DOB "added after the application" never reached ClickUp
+      // until an unrelated full repush.
+      enqueueClickupPush(req.params.id, brKeys).catch(() => {});
     }
-    if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brSets.length });
+    if (!borrowerScoped) await audit(req, 'complete_fields', 'application', req.params.id, { app: appKeys, borrower: brKeys, before: brBefore || undefined });
     res.json({ ok: true, appFields: appKeys.length, borrowerFields: brSets.length });
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
 }

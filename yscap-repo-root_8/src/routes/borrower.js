@@ -142,13 +142,48 @@ router.put('/profile', async (req, res) => {
   if (b.mailingDifferent === false) fields.mailing_address = null;
   else if (b.mailingAddress !== undefined) fields.mailing_address = b.mailingAddress ? JSON.stringify(b.mailingAddress) : null;
 
+  // 2026-07-15 incident: DOB must be a real calendar date in a sane year — a
+  // mid-typing artifact (year 0026) or malformed string never persists.
+  if (fields.date_of_birth != null) {
+    const s = String(fields.date_of_birth);
+    const y = Number(s.slice(0, 4));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !(y >= 1900 && y <= 2100)) {
+      return res.status(400).json({ error: 'date of birth must be a valid YYYY-MM-DD' });
+    }
+  }
   const sets = [], vals = []; let i = 1;
   for (const [k, v] of Object.entries(fields)) { sets.push(`${k}=$${i++}`); vals.push(v); }
   if (b.ssn) { sets.push(`ssn_encrypted=$${i++}`); vals.push(C.encryptSSN(b.ssn)); sets.push(`ssn_last4=$${i++}`); vals.push(String(b.ssn).replace(/\D/g, '').slice(-4)); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+  // Before-image of the identity-critical fields for the audit trail (incident
+  // gap: update_profile logged no values, so changes couldn't be reconstructed).
+  const CRITICAL = ['cell_phone', 'date_of_birth', 'fico', 'citizenship'];
+  const changedCritical = CRITICAL.filter((k) => k in fields);
+  let beforeImg;
+  if (changedCritical.length) {
+    try { beforeImg = (await db.query(`SELECT ${changedCritical.join(', ')} FROM borrowers WHERE id=$1`, [me(req)])).rows[0]; } catch (_) {}
+  }
   sets.push('updated_at=now()'); vals.push(me(req));
   await db.query(`UPDATE borrowers SET ${sets.join(',')} WHERE id=$${i}`, vals);
-  await audit(req, 'update_profile', 'borrower', me(req));
+  await audit(req, 'update_profile', 'borrower', me(req), {
+    changed: Object.keys(fields), ssn: !!b.ssn,
+    before: beforeImg || undefined,
+    after: changedCritical.length ? Object.fromEntries(changedCritical.map((k) => [k, fields[k]])) : undefined });
+  // Mapped borrower fields propagate to ClickUp immediately on every file this
+  // borrower has that is ALREADY linked to a task (a profile edit must never
+  // materialize a brand-new ClickUp task as a side effect — hence the filter).
+  {
+    const MAPPED = ['date_of_birth', 'cell_phone', 'fico', 'citizenship', 'years_at_residence', 'housing_status', 'housing_payment'];
+    const pushKeys = MAPPED.filter((k) => k in fields);
+    if (pushKeys.length) {
+      try {
+        const apps = await db.query(
+          `SELECT id FROM applications WHERE borrower_id=$1 AND deleted_at IS NULL AND clickup_pipeline_task_id IS NOT NULL`, [me(req)]);
+        const { enqueueClickupPush } = require('../clickup/enqueue');
+        for (const row of apps.rows) enqueueClickupPush(row.id, pushKeys).catch(() => {});
+      } catch (_) { /* propagation is best-effort */ }
+    }
+  }
   // Profile fields (credit score, citizenship, home state…) feed the condition
   // rule engine — re-check every open file this borrower is on.
   if (b.fico !== undefined || b.citizenship !== undefined || b.currentAddress !== undefined) {
@@ -1305,14 +1340,26 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
     // not overwrite the primary borrower's DOB / phone / FICO / citizenship
     // (their own values differ). App/deal fields above are file-level and either
     // party may fill them.
-    const brVals = [me(req)], brSets = [];
+    const brVals = [me(req)], brSets = [], brKeys = [];
     for (const [k, t] of Object.entries(B_COMPLETE_BORROWER)) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
       if (t === 'int') { v = k === 'fico' ? require('../lib/fields').sanitizeFico(v) : parseInt(v, 10); if (v == null || !Number.isFinite(v)) continue; }  // #90: FICO 300–850
-      brVals.push(v); brSets.push(`${k}=$${brVals.length}`);
+      if (t === 'date') {  // 2026-07-15 incident: strict calendar + year bounds
+        const s = String(v);
+        const y = Number(s.slice(0, 4));
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !(y >= 1900 && y <= 2100)) continue;
+      }
+      brVals.push(v); brSets.push(`${k}=$${brVals.length}`); brKeys.push(k);
     }
-    if (brSets.length) { brSets.push('updated_at=now()'); await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals); }
+    if (brSets.length) {
+      brSets.push('updated_at=now()');
+      await db.query(`UPDATE borrowers SET ${brSets.join(', ')} WHERE id=$1`, brVals);
+      // A DOB/phone/FICO added after submit reaches ClickUp immediately (scoped
+      // push, PRIMARY borrower only — a co-borrower's own-profile values must
+      // never overwrite the parent task's primary-borrower fields).
+      if (me(req) === bid) { try { require('../clickup/enqueue').enqueueClickupPush(req.params.id, brKeys); } catch (_) {} }
+    }
     res.json({
       ok: true,
       locked,
