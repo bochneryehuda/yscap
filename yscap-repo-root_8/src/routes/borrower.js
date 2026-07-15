@@ -1088,7 +1088,10 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
   if (app.rows[0].co_borrower_id) return res.status(409).json({ error: 'This file already has a co-borrower.' });
   const email = String(b.email || '').trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'a valid co-borrower email is required' });
-  const primary = await db.query(`SELECT first_name,last_name FROM borrowers WHERE id=$1`, [me(req)]);
+  const primary = await db.query(`SELECT first_name,last_name,email FROM borrowers WHERE id=$1`, [me(req)]);
+  // A borrower can't be their own co-borrower (would set co_borrower_id = borrower_id).
+  if (String((primary.rows[0] || {}).email || '').toLowerCase() === email.toLowerCase())
+    return res.status(400).json({ error: "You can't add yourself as your own co-borrower — use a different email." });
   const pn = primary.rows[0] ? `${primary.rows[0].first_name} ${primary.rows[0].last_name}`.trim() : '';
   try {
     const coId = await inviteCoBorrower(req.params.id, pn, { firstName: b.firstName, lastName: b.lastName, email, phone: b.phone, fico: b.fico });
