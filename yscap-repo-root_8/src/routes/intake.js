@@ -78,7 +78,7 @@ router.post('/', async (req, res) => {
           purchase_price,as_is_value,arv,rehab_budget,loan_amount,ltv,
           is_assignment,underlying_contract_price,assignment_fee,source,raw_intake,status,submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'website_form',$18,'new',now()) RETURNING id`,
-      [borrowerId, officerId, officerName, p.program || p.dealType || null, p.loanType || p.purpose || null,
+      [borrowerId, officerId, officerName, p.program || p.dealType || null, require('../lib/fields').sanitizeLoanType(p.loanType || p.purpose),   // #95: public form can't persist a program as a loan type
        JSON.stringify(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
        p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
        num(p.purchasePrice || p.price), num(p.asIsValue || p.asIs), num(p.arv),

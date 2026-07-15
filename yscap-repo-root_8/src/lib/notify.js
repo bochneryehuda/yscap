@@ -107,8 +107,12 @@ const categoryOf = (type) => CATEGORY_OF[type] || 'other';
 // DECISION statuses email — see MAJOR_STATUSES in the status route).
 const BORROWER_MAJOR_EMAIL = new Set([
   'closing_date', 'product_registered', 'term_sheet',
-  'doc_rejected', 'condition_added', 'message',
-  'draw', 'draw_request', 'security', 'account',
+  // Borrower ACTION items — something the borrower must do — always email (a
+  // requested doc, a rejected doc, a new condition, a verification that was
+  // revoked and needs redoing). These are the opposite of LO busywork.
+  'doc_rejected', 'doc_requested', 'condition_added',
+  'llc_unverified', 'track_record_unverified',
+  'message', 'draw', 'draw_request', 'security', 'account',
 ]);
 
 /** Notify a borrower, respecting their per-category preferences. */

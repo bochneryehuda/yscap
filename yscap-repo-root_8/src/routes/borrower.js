@@ -1266,6 +1266,7 @@ router.post('/applications/:id/complete-fields', async (req, res) => {
         } catch (_) { /* skip a bad field, keep going with the rest */ }
         continue;   // never a live write for a governed field on a locked file
       }
+      if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     if (appSets.length) {

@@ -3328,7 +3328,7 @@ router.patch('/applications/:id/details', async (req, res) => {
     if (n != null && !isFinite(n)) return res.status(400).json({ error: `${k} must be a number` });
     sets.push(`${col}=$${i++}`); vals.push(n); touchedCols.push(col);
   }
-  for (const [k, col] of Object.entries(STR)) if (k in b) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : String(b[k]).slice(0, 200)); touchedCols.push(col); }
+  for (const [k, col] of Object.entries(STR)) if (k in b) { const raw = b[k] === '' ? null : String(b[k]).slice(0, 200); sets.push(`${col}=$${i++}`); vals.push(col === 'loan_type' ? require('../lib/fields').sanitizeLoanType(raw) : raw); touchedCols.push(col); }   // #95: loan_type never a program
   for (const [k, col] of Object.entries(DATE)) if (k in b) {
     const v = b[k] === '' || b[k] == null ? null : String(b[k]).slice(0, 10);
     if (v != null && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return res.status(400).json({ error: `${k} must be a YYYY-MM-DD date` });
@@ -3530,6 +3530,7 @@ async function completeFields(req, res, borrowerScoped) {
       if (!(k in b) || b[k] === '' || b[k] == null) continue;
       let v = b[k];
       if (t === 'money') { const s = String(v).replace(/[^0-9.]/g, ''); if (s === '') continue; v = Number(s); if (!Number.isFinite(v)) continue; }
+      if (k === 'loan_type') v = require('../lib/fields').sanitizeLoanType(v);   // #95: never a program
       appVals.push(v); appSets.push(`${k}=$${appVals.length}`); appKeys.push(k);
     }
     // S3-06 (mirror of /details): this path overwrites unconditionally, so it's
