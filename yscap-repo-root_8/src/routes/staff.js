@@ -834,11 +834,13 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
     const email = String(b.email || '').trim().toLowerCase();
     if (!first || !last) { const e = new Error('co-borrower first and last name are required'); e.status = 400; throw e; }
     if (!email) { const e = new Error('co-borrower email is required'); e.status = 400; throw e; }
-    const ssn = b.ssn ? String(b.ssn) : null;
+    // #91/#92: normalize + validate through the single SSN chokepoint — never
+    // encrypt a dash-formatted string or store a partial/garbage last4.
+    const ssnStore = b.ssn ? C.ssnForStorage(b.ssn) : null;
     const identity = require('../clickup/identity');
-    const ssnHash = ssn ? identity.ssnHash(ssn, cfg.ssnMatchKey) : null;
-    const ssnEnc = ssn ? C.encryptSSN(ssn) : null;
-    const ssnLast4 = ssn ? ssn.replace(/\D/g, '').slice(-4) : null;
+    const ssnHash = ssnStore ? identity.ssnHash(ssnStore.digits, cfg.ssnMatchKey) : null;
+    const ssnEnc = ssnStore ? ssnStore.encrypted : null;
+    const ssnLast4 = ssnStore ? ssnStore.last4 : null;
     // Identity graph: match an existing borrower by SSN-hash first (so the same
     // person across files stays one record), else create/update by email.
     if (ssnHash) {
@@ -1238,6 +1240,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       regId = await persistProductRegistration(client, {
         appId, program, inputs, quote, registeredByStaffId: req.actor.id,
       });
+      // #101: STICK an explicit per-file markup override to the file so it re-applies
+      // to every future quote — the borrower's self-service pricing can then never
+      // reprice below it. Only touch a column the caller explicitly set: a blank/
+      // omitted markup leaves the sticky value as-is; an explicit value (incl. an
+      // admin resetting it) overwrites it. A live company-default registration
+      // (no markup key) never freezes the default onto the file.
+      const stickyMk = (v) => { if (v == null || v === '') return null; const n = Number(v); return isFinite(n) ? n : null; };
+      if (Object.prototype.hasOwnProperty.call(overrides, 'markupStdPct'))
+        await client.query(`UPDATE applications SET file_markup_std_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupStdPct)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldPct'))
+        await client.query(`UPDATE applications SET file_markup_gold_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldPct)]);
       await client.query('COMMIT');
     } catch (e) { await client.query('ROLLBACK'); throw e; }
     finally { client.release(); }
