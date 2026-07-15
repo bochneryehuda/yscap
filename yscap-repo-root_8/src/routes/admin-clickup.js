@@ -181,12 +181,26 @@ router.get('/manual-review', async (req, res) => {
     // Surface them here (read-only, with the task to open in ClickUp) so the
     // mis-link safety net is visible instead of silently swallowed.
     const amb = await db.query(
-      `SELECT task_id, task_name, match_detail, last_seen
+      `SELECT task_id, task_name, match_status, match_detail, last_seen
          FROM clickup_task_index
-        WHERE match_status='ambiguous'
+        WHERE match_status IN ('ambiguous','duplicate_pending')
         ORDER BY last_seen DESC NULLS LAST LIMIT 100`);
     res.json({ rows: r.rows, ambiguousTasks: amb.rows });
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+
+// Force-create the portal file for a task the duplicate-in-progress defer is
+// holding (match_status='duplicate_pending') — the deliberate human override
+// for a GENUINE second deal at the same property. Runs the normal ingest with
+// forceCreate, so every other guard (identity, materialization, year guards)
+// still applies. Never touches ClickUp beyond the standard stamp switch-over.
+router.post('/manual-review/task/:taskId/force-create', async (req, res) => {
+  if (!cfg.clickupToken) return res.status(400).json({ error: 'CLICKUP_API_TOKEN not set' });
+  try {
+    const out = await sync.ingestOne(String(req.params.taskId), { forceCreate: true });
+    await audit(req, 'clickup_force_create', out && out.applicationId, JSON.stringify({ taskId: req.params.taskId, matchStatus: out && out.matchStatus }));
+    res.json({ ok: true, applicationId: out && out.applicationId, matchStatus: out && out.matchStatus });
+  } catch (e) { res.status(502).json({ error: String(e.message) }); }
 });
 
 // Resolve one file out of the queue. link => 'linked', descope => 'descoped'.

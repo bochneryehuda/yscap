@@ -52,4 +52,54 @@ function assignmentFields(b) {
   return { isAssignment, underlying, assignFee, purchasePrice };
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields };
+// A date-only value (DOB, closing, acquisition, track-record exit) → canonical
+// 'YYYY-MM-DD', or null when it isn't a REAL calendar date inside [1900, 2100].
+// The year window is the root fix for the 2026-07-14/15 incident where a date
+// typed with a 2-digit year persisted as year 0026 and round-tripped to ClickUp:
+// shape-only regexes accept '0026-07-17'. Every write path that stores a date
+// column routes through this (or an equivalent inline guard) — see
+// docs/CLICKUP-DATE-INCIDENT.md and docs/CLICKUP-DATA-SAFETY.md.
+function sanitizeDateOnly(v) {
+  if (v == null || v === '') return null;
+  let y, m, d;
+  if (v instanceof Date) {
+    if (isNaN(v)) return null;
+    y = v.getFullYear(); m = v.getMonth() + 1; d = v.getDate();
+  } else {
+    const s = String(v).trim();
+    const mm = /^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/.exec(s);
+    if (!mm) return null;
+    y = +mm[1]; m = +mm[2]; d = +mm[3];
+  }
+  if (y < 1900 || y > 2100) return null;
+  const t = new Date(Date.UTC(y, m - 1, d));
+  if (t.getUTCFullYear() !== y || t.getUTCMonth() !== m - 1 || t.getUTCDate() !== d) return null; // 2026-13-45 etc.
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+// ONE way to read a typed date, system-wide (owner-directed 2026-07-15): a user
+// typing a 2-DIGIT year into an HTML date input produces year 0026 — the portal
+// used to persist that literally while ClickUp (and every human) reads "26" as
+// 2026, so the two systems saw different dates. Every date entry point routes
+// through this so a typed "26" RESOLVES to the real year the person meant:
+//   kind 'dob'      → the century that makes the borrower an adult
+//                     (26 → 1926; 99 → 1999 — a DOB is never in the future)
+//   kind 'generic'  → 20xx (closings / application / acquisition dates are modern)
+// A 3–4 digit out-of-window year (0203, 9999) has no safe interpretation and
+// still returns null (the caller rejects/skips). Mirrors the inbound-side
+// pivotSuspectYear proposals in src/clickup/transforms.js — same mental model
+// on both sides of the sync.
+function normalizeTypedDate(v, kind = 'generic') {
+  const clean = sanitizeDateOnly(v);
+  if (clean != null) return clean;
+  if (v == null || v === '' || v instanceof Date) return null;
+  const mm = /^(\d{1,4})-(\d{2})-(\d{2})(?:[T\s].*)?$/.exec(String(v).trim());
+  if (!mm) return null;
+  let y = Number(mm[1]);
+  if (y > 99) return null;                       // e.g. year 0203 — no safe guess
+  y += 2000;
+  if (kind === 'dob' && y > new Date().getUTCFullYear() - 18) y -= 100;  // adults only
+  return sanitizeDateOnly(`${String(y).padStart(4, '0')}-${mm[2]}-${mm[3]}`);
+}
+
+module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate };

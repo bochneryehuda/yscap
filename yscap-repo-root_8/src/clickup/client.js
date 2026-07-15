@@ -38,6 +38,66 @@ function guardNoTaskDeletion(method, path) {
   }
 }
 
+// ── HARD STOP 2 (owner-directed 2026-07-15, post data-loss report): this ──────
+// integration may NEVER blank, clear, or wipe a ClickUp field value. A write
+// whose value is empty (null / undefined / '' / empty array) IS a clear — and a
+// subtler class does the same thing silently: JSON.stringify turns NaN/Infinity
+// into null and DROPS undefined object keys, and a nested null (e.g. a null
+// latitude) reaches ClickUp as a value it treats as a clear/garbage write. All
+// of it is refused here, at the single choke point every field write funnels
+// through, so no code path (present, future, a refactor slip, or a copy-paste)
+// can ever erase ClickUp data. Clearing a field remains a conscious human
+// action in the ClickUp UI — never something this sync does.
+function findJsonUnsafe(v, path) {
+  if (v === undefined) return `${path} is undefined (JSON drops it → ClickUp reads a clear)`;
+  if (v === null) return `${path} is null (ClickUp reads a clear)`;
+  if (typeof v === 'number' && !Number.isFinite(v)) return `${path} is ${v} (JSON → null → ClickUp clears the field)`;
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) { const r = findJsonUnsafe(v[i], `${path}[${i}]`); if (r) return r; }
+    return null;
+  }
+  if (v && typeof v === 'object') {
+    for (const k of Object.keys(v)) { const r = findJsonUnsafe(v[k], `${path}.${k}`); if (r) return r; }
+    return null;
+  }
+  return null;
+}
+function guardNoFieldClearing(fieldId, value) {
+  const forbid = (why) => {
+    const e = new Error(`BLOCKED: refusing to write field ${fieldId} — ${why}. ` +
+      `The sync never clears ClickUp values; clearing is a human-only action in the ClickUp UI.`);
+    e.code = 'CLICKUP_EMPTY_WRITE_FORBIDDEN';
+    throw e;
+  };
+  if (value === null || value === undefined) forbid('value is empty (null/undefined)');
+  if (typeof value === 'string' && value.trim() === '') forbid('value is an empty string');
+  if (Array.isArray(value) && value.length === 0) forbid('value is an empty array (clears a users/labels field)');
+  if (value && typeof value === 'object' && Array.isArray(value.add) && value.add.length === 0) forbid('users add-list is empty');
+  const unsafe = findJsonUnsafe(value, 'value');
+  if (unsafe) forbid(unsafe);
+}
+
+// ── HARD STOP 3: task updates may carry NOTHING but a status. The sync never ──
+// renames a task and never touches its description — names/descriptions are
+// human-owned deal identity (the portal sets a name only at task CREATION). An
+// ALLOWLIST (not a blocklist) so any future payload key is refused by default.
+const TASK_UPDATE_ALLOWED_KEYS = new Set(['status']);
+function guardTaskUpdatePayload(payload) {
+  const p = payload || {};
+  for (const k of Object.keys(p)) {
+    if (!TASK_UPDATE_ALLOWED_KEYS.has(k)) {
+      const e = new Error(`BLOCKED: task update may not carry '${k}' — the sync only ever updates a task's status.`);
+      e.code = 'CLICKUP_RENAME_FORBIDDEN';
+      throw e;
+    }
+  }
+  if ('status' in p && (p.status == null || String(p.status).trim() === '')) {
+    const e = new Error('BLOCKED: task update with an empty status.');
+    e.code = 'CLICKUP_EMPTY_WRITE_FORBIDDEN';
+    throw e;
+  }
+}
+
 async function call(path, { method = 'GET', body } = {}) {
   guardNoTaskDeletion(method, path); // never delete a ClickUp file — see guard above
   const res = await fetch(`${BASE}${path}`, {
@@ -59,12 +119,17 @@ async function call(path, { method = 'GET', body } = {}) {
 const createTask = (listId, payload) =>
   call(`/list/${listId}/task`, { method: 'POST', body: payload });
 
-const updateTask = (taskId, payload) =>
-  call(`/task/${taskId}`, { method: 'PUT', body: payload });
+const updateTask = (taskId, payload) => {
+  guardTaskUpdatePayload(payload);          // status-only allowlist — never rename / never touch descriptions
+  return call(`/task/${taskId}`, { method: 'PUT', body: payload });
+};
 
-// Set a single custom field value on a task.
-const setField = (taskId, fieldId, value) =>
-  call(`/task/${taskId}/field/${fieldId}`, { method: 'POST', body: { value } });
+// Set a single custom field value on a task. Field-clearing writes are refused
+// structurally (see HARD STOP 2) — this sync can update values, never erase them.
+const setField = (taskId, fieldId, value) => {
+  guardNoFieldClearing(fieldId, value);
+  return call(`/task/${taskId}/field/${fieldId}`, { method: 'POST', body: { value } });
+};
 
 const getFolderLists = (folderId) => call(`/folder/${folderId}/list`);
 const addComment = (taskId, comment_text) =>
@@ -139,4 +204,5 @@ module.exports = {
   addTaskToList, removeTaskFromList,
   createWebhook, listWebhooks, updateWebhook, deleteWebhook, verifyWebhookSignature,
   guardNoTaskDeletion, // exported for the safety test; the guard is enforced inside call()
+  guardNoFieldClearing, guardTaskUpdatePayload, // exported for the safety tests; enforced inside setField()/updateTask()
 };

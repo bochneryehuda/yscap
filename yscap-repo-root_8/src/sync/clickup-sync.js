@@ -127,15 +127,17 @@ async function processInboxOnce() {
   return true;
 }
 
-/** Fetch + ingest a single task by id, applying the materialization gate. */
-async function ingestOne(taskId) {
+/** Fetch + ingest a single task by id, applying the materialization gate.
+ *  opts.forceCreate: admin override — creates the file even when the
+ *  duplicate-in-progress defer would wait (a genuine same-address second deal). */
+async function ingestOne(taskId, opts = {}) {
   const task = await clickup.getTask(taskId, { include: ['custom_fields'] });
   const options = await optionMap();
   const read = mapper.readTaskFields(task, options);
   // Inbound new-file creation is gated (see cfg.clickupInboundCreateFiles) to
   // avoid duplicating an existing unlinked portal app; linked files still update.
-  const createFile = cfg.clickupInboundCreateFiles && canMaterialize(read);
-  return ingest.ingestTask(task, options, { createFile });
+  const createFile = (cfg.clickupInboundCreateFiles || opts.forceCreate === true) && canMaterialize(read);
+  return ingest.ingestTask(task, options, { createFile, forceCreate: opts.forceCreate === true });
 }
 
 // ---- reconciliation poll --------------------------------------------------
@@ -263,6 +265,15 @@ async function reconcileLinkedProgramsOnce() {
       checked++;
       liveTaskIds.add(String(row.task_id));
       if (res && res.matchStatus === 'descoped') descoped++;
+      // Stamp heal for the EXISTING portfolio ("previous AND future" rule): a
+      // task linked before the stamp switch-over existed may carry a stale or
+      // missing "YS Portal File ID/Link" (e.g. a copied stamp from the
+      // duplicate workflow). Enqueue the scoped stamp push once per boot pass;
+      // the push's no-op suppression makes an already-correct stamp write-free,
+      // so this converges to zero writes after the first healing pass.
+      if (cfg.clickupOutboundEnabled && res && res.applicationId) {
+        try { await require('../clickup/enqueue').enqueueClickupPush(res.applicationId, ['portal_stamp']); } catch (_) {}
+      }
     } catch (e) {
       if (isTaskDeletedError(e)) orphans.push(row);
       else console.error('[clickup] reconcile-programs task failed', row.task_id, e.message);

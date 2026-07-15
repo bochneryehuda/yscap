@@ -170,8 +170,12 @@ function writeValue(f, val, options) {
 }
 
 function addressField(id, addr) {
-  // Only emit a location field when we have coordinates (ClickUp requires lat/lng).
-  if (!addr || addr.lat == null || addr.lng == null) return null;
+  // Only emit a location field when we have REAL coordinates (ClickUp requires
+  // lat/lng). Reject null AND non-finite (NaN/Infinity) explicitly: Number(null)
+  // is 0 (finite!) and a NaN would JSON-serialize to null — either way ClickUp
+  // would receive a location-clearing/garbage write (2026-07-15 audit #1).
+  if (!addr || addr.lat == null || addr.lng == null
+      || !Number.isFinite(Number(addr.lat)) || !Number.isFinite(Number(addr.lng))) return null;
   const formatted = addr.formatted_address || addr.oneLine ||
     [addr.line1 || addr.street, addr.city, [addr.state, addr.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   return { id, value: { location: { lat: addr.lat, lng: addr.lng }, formatted_address: formatted } };
@@ -248,9 +252,13 @@ function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
   if (ctx.portalAppId) put(F.SYNC.portalFileId, String(ctx.portalAppId));
   if (ctx.portalFileLink) put(F.SYNC.portalFileLink, ctx.portalFileLink);
 
+  // Task name (used ONLY at task creation — updateTask is status-only by hard
+  // stop). Trim the address so a whitespace-only oneLine can never produce a
+  // truncated "Name - " title.
+  const nameAddr = app.property_address
+    ? String(app.property_address.oneLine || app.property_address.line1 || '').trim() : '';
   const name = `${T.joinName(borrower.first_name, borrower.last_name) || 'New Borrower'}${
-    app.property_address && (app.property_address.oneLine || app.property_address.line1)
-      ? ' - ' + (app.property_address.oneLine || app.property_address.line1) : ''}`;
+    nameAddr ? ' - ' + nameAddr : ''}`;
   // Checklist condition statuses go in a SEPARATE array — NEVER merged into
   // customFields — so a task create or a full/admin repush (which push only
   // customFields) can never overwrite a ClickUp checklist dropdown. These reach
@@ -422,6 +430,20 @@ function resolveOnly(onlyKeys) {
         cuIds.add(F.SHARED.borrowerName); break;
       case 'llc_id':
         cuIds.add(F.PIPELINE.vesting); cuIds.add(F.PIPELINE.llcName); cuIds.add(F.PIPELINE.ein); break;
+      // Borrower identity keys that have no FIELD_MAP column mapping of their
+      // own. They exist so a sync-review APPROVAL (which re-pushes `only:
+      // [field_key]` with the review bypass) can apply a deliberately-approved
+      // identity change through the normal scoped-push path.
+      case 'ssn':
+        cuIds.add(F.SHARED.borrowerSSN); break;
+      case 'current_address':
+        cuIds.add(F.SHARED.borrowerAddress); break;
+      // The task's own binding stamp (portal file id + deep link). Enqueued by
+      // the ingest layer when a link is newly ESTABLISHED, so a DUPLICATED task
+      // — which inherits the SOURCE file's copyable stamp — gets re-stamped
+      // with ITS OWN file's identity (owner-directed 2026-07-15).
+      case 'portal_stamp':
+        cuIds.add(F.SYNC.portalFileId); cuIds.add(F.SYNC.portalFileLink); break;
       default:
         if (k.startsWith('checklist:')) {
           const fid = k.slice('checklist:'.length);

@@ -16,7 +16,9 @@ const eq = (name, got, exp) => ok(`${name} (got ${JSON.stringify(got)} exp ${JSO
 
 const PORTAL_STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
 // Fields with no "outstanding" option → outstanding is a legitimate null/skip.
-const NO_OUTSTANDING = new Set(['rehabBudget', 'signedTermSheet']);
+// (iska carries only requested/received/issue — added to F.CHECKLIST after this
+// allowlist was written; resolveOutbound correctly skips rather than inventing.)
+const NO_OUTSTANDING = new Set(['rehabBudget', 'signedTermSheet', 'iska']);
 
 // ---- 1) resolveOutbound: every (field,status) → a REAL option UUID or a legit null ----
 for (const [key, def] of Object.entries(F.CHECKLIST)) {
