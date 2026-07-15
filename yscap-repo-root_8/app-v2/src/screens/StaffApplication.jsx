@@ -2586,7 +2586,7 @@ export default function StaffApplication() {
           <div className="metrow"><span className="k">Internal status</span><span className="v">{app.internal_status || '—'}</span></div>
           <div className="metrow"><span className="k">Program</span><span className="v">{app.program || '—'}</span></div>
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>
-          <div className="metrow"><span className="k">Target closing</span><span className="v">{app.expected_closing ? String(app.expected_closing).slice(0, 10) : '—'}</span></div>
+          <div className="metrow"><span className="k">Target closing</span><span className="v">{app.expected_closing ? fmtDay(app.expected_closing) : '—'}</span></div>
         </div>
 
         <div className="panel">

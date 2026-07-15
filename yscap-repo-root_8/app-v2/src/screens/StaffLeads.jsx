@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { fmtDay } from '../lib/dates.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, BOARD_STAGES, OPEN_STAGES, SOURCES, PROGRAMS,
@@ -216,7 +217,7 @@ function LeadList({ leads, onOpen, actor }) {
                     : <span className="off un"><span className="dot" />Loan desk</span>}</td>
                   <td className="num">{money(l.loan_amount) || '—'}</td>
                   <td className="mut" style={dueSoon(l) ? { color: 'var(--warning,#b8860b)', fontWeight: 600 } : undefined}>
-                    {l.next_follow_up ? String(l.next_follow_up).slice(0, 10) : '—'}</td>
+                    {l.next_follow_up ? fmtDay(l.next_follow_up) : '—'}</td>
                   <td className="mut">{l.open_tasks > 0 ? `${l.open_tasks} open` : '—'}</td>
                 </tr>
               );
