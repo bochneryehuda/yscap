@@ -21,6 +21,101 @@ const blankForm = () => ({
 const initials = (s) => (String(s || '').trim().split(/\s+/).map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()) || '—';
 const roleClass = (role) => role === 'super_admin' ? 'role t1' : role === 'admin' ? 'role t2' : 'role';
 
+// #111: per-loan manual access — grant a scoped staffer access to SPECIFIC loan
+// files (finer than the per-officer share). Backed by the #64 application_assignees
+// chokepoint (a non-primary assistant row), so every access gate honors it with no
+// new gate code. Self-contained: owns its grant list + debounced loan search so
+// each open panel is isolated. `staffer` is the roster row; `flash`/`onError` bubble
+// to the parent's notice bars.
+function FileGrants({ staffer, flash, onError }) {
+  const [grants, setGrants] = useState(null);
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => api.adminStaffFileGrants(staffer.id).then(setGrants).catch(e => onError(e.message));
+  useEffect(() => { load(); }, [staffer.id]);
+
+  // Debounced loan search (reuses the staff omnibox; admins see every file).
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) { setResults([]); setSearching(false); return; }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try { const r = await api.staffGlobalSearch(term); setResults(r.loans || []); }
+      catch { setResults([]); }
+      finally { setSearching(false); }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const grantedIds = new Set((grants || []).map(g => g.applicationId));
+
+  async function grant(appId) {
+    if (busy) return; setBusy(true); onError('');
+    try { await api.adminGrantStaffFile(staffer.id, appId); setQ(''); setResults([]); await load(); flash('File access granted.'); }
+    catch (e) { onError(e.message); }
+    finally { setBusy(false); }
+  }
+  async function revoke(appId) {
+    if (busy) return; setBusy(true); onError('');
+    try { await api.adminRevokeStaffFile(staffer.id, appId); await load(); flash('File access removed.'); }
+    catch (e) { onError(e.message); }
+    finally { setBusy(false); }
+  }
+
+  const loanLabel = (loan) => {
+    const nm = `${loan.first_name || ''} ${loan.last_name || ''}`.trim();
+    const addr = (loan.property_address && loan.property_address.oneLine) || loan.ys_loan_number || '';
+    return { nm: nm || 'Borrower', addr };
+  };
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--line)' }}>
+      <div className="small"><strong>Access to specific loan files</strong>
+        <span className="muted"> — grant this person one file at a time</span></div>
+      <div style={{ marginTop: 8 }}>
+        {grants == null ? <span className="muted small">Loading…</span>
+          : grants.length === 0 ? <span className="muted small">No individual file grants yet.</span>
+            : <div className="grid" style={{ gap: 6 }}>
+              {grants.map(g => (
+                <div key={g.applicationId} className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '4px 8px', border: '1px solid var(--line)', borderRadius: 8 }}>
+                  <span className="small" style={{ minWidth: 0 }}>
+                    <strong>{g.borrowerName || 'Borrower'}</strong>
+                    {g.address ? <span className="muted"> · {g.address}</span> : g.ysLoanNumber ? <span className="muted"> · {g.ysLoanNumber}</span> : null}
+                  </span>
+                  <button className="btn link small" disabled={busy} onClick={() => revoke(g.applicationId)} title="Remove this file grant">Remove</button>
+                </div>
+              ))}
+            </div>}
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <input className="input" style={{ maxWidth: 360 }} placeholder="Search a loan by borrower or address…"
+          value={q} onChange={e => setQ(e.target.value)} />
+        {q.trim().length >= 2 && (
+          <div style={{ marginTop: 6, border: '1px solid var(--line)', borderRadius: 8, maxHeight: 200, overflowY: 'auto' }}>
+            {searching && <div className="muted small" style={{ padding: 8 }}>Searching…</div>}
+            {!searching && results.length === 0 && <div className="muted small" style={{ padding: 8 }}>No matching loans.</div>}
+            {!searching && results.map(loan => {
+              const already = grantedIds.has(loan.id);
+              const { nm, addr } = loanLabel(loan);
+              return (
+                <button key={loan.id} type="button" disabled={busy || already}
+                  className="row" style={{ width: '100%', textAlign: 'left', justifyContent: 'space-between', gap: 8, padding: '6px 8px', background: 'none', border: 'none', borderBottom: '1px solid var(--line)', cursor: already ? 'default' : 'pointer' }}
+                  onClick={() => !already && grant(loan.id)}>
+                  <span className="small" style={{ minWidth: 0 }}><strong>{nm}</strong>{addr ? <span className="muted"> · {addr}</span> : null}</span>
+                  <span className="muted small">{already ? 'Has access' : '+ Grant'}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function StaffTeam() {
   const { can } = useAuth();
   const isAdmin = can('manage_team');
@@ -335,6 +430,12 @@ export default function StaffTeam() {
                         </div>
                       );
                     })()}
+                    {/* #111 per-loan manual grants — same gate as the officer share:
+                        only meaningful for a scoped staffer (someone who does NOT
+                        already see every file). */}
+                    {s.role !== 'super_admin' && !effectiveFor(s).has('see_all_files') && (
+                      <FileGrants staffer={s} flash={flash} onError={setErr} />
+                    )}
                   </div>
                 )}
               </div>
