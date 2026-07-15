@@ -218,9 +218,9 @@ async function auditIdentityMismatchesOnce() {
   const transforms = require('../clickup/transforms');
   const KEYS = ['email', 'cell_phone', 'first_name', 'current_address', 'ssn'];
   const r = await db.query(
-    `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
+    `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id, a.co_borrower_id,
             b.email, b.cell_phone, b.first_name, b.last_name, b.current_address, b.ssn_last4,
-            b2.email AS co_email, b2.cell_phone AS co_cell, b2.first_name AS co_first, b2.ssn_last4 AS co_ssn_last4,
+            b2.email AS co_email, b2.cell_phone AS co_cell, b2.first_name AS co_first, b2.last_name AS co_last, b2.ssn_last4 AS co_ssn_last4,
             i.snapshot
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
@@ -362,18 +362,40 @@ async function auditIdentityMismatchesOnce() {
     }
     const cuS = sbLast4;
     if (cuS && row.ssn_last4) checks.push({ key: 'ssn', differ: cuS !== String(row.ssn_last4), cu: '✱✱✱-✱✱-' + cuS, p: '✱✱✱-✱✱-' + row.ssn_last4 });
+    // CO-BORROWER coverage (mega-audit enhancement #3): the snapshot's masked
+    // coBorrower block carries enough for name + phone-last4 comparisons
+    // against the SUBTASK person. Guidance-only rows (co_* keys are not side-
+    // resolvable — the fix happens on the subtask or the co profile); the
+    // role-reconciliation pass makes the pairing trustworthy.
+    const sco = row.snapshot && row.snapshot.coBorrower;
+    if (sco && row.co_borrower_id && typeof sco === 'object') {
+      const scoFirst = lc(String(sco.first_name || '').split(/\s+/)[0]);
+      const pcoFirst = lc(String(row.co_first || '').split(/\s+/)[0]);
+      if (scoFirst && pcoFirst && !transforms.isPlaceholderName(sco.first_name) && !transforms.isPlaceholderName(row.co_first)) {
+        checks.push({ key: 'co_first_name', bId: row.co_borrower_id, differ: scoFirst !== pcoFirst,
+          cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
+      }
+      const scoP4 = String(sco.phone_last4 || ''), pcoP4 = digitsOf(row.co_cell).slice(-4);
+      if (scoP4.length === 4 && pcoP4.length === 4) {
+        checks.push({ key: 'co_cell_phone', bId: row.co_borrower_id, differ: scoP4 !== pcoP4,
+          cu: '…' + scoP4, p: '…' + pcoP4 });
+      }
+    }
     for (const c of checks) {
       try {
         if (c.differ) {
           await review.queueReview({
-            applicationId: row.id, borrowerId: row.borrower_id, taskId: row.task_id,
+            applicationId: row.id, borrowerId: c.bId || row.borrower_id, taskId: row.task_id,
             direction: 'inbound', fieldKey: c.key, reason: 'identity_mismatch_audit',
             suppressIfRejected: true,
             clickupValue: String(c.cu).slice(0, 160), portalValue: String(c.p).slice(0, 160) });
           queued++;
         } else if (openSet.has(`${row.task_id}|${c.key}`)) {
+          // The RESOLVED tab must SAY what settled it (owner-directed): the
+          // note carries the value the two systems now share, so "somebody
+          // fixed it outside PILOT" is still a visible, explained record.
           closed += await review.closeStaleReviews({ taskId: row.task_id, fieldKey: c.key,
-            note: 'auto-closed — the two systems now agree' });
+            note: `auto-closed — the two systems now agree on “${String(c.p).slice(0, 80)}” (fixed at the source or by a sync heal)` });
         }
       } catch (_) { /* per-field best-effort */ }
     }
@@ -993,6 +1015,17 @@ function start() {
     // that happen to receive a new webhook.
     retryStuckTasksOnce().catch((e) => console.error('[clickup-sync] stuck-task retry', e.message));
   }, cfg.clickupRunBackfill ? 120000 : 15000);
+
+  // Review-queue upkeep (mega-audit enhancements #2/#5): the aging sweep
+  // re-notifies/escalates stale open rows; the digest self-gates to weekly.
+  // Boot pass + daily cadence; both best-effort and cheap.
+  const reviewUpkeep = () => {
+    const R = require('../lib/sync-review');
+    R.remindStaleReviewsOnce().catch((e) => console.error('[clickup-sync] review aging', e.message));
+    R.sendReviewDigestOnce().catch((e) => console.error('[clickup-sync] review digest', e.message));
+  };
+  setTimeout(reviewUpkeep, 60000);
+  setInterval(reviewUpkeep, 24 * 3600 * 1000).unref();
 
   const tick = async (fn, name) => { try { while (await fn()) { /* drain */ } } catch (e) { console.error(`[clickup-sync] ${name}`, e.message); } };
 

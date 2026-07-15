@@ -189,7 +189,7 @@ async function journalResolveWrite(appId, taskId, fieldId, fieldKey, oldVal, new
  * winner = 'clickup' | 'portal'. Throws {status:4xx} for unusable states so
  * the route can surface a clear message. Returns a summary for the audit row.
  */
-async function applyReviewWinner(row, winner) {
+async function applyReviewWinner(row, winner, customValue) {
   const cfg = require('../config');
   const clickup = require('../clickup/client');
   const fieldKey = row.field_key;
@@ -200,12 +200,21 @@ async function applyReviewWinner(row, winner) {
     const a = (await db.query(`SELECT borrower_id, clickup_pipeline_task_id FROM applications WHERE id=$1`, [appId])).rows[0];
     if (a) { borrowerId = borrowerId || a.borrower_id; taskId = taskId || a.clickup_pipeline_task_id; }
   }
+  // THIRD OPTION — the reviewer TYPES the correct value when NEITHER side is
+  // right (owner/mega-audit enhancement #1: previously they had to hand-edit
+  // one system and wait for a sync). The typed value runs through exactly the
+  // same sanitizers and appliers as an adopted side — never new machinery.
+  const custom = winner === 'custom' ? String(customValue == null ? '' : customValue).trim() : null;
+  if (winner === 'custom' && !custom) throw httpError(400, 'a value is required to resolve with a custom value');
 
   // ---- DOB: borrower-level; the adopter writes the portal + every linked task.
   if (fieldKey === 'date_of_birth') {
     if (!borrowerId) throw httpError(422, 'no borrower on this review');
     let day;
-    if (winner === 'clickup') {
+    if (winner === 'custom') {
+      day = sanitizeDob(custom);
+      if (!day) throw httpError(422, 'that is not a plausible adult birth date (YYYY-MM-DD)');
+    } else if (winner === 'clickup') {
       if (!taskId) throw httpError(422, 'no ClickUp task on this review');
       const task = await clickup.getTask(taskId);
       const cf = ((task && task.custom_fields) || []).find((c) => c.id === F.SHARED.borrowerDOB);
@@ -225,7 +234,10 @@ async function applyReviewWinner(row, winner) {
     if (!appId) throw httpError(422, 'no application on this review');
     const fieldId = APP_DATE_FIELDS[fieldKey]();
     let day;
-    if (winner === 'clickup') {
+    if (winner === 'custom') {
+      day = require('./fields').normalizeTypedDate(custom);
+      if (!day) throw httpError(422, 'that is not a usable calendar date (YYYY-MM-DD)');
+    } else if (winner === 'clickup') {
       if (!taskId) throw httpError(422, 'no ClickUp task on this review');
       const task = await clickup.getTask(taskId);
       const cf = ((task && task.custom_fields) || []).find((c) => c.id === fieldId);
@@ -260,6 +272,19 @@ async function applyReviewWinner(row, winner) {
     const identity = require('../clickup/identity');
     const { sanitizeSsnDigits } = require('./fields');
     let digits;
+    if (winner === 'custom') {
+      digits = sanitizeSsnDigits(custom);
+      if (!digits) throw httpError(422, 'a full 9-digit Social Security number is required');
+      await db.query(
+        `UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3, ssn_hash=$4, updated_at=now() WHERE id=$1`,
+        [borrowerId, C.encryptSSN(digits), digits.slice(-4), identity.ssnHash(digits, cfg.ssnMatchKey)]);
+      if (taskId && cfg.clickupOutboundEnabled) {
+        require('../clickup/orchestrator').circuitCheck(appId, taskId, 1);
+        await clickup.setField(taskId, F.SHARED.borrowerSSN, digits);
+        await journalResolveWrite(appId, taskId, F.SHARED.borrowerSSN, 'ssn', '✱✱✱', '✱✱✱', true);
+      }
+      return { fieldKey, winner, value: `✱✱✱-✱✱-${digits.slice(-4)}` };
+    }
     if (winner === 'clickup') {
       if (!taskId) throw httpError(422, 'no ClickUp task on this review');
       const task = await clickup.getTask(taskId);
@@ -314,43 +339,59 @@ async function applyReviewWinner(row, winner) {
       await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true });
       return { fieldKey, winner };
     }
+    // ONE applier for both adopt-ClickUp and reviewer-typed custom values —
+    // identical validation, identical portal write.
+    const applyIdentityValue = async (v, sourceLabel) => {
+      if (fieldKey === 'email') {
+        const email = String(v).trim().toLowerCase();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw httpError(422, `${sourceLabel} is not a valid email`);
+        try { await db.query(`UPDATE borrowers SET email=$2, updated_at=now() WHERE id=$1`, [borrowerId, email]); }
+        catch (e) { if (e.code === '23505') throw httpError(409, 'that email is already in use by another borrower'); throw e; }
+        return email;
+      }
+      if (fieldKey === 'cell_phone') {
+        const phone = String(v).trim();
+        if (phone.replace(/\D/g, '').length < 10) throw httpError(422, `${sourceLabel} is not a full phone number`);
+        await db.query(`UPDATE borrowers SET cell_phone=$2, updated_at=now() WHERE id=$1`, [borrowerId, phone]);
+        return phone;
+      }
+      if (fieldKey === 'first_name') {
+        const parts = String(v).trim().split(/\s+/);
+        if (!parts[0] || require('../clickup/transforms').isPlaceholderName(String(v))) {
+          throw httpError(422, `${sourceLabel} is not a usable name`);
+        }
+        const first = parts.shift(), last = parts.join(' ') || null;
+        await db.query(
+          `UPDATE borrowers SET first_name=$2, last_name=COALESCE($3, last_name), updated_at=now() WHERE id=$1`,
+          [borrowerId, first, last]);
+        return String(v).trim();
+      }
+      // current_address: object (ClickUp location) or typed text → jsonb shape.
+      const addr = typeof v === 'object'
+        ? { formatted_address: v.formatted_address || null,
+            ...(v.location && Number.isFinite(Number(v.location.lat)) ? { lat: Number(v.location.lat), lng: Number(v.location.lng) } : {}) }
+        : { formatted_address: String(v).trim() };
+      if (!addr.formatted_address) throw httpError(422, `${sourceLabel} has no readable address text`);
+      await db.query(`UPDATE borrowers SET current_address=$2::jsonb, updated_at=now() WHERE id=$1`, [borrowerId, JSON.stringify(addr)]);
+      return addr.formatted_address;
+    };
+    if (winner === 'custom') {
+      const value = await applyIdentityValue(custom, 'that value');
+      // The typed value is now the PORTAL's value — push it out scoped with
+      // the review bypass so BOTH systems carry it.
+      if (appId) {
+        try { await require('../clickup/orchestrator').pushApplication(appId, { only: [fieldKey], approvedReview: true, force: true }); }
+        catch (e) { console.warn('[sync-autoresolve] custom-value push failed (portal applied):', e.message); }
+      }
+      return { fieldKey, winner, value };
+    }
     if (!taskId) throw httpError(422, 'no ClickUp task on this review');
     const task = await clickup.getTask(taskId);
     const cf = ((task && task.custom_fields) || []).find((c) => c.id === IDENTITY_FIELDS[fieldKey].cu());
     const v = cf && cf.value != null ? cf.value : null;
     if (v == null || v === '') throw httpError(422, "ClickUp's current value is blank — fix it there first, or adopt PILOT's value");
-    if (fieldKey === 'email') {
-      const email = String(v).trim().toLowerCase();
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw httpError(422, "ClickUp's current value is not a valid email");
-      try { await db.query(`UPDATE borrowers SET email=$2, updated_at=now() WHERE id=$1`, [borrowerId, email]); }
-      catch (e) { if (e.code === '23505') throw httpError(409, 'that email is already in use by another borrower'); throw e; }
-      return { fieldKey, winner, value: email };
-    }
-    if (fieldKey === 'cell_phone') {
-      const phone = String(v).trim();
-      if (String(phone).replace(/\D/g, '').length < 10) throw httpError(422, "ClickUp's current value is not a full phone number");
-      await db.query(`UPDATE borrowers SET cell_phone=$2, updated_at=now() WHERE id=$1`, [borrowerId, phone]);
-      return { fieldKey, winner, value: phone };
-    }
-    if (fieldKey === 'first_name') {
-      const parts = String(v).trim().split(/\s+/);
-      if (!parts[0] || require('../clickup/transforms').isPlaceholderName(String(v))) {
-        throw httpError(422, "ClickUp's current value is not a usable name");
-      }
-      const first = parts.shift(), last = parts.join(' ') || null;
-      await db.query(
-        `UPDATE borrowers SET first_name=$2, last_name=COALESCE($3, last_name), updated_at=now() WHERE id=$1`,
-        [borrowerId, first, last]);
-      return { fieldKey, winner, value: String(v).trim() };
-    }
-    // current_address: ClickUp location value → the portal's jsonb shape.
-    const addr = typeof v === 'object'
-      ? { formatted_address: v.formatted_address || null,
-          ...(v.location && Number.isFinite(Number(v.location.lat)) ? { lat: Number(v.location.lat), lng: Number(v.location.lng) } : {}) }
-      : { formatted_address: String(v) };
-    if (!addr.formatted_address) throw httpError(422, "ClickUp's current address has no readable text — fix it there first");
-    await db.query(`UPDATE borrowers SET current_address=$2::jsonb, updated_at=now() WHERE id=$1`, [borrowerId, JSON.stringify(addr)]);
-    return { fieldKey, winner, value: addr.formatted_address };
+    const value = await applyIdentityValue(v, "ClickUp's current value");
+    return { fieldKey, winner, value };
   }
 
   throw httpError(422, `resolving '${fieldKey}' two-sided is not supported yet — use approve/reject`);
