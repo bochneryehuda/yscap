@@ -11,7 +11,7 @@ import { getToken } from './api.js';
 const EVENT_NAMES = [
   'hello', 'message:new', 'message:edited', 'message:deleted', 'reaction:update',
   'receipt:read', 'receipt:delivered', 'typing', 'presence:diff',
-  'unread:update', 'conversation:updated', 'notify',
+  'unread:update', 'conversation:updated', 'track_record:updated', 'notify',
 ];
 
 let es = null;

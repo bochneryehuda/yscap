@@ -180,6 +180,31 @@
     else waitFlushed();
   });
 
+  // #112 live cross-user refresh: the portal host relays a server event whenever
+  // THIS borrower's track record changed in another session (the other party
+  // added/edited/verified a line or attached a document). Pull the fresh truth in
+  // — but NEVER clobber a local edit in progress: defer while a sync is
+  // pending/in-flight or an add/edit form is open (a remote change must not wipe
+  // what the local user is typing), and coalesce a burst of events into one reload.
+  var extReloadT = null, extReloadTries = 0;
+  function scheduleExternalReload() {
+    if (!loaded) return;                 // nothing to refresh before the first load
+    clearTimeout(extReloadT);
+    extReloadT = setTimeout(function tryReload() {
+      if (syncing || pendingSnap || document.getElementById("tr-ov")) {
+        // Local user is mid-edit — wait (bounded), so we never overwrite their work.
+        if (extReloadTries++ < 40) { extReloadT = setTimeout(tryReload, 500); return; }
+        extReloadTries = 0; return;      // give up quietly; their next save reconciles
+      }
+      extReloadTries = 0;
+      reload().catch(function () {});
+    }, 300);
+  }
+  window.addEventListener("message", function (e) {
+    if (!e.data || e.data.type !== "ys-tr-reload") return;
+    scheduleExternalReload();
+  });
+
   async function runSync() {
     if (syncing) { syncT = setTimeout(runSync, 300); return; }
     var snapshot = pendingSnap;

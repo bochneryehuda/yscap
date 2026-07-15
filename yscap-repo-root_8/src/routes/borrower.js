@@ -1704,6 +1704,8 @@ router.post('/track-records', async (req, res) => {
     trId = ex.rows[0] && ex.rows[0].id;
   }
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  // Live cross-user refresh (#112): staff viewing this borrower's record reload.
+  require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.status(201).json({ ok: true, trackRecordId: trId, missing: trackRecordMissing(b) });
 });
 // Edit an entry — only the borrower's own, and only while it is unverified
@@ -1727,6 +1729,7 @@ router.put('/track-records/:id', async (req, res) => {
       WHERE id=$1 AND borrower_id=$2`,
     [req.params.id, me(req), b.llcId || null, ...vals]);
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.json({ ok: true, missing: trackRecordMissing(b) });
 });
 // Delete a track-record entry — only the borrower's own, and only while it is
@@ -1737,6 +1740,7 @@ router.delete('/track-records/:id', async (req, res) => {
     [req.params.id, me(req)]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found or already verified' });
   try { await syncExperienceChecklistForBorrower(me(req)); } catch (_) { /* best-effort */ }
+  require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.json({ ok: true });
 });
 // Supporting documents on ONE track-record entry (closing statement, deed,
@@ -1795,6 +1799,8 @@ router.post('/track-records/:id/documents', async (req, res) => {
   }
   await audit(req, 'upload_track_record_doc', 'track_record', req.params.id, { filename: b.filename });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+  // Live cross-user refresh (#112): staff viewing this record see the new doc.
+  require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 
   // The upload answered an open back-office request — tell the file's loan
@@ -1960,6 +1966,9 @@ router.post('/documents', async (req, res) => {
   if (b.llcId) { try { await llcLib.syncLlcConditions(b.llcId); } catch (_) { /* best-effort */ } }
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
+  // Live cross-user refresh (#112): a doc answering a track-record line-item
+  // request lands on the line — staff viewing it reload to see the new evidence.
+  if (trackRecordId) require('../lib/events').publishTrackRecordUpdate(me(req), { kind: 'borrower', id: me(req) }).catch(() => {});
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
 
   // An LLC document uploaded from the profile (no file context): tell the loan

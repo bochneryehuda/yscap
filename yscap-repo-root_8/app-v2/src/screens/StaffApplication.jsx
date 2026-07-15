@@ -6,6 +6,7 @@ import { fileToBase64 } from '../lib/files.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { formatSSN } from '../lib/validators.js';
 import { useAuth } from '../lib/auth.jsx';
+import { subscribeChat } from '../lib/chatEvents.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
@@ -1081,6 +1082,24 @@ function StaffTrackRecordPanel({ app, role }) {
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
   }, [refreshSnap]);
+  // #112 live cross-user refresh: when the borrower (or another staffer) changes
+  // THIS borrower's track record, the server pushes track_record:updated. Reload
+  // the embedded tool + refresh the per-line-item list and saved-copy snapshot —
+  // but only for the borrower whose record is on screen. Our own edits are
+  // excluded server-side, so this never fights the tool's own autosave, and the
+  // tool defers a reload while a form is open.
+  useEffect(() => {
+    const unsub = subscribeChat((event, data) => {
+      if (event !== 'track_record:updated' || !data || data.borrowerId !== borrowerId) return;
+      refreshTrs();
+      refreshSnap();
+      document.querySelectorAll('iframe').forEach((f) => {
+        try { if (f.contentWindow) f.contentWindow.postMessage({ type: 'ys-tr-reload' }, window.location.origin); }
+        catch { /* cross-origin frame — not ours */ }
+      });
+    });
+    return unsub;
+  }, [borrowerId, refreshTrs, refreshSnap]);
   async function download() {
     if (!snap) return;
     setDl(true);
