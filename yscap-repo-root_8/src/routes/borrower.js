@@ -1197,25 +1197,9 @@ router.post('/applications/:id/link-llc', async (req, res) => {
 // The borrower enters the card the appraisal is ordered on. Stored encrypted
 // (AES-256-GCM, same key handling as SSNs); the back office decrypts it when
 // placing the order. Luhn + expiry validated server-side.
-function luhnOk(num) {
-  const s = String(num || '').replace(/\D/g, '');
-  if (s.length < 13 || s.length > 19) return false;
-  let sum = 0, dbl = false;
-  for (let i = s.length - 1; i >= 0; i--) {
-    let d = s.charCodeAt(i) - 48;
-    if (dbl) { d *= 2; if (d > 9) d -= 9; }
-    sum += d; dbl = !dbl;
-  }
-  return sum % 10 === 0;
-}
-function cardBrand(num) {
-  const s = String(num || '').replace(/\D/g, '');
-  if (/^4/.test(s)) return 'Visa';
-  if (/^(5[1-5]|2[2-7])/.test(s)) return 'Mastercard';
-  if (/^3[47]/.test(s)) return 'Amex';
-  if (/^6(011|5)/.test(s)) return 'Discover';
-  return 'Card';
-}
+// Card validation (Luhn/expiry/CVC) + at-rest save now live in the shared
+// appraisal-card chokepoint (validateCardInput / saveApplicationCard, #107) so
+// the borrower route AND the staff route behave identically.
 // Tell the assigned LO + processor the appraisal card is on the file so they
 // can place the order. Best-effort; carries only brand + last4 (never the PAN).
 async function notifyAppraisalCardAdded(appId, brand, last4) {
@@ -1238,48 +1222,28 @@ async function notifyAppraisalCardAdded(appId, brand, last4) {
 router.post('/applications/:id/appraisal-card', async (req, res) => {
   const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
-  const b = req.body || {};
-  const number = String(b.number || '').replace(/\D/g, '');
-  if (!luhnOk(number)) return res.status(400).json({ error: 'That does not look like a valid card number — please check the digits.' });
-  const expMonth = parseInt(b.expMonth, 10), expYear = parseInt(b.expYear, 10);
-  const fullYear = expYear < 100 ? 2000 + expYear : expYear;
-  if (!(expMonth >= 1 && expMonth <= 12)) return res.status(400).json({ error: 'expiration month must be 1–12' });
-  const now = new Date();
-  if (!(fullYear > now.getFullYear() || (fullYear === now.getFullYear() && expMonth >= now.getMonth() + 1)))
-    return res.status(400).json({ error: 'that card is expired' });
-  const cvc = String(b.cvc || '').replace(/\D/g, '');
-  if (cvc.length < 3 || cvc.length > 4) return res.status(400).json({ error: 'security code must be 3 or 4 digits' });
-  const zip = String(b.zip || '').trim().slice(0, 10);
-  if (!zip) return res.status(400).json({ error: 'billing ZIP is required' });
-  const saveForReuse = b.saveForReuse === true || b.saveForReuse === 'true';
+  // Validate + save through the shared chokepoint (#107) so the borrower route and
+  // the staff route behave identically. The card OWNER is the file's borrower.
+  const v = apprCard.validateCardInput(req.body || {});
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const saveForReuse = (req.body || {}).saveForReuse === true || (req.body || {}).saveForReuse === 'true';
   try {
-  // encryptSSN yields binary (bytea shape) — base64 it for the text column.
-  const enc = C.encryptSSN(JSON.stringify({ number, cvc })).toString('base64');
-  await db.query(
-    `INSERT INTO application_payment_cards (application_id,borrower_id,card_encrypted,last4,brand,exp_month,exp_year,billing_zip)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-     ON CONFLICT (application_id) DO UPDATE SET
-       card_encrypted=EXCLUDED.card_encrypted, last4=EXCLUDED.last4, brand=EXCLUDED.brand,
-       exp_month=EXCLUDED.exp_month, exp_year=EXCLUDED.exp_year, billing_zip=EXCLUDED.billing_zip,
-       borrower_id=EXCLUDED.borrower_id, updated_at=now()`,
-    [req.params.id, me(req), enc, number.slice(-4), cardBrand(number), expMonth, fullYear, zip]);
-  await db.query(
-    `UPDATE checklist_items SET status='received', updated_at=now()
-      WHERE application_id=$1 AND tool_key='appraisal_card'`, [req.params.id]);
-  // Opt-in: also persist an encrypted, reusable copy on the borrower's profile
-  // (PAN + CVV encrypted at rest with the same GCM helper). Best-effort — the
-  // per-file card is already saved, so a reuse-copy failure must not 500 the
-  // primary action. Never log card data.
-  let savedForReuse = false;
-  if (saveForReuse) {
-    try {
-      await apprCard.saveCardForReuse(me(req), { number, cvc, expMonth, expYear: fullYear, zip });
-      savedForReuse = true;
-    } catch (e) { console.error('[appraisal-card] save-for-reuse failed:', db.describeError(e)); }
-  }
-  await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4: number.slice(-4), savedForReuse });
-  await notifyAppraisalCardAdded(req.params.id, cardBrand(number), number.slice(-4));
-  res.status(201).json({ ok: true, last4: number.slice(-4), brand: cardBrand(number), savedForReuse });
+    const { last4, brand } = await apprCard.saveApplicationCard({
+      appId: req.params.id, borrowerId: me(req),
+      number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip });
+    // Opt-in: also persist an encrypted, reusable copy on the borrower's profile.
+    // Best-effort — the per-file card is already saved, so a reuse-copy failure must
+    // not 500 the primary action. Never log card data.
+    let savedForReuse = false;
+    if (saveForReuse) {
+      try {
+        await apprCard.saveCardForReuse(me(req), { number: v.number, cvc: v.cvc, expMonth: v.expMonth, expYear: v.expYear, zip: v.zip });
+        savedForReuse = true;
+      } catch (e) { console.error('[appraisal-card] save-for-reuse failed:', db.describeError(e)); }
+    }
+    await audit(req, 'save_appraisal_card', 'application', req.params.id, { last4, savedForReuse });
+    await notifyAppraisalCardAdded(req.params.id, brand, last4);
+    res.status(201).json({ ok: true, last4, brand, savedForReuse });
   } catch (e) { res.status(500).json({ error: db.describeError(e) }); }
 });
 // Masked view for the borrower's own condition row.

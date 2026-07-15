@@ -44,6 +44,65 @@ function parseExp(exp) {
 
 const last4Of = (num) => String(num || '').replace(/\D/g, '').slice(-4);
 
+// Luhn mod-10 checksum — the standard card-number validity test.
+function luhnOk(num) {
+  const s = String(num || '').replace(/\D/g, '');
+  if (s.length < 13 || s.length > 19) return false;
+  let sum = 0, alt = false;
+  for (let i = s.length - 1; i >= 0; i--) {
+    let d = parseInt(s[i], 10);
+    if (alt) { d *= 2; if (d > 9) d -= 9; }
+    sum += d; alt = !alt;
+  }
+  return sum % 10 === 0;
+}
+
+// The ONE validation contract for raw card input, shared by the borrower route and
+// the authorized-staff route (#107). Returns { ok:true, number, cvc, expMonth,
+// expYear, zip } (all normalized) or { ok:false, error } with a user-facing message.
+function validateCardInput(b) {
+  b = b || {};
+  const number = String(b.number || '').replace(/\D/g, '');
+  if (!luhnOk(number)) return { ok: false, error: 'That does not look like a valid card number — please check the digits.' };
+  const expMonth = parseInt(b.expMonth, 10);
+  const rawYear = parseInt(b.expYear, 10);
+  if (!(expMonth >= 1 && expMonth <= 12)) return { ok: false, error: 'expiration month must be 1–12' };
+  const fullYear = rawYear < 100 ? 2000 + rawYear : rawYear;
+  const now = new Date();
+  if (!(fullYear > now.getFullYear() || (fullYear === now.getFullYear() && expMonth >= now.getMonth() + 1)))
+    return { ok: false, error: 'that card is expired' };
+  const cvc = String(b.cvc || '').replace(/\D/g, '');
+  if (cvc.length < 3 || cvc.length > 4) return { ok: false, error: 'security code must be 3 or 4 digits' };
+  const zip = String(b.zip || '').trim().slice(0, 10);
+  if (!zip) return { ok: false, error: 'billing ZIP is required' };
+  return { ok: true, number, cvc, expMonth, expYear: fullYear, zip };
+}
+
+// Save the appraisal payment card onto a FILE and complete its condition — the
+// single chokepoint the borrower route AND the authorized-staff route (#107) share
+// (owner-directed: LO/processor/admin can enter these borrower conditions too).
+// Input must already be validated via validateCardInput(). `borrowerId` is the
+// card OWNER = the file's borrower (even when a staffer enters it). Encrypts PAN +
+// CVV at rest with the GCM helper, upserts the per-file card, and moves the
+// `appraisal_card` condition to 'received' (sign-off stays separate). Never logs
+// card data. Returns a non-secret summary { last4, brand }.
+async function saveApplicationCard({ appId, borrowerId, number, cvc, expMonth, expYear, zip }) {
+  const brand = cardBrand(number);
+  const enc = C.encryptSSN(JSON.stringify({ number, cvc })).toString('base64');
+  await db.query(
+    `INSERT INTO application_payment_cards (application_id,borrower_id,card_encrypted,last4,brand,exp_month,exp_year,billing_zip)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (application_id) DO UPDATE SET
+       card_encrypted=EXCLUDED.card_encrypted, last4=EXCLUDED.last4, brand=EXCLUDED.brand,
+       exp_month=EXCLUDED.exp_month, exp_year=EXCLUDED.exp_year, billing_zip=EXCLUDED.billing_zip,
+       borrower_id=EXCLUDED.borrower_id, updated_at=now()`,
+    [appId, borrowerId, enc, last4Of(number), brand, expMonth, expYear, zip]);
+  await db.query(
+    `UPDATE checklist_items SET status='received', updated_at=now()
+      WHERE application_id=$1 AND tool_key='appraisal_card'`, [appId]);
+  return { last4: last4Of(number), brand };
+}
+
 /**
  * Persist an encrypted, reusable copy of the card onto the borrower's profile
  * and flip save_card_for_reuse on. `number` and `cvc` are plaintext strings in
@@ -166,5 +225,6 @@ async function autoApplySavedCardIfOptedIn(applicationId, borrowerId) {
 
 module.exports = {
   cardBrand, formatExp, parseExp,
+  luhnOk, validateCardInput, saveApplicationCard,
   saveCardForReuse, getSavedCard, applySavedCardToApplication, autoApplySavedCardIfOptedIn,
 };
