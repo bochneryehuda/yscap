@@ -5,6 +5,7 @@ import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { Brand } from './Layout.jsx';
 import ChatBubble from './ChatBubble.jsx';
+import { useStaleBuild } from '../lib/useStaleBuild.jsx';
 
 const ROLE_LABEL = {
   super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter',
@@ -275,37 +276,9 @@ export default function StaffLayout({ children }) {
     const t = setInterval(poll, 120000);
     return () => { alive = false; clearInterval(t); };
   }, []);
-  // STALE-BUILD WATCHDOG (owner-reported 2026-07-15 night: an officer's
-  // long-lived tab ran yesterday's bundle — displaying a timezone-shifted DOB
-  // and missing today's screens — while a freshly-reloaded admin saw the
-  // current build; "I see one date of birth and the loan officer sees
-  // another"). Every few minutes (and whenever the tab regains focus) the
-  // server's DEPLOYED bundle hash is read from /api/health — deliberately an
-  // /api/ path because the service worker never intercepts those (a direct
-  // index.html fetch was answered from the SW's own cache, which by
-  // construction references the RUNNING bundle — the check compared the
-  // running build against itself and never fired; post-merge audit #271).
-  const [staleBuild, setStaleBuild] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    const running = (() => {
-      const s = document.querySelector('script[src*="/assets/index-"]');
-      const m = s && s.src && s.src.match(/index-([\w-]+)\.js/);
-      return m ? m[1] : null;
-    })();
-    if (!running) return undefined;
-    const check = () => fetch('/api/health', { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((h) => {
-        if (!alive || !h || !h.bundle) return;
-        if (h.bundle !== running) setStaleBuild(true);
-      }).catch(() => {});
-    check();
-    const t = setInterval(check, 5 * 60 * 1000);
-    const onFocus = () => check();
-    window.addEventListener('focus', onFocus);
-    return () => { alive = false; clearInterval(t); window.removeEventListener('focus', onFocus); };
-  }, []);
+  // STALE-BUILD WATCHDOG — shared hook (see lib/useStaleBuild.js): compares
+  // the deployed bundle hash from /api/health with the one this tab runs.
+  const staleBuild = useStaleBuild();
   useEffect(() => {
     let alive = true;
     const poll = () => api.staffConversations()

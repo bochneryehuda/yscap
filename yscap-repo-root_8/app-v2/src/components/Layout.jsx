@@ -3,6 +3,7 @@ import { NavLink, useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import ChatBubble from './ChatBubble.jsx';
+import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
 
 export function Brand({ console: consoleLabel = 'Borrower console', to = '/dashboard', ariaLabel = 'PILOT by YS Capital' }) {
   return (
@@ -44,6 +45,9 @@ export default function Layout({ children }) {
   const nav = useNavigate();
   const [unread, setUnread] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Stale-build watchdog — EVERY layout shell mounts it (CLAUDE.md rule; the
+  // borrower shell was missed when the staff shell got it — mega-audit #2).
+  const staleBuild = useStaleBuild();
 
   useEffect(() => {
     let live = true;
@@ -55,6 +59,7 @@ export default function Layout({ children }) {
 
   return (
     <div className="shell">
+      <StaleBuildBanner stale={staleBuild} />
       <header className="header">
         <div className="wrap">
           <Brand />

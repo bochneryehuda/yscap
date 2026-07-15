@@ -248,6 +248,22 @@ function Overview({ b, onChanged }) {
         <Row k="Marital status" v={b.marital_status} />
         <Row k="Contact type" v={b.contact_type} />
         <Row k="Primary officer" v={b.primary_officer_name} />
+        {/* ADDITIONAL contact info accumulated across the borrower's files
+            (owner-directed 2026-07-15 night): extra emails/phones ADD here —
+            the primary above never gets replaced by another file's contact. */}
+        {(() => {
+          const extras = (b.contacts || []).filter((c) =>
+            !(c.kind === 'email' && String(c.value).toLowerCase() === String(b.email || '').toLowerCase()) &&
+            !(c.kind === 'phone' && String(c.value).replace(/\D/g, '').slice(-10) === String(b.cell_phone || '').replace(/\D/g, '').slice(-10)));
+          return extras.length ? (
+            <>
+              <div className="gold-rule" style={{ margin: '8px 0' }} />
+              <div className="metrow"><span className="k">Also on file</span><span className="v muted small">
+                {extras.map((c, i) => <span key={i} style={{ display: 'block' }}>{c.kind === 'email' ? '✉' : '☎'} {c.value}</span>)}
+              </span></div>
+            </>
+          ) : null;
+        })()}
         <Row k="Current address" v={addr(b.current_address)} />
         <Row k="Mailing address" v={b.mailing_address ? addr(b.mailing_address) : 'same as current'} />
         <Row k="Housing" v={b.housing_status ? `${b.housing_status.replace(/_/g, ' ')}${b.housing_payment ? ` · ${money(b.housing_payment)}/mo` : ''}` : null} />
