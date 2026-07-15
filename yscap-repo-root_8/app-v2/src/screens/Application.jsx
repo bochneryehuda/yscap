@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useLocation, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
+import { formatSSN } from '../lib/validators.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
@@ -789,6 +790,7 @@ export default function Application() {
           <div className="metrow"><span className="k">Name</span><span className="v">{profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || '—' : '—'}</span></div>
           <div className="metrow"><span className="k">Email</span><span className="v">{(profile && profile.email) || '—'}</span></div>
           <div className="metrow"><span className="k">Phone</span><span className="v">{(profile && profile.cell_phone) || '—'}</span></div>
+          <SsnRow profile={profile} onSaved={load} />
           <div className="metrow"><span className="k">Vesting entity</span><span className="v">
             {app.entity_name || app.llc_name || (app.llc_id ? 'LLC on file' : 'Not linked yet')}
             {app.llc_id && app.llc_verified && <span className="ts-badge ok" style={{ marginLeft: 6 }}>Verified ✓</span>}
@@ -1268,6 +1270,49 @@ export default function Application() {
           onClose={() => setPreviewDoc(null)} />
       )}
     </>
+  );
+}
+
+/* #91: add / update the SSN from the FILE (not only the standalone profile).
+   Saves to the VIEWER's own profile, so it works for the borrower AND the
+   co-borrower (each adds their own). Encrypted server-side; only last 4 shown. */
+function SsnRow({ profile, onSaved }) {
+  const [open, setOpen] = useState(false);
+  const [ssn, setSsn] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const onFile = profile && profile.ssn_last4;
+  async function save() {
+    const digits = ssn.replace(/\D/g, '');
+    if (digits.length !== 9) { setErr('Enter all 9 digits.'); return; }
+    setBusy(true); setErr('');
+    try { await api.saveProfile({ ssn: digits }); setOpen(false); setSsn(''); await onSaved(); }
+    catch (e) { setErr(e.message || 'Could not save your SSN.'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="metrow" style={{ alignItems: open ? 'flex-start' : 'center' }}>
+      <span className="k">SSN</span>
+      <span className="v">
+        {!open ? (
+          <span className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {onFile ? `•••-••-${profile.ssn_last4}` : <span className="muted">Not on file</span>}
+            <button className="btn ghost small" onClick={() => setOpen(true)}>{onFile ? 'Update' : 'Add SSN'}</button>
+          </span>
+        ) : (
+          <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 6 }}>
+            <input className="input" autoComplete="off" inputMode="numeric" value={ssn}
+              onChange={e => setSsn(formatSSN(e.target.value))} placeholder="•••-••-••••" style={{ maxWidth: 170 }} />
+            {err && <span className="small" style={{ color: 'var(--danger)' }}>{err}</span>}
+            <span className="row" style={{ gap: 6 }}>
+              <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
+              <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); setSsn(''); }}>Cancel</button>
+            </span>
+            <span className="muted small">Encrypted — only the last 4 digits are ever shown.</span>
+          </span>
+        )}
+      </span>
+    </div>
   );
 }
 
