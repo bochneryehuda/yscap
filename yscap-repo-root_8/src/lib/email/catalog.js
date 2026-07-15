@@ -13,7 +13,7 @@
 
    Usage:
      const mail = require('./catalog');
-     await mail.send('welcome', 'borrower@x.com', { firstName, verifyUrl, code });
+     await mail.send('welcome', 'borrower@x.com', { firstName, verifyUrl });
    ===================================================================== */
 'use strict';
 
