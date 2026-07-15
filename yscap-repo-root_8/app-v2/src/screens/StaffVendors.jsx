@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
+import { PhoneInput } from '../components/FormattedInputs.jsx';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAuth } from '../lib/auth.jsx';
 
@@ -36,7 +37,7 @@ function VendorForm({ initial, onSave, onCancel, busy }) {
         <div className="field"><label>Email</label>
           <input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
         <div className="field"><label>Phone</label>
-          <input className="input" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></div>
+          <PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></div>
         <div className="field"><label>Address</label>
           <input className="input" value={f.address} onChange={e => setF({ ...f, address: e.target.value })} /></div>
         <div className="field" style={{ gridColumn: '1 / -1' }}><label>Notes (internal)</label>

@@ -13,6 +13,7 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
+import { PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
@@ -249,7 +250,7 @@ function PrimaryAddressPanel({ borrowerId, address, name, onSaved }) {
         <div className="field"><label>State</label>
           <input className="input" value={a.state} onChange={e => set('state', e.target.value.toUpperCase())} maxLength={2} placeholder="NJ" /></div>
         <div className="field"><label>ZIP</label>
-          <input className="input" value={a.zip} onChange={e => set('zip', e.target.value)} inputMode="numeric" placeholder="07001" /></div>
+          <ZipInput value={a.zip} onChange={v => set('zip', v)} placeholder="07001" /></div>
       </div>
       <div className="row" style={{ gap: 10, alignItems: 'center' }}>
         <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save address'}</button>
@@ -1545,7 +1546,7 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
           <label><span>First name</span><input className="input" value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
           <label style={{ gridColumn: '1 / -1' }}><span>Email</span><input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></label>
-          <label><span>Phone</span><input className="input" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} /></label>
+          <label><span>Phone</span><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></label>
           <label><span>Date of birth</span><input className="input" type="date" value={f.dob} onChange={e => setF({ ...f, dob: e.target.value })} /></label>
           <label style={{ gridColumn: '1 / -1' }}><span>SSN (stored encrypted)</span><input className="input" inputMode="numeric" value={f.ssn} onChange={e => setF({ ...f, ssn: formatSSN(e.target.value) })} placeholder="XXX-XX-XXXX" /></label>
         </div>
@@ -1586,7 +1587,7 @@ function StaffCardEntry({ appId, onSaved }) {
       <input className="input" style={{ maxWidth: 56 }} inputMode="numeric" placeholder="MM" value={f.expMonth} onChange={set('expMonth')} />
       <input className="input" style={{ maxWidth: 72 }} inputMode="numeric" placeholder="YYYY" value={f.expYear} onChange={set('expYear')} />
       <input className="input" style={{ maxWidth: 64 }} inputMode="numeric" placeholder="CVC" value={f.cvc} onChange={set('cvc')} />
-      <input className="input" style={{ maxWidth: 84 }} inputMode="numeric" placeholder="ZIP" value={f.zip} onChange={set('zip')} />
+      <ZipInput style={{ maxWidth: 84 }} placeholder="ZIP" value={f.zip} onChange={v => setF(p => ({ ...p, zip: v }))} />
       <button className="btn small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save card'}</button>
       <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
       {err && <span style={{ color: 'var(--bad, #c0392b)', flexBasis: '100%', textAlign: 'right' }}>{err}</span>}

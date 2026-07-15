@@ -4,6 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
+import { PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
 import { passwordProblem } from '../lib/password.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
@@ -195,7 +196,7 @@ function Overview({ b, onChanged }) {
         {err && <div role="alert" className="notice err">{err}</div>}
         <div className="ts-inputs">
           <label><span>Email</span><input className="input" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></label>
-          <label><span>Cell phone</span><input className="input" value={f.cellPhone} onChange={e => setF({ ...f, cellPhone: e.target.value })} /></label>
+          <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
           <label><span>Contact type</span><input className="input" placeholder="INVESTOR / PRIMARY / …" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })} /></label>
           <label><span>Marital status</span><input className="input" value={f.maritalStatus} onChange={e => setF({ ...f, maritalStatus: e.target.value })} /></label>
           <label><span>Citizenship</span><input className="input" value={f.citizenship} onChange={e => setF({ ...f, citizenship: e.target.value })} /></label>
@@ -213,14 +214,14 @@ function Overview({ b, onChanged }) {
           <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ca.line1 || ''} onChange={e => setCa('line1', e.target.value)} /></label>
           <label><span>City</span><input className="input" value={f.ca.city || ''} onChange={e => setCa('city', e.target.value)} /></label>
           <label><span>State</span><input className="input" value={f.ca.state || ''} onChange={e => setCa('state', e.target.value)} /></label>
-          <label><span>ZIP</span><input className="input" value={f.ca.zip || ''} onChange={e => setCa('zip', e.target.value)} /></label>
+          <label><span>ZIP</span><ZipInput value={f.ca.zip || ''} onChange={v => setCa('zip', v)} /></label>
         </div>
         <div style={{ fontWeight: 600, margin: '12px 0 6px' }}>Mailing address (if different)</div>
         <div className="ts-inputs">
           <label style={{ gridColumn: '1 / -1' }}><span>Street</span><input className="input" value={f.ma.line1 || ''} onChange={e => setMa('line1', e.target.value)} /></label>
           <label><span>City</span><input className="input" value={f.ma.city || ''} onChange={e => setMa('city', e.target.value)} /></label>
           <label><span>State</span><input className="input" value={f.ma.state || ''} onChange={e => setMa('state', e.target.value)} /></label>
-          <label><span>ZIP</span><input className="input" value={f.ma.zip || ''} onChange={e => setMa('zip', e.target.value)} /></label>
+          <label><span>ZIP</span><ZipInput value={f.ma.zip || ''} onChange={v => setMa('zip', v)} /></label>
         </div>
         <div className="row" style={{ gap: 8, marginTop: 12 }}>
           <button className="btn primary small" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>

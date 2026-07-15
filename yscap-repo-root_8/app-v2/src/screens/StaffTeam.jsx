@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
+import { PhoneInput } from '../components/FormattedInputs.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 
@@ -274,9 +275,9 @@ export default function StaffTeam() {
           <div className="field"><label>Title</label>
             <input className="input" value={form.title} onChange={e => set('title', e.target.value)} placeholder="Loan Coordinator" /></div>
           <div className="field"><label>Direct phone</label>
-            <input className="input" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="718-247-8700" /></div>
+            <PhoneInput value={form.phone} onChange={v => set('phone', v)} /></div>
           <div className="field"><label>Cell</label>
-            <input className="input" value={form.cell} onChange={e => set('cell', e.target.value)} /></div>
+            <PhoneInput value={form.cell} onChange={v => set('cell', v)} /></div>
           <div className="field"><label>Ext.</label>
             <input className="input" value={form.ext} onChange={e => set('ext', e.target.value)} /></div>
           <div className="field">
