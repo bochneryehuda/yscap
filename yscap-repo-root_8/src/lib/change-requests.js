@@ -169,8 +169,13 @@ async function applyRequest(client, cr, deciderId, note) {
   return { field: cr.field, fieldLabel: cr.field_label, oldValue: cr.old_value, newValue: cr.new_value };
 }
 
+// The governed economics fields, exported so the ClickUp inbound pull can protect
+// a freshly-approved value from a stale re-pull (#86). All are FIELD_MAP `both`
+// fields — the only ones an approved change request ever writes.
+const GOVERNED_FIELDS = Object.keys(FIELD_LABELS);
+
 module.exports = {
-  FIELD_LABELS, MONEY_FIELDS, INT_FIELDS, FIELD_OPTIONS, isGovernedField,
+  FIELD_LABELS, MONEY_FIELDS, INT_FIELDS, FIELD_OPTIONS, GOVERNED_FIELDS, isGovernedField,
   isBorrowerLocked, openRequest, applyRequest, currentValue, normalizeValue,
   formatValue, describeChange,
 };
