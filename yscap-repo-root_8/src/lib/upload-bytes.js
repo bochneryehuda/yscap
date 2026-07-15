@@ -54,7 +54,10 @@ function normalizeBase64String(input) {
   // 2) whitespace (line-wrapped base64, trailing newlines) is legal — remove it
   s = s.replace(/\s+/g, '');
   // 3) percent-encoded commas/plus from sloppy form encodings
-  if (/^%[0-9a-f]{2}/i.test(s)) s = decodeURIComponent(s);
+  if (/^%[0-9a-f]{2}/i.test(s)) {
+    try { s = decodeURIComponent(s); }
+    catch (_) { throw badRequest('invalid file data (malformed percent-encoding)'); }
+  }
   // 4) URL-safe alphabet → standard
   s = s.replace(/-/g, '+').replace(/_/g, '/');
   if (!s) throw badRequest('empty file data');
@@ -91,7 +94,10 @@ function decodeUploadBase64(input, opts = {}) {
 function sniffKind(buf) {
   if (!buf || buf.length < 4) return null;
   const head = buf.subarray(0, 8);
-  if (head.subarray(0, 4).toString('latin1') === '%PDF') return 'pdf';
+  // The PDF spec tolerates a preamble before the header — accept %PDF anywhere
+  // in the first 1KB (matches how real readers find it).
+  const pdfAt = buf.subarray(0, 1024).indexOf('%PDF');
+  if (pdfAt >= 0) return 'pdf';
   if (head[0] === 0x89 && head.subarray(1, 4).toString('latin1') === 'PNG') return 'png';
   if (head[0] === 0xFF && head[1] === 0xD8 && head[2] === 0xFF) return 'jpg';
   if (head[0] === 0x50 && head[1] === 0x4B) return 'zip';           // docx/xlsx/zip

@@ -2081,8 +2081,10 @@ router.post('/documents', async (req, res) => {
           // bytes only when small enough for the mail providers (Graph caps inline
           // attachments ~3 MB) — larger files are still one tap away in the portal.
           files: [b.filename],
+          // Re-encode the DECODED bytes (never the raw client payload): the
+          // stored document and the emailed copy must be the same bytes.
           attachments: buf.length <= 3 * 1024 * 1024
-            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: b.dataBase64 }]
+            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: buf.toString('base64') }]
             : undefined,
         };
         await notify.notifyAppStaff(b.applicationId, opts);   // #113: whole team (primary + assistants)

@@ -190,7 +190,10 @@ async function resolveSyncFolder(ctx) {
     && cached.details.flags.includes('no-officer:unfiled');
   if (cached && !(wasUnfiled && ctx.officerName)) {
     const out = { driveId, syncFolderId: cached.sync_folder_id, webUrl: cached.web_url, fullPath: cached.full_path, details: cached.details };
-    _memCache.set(ctx.scopeKey, out);
+    // Same rule as the fresh-resolution path below: an Unfiled resolution is
+    // never memory-cached, or a doc mirrored before officer assignment would
+    // pin the whole process to Unfiled even after the officer arrives.
+    if (!wasUnfiled) _memCache.set(ctx.scopeKey, out);
     return out;
   }
 

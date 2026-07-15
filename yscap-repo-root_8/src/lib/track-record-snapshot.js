@@ -21,7 +21,12 @@ const MAX_BYTES = 4 * 1024 * 1024;   // a rendered track record is tens of KB; 4
 // is still fresh (< COALESCE_WINDOW) and not yet mirrored; a new row (with
 // supersede) is only born when the previous snapshot already mirrored or the
 // session went quiet. Result: one row + one mirrored copy per session.
-const COALESCE_WINDOW = '10 minutes';
+// Must stay <= the mirror's snapshot settle window (SHAREPOINT_SNAPSHOT_SETTLE_SEC):
+// the mirror only uploads snapshot rows OLDER than the settle window, and the
+// coalescer only mutates rows YOUNGER than this window — keeping this window
+// the smaller of the two means no row is ever mutated in place while the
+// mirror could be reading it.
+const COALESCE_SEC = Math.min(600, parseInt(process.env.SHAREPOINT_SNAPSHOT_SETTLE_SEC || '600', 10) || 600);
 
 async function saveSnapshot(borrowerId, { html, filename, uploadedByKind, uploadedById }) {
   const text = String(html || '');
@@ -35,7 +40,7 @@ async function saveSnapshot(borrowerId, { html, filename, uploadedByKind, upload
     `SELECT id, storage_ref FROM documents
       WHERE borrower_id=$1 AND doc_kind=$2 AND is_current
         AND sharepoint_backed_up_at IS NULL
-        AND created_at > now() - interval '${COALESCE_WINDOW}'
+        AND created_at > now() - make_interval(secs => ${COALESCE_SEC})
       ORDER BY created_at DESC LIMIT 1`,
     [borrowerId, DOC_KIND])).rows[0];
   if (prev) {

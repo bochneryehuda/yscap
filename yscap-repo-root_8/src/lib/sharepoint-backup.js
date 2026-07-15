@@ -570,7 +570,11 @@ async function mirrorRowInner(row, scopeKey) {
   // file — record where the existing copy lives and settle the row. (This is
   // what stops re-submitted identical documents and double-fired exports from
   // stacking "(abc12345)" duplicates in SharePoint.)
-  const dup = (await db.query(
+  // NEVER dedups a RE-MIRROR (row already carries a ref): a corrupt-mirror
+  // replacement or an admin's explicit re-mirror must actually upload — a
+  // byte-identical historical sibling would otherwise settle the row while its
+  // ref still points at the corrupt item (an endless flag→settle loop).
+  const dup = row.sharepoint_backup_ref ? null : (await db.query(
     `SELECT id, sharepoint_web_url, sharepoint_backup_ref FROM documents
       WHERE sha256 = $1 AND filename = $2 AND id <> $3
         AND sharepoint_backup_ref IS NOT NULL
@@ -774,15 +778,19 @@ async function verifyBatch(limit) {
 }
 
 async function stampVerdict(id, verdict, extra = {}) {
+  // A transient verify ERROR must not push the doc out of the audit rotation
+  // for the full recheck window — stamp it as "re-check tomorrow" instead
+  // (backdated so it also leaves the head of the NULLS FIRST queue).
+  const isError = /^verify-error/.test(String(verdict));
   await db.query(
     `UPDATE documents SET
-        sharepoint_verified_at = now(),
+        sharepoint_verified_at = CASE WHEN $5 THEN now() - make_interval(days => ${VERIFY_RECHECK_DAYS - 1}) ELSE now() END,
         sharepoint_integrity = $2,
         sha256 = COALESCE($3, sha256),
         sharepoint_item_size = COALESCE($4, sharepoint_item_size)
       WHERE id = $1`,
     [id, String(verdict).slice(0, 200), extra.sha256 || null,
-     extra.itemSize != null ? Number(extra.itemSize) : null]);
+     extra.itemSize != null ? Number(extra.itemSize) : null, isError]);
 }
 
 async function auditLogVerify(row, action, details) {
@@ -985,6 +993,10 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
       console.warn(`[sp-sync] doc ${row.id} failed: ${e.message}`);
       try { await recordFailure(row, e); } catch (_) { /* best-effort */ }
     }
+    // Per-document lease renewal: one throttled chunked upload can legally
+    // take longer than the whole lease, and an expired lease mid-batch is
+    // exactly the double-drain the lease exists to prevent.
+    await renewLease('sp-drain');
     await sleep(PACING_MS);
   }
   _lastPass = { at: new Date().toISOString(), scanned: rows.length, mirrored, failed };
