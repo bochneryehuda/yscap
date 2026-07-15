@@ -1473,6 +1473,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
             ci.assignee_staff_id, asg.full_name AS assignee_name,
             ci.signed_off_by, so.full_name AS signed_off_name, ci.signed_off_at,
             ci.reviewed_by, rv.full_name AS reviewed_by_name, ci.reviewed_at,
+            ci.waived_at, ci.waived_by, wv.full_name AS waived_by_name,
             -- The borrower-visible reason a condition was rejected / pushed back /
             -- raised (#125): staff must see it on the condition too, not only in the
             -- separate documents panel. Falls back to the latest rejected document's
@@ -1485,6 +1486,7 @@ router.get('/applications/:id/checklist', async (req, res) => {
        LEFT JOIN staff_users asg ON asg.id = ci.assignee_staff_id
        LEFT JOIN staff_users so  ON so.id  = ci.signed_off_by
        LEFT JOIN staff_users rv  ON rv.id  = ci.reviewed_by
+       LEFT JOIN staff_users wv  ON wv.id  = ci.waived_by
       WHERE ci.application_id=$1
       ORDER BY ci.sort_order, ci.created_at`, [req.params.id]);
   res.json(r.rows);
@@ -2105,6 +2107,15 @@ router.patch('/checklist/:itemId', async (req, res) => {
   if (b.reviewed === true && !can(req.actor, 'review_conditions') && !canComplete) {
     return res.status(403).json({ error: 'You do not have permission to review conditions on this file.' });
   }
+  // #106: waiving is a completion action (it removes the condition from the list),
+  // so it needs the same capability as a sign-off, and only an OPTIONAL condition
+  // may be waived — a required condition must actually be satisfied.
+  if (b.waived === true) {
+    if (!canComplete) return res.status(403).json({ error: 'Only a processor or underwriter can waive a condition.' });
+    const cur = await db.query(`SELECT is_required FROM checklist_items WHERE id=$1`, [req.params.itemId]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (cur.rows[0].is_required !== false) return res.status(422).json({ error: 'Only an optional condition can be waived — make it optional first, then waive.' });
+  }
   // Push-back / reject / reopen: send a condition back to the borrower with a
   // BORROWER-VISIBLE reason (owner-directed 2026-07-12, LOS-grade management). One
   // verb covers reject (an open item is not acceptable), push-back, and add-back /
@@ -2135,7 +2146,7 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // when signing off in the same call — otherwise the UPDATE sets the `status`
   // column twice and Postgres rejects it (42601) with a 500. Push-back also owns
   // the status ('issue'), so skip the explicit one in that case too.
-  if (b.status && b.signedOff !== true && b.pushBack !== true) add('status=?', b.status);
+  if (b.status && b.signedOff !== true && b.pushBack !== true && b.waived !== true) add('status=?', b.status);
   if (b.notes != null) add('notes=?', b.notes);
   if ('assigneeStaffId' in b) add('assignee_staff_id=?', b.assigneeStaffId || null);
   // Requirement toggle — e.g. the LLC's Certificate of Good Standing is
@@ -2144,11 +2155,19 @@ router.patch('/checklist/:itemId', async (req, res) => {
   if (typeof b.isRequired === 'boolean') add('is_required=?', b.isRequired);
 
   // Sign-off marks the item satisfied and stamps who/when; un-sign clears it.
+  // #106: a WAIVE completes an OPTIONAL condition (the "clear" action) — it
+  // satisfies the item for every gate but records that it was WAIVED (not that the
+  // doc/data was provided). Un-waive puts it back on the list.
   if (b.signedOff === true) {
     add('signed_off_by=?', req.actor.id);
     sets.push("signed_off_at=now()", "status='satisfied'");
-  } else if (b.signedOff === false) {
-    sets.push('signed_off_by=NULL', 'signed_off_at=NULL');
+  } else if (b.waived === true) {
+    add('signed_off_by=?', req.actor.id);
+    add('waived_by=?', req.actor.id);
+    sets.push("signed_off_at=now()", "waived_at=now()", "status='satisfied'");
+  } else if (b.signedOff === false || b.waived === false) {
+    sets.push('signed_off_by=NULL', 'signed_off_at=NULL', 'waived_by=NULL', 'waived_at=NULL');
+    if (b.waived === false) sets.push("status='outstanding'");
   }
   // Reviewed stamp (any assigned staff, typically the loan officer).
   if (b.reviewed === true) {

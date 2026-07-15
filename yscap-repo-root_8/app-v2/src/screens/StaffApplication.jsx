@@ -378,7 +378,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           </div>
           {it.hint && <div className="muted small" style={{ marginTop: 4 }}>{it.hint}</div>}
           {it.assignee_name && <div className="muted small">Assigned to {it.assignee_name}</div>}
-          {signed && <div className="muted small">Signed off by {it.signed_off_name || 'the internal team'} · {new Date(it.signed_off_at).toLocaleDateString()}</div>}
+          {signed && (it.waived_at
+            ? <div className="muted small">Waived by {it.waived_by_name || 'the internal team'} · {new Date(it.waived_at).toLocaleDateString()}</div>
+            : <div className="muted small">Signed off by {it.signed_off_name || 'the internal team'} · {new Date(it.signed_off_at).toLocaleDateString()}</div>)}
           {it.reviewed_at && <div className="muted small">Reviewed by {it.reviewed_by_name || 'the loan officer'} · {new Date(it.reviewed_at).toLocaleDateString()}</div>}
           {(it.issue_reason || it.rejection_reason) && (
             <div className="small" style={{ marginTop: 4, color: 'var(--danger)' }}>Sent back to the borrower: {it.issue_reason || it.rejection_reason}</div>
@@ -485,8 +487,11 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           ? <button className="btn ghost" title="You marked this done — undo to put it back on your list" onClick={() => onPatch(it.id, { reviewed: false })}>Undo done</button>
           : <button className="btn ghost" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
         {completer && (signed
-          ? <button className="btn ghost" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
-          : <button className="btn primary" title="Sign off = the whole condition is complete (processor step). This is what removes it from the list for everyone." onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}
+          ? <button className="btn ghost" onClick={() => onPatch(it.id, it.waived_at ? { waived: false } : { signedOff: false })}>{it.waived_at ? 'Undo waive' : 'Undo sign-off'}</button>
+          : <>
+              <button className="btn primary" title="Sign off = the whole condition is complete (processor step). This is what removes it from the list for everyone." onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>
+              {it.is_required === false && <button className="btn ghost" title="Waive = this optional condition doesn't apply; clear it without a document. Optional conditions only." onClick={() => onPatch(it.id, { waived: true })}>Waive</button>}
+            </>)}
         {it.audience !== 'staff' && (
           <button className="btn ghost" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
             onClick={() => {
@@ -1695,8 +1700,11 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 ? <button className="btn ghost small" title={`Marked done by ${it.reviewed_by_name || 'staff'} — undo to put it back on your list`} onClick={() => onPatch(it.id, { reviewed: false })}>Done ✓</button>
                 : <button className="btn ghost small" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
               {completer && (signed
-                ? <button className="btn ghost small" onClick={() => onPatch(it.id, { signedOff: false })}>Undo sign-off</button>
-                : <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>)}
+                ? <button className="btn ghost small" onClick={() => onPatch(it.id, it.waived_at ? { waived: false } : { signedOff: false })}>{it.waived_at ? 'Undo waive' : 'Undo sign-off'}</button>
+                : <>
+                    <button className="btn primary small" onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>
+                    {it.is_required === false && <button className="btn ghost small" title="Waive this optional condition (clear without a document)" onClick={() => onPatch(it.id, { waived: true })}>Waive</button>}
+                  </>)}
               <button className="btn ghost small" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
                 onClick={() => {
                   const reason = window.prompt(signed || it.status === 'satisfied'
