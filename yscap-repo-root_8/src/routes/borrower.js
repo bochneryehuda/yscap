@@ -180,7 +180,7 @@ router.post('/profile/photo-id', async (req, res) => {
   try {
     const dupPhoto = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
       filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
-      applicationId: appId, checklistItemId: appItemId });
+      applicationId: appId, checklistItemId: appItemId, docKind: 'photo_id' });
     if (dupPhoto) return res.status(201).json({ ok: true, documentId: dupPhoto, deduped: true });
     const { ref, provider } = await storage.save(buf, { filename: b.filename });
     const d = await db.query(
@@ -1690,7 +1690,7 @@ router.post('/track-records/:id/documents', async (req, res) => {
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
   const dupTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
     filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
-    trackRecordId: req.params.id, checklistItemId: reqItemId });
+    trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
   if (dupTr) return res.status(201).json({ ok: true, documentId: dupTr, deduped: true });
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
@@ -1818,7 +1818,7 @@ router.post('/documents', async (req, res) => {
   const dupId = await require('../lib/doc-dedup').recentDuplicateDocId({
     filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'borrower', uploadedById: me(req),
     applicationId: b.applicationId || null, checklistItemId: b.checklistItemId || null,
-    llcId: b.llcId || null, trackRecordId, slotLabel: slot });
+    llcId: b.llcId || null, trackRecordId, slotLabel: slot, docKind });
   if (dupId) return res.status(201).json({ ok: true, documentId: dupId, deduped: true });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(

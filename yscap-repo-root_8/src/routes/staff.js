@@ -2844,7 +2844,7 @@ router.post('/track-records/:id/documents', async (req, res) => {
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
   const dupStaffTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
     filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
-    trackRecordId: req.params.id, checklistItemId: reqItemId });
+    trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
   if (dupStaffTr) return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
@@ -4384,7 +4384,7 @@ router.post('/applications/:id/documents', async (req, res) => {
   const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
     filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
     applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
-    llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot });
+    llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot, docKind });
   if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
   const r = await db.query(

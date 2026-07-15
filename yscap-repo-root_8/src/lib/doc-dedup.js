@@ -32,12 +32,13 @@ async function recentDuplicateDocId(keys, { windowSec = 120, client = db } = {})
         AND COALESCE(llc_id::text,'')            = COALESCE($7::text,'')
         AND COALESCE(track_record_id::text,'')   = COALESCE($8::text,'')
         AND COALESCE(slot_label,'')              = COALESCE($9,'')
+        AND COALESCE(doc_kind,'')                = COALESCE($11,'')
         AND created_at > now() - (($10)::text || ' seconds')::interval
       ORDER BY created_at DESC
       LIMIT 1`,
     [k.filename, Number(k.sizeBytes), k.uploadedByKind || null, k.uploadedById || null,
      k.applicationId || null, k.checklistItemId || null, k.llcId || null,
-     k.trackRecordId || null, k.slotLabel || null, Number(windowSec)]);
+     k.trackRecordId || null, k.slotLabel || null, Number(windowSec), k.docKind || null]);
   return r.rows[0] ? r.rows[0].id : null;
 }
 
