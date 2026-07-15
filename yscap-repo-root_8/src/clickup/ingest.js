@@ -116,7 +116,8 @@ async function healBorrowerFields(borrowerId, b) {
           updated_at      = now()
         WHERE id=$1`,
       [borrowerId, name(b.first_name), name(b.last_name), nn(b.cell_phone), nn(b.date_of_birth),
-       nn(b.citizenship), b.fico || null, b.current_address ? JSON.stringify(b.current_address) : null,
+       nn(b.citizenship), require('../lib/fields').sanitizeFico(b.fico),   // #90: never persist an out-of-range FICO from ClickUp
+       b.current_address ? JSON.stringify(b.current_address) : null,
        nn(b.marital_status), nn(b.employment_type), nn(b.employer)]);
   } catch (e) { console.warn('[ingest] borrower heal skipped:', e.message); }
 }
@@ -183,7 +184,8 @@ async function resolveBorrower(read, taskId) {
                             marital_status,employment_type,employer,ssn_hash,origin)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'clickup_backfill')
      ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
-    [first, last, email, b.cell_phone || null, b.date_of_birth || null, b.citizenship || null, b.fico || null,
+    [first, last, email, b.cell_phone || null, b.date_of_birth || null, b.citizenship || null,
+     require('../lib/fields').sanitizeFico(b.fico),   // #90: FICO 300–850 or null
      b.current_address ? JSON.stringify(b.current_address) : null, b.marital_status || null,
      b.employment_type || null, b.employer || null, ssnHash]);
   const borrowerId = ins.rows[0].id;
@@ -191,8 +193,11 @@ async function resolveBorrower(read, taskId) {
   // same task's shadow email on a re-sync) — heal it too, or the very row this
   // sync created with 'Unknown' can never pick the name up later.
   await healBorrowerFields(borrowerId, b);
-  if (b.ssn) { try { await db.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1 AND ssn_encrypted IS NULL`,
-    [borrowerId, C.encryptSSN(String(b.ssn)), String(b.ssn).replace(/\D/g, '').slice(-4)]); } catch (_) {} }
+  // #91: only accept a real 9-digit SSN from ClickUp, and store it canonically
+  // (digits only), matching every other write path.
+  const ssnD = require('../lib/fields').sanitizeSsnDigits(b.ssn);
+  if (ssnD) { try { await db.query(`UPDATE borrowers SET ssn_encrypted=$2, ssn_last4=$3 WHERE id=$1 AND ssn_encrypted IS NULL`,
+    [borrowerId, C.encryptSSN(ssnD), ssnD.slice(-4)]); } catch (_) {} }
   await recordContacts(borrowerId, b, taskId);
   // "Possible duplicate — please check": the email pointed at an existing borrower
   // we could not corroborate, so we created a DISTINCT profile (safe over-split).
