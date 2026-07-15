@@ -1100,6 +1100,30 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
   var val = function (id) { var e = el(id); return e ? String(e.value).trim() : ""; };
   var num = function (id) { return YS.num(id); };
   function digits(s) { return (s || "").replace(/\D/g, ""); }
+  // Phone / ZIP boxes accept digits only, pretty-printed as the user types —
+  // same behavior as the portal's PhoneInput/ZipInput.
+  function fmtPhone(v) {
+    var d = digits(v).slice(0, 10);
+    if (d.length <= 3) return d;
+    if (d.length <= 6) return "(" + d.slice(0, 3) + ") " + d.slice(3);
+    return "(" + d.slice(0, 3) + ") " + d.slice(3, 6) + "-" + d.slice(6);
+  }
+  function fmtZip(v) {
+    var d = digits(v).slice(0, 9);
+    return d.length <= 5 ? d : d.slice(0, 5) + "-" + d.slice(5);
+  }
+  var FORMATTERS = [];
+  function wireFormat(id, fmt) {
+    var e = el(id); if (!e) return;
+    var apply = function () { var out = fmt(e.value); if (e.value !== out) e.value = out; };
+    e.addEventListener("input", apply);
+    e.addEventListener("change", apply);
+    FORMATTERS.push(apply);
+    if (e.value) apply();
+  }
+  // Values set programmatically (XLSX import, URL-state restore) bypass input
+  // events — re-run every formatter after such a bulk apply.
+  function reformatAll() { FORMATTERS.forEach(function (f) { f(); }); }
   function clampPct(n) { n = +n; if (!isFinite(n)) n = 0; return Math.max(0, Math.min(100, n)); }
   var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -1778,6 +1802,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       if (!st) { flash("That file has no saved YS application data to import."); input.value = ""; return; }
       YS.applyState(st);
       if (st.v && st.v.borrowerCount) setBCount(parseInt(st.v.borrowerCount, 10));
+      reformatAll();
       updateConditionals(); recompute();
       if (+($(".wizard-step.is-active") || { getAttribute: function () { return 1; } }).getAttribute("data-step") === 3) renderReview();
       flash("Application imported.");
@@ -1921,7 +1946,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 
     wireAdmin();
 
-    // SSN formatting for every borrower
+    // SSN / phone / ZIP formatting for every borrower
     for (var i = 1; i <= MAX_BORROWERS; i++) (function (p) {
       var ssn = el(p + "Ssn");
       if (ssn) ssn.addEventListener("input", function () {
@@ -1930,8 +1955,12 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
         else if (d.length > 3) out = d.slice(0, 3) + "-" + d.slice(3);
         ssn.value = out;
       });
+      wireFormat(p + "Phone", fmtPhone);
+      wireFormat(p + "Zip", fmtZip);
+      wireFormat(p + "FZip", fmtZip);
       var ow = el(p + "Own"); if (ow) ow.addEventListener("input", function () { balanceOwnership(p + "Own"); });
     })("b" + i);
+    wireFormat("pZip", fmtZip);
 
     // add / remove borrower
     if (el("addBorrowerBtn")) el("addBorrowerBtn").addEventListener("click", function () {
