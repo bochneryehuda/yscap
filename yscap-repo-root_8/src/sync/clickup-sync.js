@@ -220,9 +220,11 @@ async function auditIdentityMismatchesOnce() {
   const r = await db.query(
     `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
             b.email, b.cell_phone, b.first_name, b.last_name, b.current_address, b.ssn_last4,
+            b2.email AS co_email, b2.cell_phone AS co_cell, b2.first_name AS co_first, b2.ssn_last4 AS co_ssn_last4,
             i.snapshot
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN borrowers b2 ON b2.id = a.co_borrower_id
        JOIN clickup_task_index i ON i.task_id = a.clickup_pipeline_task_id
       WHERE a.clickup_pipeline_task_id IS NOT NULL AND a.deleted_at IS NULL
         AND (a.sync_state IS NULL OR a.sync_state NOT IN ('descoped','manual_review','dead'))
@@ -236,24 +238,77 @@ async function auditIdentityMismatchesOnce() {
   const openSet = new Set(open.rows.map((o) => `${o.task_id}|${o.field_key}`));
   const digitsOf = (v) => String(v == null ? '' : v).replace(/\D/g, '');
   const lc = (v) => String(v == null ? '' : v).trim().toLowerCase();
-  const addrOf = (v) => { try { return identity.normalizeIdentity({ address: v && (v.formatted_address || v.oneLine || v.line1) }).address || null; } catch { return null; } };
+  // Our own placeholder emails are FILLER, never data — treated as blank here
+  // (Avrohom Kopel: shadow-vs-real "mismatches" hundreds of times; the heal
+  // now upgrades them, and they must never flag meanwhile).
+  const isShadowEmail = (v) => /^noemail\+.*@clickup\.local$/i.test(String(v || ''));
   const addrText = (v) => (v && (v.formatted_address || v.oneLine || v.line1)) || '';
+  // SAME-STREET comparator (Noach Mendelovits: "Ave" vs "Avenue", "Unit 114"
+  // vs "114", "Village of Spring Valley" vs "Spring Valley" are the SAME
+  // place). House number + first two street tokens (suffix-normalized) +
+  // ZIP-when-both-present must all agree to be "same"; anything failing that
+  // is a real disagreement. Full canonicalization (Google place_id) is the
+  // owner's follow-up project — this kills the formatting-noise class now.
+  const STREET_ABBR = { avenue: 'ave', av: 'ave', street: 'st', road: 'rd', drive: 'dr', lane: 'ln', court: 'ct',
+    place: 'pl', boulevard: 'blvd', terrace: 'ter', highway: 'hwy', parkway: 'pkwy', circle: 'cir', square: 'sq', trail: 'trl' };
+  const addrParts = (t) => {
+    const raw = String(t || '');
+    if (!raw.trim()) return null;
+    const s = raw.toLowerCase()
+      .replace(/\b(unit|apt|apartment|suite|ste)\s*#?\s*[\w-]+/g, ' ')
+      .replace(/#\s*[\w-]+/g, ' ')
+      .replace(/\b(village|town|city|borough|township)\s+of\b/g, ' ')
+      .replace(/[^a-z0-9 ]+/g, ' ');
+    const toks = s.split(/\s+/).filter(Boolean).map((w) => STREET_ABBR[w] || w);
+    const num = toks.find((w) => /^\d/.test(w)) || '';
+    const street = toks.filter((w) => /^[a-z]/.test(w)).slice(0, 2).join(' ');
+    const zip = (raw.match(/\b(\d{5})(?:-\d{4})?\b(?!.*\b\d{5}\b)/) || [])[1] || '';
+    return num && street ? { num, street, zip } : null;
+  };
+  const sameStreet = (a, b) => {
+    const x = addrParts(a), y = addrParts(b);
+    if (!x || !y) return null;   // can't tell → skip (never flag on a guess)
+    return x.num === y.num && x.street === y.street && (!x.zip || !y.zip || x.zip === y.zip);
+  };
   let queued = 0, closed = 0;
   for (const row of r.rows) {
     const sb = (row.snapshot && row.snapshot.borrower) || {};
+    // SWAP-PENDING GUARD (Boruch Stauber): when the MAIN task's person is the
+    // file's CO-borrower (roles reversed between the systems), every check
+    // below would cross-compare two different humans. The ingest-side role
+    // reconciliation aligns the file on the same boot pass — skip it here.
+    const sbLast4 = (String(sb.ssn || '').match(/(\d{4})\s*$/) || [])[1] || null;
+    const sbFirst = lc(String(sb.first_name || '').split(/\s+/)[0]);
+    const looksLikeCo = !!(row.co_first || row.co_ssn_last4) && (
+      (sbLast4 && row.co_ssn_last4 && sbLast4 === String(row.co_ssn_last4)) ||
+      (sb.email && row.co_email && lc(sb.email) === lc(row.co_email) && !isShadowEmail(row.co_email)) ||
+      (sbFirst && row.co_first && sbFirst === lc(String(row.co_first).split(/\s+/)[0])
+        && digitsOf(sb.cell_phone).slice(-10) && digitsOf(sb.cell_phone).slice(-10) === digitsOf(row.co_cell).slice(-10)));
+    if (looksLikeCo) continue;
     const checks = [];
-    if (sb.email && row.email) checks.push({ key: 'email', differ: lc(sb.email) !== lc(row.email), cu: sb.email, p: row.email });
+    if (sb.email && row.email && !isShadowEmail(sb.email)) {
+      if (isShadowEmail(row.email)) {
+        // Placeholder vs real is NOT a disagreement — the heal upgrades it;
+        // close any noise row already queued for it.
+        if (openSet.has(`${row.task_id}|email`)) {
+          closed += await review.closeStaleReviews({ taskId: row.task_id, fieldKey: 'email',
+            note: 'auto-closed — PILOT held our own placeholder email, not a real value; it upgrades from ClickUp automatically' });
+        }
+      } else {
+        checks.push({ key: 'email', differ: lc(sb.email) !== lc(row.email), cu: sb.email, p: row.email });
+      }
+    }
     const cp = digitsOf(sb.cell_phone), pp = digitsOf(row.cell_phone);
     if (cp.length >= 10 && pp.length >= 10) checks.push({ key: 'cell_phone', differ: cp.slice(-10) !== pp.slice(-10), cu: sb.cell_phone, p: row.cell_phone });
-    const cuFirst = lc(String(sb.first_name || '').split(/\s+/)[0]);
+    const cuFirst = sbFirst;
     const pFirst = lc(String(row.first_name || '').split(/\s+/)[0]);
     if (cuFirst && pFirst && !transforms.isPlaceholderName(sb.first_name) && !transforms.isPlaceholderName(row.first_name)) {
       checks.push({ key: 'first_name', differ: cuFirst !== pFirst,
         cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
     }
-    const cuA = addrOf(sb.current_address), pA = addrOf(row.current_address);
-    if (cuA && pA) checks.push({ key: 'current_address', differ: cuA !== pA, cu: addrText(sb.current_address), p: addrText(row.current_address) });
-    const cuS = (String(sb.ssn || '').match(/(\d{4})\s*$/) || [])[1];
+    const same = sameStreet(addrText(sb.current_address), addrText(row.current_address));
+    if (same !== null) checks.push({ key: 'current_address', differ: !same, cu: addrText(sb.current_address), p: addrText(row.current_address) });
+    const cuS = sbLast4;
     if (cuS && row.ssn_last4) checks.push({ key: 'ssn', differ: cuS !== String(row.ssn_last4), cu: '✱✱✱-✱✱-' + cuS, p: '✱✱✱-✱✱-' + row.ssn_last4 });
     for (const c of checks) {
       try {

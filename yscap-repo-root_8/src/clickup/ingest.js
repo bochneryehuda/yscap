@@ -254,6 +254,21 @@ async function healBorrowerFields(borrowerId, b, taskId) {
       }
     } catch (e) { console.warn('[ingest] cleared-DOB check skipped:', e.message); }
   }
+  // SHADOW-EMAIL UPGRADE (owner-reported 2026-07-15 night, Avrohom Kopel —
+  // "this comes up hundreds of times"): noemail+<task>@clickup.local is OUR
+  // OWN placeholder, minted when a profile had to be created without a safely
+  // usable real email. It is filler, not data — when ClickUp now carries a
+  // real email, the placeholder upgrades to it automatically. Unique-collision
+  // safe: if another borrower owns that email this throws 23505 and the
+  // placeholder stays (that pair is exactly what the dedup queue tracks).
+  try {
+    const em = nn(b.email) ? String(b.email).trim().toLowerCase() : null;
+    if (em && /@/.test(em) && !/@clickup\.local$/i.test(em)) {
+      await db.query(
+        `UPDATE borrowers SET email=$2, updated_at=now()
+          WHERE id=$1 AND email LIKE 'noemail+%@clickup.local'`, [borrowerId, em]);
+    }
+  } catch (_) { /* 23505: the real email belongs to another profile — keep the placeholder */ }
   // SSN fill-only, at the ONE heal chokepoint (owner-reported 2026-07-15
   // night, Shalom Elbaum: ClickUp carried the SSN but the file never got it —
   // the encrypted fill previously ran ONLY on the borrower-CREATE path, so a
@@ -875,6 +890,37 @@ async function ingestTask(task, options = {}, opts = {}) {
     const res = await linkOrCreateApplication(task, read, borrowerId, llcId,
       { allowCreate: opts.createFile === true, forceCreate: opts.forceCreate === true, folderId, loanOfficerEmail, processorEmail, coBorrowerId, coBorrowerTaskId });
     applicationId = res.applicationId; matchStatus = res.matchStatus; matchDetail = res.detail || null;
+    // ROLE RECONCILIATION (owner-directed 2026-07-15 night, Boruch Stauber /
+    // Shaindel Schwimmer: the MAIN task is the borrower and the SUBTASK is the
+    // co-borrower — but the portal file had the two people in swapped roles,
+    // so every position-based comparison cross-compared two different humans:
+    // name/SSN/cell "mismatches" on every file, DOB gates blocking pushes of
+    // the wrong person's data). resolveBorrower matched THIS task's fields to
+    // a person by hard identity (SSN hash / corroborated email) — when that
+    // person is the file's CO-borrower, the roles are PROVEN swapped: align
+    // them (audited, reversible, both people stay on the file). No review
+    // needed — this is structure, not a data conflict.
+    if (applicationId && borrowerId) {
+      try {
+        const roles = (await db.query(`SELECT borrower_id, co_borrower_id FROM applications WHERE id=$1`, [applicationId])).rows[0];
+        if (roles && String(roles.borrower_id) !== String(borrowerId)
+            && roles.co_borrower_id && String(roles.co_borrower_id) === String(borrowerId)) {
+          await db.query(
+            `UPDATE applications SET borrower_id=$2, co_borrower_id=$3, updated_at=now() WHERE id=$1`,
+            [applicationId, borrowerId, roles.borrower_id]);
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system',NULL,'borrower_roles_swapped','application',$1,$2)`,
+            [applicationId, JSON.stringify({ taskId: task.id, primaryNow: borrowerId, coBorrowerNow: roles.borrower_id,
+              why: 'ClickUp main task is the borrower; identity resolution proved the portal roles were reversed' })]).catch(() => {});
+          // The cross-person "mismatch" rows for this task are artifacts of the
+          // swap — close them; the next audit pass compares the right people.
+          for (const fk of ['first_name', 'email', 'cell_phone', 'ssn', 'current_address', 'date_of_birth']) {
+            try { await review.closeStaleReviews({ taskId: task.id, fieldKey: fk, note: 'auto-closed — the file’s borrower/co-borrower roles were aligned to ClickUp (main task = borrower); the comparison was across two different people' }); } catch (_) {}
+          }
+        }
+      } catch (e) { console.warn('[ingest] role reconciliation skipped:', e.message); }
+    }
     // Stamp switch-over (owner-directed 2026-07-15): when a link was newly
     // ESTABLISHED this pass (created / identity / stamp / loan-number /
     // dead-task relink — anything but the steady-state 'linked_task'), the
