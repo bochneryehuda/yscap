@@ -862,6 +862,46 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     if (m && m.id) { targetId = m.id; matchStatus = m.how; detail = m.detail || null; }
   }
 
+  // #86 — protect a freshly-APPROVED economics change from a STALE ClickUp pull.
+  // When a locked file's economics change is approved in the portal, the value is
+  // written to `applications` and an outbound push is enqueued. If an inbound pull
+  // lands before that push reaches ClickUp (a race, a lagging queue, or outbound
+  // disabled), the raw ClickUp value would COALESCE-overwrite the just-approved one
+  // — the borrower sees the old number, opens a NEW change request, and the request
+  // "re-appears" forever. Fix: for each governed field, if an APPROVED change_request
+  // is NEWER than the ClickUp task's last update, ClickUp is definitionally stale for
+  // that field — keep the portal value (cols[field]=null → COALESCE keeps it) and
+  // re-enqueue the push so ClickUp catches up. A genuinely newer ClickUp edit
+  // (date_updated > the approval) still wins, so this never blocks a real ClickUp
+  // change; and once our push lands, date_updated moves past the approval and the
+  // guard stops firing (no loop). Best-effort — never breaks the pull.
+  if (targetId && task && task.date_updated) {
+    try {
+      const CR = require('../lib/change-requests');
+      const present = CR.GOVERNED_FIELDS.filter((k) => k in cols && cols[k] != null);
+      if (present.length) {
+        const protectedCrs = await db.query(
+          `SELECT DISTINCT ON (field) field FROM change_requests
+            WHERE application_id=$1 AND status='approved' AND field = ANY($2)
+              AND decided_at > to_timestamp($3::bigint / 1000.0)
+            ORDER BY field, decided_at DESC`,
+          [targetId, present, String(task.date_updated)]);
+        if (protectedCrs.rows.length) {
+          const fields = protectedCrs.rows.map((r) => r.field);
+          for (const f of fields) cols[f] = null;   // COALESCE keeps the approved portal value
+          try { await require('./enqueue').enqueueClickupPush(targetId, fields); } catch (_) { /* re-sync ClickUp; no-op if already equal */ }
+          // Audit the protection (part of the cross-system change history).
+          try {
+            await db.query(
+              `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+               VALUES ('system', NULL, 'clickup_pull_cr_protected', 'application', $1, $2)`,
+              [targetId, JSON.stringify({ taskId: task.id, fields })]);
+          } catch (_) {}
+        }
+      }
+    } catch (_) { /* best-effort — a guard failure must never break the inbound pull */ }
+  }
+
   const vals = Object.values(cols);
   const set = Object.keys(cols).map((k, i) => `${k}=COALESCE($${i + 2}, ${k})`).join(', ');
   if (targetId) {
