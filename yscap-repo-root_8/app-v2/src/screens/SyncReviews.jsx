@@ -30,6 +30,7 @@ const REASON_COPY = {
   identity_mismatch_audit: 'The portfolio audit found the two systems carrying DIFFERENT values for this borrower-identity field. Nothing was changed anywhere (identity fields never overwrite silently) — compare the sides and adopt the correct one; it is applied to both systems. If both are fine (e.g. an old phone number), dismiss and this stays closed.',
   sharepoint_match_uncertain: 'The SharePoint mirror was NOT SURE which folder this file’s documents belong in (an ambiguous folder match, or no officer yet), so it filed into a safe, clearly-marked new folder — shown under “In PILOT”. If that is the wrong tree: merge or rename the folders IN SharePoint (the mirror never moves or renames anything itself), then click Re-match. Dismiss keeps the new folder.',
   sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the last error is recorded on the row. Usually a permissions problem, a folder issue, or an unreadable file. Fix the cause, then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
+  borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: the name on this file’s ClickUp task and the name on the PILOT profile disagree, and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either name — that would rename the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
 };
 // FILE-LEVEL resolution options per reason (mirrors REASON_ACTIONS in
 // src/lib/sync-file-review.js — the server validates; this only renders).
@@ -57,6 +58,9 @@ const REASON_FILE_ACTIONS = {
   sharepoint_mirror_failed: [
     { action: 'sp_retry_doc', label: 'Retry the document', title: 'Re-arm the document’s mirror retries and kick a sync pass — fix the underlying cause first' },
     { action: 'sp_rematch', label: 'Re-match folders', title: 'Clear the folder match so the next sync re-runs it (when the folder resolution itself is the problem)' },
+  ],
+  borrower_identity_conflict: [
+    { action: 'split_borrower', label: 'Split — give this file’s person their own profile', title: 'Un-merge: rebuild this file’s person from the ClickUp task on a fresh profile and re-point the file; the other person keeps the original profile untouched' },
   ],
 };
 // Candidate files the matcher surfaced (enriched into raw_value at queue time).
@@ -89,6 +93,8 @@ const FIELD_LABELS = {
   file_link: 'File not syncing', ys_loan_number: 'YS loan number', push_job: 'ClickUp push failed',
   co_first_name: 'Co-borrower name', co_cell_phone: 'Co-borrower cell',
   sharepoint_folder: 'SharePoint filing', sharepoint_doc: 'SharePoint document sync',
+  borrower_identity: 'Borrower identity — one profile, two people',
+  co_borrower_identity: 'Co-borrower identity — one profile, two people',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are

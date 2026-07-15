@@ -29,14 +29,26 @@ async function expectHttp(status, fn) {
 
 (async () => {
   // ---- contract shape ------------------------------------------------------
-  t('REASON_ACTIONS lists the seven stuck states', () => {
+  t('REASON_ACTIONS lists the eight stuck states', () => {
     const keys = Object.keys(SFR.REASON_ACTIONS).sort();
     assert.deepStrictEqual(keys, [
       'file_not_materialized_ambiguous', 'file_not_materialized_duplicate_pending',
       'file_unlinked_no_task', 'push_dead_lettered', 'task_deleted_needs_decision',
-      'sharepoint_match_uncertain', 'sharepoint_mirror_failed'].sort());
+      'sharepoint_match_uncertain', 'sharepoint_mirror_failed', 'borrower_identity_conflict'].sort());
     for (const k of keys) assert.ok(SFR.REASON_ACTIONS[k].length >= 1, `${k} has at least one action`);
   });
+  // ---- split_borrower (the wrong-officer merge repair) ----------------------
+  t('borrower_identity_conflict offers ONLY split_borrower', () => {
+    assert.strictEqual(SFR.isActionAllowed('borrower_identity_conflict', 'split_borrower'), true);
+    assert.strictEqual(SFR.isActionAllowed('borrower_identity_conflict', 'create_file'), false);
+    assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'split_borrower'), false, 'split never leaks onto other reasons');
+  });
+  await ta('split_borrower without a file → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'borrower_identity_conflict', application_id: null, borrower_id: 'b1' }, action: 'split_borrower' })));
+  await ta('split_borrower without a person → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'borrower_identity_conflict', application_id: 'a1', borrower_id: null }, action: 'split_borrower' })));
   await ta('sp_rematch without any scope reference → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'sharepoint_match_uncertain', raw_value: 'not-json' }, action: 'sp_rematch' })));

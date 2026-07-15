@@ -137,8 +137,8 @@ eq('identity address case-insensitive',
 eq('identity 2-match across mixed case',
   id.isMatch({ borrowerName: 'John Smith', email: 'A@B.com' },
              { borrowerName: 'JOHN SMITH', email: 'a@b.COM' }), true);
-eq('corroborate last name mixed case',
-  id.emailMatchCorroborated({ lastName: 'MENDLOVIC' }, { lastName: 'mendlovic' }), true);
+eq('corroborate FULL name mixed case',
+  id.emailMatchCorroborated({ firstName: 'Noach', lastName: 'MENDLOVIC' }, { firstName: 'noach', lastName: 'mendlovic' }), true);
 
 // case-insensitive officer routing (a case difference must not drop to Lead Capture)
 eq('routing case-insensitive folder',
@@ -148,8 +148,18 @@ eq('routing all-caps still an officer', routing.resolveRouting('YEHUDA BOCHNER')
 eq('routing unknown -> unassigned', routing.resolveRouting('Nobody Here').role, 'unassigned');
 
 // email-match corroboration gate (§3.4 — email alone is never enough to merge)
-eq('corrob last name',
-  id.emailMatchCorroborated({ lastName: 'Steiner', phone: null, dob: null }, { lastName: 'STEINER', phone: null, dob: null }), true);
+// LAST NAME ALONE NEVER CORROBORATES (owner incident 2026-07-15 night): family
+// members share the email AND the surname — an officer's lead and a different
+// real borrower were merged into one profile exactly this way. The wrong-officer
+// merge shape MUST stay false forever:
+eq('corrob last name ALONE is NOT enough (the wrong-officer merge incident)',
+  id.emailMatchCorroborated({ lastName: 'Steiner', phone: null, dob: null }, { lastName: 'STEINER', phone: null, dob: null }), false);
+eq('corrob family email + family surname, different first names -> two people, never merged',
+  id.emailMatchCorroborated({ firstName: 'Noach', lastName: 'Mendelovits' }, { firstName: 'Chaim', lastName: 'Mendelovits' }), false);
+eq('corrob FULL name (first + last agree)',
+  id.emailMatchCorroborated({ firstName: 'Yosef', lastName: 'Steiner' }, { firstName: 'yosef', lastName: 'STEINER' }), true);
+eq('corrob placeholder first names never corroborate',
+  id.emailMatchCorroborated({ firstName: 'Unknown', lastName: 'Steiner' }, { firstName: 'unknown', lastName: 'Steiner' }), false);
 eq('corrob phone last10',
   id.emailMatchCorroborated({ phone: '+1 (917) 538-1594' }, { phone: '9175381594' }), true);
 eq('corrob dob (Date vs string)',
@@ -165,6 +175,20 @@ eq('corrob two different people',
 eq('corrob one-sided last name', id.emailMatchCorroborated({ lastName: 'Katz' }, { lastName: null }), false);
 eq('corrob both empty', id.emailMatchCorroborated({}, {}), false);
 eq('corrob blank strings', id.emailMatchCorroborated({ lastName: '  ' }, { lastName: '' }), false);
+
+// nameConflict — the same-email-different-person guard on every borrower
+// adoption path (staff file create, portal invite, lead convert, public intake)
+eq('nameConflict: different first names -> conflict',
+  id.nameConflict('Noach', 'Mendelovits', 'Chaim', 'Mendelovits'), true);
+eq('nameConflict: different last names -> conflict',
+  id.nameConflict('Moshe', 'Cohen', 'Moshe', 'Weiss'), true);
+eq('nameConflict: same person, case/middle-name noise -> no conflict',
+  id.nameConflict('Moshe Dov', 'COHEN', 'moshe', 'Cohen'), false);
+eq('nameConflict: initial matches its full name -> no conflict',
+  id.nameConflict('M', 'Cohen', 'Moshe', 'Cohen'), false);
+eq('nameConflict: placeholder never conflicts',
+  id.nameConflict('Unknown', 'Unknown', 'Moshe', 'Cohen'), false);
+eq('nameConflict: blanks never conflict', id.nameConflict('', '', 'Moshe', 'Cohen'), false);
 
 // RTL descope gate (I-A) — ONLY positively non-RTL labels may descope a live file
 eq('nonRtl dscr label', x.isNonRtlProgramLabel('Non-QM - DSCR Ratio'), true);
