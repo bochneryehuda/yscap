@@ -296,6 +296,19 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
       if (!win || !win.TS) return null;
       try { return readSnapshot(win); } catch (_) { return null; }
     },
+    // #103: the RAW input state the frozen tool round-trips through YS.applyState
+    // — used by the borrower self-service Pricing screen to SAVE a scenario and
+    // reopen it later. Distinct from snapshot() (the computed pricing result).
+    readState() {
+      const win = winRef.current;
+      if (!win || !win.YS || typeof win.YS.readState !== 'function') return null;
+      try { return win.YS.readState(); } catch (_) { return null; }
+    },
+    applyState(state) {
+      const win = winRef.current;
+      if (!win || !win.YS || typeof win.YS.applyState !== 'function' || !state) return false;
+      try { win.YS.applyState(state); return true; } catch (_) { return false; }
+    },
     setAdminVisible(show) { applyAdminVisible(show); },
     /* Bring the admin pricing zone into view. `container` is the scrolling
        ancestor (the studio sheet body) — falls back to the window. */

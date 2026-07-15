@@ -203,6 +203,12 @@ export const api = {
   requestChange:  (id, field, value, reason) => req('POST', `/api/borrower/applications/${id}/complete-fields`, { [field]: value, reason }),
   activity:     (id) => req('GET', `/api/borrower/applications/${id}/activity`),
   statusHistory:(id) => req('GET', `/api/borrower/applications/${id}/status-history`),
+  // #103 borrower self-service pricing
+  pricingPrefill:      () => req('GET', '/api/borrower/pricing/prefill'),
+  pricingScenarios:    () => req('GET', '/api/borrower/pricing/scenarios'),
+  savePricingScenario: (label, inputs) => req('POST', '/api/borrower/pricing/scenarios', { label, inputs }),
+  updatePricingScenario: (id, body) => req('PUT', `/api/borrower/pricing/scenarios/${id}`, body),
+  deletePricingScenario: (id) => req('DELETE', `/api/borrower/pricing/scenarios/${id}`),
   notifications:() => req('GET', '/api/borrower/notifications'),
   messages:     (appId) => req('GET', `/api/borrower/messages?applicationId=${appId}`),
   react:        (msgId, emoji) => req('POST', `/api/borrower/messages/${msgId}/react`, { emoji }),
