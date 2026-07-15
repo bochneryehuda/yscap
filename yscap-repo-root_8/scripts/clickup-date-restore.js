@@ -106,7 +106,30 @@ async function main() {
     for (const f of DATE_FIELDS) {
       if (ONLY && f.key !== ONLY) continue;
       const raw = cf[f.id];
-      if (raw == null || raw === '') continue;
+      if (raw == null || raw === '') {
+        // ClickUp side is EMPTY. If the PORTAL side holds a garbage year (the
+        // typing artifact persisted DB-side, e.g. a 0026 closing), the owner's
+        // rule is WIPE, DON'T GUESS: clear the portal column (audited).
+        let p = f.col === 'date_of_birth' ? app.date_of_birth : app[f.col];
+        if (p instanceof Date) p = null;                     // timestamptz — never wiped
+        const y = Number(String(p || '').slice(0, 4));
+        if (p != null && !(y >= 1900 && y <= 2100) && PORTAL_HEAL_COLS.has(f.col)) {
+          const action = APPLY ? 'clear-portal-garbage' : 'would-clear-portal-garbage';
+          if (APPLY) {
+            if (f.table === 'b') await db.query(`UPDATE borrowers SET date_of_birth=NULL, updated_at=now() WHERE id=$1`, [app.borrower_id]);
+            else await db.query(`UPDATE applications SET ${f.col}=NULL, updated_at=now() WHERE id=$1`, [app.id]);
+            await db.query(
+              `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+               VALUES ('system', NULL, 'clickup_date_restore_portal', $1, $2, $3)`,
+              [f.table === 'b' ? 'borrower' : 'application', f.table === 'b' ? app.borrower_id : app.id,
+               JSON.stringify({ taskId: app.task_id, field: f.col, from: String(p), to: null, rule: 'wipe_dont_guess' })]);
+            flagged++;
+          }
+          rows.push([app.task_id, app.id, `${app.first_name || ''} ${app.last_name || ''}`.trim(), f.key,
+            '', null, 'clickup-empty', p, false, action, null, APPLY || null].map(csvEsc));
+        }
+        continue;
+      }
       const cls = classify(raw);
       const cuDay = T.fromEpochMs(raw);
       // portal-side value for the same field ('YYYY-MM-DD' via the pg type parser;
