@@ -118,9 +118,12 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
       `UPDATE applications SET clickup_pipeline_task_id=$2, sync_state='linked', updated_at=now() WHERE id=$1`,
       [app.id, row.task_id]);
     await audit('sync_review_link_existing', app.id, actorId, { taskId: row.task_id, reviewId: row.id });
-    // Fill from the task through the normal guarded pull; the unlinked→linked
-    // stamp push happens inside ingest. Best-effort — the link itself is done.
+    // Fill from the task through the normal guarded pull, and re-point the
+    // task's Portal-File-ID stamp at ITS file (the re-ingest matches byTask =
+    // 'linked_task', which deliberately never re-enqueues the stamp — so the
+    // link action enqueues it itself). Both best-effort — the link is done.
     try { await require('../sync/clickup-sync').ingestOne(row.task_id); } catch (e) { console.warn('[sync-file-review] post-link ingest failed:', e.message); }
+    try { await require('../clickup/enqueue').enqueueClickupPush(app.id, ['portal_stamp']); } catch (_) { /* best-effort */ }
     return { note: `linked to existing file ${app.id}`, applicationId: app.id };
   }
 
