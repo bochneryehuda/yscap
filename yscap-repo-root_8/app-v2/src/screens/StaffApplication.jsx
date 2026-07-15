@@ -4,7 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fileToBase64 } from '../lib/files.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
-import { formatSSN } from '../lib/validators.js';
+import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { useAuth } from '../lib/auth.jsx';
 import { subscribeChat } from '../lib/chatEvents.js';
 import ChatThread from '../components/ChatThread.jsx';
@@ -110,7 +110,7 @@ const COMPLETENESS_FIELDS = (app, borrower) => [
   { key: 'cell_phone', label: 'Borrower phone', ok: !!(borrower && borrower.cell_phone), type: 'tel' },
   { key: 'date_of_birth', label: 'Date of birth', ok: !!(borrower && borrower.date_of_birth), type: 'date' },
   { key: 'ssn', label: 'SSN on file', ok: !!(borrower && borrower.ssn_last4), edit: false, hint: 'Enter via the secure SSN field on the borrower profile.' },
-  { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'number' },
+  { key: 'fico', label: 'FICO', ok: !!(borrower && borrower.fico), type: 'fico' },
   { key: 'citizenship', label: 'Citizenship', ok: !!(borrower && borrower.citizenship), type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
 ];
 
@@ -128,7 +128,7 @@ const CO_COMPLETENESS_FIELDS = (app) => ((app.co_borrower_id && ('co_first_name'
   { key: 'co_email', label: 'Co-borrower email', ok: !!app.co_email, edit: false, hint: 'Set in the Co-borrower panel.' },
   { key: 'co_phone', label: 'Co-borrower phone', ok: !!app.co_cell_phone, type: 'tel' },
   { key: 'co_dob', label: 'Co-borrower date of birth', ok: !!app.co_date_of_birth, type: 'date' },
-  { key: 'co_fico', label: 'Co-borrower FICO', ok: !!app.co_fico, type: 'number' },
+  { key: 'co_fico', label: 'Co-borrower FICO', ok: !!app.co_fico, type: 'fico' },
   { key: 'co_citizenship', label: 'Co-borrower citizenship', ok: !!app.co_citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
   { key: 'co_ssn', label: 'Co-borrower SSN on file', ok: !!app.co_ssn_last4, edit: false, hint: 'Enter in the Co-borrower panel (stored encrypted).' },
 ] : []);
@@ -147,6 +147,8 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
   const start = (f) => { setEditing(f.key); setVal(''); setErr(''); };
   async function save(f) {
     if (val === '' || val == null) return;
+    // #90: a FICO must be a real 3-digit score in range — never save junk.
+    if (f.type === 'fico' && !ficoValid(val)) { setErr('FICO must be a 3-digit score between 300 and 850.'); return; }
     setBusy(true); setErr('');
     try { await api.post(endpoint, { [f.key]: val }); setEditing(null); setVal(''); await onSaved(); }
     catch (e) { setErr(e.message || 'Could not save'); }
@@ -173,10 +175,12 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                     </select>
                   : <input className="input" style={{ maxWidth: 170 }} autoFocus
                       type={f.type === 'date' ? 'date' : f.type === 'number' || f.type === 'money' ? 'number' : f.type === 'tel' ? 'tel' : 'text'}
-                      inputMode={f.type === 'money' || f.type === 'number' ? 'numeric' : undefined}
-                      placeholder={f.label} value={val} onChange={(e) => setVal(e.target.value)}
+                      inputMode={f.type === 'money' || f.type === 'number' || f.type === 'fico' ? 'numeric' : undefined}
+                      maxLength={f.type === 'fico' ? 3 : undefined}
+                      placeholder={f.type === 'fico' ? '300–850' : f.label} value={val}
+                      onChange={(e) => setVal(f.type === 'fico' ? cleanFICO(e.target.value) : e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && save(f)} />}
-                <button className="btn primary small" disabled={busy || val === ''} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
+                <button className="btn primary small" disabled={busy || val === '' || (f.type === 'fico' && !ficoValid(val))} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
                 <button className="btn ghost small" onClick={() => setEditing(null)}>✕</button>
               </span>
             ) : f.edit === false ? (
