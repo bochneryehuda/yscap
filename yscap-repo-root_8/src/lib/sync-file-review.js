@@ -235,17 +235,44 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
       `SELECT id, borrower_id, co_borrower_id, clickup_pipeline_task_id
          FROM applications WHERE id=$1 AND deleted_at IS NULL`, [row.application_id])).rows[0];
     if (!app) throw httpError(404, 'the file no longer exists');
-    const role = String(app.borrower_id) === String(row.borrower_id) ? 'borrower'
-      : (app.co_borrower_id && String(app.co_borrower_id) === String(row.borrower_id)) ? 'co_borrower' : null;
-    if (!role) throw httpError(409, 'the file no longer references this person (already fixed)');
+    // WHICH SLOT is the merged one? The CARD knows (the detector stamped the
+    // role into raw_value / the field key) — trust that FIRST. Deriving the
+    // role from pointer comparison alone re-points the WRONG slot in the worst
+    // damage shape: when the merged row serves BOTH slots (the co-borrower
+    // resolution collapsed into the main borrower's row), borrower_id ===
+    // co_borrower_id and a pointer check would always answer 'borrower' even
+    // for a co-borrower card (live incident, Mendelovits follow-up #2).
+    let role = null;
+    try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; role = raw && raw.role; } catch (_) { /* forensic */ }
+    if (role !== 'borrower' && role !== 'co_borrower') {
+      role = row.field_key === 'co_borrower_identity' ? 'co_borrower'
+        : row.field_key === 'borrower_identity' ? 'borrower'
+        : String(app.borrower_id) === String(row.borrower_id) ? 'borrower'
+        : (app.co_borrower_id && String(app.co_borrower_id) === String(row.borrower_id)) ? 'co_borrower' : null;
+    }
+    const slotVal = role === 'borrower' ? app.borrower_id : role === 'co_borrower' ? app.co_borrower_id : null;
+    if (!role || !slotVal || String(slotVal) !== String(row.borrower_id)) {
+      throw httpError(409, 'the file no longer references this person (already fixed)');
+    }
     const taskKey = app.clickup_pipeline_task_id || row.task_id;
     if (!taskKey || String(taskKey).startsWith('app:')) throw httpError(409, 'the file has no ClickUp task to rebuild the person from');
     const idx = (await db.query(
       `SELECT snapshot FROM clickup_task_index WHERE task_id=$1`, [taskKey])).rows[0];
     const snap = idx && idx.snapshot;
-    const person = role === 'borrower' ? (snap && snap.borrower) : (snap && snap.coBorrower);
-    if (!person || typeof person !== 'object' || !person.first_name) {
-      throw httpError(409, 'the ClickUp snapshot carries no usable identity for this person — press “Sync my files” and try again');
+    let person = role === 'borrower' ? (snap && snap.borrower) : (snap && snap.coBorrower);
+    if (!person || typeof person !== 'object') person = {};
+    // A CO-borrower frequently has NO name in the snapshot (the name lives on
+    // the SUBTASK; the parent task carried only a phone — exactly the shape
+    // the owner hit: the card showed “…0192” and Split dead-ended on a 409).
+    // The split must still work: start the fresh profile as a PLACEHOLDER —
+    // 'Co-Borrower' is in the heal's placeholder set, so the post-split
+    // re-ingest below immediately overwrites it with the real name/phone/DOB
+    // read live from the subtask. Only the MAIN borrower role hard-requires a
+    // name (the main task always carries one; without it there is nothing to
+    // split toward).
+    if (!person.first_name) {
+      if (role === 'co_borrower') person = { ...person, first_name: 'Co-Borrower', last_name: '' };
+      else throw httpError(409, 'the ClickUp snapshot carries no usable identity for this person — press “Sync my files” and try again');
     }
     const old = (await db.query(
       `SELECT email, first_name, last_name, cell_phone, date_of_birth, current_address
@@ -301,9 +328,12 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
     } catch (_) { /* best-effort */ }
     // Heal the fresh profile from ClickUp through the normal guarded pull.
     try { await require('../sync/clickup-sync').ingestOne(taskKey); } catch (e) { console.warn('[sync-file-review] post-split ingest failed:', e.message); }
+    const newLabel = person.first_name === 'Co-Borrower' && !person.last_name
+      ? 'the co-borrower (name pending — it fills in from ClickUp once the subtask carries it, or type it on the new profile)'
+      : `“${[person.first_name, person.last_name].filter(Boolean).join(' ')}”`;
     return {
       note: `split into two people: the file's ${role === 'co_borrower' ? 'co-borrower' : 'borrower'} ` +
-        `“${[person.first_name, person.last_name].filter(Boolean).join(' ')}” now has their own profile (${newId}); ` +
+        `${newLabel} now has their own profile (${newId}); ` +
         `“${[old.first_name, old.last_name].filter(Boolean).join(' ')}” keeps the original profile untouched` +
         (possiblyPolluted.length ? ` — REVIEW the original profile's ${possiblyPolluted.join(', ')}: those values match the split-off person and may have been synced in by the merge` : ''),
       applicationId: app.id };
