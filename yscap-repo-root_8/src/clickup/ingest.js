@@ -334,15 +334,19 @@ async function resolveBorrower(read, taskId) {
   //        (last 10) / DOB also agrees; else create a distinct profile.
   if (b.email) {
     const r = await db.query(
-      `SELECT id, ssn_hash, last_name, cell_phone, date_of_birth FROM borrowers WHERE email=$1 LIMIT 1`,
+      `SELECT id, ssn_hash, first_name, last_name, cell_phone, date_of_birth FROM borrowers WHERE email=$1 LIMIT 1`,
       [String(b.email).toLowerCase().trim()]);
     const ex = r.rows[0];
     if (ex) {
       const ssnConflict = ssnHash && ex.ssn_hash && ssnHash !== ex.ssn_hash;
       const ssnAgree    = ssnHash && ex.ssn_hash && ssnHash === ex.ssn_hash;
+      // Corroboration requires phone / DOB / the FULL name — never the last
+      // name alone (a family-shared email + the family surname merged a loan
+      // officer's LEAD with a different real borrower, owner incident
+      // 2026-07-15 night — two people, one profile, wrong officer on the file).
       const corroborated = identity.emailMatchCorroborated(
-        { lastName: b.last_name, phone: b.cell_phone, dob: b.date_of_birth },
-        { lastName: ex.last_name, phone: ex.cell_phone, dob: ex.date_of_birth });
+        { firstName: b.first_name, lastName: b.last_name, phone: b.cell_phone, dob: b.date_of_birth },
+        { firstName: ex.first_name, lastName: ex.last_name, phone: ex.cell_phone, dob: ex.date_of_birth });
       if (!ssnConflict && (ssnAgree || corroborated)) {
         if (ssnHash) await db.query(`UPDATE borrowers SET ssn_hash=COALESCE(ssn_hash,$1) WHERE id=$2`, [ssnHash, ex.id]);
         await healBorrowerFields(ex.id, b, taskId);
@@ -631,7 +635,17 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
       [borrowerId, task.id]).catch(() => ({ rows: [] }));
     for (const o of other.rows) {
       const on = identity.normalizeIdentity({ address: _addrOf(o.property_address) });
-      if (!on.address || on.address !== tn.address) continue;
+      if (!on.address) continue;
+      if (on.address !== tn.address) {
+        // CANONICAL fallback (owner-directed): the strict token compare misses
+        // formatting variants of the SAME property ("St"/"Street") — before
+        // skipping this sibling, ask the cached Google place_id resolver.
+        // Degradable (no key / unresolvable → skip as before) and bounded
+        // (few siblings per borrower; every distinct text resolves once).
+        let sameProp = null;
+        try { sameProp = await require('../lib/address-canon').samePlace(_addrOf(read.app.property_address), _addrOf(o.property_address)); } catch (_) {}
+        if (sameProp !== true) continue;
+      }
       let dead = false, sibTerminal = false;
       try {
         const sib = await require('./client').getTask(o.clickup_pipeline_task_id);

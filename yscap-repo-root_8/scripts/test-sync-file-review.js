@@ -29,17 +29,59 @@ async function expectHttp(status, fn) {
 
 (async () => {
   // ---- contract shape ------------------------------------------------------
-  t('REASON_ACTIONS lists the six stuck states', () => {
+  t('REASON_ACTIONS lists the eight stuck states', () => {
     const keys = Object.keys(SFR.REASON_ACTIONS).sort();
     assert.deepStrictEqual(keys, [
       'file_not_materialized_ambiguous', 'file_not_materialized_duplicate_pending',
       'file_unlinked_no_task', 'push_dead_lettered', 'task_deleted_needs_decision',
-      'sharepoint_match_uncertain'].sort());
+      'sharepoint_match_uncertain', 'sharepoint_mirror_failed', 'borrower_identity_conflict'].sort());
     for (const k of keys) assert.ok(SFR.REASON_ACTIONS[k].length >= 1, `${k} has at least one action`);
   });
-  await ta('sp_rematch without a scope reference → 409', () =>
+  // ---- split_borrower (the wrong-officer merge repair) ----------------------
+  t('borrower_identity_conflict offers ONLY split_borrower', () => {
+    assert.strictEqual(SFR.isActionAllowed('borrower_identity_conflict', 'split_borrower'), true);
+    assert.strictEqual(SFR.isActionAllowed('borrower_identity_conflict', 'create_file'), false);
+    assert.strictEqual(SFR.isActionAllowed('push_dead_lettered', 'split_borrower'), false, 'split never leaks onto other reasons');
+  });
+  await ta('split_borrower without a file → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'borrower_identity_conflict', application_id: null, borrower_id: 'b1' }, action: 'split_borrower' })));
+  await ta('split_borrower without a person → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'borrower_identity_conflict', application_id: 'a1', borrower_id: null }, action: 'split_borrower' })));
+  await ta('sp_rematch without any scope reference → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'sharepoint_match_uncertain', raw_value: 'not-json' }, action: 'sp_rematch' })));
+  await ta('sp_retry_doc without a document reference → 409', () =>
+    expectHttp(409, () => SFR.applyFileReviewAction({
+      row: { reason: 'sharepoint_mirror_failed', raw_value: 'not-json' }, action: 'sp_retry_doc' })));
+
+  // ---- address canonicalization: the pure geocode parser -------------------
+  t('parseGeocodeResult: full street result → place row', () => {
+    const CANON = require('../src/lib/address-canon');
+    const out = CANON.parseGeocodeResult({ results: [{
+      place_id: 'ChIJabc', formatted_address: '97 S Madison Ave #114, Spring Valley, NY 10977, USA',
+      types: ['street_address'],
+      geometry: { location: { lat: 41.11, lng: -74.04 } },
+      address_components: [{ types: ['postal_code'], long_name: '10977' }],
+    }] });
+    assert.strictEqual(out.place_id, 'ChIJabc');
+    assert.strictEqual(out.zip, '10977');
+    assert.strictEqual(out.lat, 41.11);
+  });
+  t('parseGeocodeResult: locality-level (imprecise) result → null', () => {
+    const CANON = require('../src/lib/address-canon');
+    assert.strictEqual(CANON.parseGeocodeResult({ results: [{ place_id: 'x', types: ['locality'] }] }), null);
+  });
+  t('parseGeocodeResult: empty/missing results → null', () => {
+    const CANON = require('../src/lib/address-canon');
+    assert.strictEqual(CANON.parseGeocodeResult({ results: [] }), null);
+    assert.strictEqual(CANON.parseGeocodeResult(null), null);
+  });
+  t('inputKey collapses whitespace + case (cache identity)', () => {
+    const CANON = require('../src/lib/address-canon');
+    assert.strictEqual(CANON.inputKey('  97 S  Madison AVE '), CANON.inputKey('97 s madison ave'));
+  });
   t('isActionAllowed enforces the per-reason list', () => {
     assert.strictEqual(SFR.isActionAllowed('file_not_materialized_ambiguous', 'create_file'), true);
     assert.strictEqual(SFR.isActionAllowed('file_not_materialized_ambiguous', 'link_existing'), true);

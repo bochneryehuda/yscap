@@ -595,6 +595,36 @@ router.get('/lead-capture', async (req, res) => {
   res.json(r.rows);
 });
 
+// SAME-EMAIL, DIFFERENT-PERSON guard (owner incident 2026-07-15 night): every
+// staff path that match-or-creates a borrower by email must first check that
+// the existing row's NAME belongs to the same person. A family-shared email
+// silently adopted a loan officer's LEAD as the borrower of a different
+// person's file — merging two people into one profile and handing the file
+// (via owning-officer stickiness) to the wrong loan officer. When the names
+// materially disagree, the write is REFUSED with an explicit 409 so the
+// staffer decides — open the existing profile if it truly is the same person,
+// or use a different email for the new one. Never a silent merge.
+async function emailAdoptionConflict(email, firstName, lastName) {
+  if (!email) return null;
+  const identity = require('../clickup/identity');
+  const r = await db.query(
+    `SELECT id, first_name, last_name FROM borrowers WHERE email=$1 LIMIT 1`,
+    [String(email).toLowerCase().trim()]);
+  const ex = r.rows[0];
+  if (!ex) return null;
+  if (!identity.nameConflict(firstName, lastName, ex.first_name, ex.last_name)) return null;
+  return ex;
+}
+function emailAdoptionError(res, ex, email) {
+  const who = [ex.first_name, ex.last_name].filter(Boolean).join(' ') || 'another person';
+  return res.status(409).json({
+    error: `The email ${email} already belongs to ${who} — a different name. ` +
+      `If this really is the same person, open their existing profile and start the file from there; ` +
+      `otherwise use a different email for this borrower. Two people are never merged on a shared email.`,
+    existingBorrowerId: ex.id, existingName: who,
+  });
+}
+
 // ---------------- staff originates a mortgage file (borrower need not exist) ----------------
 // Any staffer (admin / loan officer / operations) can open a file from their
 // side: match-or-create the borrower by email (no login required), create the
@@ -612,6 +642,9 @@ router.post('/applications', async (req, res) => {
   if (!addr || !(addr.oneLine || addr.street || addr.line1))
     return res.status(400).json({ error: 'property address required' });
   try {
+    // Same email + a DIFFERENT person's name → refuse the silent merge (409).
+    const exConflict = await emailAdoptionConflict(email, firstName, lastName);
+    if (exConflict) return emailAdoptionError(res, exConflict, email);
     // Match-or-create the borrower. Never overwrite existing PII — only fill
     // blank fields — so an existing borrower record is preserved intact.
     const br = await db.query(
@@ -802,6 +835,11 @@ router.post('/invite-to-portal', async (req, res) => {
     if (o.rows[0]) officerId = o.rows[0].id;
   }
   try {
+    // Same email + a DIFFERENT person's name → refuse the silent merge (409).
+    // (Inviting "Chaim Mendelovits" on an email that belongs to "Noach
+    // Mendelovits" must not overlay one person's lead on the other's profile.)
+    const exConflict = await emailAdoptionConflict(email, first, last);
+    if (exConflict) return emailAdoptionError(res, exConflict, email);
     // 1) upsert the borrower profile by email; set the owning officer only when the
     // borrower doesn't already have one (never steal an existing relationship).
     const bor = await db.query(
@@ -4597,6 +4635,14 @@ router.post('/leads/:id/convert', async (req, res) => {
     if (!firstName) return res.status(400).json({ error: 'a borrower first name is required to convert' });
     if (!addr || !(addr.oneLine || addr.street || addr.line1))
       return res.status(400).json({ error: 'a subject property address is required to convert' });
+
+    // Same email + a DIFFERENT person's name → refuse the silent merge (409).
+    // Converting officer A's lead onto a borrower row that is really a
+    // DIFFERENT person (family-shared email, same surname) is exactly the
+    // wrong-officer merge incident — the lead's officer would inherit the
+    // other person's file and profile.
+    const exConflict = await emailAdoptionConflict(email, firstName, lastName);
+    if (exConflict) return emailAdoptionError(res, exConflict, email);
 
     const br = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone)

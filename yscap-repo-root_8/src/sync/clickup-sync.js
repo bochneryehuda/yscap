@@ -216,9 +216,9 @@ async function auditIdentityMismatchesOnce() {
   const review = require('../lib/sync-review');
   const identity = require('../clickup/identity');
   const transforms = require('../clickup/transforms');
-  const KEYS = ['email', 'cell_phone', 'first_name', 'current_address', 'ssn'];
+  const KEYS = ['email', 'cell_phone', 'first_name', 'current_address', 'ssn', 'borrower_identity', 'co_borrower_identity'];
   const r = await db.query(
-    `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id, a.co_borrower_id,
+    `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id, a.co_borrower_id, a.loan_officer_id,
             b.email, b.cell_phone, b.first_name, b.last_name, b.current_address, b.ssn_last4,
             b2.email AS co_email, b2.cell_phone AS co_cell, b2.first_name AS co_first, b2.last_name AS co_last, b2.ssn_last4 AS co_ssn_last4,
             i.snapshot
@@ -269,6 +269,32 @@ async function auditIdentityMismatchesOnce() {
     const x = addrParts(a), y = addrParts(b);
     if (!x || !y) return null;   // can't tell → skip (never flag on a guess)
     return x.num === y.num && x.street === y.street && (!x.zip || !y.zip || x.zip === y.zip);
+  };
+  // WRONG-MERGE SIGNATURE (owner incident 2026-07-15 night): a NAME
+  // disagreement between the task and the profile is usually a typo/nickname —
+  // but when the profile ALSO shows evidence of belonging to someone else's
+  // relationship (an owning officer or a CRM lead under a DIFFERENT officer
+  // than the file's), the likeliest truth is that TWO PEOPLE were merged into
+  // ONE row (family-shared email + family surname). That case must NOT be a
+  // rename review — adopting either name onto the shared row renames the OTHER
+  // person too. It queues a 'borrower_identity_conflict' row whose
+  // split_borrower action un-merges them.
+  const wrongMergeSignature = async (personId, loanOfficerId) => {
+    try {
+      const s = await db.query(
+        `SELECT
+           EXISTS (SELECT 1 FROM borrowers bb
+                    WHERE bb.id=$1 AND bb.primary_officer_id IS NOT NULL
+                      AND bb.primary_officer_id IS DISTINCT FROM $2) AS owner_differs,
+           EXISTS (SELECT 1 FROM leads l
+                    WHERE l.officer_id IS NOT NULL AND l.officer_id IS DISTINCT FROM $2
+                      AND (l.borrower_id=$1 OR EXISTS (
+                            SELECT 1 FROM borrowers bb2
+                             WHERE bb2.id=$1 AND bb2.email IS NOT NULL
+                               AND lower(l.email)=lower(bb2.email)))) AS lead_differs`,
+        [personId, loanOfficerId]);
+      return !!(s.rows[0] && (s.rows[0].owner_differs || s.rows[0].lead_differs));
+    } catch (_) { return false; }
   };
   let queued = 0, closed = 0;
   for (const row of r.rows) {
@@ -329,10 +355,35 @@ async function auditIdentityMismatchesOnce() {
     const cuFirst = sbFirst;
     const pFirst = lc(String(row.first_name || '').split(/\s+/)[0]);
     if (cuFirst && pFirst && !transforms.isPlaceholderName(sb.first_name) && !transforms.isPlaceholderName(row.first_name)) {
-      checks.push({ key: 'first_name', differ: cuFirst !== pFirst,
-        cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
+      const namesDiffer = cuFirst !== pFirst;
+      const merged = namesDiffer && await wrongMergeSignature(row.borrower_id, row.loan_officer_id);
+      if (merged) {
+        // Two people on one profile — NOT a rename decision. The row is
+        // file-scoped so it notifies the FILE's assigned officer only.
+        checks.push({ key: 'borrower_identity', reason: 'borrower_identity_conflict', differ: true,
+          raw: { role: 'borrower', mergedBorrowerId: row.borrower_id },
+          cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
+      } else {
+        checks.push({ key: 'first_name', differ: namesDiffer,
+          cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
+        // A same-person rename verdict clears any earlier merge suspicion row.
+        checks.push({ key: 'borrower_identity', differ: false,
+          cu: [sb.first_name, sb.last_name].filter(Boolean).join(' '), p: [row.first_name, row.last_name].filter(Boolean).join(' ') });
+      }
     }
-    const same = sameStreet(addrText(sb.current_address), addrText(row.current_address));
+    let same = sameStreet(addrText(sb.current_address), addrText(row.current_address));
+    // CANONICAL fallback (owner-directed: Google Maps decides "technically the
+    // same"): when the text heuristic says the addresses DIFFER, resolve both
+    // through the cached place_id canonicalizer — the same property in two
+    // formats stops flagging. Degradable: no API key / unresolvable → the
+    // heuristic verdict stands. Bounded: only runs on heuristic mismatches,
+    // and every distinct text resolves once (db/113 cache).
+    if (same === false) {
+      try {
+        const sp2 = await require('../lib/address-canon').samePlace(addrText(sb.current_address), addrText(row.current_address));
+        if (sp2 === true) same = true;
+      } catch (_) { /* canonicalization is an enhancement, never a blocker */ }
+    }
     if (same === true) {
       // UNITS ARE ADDITIVE (owner-directed 2026-07-15 night: "a unit is just
       // an addition, not an override — if one side has it, add it to the
@@ -372,8 +423,21 @@ async function auditIdentityMismatchesOnce() {
       const scoFirst = lc(String(sco.first_name || '').split(/\s+/)[0]);
       const pcoFirst = lc(String(row.co_first || '').split(/\s+/)[0]);
       if (scoFirst && pcoFirst && !transforms.isPlaceholderName(sco.first_name) && !transforms.isPlaceholderName(row.co_first)) {
-        checks.push({ key: 'co_first_name', bId: row.co_borrower_id, differ: scoFirst !== pcoFirst,
-          cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
+        const coDiffer = scoFirst !== pcoFirst;
+        const coMerged = coDiffer && await wrongMergeSignature(row.co_borrower_id, row.loan_officer_id);
+        if (coMerged) {
+          // The Mendelovits/Cohen incident shape: the file's CO-borrower slot
+          // points at a profile that is really another officer's lead — two
+          // different people merged on a shared family email + surname.
+          checks.push({ key: 'co_borrower_identity', reason: 'borrower_identity_conflict', bId: row.co_borrower_id, differ: true,
+            raw: { role: 'co_borrower', mergedBorrowerId: row.co_borrower_id },
+            cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
+        } else {
+          checks.push({ key: 'co_first_name', bId: row.co_borrower_id, differ: coDiffer,
+            cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
+          checks.push({ key: 'co_borrower_identity', bId: row.co_borrower_id, differ: false,
+            cu: [sco.first_name, sco.last_name].filter(Boolean).join(' '), p: [row.co_first, row.co_last].filter(Boolean).join(' ') });
+        }
       }
       const scoP4 = String(sco.phone_last4 || ''), pcoP4 = digitsOf(row.co_cell).slice(-4);
       if (scoP4.length === 4 && pcoP4.length === 4) {
@@ -386,8 +450,9 @@ async function auditIdentityMismatchesOnce() {
         if (c.differ) {
           await review.queueReview({
             applicationId: row.id, borrowerId: c.bId || row.borrower_id, taskId: row.task_id,
-            direction: 'inbound', fieldKey: c.key, reason: 'identity_mismatch_audit',
+            direction: 'inbound', fieldKey: c.key, reason: c.reason || 'identity_mismatch_audit',
             suppressIfRejected: true,
+            rawValue: c.raw ? JSON.stringify(c.raw).slice(0, 300) : undefined,
             clickupValue: String(c.cu).slice(0, 160), portalValue: String(c.p).slice(0, 160) });
           queued++;
         } else if (openSet.has(`${row.task_id}|${c.key}`)) {

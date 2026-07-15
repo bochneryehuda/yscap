@@ -33,9 +33,30 @@ router.post('/', async (req, res) => {
   const num = (v) => { if (v == null || v === '') return null; const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return isFinite(n) ? n : null; };
   const int = (v) => { const n = num(v); return n == null ? null : Math.round(n); };
   const client = await db.getClient();
+  let dupOfBorrowerId = null;   // set when a shared email hit a DIFFERENT person's row
   try {
     await client.query('BEGIN');
-    // 1) upsert borrower (canonical profile)
+    // SAME-EMAIL, DIFFERENT-PERSON guard (owner incident 2026-07-15 night): a
+    // public submission on a family-shared email must NEVER adopt an existing
+    // row whose NAME belongs to someone else (that silent merge folded a loan
+    // officer's lead and a different real borrower into one profile and handed
+    // the file to the wrong officer). This is a public endpoint — nobody is
+    // here to answer a 409 — so the submission gets a DISTINCT profile with a
+    // placeholder email instead; the real email is preserved as an additional
+    // contact, the pair is queued for human dedup review, and admins are told.
+    const submittedFirst = p.firstName || p.b1First || 'Unknown';
+    const submittedLast = p.lastName || p.b1Last || 'Unknown';
+    const identity = require('../clickup/identity');
+    const exRow = (await client.query(`SELECT id, first_name, last_name FROM borrowers WHERE email=$1 LIMIT 1`,
+      [String(email).toLowerCase().trim()])).rows[0];
+    if (exRow && identity.nameConflict(submittedFirst, submittedLast, exRow.first_name, exRow.last_name)) {
+      dupOfBorrowerId = exRow.id;
+    }
+    // 1) upsert borrower (canonical profile) — or a DISTINCT profile when the
+    // email already belongs to a different person (never a silent merge).
+    const emailForRow = dupOfBorrowerId
+      ? `noemail+intake-${require('crypto').randomBytes(6).toString('hex')}@clickup.local`
+      : email;
     const b = await client.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,citizenship)
        VALUES ($1,$2,$3,$4,$5)
@@ -50,7 +71,7 @@ router.post('/', async (req, res) => {
          cell_phone=COALESCE(borrowers.cell_phone,EXCLUDED.cell_phone),
          citizenship=COALESCE(borrowers.citizenship,EXCLUDED.citizenship),
          updated_at=now() RETURNING id`,
-      [p.firstName || p.b1First || 'Unknown', p.lastName || p.b1Last || 'Unknown', email,
+      [submittedFirst, submittedLast, emailForRow,
        p.cellPhone || p.b1Phone || null, p.citizenship || p.b1Citizen || null]);
     const borrowerId = b.rows[0].id;
     if (p.ssn || p.b1Ssn) {
@@ -103,6 +124,28 @@ router.post('/', async (req, res) => {
     // must never turn into a 500 that makes the website resubmit the form and
     // create a DUPLICATE application.
     res.status(201).json({ ok: true, borrowerId, applicationId: appId, assigned: !!officerId });
+    // Shared-email dedup bookkeeping (post-commit, best-effort): keep the REAL
+    // email on the new profile as an additional contact so it is never lost
+    // (the primary email slot holds the placeholder to avoid the unique-email
+    // collision), record the pair for human dedup review, and tell the admins.
+    if (dupOfBorrowerId) {
+      try {
+        await db.query(
+          `INSERT INTO borrower_contacts (borrower_id, kind, value, source)
+           VALUES ($1,'email',$2,'intake') ON CONFLICT (borrower_id, kind, value) DO NOTHING`,
+          [borrowerId, String(email).toLowerCase().trim()]);
+        await db.query(
+          `INSERT INTO borrower_dedup_candidates (borrower_id, matched_borrower_id, reason, source_task_id)
+           VALUES ($1,$2,'shared_email_uncorroborated',NULL)
+           ON CONFLICT (borrower_id, matched_borrower_id) DO NOTHING`,
+          [borrowerId, dupOfBorrowerId]);
+        await notify.notifyAdmins({
+          type: 'borrower_dedup', title: 'Shared email — two different names (kept separate)',
+          body: `A website application from "${(p.firstName || p.b1First || '')} ${(p.lastName || p.b1Last || '')}" used an email that already belongs to a different person's profile. ` +
+            `The new file was created on its OWN profile (placeholder email); the submitted email is saved as an additional contact. Review the pair and fix the primary email.`,
+          link: `/internal/borrowers/${borrowerId}` });
+      } catch (dupErr) { console.error('[intake] dedup bookkeeping failed:', db.describeError(dupErr)); }
+    }
     try {
       // Invariant chokepoint (root fix 2026-07-14): derives program/loan
       // type/assignment from the SAVED row — this caller used to pass no opts

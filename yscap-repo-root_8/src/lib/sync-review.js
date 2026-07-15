@@ -29,7 +29,11 @@ const FIELD_LABELS = {
   // FILE-LEVEL rows (owner-directed 2026-07-15 night: "not only a field that is
   // wrong — entire files; anything stuck goes to manual review, with options"):
   file_link: 'File not syncing', ys_loan_number: 'YS loan number', push_job: 'ClickUp push failed',
-  co_first_name: 'Co-borrower name', co_cell_phone: 'Co-borrower cell', sharepoint_folder: 'SharePoint filing',
+  co_first_name: 'Co-borrower name', co_cell_phone: 'Co-borrower cell',
+  sharepoint_folder: 'SharePoint filing', sharepoint_doc: 'SharePoint document sync',
+  // Two different people merged onto one profile (the wrong-officer incident):
+  borrower_identity: 'Borrower identity — one profile, two people',
+  co_borrower_identity: 'Co-borrower identity — one profile, two people',
 };
 
 async function queueReview({ applicationId, borrowerId, taskId, direction, fieldKey,
@@ -97,13 +101,21 @@ async function notifyLoanOfficer(reviewId) {
   const officers = new Map();
   const add = (id, email, appId) => { if (id && !officers.has(id)) officers.set(id, { email, appId }); };
   if (row.application_id) {
+    // HARD SCOPE GUARD (owner-reported 2026-07-15 night: an officer with NO
+    // relation to the file was emailed a review for it): a FILE-scoped row
+    // notifies ONLY that file's assigned loan officer — never any other
+    // officer, and NEVER the borrower-wide fan-out below. A file with no
+    // assigned LO emails nobody (the admin queue, the sidebar badge, and the
+    // 7-day admin escalation still surface it).
     const a = (await db.query(
       `SELECT a.loan_officer_id, s.email FROM applications a
          LEFT JOIN staff_users s ON s.id = a.loan_officer_id AND s.is_active
         WHERE a.id=$1`, [row.application_id])).rows[0];
     if (a) add(a.loan_officer_id, a.email, row.application_id);
-  }
-  if (!officers.size && row.borrower_id) {
+  } else if (row.borrower_id) {
+    // BORROWER-level rows only (no file to scope to — e.g. a DOB): the loan
+    // officers of THIS borrower's own active files, each of whom owns the
+    // shared fact being reviewed.
     const apps = (await db.query(
       `SELECT a.id, a.loan_officer_id, s.email FROM applications a
          LEFT JOIN staff_users s ON s.id = a.loan_officer_id AND s.is_active
@@ -117,7 +129,7 @@ async function notifyLoanOfficer(reviewId) {
   // FILE-LEVEL rows aren't a value disagreement — the email must say what the
   // situation is and that the review screen offers ACTIONS, not sides
   // (pre-merge audit #257 should-fix: the two-sided copy misdirected LOs).
-  const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'co_first_name', 'co_cell_phone'].includes(row.field_key);
+  const fileLevel = ['file_link', 'push_job', 'ys_loan_number', 'sharepoint_folder', 'sharepoint_doc', 'co_first_name', 'co_cell_phone', 'borrower_identity', 'co_borrower_identity'].includes(row.field_key);
   const body = fileLevel
     ? `A file${who} needs a decision: ${label.toLowerCase()}` +
       (row.clickup_value ? ` (${row.clickup_value})` : '') + '. ' +

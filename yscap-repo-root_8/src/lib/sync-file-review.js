@@ -41,6 +41,17 @@ const REASON_ACTIONS = {
   // fuzzy match / officer-less Unfiled). Fix the folders IN SharePoint (the
   // mirror never moves or renames anything), then re-match.
   sharepoint_match_uncertain: ['sp_rematch'],
+  // A document burned its whole mirror retry budget — something real is wrong
+  // (permissions, a bad path, an unreadable local file). Retry after fixing
+  // the cause; re-match if the FOLDER resolution itself is the problem.
+  sharepoint_mirror_failed: ['sp_retry_doc', 'sp_rematch'],
+  // TWO DIFFERENT PEOPLE ended up sharing ONE borrower profile (the
+  // wrong-officer merge incident, 2026-07-15 night: a family-shared email plus
+  // the family last name merged a loan officer's LEAD with a different real
+  // borrower — the file inherited the lead's officer and the lead's officer
+  // could see the other person's data). split_borrower gives the file's person
+  // their OWN fresh profile built from the ClickUp task and re-points the file.
+  borrower_identity_conflict: ['split_borrower'],
 };
 
 // Rows with no ClickUp task (an unlinked FILE) still need a dedup identity in
@@ -180,13 +191,122 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
   if (action === 'sp_rematch') {
     // Clear the scope's folder cache so the NEXT document sync re-runs the
     // fuzzy match — used after the human merges/renames the folders in
-    // SharePoint (the mirror itself never moves or renames anything).
+    // SharePoint (the mirror itself never moves or renames anything). For a
+    // mirror-failure row (no scopeKey stored), derive the scope from the
+    // file/borrower the row is on.
     let scopeKey = null;
     try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; scopeKey = raw && raw.scopeKey; } catch (_) {}
+    if (!scopeKey && row.application_id) scopeKey = `app:${row.application_id}`;
+    if (!scopeKey && row.borrower_id) scopeKey = `borrower:${row.borrower_id}`;
     if (!scopeKey) throw httpError(409, 'this row does not reference a SharePoint scope');
     await require('./sharepoint-map').invalidateScope(scopeKey);
     await audit('sync_review_sp_rematch', row.application_id, actorId, { scopeKey, reviewId: row.id });
     return { note: 'folder cache cleared — the next document sync re-matches the folders (fix them in SharePoint first; the mirror never moves anything itself)', applicationId: row.application_id };
+  }
+
+  if (action === 'sp_retry_doc') {
+    // Re-arm the document's mirror budget and kick a pass — used after the
+    // human fixes the underlying cause (permissions, a renamed folder, a
+    // restored local file). The mirror re-runs through every normal rule.
+    let docId = null;
+    try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; docId = raw && raw.docId; } catch (_) {}
+    if (!docId) throw httpError(409, 'this row does not reference a document');
+    const u = await db.query(
+      `UPDATE documents SET sharepoint_backup_attempts=0, sharepoint_backup_error=NULL
+        WHERE id=$1 AND sharepoint_backed_up_at IS NULL RETURNING id`, [docId]);
+    if (!u.rows[0]) throw httpError(409, 'the document is no longer pending (already mirrored or removed)');
+    try { require('./sharepoint-backup').kick(); } catch (_) { /* mirror may be disabled */ }
+    await audit('sync_review_sp_retry_doc', row.application_id, actorId, { docId, reviewId: row.id });
+    return { note: `document ${docId} re-queued for mirroring`, applicationId: row.application_id };
+  }
+
+  if (action === 'split_borrower') {
+    // UN-MERGE two different people who ended up on one borrower profile: the
+    // file's person gets their OWN fresh profile built from the ClickUp task's
+    // last-ingest snapshot, and the file is re-pointed at it. The OTHER person
+    // (the officer's lead) keeps the original row — nothing of theirs is
+    // deleted. The post-split re-ingest heals the new profile from ClickUp
+    // (full fields, SSN through the normal chokepoint): the fixed resolver
+    // declines the shared-email merge and lands on this exact row via its
+    // canonical shadow email, so the split and the sync compose.
+    if (!row.application_id) throw httpError(409, 'this row has no portal file');
+    if (!row.borrower_id) throw httpError(409, 'this row does not reference a person');
+    const app = (await db.query(
+      `SELECT id, borrower_id, co_borrower_id, clickup_pipeline_task_id
+         FROM applications WHERE id=$1 AND deleted_at IS NULL`, [row.application_id])).rows[0];
+    if (!app) throw httpError(404, 'the file no longer exists');
+    const role = String(app.borrower_id) === String(row.borrower_id) ? 'borrower'
+      : (app.co_borrower_id && String(app.co_borrower_id) === String(row.borrower_id)) ? 'co_borrower' : null;
+    if (!role) throw httpError(409, 'the file no longer references this person (already fixed)');
+    const taskKey = app.clickup_pipeline_task_id || row.task_id;
+    if (!taskKey || String(taskKey).startsWith('app:')) throw httpError(409, 'the file has no ClickUp task to rebuild the person from');
+    const idx = (await db.query(
+      `SELECT snapshot FROM clickup_task_index WHERE task_id=$1`, [taskKey])).rows[0];
+    const snap = idx && idx.snapshot;
+    const person = role === 'borrower' ? (snap && snap.borrower) : (snap && snap.coBorrower);
+    if (!person || typeof person !== 'object' || !person.first_name) {
+      throw httpError(409, 'the ClickUp snapshot carries no usable identity for this person — press “Sync my files” and try again');
+    }
+    const old = (await db.query(
+      `SELECT email, first_name, last_name, cell_phone, date_of_birth, current_address
+         FROM borrowers WHERE id=$1`, [row.borrower_id])).rows[0] || {};
+    const lc = (v) => String(v == null ? '' : v).trim().toLowerCase();
+    // The co-borrower snapshot masks contact info — a co split always starts on
+    // the canonical shadow email (the subtask re-ingest upgrades it to the real
+    // one). A borrower split may keep the task's REAL email, but only when it
+    // is not the shared email that caused the merge in the first place.
+    const shadow = `noemail+${taskKey}${role === 'co_borrower' ? '-co' : ''}@clickup.local`;
+    const email = (role === 'borrower' && person.email && !/\*/.test(person.email) && lc(person.email) !== lc(old.email))
+      ? lc(person.email) : shadow;
+    const F = require('./fields');
+    const ins = await db.query(
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,current_address,origin)
+       VALUES ($1,$2,$3,$4,$5,$6,'clickup_backfill')
+       ON CONFLICT (email) DO UPDATE SET updated_at=now() RETURNING id`,
+      [person.first_name, person.last_name || '', email,
+       role === 'borrower' ? (person.cell_phone || null) : null,
+       role === 'borrower' ? F.sanitizeDob(person.date_of_birth) : null,
+       role === 'borrower' && person.current_address ? JSON.stringify(person.current_address) : null]);
+    const newId = ins.rows[0].id;
+    if (String(newId) === String(row.borrower_id)) throw httpError(409, 'could not create a distinct profile (email collision with the merged row)');
+    const col = role === 'borrower' ? 'borrower_id' : 'co_borrower_id';
+    const up = await db.query(
+      `UPDATE applications SET ${col}=$2, updated_at=now() WHERE id=$1 AND ${col}=$3 RETURNING id`,
+      [app.id, newId, row.borrower_id]);
+    if (!up.rows[0]) throw httpError(409, 'the file no longer references this person (already fixed)');
+    // Which fields on the ORIGINAL row may have been healed in from the wrong
+    // person? Reported (never auto-wiped — we cannot PROVE which human each
+    // value belongs to, and wipe-don't-guess only covers provable garbage).
+    const digits10 = (v) => String(v == null ? '' : v).replace(/\D/g, '').slice(-10);
+    const dayOf = (v) => (v == null ? '' : String(v).slice(0, 10));
+    const possiblyPolluted = [];
+    if (role === 'borrower') {
+      if (old.cell_phone && person.cell_phone && digits10(old.cell_phone) === digits10(person.cell_phone)) possiblyPolluted.push('cell_phone');
+      if (old.date_of_birth && person.date_of_birth && dayOf(old.date_of_birth) === dayOf(person.date_of_birth)) possiblyPolluted.push('date_of_birth');
+    }
+    await audit('borrower_split', app.id, actorId, {
+      reviewId: row.id, role, taskId: taskKey,
+      oldBorrowerId: row.borrower_id, newBorrowerId: newId,
+      newName: [person.first_name, person.last_name].filter(Boolean).join(' '),
+      keptName: [old.first_name, old.last_name].filter(Boolean).join(' '),
+      possiblyPolluted: possiblyPolluted.length ? possiblyPolluted : undefined });
+    // The cross-person "mismatch" rows for this task were artifacts of the
+    // merge — close them; the next audit pass compares the right people.
+    try {
+      const review = require('./sync-review');
+      for (const fk of ['first_name', 'email', 'cell_phone', 'ssn', 'current_address', 'date_of_birth', 'co_first_name', 'co_cell_phone']) {
+        await review.closeStaleReviews({ taskId: taskKey, fieldKey: fk,
+          note: 'auto-closed — the profile was split into two people; the comparison was across two different humans' }).catch(() => {});
+      }
+    } catch (_) { /* best-effort */ }
+    // Heal the fresh profile from ClickUp through the normal guarded pull.
+    try { await require('../sync/clickup-sync').ingestOne(taskKey); } catch (e) { console.warn('[sync-file-review] post-split ingest failed:', e.message); }
+    return {
+      note: `split into two people: the file's ${role === 'co_borrower' ? 'co-borrower' : 'borrower'} ` +
+        `“${[person.first_name, person.last_name].filter(Boolean).join(' ')}” now has their own profile (${newId}); ` +
+        `“${[old.first_name, old.last_name].filter(Boolean).join(' ')}” keeps the original profile untouched` +
+        (possiblyPolluted.length ? ` — REVIEW the original profile's ${possiblyPolluted.join(', ')}: those values match the split-off person and may have been synced in by the merge` : ''),
+      applicationId: app.id };
   }
 
   if (action === 'create_task') {
