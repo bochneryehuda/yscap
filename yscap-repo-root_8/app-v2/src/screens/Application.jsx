@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useLocation, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
-import { formatSSN } from '../lib/validators.js';
+import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import PropertyPhoto from '../components/PropertyPhoto.jsx';
@@ -465,13 +465,15 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
     { key: 'rehab_budget', label: 'Rehab budget', ok: app.rehab_budget != null, type: 'money' },
     { key: 'cell_phone', label: 'Your phone', ok: !!b.cell_phone, type: 'tel' },
     { key: 'date_of_birth', label: 'Date of birth', ok: !!b.date_of_birth, type: 'date' },
-    { key: 'fico', label: 'Estimated FICO', ok: b.fico != null, type: 'number' },
+    { key: 'fico', label: 'Estimated FICO', ok: b.fico != null, type: 'fico' },
     { key: 'citizenship', label: 'Citizenship', ok: !!b.citizenship, type: 'select', options: ['US Citizen', 'Permanent Resident', 'Foreign National'] },
   ];
   const done = fields.filter((x) => x.ok).length;
   const missing = fields.filter((x) => !x.ok);
   async function save(f) {
     if (val === '' || val == null) return;
+    // #90: a FICO must be a real 3-digit score in range — never save junk.
+    if (f.type === 'fico' && !ficoValid(val)) { setErr('FICO must be a 3-digit score between 300 and 850.'); return; }
     setBusy(true); setErr('');
     try { await api.post(`/api/borrower/applications/${appId}/complete-fields`, { [f.key]: val }); setEditing(null); setVal(''); await onSaved(); }
     catch (e) { setErr(e.message || 'Could not save'); }
@@ -500,10 +502,12 @@ function BorrowerCompleteness({ app, profile, appId, onSaved }) {
                       </select>
                     : <input className="input" style={{ maxWidth: 170 }} autoFocus
                         type={f.type === 'date' ? 'date' : f.type === 'number' || f.type === 'money' ? 'number' : f.type === 'tel' ? 'tel' : 'text'}
-                        inputMode={f.type === 'money' || f.type === 'number' ? 'numeric' : undefined}
-                        placeholder={f.label} value={val} onChange={(e) => setVal(e.target.value)}
+                        inputMode={f.type === 'money' || f.type === 'number' || f.type === 'fico' ? 'numeric' : undefined}
+                        maxLength={f.type === 'fico' ? 3 : undefined}
+                        placeholder={f.type === 'fico' ? '300–850' : f.label} value={val}
+                        onChange={(e) => setVal(f.type === 'fico' ? cleanFICO(e.target.value) : e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && save(f)} />}
-                  <button className="btn primary small" disabled={busy || val === ''} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
+                  <button className="btn primary small" disabled={busy || val === '' || (f.type === 'fico' && !ficoValid(val))} onClick={() => save(f)}>{busy ? '…' : 'Save'}</button>
                   <button className="btn ghost small" onClick={() => setEditing(null)}>✕</button>
                 </span>
               ) : f.edit === false ? (
