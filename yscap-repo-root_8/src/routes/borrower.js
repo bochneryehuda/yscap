@@ -1101,7 +1101,12 @@ router.post('/applications/:id/co-borrower', async (req, res) => {
     try { await upsertPartner(me(req), { firstName: b.firstName, lastName: b.lastName, email, phone: b.phone, relationshipType: 'co_borrower' }); } catch (_) {}
     await audit(req, 'invite_co_borrower', 'application', req.params.id, { coBorrowerId: coId });
     res.status(201).json({ ok: true, coBorrowerId: coId });
-  } catch (e) { console.error('[co-borrower] invite failed:', db.describeError(e)); res.status(500).json({ error: 'could not invite the co-borrower' }); }
+  } catch (e) {
+    // Lost the atomic slot race (audit F-LOW-1) — surface as the same 409 the
+    // pre-check would have returned, not a 500.
+    if (e && e.code === 'CO_BORROWER_EXISTS') return res.status(409).json({ error: 'This file already has a co-borrower.' });
+    console.error('[co-borrower] invite failed:', db.describeError(e)); res.status(500).json({ error: 'could not invite the co-borrower' });
+  }
 });
 router.get('/llcs/:id/documents', async (req, res) => {
   const own = await db.query(`SELECT 1 FROM llcs WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
@@ -2455,7 +2460,16 @@ async function inviteCoBorrower(appId, primaryName, co) {
     [co.firstName || 'Co-Borrower', co.lastName || '', co.email, co.phone || null,
      require('../lib/fields').sanitizeFico(co.fico)]);
   const coId = cb.rows[0].id;
-  await db.query(`UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1`, [appId, coId]);
+  // Claim the co-borrower slot ATOMICALLY (audit F-LOW-1): the caller's 409 guard
+  // reads co_borrower_id in a separate statement, so two concurrent invites from
+  // the same owner could both pass it; an unconditional UPDATE would let the second
+  // overwrite the first and strand a borrower. `WHERE co_borrower_id IS NULL` makes
+  // the slot single-winner. The draft-submit caller always links onto a fresh
+  // (null) app, so this guard is a no-op there.
+  const link = await db.query(
+    `UPDATE applications SET co_borrower_id=$2, updated_at=now() WHERE id=$1 AND co_borrower_id IS NULL`,
+    [appId, coId]);
+  if (link.rowCount === 0) { const err = new Error('this file already has a co-borrower'); err.code = 'CO_BORROWER_EXISTS'; throw err; }
   // Existing login? They already have access via co_borrower_id — just notify.
   const hasAuth = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [coId]);
   const token = C.randomToken(24);
