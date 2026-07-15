@@ -474,7 +474,30 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options) {
       const asId = T.dropdownIndexToId((options && options[fieldId]) || [], oldVal);
       return asId != null && asId === newVal;
     }
-    if (newVal && typeof newVal === 'object') return false;  // users/location — always write
+    if (newVal && typeof newVal === 'object') {
+      // LOCATION: compare coordinates (tolerance ~10m), falling back to the
+      // normalized formatted address. Without this, an IDENTICAL borrower
+      // address could never be recognized as equivalent, so every full repush
+      // blocked it via the PII shield and queued a pointless review row
+      // (post-merge audit finding #2). Conservative: any doubt → not equivalent.
+      if (newVal.location && Number.isFinite(Number(newVal.location.lat))) {
+        const c = (oldVal && oldVal.location) || {};
+        if (Number.isFinite(Number(c.lat)) && Number.isFinite(Number(c.lng))) {
+          return Math.abs(Number(c.lat) - Number(newVal.location.lat)) < 1e-4
+              && Math.abs(Number(c.lng) - Number(newVal.location.lng)) < 1e-4;
+        }
+        const fa = (x) => String((x && (x.formatted_address || x.formattedAddress)) || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        return !!fa(oldVal) && fa(oldVal) === fa(newVal);
+      }
+      // USERS: the write shape is {add:[id]} — equivalent when every id to add
+      // is already assigned (an add-only write would be a no-op). Kills the
+      // "re-adds the same officer on every repush" journal churn.
+      if (Array.isArray(newVal.add)) {
+        const have = Array.isArray(oldVal) ? oldVal.map((u) => Number(u && u.id != null ? u.id : u)) : [];
+        return newVal.add.length > 0 && newVal.add.every((uid) => have.includes(Number(uid)));
+      }
+      return false;  // unknown object shape — always write
+    }
     return String(oldVal).trim() === String(newVal).trim();
   } catch (_) { return false; }
 }

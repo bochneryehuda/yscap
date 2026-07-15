@@ -826,8 +826,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // the year lands in 0026) is NEVER persisted. It goes to the sync review
   // queue instead, with the auto-pivoted proposal (26 → 2026) for one-click
   // human approval. The rest of the pull proceeds normally.
+  // NOTE: acquisition_date is mapped 'both' in FIELD_MAP but has NO inbound
+  // persistence path (it is absent from `cols` below), so it needs no entry
+  // here — an entry would be dead code (post-merge audit finding #1). If an
+  // inbound acquisition_date pull is ever added to `cols`, add it to this loop.
   const pendingYearReviews = [];
-  for (const dk of ['expected_closing', 'actual_closing', 'acquisition_date']) {   // acquisition_date pulls 'both' too (2026-07-15 audit)
+  for (const dk of ['expected_closing', 'actual_closing']) {
     const v = cols[dk];
     if (v == null || v === '') continue;
     const y = Number(String(v).slice(0, 4));

@@ -98,6 +98,25 @@ sync now handles the full lifecycle:
 6. A duplicate that copied a **real YS loan number** stays `ambiguous` until
    the officer sets the new deal's number (loan numbers are globally unique).
 
+### Follow-up hardening (post-merge audit)
+
+- `fieldValueEquivalent` understands **location + users** values: an identical
+  borrower address is a recognized no-op (no phantom PII-shield review rows on
+  repushes), and an already-assigned officer is never re-added. Note:
+  `acquisition_date` has NO inbound persistence path (the ingest `cols` never
+  carry it), so the inbound year-guard loop deliberately covers only
+  expected/actual closing — extend it if that pull is ever added.
+- **Outage-class retries**: a `CLICKUP_CIRCUIT_OPEN` or `CLICKUP_PREREAD_FAILED`
+  failure means ClickUp (or our own volume cap) is temporarily unavailable —
+  those queue jobs retry every 10 minutes for up to ~7 hours instead of
+  dead-lettering after ~4 minutes, so a breaker opening or a brief API outage
+  can never permanently drop a user's edit.
+- **Unlinked-file recovery** (`recoverUnlinkedFilesOnce`, boot one-shot after
+  the reconcile pass): a file whose create-at-file-start failed transiently
+  gets one bounded create retry (≤50 files/boot, 10-minute–30-day age window,
+  portal-origin states only, outbound-gated) — restoring self-healing without
+  weakening the scoped-pushes-never-create guard.
+
 ## 5. One way to read a typed date, system-wide
 
 `lib/fields.sanitizeDateOnly` (real calendar date, 4-digit year 1900–2100) and
