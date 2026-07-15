@@ -26,6 +26,9 @@ const JSON_LIMIT_MB = Math.max(25, Math.ceil(cfg.maxUploadMb * 1.4) + 4);
 // ClickUp webhook is mounted BEFORE the JSON parser — it needs the RAW body to
 // verify the HMAC signature (it applies its own express.raw()).
 app.use('/api/clickup/webhook', require('./routes/clickup-webhook'));
+// #75 — inbound email → chat: an external guest's email reply lands back in the
+// conversation (dormant until an inbound-email domain is configured in Resend).
+app.use('/api/inbound/chat', require('./routes/inbound-chat'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.

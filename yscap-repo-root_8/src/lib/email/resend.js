@@ -8,7 +8,7 @@ const cfg = require('../../config');
 
 module.exports = {
   name: 'resend',
-  async sendMail({ to, subject, text, html, attachments }) {
+  async sendMail({ to, subject, text, html, attachments, replyTo }) {
     if (!cfg.resendApiKey) {
       throw new Error('RESEND_API_KEY is not set — add it in the Render environment to send email.');
     }
@@ -38,7 +38,10 @@ module.exports = {
           subject,
           text,
           html,
-        }, atts.length ? { attachments: atts } : {})),
+        }, atts.length ? { attachments: atts } : {},
+           // #75: a unique reply-to lets an external chat guest reply by email and
+           // have it land back in the conversation (routed via the inbound webhook).
+           replyTo ? { reply_to: replyTo } : {})),
         signal: ac.signal,
       });
     } catch (e) {

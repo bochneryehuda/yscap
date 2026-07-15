@@ -159,8 +159,9 @@ router.post('/applications/:id/conversations', async (req, res) => {
 /* ---------------- one conversation: detail, rename, members ---------------- */
 router.get('/conversations/:cid', async (req, res) => {
   const conv = await loadConv(req, res); if (!conv) return;
-  const [members, pinned, myDraft] = await Promise.all([
+  const [members, externals, pinned, myDraft] = await Promise.all([
     chat.membersOf(conv.id),
+    chat.externalParticipantsOf(conv.id),
     db.query(`SELECT m.id, m.seq, m.body, m.created_at, m.attachment_kind,
                      CASE WHEN m.sender_kind='staff' THEN s.full_name ELSE (b.first_name || ' ' || b.last_name) END AS sender_name
                 FROM messages m
@@ -176,6 +177,12 @@ router.get('/conversations/:cid', async (req, res) => {
     archivedAt: conv.archived_at, ysLoanNumber: conv.ys_loan_number,
     propertyAddress: conv.property_address, appStatus: conv.app_status,
     members,
+    // #75 — external EMAIL guests (partner/secretary/attorney). Not portal users;
+    // they receive messages by email and reply to a unique address. reply_key is
+    // NOT exposed to the client (it's the address secret).
+    externals: externals.map(e => ({
+      id: e.id, email: e.email, name: e.name, signedUp: !!e.signed_up_at, addedAt: e.added_at,
+    })),
     pinned: pinned.rows.map(p => ({ ...p, seq: Number(p.seq) })),
     draft: myDraft.rows[0] ? myDraft.rows[0].body : '',
     isMember: members.some(m => m.member_kind === 'staff' && m.member_id === req.actor.id),
@@ -252,6 +259,31 @@ router.delete('/conversations/:cid/members/:staffId', async (req, res) => {
   const who = await actorName(req);
   await chat.postSystemMessage(conv, `${who} removed ${s.rows[0] ? s.rows[0].full_name : 'a member'} from this chat`);
   await audit(req, 'remove_conversation_member', 'conversation', conv.id, { staffId: req.params.staffId });
+  events.publishToConversation(conv.id, 'conversation:updated', { conversationId: conv.id }).catch(() => {});
+  res.json({ ok: true });
+});
+
+/* ---------------- external EMAIL participants (#75) ---------------- */
+router.post('/conversations/:cid/external', async (req, res) => {
+  const conv = await loadConv(req, res); if (!conv) return;
+  const b = req.body || {};
+  let ep;
+  try { ep = await chat.addExternalParticipant(conv.id, { email: b.email, name: b.name }, { kind: 'staff', id: req.actor.id }); }
+  catch (e) { return res.status(400).json({ error: e.message || 'could not add participant' }); }
+  const who = await actorName(req);
+  await chat.postSystemMessage(conv, `${who} added ${ep.name || ep.email} to this chat by email`);
+  await audit(req, 'add_external_participant', 'conversation', conv.id, { email: ep.email });
+  events.publishToConversation(conv.id, 'conversation:updated', { conversationId: conv.id }).catch(() => {});
+  res.status(201).json({ ok: true, id: ep.id });
+});
+
+router.delete('/conversations/:cid/external/:id', async (req, res) => {
+  const conv = await loadConv(req, res); if (!conv) return;
+  const removed = await chat.removeExternalParticipant(conv.id, req.params.id);
+  if (!removed) return res.status(404).json({ error: 'not a participant' });
+  const who = await actorName(req);
+  await chat.postSystemMessage(conv, `${who} removed ${removed.email} from this chat`);
+  await audit(req, 'remove_external_participant', 'conversation', conv.id, { email: removed.email });
   events.publishToConversation(conv.id, 'conversation:updated', { conversationId: conv.id }).catch(() => {});
   res.json({ ok: true });
 });

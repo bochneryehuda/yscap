@@ -1,0 +1,68 @@
+/**
+ * Inbound email → chat (#75). When an external chat guest replies to the unique
+ * reply-to address (chat+<reply_key>@<CHAT_REPLY_DOMAIN>), the email provider's
+ * inbound webhook POSTs the parsed message here, and we post it back into the
+ * conversation as that guest.
+ *
+ * The reply_key IS the secret — 144 bits of unguessable entropy — so an unknown
+ * or removed key is a silent no-op (200, so the provider doesn't retry). This
+ * endpoint stays dormant until an inbound-email domain is configured in Resend
+ * (CHAT_REPLY_DOMAIN + an inbound route/webhook); no key ever matches before then.
+ *
+ * Tolerant to the common inbound-webhook shapes (Resend `email.received`, a bare
+ * parsed-email object, SendGrid-style form fields) — it only needs the recipient
+ * address(es) and the plain-text body.
+ */
+const express = require('express');
+const chat = require('../lib/chat');
+
+const router = express.Router();
+
+// Pull chat+<key> out of any of the recipient addresses.
+function replyKeyFromRecipients(list) {
+  for (const raw of list) {
+    const m = String(raw || '').match(/chat\+([A-Za-z0-9_-]+)@/i);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// Best-effort: strip a quoted reply/signature so we only post what they typed.
+// Cuts at the first "On <date> … wrote:" line or a leading-">" quote block.
+function topReply(text) {
+  const s = String(text || '').replace(/\r\n/g, '\n');
+  const cut = s.search(/\n\s*On .+ wrote:\n|\n\s*-{2,}\s*\n|\n>{1,}/);
+  return (cut > 0 ? s.slice(0, cut) : s).trim();
+}
+
+function collectRecipients(body) {
+  const out = [];
+  const push = (v) => {
+    if (!v) return;
+    if (Array.isArray(v)) v.forEach(push);
+    else if (typeof v === 'object') push(v.address || v.email || v.value);
+    else out.push(String(v));
+  };
+  const d = (body && body.data) || body || {};
+  push(d.to); push(d.To); push(d.recipient); push(d.envelope && d.envelope.to);
+  return out;
+}
+
+router.post('/', express.json({ limit: '2mb' }), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const d = (body.data && typeof body.data === 'object') ? body.data : body;
+    const key = replyKeyFromRecipients(collectRecipients(body));
+    if (!key) return res.json({ ok: true, skipped: 'no reply key' });
+    const text = topReply(d.text || d.plain || d['stripped-text'] || d.body || '');
+    if (!text) return res.json({ ok: true, skipped: 'empty body' });
+    const msg = await chat.postExternalReply(key, text);
+    return res.json({ ok: true, posted: !!msg });
+  } catch (e) {
+    // Never 500 back to a provider (it would retry forever); log + accept.
+    console.error('[inbound-chat]', e.message);
+    return res.json({ ok: true, error: 'handled' });
+  }
+});
+
+module.exports = router;

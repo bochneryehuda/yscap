@@ -112,6 +112,12 @@ module.exports = {
   // An explicit EMAIL_PROVIDER always wins.
   emailProvider: resolveEmailProvider(),
   notifyFrom:    process.env.NOTIFY_FROM || 'YS Capital Group <no-reply@yscapgroup.com>',
+  // #75 external chat guests: the domain a unique per-participant reply-to is
+  // built on (e.g. "reply.yscapgroup.com" → chat+<key>@reply.yscapgroup.com).
+  // When UNSET, external guests still receive chat emails but with no reply-to,
+  // and the inbound reply webhook stays dormant until an inbound-email domain is
+  // configured in Resend. Never falls back to the marketing domain.
+  chatReplyDomain: (process.env.CHAT_REPLY_DOMAIN || '').trim().replace(/^@+/, '').toLowerCase() || null,
   appUrl:        publicBaseUrl(),  // base for links in emails (live custom domain; onrender guarded out)
   // The borrower/staff SPA is mounted under this path (vite base '/portal/',
   // HashRouter). Email + notification deep links must include it, or they land

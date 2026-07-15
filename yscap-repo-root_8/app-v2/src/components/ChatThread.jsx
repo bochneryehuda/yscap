@@ -187,6 +187,8 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
     shared: () => api.staffConvShared(cid),
     addMember: (sid) => api.staffConvAddMember(cid, sid),
     removeMember: (sid) => api.staffConvRemoveMember(cid, sid),
+    addExternal: (b) => api.staffConvAddExternal(cid, b),
+    removeExternal: (id) => api.staffConvRemoveExternal(cid, id),
     search: (q) => api.staffChatSearch(q, cid),
   } : {
     detail: () => api.conversation(cid),
@@ -206,12 +208,15 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
     mentionables: (appId) => api.mentionables(appId),
     rename: null, mute: null,
     shared: () => api.convShared(cid),
-    addMember: null, removeMember: null, search: null,
+    addMember: null, removeMember: null, addExternal: null, removeExternal: null, search: null,
   }, [cid, isStaff]);
 
   const [conv, setConv] = useState(null);
   const [msgs, setMsgs] = useState(null);
   const [members, setMembers] = useState([]);
+  const [externals, setExternals] = useState([]);   // #75 external EMAIL guests
+  const [addingExternal, setAddingExternal] = useState(false);
+  const [extForm, setExtForm] = useState({ email: '', name: '' });
   const [typers, setTypers] = useState({});          // key -> {name, until}
   const [body, setBody] = useState('');
   const [pending, setPending] = useState(null);      // attachment awaiting send
@@ -259,6 +264,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
     const [d, mm] = await Promise.all([A.detail(), A.msgs()]);
     setConv(d);
     setMembers(mm.members || d.members || []);
+    setExternals(d.externals || []);
     setMsgs(mm.messages || []);
     const mine = (d.members || []).find(x => x.member_kind === me.kind && x.member_id === me.id);
     const lastRead = mine ? mine.last_read_seq : 0;
@@ -332,7 +338,7 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
         const key = `${data.memberKind}:${data.memberId}`;
         if (key !== myKey) setTypers(t => ({ ...t, [key]: { name: data.name, until: Date.now() + 6000 } }));
       } else if (event === 'conversation:updated') {
-        A.detail().then(d => { setConv(d); setMembers(d.members || []); }).catch(() => {});
+        A.detail().then(d => { setConv(d); setMembers(d.members || []); setExternals(d.externals || []); }).catch(() => {});
         onChanged && onChanged();
       }
     });
@@ -780,6 +786,44 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
               )}
             </div>
           ))}
+          {/* #75 — external EMAIL guests (partner / secretary / attorney). Not
+              portal users: they receive every message by email and can reply
+              straight from their inbox; they can also accept an invite to open the
+              chat online, and email keeps flowing either way. */}
+          {A.addExternal && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line)' }}>
+              <div className="row" style={{ marginBottom: 4 }}>
+                <strong className="small">Email guests{externals.length ? ` (${externals.length})` : ''}</strong>
+                <div className="spacer" />
+                <button className="btn ghost small" onClick={() => setAddingExternal(v => !v)}>+ Add by email</button>
+              </div>
+              <p className="muted small" style={{ margin: '0 0 8px' }}>
+                Add an outside person by email — a partner, secretary, or attorney. They get every message and can reply from their inbox.
+              </p>
+              {addingExternal && (
+                <form className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 8 }}
+                  onSubmit={async (e) => { e.preventDefault();
+                    try { await A.addExternal({ email: extForm.email, name: extForm.name }); setExtForm({ email: '', name: '' }); setAddingExternal(false); }
+                    catch (err) { setErr(err.message); } }}>
+                  <input className="input" type="email" required placeholder="email@example.com" style={{ flex: '1 1 150px' }}
+                    value={extForm.email} onChange={e => setExtForm(f => ({ ...f, email: e.target.value }))} />
+                  <input className="input" placeholder="Name (optional)" style={{ flex: '1 1 110px' }}
+                    value={extForm.name} onChange={e => setExtForm(f => ({ ...f, name: e.target.value }))} />
+                  <button className="btn primary small" type="submit">Add</button>
+                </form>
+              )}
+              {externals.map(ep => (
+                <div key={ep.id} className="cv-member">
+                  <span className="cv-ava">{initials(ep.name || ep.email)}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div>{ep.name || ep.email} <span className="muted small">· {ep.signedUp ? 'guest' : 'email only'}</span></div>
+                    {ep.name && <div className="muted small" style={{ overflowWrap: 'anywhere' }}>{ep.email}</div>}
+                  </div>
+                  <button className="btn link small" onClick={async () => { try { await A.removeExternal(ep.id); } catch (e) { setErr(e.message); } }}>Remove</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
       {showShared && (
