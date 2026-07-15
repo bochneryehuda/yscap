@@ -394,7 +394,17 @@ async function resolveBorrower(read, taskId) {
   // we could not corroborate, so we created a DISTINCT profile (safe over-split).
   // Record the pair so a human is TOLD, instead of the split happening silently.
   // Idempotent (one open row per pair) and best-effort — never blocks ingest.
-  if (possibleDupOfId && possibleDupOfId !== borrowerId) {
+  // A NAMELESS husk profile spawns NO dedup pair and NO review card (owner-
+  // reported: cards reading "Unknown Unknown AND Unknown Unknown" — nothing a
+  // human can decide about a profile with no name; the husk fills from
+  // ClickUp automatically and the pair becomes reviewable when it does).
+  if (possibleDupOfId && possibleDupOfId !== borrowerId && identity.nameToken(b.first_name)) {
+    // An ALLOWED shared-email pair (staff clicked "Allow — same email for
+    // both") is settled forever — no dedup pair, no review card.
+    const allowed = await db.query(
+      `SELECT 1 FROM borrower_profile_links WHERE borrower_id=$1 AND linked_borrower_id=$2`,
+      [borrowerId, possibleDupOfId]).catch(() => ({ rows: [] }));
+    if (allowed.rows[0]) return { borrowerId, created: true };
     try {
       await db.query(
         `INSERT INTO borrower_dedup_candidates (borrower_id, matched_borrower_id, reason, source_task_id)
@@ -898,12 +908,45 @@ async function ingestTask(task, options = {}, opts = {}) {
   let coBorrowerId = null;
   if (read.coBorrower && (read.coBorrower.first_name || read.coBorrower.email)) {
     try {
+      // A NAME-ONLY co-borrower must first try the FILE'S OWN PEOPLE (Boruch
+      // Stauber root cause, 2026-07-15 night): a person with no email and no
+      // SSN can never identity-match, so resolveBorrower minted a duplicate
+      // shadow profile of someone ALREADY on the file — and because that new
+      // shadow id never equaled the file's borrower id, the role re-seat
+      // proof ("ClickUp's co-borrower IS the file's current borrower, so the
+      // roles are reversed") could never fire. On the four Schwimmer/Stauber
+      // tasks ClickUp says borrower = Shaindel, Co-Borrower Name = "Boruch
+      // Stauber" — exactly the file's current borrower — and the files sat
+      // flagged forever. Match by full name against the linked file's
+      // borrower and co-borrower before ever creating anything.
+      if (!read.coBorrower.email && !read.coBorrower.ssn && read.coBorrower.first_name) {
+        const linked = (await db.query(
+          `SELECT a.borrower_id, a.co_borrower_id,
+                  b.first_name AS bf, b.last_name AS bl,
+                  cb.first_name AS cf, cb.last_name AS cl
+             FROM applications a
+             JOIN borrowers b ON b.id = a.borrower_id
+             LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+            WHERE a.clickup_pipeline_task_id=$1 AND a.deleted_at IS NULL LIMIT 1`,
+          [task.id])).rows[0];
+        if (linked) {
+          const sameName = (f2, l2) =>
+            identity.nameToken(read.coBorrower.first_name)
+            && identity.nameToken(read.coBorrower.first_name) === identity.nameToken(f2)
+            && String(read.coBorrower.last_name || '').trim().toLowerCase() === String(l2 || '').trim().toLowerCase()
+            && String(read.coBorrower.last_name || '').trim() !== '';
+          if (sameName(linked.bf, linked.bl)) coBorrowerId = linked.borrower_id;
+          else if (linked.co_borrower_id && sameName(linked.cf, linked.cl)) coBorrowerId = linked.co_borrower_id;
+        }
+      }
       // Distinct synthetic-email discriminator (`<taskId>-co`) so a co-borrower
       // with NO email doesn't collide with the PRIMARY's `noemail+<taskId>` shadow
       // (which would ON CONFLICT resolve back to the primary and silently drop the
       // co-borrower). A co-borrower WITH a real email is unaffected.
-      const co = await resolveBorrower({ borrower: read.coBorrower }, `${task.id}-co`);
-      if (co.borrowerId && co.borrowerId !== borrowerId) coBorrowerId = co.borrowerId;
+      if (!coBorrowerId) {
+        const co = await resolveBorrower({ borrower: read.coBorrower }, `${task.id}-co`);
+        if (co.borrowerId && co.borrowerId !== borrowerId) coBorrowerId = co.borrowerId;
+      }
     } catch (_) { /* co-borrower is best-effort */ }
   }
   const llcId = await upsertLlc(borrowerId, read.llc.llc_name, read.llc.ein, task.id);
@@ -955,7 +998,17 @@ async function ingestTask(task, options = {}, opts = {}) {
             && coBorrowerId && String(coBorrowerId) === String(roles.borrower_id)
             && (!roles.co_borrower_id
               || String(roles.co_borrower_id) === String(coBorrowerId)
-              || String(roles.co_borrower_id) === String(roles.borrower_id))) {
+              || String(roles.co_borrower_id) === String(roles.borrower_id)
+              // ...or the co slot holds a sync-created SHADOW row (no login,
+              // clickup origin, placeholder email) — a duplicate minted before
+              // the name-only co-borrower learned to match the file's own
+              // people; displacing it to seat the real person is safe.
+              || !!(await db.query(
+                    `SELECT 1 FROM borrowers hb
+                      WHERE hb.id=$1 AND hb.origin='clickup_backfill'
+                        AND hb.email LIKE 'noemail+%@clickup.local'
+                        AND NOT EXISTS (SELECT 1 FROM borrower_auth ba WHERE ba.borrower_id=hb.id)`,
+                    [roles.co_borrower_id])).rows[0])) {
           // FULL REVERSAL, second shape (Boruch Stauber follow-up, owner
           // 2026-07-15 night: "should be resolved by the correct logic, still
           // not resolved"). The main task's person is NOT on the file at all —
