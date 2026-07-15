@@ -263,7 +263,13 @@ async function pushApplication(appId, opts = {}) {
       // genuine ambiguity stops at the TWO-SIDED review queue (which emails
       // the file's loan officer). A blank DOB may still be FILLED; an approved
       // review applies via the re-push bypass (opts.approvedReview).
-      if (!opts.approvedReview && c.id === F.SHARED.borrowerDOB) {
+      // A staff-typed DOB edit (humanEditKeys, set only by the authenticated
+      // portal form routes and carried through the queue) IS the human
+      // decision this gate exists to demand — it writes through, journaled
+      // and breaker-limited like every write (owner-directed 2026-07-15
+      // night: DOB must be fully editable from PILOT).
+      const humanDobEdit = Array.isArray(opts.humanEditKeys) && opts.humanEditKeys.includes('date_of_birth');
+      if (!opts.approvedReview && !humanDobEdit && c.id === F.SHARED.borrowerDOB) {
         const oldLoose = T.epochToDayLoose(old);            // sees artifact years the windowed read hides
         const newDay = T.fromEpochMs(c.value);
         if (oldLoose && newDay && oldLoose !== newDay) {

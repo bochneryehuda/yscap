@@ -132,8 +132,33 @@ async function healBorrowerFields(borrowerId, b, taskId) {
       const cur = (await db.query(`SELECT date_of_birth, origin FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
       const portalDay = cur.date_of_birth ? String(cur.date_of_birth) : null;
       const AR = require('../lib/sync-autoresolve');
-      const d = AR.decideDob({ clickupDay: rawDob, portalDay, portalOrigin: cur.origin || null });
-      if (d.outcome === 'adopt') {
+      // HUMAN-EDIT-WINS (owner-reported 2026-07-15 night, Shalom Elbaum /
+      // 163-165 County Rd: ClickUp's 1/10/91 was corrupted to 1/9/91, the
+      // owner FIXED it back in ClickUp and hit resync — and the portal kept
+      // the wrong day forever because two plausible differing DOBs park in
+      // review). When ClickUp's DOB CHANGED since this task's last ingest —
+      // the stored snapshot is the evidence — and the new value is a
+      // plausible adult DOB that differs from the portal's, a human edited
+      // it AT THE SOURCE deliberately. That correction WINS: adopt it to
+      // both systems (journaled, audited) and the stale reviews close —
+      // never park a human's explicit fix behind a review click. Our own
+      // pushes can't trip this: a value we wrote equals the portal's, which
+      // short-circuits as 'agree' below before any snapshot check matters.
+      let handled = false;
+      const vNew = FLD.sanitizeDob(rawDob);
+      if (taskId && vNew && portalDay && vNew !== FLD.sanitizeDob(portalDay)) {
+        const prev = (await db.query(`SELECT snapshot FROM clickup_task_index WHERE task_id=$1`, [taskId])).rows[0];
+        const prevRaw = prev && prev.snapshot && prev.snapshot.borrower ? prev.snapshot.borrower.date_of_birth : null;
+        const vPrev = prevRaw != null ? (FLD.sanitizeDob(String(prevRaw)) || String(prevRaw)) : null;
+        if (prevRaw != null && vPrev !== vNew) {
+          await AR.adoptDobEverywhere({ borrowerId, day: vNew,
+            why: 'clickup_dob_edited_at_source', source: 'clickup_human_edit' });
+          dobIn = null; handled = true;
+        }
+      }
+      const d = handled ? null : AR.decideDob({ clickupDay: rawDob, portalDay, portalOrigin: cur.origin || null });
+      if (handled) { /* adopted the human's source edit — nothing else to decide */ }
+      else if (d.outcome === 'adopt') {
         await AR.adoptDobEverywhere({ borrowerId, day: d.value, why: d.why, source: 'auto_resolve_inbound' });
         dobIn = null;   // adoption already wrote both sides — nothing left to fill
       } else if (d.outcome === 'review') {
@@ -1064,14 +1089,22 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     if (own.rows[0]) {
       const holder = own.rows[0];
       let reassign = false, holderStillClaims = null;
-      if (holder.clickup_pipeline_task_id) {
+      // Nothing persists on this pass (no linked target and creation gated
+      // off) → adjudicating would strip the holder while nobody takes the
+      // number. Skip to the conservative flag path (post-merge audit nit).
+      const willPersist = !!targetId || allowCreate;
+      if (holder.clickup_pipeline_task_id && willPersist) {
         try {
           const ht = await require('./client').getTask(holder.clickup_pipeline_task_id);
           const hf = ((ht && ht.custom_fields) || []).find((c) => c.id === F.PIPELINE.ysLoanNumber);
           const hNum = hf && hf.value != null ? String(hf.value).trim().toLowerCase() : '';
           holderStillClaims = hNum === String(cols.ys_loan_number).trim().toLowerCase();
           if (!holderStillClaims) reassign = true;                       // fixed at the source — stale portal copy
-          else {
+          else if (String(holder.borrower_id) === String(borrowerId)) {
+            // Date order decides ONLY within one borrower's own deals. A
+            // CROSS-BORROWER contested number where both tasks still claim
+            // it is a genuine key collision — policy says a human decides
+            // (post-merge audit should-fix; the flag path below holds it).
             const curCreated = Number(task.date_created || 0);
             const holderCreated = Number(ht.date_created || 0);
             if (curCreated && holderCreated && curCreated < holderCreated) reassign = true;   // older task IS the original
@@ -1079,7 +1112,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
         } catch (e) { if (e && e.status === 404) reassign = true; /* holder's task deleted — claim gone; other errors: conservative */ }
       }
       if (reassign) {
-        await db.query(`UPDATE applications SET ys_loan_number=NULL, updated_at=now() WHERE id=$1`, [holder.id]).catch(() => {});
+        // Re-check the number in the WHERE so a concurrent ingest that just
+        // gave the holder a DIFFERENT number can't be clobbered (audit nit).
+        await db.query(
+          `UPDATE applications SET ys_loan_number=NULL, updated_at=now()
+            WHERE id=$1 AND lower(btrim(ys_loan_number))=lower(btrim($2))`,
+          [holder.id, cols.ys_loan_number]).catch(() => {});
         await db.query(
           `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
            VALUES ('system',NULL,'loan_number_reassigned','application',$1,$2)`,

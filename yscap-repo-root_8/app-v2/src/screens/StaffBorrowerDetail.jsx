@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
-import { fmtDay } from '../lib/dates.js';
+import { fmtDay, dayInputValue } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
 import { passwordProblem } from '../lib/password.js';
 
@@ -163,6 +163,7 @@ function Overview({ b, onChanged }) {
   const start = () => setF({
     email: b.email || '', cellPhone: b.cell_phone || '', contactType: b.contact_type || '',
     maritalStatus: b.marital_status || '', citizenship: b.citizenship || '',
+    dob: dayInputValue(b.date_of_birth) || '',
     primaryOfficerId: b.primary_officer_id || '',
     ca: b.current_address || {}, ma: b.mailing_address || {},
   });
@@ -172,6 +173,9 @@ function Overview({ b, onChanged }) {
       await api.staffUpdateBorrower(b.id, {
         email: f.email, cellPhone: f.cellPhone, contactType: f.contactType,
         maritalStatus: f.maritalStatus, citizenship: f.citizenship,
+        // Send the DOB only when it actually changed — setting it applies to
+        // the profile AND every linked ClickUp task (audited + journaled).
+        ...(f.dob && f.dob !== (dayInputValue(b.date_of_birth) || '') ? { dob: f.dob } : {}),
         primaryOfficerId: f.primaryOfficerId || null,
         currentAddress: Object.values(f.ca).some(Boolean) ? f.ca : null,
         mailingAddress: Object.values(f.ma).some(Boolean) ? f.ma : null,
@@ -195,6 +199,9 @@ function Overview({ b, onChanged }) {
           <label><span>Contact type</span><input className="input" placeholder="INVESTOR / PRIMARY / …" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })} /></label>
           <label><span>Marital status</span><input className="input" value={f.maritalStatus} onChange={e => setF({ ...f, maritalStatus: e.target.value })} /></label>
           <label><span>Citizenship</span><input className="input" value={f.citizenship} onChange={e => setF({ ...f, citizenship: e.target.value })} /></label>
+          <label><span>Date of birth</span><input className="input" type="date" value={f.dob}
+            onChange={e => setF({ ...f, dob: e.target.value })}
+            title="Saving applies to the borrower profile and every linked ClickUp task (audited)" /></label>
           <label><span>Primary officer</span>
             <select className="input" value={f.primaryOfficerId} onChange={e => setF({ ...f, primaryOfficerId: e.target.value })}>
               <option value="">—</option>
