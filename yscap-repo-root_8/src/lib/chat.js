@@ -72,6 +72,11 @@ async function ensureConversationsForApp(appId) {
         UNION ALL SELECT 'borrower', a.co_borrower_id, 'Co-borrower', true
         UNION ALL SELECT 'staff', a.loan_officer_id, 'Loan Officer', false
         UNION ALL SELECT 'staff', a.processor_id, 'Processor', false
+        -- #113: full-access ASSISTANTS join the file's chats too (the primary is
+        -- already covered by the two branches above; ON CONFLICT dedupes).
+        UNION ALL SELECT 'staff', aa.staff_id, 'Assistant', false
+                    FROM application_assignees aa
+                   WHERE aa.application_id=a.id AND aa.removed_at IS NULL AND aa.is_primary=false
       ) p
      WHERE c.application_id=$1 AND c.kind <> 'custom'
        AND p.id IS NOT NULL

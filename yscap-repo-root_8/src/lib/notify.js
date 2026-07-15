@@ -172,6 +172,27 @@ async function notifyAppBorrowers(appId, opts) {
   return out;
 }
 
+/** Notify every ACTIVE staffer on a file — the primary LO/processor AND any
+    full-access ASSISTANTS (#113) — de-duplicated. Previously each file-event site
+    hand-built the recipient set from the denormalized loan_officer_id/processor_id
+    pointer, which EXCLUDED assistants: they had full access but were silent
+    recipients. This is the single fan-out chokepoint (mirrors notifyAppBorrowers)
+    so every file event reaches the whole team. `opts.exceptStaffId` skips the actor
+    who caused the event (staff-triggered sites). Per-staffer notifications_enabled
+    is honored inside notifyStaff, so it isn't re-implemented here. */
+async function notifyAppStaff(appId, opts = {}) {
+  const { rows } = await db.query(
+    `SELECT DISTINCT staff_id FROM application_assignees
+      WHERE application_id=$1 AND removed_at IS NULL AND staff_id IS NOT NULL`, [appId]);
+  const except = opts.exceptStaffId ? String(opts.exceptStaffId) : null;
+  const out = [];
+  for (const r of rows) {
+    if (except && String(r.staff_id) === except) continue;
+    out.push(await notifyStaff(r.staff_id, opts));
+  }
+  return out;
+}
+
 /** Notify every active admin (used when an application has no loan officer). */
 async function notifyAdmins(opts) {
   const { rows } = await db.query(
@@ -226,4 +247,4 @@ async function fileContext(appId, extraMeta = []) {
   } catch (_) { return null; }
 }
 
-module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAdmins, buildEmail, fileContext, NOTIFY_CATEGORIES, ALWAYS_IN_APP };
+module.exports = { notifyStaff, notifyBorrower, notifyAppBorrowers, notifyAppStaff, notifyAdmins, buildEmail, fileContext, NOTIFY_CATEGORIES, ALWAYS_IN_APP };
