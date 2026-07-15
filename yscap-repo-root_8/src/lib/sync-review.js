@@ -1,6 +1,6 @@
 /**
  * Sync review queue — the human gate for suspicious cross-system changes
- * (2026-07-15 date incident; db/107). The sync stays fully bidirectional:
+ * (2026-07-15 date incident; db/108). The sync stays fully bidirectional:
  * normal changes flow both ways as always. Only the SUSPICIOUS cases stop
  * here and wait for a person:
  *   * outbound DOB one-day shifts (the corruption signature),

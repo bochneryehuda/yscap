@@ -5077,7 +5077,7 @@ router.get('/audit-log/facets', async (req, res) => {
 });
 
 // ---------------- sync review queue (2026-07-15 date incident) --------------
-// The human gate for suspicious cross-system changes (db/107): blocked outbound
+// The human gate for suspicious cross-system changes (db/108): blocked outbound
 // DOB shifts, inbound out-of-range years (mid-typing / 2-digit "26"), and
 // inbound DOBs that disagree with the portal. Nothing here is applied until a
 // person approves it; rejecting closes the row. Scoped like every other list:
