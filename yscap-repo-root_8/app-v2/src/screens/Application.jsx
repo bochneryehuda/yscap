@@ -568,14 +568,19 @@ export default function Application() {
   }
   // Preview a document in place (no download) — same authenticated loader.
   const [previewDoc, setPreviewDoc] = useState(null);
+  // #100: the borrower's OWN loan officer contact for this file (name, title,
+  // NMLS, phone, email) — not generic company info. null while loading / at Lead
+  // Capture, so the rail falls back to the general YS Capital contact.
+  const [officer, setOfficer] = useState(null);
   useEffect(() => {
     // React Router reuses this mounted component across /app/:id changes
     // (mention chips, notification deep-links). Clear the previous file's data
     // first or the old loan renders under the new URL until the fetch lands.
     setApp(null); setItems([]); setUploads([]); setConds([]); setErr(''); setMsg('');
     setSowOpen(false); setTarget(null);   // else the Scope-of-Work modal carries over to the next file
-    setJustTouched(new Set());
+    setJustTouched(new Set()); setOfficer(null);
     load();
+    api.fileOfficer(id).then(r => setOfficer((r && r.officer) || null)).catch(() => setOfficer(null));
     /* eslint-disable-next-line */
   }, [id]);
   // Coming back from the Track Record section / Scope of Work tab: refresh so
@@ -1197,20 +1202,32 @@ export default function Application() {
 
       </FileSections>
 
-      {/* RIGHT RAIL — presentation only. Reads ONLY data the screen already
-          holds (the loan officer name from the loan object) plus a static
-          YS Capital help block. No fetch, no derivation, no handlers, no
-          note-buyer/capital-partner names. */}
+      {/* RIGHT RAIL — the borrower's loan team + help. Shows THEIR assigned loan
+          officer's contact (name, title, NMLS, direct phone + email; #100),
+          fetched per file, falling back to the loan object's name and the general
+          YS Capital line at Lead Capture. No note-buyer/capital-partner names. */}
       <aside className="file-rail" aria-label="Your loan team and help">
         <div className="panel">
           <h3 style={{ marginBottom: 10 }}>Your team</h3>
           <div className="rail-team">
             <span className="rail-ava" aria-hidden="true" />
             <div className="rail-who">
-              <div className="rail-n">{app.loan_officer_name || 'Lead Capture'}</div>
-              <div className="rail-r muted small">Loan Officer</div>
+              <div className="rail-n">{(officer && officer.full_name) || app.loan_officer_name || 'Lead Capture'}</div>
+              <div className="rail-r muted small">{(officer && officer.title) || 'Loan Officer'}{officer && officer.nmls ? ` · NMLS #${officer.nmls}` : ''}</div>
             </div>
           </div>
+          {officer && (officer.phone || officer.cell || officer.email) && (
+            <div className="rail-help" style={{ marginTop: 10, flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+              {(officer.cell || officer.phone) && (
+                <span><span className="rail-help-ic" aria-hidden="true">☎</span>{' '}
+                  <a href={`tel:${(officer.cell || officer.phone).replace(/[^\d+]/g, '')}`}>{officer.cell || officer.phone}</a></span>
+              )}
+              {officer.email && (
+                <span><span className="rail-help-ic" aria-hidden="true">✉</span>{' '}
+                  <a href={`mailto:${officer.email}`}>{officer.email}</a></span>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="panel rail-callout">

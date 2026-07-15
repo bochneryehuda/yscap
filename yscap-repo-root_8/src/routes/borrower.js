@@ -349,6 +349,24 @@ router.get('/applications/:id', async (req, res) => {
   res.json(stripInternalAppFields(r.rows[0]));
 });
 
+// #100: the borrower sees THEIR loan officer's contact details on their file
+// (not generic company info). Returns the FILE's assigned officer contact, or
+// null when the file is still at Lead Capture (client falls back to the company
+// contact). Only the borrower/co-borrower on the file may read it.
+router.get('/applications/:id/officer', async (req, res) => {
+  const own = await db.query(
+    `SELECT loan_officer_id FROM applications
+      WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2) AND deleted_at IS NULL`,
+    [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const oid = own.rows[0].loan_officer_id;
+  if (!oid) return res.json({ officer: null });
+  const r = await db.query(
+    `SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1 AND is_active=true`,
+    [oid]);
+  res.json({ officer: r.rows[0] || null });
+});
+
 // Columns on `applications` that must never be returned to a borrower.
 const BORROWER_HIDDEN_APP_FIELDS = [
   // raw_intake is the ORIGINAL submission blob — on a joint file it carries the
