@@ -54,7 +54,7 @@ const ACTIONS = {
   // ---- Documents ----------------------------------------------------------
   upload_document: { label: 'Uploaded a document', cat: 'document' },
   upload_photo_id: { label: 'Uploaded a photo ID', cat: 'document' },
-  export_tpr: { label: 'Exported the clean file (DPR)', cat: 'document' },
+  export_tpr: { label: 'Exported the clean file (TPR)', cat: 'document' },
   store_tool_exports: { label: 'Stored tool exports', cat: 'document' },
   staff_tool_submit: { label: 'Saved a tool result', cat: 'document' },
 

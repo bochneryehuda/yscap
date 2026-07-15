@@ -53,7 +53,7 @@ export default function EditFileDetails({ app, onSaved }) {
         acquisitionDate: isRefi ? f.acquisitionDate : '',
         isAssignment: f.isAssignment,
         underlyingContractPrice: f.isAssignment ? f.underlyingContractPrice : '',
-        assignmentFee: f.isAssignment ? f.assignmentFee : '',
+        assignmentFee: f.isAssignment ? Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)) : '',
       };
       if (addrChanged) {
         const line1 = f.addrLine1.trim();
@@ -145,8 +145,11 @@ export default function EditFileDetails({ app, onSaved }) {
               <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500, fontSize: '14px', color: 'var(--ivory)' }}>This is an assignment purchase</span>
             </label>
             {f.isAssignment && <>
-              <label className="col-2"><span>Underlying price</span><MoneyInput value={f.underlyingContractPrice} onChange={(v) => set('underlyingContractPrice', v)} /></label>
-              <label className="col-2"><span>Assignment fee</span><MoneyInput value={f.assignmentFee} onChange={(v) => set('assignmentFee', v)} /></label>
+              <label className="col-2"><span>Original (underlying) price</span><MoneyInput value={f.underlyingContractPrice} onChange={(v) => set('underlyingContractPrice', v)} /></label>
+              <label className="col-2"><span>Assignment fee (auto)</span>
+                <div className="input" style={{ display: 'flex', alignItems: 'center', background: 'var(--soft, #f4f1ea)' }}>
+                  ${Math.max(0, (Number(f.purchasePrice) || 0) - (Number(f.underlyingContractPrice) || 0)).toLocaleString('en-US')}
+                </div></label>
             </>}
           </div>
           <p className="muted small" style={{ margin: '8px 0 0' }}>Editing the price/ARV/rehab/assignment re-drives the pricing engine when you re-register a product. Every change lands in the file's Activity log with its before/after values.</p>

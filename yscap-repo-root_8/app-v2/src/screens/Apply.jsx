@@ -177,6 +177,34 @@ export default function Apply() {
     if (k === 'ssn') return;
     save({ data: { [k]: v } });
   };
+  // Assignment purchase (mirrors the staff new-file form): the borrower types
+  // the TOTAL purchase price and the ORIGINAL (underlying) contract price; the
+  // assignment fee is ALWAYS derived (total − underlying), never typed. Keep the
+  // derived fee persisted on the draft so the Term Sheet Studio prefill and the
+  // submitted file both carry it without a separate manual field to drift.
+  const assignFeeOf = (price, underlying) =>
+    Math.max(0, (Number(price) || 0) - (Number(underlying) || 0));
+  const setPurchasePrice = (v) => setForm(f => {
+    const cur = f || {};
+    const patch = { purchasePrice: v };
+    if (cur.isAssignment) patch.assignmentFee = String(assignFeeOf(v, cur.underlyingContractPrice));
+    save({ data: patch });
+    return { ...cur, ...patch };
+  });
+  const setUnderlying = (v) => setForm(f => {
+    const cur = f || {};
+    const patch = { underlyingContractPrice: v, assignmentFee: String(assignFeeOf(cur.purchasePrice, v)) };
+    save({ data: patch });
+    return { ...cur, ...patch };
+  });
+  const setAssignment = (on) => setForm(f => {
+    const cur = f || {};
+    const patch = on
+      ? { isAssignment: true, assignmentFee: String(assignFeeOf(cur.purchasePrice, cur.underlyingContractPrice)) }
+      : { isAssignment: false, underlyingContractPrice: '', assignmentFee: '' };
+    save({ data: patch });
+    return { ...cur, ...patch };
+  });
   const mergeAddr = (patch) => {
     setForm(f => {
       const address = { ...((f && f.propertyAddress) || {}), ...patch };
@@ -512,7 +540,7 @@ export default function Apply() {
             {!isRefi(form.loanType) ? (
               <div className="grid cols-2">
                 <div className="field"><label>Purchase price</label>
-                  <MoneyInput value={form.purchasePrice || ''} onChange={v => set('purchasePrice', v)} /></div>
+                  <MoneyInput value={form.purchasePrice || ''} onChange={setPurchasePrice} /></div>
                 <div className="field"><label>As-is value</label>
                   <MoneyInput value={form.asIsValue || ''} onChange={v => set('asIsValue', v)} /></div>
               </div>
@@ -538,20 +566,22 @@ export default function Apply() {
             )}
             {isPurchase(form.loanType) && (
               <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer', margin: '2px 0 12px' }}>
-                <input type="checkbox" checked={!!form.isAssignment} onChange={e => set('isAssignment', e.target.checked)} />
+                <input type="checkbox" checked={!!form.isAssignment} onChange={e => setAssignment(e.target.checked)} />
                 <span>This purchase is an <strong>assignment</strong> of contract</span>
               </label>
             )}
             {form.isAssignment && (
               <>
                 <div className="grid cols-2">
-                  <div className="field"><label>Underlying contract price</label>
-                    <MoneyInput value={form.underlyingContractPrice || ''} onChange={v => set('underlyingContractPrice', v)} /></div>
-                  <div className="field"><label>Assignment fee</label>
-                    <MoneyInput value={form.assignmentFee || ''} onChange={v => set('assignmentFee', v)} /></div>
+                  <div className="field"><label>Original (underlying) purchase price</label>
+                    <MoneyInput value={form.underlyingContractPrice || ''} onChange={setUnderlying} /></div>
+                  <div className="field"><label>Assignment fee (auto)</label>
+                    <div className="input" style={{ background: 'var(--soft, #f4f1ea)', display: 'flex', alignItems: 'center' }}>
+                      {money(assignFeeOf(form.purchasePrice, form.underlyingContractPrice))}
+                    </div></div>
                 </div>
                 <p className="muted small" style={{ marginBottom: 12 }}>
-                  Total purchase price: <strong>{money((Number(form.underlyingContractPrice) || 0) + (Number(form.assignmentFee) || 0))}</strong>.
+                  The assignment fee is your <strong>purchase price</strong> above minus the <strong>original (underlying) contract price</strong>.
                   We'll ask for the <strong>assignment contract</strong> and the <strong>underlying purchase contract</strong> on your file.
                 </p>
               </>

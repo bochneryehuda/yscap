@@ -663,27 +663,25 @@ router.post('/applications', async (req, res) => {
     // underlying price too silently stored is_assignment=false when staff
     // ticked assignment without typing the price yet — so the assignment
     // condition never generated. The price is its own field, filled when known.
-    const isAssignment = !!b.isAssignment;
-    const underlying = isAssignment ? (b.underlyingContractPrice || null) : null;
-    const assignFee = isAssignment ? (b.assignmentFee || null) : null;
-    const purchasePrice = isAssignment
-      ? (Number(b.underlyingContractPrice || 0) + Number(b.assignmentFee || 0))
-      : (b.purchasePrice || null);
+    // Shared with the borrower create paths (#96) so the assignment invariant
+    // has ONE definition and can never drift between staff and borrower surfaces.
+    const { isAssignment, underlying, assignFee, purchasePrice } =
+      require('../lib/fields').assignmentFields(b);
 
     const ins = await db.query(
       `INSERT INTO applications
          (borrower_id,property_address,property_type,units,program,loan_type,
           purchase_price,as_is_value,arv,rehab_budget,loan_officer_id,loan_officer_name,
           rehab_type,sqft_pre,sqft_post,requested_exp_flips,requested_exp_holds,requested_exp_ground,
-          processor_id,is_assignment,underlying_contract_price,assignment_fee,source,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,'staff','new',now())
+          processor_id,is_assignment,underlying_contract_price,assignment_fee,requested_exp_reo,source,status,submitted_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'staff','new',now())
        RETURNING id,ys_loan_number`,
       [borrowerId, JSON.stringify(addr), b.propertyType || null, b.units || null,
        b.program || null, require('../lib/fields').sanitizeLoanType(b.loanType), purchasePrice, b.asIsValue || null,   // #95: never a program
        b.arv || null, b.rehabBudget || null, officerId, officerName,
        b.rehabType || null, intField(b.sqftPre) || null, intField(b.sqftPost) || null,
        intField(b.requestedExpFlips), intField(b.requestedExpHolds), intField(b.requestedExpGround),
-       processorId, isAssignment, underlying, assignFee]);
+       processorId, isAssignment, underlying, assignFee, intField(b.requestedExpReo)]);   // #97: General REO slot
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'staff_create' }); }
