@@ -5,7 +5,6 @@ import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import { MoneyInput, PhoneInput } from '../components/FormattedInputs.jsx';
 import Entities from '../components/Entities.jsx';
 import { BorrowerContacts } from '../components/FileContacts.jsx';
-import DocPreview from '../components/DocPreview.jsx';
 import TwoFactorPanel from '../components/TwoFactorPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
@@ -34,7 +33,6 @@ export default function Profile() {
   const [trCounts, setTrCounts] = useState(null);  // live track-record counts
   const [trSnap, setTrSnap] = useState(null);      // saved static HTML copy
   const [trDl, setTrDl] = useState(false);
-  const [trPreview, setTrPreview] = useState(false);
 
   useEffect(() => {
     api.profile().then(d => {
@@ -276,9 +274,10 @@ export default function Profile() {
             <p className="muted small" style={{ margin: 0 }}>Your completed deals live in their own section and link to every loan file automatically.</p>
           </div>
           <div className="spacer" />
-          {trSnap && (
-            <button className="btn ghost" onClick={() => setTrPreview(true)} title="Preview your saved track record without downloading">Preview</button>
-          )}
+          {/* #82: the "Preview" of a saved static copy was removed — the track
+              record is a LIVE, editable record now. "Open" takes you straight to
+              the full-screen builder (auto-saves as you work). The HTML export
+              stays for anyone who wants a static copy to keep. */}
           {trSnap && (
             <button className="btn ghost" disabled={trDl} onClick={downloadTrSnap} title="The static HTML copy of your track record — kept in sync automatically">
               {trDl ? '…' : '⤓ Saved copy (HTML)'}
@@ -286,11 +285,6 @@ export default function Profile() {
           )}
           <Link className="btn primary" to="/track-record">Open Track Record →</Link>
         </div>
-        {trPreview && trSnap && (
-          <DocPreview title="Track record — saved copy" filename={trSnap.filename} contentType="text/html"
-            load={() => api.downloadDoc(trSnap.documentId)}
-            onDownload={downloadTrSnap} onClose={() => setTrPreview(false)} />
-        )}
         {trCounts && (
           <div className="reqchips" style={{ marginTop: 12 }}>
             <span className={`reqchip ${trCounts.total ? 'met' : ''}`}>{trCounts.total} deal{trCounts.total === 1 ? '' : 's'} on record</span>

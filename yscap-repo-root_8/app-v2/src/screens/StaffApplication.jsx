@@ -1026,7 +1026,6 @@ function StaffTrackRecordPanel({ app, role }) {
   const borrowerId = people.some(p => p.id === selected) ? selected : app.borrower_id;
   const [snap, setSnap] = useState(null);
   const [dl, setDl] = useState(false);
-  const [preview, setPreview] = useState(false);
   const [full, setFull] = useState(false);   // full-screen tool sheet (same UX as the Scope of Work)
   // Per-line-item list so staff can raise an issue/request against a SPECIFIC
   // past project — it becomes a named condition on this file the borrower answers.
@@ -1116,10 +1115,9 @@ function StaffTrackRecordPanel({ app, role }) {
           title="Open the track record in the full-screen workspace — same as the Scope of Work">
           Open full screen
         </button>
-        {snap && (
-          <button className="btn ghost small" onClick={() => setPreview(true)}
-            title="Preview the borrower's saved static copy without downloading">Preview</button>
-        )}
+        {/* #82: the "Preview" of a saved static copy was removed — it opened a
+            stale snapshot. "Open full screen" is the live, editable, auto-saving
+            record; the HTML export below stays for a static copy on hand. */}
         {snap && (
           <button className="btn ghost small" disabled={dl} onClick={download}
             title="The borrower's saved static copy — refreshed automatically on every change">
@@ -1143,11 +1141,6 @@ function StaffTrackRecordPanel({ app, role }) {
             Pricing experience for this file = both borrowers, summed.
           </span>
         </div>
-      )}
-      {preview && snap && (
-        <DocPreview title="Track record — saved copy" filename={snap.filename} contentType="text/html"
-          load={() => api.staffDownloadDoc(snap.documentId)}
-          onDownload={download} onClose={() => setPreview(false)} />
       )}
       {trs.length > 0 && (
         <div className="panel" style={{ marginBottom: 12, padding: 10 }}>
