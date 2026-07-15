@@ -29,6 +29,11 @@ app.use('/api/clickup/webhook', require('./routes/clickup-webhook'));
 // #75 — inbound email → chat: an external guest's email reply lands back in the
 // conversation (dormant until an inbound-email domain is configured in Resend).
 app.use('/api/inbound/chat', require('./routes/inbound-chat'));
+// #68 — inbound email → per-file forward: a reply to file+<appId>@<domain> is
+// verified (Svix signature over the RAW body) and fanned out to every assignee.
+// Mounted BEFORE the JSON parser for the same raw-body reason as the chat/ClickUp
+// webhooks. Separate URL from /api/inbound/chat (which is unchanged).
+app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.

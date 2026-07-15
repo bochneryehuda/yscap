@@ -144,6 +144,14 @@ module.exports = {
   msClientSecret:process.env.MS_CLIENT_SECRET,
   // Resend provider:
   resendApiKey:  process.env.RESEND_API_KEY,
+  // #68 inbound file-email forwarding. RESEND_WEBHOOK_SECRET (whsec_…) verifies
+  // that an email.received webhook actually came from Resend (Svix signature over
+  // the raw body). RESEND_INBOUND_API_KEY is a FULL-ACCESS key used to retrieve
+  // the inbound email body via the Receiving API — a Sending-only key can't read
+  // it — and falls back to RESEND_API_KEY when unset (fine if that key already has
+  // full access). The inbound route stays dormant until the secret is configured.
+  resendWebhookSecret:   (process.env.RESEND_WEBHOOK_SECRET || '').trim() || null,
+  resendInboundApiKey:   (process.env.RESEND_INBOUND_API_KEY || process.env.RESEND_API_KEY || '').trim() || null,
   // Hosted card-OCR (appraisal "scan a photo"): OCR.space. Get a free key at
   // https://ocr.space/ocrapi; unset falls back to the public demo key.
   ocrSpaceApiKey: process.env.OCR_SPACE_API_KEY,
