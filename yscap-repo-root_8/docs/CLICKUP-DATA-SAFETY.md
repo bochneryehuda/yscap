@@ -95,8 +95,25 @@ sync now handles the full lifecycle:
 5. A **genuine second deal at the same address** is unblocked deliberately:
    `POST /api/admin/clickup/manual-review/task/:taskId/force-create` (runs the
    normal ingest with the defer bypassed; every other guard still applies).
-6. A duplicate that copied a **real YS loan number** stays `ambiguous` until
-   the officer sets the new deal's number (loan numbers are globally unique).
+6. A duplicate that copied a **real YS loan number** is handled by WHOSE number
+   it is (root-caused 2026-07-15, Asher Salamon / 734 Dennis Pl — the copied
+   YSCAP number kept the task silently `ambiguous` forever):
+   - **Same borrower**, number bound to another live task → a stale copy from
+     the duplicate workflow, exactly like the copied stamp. It is **ignored for
+     matching and never imported** (a loan number belongs to one loan; importing
+     would collide on the unique index). The file materializes without it and a
+     `copied_loan_number_needs_assignment` review row tells the LO to set the
+     real number in ClickUp — which then fills in via COALESCE and the row
+     auto-closes.
+   - **Different borrower** sharing a number → a genuine cross-borrower key
+     collision; stays `ambiguous` for a human.
+7. **No silent materialization failures.** Every ingest that leaves a task
+   non-materialized (`ambiguous` / `duplicate_pending`) queues a visible
+   `file_link` review row saying WHY and what fixes it; the row auto-closes the
+   moment the file materializes. And a boot one-shot (`retryStuckTasksOnce`)
+   re-drives every stuck task through the CURRENT resolver (≤200/boot), so a
+   root-cause fix heals the whole backlog on deploy — not only tasks that
+   happen to receive a new webhook.
 
 ### Follow-up hardening (post-merge audit)
 
@@ -164,6 +181,15 @@ doesn't know, trigger the review."
   borrower's active files) with a deep link to `/internal/sync-reviews`; the
   screen and resolve endpoints are already scoped so LOs resolve their own
   files' rows. `notified_at` prevents double-sends.
+- **A CLEARED ClickUp DOB is looked at too** (Leifer, 2026-07-15: the disputed
+  DOB was deleted in ClickUp and the review row sat open forever because the
+  heal flow only ran when a value came in). A blank inbound DOB still can never
+  clear a real portal DOB — but it now vacates the conflict: portal DOB
+  plausible → open review rows auto-close ("PILOT keeps X"); portal DOB
+  IMPOSSIBLE (fails `sanitizeDob`) → **wipe-don't-guess**: both systems agreed
+  the value was wrong, so the portal copy is NULLed (audited
+  `dob_wipe_dont_guess`) instead of preserving provable garbage, and the rows
+  close ready for the real date.
 
 ## 5. One way to read a typed date, system-wide
 

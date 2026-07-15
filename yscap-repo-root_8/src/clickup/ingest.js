@@ -156,6 +156,38 @@ async function healBorrowerFields(borrowerId, b, taskId) {
         }
       }
     } catch (e) { dobIn = FLD.sanitizeDob(rawDob); /* strict fill-only fallback */ }
+  } else {
+    // ClickUp's DOB is BLANK (cleared at the source). The COALESCE below already
+    // guarantees a blank can never clear a real portal DOB — but a clear is also
+    // how an officer VACATES a disputed value (Leifer, 2026-07-15: the bad DOB
+    // was deleted in ClickUp and the review row sat open forever because this
+    // whole flow only ran when a value came IN). So a blank still gets looked at:
+    //  * portal DOB plausible → the conflict no longer exists; close any open
+    //    review rows for this borrower (PILOT keeps its value, nothing written).
+    //  * portal DOB IMPOSSIBLE (not an adult's date) → wipe-don't-guess: both
+    //    systems agreed the value was wrong (ClickUp cleared it), so NULL the
+    //    portal copy too rather than preserving provable garbage — audited.
+    try {
+      const cur = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [borrowerId])).rows[0] || {};
+      const portalDay = cur.date_of_birth ? String(cur.date_of_birth) : null;
+      if (portalDay) {
+        const FLD = require('../lib/fields');
+        if (FLD.sanitizeDob(portalDay)) {
+          await review.closeStaleReviews({ borrowerId, fieldKey: 'date_of_birth',
+            note: 'auto-closed — the ClickUp DOB was cleared at the source; PILOT keeps ' + portalDay });
+        } else {
+          const problem = FLD.dobProblem(portalDay) || 'invalid';
+          await db.query(`UPDATE borrowers SET date_of_birth=NULL, updated_at=now() WHERE id=$1`, [borrowerId]);
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system',NULL,'dob_wipe_dont_guess','borrower',$1,$2)`,
+            [borrowerId, JSON.stringify({ removed: portalDay, problem, taskId: taskId || null,
+              why: 'ClickUp DOB cleared and the PILOT value cannot belong to an adult borrower — cleared rather than guessed' })]).catch(() => {});
+          await review.closeStaleReviews({ borrowerId, fieldKey: 'date_of_birth',
+            note: `auto-closed — ClickUp cleared the DOB and PILOT's ${portalDay} is impossible (${problem}); both sides now blank, ready for the real date` });
+        }
+      }
+    } catch (e) { console.warn('[ingest] cleared-DOB check skipped:', e.message); }
   }
   try {
     await db.query(
@@ -425,22 +457,44 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
   // ys_loan_number is a GLOBAL unique key — same number == same loan. Match it
   // across ALL borrowers (not just the resolved one) so a re-linked/re-keyed file
   // links instead of colliding on the unique index (which would otherwise throw).
+  // Set when THIS task carries a loan number that belongs to ANOTHER live task
+  // of the SAME borrower — the "duplicate a task and forget to change the loan
+  // number" class (root-caused 2026-07-15, Asher Salamon / 734 Dennis Pl: the
+  // copied YSCAP number made the task 'ambiguous' forever, silently).
+  let copiedLoanNumber = null;
   if (read.app.ys_loan_number) {
     // Case-insensitive (+ whitespace-tolerant) so "YS-123" and "ys-123" are the
     // SAME loan — matching how the identity scan below normalizes loanNumber, so a
     // mere case difference can never miss a link and split one loan into two files.
     const ln = await db.query(
-      `SELECT id, clickup_pipeline_task_id FROM applications WHERE lower(btrim(ys_loan_number))=lower(btrim($1)) AND deleted_at IS NULL LIMIT 1`,
+      `SELECT id, borrower_id, clickup_pipeline_task_id FROM applications WHERE lower(btrim(ys_loan_number))=lower(btrim($1)) AND deleted_at IS NULL LIMIT 1`,
       [read.app.ys_loan_number]
     ).catch(() => ({ rows: [] }));
     if (ln.rows[0]) {
       const linked = ln.rows[0].clickup_pipeline_task_id;
       if (!linked || linked === task.id) return { id: ln.rows[0].id, how: 'linked_loannum', detail: { ysLoanNumber: read.app.ys_loan_number } };
-      return { ambiguous: true, detail: { ysLoanNumber: read.app.ys_loan_number, boundToTask: linked } };
+      if (String(ln.rows[0].borrower_id) === String(borrowerId)) {
+        // SAME borrower, different live task: exactly like the copied Portal-
+        // File-ID stamp (f346033), a loan number inherited by the duplicate-a-
+        // task workflow is a STALE COPY, not an identity claim — a real loan
+        // number is globally unique, so two of the borrower's deals can't share
+        // one. Ignore it for matching (fall through to identity/defer/create)
+        // and tell the caller so the copied number is NEVER imported onto the
+        // new file (it would collide on the unique index) — the officer gets a
+        // review row to assign the real number in ClickUp instead.
+        copiedLoanNumber = { number: read.app.ys_loan_number, ofApplication: ln.rows[0].id, boundToTask: linked };
+      } else {
+        // DIFFERENT borrower sharing a loan number — a genuine cross-borrower
+        // key collision; a human must look (visible via the review row the
+        // ingest layer queues for every non-materialized task).
+        return { ambiguous: true, detail: { ysLoanNumber: read.app.ys_loan_number, boundToTask: linked } };
+      }
     }
   }
   const tn = identity.normalizeIdentity({
-    address: _addrOf(read.app.property_address), loanNumber: read.app.ys_loan_number, purchasePrice: read.app.purchase_price,
+    address: _addrOf(read.app.property_address),
+    loanNumber: copiedLoanNumber ? null : read.app.ys_loan_number,   // a copied number is not an identity signal
+    purchasePrice: read.app.purchase_price,
   });
   const cand = await db.query(
     `SELECT id, property_address, ys_loan_number, purchase_price FROM applications
@@ -459,7 +513,7 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
       const loan = tn.loanNumber && tn.loanNumber === cn.loanNumber;
       if (addr || loan) strong.push({ id: c.id, addr: !!addr, loan: !!loan });
     }
-    if (strong.length === 1) return { id: strong[0].id, how: 'linked_identity', detail: strong[0] };
+    if (strong.length === 1) return { id: strong[0].id, how: 'linked_identity', detail: strong[0], copiedLoanNumber };
     if (strong.length > 1)  return { ambiguous: true, detail: { candidates: strong.map((s) => s.id) } };
   }
 
@@ -485,7 +539,7 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
       let dead = false;
       try { await require('./client').getTask(o.clickup_pipeline_task_id); }
       catch (e) { if (e && e.status === 404) dead = true; }
-      if (dead) return { id: o.id, how: 'relinked_dead_task', detail: { fromTask: o.clickup_pipeline_task_id } };
+      if (dead) return { id: o.id, how: 'relinked_dead_task', detail: { fromTask: o.clickup_pipeline_task_id }, copiedLoanNumber };
       // Duplicate-in-progress DEFER (owner-directed 2026-07-15): this borrower
       // already has a portal file at the SAME property bound to a LIVE other
       // task — this task is almost certainly a fresh ClickUp duplicate whose
@@ -502,7 +556,7 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
       // creation is even possible: without allowCreate the caller returns
       // 'skipped' exactly as before, and forceCreate is the human override.
       if (opts.allowCreate && !opts.forceCreate) {
-        return { duplicatePending: true, detail: { sameAddressAs: o.id, boundToTask: o.clickup_pipeline_task_id, alive: !dead } };
+        return { duplicatePending: true, detail: { sameAddressAs: o.id, boundToTask: o.clickup_pipeline_task_id, alive: !dead }, copiedLoanNumber };
       }
     }
   }
@@ -516,10 +570,10 @@ async function findExistingApp(task, read, borrowerId, opts = {}) {
     const srcAddr = src.rows[0]
       ? identity.normalizeIdentity({ address: _addrOf(src.rows[0].property_address) }).address : null;
     if (!tn.address || (srcAddr && tn.address === srcAddr)) {
-      return { duplicatePending: true, detail: { copiedStampOf: staleStampAppId } };
+      return { duplicatePending: true, detail: { copiedStampOf: staleStampAppId }, copiedLoanNumber };
     }
   }
-  return null;
+  return copiedLoanNumber ? { copiedLoanNumber } : null;
 }
 
 /**
@@ -729,6 +783,33 @@ async function ingestTask(task, options = {}, opts = {}) {
     if (applicationId && matchStatus && matchStatus !== 'linked_task') {
       try { await require('./enqueue').enqueueClickupPush(applicationId, ['portal_stamp']); } catch (_) { /* best-effort */ }
     }
+    // SILENT-GATE VISIBILITY (root fix 2026-07-15, Asher Salamon / 734 Dennis
+    // Pl): a task that fails to materialize must never be invisible. Ambiguous
+    // and duplicate-pending tasks queue a review row (which emails the file's
+    // loan officer); the row auto-closes the moment the file lands. A loan
+    // number copied by the duplicate-a-task workflow gets its own row telling
+    // the officer to assign the real number in ClickUp — once assigned, the
+    // number fills in via COALESCE and the row auto-closes too.
+    try {
+      if (!applicationId && (matchStatus === 'ambiguous' || matchStatus === 'duplicate_pending')) {
+        await review.queueReview({
+          borrowerId, taskId: task.id, direction: 'inbound', fieldKey: 'file_link',
+          reason: 'file_not_materialized_' + matchStatus,
+          clickupValue: String(task.name || '').slice(0, 120), portalValue: null,
+          rawValue: matchDetail ? JSON.stringify(matchDetail).slice(0, 300) : null });
+      } else if (applicationId) {
+        await review.closeStaleReviews({ taskId: task.id, fieldKey: 'file_link', note: 'auto-closed \u2014 the file is now in PILOT' });
+      }
+      if (applicationId && res.copiedLoanNumber) {
+        await review.queueReview({
+          applicationId, borrowerId, taskId: task.id, direction: 'inbound', fieldKey: 'ys_loan_number',
+          reason: 'copied_loan_number_needs_assignment',
+          clickupValue: res.copiedLoanNumber.number, portalValue: null,
+          rawValue: JSON.stringify(res.copiedLoanNumber).slice(0, 300) });
+      } else if (applicationId) {
+        await review.closeStaleReviews({ taskId: task.id, fieldKey: 'ys_loan_number', note: 'auto-closed \u2014 the task now carries its own loan number' });
+      }
+    } catch (_) { /* visibility is best-effort \u2014 never breaks ingest */ }
     // Co-borrower government-ID condition follows the file's ACTUAL linked
     // co-borrower (a manual link is preserved by fill-only-if-null above).
     if (applicationId) {
@@ -876,15 +957,45 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   let targetId = null, matchStatus = null, detail = null;
   const byTask = await db.query(`SELECT id FROM applications WHERE clickup_pipeline_task_id=$1 LIMIT 1`, [task.id]);
   if (byTask.rows[0]) { targetId = byTask.rows[0].id; matchStatus = 'linked_task'; }
-  else {
+  let copiedLoanNumber = null;
+  if (!targetId) {
     const m = await findExistingApp(task, read, borrowerId, { allowCreate, forceCreate });
     if (m && m.ambiguous) return { applicationId: null, matchStatus: 'ambiguous', detail: m.detail };
+    copiedLoanNumber = (m && m.copiedLoanNumber) || null;
+    // A loan number COPIED from another live task of the same borrower is a
+    // stale duplicate-workflow artifact — NEVER import it (a real loan number
+    // is globally unique; importing would collide on the unique index). The
+    // file materializes without it and the officer gets a review row to assign
+    // the correct number in ClickUp (which then fills in via COALESCE).
+    if (copiedLoanNumber) cols.ys_loan_number = null;
     // Fresh ClickUp duplicate whose address hasn't been updated yet — do NOT
     // create a same-address twin file; the officer's address edit re-triggers
     // ingest and the file materializes cleanly then. Admin force-create is the
     // deliberate override for a genuine same-address second deal.
     if (m && m.duplicatePending) return { applicationId: null, matchStatus: 'duplicate_pending', detail: m.detail };
     if (m && m.id) { targetId = m.id; matchStatus = m.how; detail = m.detail || null; }
+  }
+  // UNIVERSAL loan-number import guard — EVERY persistence path, not only the
+  // findExistingApp one. After a file materializes without the copied number,
+  // the very next ingest matches byTask ('linked_task', which never calls
+  // findExistingApp) while ClickUp STILL carries the copied number — and the
+  // COALESCE update would try to import it, collide on the partial unique
+  // index (db/048), and break the ENTIRE inbound update for the file on every
+  // pass. So: a number already carried by ANOTHER live application is never
+  // importable, period. It also keeps `copiedLoanNumber` truthy on every pass
+  // until the officer actually assigns a fresh number in ClickUp — which is
+  // exactly when the review row should auto-close (not one webhook after
+  // materialization, when the task was still carrying the stale copy).
+  if (cols.ys_loan_number != null) {
+    const own = await db.query(
+      `SELECT id, clickup_pipeline_task_id FROM applications
+        WHERE lower(btrim(ys_loan_number))=lower(btrim($1)) AND deleted_at IS NULL AND id IS DISTINCT FROM $2 LIMIT 1`,
+      [cols.ys_loan_number, targetId]).catch(() => ({ rows: [] }));
+    if (own.rows[0]) {
+      copiedLoanNumber = copiedLoanNumber ||
+        { number: cols.ys_loan_number, ofApplication: own.rows[0].id, boundToTask: own.rows[0].clickup_pipeline_task_id };
+      cols.ys_loan_number = null;   // COALESCE keeps the portal's (blank or own) number
+    }
   }
 
   // #86 — protect a freshly-APPROVED economics change from a STALE ClickUp pull.
@@ -1005,7 +1116,7 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     if (llcId) {
       try { await require('../lib/vesting').setVestingLlc(targetId, llcId, { source: 'clickup', push: false }); } catch (_) { /* best-effort */ }
     }
-    return { applicationId: targetId, matchStatus, detail };
+    return { applicationId: targetId, matchStatus, detail, copiedLoanNumber };
   }
   if (!allowCreate) return { applicationId: null, matchStatus: 'skipped' };
 
@@ -1035,7 +1146,7 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   if (llcId) {
     try { await require('../lib/vesting').setVestingLlc(newId, llcId, { source: 'clickup', push: false, force: true }); } catch (_) { /* best-effort */ }
   }
-  return { applicationId: newId, matchStatus: 'created' };
+  return { applicationId: newId, matchStatus: 'created', copiedLoanNumber };
 }
 
 module.exports = {
