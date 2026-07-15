@@ -473,6 +473,13 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
   const adoptIfIdentical = async (name) => {
     try {
       const existing = await sp.itemMetaByName(driveId, parentId, name);
+      // NEVER adopt the item this row's own ref already points at: on a
+      // re-mirror that item is the KNOWN-CORRUPT copy being replaced, and
+      // before hash calibration a same-size corrupt item would pass the size
+      // check and be re-recorded as 'ok' (post-merge audit, 2026-07-15).
+      if (row.sharepoint_backup_ref && existing) {
+        try { if (sp.parseRef(row.sharepoint_backup_ref).itemId === existing.id) return null; } catch (_) { /* bad ref — fall through */ }
+      }
       const sizeOk = existing && existing.size != null && Number(existing.size) === bytes.length;
       const remoteQx = existing && existing.file && existing.file.hashes && existing.file.hashes.quickXorHash;
       const hashOk = _qxTrusted === true ? (remoteQx && remoteQx === localQx) : true;
@@ -578,6 +585,12 @@ async function mirrorRowInner(row, scopeKey) {
     `SELECT id, sharepoint_web_url, sharepoint_backup_ref FROM documents
       WHERE sha256 = $1 AND filename = $2 AND id <> $3
         AND sharepoint_backup_ref IS NOT NULL
+        -- only dedup against a HEALTHY, fully-recorded mirror: a doc whose
+        -- mirror is flagged corrupt (re-queued: backed_up_at NULL, ref kept)
+        -- or mismatch-stamped must never lend its corrupt URL to a sibling
+        -- (post-merge audit, 2026-07-15)
+        AND sharepoint_backed_up_at IS NOT NULL
+        AND (sharepoint_integrity IS NULL OR sharepoint_integrity NOT LIKE 'mismatch%')
         AND application_id  IS NOT DISTINCT FROM $4
         AND borrower_id     IS NOT DISTINCT FROM $5
         AND llc_id          IS NOT DISTINCT FROM $6
