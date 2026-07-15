@@ -116,4 +116,21 @@ function sanitizeDob(v) {
   return d;
 }
 
-module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate, sanitizeDob };
+// COMMON-SENSE classification of WHY a DOB is implausible (owner-directed
+// 2026-07-15: "it doesn't make sense that the date of birth is in the future
+// or a 3-year-old — say that, not 'they differ'"). Returns null for a
+// plausible adult DOB, else one of: 'future' (born after today), 'minor'
+// (under 18), 'over_120', 'invalid' (not a real calendar date at all).
+function dobProblem(v) {
+  if (v == null || v === '') return 'invalid';
+  const d = normalizeTypedDate(v, 'dob') || sanitizeDateOnly(v);
+  if (d == null) return 'invalid';
+  const y = Number(d.slice(0, 4));
+  const nowY = new Date().getUTCFullYear();
+  if (d > new Date().toISOString().slice(0, 10)) return 'future';
+  if (y > nowY - 18) return 'minor';
+  if (y < nowY - 120) return 'over_120';
+  return null;
+}
+
+module.exports = { sanitizeFico, sanitizeSsnDigits, sanitizeLoanType, assignmentFields, sanitizeDateOnly, normalizeTypedDate, sanitizeDob, dobProblem };

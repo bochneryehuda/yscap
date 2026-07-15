@@ -59,7 +59,27 @@ eq('adopt: resolvable ClickUp artifact (0072→1972) beats a toddler portal valu
    { outcome: 'adopt', value: '1972-02-24', winner: 'clickup', why: 'portal_value_implausible' });
 eq('review: both sides truly unresolvable → review with no proposal',
    decideDob({ clickupDay: '0203-01-01', portalDay: '2022-12-11' }),
-   { outcome: 'review', proposal: null });
+   { outcome: 'review', proposal: null, kind: 'unusable' });
+
+// ---- common-sense review kinds (owner-directed 2026-07-15 evening) ------------
+// "You should not say that it's different — it's the same, it just doesn't make
+// sense": equal-but-impossible pairs classify as same_impossible, not differs.
+eq('kind: same impossible value on both sides (future birth)',
+   decideDob({ clickupDay: '2029-08-28', portalDay: '2029-08-28' }),
+   { outcome: 'review', proposal: null, kind: 'same_impossible' });
+eq('kind: same toddler DOB on both sides',
+   decideDob({ clickupDay: '2022-07-22', portalDay: '2022-07-22' }).kind, 'same_impossible');
+eq('kind: genuinely differing plausible DOBs',
+   decideDob({ clickupDay: '1983-02-23', portalDay: '1986-02-23' }).kind, 'differs');
+eq('kind: unusable pair that differs', decideDob({ clickupDay: '0203-01-01', portalDay: '2022-12-11' }).kind, 'unusable');
+
+const { dobProblem } = require('../src/lib/fields');
+eq('dobProblem: future birth', dobProblem('2029-08-28'), 'future');
+eq('dobProblem: toddler', dobProblem('2022-07-22'), 'minor');
+eq('dobProblem: over 120', dobProblem('1905-01-01'), 'over_120');
+eq('dobProblem: outside the parse window entirely', dobProblem('1890-01-01'), 'invalid');
+eq('dobProblem: garbage', dobProblem('not-a-date'), 'invalid');
+eq('dobProblem: plausible adult -> null', dobProblem('1995-10-19'), null);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

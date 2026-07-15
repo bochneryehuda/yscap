@@ -19,8 +19,23 @@ const REASON_COPY = {
   clickup_dob_year_out_of_range: 'ClickUp holds a DOB with an impossible year. Nothing was synced.',
   clickup_dob_implausible: 'ClickUp holds a DOB that cannot belong to an adult borrower. Nothing was synced.',
   clickup_dob_differs_from_portal: 'ClickUp and PILOT carry different dates of birth and neither is provably wrong — a person must decide.',
+  dob_same_but_impossible: 'Both systems carry the SAME date of birth — but it cannot be right (see the note next to the value). Correct the DOB on the borrower’s file, then dismiss this row.',
   pii_overwrite_blocked: 'A bulk repush wanted to overwrite this borrower-identity value in ClickUp. Bulk pushes may only fill blanks — nothing was written.',
 };
+
+// COMMON-SENSE annotation for a DOB value (owner-directed 2026-07-15): a review
+// row must SAY what is wrong — "born in the future", "would be 3 years old" —
+// not just that something needs review.
+function dobNote(v) {
+  if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return '';
+  const today = new Date().toISOString().slice(0, 10);
+  const y = Number(String(v).slice(0, 4));
+  const nowY = new Date().getUTCFullYear();
+  if (String(v) > today) return ' — not born yet (a birth date in the future)';
+  if (y > nowY - 18) return ` — would make the borrower about ${Math.max(0, nowY - y)} years old (a minor)`;
+  if (y < nowY - 120) return ` — would make the borrower over 120 years old`;
+  return '';
+}
 const FIELD_LABELS = {
   date_of_birth: 'Date of birth', expected_closing: 'Expected closing',
   actual_closing: 'Actual closing', acquisition_date: 'Acquisition date',
@@ -84,7 +99,12 @@ export default function SyncReviews() {
         </p></div>
       ) : rows.map((r) => {
         const { cu, p } = sides(r);
-        const canResolve = RESOLVABLE.has(r.field_key);
+        // Adopting a side only makes sense when the sides actually DIFFER —
+        // for an equal-but-impossible pair the fix is correcting the value on
+        // the file (the resolver would refuse to re-apply nonsense anyway).
+        const sidesEqual = cu != null && p != null && String(cu) === String(p);
+        const canResolve = RESOLVABLE.has(r.field_key) && !sidesEqual;
+        const isDob = r.field_key === 'date_of_birth';
         return (
           <div className="panel" key={r.id} style={{ marginBottom: 10 }}>
             <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
@@ -95,9 +115,13 @@ export default function SyncReviews() {
               {r.application_id && <Link className="btn ghost btn-sm" to={`/internal/app/${r.application_id}`}>Open file</Link>}
             </div>
             <div className="metrow"><span className="k">Who</span><span className="v">{r.borrower_name || '—'}{r.property ? ` — ${r.property}` : ''}</span></div>
-            <div className="metrow"><span className="k">In ClickUp</span><span className="v"><strong>{showVal(cu)}</strong></span></div>
-            <div className="metrow"><span className="k">In PILOT</span><span className="v"><strong>{showVal(p)}</strong></span></div>
-            <p className="muted small" style={{ margin: '8px 0' }}>{REASON_COPY[r.reason] || r.reason}</p>
+            <div className="metrow"><span className="k">In ClickUp</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
+            <div className="metrow"><span className="k">In PILOT</span><span className="v"><strong>{showVal(p)}</strong>{isDob ? <em className="muted small">{dobNote(p)}</em> : null}</span></div>
+            <p className="muted small" style={{ margin: '8px 0' }}>
+              {sidesEqual && r.reason === 'clickup_dob_differs_from_portal'
+                ? REASON_COPY.dob_same_but_impossible   /* legacy rows queued before the common-sense reasons */
+                : (REASON_COPY[r.reason] || r.reason)}
+            </p>
             {status === 'open' && canResolve && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}
