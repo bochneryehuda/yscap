@@ -45,6 +45,7 @@
             <a class="back" href="../suite.html">← All tools</a>
             <button class="btn btn-line" type="button" onclick="TR.share(this)" title="Copy a link that reopens this track record">Share link 🔗</button>
             <button class="btn btn-line" type="button" onclick="TR.exportXlsx(this)">Export ⤓</button>
+            <button class="btn btn-line" type="button" onclick="TR.emailToOfficer(this)" title="Send your track record (PDF &amp; Excel) straight to your YS Capital loan officer">Email to loan officer ✉</button>
             <button class="btn btn-line" type="button" onclick="document.getElementById('tr-import').click()">Import ⤒</button>
             <input id="tr-import" type="file" accept=".xlsx" class="hide" onchange="TR.importXlsx(this)">
         </div>
@@ -85,7 +86,7 @@
 <script src="../suite.js"></script>
 <script src="rb-logo.js"></script>
 <script src="address-autocomplete.js"></script>
-<script src="track-record.js?v=n8"></script>
+<script src="track-record.js?v=n9-email"></script>
 <script src="track-record-portal.js?v=n9-freshup"></script>
 <script src="../float-actions.js"></script>
 </body>

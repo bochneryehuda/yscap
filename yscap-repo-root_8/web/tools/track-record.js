@@ -632,6 +632,31 @@ const TR=(function(){
     if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(()=>flash("Link copied — it reopens this track record."),()=>prompt("Copy this link:",url)); }
     else prompt("Copy this link:",url);
   }
+  function blobToB64(blob){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>{ const s=String(r.result); res(s.slice(s.indexOf(",")+1)); }; r.onerror=rej; r.readAsDataURL(blob); }); }
+  // #99: send the borrower's track record straight to the branded officer
+  // SERVER-SIDE (a real branded email with the PDF + Excel attached) — no .eml the
+  // visitor has to open. Uses the exports' existing returnFile blob path.
+  async function emailToOfficer(btn){
+    save();
+    const ob=window.YSBRAND||{};
+    const code=ob.email?String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g,""):"";
+    const vemail=(prompt("Your email address (so your YS Capital officer can follow up):")||"").trim();
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(vemail)){ flash("Enter a valid email to send your track record."); return; }
+    const o=btn?btn.textContent:null; if(btn){ btn.textContent="Sending…"; btn.disabled=true; }
+    try{
+      const files=[];
+      try{ const pdf=await exportPdf(null,{returnFile:true}); if(pdf) files.push({filename:fileBase()+".pdf",contentType:"application/pdf",dataBase64:await blobToB64(pdf)}); }catch(e){}
+      try{ const xls=await exportXlsx(null,{returnFile:true}); if(xls) files.push({filename:fileBase()+".xlsx",contentType:(xls&&xls.type)||"application/octet-stream",dataBase64:await blobToB64(xls)}); }catch(e){}
+      const r=await fetch("/api/leads",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({tool:"track_record",officerCode:code||undefined,name:S.borrower||undefined,email:vemail,
+          subject:"Track record — "+(S.borrower||"borrower"),
+          message:"A borrower shared their real-estate track record from the Track Record tool. The "+(files.length>1?"PDF & Excel are":"PDF is")+" attached. Please review and follow up.",
+          attachments:files, payload:{borrower:S.borrower||"", properties:(S.props||[]).length}}) });
+      if(!r.ok) throw new Error("send "+r.status);
+      flash("Sent — your YS Capital officer has your track record and will follow up.");
+      if(btn){ btn.textContent="Sent ✓"; setTimeout(()=>{ btn.textContent=o; btn.disabled=false; },3200); }
+    }catch(e){ if(window.console)console.error(e); flash("Couldn't send — please try again, or use Export and email it yourself."); if(btn){ btn.textContent=o; btn.disabled=false; } }
+  }
 
   /* ===================== BOOT ===================== */
   function boot(){ restore(); render();
@@ -665,6 +690,6 @@ const TR=(function(){
     try{ document.querySelectorAll('[data-card="'+tempId+'"]').forEach(el=>el.setAttribute("data-card",serverId)); }catch(e){}
   }
 
-  return { share, exportXlsx, importXlsx, exportPdf, _state:()=>S, setState, adoptServerId, snap:()=>snap() };
+  return { share, exportXlsx, importXlsx, exportPdf, emailToOfficer, _state:()=>S, setState, adoptServerId, snap:()=>snap() };
 })();
 if(typeof window!=="undefined") window.TR=TR;
