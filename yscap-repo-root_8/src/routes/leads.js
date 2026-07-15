@@ -17,6 +17,7 @@ const TOOL_LABEL = {
   loan_application: 'Loan application',
   rehab_budget: 'Rehab budget / Scope of Work',
   term_sheet: 'Term sheet request',
+  track_record: 'Track record',
   deal_analyzer: 'Deal analyzer',
   qualifier: 'Qualifier',
   contact: 'Contact request',

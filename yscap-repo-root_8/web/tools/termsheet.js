@@ -952,7 +952,7 @@
   }
   function money(n) { return YS.fmtUSD(n); }
 
-  async function exportPdf(btn) {
+  async function exportPdf(btn, returnBlob) {
     var label = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Building term sheet\u2026"; btn.disabled = true; }
     try {
       await ensurePDF();
@@ -1212,6 +1212,9 @@
       }
 
       if (d && (d.pricingReady || d.totalLoan > 0 || (borrowerOfRecord() || "").trim())) drawDerivationPage(doc, d, "Inputs & Loan Derivation", "This term sheet was generated from the inputs below, entered through the YS Capital Term Sheet Studio. This page records exactly what was provided and how the loan amount and leverage were determined.");
+      // #99: when asked for a blob (the "email to my officer" path) return the PDF
+      // bytes to attach server-side instead of downloading it.
+      if (returnBlob) { if (btn) { btn.textContent = label; btn.disabled = false; } return doc.output("blob"); }
       doc.save(fileStem() + ".pdf");
       flash("Term sheet downloaded.");
     } catch (e) {
@@ -1388,6 +1391,32 @@
       "Eligibility: " + (s.status || "\u2014"), "", "Please send the full term sheet and follow up."];
     return "mailto:" + LENDER.email + "?subject=" + encodeURIComponent(subj) + "&body=" + encodeURIComponent(L.join("\n"));
   }
+  function blobToB64(blob) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { var s = String(r.result); res(s.slice(s.indexOf(",") + 1)); }; r.onerror = rej; r.readAsDataURL(blob); }); }
+  function leadBody(s) {
+    return ["New term sheet request from the Term Sheet Studio:", "",
+      "Borrower / entity: " + (s.borrower || "(not provided)"),
+      "Reply-to: " + s.email, "Program: " + s.program,
+      "Property: " + (s.property || "TBD") + (s.state ? ", " + s.state : ""),
+      "Loan amount: " + (s.loanAmount ? YS.fmtUSD(s.loanAmount) : "\u2014"),
+      "Note rate: " + (s.rate ? s.rate.toFixed(2) + "%" : "\u2014"),
+      "Term: " + (s.term ? s.term + " months" : "\u2014"),
+      "Eligibility: " + (s.status || "\u2014"), "", "The term sheet PDF is attached. Please follow up."].join("\n");
+  }
+  // #99: send the term sheet straight to the branded officer SERVER-SIDE (a real
+  // branded email with the PDF attached) \u2014 no .eml the visitor has to open. Falls
+  // back to the mailto draft only if the backend send fails / is offline.
+  async function sendTermSheetToOfficer(summary) {
+    var ob = window.YSBRAND || {};
+    var code = ob.email ? String(ob.email).split("@")[0].toLowerCase().replace(/[^a-z0-9._-]/g, "") : "";
+    var atts = [];
+    try { var blob = await exportPdf(null, true); if (blob) atts.push({ filename: fileStem() + ".pdf", contentType: "application/pdf", dataBase64: await blobToB64(blob) }); } catch (e) { /* send without the attachment if the PDF engine failed */ }
+    var r = await fetch("/api/leads", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool: "term_sheet", officerCode: code || undefined, name: summary.borrower || undefined, email: summary.email,
+        subject: "Term sheet request \u2014 " + (summary.borrower || summary.program), message: leadBody(summary),
+        attachments: atts, payload: summary }) });
+    if (!r.ok) throw new Error("send " + r.status);
+    return r.json();
+  }
   function captureLead(btn) {
     var f = el("leadEmail"), note = el("leadNote");
     var email = (f ? f.value : "").trim();
@@ -1404,13 +1433,17 @@
       loanAmount: (d && d.totalLoan) || 0, rate: (d && d.pricingReady && d.rate) ? d.rate : null,
       term: (d && d.term) || "", status: (d && d.status) || ""
     };
-    // ===== BACKEND PLUG-IN POINT: wire window.YS_CAPTURE_LEAD to a CRM / email endpoint (fetch POST).
-    // Until then, compose an email to sales with the borrower's details as a transparent fallback. =====
-    var sent = false;
-    if (typeof window.YS_CAPTURE_LEAD === "function") { try { window.YS_CAPTURE_LEAD(summary); sent = true; } catch (e) {} }
-    if (!sent) { try { window.location.href = leadMailto(summary); } catch (e) {} }
-    if (note) { note.textContent = "Thanks \u2014 a YS Capital specialist will email your term sheet and follow up shortly."; note.style.color = ""; }
-    if (btn) { btn.textContent = "Sent \u2713"; btn.disabled = true; setTimeout(function () { btn.textContent = "Send it \u2192"; btn.disabled = false; }, 3200); }
+    if (btn) { btn.textContent = "Sending\u2026"; btn.disabled = true; }
+    sendTermSheetToOfficer(summary).then(function () {
+      if (note) { note.textContent = "Thanks \u2014 your term sheet is on its way to your YS Capital officer, who will follow up shortly."; note.style.color = ""; }
+      if (btn) { btn.textContent = "Sent \u2713"; setTimeout(function () { btn.textContent = "Send it \u2192"; btn.disabled = false; }, 3200); }
+    }).catch(function () {
+      var sent = false;
+      if (typeof window.YS_CAPTURE_LEAD === "function") { try { window.YS_CAPTURE_LEAD(summary); sent = true; } catch (e) {} }
+      if (!sent) { try { window.location.href = leadMailto(summary); } catch (e) {} }
+      if (note) { note.textContent = "Thanks \u2014 a YS Capital specialist will email your term sheet and follow up shortly."; note.style.color = ""; }
+      if (btn) { btn.textContent = "Sent \u2713"; setTimeout(function () { btn.textContent = "Send it \u2192"; btn.disabled = false; }, 3200); }
+    });
   }
 
   // ---- shared "inputs & how the loan was sized" page (POF page 2 + term sheet appendix) ----
