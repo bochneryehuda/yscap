@@ -1033,7 +1033,12 @@ router.post('/applications/:id/co-borrower-fields', async (req, res) => {
     if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
     sets.push('updated_at=now()');
     await db.query(`UPDATE borrowers SET ${sets.join(', ')} WHERE id=$1`, vals);
-    await audit(req, 'complete_co_borrower_fields', 'application', req.params.id, { fields: sets.length - 1, coBorrowerId: coId });
+    // Detail carries the FIELD NAMES (not just a count): the DOB backdating
+    // provenance check reads the audit trail for a human 'date_of_birth'
+    // fingerprint — a bare count would make a co-borrower DOB edit invisible
+    // to it and the backdating rule could override a human's entry.
+    await audit(req, 'complete_co_borrower_fields', 'application', req.params.id,
+      { fields: sets.filter((s) => !s.startsWith('updated_at')).map((s) => s.split('=')[0]), coBorrowerId: coId });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
 });

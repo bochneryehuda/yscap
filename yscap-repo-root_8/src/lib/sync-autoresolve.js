@@ -123,6 +123,12 @@ async function adoptDobEverywhere({ borrowerId, day, why, source = 'auto_resolve
         const cf = ((task && task.custom_fields) || []).find((c) => c.id === F.SHARED.borrowerDOB);
         const curDay = cf && cf.value != null ? T.epochToDayLoose(cf.value) : null;
         if (curDay === day && Number(cf.value) === epoch) { out.tasksSkipped++; continue; }
+        // Count into the ONE shared volume breaker (post-merge audit d41136e:
+        // this write path bypassed it — with human-edit-wins/backdating firing
+        // from any inbound ingest, an upstream flap could have written
+        // uncapped). A breaker-open throws into the per-task catch: the
+        // portal side stays healed, the task write waits for a later pass.
+        require('../clickup/orchestrator').circuitCheck(a.id, a.task_id, 1);
         await clickup.setField(a.task_id, F.SHARED.borrowerDOB, epoch);
         out.tasksUpdated++;
         await db.query(

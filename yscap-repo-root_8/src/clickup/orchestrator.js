@@ -497,4 +497,5 @@ async function createForNewFile(appId) {
 module.exports = {
   pushApplication, createForNewFile, loadPushContext, resolveTargetList, firstListId, logSync,
   PII_OVERWRITE_SHIELD, PII_REVIEW_KEY, // exported for the write-safety tests
+  circuitCheck, // the ONE shared volume breaker — every ClickUp write path counts into it (audit fix)
 };
