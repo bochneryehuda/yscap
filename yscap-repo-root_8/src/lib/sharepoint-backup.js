@@ -1120,4 +1120,5 @@ function health() {
 module.exports = {
   start, stop, kick, runOnce, drain, enabled, health, categoryFor, mirrorRow,
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
+  MAX_ATTEMPTS, VERIFY_RECHECK_DAYS,
 };
