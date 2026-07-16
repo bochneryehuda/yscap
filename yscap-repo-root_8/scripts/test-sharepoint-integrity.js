@@ -99,5 +99,25 @@ ok('term_sheet is NOT regen (point-in-time offer, keeps versions)', !backup.isRe
 ok('track_record_doc is NOT regen (human verification doc)', !backup.isRegenKind('track_record_doc'));
 ok('chat attachment kind (null) is NOT regen', !backup.isRegenKind(null));
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+// -------------------------------------- the ONE sanctioned delete: guardrails
+// (Graph-free checks: refusals must fire BEFORE any network call.)
+(async () => {
+  const spClient = require('../src/lib/sharepoint');
+  const rejects = (name, p) => p.then(
+    () => { fail++; console.log(`FAIL ${name}: did not throw`); },
+    () => { pass++; });
+  process.env.SHAREPOINT_DELETE_REPLACED_CORRUPT = '0';
+  await rejects('sanctioned delete: kill switch blocks outright',
+    spClient.deleteReplacedCorruptMirror('d', 'i', { expectedParentId: 'p', replacementItemId: 'r', localSize: 1 }));
+  process.env.SHAREPOINT_DELETE_REPLACED_CORRUPT = '1';
+  await rejects('sanctioned delete: refuses without replacement id',
+    spClient.deleteReplacedCorruptMirror('d', 'i', { expectedParentId: 'p', localSize: 1 }));
+  await rejects('sanctioned delete: refuses without expected parent',
+    spClient.deleteReplacedCorruptMirror('d', 'i', { replacementItemId: 'r', localSize: 1 }));
+  await rejects('sanctioned delete: refuses without item id',
+    spClient.deleteReplacedCorruptMirror('d', null, { expectedParentId: 'p', replacementItemId: 'r', localSize: 1 }));
+  ok('general remove() still throws', await spClient.remove().then(() => false, () => true));
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();
