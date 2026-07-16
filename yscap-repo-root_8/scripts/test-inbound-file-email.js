@@ -280,6 +280,18 @@ async function main() {
     r = await fileInbox.processReceivedEvent(evt('test-exhausted-1', [`file+${A1}@${DOMAIN}`]));
     ok(r.status === 'duplicate', 'redelivery after failed_permanent → duplicate');
 
+    // Crash on the FINAL attempt (stuck 'received' at the cap): once the lease
+    // expires it is marked failed_permanent (surfaced), never a silent duplicate.
+    await db.query(`INSERT INTO inbound_file_emails (resend_email_id, recipients, status, attempt_count, claimed_at)
+                    VALUES ('test-final-crash-1', '[]'::jsonb, 'received', 8, now() - interval '15 minutes')`);
+    r = await fileInbox.processReceivedEvent(evt('test-final-crash-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'failed_permanent', 'crash on final attempt → failed_permanent after lease (not silent)');
+    // ...while the lease is still live at the cap, keep Resend retrying.
+    await db.query(`INSERT INTO inbound_file_emails (resend_email_id, recipients, status, attempt_count)
+                    VALUES ('test-final-live-1', '[]'::jsonb, 'received', 8)`);
+    r = await fileInbox.processReceivedEvent(evt('test-final-live-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'in_flight' && r.retryable === true, 'final attempt still in flight → retryable (lease decides)');
+
     // Provider soft-failure ({ok:false}) is a failure, never recorded as forwarded.
     sent = []; sendBehavior = 'soft-fail';
     r = await fileInbox.processReceivedEvent(evt('test-softfail-1', [`file+${A1}@${DOMAIN}`]));

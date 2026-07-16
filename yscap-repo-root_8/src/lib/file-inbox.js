@@ -419,13 +419,25 @@ async function processReceivedEvent(event) {
           if (cur && cur.status === 'received' && Number(cur.attempt_count) < MAX_ATTEMPTS) {
             return { status: 'in_flight', retryable: true };
           }
-          if (cur && RETRYABLE_STATUSES.includes(cur.status) && Number(cur.attempt_count) >= MAX_ATTEMPTS) {
+          // Exhausted = a retryable failure at the cap, OR a claim that crashed on
+          // its FINAL attempt (stuck 'received' at the cap, lease expired). Both
+          // must surface — the mark-once UPDATE mirrors the same conditions.
+          const exhausted = cur && Number(cur.attempt_count) >= MAX_ATTEMPTS
+            && (RETRYABLE_STATUSES.includes(cur.status) || cur.status === 'received');
+          if (exhausted) {
             const marked = await db.query(
               `UPDATE inbound_file_emails
                   SET status = 'failed_permanent', processed_at = now()
-                WHERE resend_email_id = $1 AND status = ANY($2) AND attempt_count >= $3
+                WHERE resend_email_id = $1 AND attempt_count >= $2
+                  AND (status = ANY($3)
+                       OR (status = 'received' AND claimed_at < now() - ($4 || ' minutes')::interval))
                 RETURNING id`,
-              [String(emailId), RETRYABLE_STATUSES, MAX_ATTEMPTS]);
+              [String(emailId), MAX_ATTEMPTS, RETRYABLE_STATUSES, String(STUCK_CLAIM_MINUTES)]);
+            if (!marked.rows[0] && cur.status === 'received') {
+              // At the cap but the lease hasn't expired: the final attempt may
+              // still be running — keep Resend retrying until the lease decides.
+              return { status: 'in_flight', retryable: true };
+            }
             if (marked.rows[0]) {
               try {
                 await notify.notifyAdmins({
