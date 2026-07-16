@@ -145,6 +145,14 @@ function buildInputs(app, experience, overrides) {
     for (const k of NUMK) if (overrides[k] != null && overrides[k] !== '') out[k] = num(overrides[k]);
     for (const k of STRK) if (overrides[k] != null) out[k] = clean(overrides[k]);
     for (const k of BOOLK) if (overrides[k] != null) out[k] = !!overrides[k];
+    // Present-but-EMPTY means "clear it" (owner-reported 2026-07-16: a field the
+    // user blanked in the studio must never silently revert to the previously-
+    // saved value on re-register): markup '' → drop the sticky file markup so
+    // the company default governs; irMonths '' → 0 (no reserve requested) —
+    // mirroring irAmount's existing blank-sends-0 contract.
+    if (overrides.markupStdPct === '') delete out.markupStdPct;
+    if (overrides.markupGoldPct === '') delete out.markupGoldPct;
+    if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
   if (out.manualPricing) {

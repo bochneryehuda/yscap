@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { PhoneInput } from '../components/FormattedInputs.jsx';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -63,7 +63,15 @@ export default function StaffVendors() {
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
 
-  const load = () => api.staffVendors(type).then(setRows).catch(e => setErr(e.message));
+  // Last-request-wins: switching vendor types fast must never let a slow
+  // earlier type's response overwrite the current one (vanishing-search class).
+  const loadSeq = useRef(0);
+  const load = () => {
+    const mine = ++loadSeq.current;
+    return api.staffVendors(type)
+      .then(r => { if (mine === loadSeq.current) setRows(r); })
+      .catch(e => { if (mine === loadSeq.current) setErr(e.message); });
+  };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [type]);
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 3000); };
 

@@ -76,20 +76,27 @@ function compact(obj) {
 export function overridesFromSnapshot(snap, mode) {
   const f = snap.fields;
   const d = snap.d || {};
-  const base = compact({
-    targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
-    irMonths: f.irMonths === '' ? null : f.irMonths,
-    // Interest reserve may instead be an exact dollar amount (owner-directed
-    // 2026-07-12) — carried through to the frozen engine, which honors it over
-    // months and fits it under the same caps. A BLANK amount is sent as 0 (not
-    // null) so it actively clears any previously-registered amount: null would be
-    // skipped by the override loop, leaving a stale amount to wrongly win over a
-    // freshly-chosen months value when a file switches from amount back to months.
-    irAmount: f.irAmount === '' ? 0 : f.irAmount,
-    term: f.tsTerm,
-    fico: f.fico,
-    expFlips: f.expFlips, expHolds: f.expBrrrr, expGround: f.expGround,
-  });
+  const base = {
+    ...compact({
+      targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
+      // Interest reserve may instead be an exact dollar amount (owner-directed
+      // 2026-07-12) — carried through to the frozen engine, which honors it over
+      // months and fits it under the same caps. A BLANK amount is sent as 0 (not
+      // null) so it actively clears any previously-registered amount: null would be
+      // skipped by the override loop, leaving a stale amount to wrongly win over a
+      // freshly-chosen months value when a file switches from amount back to months.
+      irAmount: f.irAmount === '' ? 0 : f.irAmount,
+      term: f.tsTerm,
+      fico: f.fico,
+      expFlips: f.expFlips, expHolds: f.expBrrrr, expGround: f.expGround,
+    }),
+    // A blanked months field actively CLEARS the requested reserve on
+    // re-register (root-caused 2026-07-16: compact() omitted it, so the server
+    // silently fell back to the previously-registered months). buildInputs
+    // maps '' → 0 — the same contract irAmount already has. An ABSENT field
+    // (undefined — the studio never rendered it) still sends nothing.
+    ...(f.irMonths === '' ? { irMonths: '' } : f.irMonths != null ? { irMonths: f.irMonths } : {}),
+  };
   if (mode !== 'staff') return base;
   const refi = /refinance/i.test(f.dealPurpose || '');
   return {
@@ -105,7 +112,6 @@ export function overridesFromSnapshot(snap, mode) {
       asIsValue: f.asIs,
       arv: f.arv,
       rehabBudget: f.construction,
-      markupStdPct: f.tsYspStd, markupGoldPct: f.tsYspGold,
       origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
       titleFee: f.tsFeeTitle,
@@ -120,6 +126,12 @@ export function overridesFromSnapshot(snap, mode) {
     heavyRehab: f.rehabScope === 'heavy',
     sqftAddition: !!f.sqft,
     manualPricing: !!f.tsManualOn,
+    // Markup: an EXPLICITLY blanked field sends '' — the server drops the
+    // sticky per-file markup and prices at the company default (root-caused
+    // 2026-07-16: compact() omitted it, so the old sticky silently re-applied).
+    // An untouched/absent field still sends nothing.
+    ...(f.tsYspStd === '' ? { markupStdPct: '' } : f.tsYspStd != null ? { markupStdPct: f.tsYspStd } : {}),
+    ...(f.tsYspGold === '' ? { markupGoldPct: '' } : f.tsYspGold != null ? { markupGoldPct: f.tsYspGold } : {}),
   };
 }
 
@@ -208,8 +220,14 @@ function studioStateFromFields(f) {
   return { v, c: checks };
 }
 
-const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered, toolItemId }, ref) {
+const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered, toolItemId, staffRole }, ref) {
   const isStaff = mode === 'staff';
+  // The admin pricing zone (manual rate/leverage basis, experience overrides)
+  // only renders for roles the SERVER will honor (root-caused 2026-07-16,
+  // Pinchus Wieder: every other staff role had those knobs silently stripped
+  // on register — the studio displayed terms the file never got). Non-admin
+  // staff never see knobs their register would now be refused for.
+  const staffAdmin = isStaff && ['admin', 'super_admin'].includes(staffRole || '');
   const [data, setData] = useState(null);       // { current, history }
   const [profile, setProfile] = useState(null); // borrower profile (name + fico)
   const [snap, setSnap] = useState(null);       // live studio state
@@ -482,7 +500,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
           requirement all flow onto this file.
         </p>
       )}
-      {cur && <RegisteredProductDetails reg={cur} showAdmin={isStaff} />}
+      {cur && <RegisteredProductDetails reg={cur} showAdmin={staffAdmin} />}
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
           {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}
@@ -514,12 +532,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
             <div className="toolsheet-inner">
               <p className="muted small" style={{ margin: '12px 0 8px' }}>
                 {isStaff
-                  ? 'The live Term Sheet Studio, prefilled from this file. Adjust anything — including the admin pricing controls — pick the program and leverage, then register. Every detail saves back onto the file and the exact term sheet PDF is attached (previous sheets are marked superseded).'
+                  ? 'The live Term Sheet Studio, prefilled from this file. Adjust anything — pick the program and leverage, then register. Every detail saves back onto the file and the exact term sheet PDF is attached (previous sheets are marked superseded).'
                   : 'Prefilled from your loan file. Adjust your experience, credit and reserve, compare the programs, pick your leverage — then register your product. Deal numbers come from your file; ask your loan team to change those.'}
               </p>
               {prefill
                 ? <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
-                    showAdmin={isStaff} onState={onStudioState} />
+                    showAdmin={staffAdmin} onState={onStudioState} />
                 : <p className="muted small">Loading your scenario…</p>}
               <div className="toolsheet-actions">
                 <button className="btn primary" disabled={busy} onClick={register}>

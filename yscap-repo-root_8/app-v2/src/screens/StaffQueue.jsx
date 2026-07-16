@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -316,11 +316,25 @@ export default function StaffQueue() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qs]);
 
+  // Last-request-wins (root-caused 2026-07-16: "search results vanish after
+  // 10–20s"). A slow EARLIER response — the heavy unfiltered mount fetch, or a
+  // delayed sync-refresh — used to land after the filtered one and overwrite
+  // the visible list with unfiltered rows while the query stayed in the bar.
+  // Every response now applies only if it's still the LATEST request.
+  const listSeq = useRef(0);
   const fetchList = useCallback(() => {
+    const mine = ++listSeq.current;
     setList(null);
-    return api.staffApplications(serverParams).then(setList).catch(e => { setList([]); setErr(e.message); });
+    return api.staffApplications(serverParams)
+      .then(d => { if (mine === listSeq.current) setList(d); })
+      .catch(e => { if (mine === listSeq.current) { setList([]); setErr(e.message); } });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverKey]);
+  // Delayed refreshes (the ClickUp sync timers) must read the LIVE filters, not
+  // the ones captured at click time — a stale closure refetched WITHOUT the
+  // user's query and reset the list. The ref always points at the current fn.
+  const fetchListRef = useRef(fetchList);
+  useEffect(() => { fetchListRef.current = fetchList; }, [fetchList]);
 
   // Leads, exceptions, and the unfiltered facet list load once.
   const loadContext = useCallback(() => {
@@ -342,7 +356,11 @@ export default function StaffQueue() {
     const p = {};
     if (mine) p.mine = '1';
     if (officerId) p.officerId = officerId;
-    api.staffDashboard(p).then(setDash).catch(() => {});
+    // Same last-request-wins guard as the list — a slow earlier KPI response
+    // must never overwrite a newer view's numbers.
+    let alive = true;
+    api.staffDashboard(p).then(d => { if (alive) setDash(d); }).catch(() => {});
+    return () => { alive = false; };
   }, [dashKey]);
 
   useEffect(() => { loadContext(); }, [loadContext]);
@@ -353,9 +371,12 @@ export default function StaffQueue() {
     try {
       await api.staffSyncMyClickup();
       setSyncMsg('Pulling your files from ClickUp… this refreshes in a moment.');
-      // the backfill runs server-side; reload the pipeline a few times as it lands
-      setTimeout(() => { loadContext(); fetchList(); }, 4000);
-      setTimeout(() => { loadContext(); fetchList(); setSyncMsg('Synced ✓'); setTimeout(() => setSyncMsg(''), 4000); }, 12000);
+      // the backfill runs server-side; reload the pipeline a few times as it
+      // lands — via the ref, so the refresh honors whatever the user has
+      // typed/filtered SINCE clicking sync (a stale closure used to refetch
+      // without the query and wipe their search results).
+      setTimeout(() => { loadContext(); fetchListRef.current(); }, 4000);
+      setTimeout(() => { loadContext(); fetchListRef.current(); setSyncMsg('Synced ✓'); setTimeout(() => setSyncMsg(''), 4000); }, 12000);
     } catch (e) { setSyncMsg(e.message || 'Sync failed'); }
     finally { setTimeout(() => setSyncing(false), 12000); }
   }

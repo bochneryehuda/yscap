@@ -1289,13 +1289,35 @@ const ADMIN_ONLY_OVERRIDE_KEYS = [
   'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths',
   'expFlips', 'expHolds', 'expGround',
 ];
+// The manual-PRICING knobs (rate / leverage / force-price). A non-admin sending
+// one of these MEANINGFULLY engaged means the studio displayed terms the server
+// won't honor — that must be refused loudly, not registered differently
+// (Pinchus Wieder). Experience keys are NOT here on purpose: the studio always
+// carries the file's own experience, and a non-admin's experience change belongs
+// in the audited application form — silently sizing off the file's claim is the
+// correct long-standing behavior, so it must not trip the loud refusal (that
+// would 403 EVERY vanilla non-admin register).
+const MANUAL_PRICING_KEYS = [
+  'forcePrice', 'manualPricing',
+  'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
+  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths',
+];
+// "Meaningfully engaged": a truthy flag, or a numeric override with a real value
+// — NOT a present-but-default key (manualPricing:false is sent on every staff
+// register, so mere presence must never count).
+const engaged = (v) => v === true || (v != null && v !== '' && v !== false && !(typeof v === 'number' && Number.isNaN(v)));
 function sanitizeOverrides(req, raw) {
   const overrides = (raw && typeof raw === 'object') ? { ...raw } : {};
   const role = req.actor && req.actor.role;
   if (role === 'admin' || role === 'super_admin') return { overrides, strippedAdminKeys: false };
   let stripped = false;
   for (const k of ADMIN_ONLY_OVERRIDE_KEYS) {
-    if (k in overrides) { delete overrides[k]; stripped = true; }
+    if (k in overrides) {
+      // Only a MEANINGFULLY-engaged MANUAL-PRICING knob makes the studio diverge
+      // from what the server will register — that's what we refuse loudly.
+      if (MANUAL_PRICING_KEYS.includes(k) && engaged(overrides[k])) stripped = true;
+      delete overrides[k];
+    }
   }
   return { overrides, strippedAdminKeys: stripped };
 }
@@ -1306,7 +1328,11 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const f = await loadFileForPricing(req.params.id);
     if (!f) return res.status(404).json({ error: 'not found' });
-    const { overrides } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
+    // Same no-silent-divergence rule as register: a quote must never PREVIEW
+    // numbers the server would refuse to register for this role.
+    const { overrides, strippedAdminKeys } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
+    if (strippedAdminKeys)
+      return res.status(403).json({ error: 'Manual rate/leverage and experience overrides need an admin — clear the admin pricing fields to quote as your role.' });
     const out = pricing.quoteAll(f.app, f.exp, overrides);
     res.json({ ...out, experience: f.exp });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
@@ -1342,7 +1368,13 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
-    const { overrides } = sanitizeOverrides(req, b.overrides || {});
+    // NEVER register terms that silently differ from what the staffer saw
+    // (root-caused 2026-07-16, Pinchus Wieder: a non-admin's rate/experience
+    // overrides were stripped and the file re-registered with OLD economics
+    // behind a success toast). If sanitize dropped keys, refuse loudly instead.
+    const { overrides, strippedAdminKeys } = sanitizeOverrides(req, b.overrides || {});
+    if (strippedAdminKeys)
+      return res.status(403).json({ error: 'Manual rate/leverage and experience overrides need an admin — ask an admin to register these terms, or clear the admin pricing fields and re-register.' });
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     // S3-06: this endpoint writes arv back onto the file and sizes the loan off
     // both the arv and the as-is value, so a raised arv/as-is OVERRIDE here is the
@@ -1875,34 +1907,20 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'export failed' }); }
 });
 // Readiness preview (counts + missing list) without building the whole zip.
+// Draws from the SAME shared selection as the zip builder (owner-directed
+// 2026-07-16: the export packages EVERY current document on the file), so the
+// promised count can never disagree with the package.
 router.get('/applications/:id/export/tpr/preview', async (req, res) => {
   try {
-    const included = (await db.query(
-      `SELECT count(*)::int c FROM documents
-        WHERE (application_id=$1
-               OR (application_id IS NULL AND llc_id IS NOT NULL
-                   AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
-          AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'
-          AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = documents.checklist_item_id AND ci.tpr_exclude IS TRUE)`, [req.params.id])).rows[0].c;
-    // The DPR also packages the borrower's (+ co-borrower's) track-record
-    // verification documents — count them so the panel promise matches the ZIP.
-    const trackDocs = (await db.query(
-      `SELECT count(*)::int c FROM documents
-        WHERE is_current=true AND source_type<>'chat_attachment' AND review_status<>'rejected'
-          AND track_record_id IN (
-            SELECT id FROM track_records WHERE borrower_id IN (
-              SELECT borrower_id FROM applications WHERE id=$1
-              UNION SELECT co_borrower_id FROM applications WHERE id=$1 AND co_borrower_id IS NOT NULL))`, [req.params.id])).rows[0].c;
-    // A document condition only counts as "missing" for the export when it has
-    // NO accepted current document and isn't satisfied/signed off. (Accepting a
-    // document now leaves the condition 'received' until sign-off — #135 — so
-    // 'satisfied' alone would wrongly flag accepted-but-unsigned docs as missing.)
-    const missing = (await db.query(
-      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items ci
-        WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied'
-          AND signed_off_at IS NULL AND tpr_exclude IS NOT TRUE
-          AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id=ci.id AND d.is_current AND d.review_status='accepted')
-        ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
+    const tpr = require('../lib/tpr-export');
+    const included = (await tpr.selectTprDocuments(req.params.id)).length;
+    const trIds = (await db.query(
+      `SELECT id FROM track_records WHERE borrower_id IN (
+         SELECT borrower_id FROM applications WHERE id=$1
+         UNION SELECT co_borrower_id FROM applications WHERE id=$1 AND co_borrower_id IS NOT NULL)`,
+      [req.params.id])).rows.map(r => r.id);
+    const trackDocs = (await tpr.selectTrackRecordDocs(trIds)).length;
+    const missing = await tpr.selectTprMissing(req.params.id);
     res.json({ includedCount: included, trackDocs, missing });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -2010,7 +2028,7 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
 // cleared. Mirrors the checklist sign-off gate + the sibling /waive gate.
 router.post('/loan-conditions/:cid/clear', async (req, res) => {
   if (!can(req.actor, 'sign_off_conditions'))
-    return res.status(403).json({ error: 'Only a processor or underwriter can clear (sign off) a condition — mark it reviewed instead.' });
+    return res.status(403).json({ error: 'Only a processor or underwriter can sign a condition off — click Done to record your completion; the back office signs off after you.' });
   try {
     const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
     if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -2160,7 +2178,7 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
 //                     verify more, until they agree).
 async function signOffGate(itemId, actor) {
   const it = await db.query(
-    `SELECT ci.application_id, ci.tool_key, ci.tool_payload, ci.item_kind,
+    `SELECT ci.application_id, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
@@ -2181,7 +2199,12 @@ async function signOffGate(itemId, actor) {
   // rules below, and the entity-fulfilled LLC condition is verified from the
   // linked LLC — those are exempt. Insurance/title/fraud have stricter slot
   // rules handled just below (and return before reaching here).
-  if (item.item_kind === 'document' && !item.tool_key
+  // An OPTIONAL document condition (is_required=false — e.g. the Investor
+  // Structure Printout) may be signed off with nothing uploaded: "optional"
+  // means the file can complete without the document, so demanding one before
+  // sign-off contradicted the flag (owner-reported 2026-07-16). Required
+  // document conditions keep the gate exactly as before.
+  if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
       && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud) {
     if (!actor || actor.role !== 'super_admin') {
       const has = await db.query(
@@ -2318,7 +2341,7 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // officer marks it reviewed instead — a lighter stamp, never "satisfied".
   const canComplete = can(req.actor, 'sign_off_conditions');
   if ((b.signedOff === true || b.status === 'satisfied') && !canComplete) {
-    return res.status(403).json({ error: 'Only a processor or underwriter can complete a condition — mark it reviewed instead.' });
+    return res.status(403).json({ error: 'Only a processor or underwriter can sign a condition off — click Done to record your completion; the back office signs off after you.' });
   }
   // The lighter "reviewed" stamp is tied to its own capability (loan officers have
   // it; processors/underwriters/admins do too). Sign-off holders implicitly may

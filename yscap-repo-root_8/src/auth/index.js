@@ -215,6 +215,65 @@ router.post('/borrower/register', async (req, res) => {
   finally { client.release(); }
 });
 
+/* Cross-surface sign-in routing (root-caused 2026-07-16 — the "I have to reset
+   my password every time" loop, Chaim Lebowitz). One person, one email, TWO
+   credential stores (staff_users vs borrower_auth) — and two login pages that
+   each checked only their own store. A staffer landing on the site's "Client
+   Login" (the borrower page) got 401 no matter how correct their password was;
+   the shared forgot-password then routed the reset cross-kind to their STAFF
+   account, /accept let them in once, and the next visit hit the same wall — an
+   endless reset loop. Fix at the chokepoint: when the surface's own store
+   cannot authenticate but the OTHER store fully can (active row, not locked,
+   password VERIFIES), sign them into the account they actually have.
+   Password-verify-FIRST means this reveals nothing an attacker couldn't
+   already learn by trying the other endpoint directly. */
+// A wrong password on the OTHER store must count against THAT account's
+// lockout exactly like the direct endpoint would — otherwise the cross-surface
+// fallback is an unthrottled brute-force channel (found in pre-merge audit).
+async function tryStaffCredentials(email, password) {
+  const r = await db.query(
+    `SELECT id, role, password_hash, mfa_enabled, token_version, failed_attempts, locked_until
+       FROM staff_users WHERE email=$1 AND is_active=true`, [email]);
+  const row = r.rows[0];
+  // Compensating hash when there's no other-store account, so the fallback's
+  // timing doesn't reveal whether a dual (staff+borrower) identity exists.
+  if (!row || !row.password_hash) { await C.hashPassword(String(password || '')).catch(() => {}); return null; }
+  if (row.locked_until && new Date(row.locked_until) > new Date()) return null;
+  if (!(await C.verifyPassword(password, row.password_hash))) {
+    const fa = (row.failed_attempts || 0) + 1;
+    await db.query(`UPDATE staff_users SET failed_attempts=$2, locked_until=$3 WHERE id=$1`,
+      [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]).catch(() => {});
+    return null;
+  }
+  await db.query(`UPDATE staff_users SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE id=$1`, [row.id]).catch(() => {});
+  if (row.mfa_enabled)
+    return { mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'staff', role: row.role, mfa: true }, 300), kind: 'staff' };
+  return { token: staffToken(row.id, row.role, row.token_version), kind: 'staff' };
+}
+async function tryBorrowerCredentials(email, password) {
+  const r = await db.query(
+    `SELECT b.id, a.password_hash, a.mfa_enabled, a.token_version, a.failed_attempts, a.locked_until, a.email_verified
+       FROM borrowers b JOIN borrower_auth a ON a.borrower_id=b.id WHERE b.email=$1`, [email]);
+  const row = r.rows[0];
+  // Compensating hash (see tryStaffCredentials) — uniform timing whether or not
+  // a borrower account also exists for this email.
+  if (!row || !row.password_hash) { await C.hashPassword(String(password || '')).catch(() => {}); return null; }
+  if (row.locked_until && new Date(row.locked_until) > new Date()) return null;
+  if (!(await C.verifyPassword(password, row.password_hash))) {
+    const fa = (row.failed_attempts || 0) + 1;
+    await db.query(`UPDATE borrower_auth SET failed_attempts=$2, locked_until=$3 WHERE borrower_id=$1`,
+      [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]).catch(() => {});
+    return null;
+  }
+  // The S1-08 confirm-email gate still applies to the borrower account no
+  // matter which page the sign-in came from.
+  if (row.email_verified === false) return { verifyRequired: true, kind: 'borrower' };
+  await db.query(`UPDATE borrower_auth SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE borrower_id=$1`, [row.id]).catch(() => {});
+  if (row.mfa_enabled)
+    return { mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'borrower', mfa: true }, 300), kind: 'borrower' };
+  return { token: borrowerToken(row.id, row.token_version), kind: 'borrower' };
+}
+
 // On a DB failure, next(e) hands off to the JSON error middleware, which
 // answers a friendly 503 instead of leaking "connect ECONNREFUSED ..." to the
 // sign-in form.
@@ -225,12 +284,22 @@ router.post('/borrower/login', async (req, res, next) => {
       `SELECT b.id, a.password_hash, a.mfa_enabled, a.token_version, a.failed_attempts, a.locked_until, a.email_verified
        FROM borrowers b JOIN borrower_auth a ON a.borrower_id=b.id WHERE b.email=$1`, [email]);
     const row = r.rows[0];
-    // Run a real password hash even when the account doesn't exist, so the
-    // response time doesn't reveal whether the email is registered (enumeration).
-    if (!row) { await C.hashPassword(String(password || '')).catch(() => {}); return res.status(401).json({ error: 'invalid credentials' }); }
+    // No borrower account (or wrong borrower password): before failing, see if
+    // these are actually STAFF credentials — a staffer on the "Client Login"
+    // page signs into their staff console instead of looping on resets.
+    if (!row) {
+      const cross = await tryStaffCredentials(email, password);
+      if (cross) return res.json(cross);
+      // Run a real password hash even when the account doesn't exist, so the
+      // response time doesn't reveal whether the email is registered (enumeration).
+      await C.hashPassword(String(password || '')).catch(() => {});
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
     if (row.locked_until && new Date(row.locked_until) > new Date())
       return res.status(423).json({ error: 'account locked — try later' });
     if (!(await C.verifyPassword(password, row.password_hash))) {
+      const cross = await tryStaffCredentials(email, password);
+      if (cross) return res.json(cross);   // dual-identity: the staff password works — don't punish the borrower row
       const fa = row.failed_attempts + 1;
       await db.query(`UPDATE borrower_auth SET failed_attempts=$2, locked_until=$3 WHERE borrower_id=$1`,
         [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]);
@@ -265,17 +334,29 @@ router.post('/borrower/login', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/borrower/mfa/verify', async (req, res) => {
+// Completes an MFA challenge for whichever KIND the signed challenge carries.
+// Cross-surface login routing can hand a STAFF challenge to the borrower page
+// (and vice versa); the challenge JWT is signed, so its kind claim — not the
+// URL it was submitted to — is what's authoritative.
+async function completeMfa(req, res) {
   const { challenge, code } = req.body || {};
   const claims = C.verifyJwt(challenge);
-  if (!claims || !claims.mfa || claims.kind !== 'borrower') return res.status(401).json({ error: 'bad challenge' });
+  if (!claims || !claims.mfa || !['borrower', 'staff'].includes(claims.kind))
+    return res.status(401).json({ error: 'bad challenge' });
   try {
-    const v = await verifyMfaStep('borrower', claims.sub, code);
+    const v = await verifyMfaStep(claims.kind, claims.sub, code);
     if (!v.ok) return res.status(v.status).json({ error: v.error });
+    if (claims.kind === 'staff') {
+      const r = await db.query(`SELECT role, token_version FROM staff_users WHERE id=$1`, [claims.sub]);
+      if (!r.rows[0]) return res.status(401).json({ error: 'invalid code' });
+      return res.json({ token: staffToken(claims.sub, r.rows[0].role, r.rows[0].token_version), usedBackup: v.usedBackup || undefined, backupRemaining: v.backupRemaining });
+    }
     const tv = await db.query(`SELECT token_version FROM borrower_auth WHERE borrower_id=$1`, [claims.sub]);
+    if (!tv.rows[0]) return res.status(401).json({ error: 'invalid code' });
     res.json({ token: borrowerToken(claims.sub, tv.rows[0].token_version), usedBackup: v.usedBackup || undefined, backupRemaining: v.backupRemaining });
   } catch (e) { res.status(500).json({ error: e.message }); }
-});
+}
+router.post('/borrower/mfa/verify', completeMfa);
 
 // ---------------- email verification / password reset (borrower) ----------------
 // Confirm an email either by clicking the emailed link (token) or entering the code.
@@ -570,13 +651,24 @@ router.post('/staff/login', async (req, res, next) => {
       `SELECT id, role, password_hash, mfa_enabled, token_version, failed_attempts, locked_until
          FROM staff_users WHERE email=$1 AND is_active=true`, [email]);
     const row = r.rows[0];
-    // Run a real password hash even when the account doesn't exist / is inactive,
-    // so the response time doesn't reveal which staff emails are real (S1-06
-    // enumeration) — same defense the borrower login already uses.
-    if (!row || !row.password_hash) { await C.hashPassword(String(password || '')).catch(() => {}); return res.status(401).json({ error: 'invalid credentials' }); }
+    // No staff account (or wrong staff password): before failing, see if these
+    // are actually BORROWER credentials — the mirror of the borrower page's
+    // cross-surface routing, so a borrower typing into "Staff sign in" lands in
+    // their portal instead of a dead 401.
+    if (!row || !row.password_hash) {
+      const cross = await tryBorrowerCredentials(email, password);
+      if (cross) return res.json(cross);
+      // Run a real password hash even when the account doesn't exist / is inactive,
+      // so the response time doesn't reveal which staff emails are real (S1-06
+      // enumeration) — same defense the borrower login already uses.
+      await C.hashPassword(String(password || '')).catch(() => {});
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
     if (row.locked_until && new Date(row.locked_until) > new Date())
       return res.status(423).json({ error: 'account locked — try later' });
     if (!(await C.verifyPassword(password, row.password_hash))) {
+      const cross = await tryBorrowerCredentials(email, password);
+      if (cross) return res.json(cross);   // dual-identity: the borrower password works — don't punish the staff row
       // Count the miss and lock after MAX_FAILED (S1-02) — staff had no lockout.
       const fa = row.failed_attempts + 1;
       await db.query(`UPDATE staff_users SET failed_attempts=$2, locked_until=$3 WHERE id=$1`,
@@ -589,16 +681,9 @@ router.post('/staff/login', async (req, res, next) => {
     res.json({ token: staffToken(row.id, row.role, row.token_version) });
   } catch (e) { next(e); }   // JSON error middleware answers a friendly 503/500
 });
-router.post('/staff/mfa/verify', async (req, res) => {
-  const { challenge, code } = req.body || {};
-  const claims = C.verifyJwt(challenge);
-  if (!claims || !claims.mfa || claims.kind !== 'staff') return res.status(401).json({ error: 'bad challenge' });
-  const v = await verifyMfaStep('staff', claims.sub, code);
-  if (!v.ok) return res.status(v.status).json({ error: v.error });
-  const r = await db.query(`SELECT role, token_version FROM staff_users WHERE id=$1`, [claims.sub]);
-  if (!r.rows[0]) return res.status(401).json({ error: 'invalid code' });
-  res.json({ token: staffToken(claims.sub, r.rows[0].role, r.rows[0].token_version), usedBackup: v.usedBackup || undefined, backupRemaining: v.backupRemaining });
-});
+// Same cross-kind completion as /borrower/mfa/verify — the signed challenge's
+// kind claim, not the URL, decides which account the code unlocks.
+router.post('/staff/mfa/verify', completeMfa);
 
 // ---------------- admin: create staff + invites ----------------
 // Roles this legacy endpoint may assign — every persona except super_admin
@@ -706,10 +791,14 @@ router.post('/accept', async (req, res, next) => {
           && row.role !== existing.rows[0].role) {
         return res.status(403).json({ error: 'cannot take over an existing admin account' });
       }
+      // Bump token_version on the password overwrite (revokes any prior/stolen
+      // sessions — mirrors the borrower accept + admin reset) and issue the
+      // session with the ACTUAL resulting version.
       const s = await db.query(
         `INSERT INTO staff_users (email,full_name,role,password_hash) VALUES ($1,$2,$3,$4)
          ON CONFLICT (email) DO UPDATE SET password_hash=EXCLUDED.password_hash,
-           failed_attempts=0, locked_until=NULL RETURNING id,role,token_version`,
+           failed_attempts=0, locked_until=NULL, token_version=staff_users.token_version+1
+         RETURNING id,role,token_version`,
         [row.email, fullName || row.email, row.role || 'loan_officer', await C.hashPassword(password)]);
       await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
       return res.json({ token: staffToken(s.rows[0].id, s.rows[0].role, s.rows[0].token_version) });

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
@@ -158,10 +158,16 @@ export default function SyncReviews() {
     } catch (e) { setErr(e.message || 'Bulk action failed'); }
     finally { setBusyId(null); }
   }
+  // Last-request-wins: a slow response for a PREVIOUS status tab must never
+  // overwrite the current tab's rows (vanishing-search bug class, 2026-07-16).
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const mine = ++loadSeq.current;
     setErr('');
-    try { setRows((await api.get(`/api/staff/sync-reviews?status=${status}`)).reviews || []); }
-    catch (e) { setErr(e.message || 'Could not load the review queue'); setRows([]); }
+    try {
+      const rows = (await api.get(`/api/staff/sync-reviews?status=${status}`)).reviews || [];
+      if (mine === loadSeq.current) setRows(rows);
+    } catch (e) { if (mine === loadSeq.current) { setErr(e.message || 'Could not load the review queue'); setRows([]); } }
   }, [status]);
   useEffect(() => { load(); }, [load]);
 

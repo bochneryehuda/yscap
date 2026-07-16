@@ -39,16 +39,20 @@ function FileGrants({ staffer, flash, onError }) {
   useEffect(() => { load(); }, [staffer.id]);
 
   // Debounced loan search (reuses the staff omnibox; admins see every file).
+  // `alive` guards the in-flight response too — the timer cleanup alone can't
+  // stop a request that already left, and a slow stale response must never
+  // overwrite a newer query's results (the vanishing-search bug class).
   useEffect(() => {
     const term = q.trim();
     if (term.length < 2) { setResults([]); setSearching(false); return; }
     setSearching(true);
+    let alive = true;
     const t = setTimeout(async () => {
-      try { const r = await api.staffGlobalSearch(term); setResults(r.loans || []); }
-      catch { setResults([]); }
-      finally { setSearching(false); }
+      try { const r = await api.staffGlobalSearch(term); if (alive) setResults(r.loans || []); }
+      catch { if (alive) setResults([]); }
+      finally { if (alive) setSearching(false); }
     }, 300);
-    return () => clearTimeout(t);
+    return () => { alive = false; clearTimeout(t); };
   }, [q]);
 
   const grantedIds = new Set((grants || []).map(g => g.applicationId));
