@@ -38,6 +38,9 @@ export default function Login() {
     try {
       const r = await api.login(email.trim(), password);
       if (r.mfaRequired) { setChallenge(r.challenge); setMode('mfa'); }
+      // S1-08: an unconfirmed account can't get a session — the server re-sent the
+      // one-click link; show the "check your email" state instead of signing in.
+      else if (r.verifyRequired) { setErr(''); setMode('sent'); }
       else done(r.token);
     } catch (e) { setErr(e.message || 'Sign-in failed'); }
     finally { setBusy(false); }
@@ -54,6 +57,9 @@ export default function Login() {
     setBusy(true);
     try {
       const r = await api.register({ email: email.trim(), password, firstName: first.trim(), lastName: last.trim() });
+      // S1-08: registration no longer hands back a session — the borrower must
+      // confirm their email first. Show the "check your email" state.
+      if (r && (r.verifyRequired || !r.token)) { setErr(''); setMode('sent'); return; }
       done(r.token);
     } catch (e) { setErr(e.message || 'Could not create account'); }
     finally { setBusy(false); }
@@ -64,20 +70,31 @@ export default function Login() {
 
   const submit = mode === 'login' ? submitLogin : mode === 'mfa' ? submitMfa : submitRegister;
   const heading = mode === 'mfa' ? 'Enter your code'
+    : mode === 'sent' ? 'Check your email'
     : mode === 'register' ? 'Create your account'
     : 'Sign in';
   const subtitle = mode === 'mfa'
     ? 'Open your authenticator app and enter the 6-digit code.'
-    : mode === 'register'
-      ? 'Set up your account to track your loan files, documents and status.'
-      : 'Access your loan files, documents and status with YS Capital Group.';
+    : mode === 'sent'
+      ? 'One quick step to activate your account.'
+      : mode === 'register'
+        ? 'Set up your account to track your loan files, documents and status.'
+        : 'Access your loan files, documents and status with YS Capital Group.';
 
   return (
     <AuthShell title={heading} subtitle={subtitle}>
         {notice && !err && <div className="notice info" style={{ marginTop: 16 }}>{notice}</div>}
         {err && <div role="alert" className="notice err" style={{ marginTop: 16 }}>{err}</div>}
 
-        <div style={{ marginTop: 18 }}>
+        {mode === 'sent' && (
+          <div className="notice ok" style={{ marginTop: 16 }}>
+            We sent a one-click activation link to <strong>{email.trim() || 'your email'}</strong>.
+            Click it and you’re in — the link is valid for 7 days. Didn’t get it? Check spam, or{' '}
+            <button className="btn link small" onClick={() => nav('/verify')}>request a new link</button>.
+          </div>
+        )}
+
+        {mode !== 'sent' && <div style={{ marginTop: 18 }}>
           {mode === 'register' && (
             <div className="grid cols-2">
               <div className="field"><label>First name</label>
@@ -121,11 +138,13 @@ export default function Login() {
               </button>
             </div>
           )}
-        </div>
+        </div>}
 
-        <button className="btn primary btn-block" style={{ marginTop: 8 }} disabled={busy} onClick={submit}>
-          {mode === 'login' ? 'Sign in' : mode === 'mfa' ? 'Verify' : 'Create account'}
-        </button>
+        {mode !== 'sent' && (
+          <button className="btn primary btn-block" style={{ marginTop: 8 }} disabled={busy} onClick={submit}>
+            {mode === 'login' ? 'Sign in' : mode === 'mfa' ? 'Verify' : 'Create account'}
+          </button>
+        )}
 
         <div className="auth-alt">
           {mode === 'login'

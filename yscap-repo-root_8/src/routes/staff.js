@@ -2741,12 +2741,19 @@ router.post('/borrowers/:id/set-password', async (req, res) => {
     if (!b) return res.status(404).json({ error: 'not found' });
     const hash = await C.hashPassword(pw);
     const existing = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [req.params.id]);
+    // Staff-provisioned credentials are trusted the same way an invite-accept is
+    // (S1-08): mark the email verified so the borrower isn't bounced to the
+    // "confirm your email" gate on the sign-in the LO just set up for them.
     if (existing.rows[0]) {
       await db.query(
         `UPDATE borrower_auth SET password_hash=$2, token_version=token_version+1,
-             failed_attempts=0, locked_until=NULL WHERE borrower_id=$1`, [req.params.id, hash]);
+             failed_attempts=0, locked_until=NULL,
+             email_verified=true, email_verified_at=COALESCE(email_verified_at, now())
+         WHERE borrower_id=$1`, [req.params.id, hash]);
     } else {
-      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,$2,0)`, [req.params.id, hash]);
+      await db.query(
+        `INSERT INTO borrower_auth (borrower_id,password_hash,token_version,email_verified,email_verified_at)
+         VALUES ($1,$2,0,true,now())`, [req.params.id, hash]);
     }
     await audit(req, 'borrower_set_password', 'borrower', b.id, {});
     try { if (b.email) await mail.send('passwordChanged', b.email, { firstName: b.first_name }); } catch (_) {}
