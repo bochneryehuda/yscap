@@ -18,6 +18,9 @@
 const db = require('../db');
 
 const money = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US');
+// Fees / cash-to-close / reserves show EXACT cents in the condition hint
+// (owner-directed 2026-07-16); the stored breakdown already keeps cents.
+const money2 = (n) => (n == null || isNaN(Number(n))) ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // How many months of bank statements the file requires, driven by the REGISTERED
 // program (owner-directed 2026-07-12). Before a product is registered the file
@@ -64,9 +67,9 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
     };
     const hint =
       `${bankStatementLine(program)} ` +
-      `Required liquidity: ${money(required)} — the borrower's bank statements must show at least this in liquid assets. ` +
-      `Down payment ${money(breakdown.downPayment)} + closing costs due at closing ${money(breakdown.closingCosts)} ` +
-      `= cash to close ${money(breakdown.cashToClose)}; plus reserves ${money(breakdown.reserveRequirement)}` +
+      `Required liquidity: ${money2(required)} — the borrower's bank statements must show at least this in liquid assets. ` +
+      `Down payment ${money2(breakdown.downPayment)} + closing costs due at closing ${money2(breakdown.closingCosts)} ` +
+      `= cash to close ${money2(breakdown.cashToClose)}; plus reserves ${money2(breakdown.reserveRequirement)}` +
       `${breakdown.reserveBasis ? ` (${breakdown.reserveBasis})` : ''}.`;
 
     const r = await client.query(

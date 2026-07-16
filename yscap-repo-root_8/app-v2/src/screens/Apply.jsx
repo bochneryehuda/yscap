@@ -856,7 +856,7 @@ export default function Apply() {
           <p className="muted small" style={{ marginTop: 8 }}>
             {snap && !snap.ready ? `Still needed to price: ${snap.missing.join(', ')}.`
               : snap && !snap.program ? 'Tap the Standard or Gold Standard card above to open your product.'
-              : snap && snap.d && snap.d.totalLoan > 0 ? `Selected: ${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${'$' + Math.round(snap.d.totalLoan).toLocaleString('en-US')} @ ${snap.d.rate ? snap.d.rate.toFixed(2) + '%' : '—'} · cash to close ${'$' + Math.round(snap.d.cashToClose).toLocaleString('en-US')} · liquidity to show ${'$' + Math.round(snap.d.liquidity).toLocaleString('en-US')}`
+              : snap && snap.d && snap.d.totalLoan > 0 ? `Selected: ${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${'$' + Math.round(snap.d.totalLoan).toLocaleString('en-US')} @ ${snap.d.rate ? snap.d.rate.toFixed(2) + '%' : '—'} · cash to close ${'$' + Number(snap.d.cashToClose).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · liquidity to show ${'$' + Number(snap.d.liquidity).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
               : ''}
           </p>
         )}

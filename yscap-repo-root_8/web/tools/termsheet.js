@@ -363,7 +363,7 @@
     var stdSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE" && !stdExit && !stdCity;
     YS.put("stdLoanBig", (stdExit || stdCity) ? "Manual" : (stdSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM)));
     YS.put("stdRateBig", (stdSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
-    YS.put("stdOrigBig", stdSized ? YS.fmtUSD(d.origFee) : EM);
+    YS.put("stdOrigBig", stdSized ? YS.fmtUSD2(d.origFee) : EM);
     YS.put("stdOrigPts", origPtStr(adminOrigPct("standard")));
     setBadge("stdBadge", d.status, ready);
     var stdWhy = stdExit ? shortMsg(exitMsg(d.reasons)) : (d.status !== "ELIGIBLE" ? shortReason(d.reasons) : "");
@@ -635,13 +635,13 @@
     YS.put("rLtv", (sized && d.ltvPct) ? YS.fmtPct(d.ltvPct, 1) : EM);
     YS.put("rDown", sized ? YS.fmtUSD(d.downPayment) : EM);
     YS.put("rOrigLbl", "Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")");
-    YS.put("rOrig", sized ? YS.fmtUSD(d.origFee) : EM);
-    YS.put("rLender", sized ? YS.fmtUSD(d.lenderFee) : EM);
-    YS.put("rCredit", sized ? YS.fmtUSD(d.creditFee) : EM);
-    YS.put("rAppr", sized ? (YS.fmtUSD(d.apprFee) + " POC") : EM);
-    YS.put("rTitle", (sized && d.titleCost > 0) ? YS.fmtUSD(d.titleCost) : EM);
-    YS.put("rCash", sized ? YS.fmtUSD(d.cashToClose) : EM);
-    YS.put("rLiquidity", sized ? YS.fmtUSD(d.liquidity) : EM);
+    YS.put("rOrig", sized ? YS.fmtUSD2(d.origFee) : EM);
+    YS.put("rLender", sized ? YS.fmtUSD2(d.lenderFee) : EM);
+    YS.put("rCredit", sized ? YS.fmtUSD2(d.creditFee) : EM);
+    YS.put("rAppr", sized ? (YS.fmtUSD2(d.apprFee) + " POC") : EM);
+    YS.put("rTitle", (sized && d.titleCost > 0) ? YS.fmtUSD2(d.titleCost) : EM);
+    YS.put("rCash", sized ? YS.fmtUSD2(d.cashToClose) : EM);
+    YS.put("rLiquidity", sized ? YS.fmtUSD2(d.liquidity) : EM);
     YS.put("rTier", d.tierLabel || EM);
     YS.put("rFico", d.fico ? String(d.fico) : EM);
 
@@ -855,13 +855,13 @@
       ["Rehab / construction holdback", stdOk ? money(d.rehabHoldback) : EM],
       ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
       ["Leverage \u2014 LTC / as-is / ARV", stdOk ? (pct(d.ltcPct) + " / " + pct(d.ltvPct) + " / " + pct(d.arvPct)) : EM],
-      ["Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", (stdOk && d.totalLoan) ? money(d.origFee) : EM],
-      ["UW / processing / legal", stdOk ? money(d.lenderFee) : EM],
-      ["Credit report", stdOk ? money(d.creditFee) : EM],
-      ["Appraisal (est., POC)", stdOk ? money(d.apprFee) : EM],
-      ["Title / escrow (est.)", (stdOk && d.titleCost > 0) ? money(d.titleCost) : EM],
-      ["Estimated cash to close", stdOk ? money(d.cashToClose) : EM],
-      ["Liquidity to show", stdOk ? money(d.liquidity) : EM]
+      ["Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", (stdOk && d.totalLoan) ? money2(d.origFee) : EM],
+      ["UW / processing / legal", stdOk ? money2(d.lenderFee) : EM],
+      ["Credit report", stdOk ? money2(d.creditFee) : EM],
+      ["Appraisal (est., POC)", stdOk ? money2(d.apprFee) : EM],
+      ["Title / escrow (est.)", (stdOk && d.titleCost > 0) ? money2(d.titleCost) : EM],
+      ["Estimated cash to close", stdOk ? money2(d.cashToClose) : EM],
+      ["Liquidity to show", stdOk ? money2(d.liquidity) : EM]
     ];
     var gold;
     if (!gd || gd.unavailable) { gold = [["Availability", "Not offered in this state"]]; }
@@ -877,13 +877,13 @@
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
         ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
         ["Leverage \u2014 LTC / as-is / ARV", gOk ? (pct(gd.ltcPct) + " / " + pct(gd.ltvPct) + " / " + pct(gd.arvPct)) : EM],
-        ["Origination (" + origPctStr((gd.origPct != null ? gd.origPct : 0.0125)) + ")", (gOk && gd.totalLoan) ? money(gd.origFee) : EM],
-        ["UW / processing / legal", gOk ? money(gd.lenderFee) : EM],
-        ["Credit report", gOk ? money(gd.creditFee) : EM],
-        ["Appraisal (est., POC)", gOk ? money(gd.apprFee) : EM],
-        ["Title / escrow (est.)", (gOk && gd.titleCost > 0) ? money(gd.titleCost) : EM],
-        ["Estimated cash to close", gOk ? money(gd.cashToClose) : EM],
-        ["Liquidity to show", gOk ? money(gd.liquidity) : EM]
+        ["Origination (" + origPctStr((gd.origPct != null ? gd.origPct : 0.0125)) + ")", (gOk && gd.totalLoan) ? money2(gd.origFee) : EM],
+        ["UW / processing / legal", gOk ? money2(gd.lenderFee) : EM],
+        ["Credit report", gOk ? money2(gd.creditFee) : EM],
+        ["Appraisal (est., POC)", gOk ? money2(gd.apprFee) : EM],
+        ["Title / escrow (est.)", (gOk && gd.titleCost > 0) ? money2(gd.titleCost) : EM],
+        ["Estimated cash to close", gOk ? money2(gd.cashToClose) : EM],
+        ["Liquidity to show", gOk ? money2(gd.liquidity) : EM]
       ];
     }
     return [{ title: "Deal & property", items: deal }, { title: "Purchase & project costs", items: costs },
@@ -950,7 +950,7 @@
     var nm = (borrowerOfRecord() || "Applicant").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "Applicant";
     return "YS_Term_Sheet_" + nm + "_" + new Date().toISOString().slice(0, 10);
   }
-  function money(n) { return YS.fmtUSD(n); }
+  function money(n) { return YS.fmtUSD(n); } function money2(n) { return YS.fmtUSD2(n); }
 
   async function exportPdf(btn, returnBlob) {
     var label = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Building term sheet\u2026"; btn.disabled = true; }
@@ -966,7 +966,7 @@
       var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [91, 103, 112], DARK = [19, 32, 28], LINE = [228, 224, 214];
       var today = new Date(), exp = new Date(today.getTime() + 14 * 864e5);
       var fmtD = function (dt) { return dt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }); };
-      var money = function (n) { return YS.fmtUSD(n); };
+      var money = function (n) { return YS.fmtUSD(n); }; var money2 = function (n) { return YS.fmtUSD2(n); };
       var pc = function (x) { return (Math.round(x * 1000) / 10) + "%"; };
       var sized = d.pricingReady && d.totalLoan > 0 && d.status !== "INELIGIBLE";
       var stTxt = d.status === "ELIGIBLE" ? "Eligible" : d.status === "MANUAL" ? "Eligible \u2014 manual underwrite" : "Not eligible as entered";
@@ -1084,16 +1084,16 @@
       yR = rowIn(xR, colW, isBridge ? "As-is value" : "As-is / ARV value", isBridge ? money(d.asIs) : (money(d.asIs) + " / " + money(d.arv)), yR);
       yR += 9;
       yR = cardHead(xR, colW, "Estimated cash to close", yR);
-      yR = rowIn(xR, colW, "Origination fee (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", sized ? money(d.origFee) : "\u2014", yR);
-      yR = rowIn(xR, colW, "Underwriting / processing / legal", sized ? money(d.lenderFee) : "\u2014", yR);
-      yR = rowIn(xR, colW, "Credit report (avg)", sized ? money(d.creditFee) : "\u2014", yR);
-      yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money(d.apprFee) : "\u2014", yR);
-      yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money(d.titleCost) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Origination fee (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", sized ? money2(d.origFee) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Underwriting / processing / legal", sized ? money2(d.lenderFee) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Credit report (avg)", sized ? money2(d.creditFee) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
       if (d.excessOOP > 0) yR = rowIn(xR, colW, "Assignment over 15% (out of pocket)", money(d.excessOOP), yR);
-      yR = rowIn(xR, colW, "Estimated cash to close", sized ? money(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
+      yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
       var liqLbl = d.gold ? ("Liquidity to show (" + Math.round((d.liquidityPct || 0.05) * 100) + "% of loan)") : ("Liquidity to show (" + d.reserveMo + " mo)");
-      yR = rowIn(xR, colW, liqLbl, sized ? money(d.liquidity) : "\u2014", yR);
+      yR = rowIn(xR, colW, liqLbl, sized ? money2(d.liquidity) : "\u2014", yR);
       y = Math.max(yL, yR) + 4;
 
       if (d.reserveCapped && d.maxReserve >= 0) {
@@ -1263,7 +1263,7 @@
       var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [95, 103, 110], DARK = [19, 32, 28], LINE = [223, 219, 209], SOFT = [247, 245, 239], BODY = [40, 46, 52];
       var today = new Date(), exp = new Date(today.getTime() + 30 * 864e5);
       var fmtD = function (dt) { return dt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }); };
-      var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); };
+      var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); }; var money2 = function (n) { return YS.fmtUSD2(n || 0); };
       var borrower = borrower0;
       var tbd = chk("addrTBD"), addr = tbd ? "" : (val("propAddr") || "").trim(), st = (val("propState") || (d.inp && d.inp.state) || "").trim();
       var propLine = tbd ? "A residential investment property to be identified"
@@ -1451,7 +1451,7 @@
     doc.addPage();
     var W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 56;
     var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [95, 103, 110], DARK = [19, 32, 28], LINE = [223, 219, 209], BODY = [40, 46, 52];
-    var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); };
+    var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); }; var money2 = function (n) { return YS.fmtUSD2(n || 0); };
     var pc = function (x) { return (Math.round((x || 0) * 1000) / 10) + "%"; };
     var inp = d.inp || {}, isRefi = inp.loanType === "Refinance";
     var sc = YSP.normStrategy(inp.strategy), isBridge = sc === "BR", hasRehab = num("construction") > 0 || sc === "NC" || sc === "FF";

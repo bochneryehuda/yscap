@@ -342,6 +342,9 @@ function ClickupFileData({ app }) {
 }
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+// Fees / cash-to-close / liquidity / reserves show EXACT cents (owner-directed
+// 2026-07-16); loan amount / advance / holdback stay whole-dollar (frozen).
+const money2 = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city, a.state, a.zip].filter(Boolean).join(', ') || '—');
 // Build the Rehab Budget / Scope of Work builder URL SEEDED from the file —
@@ -1820,7 +1823,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         // on the internal login too (#85), not just a bare "document".
                         const liq = it.tool_payload && it.tool_payload.liquidity;
                         return liq && liq.required != null
-                          ? `Required liquidity ${money(liq.required)}${liq.cashToClose ? ` · cash to close ${money(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money(liq.reserveRequirement)}` : ''}`
+                          ? `Required liquidity ${money2(liq.required)}${liq.cashToClose ? ` · cash to close ${money2(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money2(liq.reserveRequirement)}` : ''}`
                           : 'Assets & bank statements — the required liquidity is set the moment a product is registered';
                       })()
                     : it.item_kind}
