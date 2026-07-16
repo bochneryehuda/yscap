@@ -140,9 +140,13 @@ async function graph(path, { method = 'GET', headers = {}, body, raw = false, ti
     const text = await r.text();
     let json; try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
     if (!r.ok) {
-      const err = new Error(`Graph ${method} ${path.slice(0, 120)} -> ${r.status} ${json?.error?.code || ''}: ${(json?.error?.message || text).slice(0, 200)}`);
+      // request-id is what Microsoft support needs to trace a failure on their
+      // side — always carry it in the error (industry practice for Graph).
+      const reqId = r.headers.get('request-id') || r.headers.get('client-request-id') || '';
+      const err = new Error(`Graph ${method} ${path.slice(0, 120)} -> ${r.status} ${json?.error?.code || ''}: ${(json?.error?.message || text).slice(0, 200)}${reqId ? ` [request-id ${reqId}]` : ''}`);
       err.status = r.status;
       err.graphCode = json?.error?.code;
+      err.graphRequestId = reqId || undefined;
       throw err;
     }
     return json;
@@ -201,7 +205,7 @@ async function itemByPath(driveId, relPath) {
   return graph(`/drives/${driveId}/root:/${enc}`);
 }
 
-const ITEM_META_SELECT = '$select=id,name,size,file,parentReference,webUrl,eTag,lastModifiedDateTime';
+const ITEM_META_SELECT = '$select=id,name,size,file,parentReference,webUrl,eTag,lastModifiedDateTime,malware';
 
 // Item METADATA reads (size + Graph's own content hashes) — used by the
 // integrity audit. Reading metadata is a folder-listing-class operation and
@@ -456,6 +460,33 @@ async function deleteReplacedCorruptMirror(driveId, corruptItemId, {
   return { deleted: true, name: corrupt.name };
 }
 
+/**
+ * Credential-lifecycle watchdog (research, 2026-07-16): an EXPIRED certificate
+ * or client secret kills the whole integration silently — auth just starts
+ * failing. Surface the certificate's notAfter (and days remaining) on the
+ * admin health probe so expiry is a planned rotation, never an outage.
+ * (Client-secret expiry lives in Azure and is not readable from here — the
+ * cert is preferred auth and IS readable.)
+ */
+function credentialHealth() {
+  const out = { auth: cfg.msClientCertPem ? 'certificate (secret fallback)' : (cfg.msClientSecret ? 'client secret' : 'none') };
+  if (cfg.msClientCertPem) {
+    try {
+      const certMatch = cfg.msClientCertPem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/);
+      const x509 = new crypto.X509Certificate(certMatch ? certMatch[0] : cfg.msClientCertPem);
+      const expires = new Date(x509.validTo);
+      const daysLeft = Math.floor((expires.getTime() - Date.now()) / 86400000);
+      out.certExpires = expires.toISOString().slice(0, 10);
+      out.certDaysLeft = daysLeft;
+      if (daysLeft <= 30) out.warning = `certificate expires in ${daysLeft} day(s) — rotate MS_CLIENT_CERT_PEM now`;
+      if (daysLeft <= 0) out.warning = 'CERTIFICATE EXPIRED — auth is running on the client-secret fallback (if configured)';
+    } catch (e) {
+      out.certError = `could not parse certificate: ${e.message}`;
+    }
+  }
+  return out;
+}
+
 function makeRef(driveId, itemId) { return `sp:${driveId}:${itemId}`; }
 function parseRef(ref) {
   const m = /^sp:([^:]+):(.+)$/.exec(String(ref || ''));
@@ -496,9 +527,9 @@ module.exports = {
     try {
       if (!configured()) return { ok: false, error: 'not configured (MS_* env unset)' };
       const d = await resolveDrive();
-      return { ok: true, ...d, pipelineRoot: cfg.sharepointPipelineRoot };
+      return { ok: true, ...d, pipelineRoot: cfg.sharepointPipelineRoot, credential: credentialHealth() };
     } catch (e) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: e.message, credential: credentialHealth() };
     }
   },
 };
