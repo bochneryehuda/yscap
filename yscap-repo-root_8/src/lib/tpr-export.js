@@ -1,8 +1,14 @@
 /**
- * TPR / clean-file export (#148; layout reworked owner-directed 2026-07-13).
- * Packages ONLY the clean set — accepted + current documents — into a
- * property-centric ZIP whose subject folder is organized BY CONDITION NAME,
- * mirroring the SharePoint "YS portal syncing" folder layout:
+ * TPR / file export (#148; layout reworked owner-directed 2026-07-13;
+ * EVERYTHING-on-the-file selection owner-directed 2026-07-16).
+ * Packages EVERY current document on the file — internal-condition docs
+ * (fraud / credit / insurance / title / appraisal), borrower-condition docs,
+ * loose attachments, the vesting entity's docs INCLUDING layered owning
+ * entities, and borrower-profile docs for borrower + co-borrower — whether or
+ * not review has finished (the manifest labels each doc's review status
+ * instead of dropping it). Into a property-centric ZIP whose subject folder is
+ * organized BY CONDITION NAME, mirroring the SharePoint "YS portal syncing"
+ * folder layout:
  *
  *   01_Subject_Property__<address>/
  *      00_REGISTERED_PRODUCT.{json,txt}
@@ -15,7 +21,14 @@
  *      <prior property address>/        each line item's verification docs, foldered
  *   00_MANIFEST.json / 00_INDEX.txt
  *
- * Rejected, superseded, and chat-attachment documents are structurally excluded.
+ * What stays OUT (each a deliberate, individually-decided exclusion):
+ *   - rejected documents and superseded versions (is_current=false) — trash
+ *   - chat attachments (conversation exhibits, not file documents)
+ *   - items flagged tpr_exclude (owner-directed per-condition exclusions:
+ *     ISKA, investor-structure printout — db/051/db/056)
+ *   - an EXPIRED Certificate of Good Standing (#83 — behaves like empty)
+ *   - system-generated regen artifacts (prior TPR zips, autosaved track-record
+ *     printouts) — the export builds its own live versions of those
  * Track-record verification docs are gated at the LINE-ITEM level (a project's
  * documents ride on its is_verified flag — the individual files are 'pending'
  * because verification is per project, not per document).
@@ -193,6 +206,82 @@ function trackRecordHtml({ borrowerName, generatedAt, loanNumber, records }) {
 </body></html>`;
 }
 
+/* ---------------- shared TPR document selection (the ONE chokepoint) --------
+   Owner-directed 2026-07-16 ("every single document needs to be part of the
+   TPR export"): the package includes every CURRENT document connected to the
+   file, across every source — the application's own docs (any condition,
+   internal or borrower, plus loose attachments), the vesting entity's docs
+   including LAYERED owning entities (db/094), and borrower-profile docs
+   (photo ID etc.) for borrower + co-borrower. Review no longer gates
+   inclusion — a pending doc ships and is LABELED pending in the manifest.
+   Both the ZIP builder and the staff preview endpoint MUST draw from these
+   helpers so the panel's promised count can never disagree with the package. */
+const TPR_DOC_SELECT = `
+  WITH RECURSIVE ctx AS (
+    SELECT borrower_id, co_borrower_id, llc_id FROM applications WHERE id=$1
+  ), entity_tree AS (
+    SELECT llc_id AS id FROM ctx WHERE llc_id IS NOT NULL
+    UNION
+    SELECT m.owner_llc_id FROM llc_members m JOIN entity_tree e ON m.llc_id = e.id
+     WHERE m.owner_llc_id IS NOT NULL
+  )
+  SELECT d.id, d.filename, d.storage_ref, d.reviewed_at, d.created_at, d.doc_kind,
+         COALESCE(d.review_status,'pending') AS review_status,
+         ci.label AS item_label, s.full_name AS reviewed_by_name
+    FROM documents d
+    LEFT JOIN checklist_items ci ON ci.id=d.checklist_item_id
+    LEFT JOIN staff_users s ON s.id=d.reviewed_by
+   WHERE (d.application_id=$1
+          OR (d.application_id IS NULL AND d.llc_id IN (SELECT id FROM entity_tree))
+          OR (d.application_id IS NULL AND d.llc_id IS NULL AND d.track_record_id IS NULL
+              AND d.lead_id IS NULL
+              AND d.borrower_id IN (SELECT borrower_id FROM ctx
+                                    UNION SELECT co_borrower_id FROM ctx WHERE co_borrower_id IS NOT NULL)))
+     AND d.is_current=true
+     AND COALESCE(d.review_status,'pending') <> 'rejected'
+     AND COALESCE(d.source_type,'') <> 'chat_attachment'
+     AND (ci.tpr_exclude IS NOT TRUE)
+     -- system-regenerated artifacts (a prior TPR zip, autosaved track-record
+     -- printouts) are not source documents — and re-packing a previous export
+     -- inside the next one must never happen.
+     AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export')
+     AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
+     -- #83: an EXPIRED Certificate of Good Standing behaves like empty
+     -- everywhere, so it must not ship as if it were a live document.
+     AND NOT (d.created_at < now() - interval '30 days'
+              AND ci.template_id IN (SELECT id FROM checklist_templates
+                                      WHERE code='rtl_llc_goodstanding' AND scope='llc'))
+   ORDER BY ci.sort_order NULLS LAST, d.created_at`;
+async function selectTprDocuments(appId) {
+  return (await db.query(TPR_DOC_SELECT, [appId])).rows;
+}
+
+// Document conditions that would ship EMPTY: not satisfied/signed off and no
+// current, non-rejected document at all (inclusion no longer waits on accept).
+async function selectTprMissing(appId) {
+  return (await db.query(
+    `SELECT COALESCE(label,'(document)') AS label FROM checklist_items ci
+      WHERE application_id=$1 AND item_kind='document' AND status <> 'satisfied'
+        AND signed_off_at IS NULL AND (tpr_exclude IS NOT TRUE)
+        AND NOT EXISTS (SELECT 1 FROM documents d
+                         WHERE d.checklist_item_id=ci.id AND d.is_current
+                           AND COALESCE(d.review_status,'pending') <> 'rejected')
+      ORDER BY sort_order`, [appId])).rows.map(r => r.label);
+}
+
+// Track-record verification docs for a set of line items (current, non-chat,
+// non-rejected — staff-internal docs ship too, per the everything directive).
+async function selectTrackRecordDocs(trIds) {
+  if (!trIds || !trIds.length) return [];
+  return (await db.query(
+    `SELECT id, track_record_id, filename, storage_ref, created_at
+       FROM documents
+      WHERE track_record_id = ANY($1::uuid[]) AND is_current=true
+        AND COALESCE(source_type,'') <> 'chat_attachment'
+        AND COALESCE(review_status,'pending') <> 'rejected'
+      ORDER BY created_at`, [trIds])).rows;
+}
+
 async function buildTprExport(appId) {
   const app = (await db.query(
     `SELECT a.ys_loan_number, a.program, a.loan_type, a.property_address, a.borrower_id, a.co_borrower_id,
@@ -213,42 +302,12 @@ async function buildTprExport(appId) {
     registration.quote = rest;
   }
 
-  // The subject file's clean set: accepted + current, never chat attachments,
-  // plus the vesting LLC's accepted docs (stored on the entity, not the file).
-  const docs = (await db.query(
-    `SELECT d.id, d.filename, d.storage_ref, d.reviewed_at, d.created_at, d.doc_kind,
-            ci.label AS item_label, s.full_name AS reviewed_by_name
-       FROM documents d
-       LEFT JOIN checklist_items ci ON ci.id=d.checklist_item_id
-       LEFT JOIN staff_users s ON s.id=d.reviewed_by
-      WHERE (d.application_id=$1
-             OR (d.application_id IS NULL AND d.llc_id IS NOT NULL
-                 AND d.llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
-        AND d.review_status='accepted' AND d.is_current=true
-        AND d.source_type <> 'chat_attachment'
-        AND (ci.tpr_exclude IS NOT TRUE)
-        -- #83: a Certificate of Good Standing goes stale after 30 days. An
-        -- EXPIRED CoGS behaves like empty everywhere (the LLC stays verified —
-        -- good standing never gated it), so it must NOT ship in the buyer's
-        -- clean file. Mirrors llcSlots() presenting the expired slot as empty.
-        AND NOT (d.created_at < now() - interval '30 days'
-                 AND ci.template_id IN (SELECT id FROM checklist_templates
-                                         WHERE code='rtl_llc_goodstanding' AND scope='llc'))
-        -- S4-03: never ship a document a staffer marked truly INTERNAL to the note
-        -- buyer. We deliberately KEEP 'staff_only' here — the buyer's clean file
-        -- needs the staff-managed loan documents (appraisal, title, insurance),
-        -- which live on staff-audience conditions. Only 'internal' is held back;
-        -- the existing per-item tpr_exclude flag remains the way to drop a
-        -- specific document.
-        AND d.visibility <> 'internal'
-      ORDER BY ci.sort_order NULLS LAST, d.created_at`, [appId])).rows;
+  // EVERYTHING on the file (owner-directed 2026-07-16) — see the shared
+  // selection above for the full inclusion/exclusion contract.
+  const docs = await selectTprDocuments(appId);
 
-  // Required document items still missing an accepted doc — the pre-flight list.
-  const missing = (await db.query(
-    `SELECT COALESCE(label,'(document)') AS label FROM checklist_items
-      WHERE application_id=$1 AND item_kind='document' AND status <> 'satisfied'
-        AND (tpr_exclude IS NOT TRUE)
-      ORDER BY sort_order`, [appId])).rows.map(r => r.label);
+  // Document conditions that would ship empty — the pre-flight list.
+  const missing = await selectTprMissing(appId);
 
   // The borrower's (and co-borrower's) operational track record.
   const borrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
@@ -263,13 +322,7 @@ async function buildTprExport(appId) {
 
   // Per-line-item verification documents (current, non-chat). Verification is at
   // the project level, so these ride on the line item's is_verified flag.
-  const trDocs = records.length ? (await db.query(
-    `SELECT id, track_record_id, filename, storage_ref, created_at
-       FROM documents
-      WHERE track_record_id = ANY($1::uuid[]) AND is_current=true AND source_type <> 'chat_attachment'
-        AND review_status <> 'rejected'
-        AND visibility <> 'internal'   -- S4-03: never ship a truly-internal doc to the note buyer
-      ORDER BY created_at`, [records.map(r => r.id)])).rows : [];
+  const trDocs = await selectTrackRecordDocs(records.map(r => r.id));
   const docsByTr = {};
   for (const d of trDocs) (docsByTr[d.track_record_id] = docsByTr[d.track_record_id] || []).push(d);
 
@@ -309,7 +362,14 @@ async function buildTprExport(appId) {
     const base = sanitize(d.filename.replace(/\.[^.]+$/, '') || d.item_label || 'document');
     const name = `${top}/${nn}_${base}${ext}`;
     files.push({ name, data: bytes });
-    manifestDocs.push({ file: name, source: d.filename, requirement: d.item_label || null, accepted_by: d.reviewed_by_name || null, accepted_at: d.reviewed_at || d.created_at });
+    // Inclusion no longer waits on review — label the status instead, so the
+    // reader can tell an accepted document from one still pending review.
+    manifestDocs.push({
+      file: name, source: d.filename, requirement: d.item_label || null,
+      review: d.review_status,
+      accepted_by: d.review_status === 'accepted' ? (d.reviewed_by_name || null) : null,
+      accepted_at: d.review_status === 'accepted' ? (d.reviewed_at || d.created_at) : null,
+    });
   }
 
   // 2) Track record → HTML + Excel + per-property verification-doc subfolders.
@@ -381,7 +441,7 @@ async function buildTprExport(appId) {
     included_count: manifestDocs.length,
     track_record: { projects: records.length, verified: records.filter(r => r.is_verified).length, line_items: trManifest },
     unavailable_documents: unavailable,
-    missing_or_not_yet_accepted: missing,
+    open_conditions_without_documents: missing,
   };
   if (registration) {
     files.push({
@@ -418,7 +478,7 @@ async function buildTprExport(appId) {
 
   // Human-readable index.
   const lines = [
-    `YS CAPITAL GROUP — CLEAN FILE / TPR PACKAGE`,
+    `YS CAPITAL GROUP — TPR FILE PACKAGE (every current document on the file)`,
     `Loan: ${app.ys_loan_number || '(pending)'}   Borrower: ${borrowerName}   Property: ${propLabel}`,
     `Generated: ${generatedAt}`, '',
     `PACKAGE LAYOUT:`,
@@ -427,9 +487,9 @@ async function buildTprExport(appId) {
     `  ${TRACK}/                    operating track record (HTML + Excel) + per-property verification docs`,
     '',
     `INCLUDED DOCUMENTS (${manifestDocs.length}):`,
-    ...manifestDocs.map(m => `  - ${m.file}${m.accepted_by ? `  (accepted by ${m.accepted_by})` : ''}`),
+    ...manifestDocs.map(m => `  - ${m.file}${m.accepted_by ? `  (accepted by ${m.accepted_by})` : (m.review && m.review !== 'accepted' ? `  (${m.review} review)` : '')}`),
     '', `TRACK RECORD: ${records.length} project(s), ${manifest.track_record.verified} verified.`,
-    '', `MISSING / NOT YET ACCEPTED (${missing.length}):`,
+    '', `OPEN CONDITIONS WITH NO DOCUMENT YET (${missing.length}):`,
     ...(missing.length ? missing.map(m => `  - ${m}`) : ['  (none)']),
   ];
   if (unavailable.length) {
@@ -468,4 +528,9 @@ async function saveTprExportDocument(appId, zipBuf, filename, actorId) {
   return r.rows[0].id;
 }
 
-module.exports = { buildTprExport, saveTprExportDocument, folderFor, buildXlsx };
+module.exports = {
+  buildTprExport, saveTprExportDocument, folderFor, buildXlsx,
+  // the shared selection chokepoint — the preview endpoint MUST use these so
+  // its promised counts can never disagree with the built package
+  selectTprDocuments, selectTprMissing, selectTrackRecordDocs,
+};

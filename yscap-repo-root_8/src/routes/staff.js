@@ -1875,34 +1875,20 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'export failed' }); }
 });
 // Readiness preview (counts + missing list) without building the whole zip.
+// Draws from the SAME shared selection as the zip builder (owner-directed
+// 2026-07-16: the export packages EVERY current document on the file), so the
+// promised count can never disagree with the package.
 router.get('/applications/:id/export/tpr/preview', async (req, res) => {
   try {
-    const included = (await db.query(
-      `SELECT count(*)::int c FROM documents
-        WHERE (application_id=$1
-               OR (application_id IS NULL AND llc_id IS NOT NULL
-                   AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
-          AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'
-          AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = documents.checklist_item_id AND ci.tpr_exclude IS TRUE)`, [req.params.id])).rows[0].c;
-    // The DPR also packages the borrower's (+ co-borrower's) track-record
-    // verification documents — count them so the panel promise matches the ZIP.
-    const trackDocs = (await db.query(
-      `SELECT count(*)::int c FROM documents
-        WHERE is_current=true AND source_type<>'chat_attachment' AND review_status<>'rejected'
-          AND track_record_id IN (
-            SELECT id FROM track_records WHERE borrower_id IN (
-              SELECT borrower_id FROM applications WHERE id=$1
-              UNION SELECT co_borrower_id FROM applications WHERE id=$1 AND co_borrower_id IS NOT NULL))`, [req.params.id])).rows[0].c;
-    // A document condition only counts as "missing" for the export when it has
-    // NO accepted current document and isn't satisfied/signed off. (Accepting a
-    // document now leaves the condition 'received' until sign-off — #135 — so
-    // 'satisfied' alone would wrongly flag accepted-but-unsigned docs as missing.)
-    const missing = (await db.query(
-      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items ci
-        WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied'
-          AND signed_off_at IS NULL AND tpr_exclude IS NOT TRUE
-          AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id=ci.id AND d.is_current AND d.review_status='accepted')
-        ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
+    const tpr = require('../lib/tpr-export');
+    const included = (await tpr.selectTprDocuments(req.params.id)).length;
+    const trIds = (await db.query(
+      `SELECT id FROM track_records WHERE borrower_id IN (
+         SELECT borrower_id FROM applications WHERE id=$1
+         UNION SELECT co_borrower_id FROM applications WHERE id=$1 AND co_borrower_id IS NOT NULL)`,
+      [req.params.id])).rows.map(r => r.id);
+    const trackDocs = (await tpr.selectTrackRecordDocs(trIds)).length;
+    const missing = await tpr.selectTprMissing(req.params.id);
     res.json({ includedCount: included, trackDocs, missing });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
