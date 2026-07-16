@@ -130,11 +130,14 @@ router.post('/', async (req, res) => {
     // Confirmation to the visitor (best-effort).
     if (email) {
       try {
+        // The body promises "just reply to this email" — when the lead routed to
+        // an officer, replies go to that officer instead of the no-reply sender.
+        // No application exists yet, so the file+ inbox doesn't apply here.
         const r = await mail.send('leadReceived', email, {
           firstName: name ? String(name).split(' ')[0] : '',
           toolLabel: label,
           officerName: officerRow ? officerRow.full_name : null,
-        });
+        }, { replyTo: officerRow?.email || null });
         if (r && r.ok) await db.query(`UPDATE leads SET emailed_submitter=true WHERE id=$1`, [leadId]);
       } catch (_) {}
     }

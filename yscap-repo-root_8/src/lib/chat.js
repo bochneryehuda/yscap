@@ -28,6 +28,7 @@ const email = require('./email');
 const storage = require('./storage');
 const { can } = require('./permissions');
 const { scrubText } = require('./borrower-safe');
+const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
 const CHAT_EMAIL_DELAY_MIN = 10;      // email fallback only if still unread after this
 const URGENT_RENOTIFY_MIN = 2;        // Teams-style urgent re-ping cadence
@@ -781,7 +782,11 @@ async function fireChatEmail(j) {
         meta: ctx ? ctx.meta : [],
         attachments,
       }, isBorrower ? 'borrower' : 'staff');
-      await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments }).catch(() => {});
+      // Internal members have no chat+ reply key (that exists only for external
+      // guests) — a reply to the digest goes to the file+ inbox and fans out to
+      // the whole assigned team (#68).
+      await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments,
+        replyTo: fileReplyTo(conv.application_id) }).catch(() => {});
     }
   }
   // One digest covers every pending email job for this recipient+conversation.

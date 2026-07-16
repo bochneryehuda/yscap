@@ -19,6 +19,7 @@
 const db = require('../db');
 const notify = require('./notify');
 const email = require('./email');
+const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
 const KINDS = new Set(['reminder', 'task']);
 
@@ -244,7 +245,11 @@ async function _deliver(row, { lead } = {}) {
         const msg = notify.buildEmail({
           title: titleLine, body, link: staffLink, ctaLabel: 'Open the loan file',
         }, 'staff');
-        await email.sendMail({ to: [rcp.email], subject: msg.subject, text: msg.text, html: msg.html }).catch(() => {});
+        // #68: the ad-hoc recipient (title co, escrow…) is the one most likely
+        // to reply with the answer — route it to the file's assigned team like
+        // the staff/borrower copies of this same reminder.
+        await email.sendMail({ to: [rcp.email], subject: msg.subject, text: msg.text, html: msg.html,
+          replyTo: fileReplyTo(row.application_id) }).catch(() => {});
       }
     } catch (_) { /* one bad recipient never blocks the rest */ }
   }
