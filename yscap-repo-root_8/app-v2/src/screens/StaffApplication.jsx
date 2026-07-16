@@ -1252,21 +1252,34 @@ function EmailMonitor({ appId }) {
     const color = s === 'sent' ? 'var(--ok)' : s === 'error' ? 'var(--danger)' : 'var(--muted-2)';
     return <span className="pill small" style={{ borderColor: color, color }}>{label}</span>;
   };
+  // #68 — inbound replies (direction:'inbound') interleave with outbound rows.
+  // Their email_status is the inbound processing status, not a delivery status.
+  const inboundPill = (s, n) => {
+    const label = s === 'forwarded' ? `Forwarded to ${n || 'the'} team${n > 1 ? ` (${n})` : ''}`
+      : s === 'auto_reply' ? 'Auto-reply (not forwarded)'
+        : s === 'no_recipients' ? 'No one to receive it'
+          : s === 'chat_posted' ? 'Posted to chat'
+            : 'Processing';
+    const color = s === 'forwarded' || s === 'chat_posted' ? 'var(--ok)'
+      : s === 'no_recipients' ? 'var(--danger)' : 'var(--muted-2)';
+    return <span className="pill small" style={{ borderColor: color, color }}>{label}</span>;
+  };
   const when = (r) => { try { return new Date(r.emailed_at || r.created_at).toLocaleString(); } catch { return ''; } };
   const shown = open ? rows : rows.slice(0, 8);
   return (
     <div className="panel" style={{ padding: 10 }}>
-      <div className="muted small" style={{ marginBottom: 6 }}>{rows.length} notification{rows.length === 1 ? '' : 's'} on this file · newest first.</div>
+      <div className="muted small" style={{ marginBottom: 6 }}>{rows.length} notification{rows.length === 1 ? '' : 's'} on this file · newest first · inbound replies included.</div>
       {shown.map((r) => (
         <div key={r.id} className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '5px 0', borderTop: '1px solid rgba(127,169,176,.15)' }}>
           <span className="small" style={{ flex: 1, minWidth: 200 }}>
             <strong>{r.title}</strong>
             <span className="muted" style={{ marginLeft: 6 }}>
-              → {r.recipient_name || r.recipient_email || (r.recipient_kind === 'staff' ? 'staff' : 'borrower')}
-              {r.recipient_email ? ` · ${r.recipient_email}` : ''}
+              {r.direction === 'inbound'
+                ? <>← {r.recipient_email || 'unknown sender'}</>
+                : <>→ {r.recipient_name || r.recipient_email || (r.recipient_kind === 'staff' ? 'staff' : 'borrower')}{r.recipient_email ? ` · ${r.recipient_email}` : ''}</>}
             </span>
           </span>
-          {statusPill(r.email_status)}
+          {r.direction === 'inbound' ? inboundPill(r.email_status, r.forwarded_count) : statusPill(r.email_status)}
           <span className="muted small" style={{ minWidth: 132, textAlign: 'right' }}>{when(r)}</span>
         </div>
       ))}

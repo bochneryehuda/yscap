@@ -61,7 +61,7 @@ function post(path, rawBody, headers) {
 
 // ---- stubbable behavior for the Resend Receiving API + the email provider ----
 let sent = [];
-let sendBehavior = 'ok';       // 'ok' | 'throw'
+let sendBehavior = 'ok';       // 'ok' | 'throw' | 'throw-once' | 'soft-fail'
 let retrievalBehavior = 'ok';  // 'ok' | 'fail'
 let cannedEmail = null;
 
@@ -69,6 +69,8 @@ function installStubs() {
   email.sendMail = async (args) => {
     sent.push(args);
     if (sendBehavior === 'throw') throw new Error('smtp down');
+    if (sendBehavior === 'throw-once') { sendBehavior = 'ok'; throw new Error('smtp down once'); }
+    if (sendBehavior === 'soft-fail') return { ok: false, error: 'provider refused' };
     return { ok: true, id: 'stub' };
   };
   global.fetch = async (url) => {
@@ -107,20 +109,24 @@ async function main() {
   if (!ready) { server.close(); console.log('\nABORT: table never appeared'); process.exit(1); }
 
   // ---- fixtures ----
-  const B = uuid(), A1 = uuid(), A2 = uuid(), S1 = uuid(), S2 = uuid();
+  const B = uuid(), A1 = uuid(), A2 = uuid(), A3 = uuid(), A4 = uuid(), S1 = uuid(), S2 = uuid();
   const S1email = `s1_${A1.slice(0, 8)}@staff.test`;
   const S2email = `s2_${A1.slice(0, 8)}@staff.test`;
   try {
     await db.query(`INSERT INTO borrowers (id, first_name, last_name, email) VALUES ($1,'Test','Borrower',$2)`, [B, `b_${A1.slice(0, 8)}@x.test`]);
-    for (const a of [A1, A2]) {
+    for (const a of [A1, A2, A3, A4]) {
       await db.query(`INSERT INTO applications (id, borrower_id, ys_loan_number, property_address)
                       VALUES ($1,$2,$3,$4::jsonb)`, [a, B, 'TEST-' + a.slice(0, 6), JSON.stringify({ oneLine: '123 Test St, Testville, NY' })]);
     }
+    // A4 is ARCHIVED (soft-deleted) — replies to its address must not forward.
+    await db.query(`UPDATE applications SET deleted_at = now() WHERE id = $1`, [A4]);
     await db.query(`INSERT INTO staff_users (id, email, full_name, role, is_active) VALUES ($1,$2,'Officer One','loan_officer',true)`, [S1, S1email]);
     await db.query(`INSERT INTO staff_users (id, email, full_name, role, is_active) VALUES ($1,$2,'Processor Two','processor',true)`, [S2, S2email]);
-    // A1 assignees: S1 (LO) + S2 (processor). A2: none.
+    // A1 assignees: S1 (LO) + S2 (processor). A2: none. A3/A4: S1 only.
     await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'loan_officer',true)`, [A1, S1]);
     await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'processor',true)`, [A1, S2]);
+    await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'loan_officer',true)`, [A3, S1]);
+    await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'loan_officer',true)`, [A4, S1]);
 
     installStubs();
     cannedEmail = { from: 'Guest Sender <guest@external.test>', to: [`file+${A1}@${DOMAIN}`], subject: 'Re: your file', text: 'Hi team, here is my reply.', html: '<p>Hi team</p>', attachments: [] };
@@ -170,7 +176,11 @@ async function main() {
 
     sent = [];
     r = await fileInbox.processReceivedEvent(evt('test-noassign-1', [`file+${A2}@${DOMAIN}`]));
-    ok(r.status === 'no_recipients' && sent.length === 0, 'file with no assignees → no forward');
+    // (An admin ALERT may go out — a dropped reply must be visible — but never a
+    // forward to assignee addresses, because this file has none.)
+    ok(r.status === 'no_recipients'
+      && !sent.some((s) => [].concat(s.to || []).some((t) => [S1email, S2email].includes(t))),
+      'file with no assignees → no forward (admins may be alerted)');
 
     // duplicate assignee emails (same staffer in two roles) dedups to one address
     await db.query(`INSERT INTO application_assignees (application_id, staff_id, role, is_primary) VALUES ($1,$2,'processor',false)
@@ -226,6 +236,158 @@ async function main() {
     resp = await post('/api/inbound/chat', JSON.stringify({ data: { to: ['nobody@nowhere.test'], text: 'hi' } }), {});
     ok(resp.status === 200, 'existing /api/inbound/chat still returns 200');
 
+    // ---------- round-2 audit regressions: retry safety ----------
+    console.log('\n# retry safety (round-2 audit)');
+    // A transient retrieval failure must NOT poison the email_id: the redelivery
+    // (same id, Resend back up) reclaims the row and forwards.
+    sent = []; retrievalBehavior = 'ok';
+    r = await fileInbox.processReceivedEvent(evt('test-retrievefail-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'forwarded', 'redelivery after retrieval failure → reclaimed + forwarded');
+    ok(r.retryable === undefined, 'recovered outcome is terminal (no more retries)');
+
+    // Same for a forward (SMTP) failure.
+    sent = [];
+    r = await fileInbox.processReceivedEvent(evt('test-forwardfail-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'forwarded', 'redelivery after forward failure → reclaimed + forwarded');
+
+    // ...but a TERMINAL outcome stays claimed forever.
+    sent = [];
+    r = await fileInbox.processReceivedEvent(evt('test-valid-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'duplicate' && sent.length === 0, 'redelivery of a forwarded email → still duplicate');
+
+    // A claim stuck at 'received' (crash mid-processing) is reclaimable once its
+    // claimed_at goes stale (claimed_at, not created_at, gates the window — a
+    // reclaim resets it so concurrent redeliveries can't both win).
+    await db.query(`INSERT INTO inbound_file_emails (resend_email_id, recipients, status, claimed_at)
+                    VALUES ('test-stuck-1', '[]'::jsonb, 'received', now() - interval '15 minutes')`);
+    sent = [];
+    r = await fileInbox.processReceivedEvent(evt('test-stuck-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'forwarded', 'stale stuck claim (crashed run) → reclaimed + forwarded');
+    // ...but a FRESH 'received' claim (a run in progress right now) is not.
+    await db.query(`INSERT INTO inbound_file_emails (resend_email_id, recipients, status)
+                    VALUES ('test-fresh-claim-1', '[]'::jsonb, 'received')`);
+    r = await fileInbox.processReceivedEvent(evt('test-fresh-claim-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'duplicate', 'fresh in-flight claim → duplicate (no double-processing race)');
+
+    // Provider soft-failure ({ok:false}) is a failure, never recorded as forwarded.
+    sent = []; sendBehavior = 'soft-fail';
+    r = await fileInbox.processReceivedEvent(evt('test-softfail-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'forward_failed' && r.retryable === true, 'provider {ok:false} → forward_failed (retryable)');
+    sendBehavior = 'ok';
+
+    // ---------- round-2 audit regressions: recipient extraction ----------
+    console.log('\n# recipient extraction (cc / received_for / display names)');
+    sent = [];
+    r = await fileInbox.processReceivedEvent({ type: 'email.received', data: { email_id: 'test-cc-1', to: ['borrower@ext.test'], cc: [`file+${A1}@${DOMAIN}`] } });
+    ok(r.status === 'forwarded', 'file address in Cc → forwarded');
+    sent = [];
+    r = await fileInbox.processReceivedEvent({ type: 'email.received', data: { email_id: 'test-rcvfor-1', to: ['borrower@ext.test'], received_for: [`file+${A1}@${DOMAIN}`] } });
+    ok(r.status === 'forwarded', 'file address in received_for (Bcc envelope) → forwarded');
+    sent = [];
+    r = await fileInbox.processReceivedEvent(evt('test-display-1', [`"YS File" <file+${A1}@${DOMAIN}>`]));
+    ok(r.status === 'forwarded', 'display-name recipient form → forwarded');
+
+    // ---------- round-2 audit regressions: filters ----------
+    console.log('\n# archived files, self-echo, inactive staff, auto-replies');
+    sent = [];
+    r = await fileInbox.processReceivedEvent(evt('test-archived-1', [`file+${A4}@${DOMAIN}`]));
+    ok(r.status === 'archived_app' && sent.length === 0, 'archived (soft-deleted) file → no forward');
+
+    // Sender who IS an assignee is excluded — even behind a hostile display name.
+    sent = [];
+    cannedEmail = Object.assign({}, cannedEmail, { from: `"Officer <spoof>" <${S1email}>` });
+    r = await fileInbox.processReceivedEvent(evt('test-selfecho-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'forwarded' && sent.length === 1
+      && [].concat(sent[0].to).join(',') === S2email,
+      'assignee sender excluded from own forward (display-name form handled)');
+    cannedEmail = Object.assign({}, cannedEmail, { from: 'Guest Sender <guest@external.test>' });
+
+    // Inactive staff never receive forwards.
+    await db.query(`UPDATE staff_users SET is_active=false WHERE id=$1`, [S2]);
+    sent = [];
+    r = await fileInbox.processReceivedEvent(evt('test-inactive-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'forwarded' && [].concat(sent[0].to).join(',') === S1email, 'inactive staff excluded from forward');
+    await db.query(`UPDATE staff_users SET is_active=true WHERE id=$1`, [S2]);
+
+    // Auto-generated mail is recorded, never forwarded (loop prevention).
+    for (const [id, patch] of [
+      ['test-auto-hdr-1', { headers: [{ name: 'Auto-Submitted', value: 'auto-replied' }] }],
+      ['test-auto-from-1', { from: 'MAILER-DAEMON <mailer-daemon@mx.test>' }],
+      ['test-auto-subj-1', { subject: 'Automatic reply: your file' }],
+    ]) {
+      sent = [];
+      const base = { from: 'Guest Sender <guest@external.test>', to: [`file+${A1}@${DOMAIN}`], subject: 'Re: your file', text: 'auto', html: '', attachments: [] };
+      cannedEmail = Object.assign({}, base, patch);
+      r = await fileInbox.processReceivedEvent(evt(id, [`file+${A1}@${DOMAIN}`]));
+      ok(r.status === 'auto_reply' && sent.length === 0, `auto-generated mail (${id.split('-')[2]}) → recorded, not forwarded`);
+    }
+    cannedEmail = { from: 'Guest Sender <guest@external.test>', to: [`file+${A1}@${DOMAIN}`], subject: 'Re: your file', text: 'Hi team, here is my reply.', html: '<p>Hi team</p>', attachments: [] };
+
+    // ---------- round-2 audit regressions: multi-file + partial retry ----------
+    console.log('\n# multi-file addressing + partial retry');
+    sent = []; sendBehavior = 'throw-once';
+    r = await fileInbox.processReceivedEvent(evt('test-multi-1', [`file+${A1}@${DOMAIN}`, `file+${A3}@${DOMAIN}`]));
+    ok(r.status === 'forward_failed' && r.retryable === true, 'first-team send fails → retryable, second team already forwarded');
+    sent = [];
+    r = await fileInbox.processReceivedEvent(evt('test-multi-1', [`file+${A1}@${DOMAIN}`, `file+${A3}@${DOMAIN}`]));
+    ok(r.status === 'forwarded', 'redelivery completes the failed team');
+    const multiRow = await db.query(`SELECT app_results FROM inbound_file_emails WHERE resend_email_id='test-multi-1'`);
+    ok(multiRow.rows[0] && multiRow.rows[0].app_results
+      && multiRow.rows[0].app_results[A1] === 'forwarded' && multiRow.rows[0].app_results[A3] === 'forwarded',
+      'both files marked forwarded exactly once (no double-send on retry)');
+
+    // Attachment failure falls back to a text-only forward (Graph size limits etc).
+    sent = []; sendBehavior = 'throw-once';
+    cannedEmail = Object.assign({}, cannedEmail, { attachments: [{ id: 'att1', filename: 'big.pdf', content_type: 'application/pdf', size: 3 }] });
+    r = await fileInbox.processReceivedEvent(evt('test-attretry-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'forwarded' && sent.length === 2 && sent[1].attachments.length === 0,
+      'attachment send failure → retried text-only, reply not lost');
+    cannedEmail = Object.assign({}, cannedEmail, { attachments: [] });
+
+    // Rate limiter: a file over the hourly forward cap stops forwarding (terminal).
+    for (let i = 0; i < 20; i++) {
+      await db.query(`INSERT INTO inbound_file_emails (resend_email_id, application_id, recipients, status, processed_at)
+                      VALUES ($1,$2,'[]'::jsonb,'forwarded', now()) ON CONFLICT DO NOTHING`, [`test-rl-seed-${i}`, A3]);
+    }
+    sent = [];
+    r = await fileInbox.processReceivedEvent(evt('test-rl-1', [`file+${A3}@${DOMAIN}`]));
+    ok(r.status === 'rate_limited' && sent.length === 0, 'per-file hourly forward cap → rate_limited, no forward');
+
+    // ---------- round-2: chat+ dispatch through the signed endpoint (#75) ----------
+    console.log('\n# chat+ guest replies via the signed endpoint');
+    const chatLib = require(REPO + '/src/lib/chat');
+    const chatPosts = [];
+    const realPostExternalReply = chatLib.postExternalReply;
+    chatLib.postExternalReply = async (key, text) => { chatPosts.push({ key, text }); return { id: 'stub-msg' }; };
+    try {
+      sent = [];
+      r = await fileInbox.processReceivedEvent(evt('test-chat-1', [`chat+someguestkey123@${DOMAIN}`]));
+      ok(r.status === 'chat_posted' && chatPosts.length === 1 && chatPosts[0].key === 'someguestkey123',
+        'chat+ reply retrieved and posted into the conversation');
+      ok(chatPosts[0].text === 'Hi team, here is my reply.', 'chat reply body comes from the RETRIEVED email (webhook has no body)');
+    } finally { chatLib.postExternalReply = realPostExternalReply; }
+
+    // ---------- round-2: route hardening ----------
+    console.log('\n# route hardening');
+    // Empty body must answer fast (400 — unauthenticatable), never hang.
+    resp = await post('/api/inbound/file-email', '', {});
+    ok(resp.status === 400, 'empty body → 400 fast (no hang)');
+    // No configured secret → refuse everything (fail closed in EVERY env).
+    const cfgLive = require(REPO + '/src/config');
+    const realSecret = cfgLive.resendWebhookSecret;
+    cfgLive.resendWebhookSecret = null;
+    try {
+      const hbSigned = JSON.stringify(evt('test-nosecret-1', [`file+${A1}@${DOMAIN}`]));
+      resp = await post('/api/inbound/file-email', hbSigned, sign(hbSigned));
+      ok(resp.status === 400, 'no webhook secret configured → 400 (fail closed)');
+    } finally { cfgLive.resendWebhookSecret = realSecret; }
+    // Transient failure → 503 so Resend redelivers.
+    retrievalBehavior = 'fail';
+    const hb503 = JSON.stringify(evt('test-http-retry-1', [`file+${A1}@${DOMAIN}`]));
+    resp = await post('/api/inbound/file-email', hb503, sign(hb503));
+    ok(resp.status === 503, 'transient retrieval failure → 503 (Resend will redeliver)');
+    retrievalBehavior = 'ok';
+
     // ---------- outbound: opts.replyTo threading (audit coverage fixes) ----------
     console.log('\n# outbound replyTo threading');
     const catalog = require(REPO + '/src/lib/email/catalog');
@@ -264,8 +426,9 @@ async function main() {
     // cleanup (FK-safe order)
     try {
       await db.query(`DELETE FROM inbound_file_emails WHERE resend_email_id LIKE 'test-%'`);
-      await db.query(`DELETE FROM application_assignees WHERE application_id = ANY($1::uuid[])`, [[A1, A2]]);
-      await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[A1, A2]]);
+      await db.query(`DELETE FROM notifications WHERE application_id = ANY($1::uuid[]) OR staff_id = ANY($2::uuid[])`, [[A1, A2, A3, A4], [S1, S2]]);
+      await db.query(`DELETE FROM application_assignees WHERE application_id = ANY($1::uuid[])`, [[A1, A2, A3, A4]]);
+      await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[A1, A2, A3, A4]]);
       await db.query(`DELETE FROM borrowers WHERE id=$1`, [B]);
       await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[S1, S2]]);
     } catch (e) { console.log('  (cleanup warn)', e.message); }

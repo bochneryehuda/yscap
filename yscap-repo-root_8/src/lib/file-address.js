@@ -37,13 +37,15 @@ function fileReplyTo(applicationId) {
  * non-UUID id, or wrong domain) — the caller then silently ignores it.
  */
 function applicationIdFromRecipient(addr) {
+  // No configured reply domain = the whole inbound feature is DORMANT: never
+  // extract an id from an address on some other domain (round-2 audit — the old
+  // "route is dormant anyway" assumption did not hold for non-production envs).
+  if (!cfg.chatReplyDomain) return null;
   const m = String(addr || '').trim().toLowerCase().match(/^file\+([^@\s]+)@([^@\s]+)$/);
   if (!m) return null;
   const id = m[1];
   const domain = m[2];
-  // If a reply domain is configured, the address must be on it. (When unset the
-  // route is dormant anyway, but stay strict about the local-part shape.)
-  if (cfg.chatReplyDomain && domain !== cfg.chatReplyDomain) return null;
+  if (domain !== cfg.chatReplyDomain) return null;
   return UUID_RE.test(id) ? id : null;
 }
 

@@ -32,9 +32,12 @@ Everything else the owner requested this session **is done, merged to `main`, an
 - Reuse the inbound webhook pattern already built at `src/routes/inbound-chat.js` (mounted at `/api/inbound/chat`). Add a sibling route (or extend it) that recognizes a per‑file reply address like `file+<fileId>@<inbound-domain>` and fans the reply out by email to the file's assignees (`application_assignees`).
 - Put the per‑file reply address on the outbound file emails (`src/lib/notify.js` / `src/lib/email/catalog.js`) using the `replyTo` field that already exists on the email sender (`src/lib/email/resend.js`).
 
-**What's needed from the owner:**
-- In the Resend dashboard, add and verify an **inbound domain** (e.g. `reply.yscapgroup.com`), create an inbound route, and point its webhook at our server.
-- Set the environment variable `CHAT_REPLY_DOMAIN` (in Render) to that domain. (Same variable also switches on the chat reply‑by‑email — see #75.)
+**What's needed from the owner:** the exact, current go-live steps live in
+**`docs/EMAIL-REPLY-INBOX-SETUP.md`** — in short: verify an inbound domain in
+Resend, point ONE `email.received` webhook at **`/api/inbound/file-email`**, and
+set `CHAT_REPLY_DOMAIN` + `RESEND_WEBHOOK_SECRET` + `RESEND_INBOUND_API_KEY` in
+Render. (This section previously said to point the webhook at `/api/inbound/chat`
+— superseded: that legacy route can't retrieve Resend message bodies.)
 
 ---
 
@@ -61,7 +64,11 @@ Everything else the owner requested this session **is done, merged to `main`, an
 - Guests **do** receive every chat message by email and **can** open the chat online and type there (that already works).
 - Guests **cannot reply by email** yet (there's nowhere for the reply to land).
 
-**What's needed from the owner:** Set up the Resend inbound domain and the `CHAT_REPLY_DOMAIN` env var (exactly the same step as #68), and point the inbound webhook at `/api/inbound/chat`. Once set, replies‑by‑email start working immediately with no code change.
+**What's needed from the owner:** the same single setup as #68 (see
+`docs/EMAIL-REPLY-INBOX-SETUP.md`): the webhook goes to **`/api/inbound/file-email`**,
+which handles BOTH `file+…` forwards and `chat+…` guest replies (it retrieves the
+message body from Resend — the older `/api/inbound/chat` route cannot). Once set,
+replies‑by‑email start working immediately with no code change.
 
 **Open question for the owner (optional future work):** Today the "open the chat online" guest access is a **private magic link** (no password — like a Google Docs "anyone with the link" link, but the link is unguessable and only opens that one chat, nothing else). If instead you want guests to create a **real account with a password** (a "chat‑only login"), that's a separate, larger build. The magic link satisfies "they can sign up for the chat and still get emails." **Tell me if you want the password‑account version instead.**
 

@@ -1918,8 +1918,8 @@ router.get('/applications/:id/activity', async (req, res) => {
 // its EMAIL delivery status, so the team can see at a glance exactly what has been
 // sent, to whom, and whether the email actually went out (sent / in-app only /
 // error). Reads the notifications table we already fan out through; scoped to
-// anyone who can touch the file. (Inbound REPLIES are a separate integration —
-// see #68 — and are appended here once that lands.)
+// anyone who can touch the file. Inbound REPLIES (#68) are interleaved as
+// direction:'inbound' rows so the monitor shows both sides of the thread.
 router.get('/applications/:id/emails', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -1935,7 +1935,33 @@ router.get('/applications/:id/emails', async (req, res) => {
         WHERE n.application_id = $1
         ORDER BY n.created_at DESC
         LIMIT 300`, [req.params.id]);
-    res.json(r.rows);
+    let inbound = [];
+    try {
+      const inb = await db.query(
+        `SELECT id, from_email, subject, status, forwarded_count, received_at, processed_at
+           FROM inbound_file_emails
+          WHERE application_id = $1 OR app_results ? $2
+          ORDER BY received_at DESC
+          LIMIT 100`, [req.params.id, String(req.params.id)]);
+      inbound = inb.rows.map((row) => ({
+        id: `in-${row.id}`,
+        direction: 'inbound',
+        type: 'inbound_reply',
+        title: row.subject ? `Reply: ${row.subject}` : 'Reply on this file',
+        body: null,
+        recipient_kind: 'inbound',
+        recipient_name: null,
+        recipient_email: row.from_email || null,   // shown as the SENDER on inbound rows
+        email_status: row.status,
+        emailed_at: row.processed_at,
+        created_at: row.received_at,
+        forwarded_count: row.forwarded_count,
+      }));
+    } catch (_) { /* inbound history is additive — never break the monitor over it */ }
+    const merged = r.rows.concat(inbound)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 300);
+    res.json(merged);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
