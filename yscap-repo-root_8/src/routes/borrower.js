@@ -2595,7 +2595,7 @@ async function inviteCoBorrower(appId, primaryName, co) {
       primaryName: primaryName || 'your co-borrower',
       acceptUrl: hasAuth.rows[0] ? mail.link('/login') : mail.link('/accept?token=' + token),
       hasAccount: !!hasAuth.rows[0],
-    });
+    }, { replyTo: fileReplyTo(appId) });   // #68: a reply reaches the file's assigned team
   } catch (_) {}
   return coId;
 }

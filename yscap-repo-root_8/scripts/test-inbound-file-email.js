@@ -226,6 +226,38 @@ async function main() {
     resp = await post('/api/inbound/chat', JSON.stringify({ data: { to: ['nobody@nowhere.test'], text: 'hi' } }), {});
     ok(resp.status === 200, 'existing /api/inbound/chat still returns 200');
 
+    // ---------- outbound: opts.replyTo threading (audit coverage fixes) ----------
+    console.log('\n# outbound replyTo threading');
+    const catalog = require(REPO + '/src/lib/email/catalog');
+    sent = [];
+    await catalog.send('borrowerInvite', 'someone@invite.test',
+      { firstName: 'T', acceptUrl: 'https://x/accept', hasAccount: false },
+      { replyTo: fileAddr.fileReplyTo(A1) });
+    ok(sent.length === 1 && sent[0].replyTo === `file+${A1}@${DOMAIN}`, 'catalog.send threads opts.replyTo to the provider');
+    sent = [];
+    await catalog.send('leadReceived', 'someone@lead.test',
+      { firstName: 'T', toolLabel: 'Loan Calculator', officerName: null }, { replyTo: null });
+    ok(sent.length === 1 && sent[0].replyTo == null, 'opts.replyTo null → no Reply-To (unchanged behavior)');
+
+    // graph provider forwards replyTo → message.replyTo (fetch stubbed, no network)
+    const realFetch = global.fetch;
+    let graphBody = null;
+    global.fetch = async (url, opts) => {
+      if (String(url).includes('oauth2')) return { ok: true, json: async () => ({ access_token: 't', expires_in: 3600 }) };
+      graphBody = JSON.parse(opts.body);
+      return { ok: true, status: 202, text: async () => '', json: async () => ({}) };
+    };
+    try {
+      const graph = require(REPO + '/src/lib/email/graph');
+      await graph.sendMail({ to: 'a@b.test', subject: 's', text: 't', replyTo: `file+${A1}@${DOMAIN}` });
+      ok(graphBody && graphBody.message && Array.isArray(graphBody.message.replyTo)
+        && graphBody.message.replyTo[0].emailAddress.address === `file+${A1}@${DOMAIN}`,
+        'graph provider sets message.replyTo from replyTo');
+      graphBody = null;
+      await graph.sendMail({ to: 'a@b.test', subject: 's', text: 't' });
+      ok(graphBody && graphBody.message && !('replyTo' in graphBody.message), 'graph provider omits replyTo when absent');
+    } finally { global.fetch = realFetch; }
+
   } catch (e) {
     fail++; console.log('  ✗ EXCEPTION', e && e.stack ? e.stack : e);
   } finally {

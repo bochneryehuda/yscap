@@ -12,6 +12,7 @@ const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
+const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const cfg = require('../config');
@@ -805,7 +806,7 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
     loanNumber: meta.rows[0]?.ys_loan_number || null,
     inviter: inviter.rows[0]?.full_name || null,
     acceptUrl, hasAccount: !!hasAuth.rows[0],
-  });
+  }, { replyTo: fileReplyTo(appId) });   // #68: a reply reaches the file's assigned team
   await audit(req, 'invite_borrower', 'application', appId, { email });
   // Best-effort in-app notice to the file's team.
   return { emailed: true, hasAccount: !!hasAuth.rows[0], inviteToken: token };
