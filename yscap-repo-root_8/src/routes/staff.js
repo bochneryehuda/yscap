@@ -5366,6 +5366,29 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   }
   res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: sc.rows[0].id });
 });
+// Edit a file contact in place (owner-directed 2026-07-16: staff had only a
+// Remove button — a mistyped title/insurance/realtor contact needs an Edit, not
+// a delete-and-re-add). Updates the shared vendor row's details + the link's
+// contact type. Mirrored on the borrower side.
+router.patch('/file-contacts/:linkId', async (req, res) => {
+  const f = await db.query(`SELECT application_id, service_contact_id FROM application_service_contacts WHERE id=$1`, [req.params.linkId]);
+  if (!f.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canTouchApp(req, f.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : null;
+  const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
+  // COALESCE the type so a request that omits it keeps the stored value.
+  await db.query(
+    `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type), custom_type=$3,
+        company_name=$4, contact_name=$5, email=$6, phone=$7, address=$8, notes=$9, updated_at=now()
+      WHERE id=$1`,
+    [f.rows[0].service_contact_id, type, custom, b.companyName || null, b.contactName || null,
+     b.email || null, b.phone || null, b.address || null, b.notes || null]);
+  if (type) await db.query(`UPDATE application_service_contacts SET contact_type=$2 WHERE id=$1`, [req.params.linkId, type]);
+  await audit(req, 'edit_file_contact', 'application', f.rows[0].application_id, { contactType: type || undefined });
+  res.json({ ok: true });
+});
 router.delete('/file-contacts/:linkId', async (req, res) => {
   const f = await db.query(`SELECT application_id FROM application_service_contacts WHERE id=$1`, [req.params.linkId]);
   if (!f.rows[0]) return res.status(404).json({ error: 'not found' });
