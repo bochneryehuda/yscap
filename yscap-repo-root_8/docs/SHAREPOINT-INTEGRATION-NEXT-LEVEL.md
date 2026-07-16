@@ -42,25 +42,32 @@ separates "reliable mirror" from "platform-grade integration."
 
 ## 2. Ranked roadmap
 
-### Tier 1 — high value, low risk, build next
-1. **R1 — Metadata ID stamping (rename/move-proof identity).** After each upload, PATCH the
-   driveItem's listItem fields with `PilotDocumentId`, `PilotFileId`, `PilotBorrower`,
-   `PilotLink` (needs 3 columns provisioned once on the library; Graph requires the two-step
-   upload-then-PATCH). Industry-standard system-of-record linking: matching becomes id-based
-   and immune to ANY human rename/move; staff see provenance as columns in Explorer/web; the
-   verify pass can find items even after moves. (Field-study Tier-3 #11, now the top item.)
+### Tier 1 — high value, low risk
+1. **R1 — Metadata ID stamping (rename/move-proof identity). ✅ BUILT (2026-07-16).** After
+   each upload the mirror ensures four text columns exist on the library
+   (`PilotDocumentId`/`PilotFileId`/`PilotBorrower`/`PilotSyncedAt`, created once + cached in
+   `sharepoint.ensurePilotColumns`) and PATCHes them onto the driveItem's listItem fields
+   (`sharepoint.stampItemFields`). Best-effort + gated (`SHAREPOINT_STAMP_METADATA`, default
+   on) — a stamp failure NEVER affects the mirror; `documents.sharepoint_stamped_at` (db/120)
+   tracks coverage. Matching can become id-based and immune to human rename/move; staff see
+   provenance as columns. NEXT for this: an id-based re-locator in the verify pass (find our
+   item by `PilotDocumentId` even after a move) — the columns now exist to support it.
 2. **R2 — Delta-query drift healer (read-only).** Walk the drive's delta feed on a schedule
    (Microsoft's scan guidance: delta is THE at-scale change detector) to notice renames/moves/
    deletions of OUR items and folders within hours, self-heal `sharepoint_folder_cache` and
    `sharepoint_parent_id`, and queue item-missing reviews immediately instead of at the next
-   30-day audit. Never writes back — pure observation + bookkeeping.
-3. **R3 — Reconciliation & coverage report (the "chain of custody" deliverable).** A daily
-   digest (existing weekly-digest rails) + admin screen: mirrored / pending / exhausted /
-   skipped / verified-ok / corrupt-found-and-fixed counts, oldest-pending age, per-file
-   drill-down. Auditors and the owner see PROOF the mirror is whole — what AvePoint sells as
-   compliance reporting. Most counts already exist on `GET /api/admin/sharepoint/health`.
-4. **R4 — Backlog-age SLO alert.** One threshold: "oldest un-mirrored document older than X
-   hours" (or circuit open) → admin email. Turns silent degradation into a page.
+   30-day audit. Never writes back — pure observation + bookkeeping. (R1's columns make the
+   healed item identifiable.)
+3. **R3 — Reconciliation & coverage report (the "chain of custody" deliverable). ✅ BUILT
+   (2026-07-16).** `backup.reconciliation()` classifies every document into exactly one bucket
+   (mirrored / pending / exhausted / skipped / unverified / verified-ok / integrity-mismatch /
+   source-suspect / malware / item-missing / local-missing), reports oldest-pending age and a
+   `healthy` verdict, exposed at `GET /api/admin/sharepoint/reconciliation`. The auditable
+   proof the mirror is whole — what AvePoint sells as compliance reporting.
+4. **R4 — Backlog-age SLO alert. ✅ BUILT (2026-07-16).** `backup.checkBacklogSlo()` runs on
+   the sweep cadence; if the oldest un-mirrored doc passes `SHAREPOINT_BACKLOG_SLO_HOURS`
+   (default 6) or anything is exhausted, it notifies admins ONCE per breach episode (re-arms on
+   recovery). Silent degradation becomes a signal.
 
 ### Tier 2 — medium
 5. **R5 — Graph change notifications (webhooks) on the drive.** Push-model complement to R2

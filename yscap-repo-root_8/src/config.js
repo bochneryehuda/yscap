@@ -199,6 +199,11 @@ module.exports = {
                  || (process.env.MS_CLIENT_CERT_PEM_B64
                      ? Buffer.from(process.env.MS_CLIENT_CERT_PEM_B64, 'base64').toString('utf8') : ''),
   sharepointBackupPollSec: parseInt(process.env.SHAREPOINT_BACKUP_POLL_SEC || '300', 10),
+  // Metadata ID stamping (roadmap R1): stamp PilotDocumentId/FileId/Borrower/
+  // SyncedAt columns onto each mirrored driveItem so the link survives any
+  // human rename/move. Best-effort + gated; DEFAULT ON but a stamp failure
+  // never affects the mirror. Set SHAREPOINT_STAMP_METADATA=0 to disable.
+  sharepointStampMetadata: process.env.SHAREPOINT_STAMP_METADATA !== '0',
 
   // --- ClickUp bidirectional sync (server-side token only) ---
   clickupToken:         process.env.CLICKUP_API_TOKEN,

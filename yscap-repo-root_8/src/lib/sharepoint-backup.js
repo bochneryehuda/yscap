@@ -126,6 +126,7 @@ let _rekick = false;               // an upload arrived mid-drain — drain agai
 let _kickTimer = null;
 let _interval = null;
 let _verifyInterval = null;
+let _sloInterval = null;
 let _lastPass = null;              // stats for /api/health
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -572,6 +573,26 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
       WHERE id = $1`,
     [row.id, sp.makeRef(driveId, up.item.id), up.item.webUrl || null, version, parentId,
      contentSha, up.item && up.item.size != null ? Number(up.item.size) : bytes.length]);
+
+  // METADATA ID STAMP (roadmap R1) — best-effort, gated, never affects the
+  // mirror (bytes are already uploaded + recorded above). Stamps Pilot identity
+  // columns so the link survives any human rename/move. An adopted item is
+  // re-stamped too (cheap, idempotent) so a copy created before stamping existed
+  // gets its columns on the next pass.
+  if (cfg.sharepointStampMetadata) {
+    try {
+      await sp.ensurePilotColumns(driveId);
+      await sp.stampItemFields(driveId, up.item.id, {
+        PilotDocumentId: row.id,
+        PilotFileId: row.app_id || (row.borrower_id ? `borrower:${row.borrower_id}` : ''),
+        PilotBorrower: [row.borrower_first, row.borrower_last].filter(Boolean).join(' '),
+        PilotSyncedAt: new Date().toISOString(),
+      });
+      await db.query('UPDATE documents SET sharepoint_stamped_at = now() WHERE id = $1', [row.id]);
+    } catch (e) {
+      console.warn(`[sp-sync] metadata stamp skipped for doc ${row.id}: ${e.message}`);
+    }
+  }
   return up;
 }
 
@@ -1237,11 +1258,19 @@ function start() {
   if (_verifyInterval.unref) _verifyInterval.unref();
   const vboot = setTimeout(() => drainVerify().catch((e) => console.warn('[sp-verify] boot audit error:', e.message)), 60000);
   if (vboot.unref) vboot.unref();
+  // Backlog SLO watchdog (R4): check on the same cadence as the sweep; notifies
+  // admins once per breach episode. First check ~90s after boot (let the boot
+  // drain make progress first so we don't page on a normal cold-start backlog).
+  _sloInterval = setInterval(() => checkBacklogSlo(), ms);
+  if (_sloInterval.unref) _sloInterval.unref();
+  const sboot = setTimeout(() => checkBacklogSlo(), 90000);
+  if (sboot.unref) sboot.unref();
 }
 
 function stop() {
   if (_interval) { clearInterval(_interval); _interval = null; }
   if (_verifyInterval) { clearInterval(_verifyInterval); _verifyInterval = null; }
+  if (_sloInterval) { clearInterval(_sloInterval); _sloInterval = null; }
   if (_kickTimer) { clearTimeout(_kickTimer); _kickTimer = null; }
 }
 
@@ -1252,8 +1281,84 @@ function health() {
   };
 }
 
+// -------------------------------------------------- reconciliation (R3 + R4)
+// The chain-of-custody deliverable (roadmap R3): a single query that PROVES the
+// mirror is whole — every document classified into exactly one bucket, plus the
+// oldest un-mirrored age (R4's SLO signal). Cheap (one scan, indexed
+// predicates); safe to call from an admin endpoint or a digest.
+async function reconciliation() {
+  const { rows } = await db.query(
+    `SELECT
+        count(*) FILTER (WHERE storage_ref IS NOT NULL)::int                                            AS total_docs,
+        count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL)::int                                  AS mirrored,
+        count(*) FILTER (WHERE sharepoint_skipped_reason IS NOT NULL)::int                              AS skipped,
+        count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
+                          AND COALESCE(storage_provider,'local')='local')::int                          AS pending,
+        count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
+                          AND sharepoint_backup_attempts >= $1)::int                                     AS exhausted,
+        count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL AND sharepoint_verified_at IS NULL)::int AS unverified,
+        count(*) FILTER (WHERE sharepoint_integrity = 'ok'
+                          OR sharepoint_integrity LIKE 'ok %')::int                                      AS verified_ok,
+        count(*) FILTER (WHERE sharepoint_integrity LIKE 'mismatch%')::int                              AS integrity_mismatch,
+        count(*) FILTER (WHERE sharepoint_integrity LIKE 'source-suspect%')::int                        AS source_suspect,
+        count(*) FILTER (WHERE sharepoint_integrity LIKE 'malware%')::int                               AS malware_flagged,
+        count(*) FILTER (WHERE sharepoint_integrity = 'item-missing')::int                              AS item_missing,
+        count(*) FILTER (WHERE sharepoint_integrity = 'local-missing')::int                             AS local_missing,
+        EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (
+           WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
+             AND COALESCE(storage_provider,'local')='local')))::bigint                                  AS oldest_pending_secs
+      FROM documents`,
+    [MAX_ATTEMPTS]);
+  const r = rows[0];
+  const oldestHrs = r.oldest_pending_secs != null ? Math.round(r.oldest_pending_secs / 360) / 10 : null;
+  const thresholdHrs = Number(process.env.SHAREPOINT_BACKLOG_SLO_HOURS || 6);
+  const backlogBreached = oldestHrs != null && oldestHrs > thresholdHrs;
+  return {
+    ...r,
+    oldest_pending_hours: oldestHrs,
+    slo: { thresholdHours: thresholdHrs, oldestPendingHours: oldestHrs, breached: backlogBreached, exhausted: r.exhausted },
+    // A mirror is "healthy" when nothing is exhausted and the backlog is inside SLO.
+    healthy: r.exhausted === 0 && !backlogBreached,
+  };
+}
+
+// R4 — the SLO watchdog: on each interval sweep, if the oldest un-mirrored doc
+// is past the threshold (or anything is exhausted), notify admins ONCE per
+// breach episode (dedup via a simple in-process latch that re-arms when the
+// backlog recovers). Silent degradation becomes a signal.
+let _sloBreaching = false;
+async function checkBacklogSlo() {
+  if (!enabled()) return;
+  try {
+    const recon = await reconciliation();
+    const breaching = recon.slo.breached || recon.slo.exhausted > 0;
+    if (breaching && !_sloBreaching) {
+      _sloBreaching = true;
+      const notify = require('./notify');
+      await notify.notifyAdmins({
+        type: 'sharepoint_backlog_slo',
+        title: 'SharePoint sync backlog needs attention',
+        body: `The mirror is behind SLO: ${recon.exhausted} document(s) exhausted their retries` +
+              (recon.oldest_pending_hours != null ? `, oldest un-mirrored is ${recon.oldest_pending_hours}h old (threshold ${recon.slo.thresholdHours}h).` : '.') +
+              ' Open the SharePoint Control screen to review and retry.',
+        meta: [
+          { label: 'Exhausted', value: String(recon.exhausted) },
+          { label: 'Pending', value: String(recon.pending) },
+          { label: 'Oldest pending', value: recon.oldest_pending_hours != null ? `${recon.oldest_pending_hours}h` : '—' },
+        ],
+        link: '/internal/sync-reviews', ctaLabel: 'Open Sync review',
+      }).catch(() => {});
+    } else if (!breaching && _sloBreaching) {
+      _sloBreaching = false;   // recovered — re-arm for the next episode
+    }
+  } catch (e) {
+    console.warn('[sp-sync] backlog SLO check error:', e.message);
+  }
+}
+
 module.exports = {
   start, stop, kick, runOnce, drain, enabled, health, categoryFor, mirrorRow,
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
+  reconciliation, checkBacklogSlo,
   MAX_ATTEMPTS, VERIFY_RECHECK_DAYS,
 };

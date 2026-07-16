@@ -48,6 +48,18 @@ router.get('/health', async (req, res) => {
   }
 });
 
+// R3 — chain-of-custody reconciliation: the single, auditable proof that the
+// mirror is whole (every document classified, oldest-pending age, SLO verdict).
+router.get('/reconciliation', async (req, res) => {
+  try {
+    const recon = await backup.reconciliation();
+    await audit(req, 'sharepoint_reconciliation_viewed', { healthy: recon.healthy });
+    res.json({ ok: true, ...recon });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Start the full corrupted-mirror audit (+ automatic re-sync of anything that
 // fails it). Runs in the background; progress shows on GET /health.
 router.post('/verify', async (req, res) => {

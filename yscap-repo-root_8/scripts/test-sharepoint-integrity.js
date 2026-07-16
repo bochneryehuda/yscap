@@ -99,6 +99,12 @@ ok('term_sheet is NOT regen (point-in-time offer, keeps versions)', !backup.isRe
 ok('track_record_doc is NOT regen (human verification doc)', !backup.isRegenKind('track_record_doc'));
 ok('chat attachment kind (null) is NOT regen', !backup.isRegenKind(null));
 
+// ---------------------------------------- metadata ID stamping (roadmap R1)
+eq('PILOT_COLUMNS are the four identity columns', sp.PILOT_COLUMNS,
+  ['PilotDocumentId', 'PilotFileId', 'PilotBorrower', 'PilotSyncedAt']);
+ok('ensurePilotColumns is exported', typeof sp.ensurePilotColumns === 'function');
+ok('stampItemFields is exported', typeof sp.stampItemFields === 'function');
+
 // ---------------------------- Office property-promotion identity (2026-07-16)
 ok('xlsx is office format', sp.isOfficeFormat('145_Dover_SOW_2026-07-16.xlsx'));
 ok('docx is office format', sp.isOfficeFormat('agreement.DOCX'));
