@@ -1289,13 +1289,35 @@ const ADMIN_ONLY_OVERRIDE_KEYS = [
   'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths',
   'expFlips', 'expHolds', 'expGround',
 ];
+// The manual-PRICING knobs (rate / leverage / force-price). A non-admin sending
+// one of these MEANINGFULLY engaged means the studio displayed terms the server
+// won't honor — that must be refused loudly, not registered differently
+// (Pinchus Wieder). Experience keys are NOT here on purpose: the studio always
+// carries the file's own experience, and a non-admin's experience change belongs
+// in the audited application form — silently sizing off the file's claim is the
+// correct long-standing behavior, so it must not trip the loud refusal (that
+// would 403 EVERY vanilla non-admin register).
+const MANUAL_PRICING_KEYS = [
+  'forcePrice', 'manualPricing',
+  'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
+  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths',
+];
+// "Meaningfully engaged": a truthy flag, or a numeric override with a real value
+// — NOT a present-but-default key (manualPricing:false is sent on every staff
+// register, so mere presence must never count).
+const engaged = (v) => v === true || (v != null && v !== '' && v !== false && !(typeof v === 'number' && Number.isNaN(v)));
 function sanitizeOverrides(req, raw) {
   const overrides = (raw && typeof raw === 'object') ? { ...raw } : {};
   const role = req.actor && req.actor.role;
   if (role === 'admin' || role === 'super_admin') return { overrides, strippedAdminKeys: false };
   let stripped = false;
   for (const k of ADMIN_ONLY_OVERRIDE_KEYS) {
-    if (k in overrides) { delete overrides[k]; stripped = true; }
+    if (k in overrides) {
+      // Only a MEANINGFULLY-engaged MANUAL-PRICING knob makes the studio diverge
+      // from what the server will register — that's what we refuse loudly.
+      if (MANUAL_PRICING_KEYS.includes(k) && engaged(overrides[k])) stripped = true;
+      delete overrides[k];
+    }
   }
   return { overrides, strippedAdminKeys: stripped };
 }
