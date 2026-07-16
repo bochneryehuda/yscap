@@ -126,4 +126,32 @@ function expectedKind(filename, contentType) {
   return null;
 }
 
-module.exports = { decodeUploadBase64, normalizeBase64String, sniffKind, expectedKind, sha256hex };
+/**
+ * Sanitize + length-cap a client-supplied filename (S4-10). A user-supplied
+ * name flows into documents.filename AND into notification emails, so it must
+ * be stripped of path/reserved/control characters and bounded — an absurdly
+ * long or crafted name should never reach a mail template or the DB column.
+ * The extension is preserved when trimming. Empty → 'file'. Mirrors the inline
+ * sanitizer the tool-export path already used; this is the shared chokepoint so
+ * EVERY upload route (borrower + staff, previous + future) applies it once.
+ */
+function safeFilename(name, max = 160) {
+  let s = String(name == null ? '' : name)
+    .replace(/[\u0000-\u001f\u007f]/g, "")    // strip control chars
+    .replace(/[\\/:*?"<>|]/g, '_')            // path + Windows-reserved chars
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s || s === '.' || s === '..') s = 'file';
+  if (s.length > max) {
+    const dot = s.lastIndexOf('.');
+    if (dot > 0 && s.length - dot <= 12) {    // keep a real-looking extension
+      const ext = s.slice(dot);
+      s = s.slice(0, Math.max(1, max - ext.length)) + ext;
+    } else {
+      s = s.slice(0, max);
+    }
+  }
+  return s;
+}
+
+module.exports = { decodeUploadBase64, normalizeBase64String, sniffKind, expectedKind, sha256hex, safeFilename };
