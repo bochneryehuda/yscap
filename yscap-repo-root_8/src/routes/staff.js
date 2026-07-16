@@ -14,7 +14,7 @@ const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { serveDocument } = require('../lib/serve-document');
-const { decodeUploadBase64 } = require('../lib/upload-bytes');
+const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const cfg = require('../config');
 const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
@@ -3148,6 +3148,7 @@ const trDocType = (v) => (TR_DOC_TYPE_SET.has(String(v || '').trim()) ? String(v
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
@@ -3305,6 +3306,8 @@ router.post('/llcs/:id/documents', async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+    b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
     const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
     if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
@@ -4626,6 +4629,7 @@ router.get('/leads/:id/documents', async (req, res) => {
 router.post('/leads/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   try {
     if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
     let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
@@ -4763,6 +4767,7 @@ router.get('/applications/:id/documents', async (req, res) => {
 router.post('/applications/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const appOk = await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!appOk.rows[0]) return res.status(404).json({ error: 'not found' });
   let borrowerId = appOk.rows[0].borrower_id;

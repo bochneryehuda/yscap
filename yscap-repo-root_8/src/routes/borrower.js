@@ -17,7 +17,7 @@ const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
-const { decodeUploadBase64 } = require('../lib/upload-bytes');
+const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
@@ -65,7 +65,7 @@ function stripToolAttachments(payload) {
   const raw = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
   const attachments = raw.slice(0, 4)
     .map((a) => ({
-      filename: String(a.filename || 'tool-export.txt').replace(/[\\/:*?"<>|]/g, '_').slice(0, 160),
+      filename: safeFilename(a.filename || 'tool-export.txt'),
       contentType: String(a.contentType || 'application/octet-stream').slice(0, 120),
       dataBase64: String(a.dataBase64 || ''),
     }))
@@ -244,6 +244,7 @@ router.put('/profile', async (req, res) => {
 router.post('/profile/photo-id', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
   try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
@@ -620,7 +621,7 @@ router.get('/applications/:id/pricing', async (req, res) => {
     // The live what-if quote embeds adminPricing too — strip it before it leaves.
     if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
     res.json({ current, history, quote, enginesReady: pricing.enginesReady() });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 router.post('/applications/:id/pricing/quote', async (req, res) => {
@@ -631,7 +632,7 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
     const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides));
     res.json({ ...out, experience: f.exp });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 router.post('/applications/:id/pricing/register', async (req, res) => {
@@ -731,7 +732,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     } catch (_) {}
 
     res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote) });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // Borrower-safe file activity feed (never internal chat/notes/conditions).
@@ -1810,6 +1811,7 @@ router.get('/track-records/:id/documents', async (req, res) => {
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
@@ -1892,6 +1894,7 @@ router.get('/track-record/snapshot', async (req, res) => {
 router.post('/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   // ownership check for whichever owner is supplied
   if (b.applicationId) {
     const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [b.applicationId, me(req)]);
@@ -2152,7 +2155,7 @@ router.post('/plaid/link-token', async (req, res) => {
   const plaid = require('../lib/integrations').plaid;
   if (!plaid.configured()) return res.status(503).json({ error: 'Instant bank verification is not enabled yet — please upload statements instead.' });
   try { res.json(await plaid.createLinkToken({ userId: me(req) })); }
-  catch (e) { res.status(502).json({ error: e.message }); }
+  catch (e) { console.error('[plaid]', e && e.message); res.status(502).json({ error: 'bank verification is temporarily unavailable — please try again.' }); }
 });
 router.post('/plaid/exchange', async (req, res) => {
   const plaid = require('../lib/integrations').plaid;
