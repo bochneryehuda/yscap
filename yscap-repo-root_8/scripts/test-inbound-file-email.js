@@ -263,11 +263,22 @@ async function main() {
     sent = [];
     r = await fileInbox.processReceivedEvent(evt('test-stuck-1', [`file+${A1}@${DOMAIN}`]));
     ok(r.status === 'forwarded', 'stale stuck claim (crashed run) → reclaimed + forwarded');
-    // ...but a FRESH 'received' claim (a run in progress right now) is not.
+    // ...but a FRESH 'received' claim (a run in progress right now — or one that
+    // crashed a moment ago) answers RETRYABLE: Resend's fast retries fall inside
+    // the lease window, and a 200 here would drop a crashed run's reply forever.
     await db.query(`INSERT INTO inbound_file_emails (resend_email_id, recipients, status)
                     VALUES ('test-fresh-claim-1', '[]'::jsonb, 'received')`);
     r = await fileInbox.processReceivedEvent(evt('test-fresh-claim-1', [`file+${A1}@${DOMAIN}`]));
-    ok(r.status === 'duplicate', 'fresh in-flight claim → duplicate (no double-processing race)');
+    ok(r.status === 'in_flight' && r.retryable === true, 'fresh in-flight claim → in_flight (retryable, no double-processing)');
+
+    // Retry exhaustion: the row is marked failed_permanent ONCE (admins alerted),
+    // and further redeliveries are plain duplicates.
+    await db.query(`INSERT INTO inbound_file_emails (resend_email_id, recipients, status, attempt_count)
+                    VALUES ('test-exhausted-1', '[]'::jsonb, 'retrieval_failed', 8)`);
+    r = await fileInbox.processReceivedEvent(evt('test-exhausted-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'failed_permanent' && r.retryable === undefined, 'exhausted retries → failed_permanent (terminal, admins alerted)');
+    r = await fileInbox.processReceivedEvent(evt('test-exhausted-1', [`file+${A1}@${DOMAIN}`]));
+    ok(r.status === 'duplicate', 'redelivery after failed_permanent → duplicate');
 
     // Provider soft-failure ({ok:false}) is a failure, never recorded as forwarded.
     sent = []; sendBehavior = 'soft-fail';

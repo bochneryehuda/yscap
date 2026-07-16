@@ -403,7 +403,46 @@ async function processReceivedEvent(event) {
                  OR (status = 'received' AND claimed_at < now() - ($4 || ' minutes')::interval))
           RETURNING id, app_results`,
         [String(emailId), MAX_ATTEMPTS, RETRYABLE_STATUSES, String(STUCK_CLAIM_MINUTES)]);
-      if (!reclaim.rows[0]) return { status: 'duplicate' };
+      if (!reclaim.rows[0]) {
+        // Why did the reclaim fail? Three very different answers:
+        //  - A FRESH in-flight claim (another run is processing right now — or
+        //    crashed a moment ago): answer RETRYABLE. Resend's fast retries land
+        //    inside the lease window; a 200 here would mark the delivery done and
+        //    a crash mid-claim would silently drop the reply forever.
+        //  - Retry attempts EXHAUSTED: mark the row failed_permanent (once) and
+        //    alert the admins — an unprocessable reply must never be invisible.
+        //  - A TERMINAL prior outcome: a plain duplicate, done forever.
+        try {
+          const cur = (await db.query(
+            `SELECT status, attempt_count, application_id, from_email, subject
+               FROM inbound_file_emails WHERE resend_email_id = $1`, [String(emailId)])).rows[0];
+          if (cur && cur.status === 'received' && Number(cur.attempt_count) < MAX_ATTEMPTS) {
+            return { status: 'in_flight', retryable: true };
+          }
+          if (cur && RETRYABLE_STATUSES.includes(cur.status) && Number(cur.attempt_count) >= MAX_ATTEMPTS) {
+            const marked = await db.query(
+              `UPDATE inbound_file_emails
+                  SET status = 'failed_permanent', processed_at = now()
+                WHERE resend_email_id = $1 AND status = ANY($2) AND attempt_count >= $3
+                RETURNING id`,
+              [String(emailId), RETRYABLE_STATUSES, MAX_ATTEMPTS]);
+            if (marked.rows[0]) {
+              try {
+                await notify.notifyAdmins({
+                  type: 'inbound_reply_failed',
+                  title: 'A file reply could not be processed',
+                  body: `An email reply${cur.from_email ? ` from ${cur.from_email}` : ''}${cur.subject ? ` (“${String(cur.subject).slice(0, 140)}”)` : ''} failed every retry and was NOT forwarded. Check the Resend dashboard for the original message.`,
+                  applicationId: cur.application_id || undefined,
+                  link: cur.application_id ? `/internal/app/${cur.application_id}` : '/internal/pipeline',
+                  ctaLabel: cur.application_id ? 'Open the loan file' : 'Open the pipeline',
+                });
+              } catch (_) { /* best-effort */ }
+            }
+            return { status: 'failed_permanent' };
+          }
+        } catch (_) { /* fall through to duplicate */ }
+        return { status: 'duplicate' };
+      }
       rowId = reclaim.rows[0].id;
       priorAppResults = reclaim.rows[0].app_results || {};
     }

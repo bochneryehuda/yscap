@@ -1255,13 +1255,17 @@ function EmailMonitor({ appId }) {
   // #68 — inbound replies (direction:'inbound') interleave with outbound rows.
   // Their email_status is the inbound processing status, not a delivery status.
   const inboundPill = (s, n) => {
-    const label = s === 'forwarded' ? `Forwarded to ${n || 'the'} team${n > 1 ? ` (${n})` : ''}`
+    const label = s === 'forwarded' ? `Forwarded to the team${n > 1 ? ` (${n})` : ''}`
       : s === 'auto_reply' ? 'Auto-reply (not forwarded)'
         : s === 'no_recipients' ? 'No one to receive it'
           : s === 'chat_posted' ? 'Posted to chat'
-            : 'Processing';
+            : s === 'archived_app' ? 'Archived file (not forwarded)'
+              : s === 'rate_limited' ? 'Rate limited'
+                : s === 'failed_permanent' ? 'Could not be processed'
+                  : ['retrieval_failed', 'forward_failed', 'lookup_failed', 'error'].includes(s) ? 'Delivery issue — retrying'
+                    : 'Processing';
     const color = s === 'forwarded' || s === 'chat_posted' ? 'var(--ok)'
-      : s === 'no_recipients' ? 'var(--danger)' : 'var(--muted-2)';
+      : (s === 'no_recipients' || s === 'failed_permanent') ? 'var(--danger)' : 'var(--muted-2)';
     return <span className="pill small" style={{ borderColor: color, color }}>{label}</span>;
   };
   const when = (r) => { try { return new Date(r.emailed_at || r.created_at).toLocaleString(); } catch { return ''; } };
