@@ -3,8 +3,10 @@
  *
  * ┌──────────────────────────────────────────────────────────────────────────┐
  * │ HARD RULES (docs/SHAREPOINT-POLICY.md, CLAUDE.md — owner-directed):        │
- * │  • NEVER delete or recycle anything, anywhere in SharePoint. remove() is a │
- * │    throwing no-op. There is deliberately NO Graph DELETE in this module.   │
+ * │  • NEVER delete or recycle anything in SharePoint — remove() is a throwing │
+ * │    no-op — with ONE owner-sanctioned exception (2026-07-16):               │
+ * │    deleteReplacedCorruptMirror(), seven-guard replacement of a DIAGNOSED-  │
+ * │    corrupt mirror copy by its verified "(fixed copy)", Pilot folders only. │
  * │  • NEVER overwrite an existing file: uploads use conflictBehavior 'fail'.  │
  * │  • Moves/renames are forbidden EXCEPT the single owner-approved case:      │
  * │    relocating the portal's OWN previously-uploaded mirror copies between   │
@@ -199,7 +201,7 @@ async function itemByPath(driveId, relPath) {
   return graph(`/drives/${driveId}/root:/${enc}`);
 }
 
-const ITEM_META_SELECT = '$select=id,name,size,file,parentReference,webUrl,eTag';
+const ITEM_META_SELECT = '$select=id,name,size,file,parentReference,webUrl,eTag,lastModifiedDateTime';
 
 // Item METADATA reads (size + Graph's own content hashes) — used by the
 // integrity audit. Reading metadata is a folder-listing-class operation and
@@ -373,6 +375,87 @@ async function moveOwnItem(driveId, itemId, newParentId, { expectedParentId }) {
   });
 }
 
+/**
+ * THE ONE SANCTIONED DELETE (owner-directed amendment, 2026-07-16 — narrows
+ * the previous absolute no-delete rule): after the integrity audit finds a
+ * CORRUPT mirror copy and a verified good "(fixed copy)" replacement has been
+ * uploaded, the corrupt original may be deleted — and ONLY then. Every guard
+ * below is mandatory; none may be relaxed, and no other code path may issue a
+ * Graph DELETE (remove() below stays a throwing no-op for everything else).
+ *
+ * Layered guards — ALL must pass or nothing is deleted:
+ *  G1. Kill switch: SHAREPOINT_DELETE_REPLACED_CORRUPT=0 disables outright.
+ *  G2. DB ownership: the caller must pass the itemId parsed from the row's own
+ *      documents.sharepoint_backup_ref (we only ever delete OUR mirror copy).
+ *  G3. Replacement-first: the caller must pass the REPLACEMENT item's id; its
+ *      metadata is re-read live and its size must equal the local bytes —
+ *      no verified good copy in place, no delete.
+ *  G4. Same bytes we diagnosed: the corrupt item's CURRENT size must equal the
+ *      corrupt size recorded at diagnosis (a human replacing/fixing the file
+ *      in the meantime makes it undeletable).
+ *  G5. Expected parent: the corrupt item must still sit in the exact folder our
+ *      bookkeeping recorded (human-moved items are never touched).
+ *  G6. Pilot-tree ancestry: walking UP from the item, an ancestor folder must
+ *      be a portal-created sync leaf ("Synced by Pilot"/"YS portal syncing")
+ *      within 8 hops — the delete can never reach outside a Pilot sync tree.
+ *  G7. If-Match: the DELETE is pinned to the eTag of the fresh metadata read —
+ *      any concurrent human change makes Graph answer 412 and nothing happens.
+ * A refusal at any guard throws (the caller treats deletion as best-effort and
+ * must never fail the mirror over it).
+ */
+const SYNC_LEAF_NAMES = new Set(['synced by pilot', 'ys portal syncing']);
+function deleteEnabled() {
+  return process.env.SHAREPOINT_DELETE_REPLACED_CORRUPT !== '0';
+}
+async function deleteReplacedCorruptMirror(driveId, corruptItemId, {
+  expectedParentId, corruptSize, replacementItemId, localSize,
+}) {
+  if (!deleteEnabled()) throw new Error('sanctioned delete disabled by SHAREPOINT_DELETE_REPLACED_CORRUPT=0');
+  if (!corruptItemId || !expectedParentId || !replacementItemId) {
+    throw new Error('sanctioned delete refused: missing itemId/expectedParentId/replacementItemId');
+  }
+  // G3 — the verified replacement must exist and hold the local bytes.
+  const replacement = await itemMeta(driveId, replacementItemId);
+  if (!replacement || replacement.size == null || Number(replacement.size) !== Number(localSize)) {
+    throw new Error('sanctioned delete refused: replacement copy missing or size-unverified');
+  }
+  // G4 + G5 — the corrupt item is still the bytes we diagnosed, where we left it.
+  const corrupt = await itemMeta(driveId, corruptItemId);
+  if (!corrupt || !corrupt.parentReference || corrupt.parentReference.id !== expectedParentId) {
+    throw new Error('sanctioned delete refused: item is not in the recorded portal-managed folder');
+  }
+  if (corruptSize != null && Number(corrupt.size) !== Number(corruptSize)) {
+    throw new Error('sanctioned delete refused: item size changed since diagnosis (possible human fix)');
+  }
+  if (String(corrupt.id) === String(replacementItemId)) {
+    throw new Error('sanctioned delete refused: corrupt and replacement are the same item');
+  }
+  // G6 — ancestry: an ancestor must be a Pilot sync leaf.
+  let insidePilotTree = false;
+  let cursor = corrupt.parentReference;
+  for (let hop = 0; hop < 8 && cursor && cursor.id; hop++) {
+    const folder = await graph(`/drives/${driveId}/items/${cursor.id}?$select=id,name,parentReference`);
+    const nm = String(folder.name || '').toLowerCase();
+    if (SYNC_LEAF_NAMES.has(nm) || [...SYNC_LEAF_NAMES].some((s) => nm.endsWith(`, ${s}`))) {
+      insidePilotTree = true;
+      break;
+    }
+    cursor = folder.parentReference;
+  }
+  if (!insidePilotTree) throw new Error('sanctioned delete refused: item is not inside a Pilot-created sync folder');
+  // G7 — pinned delete.
+  const r = await graph(`/drives/${driveId}/items/${corruptItemId}`, {
+    method: 'DELETE',
+    headers: corrupt.eTag ? { 'If-Match': corrupt.eTag } : {},
+    raw: true,
+  });
+  if (r.status !== 204 && r.status !== 200) {
+    const t = await r.text().catch(() => '');
+    throw new Error(`sanctioned delete not applied (${r.status}): ${t.slice(0, 120)}`);
+  }
+  return { deleted: true, name: corrupt.name };
+}
+
 function makeRef(driveId, itemId) { return `sp:${driveId}:${itemId}`; }
 function parseRef(ref) {
   const m = /^sp:([^:]+):(.+)$/.exec(String(ref || ''));
@@ -396,10 +479,17 @@ module.exports = {
   parseRef,
   seg,
   graph,
+  deleteReplacedCorruptMirror,
 
-  /** DELETION IS FORBIDDEN — permanent throwing no-op (owner policy). */
+  /**
+   * GENERAL DELETION REMAINS FORBIDDEN — permanent throwing no-op. The ONE
+   * owner-sanctioned exception (2026-07-16) is deleteReplacedCorruptMirror
+   * above: a diagnosed-corrupt mirror copy whose verified "(fixed copy)"
+   * replacement is already in place, inside a Pilot-created sync folder only,
+   * behind seven mandatory guards. Nothing else may ever delete.
+   */
   async remove() {
-    throw new Error('SharePoint is no-delete by policy (docs/SHAREPOINT-POLICY.md). Deletion is a manual, human-only action in the SharePoint UI.');
+    throw new Error('SharePoint is no-delete by policy (docs/SHAREPOINT-POLICY.md). The single sanctioned exception is deleteReplacedCorruptMirror (corrupt mirror + verified fixed copy, Pilot folders only).');
   },
 
   async probe() {

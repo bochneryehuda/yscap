@@ -220,6 +220,7 @@ async function pendingBatch(limit) {
     `SELECT d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider,
             d.slot_label, d.doc_kind, d.source_type, d.is_current, d.size_bytes,
             d.sharepoint_backup_ref, d.sharepoint_parent_id, d.sharepoint_version,
+            d.sharepoint_integrity, d.sharepoint_item_size,
             d.checklist_item_id, d.llc_id, d.created_at,
             COALESCE(d.track_record_id, ci.track_record_id)                     AS track_record_id,
             COALESCE(d.application_id, ci.application_id)                        AS app_id,
@@ -292,8 +293,19 @@ async function settleSupersededSnapshots() {
       WHERE d.sharepoint_backed_up_at IS NULL
         AND d.is_current = false
         AND ${REGEN_KIND_SQL}
-        AND d.storage_ref IS NOT NULL`);
+        AND d.storage_ref IS NOT NULL
+      RETURNING d.id`);
   if (r.rowCount) console.log(`[sp-sync] settled ${r.rowCount} superseded snapshot(s) without uploading`);
+  // A settled row is RESOLVED — any open "mirror failed" review card for it
+  // must close itself (the 2026-07-16 queue: old exhausted SOW exports that a
+  // newer save has since replaced would otherwise stay open forever).
+  for (const row of r.rows.slice(0, 200)) {
+    try {
+      await require('./sync-review').closeStaleReviews({
+        taskId: `spdoc:${row.id}`, fieldKey: 'sharepoint_doc',
+        note: 'auto-closed — a newer copy of this snapshot mirrors instead; nothing was lost' });
+    } catch (_) { /* best-effort */ }
+  }
   return r.rowCount || 0;
 }
 
@@ -609,6 +621,11 @@ async function mirrorRowInner(row, scopeKey) {
         WHERE id = $1`,
       [row.id, contentSha, dup.sharepoint_web_url || null,
        `duplicate bytes — identical to already-mirrored document ${dup.id}`]);
+    try {
+      await require('./sync-review').closeStaleReviews({
+        taskId: `spdoc:${row.id}`, fieldKey: 'sharepoint_doc',
+        note: 'auto-closed — identical bytes are already mirrored; this copy shares that file' });
+    } catch (_) { /* best-effort */ }
     return { webUrl: dup.sharepoint_web_url, deduped: true, path: '(shared with existing mirror copy)' };
   }
 
@@ -618,17 +635,40 @@ async function mirrorRowInner(row, scopeKey) {
   // Falls back to full resolution when that folder no longer exists.
   if (row.sharepoint_backup_ref && row.sharepoint_parent_id) {
     try {
-      const { driveId: oldDriveId } = sp.parseRef(row.sharepoint_backup_ref);
+      const { driveId: oldDriveId, itemId: oldItemId } = sp.parseRef(row.sharepoint_backup_ref);
+      const wasDiagnosedCorrupt = /^mismatch/.test(String(row.sharepoint_integrity || ''));
       const up = await uploadAndRecord({
         row, driveId: oldDriveId, parentId: row.sharepoint_parent_id,
         version: row.sharepoint_version || 0, bytes, contentSha,
-        // The corrupt copy keeps the clean name (no-delete/no-rename policy);
-        // the replacement must be OBVIOUSLY the good one in Explorer.
+        // The replacement must be OBVIOUSLY the good one in Explorer.
         nameSuffix: 'fixed copy' });
+      // THE ONE SANCTIONED DELETE (owner-directed 2026-07-16): with the
+      // verified fixed copy recorded, the DIAGNOSED-CORRUPT original may be
+      // removed — behind the seven guards in sp.deleteReplacedCorruptMirror
+      // (Pilot-tree ancestry, expected parent, same diagnosed bytes, If-Match,
+      // replacement re-verified live). Best-effort: a refusal never fails the
+      // mirror; the item simply stays for manual cleanup, audited either way.
+      let cleanup = 'corrupt original left in place';
+      if (wasDiagnosedCorrupt && !up.adopted) {
+        try {
+          const del = await sp.deleteReplacedCorruptMirror(oldDriveId, oldItemId, {
+            expectedParentId: row.sharepoint_parent_id,
+            corruptSize: row.sharepoint_item_size,
+            replacementItemId: up.item.id,
+            localSize: bytes.length,
+          });
+          cleanup = `corrupt original "${del.name}" deleted (verified fixed copy in place)`;
+          await auditLogVerify(row, 'sharepoint_corrupt_original_deleted', {
+            filename: row.filename, deletedItemId: oldItemId, replacementItemId: up.item.id });
+        } catch (e) {
+          cleanup = `corrupt original left in place (${String(e.message).slice(0, 140)})`;
+          console.warn(`[sp-sync] sanctioned delete skipped for doc ${row.id}: ${e.message}`);
+        }
+      }
       try {
         await require('./sync-review').closeStaleReviews({
           taskId: `spdoc:${row.id}`, fieldKey: 'sharepoint_doc',
-          note: 'auto-closed — a good copy re-mirrored into the original folder' });
+          note: `auto-closed — a good copy re-mirrored into the original folder; ${cleanup}` });
       } catch (_) { /* best-effort */ }
       return { webUrl: up.item.webUrl, path: '(re-mirrored into its original folder)' };
     } catch (e) {
@@ -730,8 +770,19 @@ async function recordFailure(row, err) {
   // something real (permissions, a bad path, an unreadable local file) and a
   // human must see it. One row per document (synthetic spdoc:<id> key),
   // dismiss sticks, auto-closed by the success path when a later retry lands.
+  // NO FAKE CARDS (owner-directed 2026-07-16): an exhaustion whose final error
+  // is TRANSIENT INFRASTRUCTURE noise (Graph throttling, a network blip, a
+  // service outage) is NOT a human-actionable problem — the boot/daily resets
+  // keep retrying it and the admin health screen counts it. Only errors a
+  // human can actually act on reach the review queue.
+  const TRANSIENT_ERROR = /(^|[^0-9])(429|503|504)([^0-9]|$)|retry-after|throttl|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|fetch failed|aborted|socket hang up/i;
   try {
     const attempts = r.rows[0] ? Number(r.rows[0].sharepoint_backup_attempts) : 0;
+    const lastError = String((err && err.message) || err);
+    if (attempts >= MAX_ATTEMPTS && TRANSIENT_ERROR.test(lastError)) {
+      console.warn(`[sp-sync] doc ${row.id} exhausted on a TRANSIENT error — no review card (resets keep retrying): ${lastError.slice(0, 120)}`);
+      return;
+    }
     if (attempts >= MAX_ATTEMPTS) {
       await require('./sync-review').queueReview({
         applicationId: row.app_id || null, borrowerId: row.borrower_id || null,
@@ -778,6 +829,7 @@ async function verifyBatch(limit) {
   const { rows } = await db.query(
     `SELECT id, filename, content_type, storage_ref, size_bytes, sha256,
             sharepoint_backup_ref, sharepoint_parent_id, sharepoint_web_url,
+            sharepoint_backed_up_at,
             application_id, borrower_id, doc_kind, slot_label, is_current
        FROM documents
       WHERE sharepoint_backup_ref IS NOT NULL
@@ -897,6 +949,26 @@ async function verifyRow(row) {
   if (sizeMatches && remoteQx && remoteQx === localQx && _qxTrusted === null) _qxTrusted = true;
 
   const hashMismatch = _qxTrusted === true && remoteQx && remoteQx !== localQx;
+
+  // MODIFIED-AFTER-UPLOAD guard (industry research, 2026-07-16): SharePoint
+  // itself REWRITES Office files after upload ("property promotion" stamps
+  // document properties into docx/xlsx — size and hash drift), and a human may
+  // legitimately edit a mirrored copy in place. Neither is corruption, and
+  // auto-replacing them would churn endless "(fixed copy)" files (and fight
+  // human edits). A mismatch on an item whose SharePoint lastModified is later
+  // than our upload is therefore NEVER auto-replaced — record the verdict; a
+  // human decides via the review Retry if they actually want the portal bytes.
+  if ((!sizeMatches || hashMismatch) && meta && meta.lastModifiedDateTime && row.sharepoint_backed_up_at) {
+    const modifiedAt = new Date(meta.lastModifiedDateTime).getTime();
+    const uploadedAt = new Date(row.sharepoint_backed_up_at).getTime();
+    if (Number.isFinite(modifiedAt) && Number.isFinite(uploadedAt) && modifiedAt > uploadedAt + 2 * 60 * 1000) {
+      await stampVerdict(row.id,
+        'modified-in-sharepoint (not replaced — the copy changed after upload: SharePoint property promotion or a human edit)',
+        { sha256: contentSha, itemSize: remoteSize });
+      return 'ok';
+    }
+  }
+
   if ((!sizeMatches || hashMismatch) && isRegenKind(row.doc_kind) && row.is_current === false) {
     // An OBSOLETE autosave snapshot with a corrupt mirror is not worth a
     // replacement upload (its newer sibling carries the truth) — record the
