@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { useAuth } from '../lib/auth.jsx';
 import AuthShell from '../components/AuthShell.jsx';
 
 /* Email confirmation is ONE-CLICK (owner-directed #94): the emailed link carries
@@ -10,6 +11,7 @@ import AuthShell from '../components/AuthShell.jsx';
 export default function Verify() {
   const [params] = useSearchParams();
   const nav = useNavigate();
+  const { signIn } = useAuth();
   const token = params.get('token') || '';
 
   const [phase, setPhase] = useState(token ? 'checking' : 'request'); // checking|request|sent|ok
@@ -20,7 +22,14 @@ export default function Verify() {
   useEffect(() => {
     if (!token) return;
     (async () => {
-      try { await api.verifyEmail({ token }); setPhase('ok'); }
+      try {
+        const r = await api.verifyEmail({ token });
+        // S1-08: the one-click link IS the activation — if the server issued a
+        // session, sign in and land straight in the portal. (No token → fall back
+        // to the "confirmed, now sign in" screen.)
+        if (r && r.token) { signIn(r.token); nav('/dashboard'); return; }
+        setPhase('ok');
+      }
       catch (e) { setErr('That activation link is invalid or has expired — request a new one below.'); setPhase('request'); }
     })();
   }, [token]);

@@ -204,7 +204,13 @@ router.post('/borrower/register', async (req, res) => {
         verifyUrl: mail.link('/verify?token=' + token) });
     } catch (mailErr) { console.error('[register] welcome email failed:', mailErr.message); }
 
-    res.status(201).json({ token: borrowerToken(id, 0), borrowerId: id });
+    // S1-08: a self-registered account must PROVE it owns the email before it
+    // gets a session — no immediate login. The welcome email (above) carries the
+    // one-click verify link; /verify then activates AND logs them in. Response
+    // mirrors the pre-existing-record branch so the app has ONE "check your email"
+    // path for every registration outcome.
+    res.status(202).json({ verifyRequired: true, borrowerId: id,
+      message: 'Check your email to activate your account, then you’re in.' });
   } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} res.status(500).json({ error: e.message }); }
   finally { client.release(); }
 });
@@ -216,7 +222,7 @@ router.post('/borrower/login', async (req, res, next) => {
   const { email, password } = req.body || {};
   try {
     const r = await db.query(
-      `SELECT b.id, a.password_hash, a.mfa_enabled, a.token_version, a.failed_attempts, a.locked_until
+      `SELECT b.id, a.password_hash, a.mfa_enabled, a.token_version, a.failed_attempts, a.locked_until, a.email_verified
        FROM borrowers b JOIN borrower_auth a ON a.borrower_id=b.id WHERE b.email=$1`, [email]);
     const row = r.rows[0];
     // Run a real password hash even when the account doesn't exist, so the
@@ -231,6 +237,28 @@ router.post('/borrower/login', async (req, res, next) => {
       return res.status(401).json({ error: 'invalid credentials' });
     }
     await db.query(`UPDATE borrower_auth SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE borrower_id=$1`, [row.id]);
+    // S1-08: a self-registered account must confirm its email before it gets a
+    // session. The password is already correct here (so this reveals nothing to an
+    // attacker) — if the email isn't verified, re-send the one-click link and ask
+    // them to confirm rather than issuing a token. Existing active borrowers were
+    // grandfathered to verified (db/119), so only never-confirmed accounts see this.
+    if (row.email_verified === false) {
+      try {
+        // Throttle: a fresh unused link from the last 10 minutes is still in their
+        // inbox — repeated sign-in attempts must not spam tokens/emails.
+        const recent = await db.query(
+          `SELECT 1 FROM email_tokens
+            WHERE kind='verify' AND borrower_id=$1 AND used_at IS NULL
+              AND created_at > now() - interval '10 minutes' LIMIT 1`, [row.id]);
+        if (!recent.rows[0]) {
+          const { token } = await issueEmailToken({ borrowerId: row.id, email, kind: 'verify', ttlMin: 10080, withToken: true, withCode: false });
+          await mail.send('verifyEmail', email, { firstName: '', verifyUrl: mail.link('/verify?token=' + token) }).catch(() => {});
+        }
+      } catch (_) { /* email is best-effort; the gate itself is the guarantee */ }
+      // 200 + a flag (like mfaRequired) — no session issued; the app shows the
+      // "check your email" state and the borrower confirms via the fresh link.
+      return res.json({ verifyRequired: true, message: 'Please confirm your email — we just sent you a fresh activation link.' });
+    }
     if (row.mfa_enabled)
       return res.json({ mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'borrower', mfa: true }, 300) });
     res.json({ token: borrowerToken(row.id, row.token_version) });
@@ -288,7 +316,16 @@ router.post('/borrower/verify', async (req, res) => {
         `UPDATE borrower_auth SET email_verified=true, email_verified_at=now() WHERE borrower_id=$1`,
         [row.borrower_id]);
     await db.query(`UPDATE email_tokens SET used_at=now() WHERE id=$1`, [row.id]);
-    res.json({ ok: true, verified: true });
+    // S1-08: the one-click verify link IS the activation — issue a session so the
+    // borrower lands straight in the portal (no separate sign-in after clicking).
+    // NB: distinct name from the destructured `token` above — a `let token` here
+    // would hoist into the try-block and put the `if (token)` lookup in the TDZ.
+    let sessionToken = null;
+    if (row.borrower_id) {
+      const tv = await db.query(`SELECT token_version FROM borrower_auth WHERE borrower_id=$1`, [row.borrower_id]);
+      sessionToken = borrowerToken(row.borrower_id, tv.rows[0] ? tv.rows[0].token_version : 0);
+    }
+    res.json({ ok: true, verified: true, token: sessionToken });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -392,10 +429,13 @@ router.post('/borrower/reset', async (req, res) => {
            AND token_hash=$1 LIMIT 1`, [C.sha256(token)]);
     const row = r.rows[0];
     if (!row || !row.borrower_id) return res.status(400).json({ error: 'invalid or expired reset' });
+    // Completing a reset proves ownership of the email the link was sent to —
+    // the same proof /verify establishes — so it also clears the S1-08 gate.
     await db.query(
       `UPDATE borrower_auth
           SET password_hash=$2, token_version=token_version+1,
-              failed_attempts=0, locked_until=NULL
+              failed_attempts=0, locked_until=NULL,
+              email_verified=true, email_verified_at=COALESCE(email_verified_at, now())
         WHERE borrower_id=$1`,
       [row.borrower_id, await C.hashPassword(password)]);
     await db.query(`UPDATE email_tokens SET used_at=now() WHERE id=$1`, [row.id]);
@@ -687,10 +727,14 @@ router.post('/accept', async (req, res, next) => {
     // and issue the token with the ACTUAL resulting version. Hardcoding 0 handed
     // an existing borrower (token_version already > 0) a token that authenticate()
     // rejects immediately as "session expired".
+    // S1-08: accepting an emailed invite PROVES email ownership (they clicked the
+    // link), so the account is email-verified on accept — never gated at login.
     const ba = await db.query(
-      `INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,$2,0)
+      `INSERT INTO borrower_auth (borrower_id,password_hash,token_version,email_verified,email_verified_at)
+       VALUES ($1,$2,0,true,now())
        ON CONFLICT (borrower_id) DO UPDATE
-         SET password_hash=EXCLUDED.password_hash, token_version=borrower_auth.token_version+1
+         SET password_hash=EXCLUDED.password_hash, token_version=borrower_auth.token_version+1,
+             email_verified=true, email_verified_at=COALESCE(borrower_auth.email_verified_at, now())
        RETURNING token_version`,
       [b.rows[0].id, await C.hashPassword(password)]);
     await db.query(`UPDATE invite_tokens SET accepted_at=now() WHERE id=$1`, [row.id]);
