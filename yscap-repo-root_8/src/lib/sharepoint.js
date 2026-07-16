@@ -205,7 +205,22 @@ async function itemByPath(driveId, relPath) {
   return graph(`/drives/${driveId}/root:/${enc}`);
 }
 
-const ITEM_META_SELECT = '$select=id,name,size,file,parentReference,webUrl,eTag,lastModifiedDateTime,malware';
+const ITEM_META_SELECT = '$select=id,name,size,file,parentReference,webUrl,eTag,createdDateTime,createdBy,lastModifiedDateTime,malware';
+
+// Office formats are REWRITTEN by SharePoint seconds after upload ("property
+// promotion" stamps document properties into the file — size AND hash drift).
+// Root cause of the 2026-07-16 stuck-xlsx queue: any post-upload byte
+// comparison (adopt-by-size, verify-by-size/hash) is MEANINGLESS for these
+// formats. Their transit integrity is proven once, at upload time, from the
+// PUT response (pre-promotion); after that, identity comes from PROVENANCE
+// (createdBy our app + exact name + our folder), never from bytes.
+function isOfficeFormat(name) {
+  return /\.(xlsx|xls|docx|doc|pptx|ppt|xlsm|docm|pptm)$/i.test(String(name || ''));
+}
+function createdByThisApp(item) {
+  const app = item && item.createdBy && item.createdBy.application;
+  return !!(app && app.id && String(app.id) === String(cfg.msClientId));
+}
 
 // Item METADATA reads (size + Graph's own content hashes) — used by the
 // integrity audit. Reading metadata is a folder-listing-class operation and
@@ -283,6 +298,13 @@ async function uploadNew(driveId, parentId, filename, buf, contentType) {
       throw err;
     }
     if (Number(item.size) !== buf.length) {
+      // Office formats: SharePoint's property promotion can rewrite the file
+      // between the PUT and the response materializing — a size drift there is
+      // promotion, not corruption (2026-07-16 root fix). Warn-only for them.
+      if (isOfficeFormat(name)) {
+        console.warn(`[sharepoint] office upload "${name}" size drifted in response (${buf.length} sent, ${item.size} stored) — property promotion, accepted`);
+        return item;
+      }
       const err = new Error(
         `upload integrity check failed for "${name}": SharePoint stored ${item.size} bytes, ${buf.length} were sent`);
       err.transitCorruption = true;
@@ -503,6 +525,8 @@ module.exports = {
   itemMeta,
   itemMetaByName,
   quickXorHash,
+  isOfficeFormat,
+  createdByThisApp,
   ensureChildFolder,
   uploadNew,
   moveOwnItem,

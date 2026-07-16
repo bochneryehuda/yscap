@@ -99,6 +99,16 @@ ok('term_sheet is NOT regen (point-in-time offer, keeps versions)', !backup.isRe
 ok('track_record_doc is NOT regen (human verification doc)', !backup.isRegenKind('track_record_doc'));
 ok('chat attachment kind (null) is NOT regen', !backup.isRegenKind(null));
 
+// ---------------------------- Office property-promotion identity (2026-07-16)
+ok('xlsx is office format', sp.isOfficeFormat('145_Dover_SOW_2026-07-16.xlsx'));
+ok('docx is office format', sp.isOfficeFormat('agreement.DOCX'));
+ok('pdf is NOT office format (bytes stay authoritative)', !sp.isOfficeFormat('scan.pdf'));
+ok('zip is NOT office format', !sp.isOfficeFormat('export.zip'));
+ok('html is NOT office format', !sp.isOfficeFormat('Track_Record.html'));
+ok('createdByThisApp requires matching app id',
+  !sp.createdByThisApp({ createdBy: { application: { id: 'someone-else' } } }));
+ok('createdByThisApp false for human-created items', !sp.createdByThisApp({ createdBy: { user: { id: 'u' } } }));
+
 // -------------------------------------- the ONE sanctioned delete: guardrails
 // (Graph-free checks: refusals must fire BEFORE any network call.)
 (async () => {
