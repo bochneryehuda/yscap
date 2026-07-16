@@ -476,9 +476,19 @@ async function shuffleRootIntoVersion1(driveId, row, stateKey, conditionFolder) 
 // "uploaded" and "recorded" used to re-upload a "(id)" duplicate on every
 // retry — now the earlier successful copy is ADOPTED. Only a genuinely
 // different same-named file uniquifies (append-only, nothing overwritten).
-async function uploadAndRecord({ row, driveId, parentId, version, bytes, contentSha, nameSuffix }) {
+async function uploadAndRecord({ row, driveId, parentId, version, bytes, contentSha, nameSuffix, pathBudget }) {
   const localQx = sp.quickXorHash(bytes);
-  const cleanName = sp.seg(row.filename || 'document');
+  let cleanName = sp.seg(row.filename || 'document');
+  // SharePoint's full decoded path limit is ~400 characters. Deep chains
+  // (officer/borrower/long address/condition/Version N) + a long filename can
+  // exceed it and fail every upload for that document forever. When the caller
+  // knows the folder path length, the FILENAME is trimmed to fit (extension
+  // preserved, floor of 24 chars) — a shortened name beats a dead mirror.
+  if (pathBudget && cleanName.length > pathBudget) {
+    const ext = (cleanName.match(/\.[A-Za-z0-9]{1,12}$/) || [''])[0];
+    const keep = Math.max(24, pathBudget) - ext.length;
+    cleanName = cleanName.slice(0, Math.max(8, keep)).trim() + ext;
+  }
 
   // Adopt-or-null: if the same-named existing item IS these bytes (size +
   // hash), return it so we never mint a duplicate after a crash/lost response.
@@ -743,7 +753,12 @@ async function mirrorRowInner(row, scopeKey) {
     }
   }
 
-  const up = await uploadAndRecord({ row, driveId, parentId, version, bytes, contentSha });
+  // Path budget: total decoded path must stay under SharePoint's ~400-char
+  // limit; leave headroom for "/Version NN/" and uniquifier suffixes.
+  const usedLen = String(`${target.fullPath}/${category}`).length + 14;
+  const up = await uploadAndRecord({
+    row, driveId, parentId, version, bytes, contentSha,
+    pathBudget: Math.max(24, 395 - usedLen) });
 
   // A successful mirror vacates any open "mirror failed" review row for this
   // document — fixed at the source, no clicks needed.
