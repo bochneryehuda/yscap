@@ -51,6 +51,39 @@ Sources: [Microsoft Graph throttling guidance](https://learn.microsoft.com/en-us
    correctness; folder resolution reads live children listings; caches self-heal on 404 with a
    single re-resolution.
 
+## B2. Platform limits & security behaviors (research round 3, 2026-07-16)
+
+Sources: [SharePoint Online limits](https://learn.microsoft.com/en-us/office365/servicedescriptions/sharepoint-online-service-description/sharepoint-online-limits),
+[built-in virus protection](https://learn.microsoft.com/en-us/defender-office-365/anti-malware-protection-for-spo-odfb-teams-about),
+[SharePoint data deletion / recycle bin](https://learn.microsoft.com/en-us/sharepoint/sharepoint-data-deletion),
+[JSON batching](https://learn.microsoft.com/en-us/graph/json-batching).
+
+1. **400-character decoded path limit** → guarded: the mirror computes a path budget and trims
+   the FILENAME to fit (extension preserved). Deep officer/borrower/address chains can never
+   strand a document again.
+2. **Malware scanning is asynchronous** — Microsoft Defender flags an infected upload AFTER it
+   lands and BLOCKS it from opening (staff read that as "corrupted, won't open"). → the
+   integrity audit now reads the `malware` facet: flagged mirrors get a distinct verdict + a
+   review card that says to check the SOURCE file — never a blind re-upload (an infected
+   source would just get re-flagged).
+3. **Deletes are SOFT for 93 days** — the ONE sanctioned delete sends the corrupt copy to the
+   site Recycle Bin, restorable by staff for 93 days (and Microsoft can restore beyond that).
+   The exception is therefore recoverable by design.
+4. **Credential lifecycle** — an expired certificate/secret kills the integration silently. →
+   the admin health probe now reports the certificate's expiry date and days remaining, with
+   an explicit warning under 30 days (dual cert+secret auth already gives one-credential
+   failover).
+5. **Graph `request-id`** — every Graph error we record now carries Microsoft's request-id, the
+   correlation key their support needs to trace a failure server-side.
+6. **Other hard limits, noted for awareness**: 250 GB max file (uploads are capped far below
+   by `MAX_UPLOAD_MB`); ~5,000-item list-view threshold per view (our per-condition folders
+   hold few files — safe by construction); OneDrive sync client degrades past ~300k files per
+   synced scope (staff Explorer experience — monitor library growth); 50,000 major versions
+   per document (irrelevant: we never overwrite, so SharePoint versioning barely engages).
+7. **JSON batching ($batch, 20 requests/call)** — the verify sweep's metadata reads could be
+   batched 20-at-a-time for ~20× fewer HTTP calls (each inner request still throttles
+   individually). Roadmap item in `SHAREPOINT-INTEGRATION-NEXT-LEVEL.md`.
+
 ## C. Environment-level behaviors (not bugs in our sync — staff should know)
 
 - **OneDrive Explorer sync duplicates** ("filename-COMPUTERNAME.pdf", conflict copies of PDFs

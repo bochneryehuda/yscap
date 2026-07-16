@@ -954,6 +954,27 @@ async function verifyRow(row) {
     return 'verify-error';
   }
 
+  // MALWARE-FLAGGED mirror (research, 2026-07-16): Microsoft scans uploads
+  // asynchronously and BLOCKS flagged files from opening — which staff report
+  // as "the file won't open." Never auto-replace (if the source bytes are
+  // infected, a re-upload just gets re-flagged); a human must check the
+  // source document in PILOT.
+  if (meta && meta.malware) {
+    await stampVerdict(row.id, 'malware-flagged (Microsoft Defender blocked this mirror copy — check the source file in PILOT)', { sha256: contentSha });
+    if (row.is_current) {
+      try {
+        await require('./sync-review').queueReview({
+          applicationId: row.application_id || null, borrowerId: row.borrower_id || null,
+          taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
+          reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
+          clickupValue: null,
+          portalValue: `${row.filename || 'document'} — Microsoft Defender flagged the SharePoint copy as MALWARE and blocked it. Do not retry blindly: scan/check the source document in PILOT first; if it is a false positive, Microsoft support can release it.`.slice(0, 400),
+          rawValue: JSON.stringify({ docId: row.id, kind: 'malware-flagged' }).slice(0, 500) });
+      } catch (_) { /* visibility best-effort */ }
+    }
+    return 'malware';
+  }
+
   const remoteSize = meta && meta.size != null ? Number(meta.size) : null;
   const remoteQx = meta && meta.file && meta.file.hashes && meta.file.hashes.quickXorHash;
   const localQx = sp.quickXorHash(bytes);
@@ -1031,6 +1052,7 @@ async function verifyOnce({ limit = VERIFY_BATCH } = {}) {
       if (v === 'ok') stats.ok++;
       else if (v === 'mismatch') stats.mismatch++;
       else if (v === 'source-suspect') stats.sourceSuspect++;
+      else if (v === 'malware') stats.malware = (stats.malware || 0) + 1;
       else if (v === 'item-missing') stats.itemMissing++;
       else if (v === 'local-missing') stats.localMissing++;
       else stats.errors++;
