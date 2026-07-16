@@ -499,7 +499,10 @@ async function processReceivedEvent(event) {
     try {
       const chat = require('./chat');   // lazy — chat.js is a heavy module graph
       const text = topReply(full.text || htmlToText(full.html));
-      const msg = text ? await chat.postExternalReply(chatKey, text) : null;
+      // #144 — resolve the key against BOTH an external guest (#75) AND an
+      // internal/borrower member, so ANY chat member's email reply posts back
+      // into the thread (not just guests').
+      const msg = text ? await chat.postInboundReply(chatKey, text) : null;
       appResults.__chat = 'posted';     // unknown/removed key is silently done, like the legacy route
       if (msg) forwardedTotal += 1;
     } catch (e) {
