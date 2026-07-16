@@ -509,6 +509,68 @@ function credentialHealth() {
   return out;
 }
 
+/**
+ * Metadata ID stamping (roadmap R1): write Pilot identifiers into the
+ * driveItem's SharePoint list columns so matching becomes id-based and the
+ * link survives ANY human rename/move. Two steps (Graph requires the columns
+ * to exist before a field PATCH):
+ *   1. ensurePilotColumns(driveId) — create the text columns if missing (once
+ *      per drive, cached). Needs the list id + site id (from /drives/{id}/list).
+ *   2. stampItemFields(driveId, itemId, {...}) — PATCH listItem/fields.
+ * ALL best-effort: the caller wraps these so a failure never affects the
+ * mirror (the bytes are already uploaded + recorded before we stamp).
+ */
+const PILOT_COLUMNS = ['PilotDocumentId', 'PilotFileId', 'PilotBorrower', 'PilotSyncedAt'];
+const _columnsReady = new Map();   // driveId -> {listId, siteId} once ensured
+
+async function resolveList(driveId) {
+  const l = await graph(`/drives/${driveId}/list?$select=id,parentReference`);
+  return { listId: l.id, siteId: l.parentReference && l.parentReference.siteId };
+}
+
+async function ensurePilotColumns(driveId) {
+  if (_columnsReady.has(driveId)) return _columnsReady.get(driveId);
+  const { listId, siteId } = await resolveList(driveId);
+  if (!listId || !siteId) throw new Error('could not resolve list/site for metadata columns');
+  const existing = await graph(`/sites/${siteId}/lists/${listId}/columns?$select=name`);
+  const have = new Set((existing.value || []).map((c) => String(c.name)));
+  for (const name of PILOT_COLUMNS) {
+    if (have.has(name)) continue;
+    try {
+      await graph(`/sites/${siteId}/lists/${listId}/columns`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // hidden:false so staff SEE the provenance in the library view; indexed
+        // so a future id-based lookup query is efficient.
+        body: JSON.stringify({ name, text: {}, enforceUniqueValues: false, indexed: name === 'PilotFileId' }),
+      });
+    } catch (e) {
+      // A column that already exists under a slightly different internal name,
+      // or a tenant that forbids column creation, must not wedge stamping —
+      // record and continue; the field PATCH simply skips unknown fields.
+      if (!(e.status === 409 || e.graphCode === 'nameAlreadyExists')) {
+        console.warn(`[sharepoint] could not create column "${name}": ${e.message}`);
+      }
+    }
+  }
+  const out = { listId, siteId };
+  _columnsReady.set(driveId, out);
+  return out;
+}
+
+async function stampItemFields(driveId, itemId, fields) {
+  // Only send known columns with non-empty values.
+  const body = {};
+  for (const k of PILOT_COLUMNS) if (fields[k] != null && fields[k] !== '') body[k] = String(fields[k]).slice(0, 255);
+  if (!Object.keys(body).length) return { skipped: true };
+  await graph(`/drives/${driveId}/items/${itemId}/listItem/fields`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return { stamped: Object.keys(body) };
+}
+
 function makeRef(driveId, itemId) { return `sp:${driveId}:${itemId}`; }
 function parseRef(ref) {
   const m = /^sp:([^:]+):(.+)$/.exec(String(ref || ''));
@@ -527,6 +589,9 @@ module.exports = {
   quickXorHash,
   isOfficeFormat,
   createdByThisApp,
+  ensurePilotColumns,
+  stampItemFields,
+  PILOT_COLUMNS,
   ensureChildFolder,
   uploadNew,
   moveOwnItem,
