@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
+import { EmailInput } from './FormattedInputs.jsx';
 
 /**
  * Reminders + task management (#93) — the popup behind a file's "Remind" button.
@@ -245,8 +246,8 @@ export default function ReminderModal({ appId, team = [], onClose, onChanged }) 
                 ))}
               </div>
               <div className="row" style={{ gap: 6, marginTop: 6 }}>
-                <input className="input" style={{ flex: 1 }} value={emailDraft} placeholder="add a contact email…"
-                  onChange={e => setEmailDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addEmail(); } }} />
+                <EmailInput style={{ flex: 1 }} value={emailDraft} placeholder="add a contact email…"
+                  onChange={v => setEmailDraft(v)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addEmail(); } }} />
                 <button type="button" className="btn ghost small" onClick={addEmail}>Add</button>
               </div>
             </div>

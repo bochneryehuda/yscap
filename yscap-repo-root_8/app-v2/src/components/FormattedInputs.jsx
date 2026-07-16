@@ -68,3 +68,19 @@ export function ZipInput({ value, onChange, placeholder, ...rest }) {
       onChange={(e) => onChange(formatZip(e.target.value))} {...rest} />
   );
 }
+
+/* Email input (#140 field-format sweep v2): type=email so the browser validates
+   and phones show the email keyboard, with autocapitalize / autocorrect / spell-
+   check OFF (an email is never a sentence) and every whitespace character stripped
+   as it's typed (emails never contain spaces — this kills the #1 "invalid email"
+   cause: a leading/trailing/pasted space). The stored string keeps the user's own
+   casing; lowercase normalization stays a server concern. ONE component for every
+   email-entry field so a new field can't reintroduce an unconstrained email box. */
+export function EmailInput({ value, onChange, placeholder, ...rest }) {
+  return (
+    <input className="input" type="email" inputMode="email" autoComplete="email"
+      autoCapitalize="off" autoCorrect="off" spellCheck={false}
+      value={value || ''} placeholder={placeholder || 'name@example.com'}
+      onChange={(e) => onChange(e.target.value.replace(/\s+/g, ''))} {...rest} />
+  );
+}
