@@ -456,6 +456,9 @@ async function buildTprExport(appId) {
     const s = q.sizing || {};
     const pct = (v, d = 2) => v == null ? 'n/a' : (Number(v) * 100).toFixed(d) + '%';
     const m = (v) => v == null ? 'n/a' : '$' + Math.round(Number(v)).toLocaleString('en-US');
+    // Fees / cash-to-close show EXACT cents (owner-directed 2026-07-16 — a $86.76
+    // fee must not round); loan/advance/holdback/reserve stay whole-dollar (frozen).
+    const m2 = (v) => v == null ? 'n/a' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     files.push({
       name: `${SUBJECT}/00_REGISTERED_PRODUCT.txt`,
       data: Buffer.from([
@@ -470,9 +473,9 @@ async function buildTprExport(appId) {
         `LTC: ${pct(s.ltcPct, 1)}`,
         `Initial/as-is LTV: ${pct(s.acqLtvPct, 1)}`,
         `Loan-to-ARV: ${pct(s.arvPct, 1)}`,
-        `Closing costs due: ${m(q.closingCosts && q.closingCosts.dueAtClosing)}`,
-        `Cash to close: ${m(q.cashToClose)}`,
-        `Liquidity required: ${m(q.liquidityRequired || q.liquidity)}`,
+        `Closing costs due: ${m2(q.closingCosts && q.closingCosts.dueAtClosing)}`,
+        `Cash to close: ${m2(q.cashToClose)}`,
+        `Liquidity required: ${m2(q.liquidityRequired || q.liquidity)}`,
         `Reserve basis: ${q.reserveBasis || 'n/a'}`,
         `Registered at: ${registration.created_at || 'n/a'}`,
       ].join('\n'), 'utf8'),

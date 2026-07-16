@@ -16,6 +16,9 @@ import TermSheetStudio, {
    and re-registering any number of times is the intended workflow. */
 
 const money = (n) => (n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
+// Fees / cash-to-close / liquidity show EXACT cents (owner-directed 2026-07-16);
+// loan amount / advance / holdback stay whole-dollar (frozen loan rounding).
+const money2 = (n) => (n == null || n === '' ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const pct = (f, d = 2) => (f == null || f === '' ? '—' : (Number(f) * 100).toFixed(d) + '%');
 const when = (t) => (t ? new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
 
@@ -183,15 +186,15 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
         </div>
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
-          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money(q.origination)} />
-          <Row k="UW / processing / legal" v={money(cc.lenderFee)} />
-          <Row k="Credit report" v={money(cc.creditFee)} />
-          <Row k="Title / escrow (est.)" v={money(cc.titleAndSettlement)} />
-          <Row k="Appraisal (est., POC)" v={money(cc.appraisalPoc)} />
-          <Row k="Closing costs due at closing" v={money(cc.dueAtClosing)} />
-          <Row k="Estimated cash to close" v={<strong>{money(q.cashToClose)}</strong>} />
-          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money(q.reserveRequirement)} />
-          <Row k="Liquidity to verify" v={<strong>{money(q.liquidity ?? q.liquidityRequired)}</strong>} />
+          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
+          <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
+          <Row k="Credit report" v={money2(cc.creditFee)} />
+          <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
+          <Row k="Appraisal (est., POC)" v={money2(cc.appraisalPoc)} />
+          <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
+          <Row k="Estimated cash to close" v={<strong>{money2(q.cashToClose)}</strong>} />
+          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money2(q.reserveRequirement)} />
+          <Row k="Liquidity to verify" v={<strong>{money2(q.liquidity ?? q.liquidityRequired)}</strong>} />
           <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Scenario as registered</p>
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           <Row k="Purchase price" v={money(inp.purchasePrice)} />
@@ -462,7 +465,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
   const statusLine = snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
     : snap && !snap.program ? 'Tap a program card above to choose Standard or Gold Standard.'
-    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money(d.cashToClose)} · liquidity ${money(d.liquidity)}`
+    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
     : '';
   // A PLAIN-LANGUAGE reason the product can't be registered yet — shown as a
   // prominent banner in the studio so the Register action never silently

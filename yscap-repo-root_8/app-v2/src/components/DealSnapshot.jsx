@@ -14,6 +14,7 @@ import React from 'react';
    rows instead of one dense grid of tiny stacked cells. Same data, same logic. */
 
 const money = (n) => n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US');
+const money2 = (n) => (n == null || n === '') ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const pctOf = (num, den) => (Number(num) > 0 && Number(den) > 0) ? (Number(num) / Number(den) * 100).toFixed(1) + '%' : null;
 const pct = (n) => Number(n) > 0 ? (Number(n) * 100).toFixed(1) + '%' : null;
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.line1 || a.street, a.city, a.state, a.zip].filter(Boolean).join(', ') || '—');
@@ -91,7 +92,7 @@ export default function DealSnapshot({ app, gating }) {
           {row('Purchase', money(purchase))}
           {row('ARV', money(app.arv))}
           {row('Rehab', money(app.rehab_budget))}
-          {row('Liquidity required', quote && quote.liquidity != null ? money(quote.liquidity) : null)}
+          {row('Liquidity required', quote && quote.liquidity != null ? money2(quote.liquidity) : null)}
         </div>
 
         <div className="snap-cluster">

@@ -21,6 +21,8 @@ import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+// Fees / cash-to-close / liquidity show EXACT cents (owner-directed 2026-07-16).
+const money2 = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city, a.state].filter(Boolean).join(', ') || '—');
 const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded' };
 
@@ -1050,9 +1052,9 @@ export default function Application() {
                     issue={assetsItem.status === 'issue'}
                     title={q ? 'Assets & liquidity — your registered requirement' : assetsItem.label}
                     subtitle={q
-                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} registration: verify ${money(liq)} in liquidity`
+                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} registration: verify ${money2(liq)} in liquidity`
                         + (q.reserveRequirement ? ` (incl. ${money(q.reserveRequirement)} reserve${q.reserveBasis ? ` — ${q.reserveBasis}` : ''})` : '')
-                        + (q.cashToClose ? ` · estimated cash to close ${money(q.cashToClose)}` : '')
+                        + (q.cashToClose ? ` · estimated cash to close ${money2(q.cashToClose)}` : '')
                         + '. Upload the bank statements that show it.'
                       : [assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
                     status={statusText(assetsItem)}
