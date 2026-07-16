@@ -215,13 +215,23 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
     // Re-arm the document's mirror budget and kick a pass — used after the
     // human fixes the underlying cause (permissions, a renamed folder, a
     // restored local file). The mirror re-runs through every normal rule.
+    // Works for EVERY document state: never-mirrored (re-arm the budget),
+    // settled-as-skipped, AND already-mirrored (force a fresh re-mirror —
+    // the corrupt-copy / item-missing cases; the re-mirror fast path uploads
+    // a good copy into the original folder and re-points the ref).
     let docId = null;
     try { const raw = row.raw_value ? JSON.parse(row.raw_value) : null; docId = raw && raw.docId; } catch (_) {}
     if (!docId) throw httpError(409, 'this row does not reference a document');
     const u = await db.query(
-      `UPDATE documents SET sharepoint_backup_attempts=0, sharepoint_backup_error=NULL
-        WHERE id=$1 AND sharepoint_backed_up_at IS NULL RETURNING id`, [docId]);
-    if (!u.rows[0]) throw httpError(409, 'the document is no longer pending (already mirrored or removed)');
+      `UPDATE documents SET
+          sharepoint_backup_attempts = 0,
+          sharepoint_backup_error = NULL,
+          sharepoint_backed_up_at = NULL,
+          sharepoint_skipped_reason = NULL
+        WHERE id=$1 AND storage_ref IS NOT NULL
+          AND (sharepoint_backed_up_at IS NULL OR sharepoint_integrity IS DISTINCT FROM 'ok')
+        RETURNING id`, [docId]);
+    if (!u.rows[0]) throw httpError(409, 'nothing to retry — the document is already mirrored and verified healthy (or it no longer exists)');
     try { require('./sharepoint-backup').kick(); } catch (_) { /* mirror may be disabled */ }
     await audit('sync_review_sp_retry_doc', row.application_id, actorId, { docId, reviewId: row.id });
     return { note: `document ${docId} re-queued for mirroring`, applicationId: row.application_id };

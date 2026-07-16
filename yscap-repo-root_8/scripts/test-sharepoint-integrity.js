@@ -73,6 +73,22 @@ for (const len of [1, 7, 20, 31, 160, 4096, 65537]) {
   eq(`quickXor ≡ spec (len ${len})`, sp.quickXorHash(buf), refQuickXor(buf));
 }
 
+// -------------------------------------------------- typo-tolerant matchers
+const map = require('../src/lib/sharepoint-map');
+eq('DL: transposition is one edit', map.dlDistance('jonh', 'john'), 1);
+eq('DL: insertion is one edit', map.dlDistance('hamiltion', 'hamilton'), 1);
+ok('DL: extension of 3 letters never <=1', map.dlDistance('katz', 'katzman') > 1);
+ok('tokenClose: short tokens must be exact', !map.tokenClose('st', 's'));
+ok('typo borrower: Jonh Smith ↔ John Smith', map.borrowerMatchesTypo('Jonh Smith', 'John', 'Smith'));
+ok('typo borrower: Katz never matches Katzman', !map.borrowerMatchesTypo('Moshe Katzman', 'Moshe', 'Katz'));
+ok('typo borrower: different first name never matches', !map.borrowerMatchesTypo('Gene Smith', 'Jean', 'Smyth'));
+ok('typo address: Hamiltion St ↔ Hamilton Street', map.addressMatchesTypo('654 Hamiltion St', '654 Hamilton Street, Newark NJ'));
+ok('typo address: house number still EXACT', !map.addressMatchesTypo('653 Hamilton St', '654 Hamilton Street'));
+ok('typo address: different street never matches', !map.addressMatchesTypo('45 Oak Street Extension', '45 Oak Street'));
+ok('typo address: stage folder never matches', !map.addressMatchesTypo('Open loan', '654 Hamilton Street'));
+ok('exact matcher unchanged: Hamiltion St does NOT exact-match', !map.addressMatches('654 Hamiltion St', '654 Hamilton Street'));
+ok('units still exact under typo pass', !map.addressMatchesTypo('123 Main St Apt 1', '123 Main Street Apt 2'));
+
 // --------------------------------------------------------- regen-kind streams
 ok('track_record_html is regen', backup.isRegenKind('track_record_html'));
 ok('tpr_export is regen', backup.isRegenKind('tpr_export'));

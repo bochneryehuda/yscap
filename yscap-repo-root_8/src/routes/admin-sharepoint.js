@@ -34,7 +34,7 @@ router.get('/health', async (req, res) => {
       db.query(`SELECT
           count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL)                                        ::int AS mirrored,
           count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL)              ::int AS pending,
-          count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND sharepoint_backup_attempts >= 8)      ::int AS exhausted,
+          count(*) FILTER (WHERE sharepoint_backed_up_at IS NULL AND sharepoint_backup_attempts >= ${backup.MAX_ATTEMPTS}) ::int AS exhausted,
           count(*) FILTER (WHERE sharepoint_skipped_reason IS NOT NULL)                                    ::int AS skipped,
           count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL AND sharepoint_verified_at IS NULL)     ::int AS unverified
         FROM documents`),
@@ -56,7 +56,8 @@ router.post('/verify', async (req, res) => {
     const pending = (await db.query(
       `SELECT count(*)::int AS n FROM documents
         WHERE sharepoint_backup_ref IS NOT NULL
-          AND (sharepoint_verified_at IS NULL OR sharepoint_verified_at < now() - interval '30 days')`)).rows[0].n;
+          AND (sharepoint_verified_at IS NULL
+               OR sharepoint_verified_at < now() - make_interval(days => ${backup.VERIFY_RECHECK_DAYS}))`)).rows[0].n;
     backup.drainVerify().catch(() => {});
     await audit(req, 'sharepoint_verify_started', { pending });
     res.json({ ok: true, started: true, toVerify: pending });
@@ -73,6 +74,26 @@ router.post('/mirror', async (req, res) => {
     backup.drain().catch(() => {});
     await audit(req, 'sharepoint_mirror_kicked', {});
     res.json({ ok: true, started: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Bulk: re-arm EVERY exhausted pending document and kick a drain — one click
+// to re-drive the whole "failed after every retry" review queue after the
+// underlying cause is fixed (e.g. a deploy shipping a sync fix). Documents
+// re-run through every normal rule; successes auto-close their review rows.
+router.post('/retry-exhausted', async (req, res) => {
+  try {
+    if (!backup.enabled()) return res.status(409).json({ error: 'SharePoint sync is not enabled on this server' });
+    const r = await db.query(
+      `UPDATE documents SET sharepoint_backup_attempts = 0, sharepoint_backup_error = NULL
+        WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
+          AND sharepoint_backup_attempts >= ${backup.MAX_ATTEMPTS}
+        RETURNING id`);
+    backup.kick();
+    await audit(req, 'sharepoint_retry_exhausted', { requeued: r.rowCount });
+    res.json({ ok: true, requeued: r.rowCount });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
