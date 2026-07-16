@@ -4191,8 +4191,14 @@ router.get('/applications/:id/mentionables', async (req, res) => {
       db.query(`SELECT id, full_name AS label FROM staff_users WHERE is_active=true ORDER BY full_name`),
       db.query(`SELECT id, label, status FROM checklist_items WHERE application_id=$1 ORDER BY sort_order LIMIT 300`, [req.params.id]),
       db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
+      // S3-11: the borrower's OTHER files are only mentionable if THIS officer can
+      // access them — a non-seesAll officer never sees a file they aren't on.
       db.query(`SELECT a.id, COALESCE(a.property_address->>'oneLine', a.property_address->>'street', 'Application') AS label
-                  FROM applications a WHERE a.borrower_id=(SELECT borrower_id FROM applications WHERE id=$1)`, [req.params.id]),
+                  FROM applications a
+                 WHERE a.borrower_id=(SELECT borrower_id FROM applications WHERE id=$1)
+                   AND a.deleted_at IS NULL
+                   ${seesAll(req) ? '' : `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`}`,
+        seesAll(req) ? [req.params.id] : [req.params.id, req.actor.id]),
     ]);
     res.json({ users: users.rows, tasks: tasks.rows, documents: docs.rows, applications: apps.rows });
   } catch (e) { res.status(500).json({ error: 'server error' }); }

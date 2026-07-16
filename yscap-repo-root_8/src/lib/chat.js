@@ -377,6 +377,23 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
     }
   }
 
+  // S4-06: the SSN/card guard also applies to an attachment's FILE NAME. A file
+  // named "my ssn 123-45-6789.pdf" would otherwise leak the number into storage,
+  // the transcript, exports and email. Borrower → block the send; staff → rename
+  // the attachment to the redacted form before it persists.
+  if (attachment && attachment.filename) {
+    const fscan = pii.scan(attachment.filename);
+    if (fscan.found) {
+      if (actor.kind === 'borrower') {
+        const e = new Error(pii.BORROWER_BLOCK_MESSAGE);
+        e.status = 400; e.code = 'pii_blocked';
+        throw e;
+      }
+      attachment = { ...attachment, filename: fscan.redacted };
+      piiFlag = piiFlag ? [...new Set([...piiFlag, ...fscan.kinds])] : fscan.kinds;
+    }
+  }
+
   // Idempotent optimistic sends: a retried POST returns the existing row
   // instead of a duplicate bubble.
   if (clientMsgId) {
