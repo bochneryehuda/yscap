@@ -1569,12 +1569,13 @@ router.patch('/file-contacts/:linkId', async (req, res) => {
   // borrower owns.
   const link = await db.query(
     `SELECT l.service_contact_id FROM application_service_contacts l JOIN applications a ON a.id=l.application_id
-      WHERE l.id=$1 AND (${OWN_FILE_SQL("a", "$2")})`, [req.params.linkId, me(req)]);
+      WHERE l.id=$1 AND a.deleted_at IS NULL AND (${OWN_FILE_SQL("a", "$2")})`, [req.params.linkId, me(req)]);
   if (!link.rows[0]) return res.status(404).json({ error: 'not found' });
   const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : null;
   const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
   await db.query(
-    `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type), custom_type=$3,
+    `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type),
+        custom_type=CASE WHEN $2::text IS NULL THEN custom_type ELSE $3 END,
         company_name=$4, contact_name=$5, email=$6, phone=$7, address=$8, notes=$9, updated_at=now()
       WHERE id=$1`,
     [link.rows[0].service_contact_id, type, custom, b.companyName || null, b.contactName || null,

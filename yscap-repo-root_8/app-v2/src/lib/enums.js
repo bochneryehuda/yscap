@@ -19,11 +19,14 @@ export const CONTACT_TYPE = ['Investor', 'Primary', 'Co-Borrower', 'Guarantor', 
 export const PROGRAMS = ['Fix & Flip', 'Fix & Hold', 'Bridge', 'Ground-Up Construction', 'DSCR / Rental', 'Not sure yet'];
 export const PROPERTY_TYPES = ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'];
 
-// A <select> whose current value isn't in the option list (legacy free-text
-// data) must still render that value so staff never silently lose it. Callers
-// pass the live value; this returns the options with the stray value appended.
+// A <select> whose current value isn't EXACTLY an option (legacy free-text data,
+// e.g. an uppercase "INVESTOR" from the old free-text field) must still render
+// that value as the selected option so staff never silently lose it. Exact —
+// not case-insensitive — match: a differently-cased legacy value is appended so
+// the controlled <select value=…> finds it and shows it selected (picking the
+// canonical option and saving then self-heals the casing).
 export function withCurrent(options, value) {
   const v = (value == null ? '' : String(value)).trim();
-  if (!v || options.some(o => o.toLowerCase() === v.toLowerCase())) return options;
+  if (!v || options.includes(v)) return options;
   return [...options, v];
 }

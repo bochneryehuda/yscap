@@ -5371,16 +5371,22 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
 // a delete-and-re-add). Updates the shared vendor row's details + the link's
 // contact type. Mirrored on the borrower side.
 router.patch('/file-contacts/:linkId', async (req, res) => {
-  const f = await db.query(`SELECT application_id, service_contact_id FROM application_service_contacts WHERE id=$1`, [req.params.linkId]);
+  const f = await db.query(
+    `SELECT l.application_id, l.service_contact_id
+       FROM application_service_contacts l JOIN applications a ON a.id=l.application_id
+      WHERE l.id=$1 AND a.deleted_at IS NULL`, [req.params.linkId]);
   if (!f.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canTouchApp(req, f.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
   const b = req.body || {};
   if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
   const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : null;
   const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
-  // COALESCE the type so a request that omits it keeps the stored value.
+  // COALESCE the type so a request that omits it keeps the stored value; keep the
+  // stored custom_type too when no valid type is given (only reset it when the
+  // type is actually being changed).
   await db.query(
-    `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type), custom_type=$3,
+    `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type),
+        custom_type=CASE WHEN $2::text IS NULL THEN custom_type ELSE $3 END,
         company_name=$4, contact_name=$5, email=$6, phone=$7, address=$8, notes=$9, updated_at=now()
       WHERE id=$1`,
     [f.rows[0].service_contact_id, type, custom, b.companyName || null, b.contactName || null,
