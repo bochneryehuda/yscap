@@ -596,12 +596,17 @@ router.get('/my-tasks', async (req, res) => {
     `SELECT ci.id, ci.label, ci.status, ci.due_date, ci.role_scope, ci.item_kind,
             ci.application_id, a.ys_loan_number, a.property_address, a.status AS app_status,
             b.first_name, b.last_name,
+            -- #142: the completion state so the task list can offer the SAME inline
+            -- Done / Sign off / Waive actions the file's condition list does.
+            ci.reviewed_at, ci.signed_off_at, ci.waived_at, ci.is_required, ci.audience,
+            su2.full_name AS reviewed_by_name,
             (ci.assignee_staff_id=$1) AS assigned_to_me,
             (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
                AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL) AS unread
        FROM checklist_items ci
        JOIN applications a ON a.id=ci.application_id
        JOIN borrowers b ON b.id=a.borrower_id
+       LEFT JOIN staff_users su2 ON su2.id=ci.reviewed_by
       WHERE a.deleted_at IS NULL
         AND ci.status NOT IN ('satisfied')
         -- FUNDED/terminal/ON-HOLD files stay quiet OUTSIDE the file (owner-
