@@ -390,11 +390,46 @@ function Badge({ children, tone }) {
 // capability (incl. the loan-coordinator persona and per-user overrides).
 const canComplete = (role) => ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
 
+/* ONE "off my plate" rule for every conditions/checklist surface (owner-directed
+   2026-07-16): the loan officer's terminal action is DONE (reviewed_at); the
+   back office's is SIGN-OFF. Once YOUR role's action is complete, the item
+   leaves your default view and renders collapsed (reopenable). */
+function roleDone(it, role) {
+  return it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at
+    || (role === 'loan_officer' && !!it.reviewed_at);
+}
+// Per-user sticky filters (client-side; keyed per filter surface).
+function useStickyFilter(key, fallback) {
+  const [v, setV] = useState(() => { try { return localStorage.getItem('pilot.filter.' + key) || fallback; } catch { return fallback; } });
+  const set = (nv) => { setV(nv); try { localStorage.setItem('pilot.filter.' + key, nv); } catch { /* private mode */ } };
+  return [v, set];
+}
+
 function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview }) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState(it.notes || '');
+  // Collapse-when-complete: once YOUR role-action is done the row renders as a
+  // one-line summary; expand/collapse is a per-item manual override on top.
+  const [expandOverride, setExpandOverride] = useState(null);   // null = automatic
   const signed = !!it.signed_off_at;
   const completer = canComplete(role);
+  const myDone = roleDone(it, role);
+  const collapsed = expandOverride === null ? myDone : !expandOverride;
+  if (collapsed) {
+    return (
+      <div className="checkitem" style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
+        onClick={() => setExpandOverride(true)} title="Show the full condition">
+        <span className={`dot ${signed || it.status === 'satisfied' ? 'done' : 'outstanding'}`} />
+        <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
+        {it.waived_at ? <Badge>not required</Badge>
+          : signed ? <Badge tone="gold">signed off</Badge>
+          : it.status === 'satisfied' ? <Badge tone="gold">satisfied</Badge>
+          : it.reviewed_at ? <Badge>done ✓ awaiting sign-off</Badge>
+          : <Badge>{it.status}</Badge>}
+        <button className="btn link small" onClick={(e) => { e.stopPropagation(); setExpandOverride(true); }}>Expand</button>
+      </div>
+    );
+  }
   // Staff-only DOCUMENT conditions (e.g. Insurance, Title) get an upload area in
   // the internal checklist, mirroring the borrower-conditions document block.
   // `it.slots` is a FIXED named-slot array (Insurance → binder + invoice) or
@@ -414,9 +449,11 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             <Badge>{it.audience}</Badge>
             {it.role_scope && <Badge>{it.role_scope}</Badge>}
             <Badge>{it.item_kind}</Badge>
+            {it.is_required === false && <Badge>optional</Badge>}
             {it.is_gate && <Badge tone="gold">gate</Badge>}
             {it.is_milestone && <Badge tone="gold">milestone</Badge>}
             {it.tool_key && <Badge tone="gold">{it.tool_submitted ? 'borrower submitted' : 'borrower task'}</Badge>}
+            {!signed && it.reviewed_at && <Badge>done ✓ awaiting sign-off</Badge>}
           </div>
           {it.hint && <div className="muted small" style={{ marginTop: 4 }}>{it.hint}</div>}
           {it.assignee_name && <div className="muted small">Assigned to {it.assignee_name}</div>}
@@ -529,10 +566,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           ? <button className="btn ghost" title="You marked this done — undo to put it back on your list" onClick={() => onPatch(it.id, { reviewed: false })}>Undo done</button>
           : <button className="btn ghost" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
         {completer && (signed
-          ? <button className="btn ghost" onClick={() => onPatch(it.id, it.waived_at ? { waived: false } : { signedOff: false })}>{it.waived_at ? 'Undo waive' : 'Undo sign-off'}</button>
+          ? <button className="btn ghost" onClick={() => onPatch(it.id, it.waived_at ? { waived: false } : { signedOff: false })}>{it.waived_at ? 'Undo not-required' : 'Undo sign-off'}</button>
           : <>
               <button className="btn primary" title="Sign off = the whole condition is complete (processor step). This is what removes it from the list for everyone." onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>
-              {it.is_required === false && <button className="btn ghost" title="Waive = this optional condition doesn't apply; clear it without a document. Optional conditions only." onClick={() => onPatch(it.id, { waived: true })}>Waive</button>}
+              {it.is_required === false && <button className="btn ghost" title="This optional condition doesn't apply to this file — clear it without a document (waive). Optional conditions only." onClick={() => onPatch(it.id, { waived: true })}>Not required</button>}
             </>)}
         {it.audience !== 'staff' && (
           <button className="btn ghost" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
@@ -544,7 +581,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
               onPatch(it.id, { pushBack: true, issueReason: reason.trim() });
             }}>{signed || it.status === 'satisfied' ? 'Reopen / send back' : 'Send back'}</button>
         )}
-        {!completer && <span className="muted small" style={{ alignSelf: 'center' }}>Completion is the processor's sign-off.</span>}
+        {!completer && !it.reviewed_at &&
+          <span className="muted small" style={{ alignSelf: 'center' }}>Done records your completion — the back office signs off after you.</span>}
+        {myDone && <button className="btn link small" style={{ marginLeft: 'auto' }} onClick={() => setExpandOverride(false)}>Collapse</button>}
       </div>
       <div className="row" style={{ width: '100%', gap: 8 }}>
         <input className="input" placeholder="Add a note…" value={notes} onChange={e => setNotes(e.target.value)} />
@@ -1457,13 +1496,17 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   const [q, setQ] = useState('');
   const [matches, setMatches] = useState(null);
   const [searchBusy, setSearchBusy] = useState(false);
+  // Last-request-wins: while typing, a SLOW earlier response must never
+  // overwrite a newer query's matches (vanishing-search bug class, 2026-07-16).
+  const searchSeq = useRef(0);
   async function runSearch(text) {
     setQ(text);
+    const mine = ++searchSeq.current;
     if (text.trim().length < 2) { setMatches(null); return; }
     setSearchBusy(true);
-    try { setMatches(await api.staffBorrowerSearch(text.trim())); }
-    catch (_) { setMatches([]); }
-    finally { setSearchBusy(false); }
+    try { const m = await api.staffBorrowerSearch(text.trim()); if (mine === searchSeq.current) setMatches(m); }
+    catch (_) { if (mine === searchSeq.current) setMatches([]); }
+    finally { if (mine === searchSeq.current) setSearchBusy(false); }
   }
   async function linkExisting(m) {
     setBusy(true); setErr('');
@@ -1620,8 +1663,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   const [cardBusy, setCardBusy] = useState(false);
   // #66 — role-aware visibility: default hides what's already off THIS viewer's
   // plate (LO clears on review/"complete"; processor·underwriter on sign-off;
-  // anyone on satisfied). The picker re-shows cleared items or everything.
-  const [condFilter, setCondFilter] = useState('mine');
+  // anyone on satisfied). The picker re-shows cleared items or everything —
+  // and the choice is persisted per user (owner-directed 2026-07-16).
+  const [condFilter, setCondFilter] = useStickyFilter('conds', 'mine');
   // The LLC condition stays its OWN dedicated section (LlcReview) AND is also
   // surfaced here as a condition to close, rendered with the full entity template
   // (owner-directed). It's excluded from the generic list below (so it isn't a bare
@@ -1655,7 +1699,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // a processor/underwriter only clears it by SIGNING IT OFF — so an accepted
   // (received) document keeps the condition on the processor's list until she
   // signs off. This is why accept now sets 'received', not 'satisfied'.
-  const offMyPlate = (it) => it.status === 'satisfied' || !!it.signed_off_at || (isLO && !!it.reviewed_at);
+  // ONE shared rule for every surface — see roleDone() above.
+  const offMyPlate = (it) => roleDone(it, role);
   const matchFilter = (it) => {
     switch (condFilter) {
       case 'awaiting':  return ['outstanding', 'requested'].includes(it.status) && !it.signed_off_at;      // nothing submitted yet
@@ -2311,12 +2356,15 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Failed'); }
   }
 
-  const [itemFilter, setItemFilter] = useState('all');
-  const [internalCondFilter, setInternalCondFilter] = useState('todo');   // #66 internal-conditions role-aware filter
+  // Role-aware defaults + per-user persistence (owner-directed 2026-07-16): the
+  // internal CHECKLIST now defaults to "Open for me" like the other sections —
+  // an LO's Done (and a processor's sign-off) clears the item off their default
+  // view; the picker (persisted per user) re-shows everything, collapsed.
+  const [itemFilter, setItemFilter] = useStickyFilter('checklist', 'todo');
+  const [internalCondFilter, setInternalCondFilter] = useStickyFilter('internalConds', 'todo');
   const bucketOf = (s) => s === 'issue' ? 'rejected' : s === 'received' ? 'submitted' : s === 'satisfied' ? 'satisfied' : 'outstanding';
-  // #66 — role-aware "off my plate": LO clears on review, processor/underwriter
-  // on sign-off, anyone on satisfied. Default hides those; picker re-shows them.
-  const condOffPlate = (it) => it.status === 'satisfied' || !!it.signed_off_at || (role === 'loan_officer' && !!it.reviewed_at);
+  // ONE "off my plate" rule for every surface — see roleDone() above.
+  const condOffPlate = (it) => roleDone(it, role);
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
   // so they must not be listed twice.
@@ -2328,12 +2376,14 @@ export default function StaffApplication() {
   const internalItems = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind !== 'document'), [items]);
   const phases = useMemo(() => {
     const groups = {};
-    const src = itemFilter === 'all' ? internalItems : internalItems.filter(it => bucketOf(it.status) === itemFilter);
+    const src = itemFilter === 'all' ? internalItems
+      : itemFilter === 'todo' ? internalItems.filter(it => !roleDone(it, role))
+      : internalItems.filter(it => bucketOf(it.status) === itemFilter);
     for (const it of src) { const k = it.phase || 'general'; (groups[k] = groups[k] || []).push(it); }
     return Object.entries(groups)
       .map(([k, arr]) => [k, arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))])
       .sort((a, b) => (a[1][0].sort_order || 0) - (b[1][0].sort_order || 0));
-  }, [internalItems, itemFilter]);
+  }, [internalItems, itemFilter, role]);
 
   if (err && !app) return <div role="alert" className="notice err">{err}</div>;
   if (!app) return <div className="panel muted">Loading…</div>;
@@ -2579,7 +2629,7 @@ export default function StaffApplication() {
       <Section id="sec-pricing" title="Loan structure & pricing"
         info="The registered product with its full economics, and the live Term Sheet Studio to reprice or re-register — every registration attaches the exact term sheet PDF."
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
-      <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff"
+      <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       </Section>
 
@@ -2644,17 +2694,23 @@ export default function StaffApplication() {
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Internal checklist</h3>
           <div className="spacer" />
-          <select className="input" style={{ maxWidth: 160 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
+          <select className="input" style={{ maxWidth: 170 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
+            <option value="todo">Open for me ({internalItems.filter(it => !roleDone(it, role)).length})</option>
             <option value="all">All ({internalItems.length})</option>
             <option value="outstanding">Outstanding</option>
             <option value="submitted">Submitted (in review)</option>
             <option value="rejected">Needs attention</option>
             <option value="satisfied">Satisfied</option>
           </select>
-          <span className="muted small">{internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off</span>
+          <span className="muted small">
+            {internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off
+            {internalItems.some(i => !i.signed_off_at && i.reviewed_at) ? ` · ${internalItems.filter(i => !i.signed_off_at && i.reviewed_at).length} done, awaiting sign-off` : ''}
+          </span>
         </div>
         {phases.length === 0
-          ? <p className="muted small">No internal-only checklist items. Borrower-facing conditions are in “Conditions to close” above.</p>
+          ? (internalItems.length === 0
+              ? <p className="muted small">No internal-only checklist items. Borrower-facing conditions are in “Conditions to close” above.</p>
+              : <p className="muted small">Everything here is done on your side — switch to “All” to see the completed items (collapsed).</p>)
           : phases.map(([k, arr]) => (
             <div key={k} style={{ marginTop: 10 }}>
               <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>

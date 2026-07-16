@@ -76,7 +76,19 @@ async function main() {
     const fa = (await db.query(`SELECT failed_attempts FROM borrower_auth WHERE borrower_id=$1`, [B])).rows[0];
     ok(fa && fa.failed_attempts === 0, 'cross-login does not bump the borrower row failed_attempts');
 
-    // 6) inactive staff never rides the fallback
+    // 6) BRUTE-FORCE via the cross-surface path still trips the staff lockout
+    //    (audit finding: the fallback used to never count failed attempts).
+    const S3 = uuid(), E3 = `xbf_${S3.slice(0, 8)}@x.test`;
+    await db.query(`INSERT INTO staff_users (id,email,full_name,role,password_hash,is_active) VALUES ($1,$2,'BF Staff','loan_officer',$3,true)`,
+      [S3, E3, await C.hashPassword(PW_STAFF)]);
+    for (let i = 0; i < 6; i++) await api('POST', '/auth/borrower/login', { email: E3, password: 'Wr0ng!' + i });
+    const bf = (await db.query(`SELECT failed_attempts, locked_until FROM staff_users WHERE id=$1`, [S3])).rows[0];
+    ok(bf && bf.failed_attempts >= 5 && bf.locked_until, 'cross-surface brute-force trips the staff lockout (failed_attempts counted)');
+    r = await api('POST', '/auth/borrower/login', { email: E3, password: PW_STAFF });
+    ok(r.status !== 200 || !r.body.token, 'locked staff account cannot cross-login even with the right password');
+    await db.query(`DELETE FROM staff_users WHERE id=$1`, [S3]).catch(() => {});
+
+    // 7) inactive staff never rides the fallback
     await db.query(`UPDATE staff_users SET is_active=false WHERE id=$1`, [S]);
     r = await api('POST', '/auth/borrower/login', { email: E_STAFF, password: PW_STAFF });
     ok(r.status === 401, 'deactivated staff account cannot sign in via the borrower page');

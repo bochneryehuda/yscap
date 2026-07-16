@@ -227,14 +227,24 @@ router.post('/borrower/register', async (req, res) => {
    password VERIFIES), sign them into the account they actually have.
    Password-verify-FIRST means this reveals nothing an attacker couldn't
    already learn by trying the other endpoint directly. */
+// A wrong password on the OTHER store must count against THAT account's
+// lockout exactly like the direct endpoint would — otherwise the cross-surface
+// fallback is an unthrottled brute-force channel (found in pre-merge audit).
 async function tryStaffCredentials(email, password) {
   const r = await db.query(
-    `SELECT id, role, password_hash, mfa_enabled, token_version, locked_until
+    `SELECT id, role, password_hash, mfa_enabled, token_version, failed_attempts, locked_until
        FROM staff_users WHERE email=$1 AND is_active=true`, [email]);
   const row = r.rows[0];
-  if (!row || !row.password_hash) return null;
+  // Compensating hash when there's no other-store account, so the fallback's
+  // timing doesn't reveal whether a dual (staff+borrower) identity exists.
+  if (!row || !row.password_hash) { await C.hashPassword(String(password || '')).catch(() => {}); return null; }
   if (row.locked_until && new Date(row.locked_until) > new Date()) return null;
-  if (!(await C.verifyPassword(password, row.password_hash))) return null;
+  if (!(await C.verifyPassword(password, row.password_hash))) {
+    const fa = (row.failed_attempts || 0) + 1;
+    await db.query(`UPDATE staff_users SET failed_attempts=$2, locked_until=$3 WHERE id=$1`,
+      [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]).catch(() => {});
+    return null;
+  }
   await db.query(`UPDATE staff_users SET failed_attempts=0, locked_until=NULL, last_login_at=now() WHERE id=$1`, [row.id]).catch(() => {});
   if (row.mfa_enabled)
     return { mfaRequired: true, challenge: C.signJwt({ sub: row.id, kind: 'staff', role: row.role, mfa: true }, 300), kind: 'staff' };
@@ -242,12 +252,19 @@ async function tryStaffCredentials(email, password) {
 }
 async function tryBorrowerCredentials(email, password) {
   const r = await db.query(
-    `SELECT b.id, a.password_hash, a.mfa_enabled, a.token_version, a.locked_until, a.email_verified
+    `SELECT b.id, a.password_hash, a.mfa_enabled, a.token_version, a.failed_attempts, a.locked_until, a.email_verified
        FROM borrowers b JOIN borrower_auth a ON a.borrower_id=b.id WHERE b.email=$1`, [email]);
   const row = r.rows[0];
-  if (!row || !row.password_hash) return null;
+  // Compensating hash (see tryStaffCredentials) — uniform timing whether or not
+  // a borrower account also exists for this email.
+  if (!row || !row.password_hash) { await C.hashPassword(String(password || '')).catch(() => {}); return null; }
   if (row.locked_until && new Date(row.locked_until) > new Date()) return null;
-  if (!(await C.verifyPassword(password, row.password_hash))) return null;
+  if (!(await C.verifyPassword(password, row.password_hash))) {
+    const fa = (row.failed_attempts || 0) + 1;
+    await db.query(`UPDATE borrower_auth SET failed_attempts=$2, locked_until=$3 WHERE borrower_id=$1`,
+      [row.id, fa, fa >= MAX_FAILED ? new Date(Date.now() + 15 * 60000) : null]).catch(() => {});
+    return null;
+  }
   // The S1-08 confirm-email gate still applies to the borrower account no
   // matter which page the sign-in came from.
   if (row.email_verified === false) return { verifyRequired: true, kind: 'borrower' };

@@ -247,8 +247,12 @@ const TPR_DOC_SELECT = `
      AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export')
      AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
      -- #83: an EXPIRED Certificate of Good Standing behaves like empty
-     -- everywhere, so it must not ship as if it were a live document.
+     -- everywhere, so it must not ship as if it were a live document. Guard the
+     -- template_id IS NOT NULL first: a loose/profile/entity doc has NULL
+     -- template_id, and NULL IN (...) evaluates to NULL, which would drop EVERY
+     -- such doc older than 30 days (this change is supposed to ship them).
      AND NOT (d.created_at < now() - interval '30 days'
+              AND ci.template_id IS NOT NULL
               AND ci.template_id IN (SELECT id FROM checklist_templates
                                       WHERE code='rtl_llc_goodstanding' AND scope='llc'))
    ORDER BY ci.sort_order NULLS LAST, d.created_at`;

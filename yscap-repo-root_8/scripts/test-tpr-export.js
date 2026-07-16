@@ -72,7 +72,16 @@ async function main() {
     const dTrSnap = await doc('tr-snapshot.html', { borrower_id: B, review_status: 'pending', is_current: true, source_type: 'system', doc_kind: 'track_record_html' });
     const dTrDoc = await doc('hud-closing.pdf', { borrower_id: B, track_record_id: TR, review_status: 'pending', is_current: true, source_type: 'staff_upload', visibility: 'internal' });
 
+    // A >30-day-old loose doc and profile doc must STILL ship — the CoGS
+    // 30-day exclusion has a NULL template_id (audit finding: it dropped every
+    // old loose/profile doc). Age these two rows past the window.
+    const dOldLoose = await doc('old-loose.pdf', { application_id: APP, borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
+    const dOldProfile = await doc('old-photo-id.pdf', { borrower_id: B, review_status: 'pending', is_current: true, source_type: 'staff_upload' });
+    await db.query(`UPDATE documents SET created_at = now() - interval '45 days' WHERE id=ANY($1::uuid[])`, [[dOldLoose, dOldProfile]]);
+
     const got = new Set((await tpr.selectTprDocuments(APP)).map(d => d.id));
+    ok(got.has(dOldLoose), 'INCLUDED: 45-day-old loose doc (CoGS window must not drop NULL-template docs)');
+    ok(got.has(dOldProfile), 'INCLUDED: 45-day-old profile doc (photo ID)');
     ok(got.has(dFraud), 'INCLUDED: fraud report (internal condition, pending review)');
     ok(got.has(dAccepted), 'INCLUDED: accepted borrower-condition doc');
     ok(got.has(dLoose), 'INCLUDED: loose staff attachment (no condition, pending)');
@@ -94,7 +103,8 @@ async function main() {
     // The full zip builds and the manifest counts match the selection.
     const { zip, includedCount } = await tpr.buildTprExport(APP);
     ok(Buffer.isBuffer(zip) && zip.length > 500, 'zip builds');
-    // manifest = subject-set docs + track-record verification docs
+    // manifest = subject-set docs + track-record verification docs (got already
+    // includes the two aged docs, so this stays consistent).
     ok(includedCount === got.size + trGot.length, `manifest count (${includedCount}) === subject (${got.size}) + track (${trGot.length})`);
   } catch (e) { fail++; console.log('  ✗ EXCEPTION', e && e.stack ? e.stack : e); }
   finally {
