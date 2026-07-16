@@ -361,10 +361,27 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const coName = (isStaff && app.co_borrower_id)
       ? ([app.co_first_name, app.co_last_name].filter(Boolean).join(' ') || '')
       : '';
+    // #143 — the stored engine inputs ARE the exact registered scenario, but
+    // older registrations / server quotes sometimes omit an economics field (most
+    // often the construction / rehab budget), so reopening the studio left that
+    // field blank even though the application carries the number ("some files
+    // missing the construction budget prefill"). Fill ONLY the fields the stored
+    // input left empty from the application's authoritative economics — never
+    // override a real stored value (incl. a genuine 0 on a bridge/purchase-only
+    // deal). Spread LAST into scenarioFromEngineInputs' `extra`, which overrides.
+    const econFallback = (inp) => {
+      const out = {};
+      const fill = (k, v) => { if ((inp[k] == null || inp[k] === '') && v != null && v !== '') out[k] = v; };
+      fill('rehabBudget', app.rehab_budget);
+      fill('purchasePrice', app.purchase_price);
+      fill('asIsValue', app.as_is_value);
+      fill('arv', app.arv);
+      return out;
+    };
     let st;
     if (cur && cur.inputs) {
       const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : cur.inputs;
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address) }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address), ...econFallback(inp) }));
       if (isStaff) {
         const adm = adminStateFromEngineInputs(inp);
         st = { v: { ...st.v, ...adm.v }, c: { ...st.c, ...adm.c } };
@@ -381,6 +398,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
         fico: inp.fico || (profile && profile.fico) || '',
+        ...econFallback(inp),
       }));
     } else {
       st = buildStudioState({
