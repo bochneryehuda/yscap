@@ -92,6 +92,19 @@ async function main() {
     const lm3 = await lastMessage(convId);
     ok(lm3 && lm3.sender_kind === 'external' && /external guest/.test(lm3.body), 'external reply landed as the guest');
 
+    // (5b) the PRIMARY Resend webhook's key extractor must preserve a CASE-
+    // SENSITIVE key (base64url external keys contain A–Z) AND the hex member key.
+    // Regression guard: a prior toLowerCase() mangled mixed-case guest keys so
+    // #75 replies never resolved through inbound-file-email.js (found by #144 audit).
+    const fileInbox = require(REPO + '/src/lib/file-inbox');
+    const mixedKey = 'AbC0vQ_JkMiWa0XrmNY6fr3s';   // has uppercase, like a real base64url key
+    ok(fileInbox.chatKeyFromRecipients([`chat+${mixedKey}@reply.test`]) === mixedKey,
+      'chatKeyFromRecipients preserves a mixed-case external key (no lowercasing)');
+    ok(fileInbox.chatKeyFromRecipients([`Chat+${bKey}@Reply.Test`]) === bKey,
+      'chatKeyFromRecipients extracts the hex member key case-insensitively on the domain');
+    ok(fileInbox.chatKeyFromRecipients([`chat+${mixedKey}@wrong.test`]) === null,
+      'chatKeyFromRecipients rejects the wrong domain');
+
     // (6) a REMOVED member's key stops resolving (access can't outlive membership).
     await db.query(`UPDATE conversation_members SET removed_at=now() WHERE conversation_id=$1 AND member_kind='staff' AND member_id=$2`, [convId, LO]);
     const cntBefore = await msgCount(convId);
