@@ -47,27 +47,37 @@ const paramsEqual = (a, b) => {
   return ak.length === bk.length && ak.every((k) => String(a[k]) === String(b[k]));
 };
 
+// #145 — every exception tile drills into the pipeline filtered to EXACTLY the
+// files it counts. The `flag` matches the server /exceptions count key 1:1
+// (DASH_FILTER_SQL), so the count and the drilled list can never disagree. The
+// tiles render on the pipeline screen itself, so ?flag=<key> applies in place.
 const EXC = [
-  { k: 'needs_correction', label: 'Docs need correction', to: '/internal/tasks' },
-  { k: 'awaiting_review', label: 'Awaiting your review', to: '/internal/tasks' },
-  { k: 'awaiting_borrower', label: 'Awaiting borrower', to: '/internal/tasks' },
-  { k: 'unread_messages', label: 'Unread messages', to: '/internal/chat' },
-  { k: 'open_conditions', label: 'Open conditions', to: '/internal/tasks' },
-  { k: 'unassigned', label: 'Unassigned', to: '/internal' },
-  { k: 'post_closing_exceptions', label: 'Post-closing exceptions', to: '/internal/tasks' },
+  { k: 'needs_correction', label: 'Docs need correction' },
+  { k: 'awaiting_review', label: 'Awaiting your review' },
+  { k: 'awaiting_borrower', label: 'Awaiting borrower' },
+  { k: 'unread_messages', label: 'Unread messages' },
+  { k: 'open_conditions', label: 'Open conditions' },
+  { k: 'unassigned', label: 'Unassigned' },
+  { k: 'post_closing_exceptions', label: 'Post-closing exceptions' },
 ];
-function ExceptionStrip({ e }) {
+function ExceptionStrip({ e, activeFlag }) {
   if (!e) return null;
   const live = EXC.filter(x => (e[x.k] || 0) > 0);
   if (live.length === 0) return null;
   return (
     <div className="tiles">
-      {live.map(x => (
-        <Link key={x.k} to={x.to} className={`tile${x.k === 'needs_correction' ? ' acc' : ''}`} style={{ textDecoration: 'none' }}>
-          <span className="fig">{e[x.k]}</span>
-          <span className="lab">{x.label}</span>
-        </Link>
-      ))}
+      {live.map(x => {
+        const active = activeFlag === x.k;
+        return (
+          <Link key={x.k} to={`?flag=${x.k}`}
+            className={`tile${x.k === 'needs_correction' ? ' acc' : ''}`}
+            aria-current={active ? 'true' : undefined}
+            style={{ textDecoration: 'none', borderColor: active ? 'var(--teal)' : undefined }}>
+            <span className="fig">{e[x.k]}</span>
+            <span className="lab">{x.label}</span>
+          </Link>
+        );
+      })}
     </div>
   );
 }
@@ -91,8 +101,11 @@ function Kpis({ d, activeParams }) {
     { k: 'Funded (all time)', v: d.funded,
       sub: `${d.fundedLifetimeValue != null ? bigMoney(d.fundedLifetimeValue) : ''}${d.fundedNoDate ? ` · ${d.fundedNoDate} awaiting date` : ''}`,
       params: { group: 'closed' } },
+    // #145 — drills via flag=newintake so the list reproduces the KPI count
+    // EXACTLY (real intakes < 7 days, excluding clickup_backfill rows). A plain
+    // createdFrom filter would also show backfilled rows the count excludes.
     { k: 'New this week', v: d.newThisWeek, sub: 'real intakes',
-      params: { createdFrom: daysAgoISO(7) } },
+      params: { flag: 'newintake' } },
     { k: 'Open leads', v: d.openLeads, to: '/internal/leads' },
     // Ops/AI signal: active files that have gone stale (untouched > 7 days).
     { k: 'Needs attention', v: d.stalled != null ? d.stalled : d.stale, alert: (d.stalled != null ? d.stalled : d.stale) > 0, sub: 'stalled > 7 days',
@@ -483,7 +496,7 @@ export default function StaffQueue() {
         <ProductionBlock d={dash} />
         <HealthBlock d={dash} />
       </div>
-      <ExceptionStrip e={exc} />
+      <ExceptionStrip e={exc} activeFlag={curFilter.flag || ''} />
       {tab === 'mine' && (
         <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           {/* Primary lens: Active (default) / Closed / Cancelled / All — so the
