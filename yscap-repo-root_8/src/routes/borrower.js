@@ -1561,6 +1561,28 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
   res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: scId });
 });
+// Edit a file contact in place (owner-directed 2026-07-16 — parity with staff).
+router.patch('/file-contacts/:linkId', async (req, res) => {
+  const b = req.body || {};
+  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  // Own-file guard: resolve the link to its service_contact only for files the
+  // borrower owns.
+  const link = await db.query(
+    `SELECT l.service_contact_id FROM application_service_contacts l JOIN applications a ON a.id=l.application_id
+      WHERE l.id=$1 AND a.deleted_at IS NULL AND (${OWN_FILE_SQL("a", "$2")})`, [req.params.linkId, me(req)]);
+  if (!link.rows[0]) return res.status(404).json({ error: 'not found' });
+  const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : null;
+  const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
+  await db.query(
+    `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type),
+        custom_type=CASE WHEN $2::text IS NULL THEN custom_type ELSE $3 END,
+        company_name=$4, contact_name=$5, email=$6, phone=$7, address=$8, notes=$9, updated_at=now()
+      WHERE id=$1`,
+    [link.rows[0].service_contact_id, type, custom, b.companyName || null, b.contactName || null,
+     b.email || null, b.phone || null, b.address || null, b.notes || null]);
+  if (type) await db.query(`UPDATE application_service_contacts SET contact_type=$2 WHERE id=$1`, [req.params.linkId, type]);
+  res.json({ ok: true });
+});
 router.delete('/file-contacts/:linkId', async (req, res) => {
   const r = await db.query(
     `DELETE FROM application_service_contacts l USING applications a

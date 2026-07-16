@@ -230,6 +230,7 @@ export const api = {
   // general file contacts (#144) — any vendor, many per file, shared on the file
   fileContacts:    (appId) => req('GET', `/api/borrower/applications/${appId}/file-contacts`),
   addFileContact:  (appId, b) => req('POST', `/api/borrower/applications/${appId}/file-contacts`, b),
+  editFileContact: (linkId, b) => req('PATCH', `/api/borrower/file-contacts/${linkId}`, b),
   delFileContact:  (linkId) => req('DELETE', `/api/borrower/file-contacts/${linkId}`),
   myContacts:      () => req('GET', '/api/borrower/my-contacts'),
 
@@ -483,6 +484,7 @@ export const api = {
   // general file contacts (#144) — staff side + a borrower's whole vendor list
   staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
   staffAddFileContact: (appId, b) => req('POST', `/api/staff/applications/${appId}/file-contacts`, b),
+  staffEditFileContact:(linkId, b) => req('PATCH', `/api/staff/file-contacts/${linkId}`, b),
   staffDelFileContact: (linkId) => req('DELETE', `/api/staff/file-contacts/${linkId}`),
   staffBorrowerContacts: (borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/contacts`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
+import { CITIZENSHIP, MARITAL, HOUSING } from '../lib/enums.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
@@ -20,7 +21,6 @@ const STUDIO_LOCKED = ['propAddr', 'addrTBD', 'propState'];
 const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'Not sure yet'];
 const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'];
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
-const CITIZENSHIP = ['US Citizen', 'Permanent Resident', 'Foreign National'];
 const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
 // Plain-language explanations so a first-time borrower can tell the options apart.
 const REHAB_TYPE_INFO = {
@@ -30,8 +30,6 @@ const REHAB_TYPE_INFO = {
   'Adding square footage': 'Expanding the existing structure — an addition, finishing a basement or attic, or raising the roofline — so the finished home is larger than it is today.',
   'Ground-up construction': 'Building brand-new from the ground up (including after a teardown) — you are financing construction of a new structure, not renovating an existing one.',
 };
-const MARITAL = ['Single', 'Married', 'Separated', 'Divorced', 'Widowed'];
-const HOUSING = ['Rent', 'Own with mortgage', 'Own free and clear', 'Live with family', 'Other'];
 
 // Fix & Flip / Ground-Up / construction files use ARV + rehab budget; a straight
 // Bridge does not, so those fields are hidden for them (same rule as the
