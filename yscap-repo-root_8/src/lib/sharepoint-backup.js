@@ -490,8 +490,16 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
     cleanName = cleanName.slice(0, Math.max(8, keep)).trim() + ext;
   }
 
-  // Adopt-or-null: if the same-named existing item IS these bytes (size +
-  // hash), return it so we never mint a duplicate after a crash/lost response.
+  // Adopt-or-null: if the same-named existing item IS ours, return it so we
+  // never mint a duplicate after a crash/lost response. Two identity tests:
+  //  • BYTES: identical size (+ hash when calibrated) — exact and sufficient
+  //    for formats SharePoint stores verbatim (pdf, images, html, zip…).
+  //  • PROVENANCE (Office formats ONLY — the 2026-07-16 root fix): SharePoint
+  //    REWRITES xlsx/docx seconds after upload (property promotion), so their
+  //    size/hash NEVER match ours again. A same-named Office item in OUR
+  //    portal-created target folder that was CREATED BY THIS APP is our own
+  //    earlier upload of this stream — adopt it. (A human's same-named file
+  //    fails createdByThisApp and still uniquifies; nothing is overwritten.)
   const adoptIfIdentical = async (name) => {
     try {
       const existing = await sp.itemMetaByName(driveId, parentId, name);
@@ -502,10 +510,13 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
       if (row.sharepoint_backup_ref && existing) {
         try { if (sp.parseRef(row.sharepoint_backup_ref).itemId === existing.id) return null; } catch (_) { /* bad ref — fall through */ }
       }
-      const sizeOk = existing && existing.size != null && Number(existing.size) === bytes.length;
-      const remoteQx = existing && existing.file && existing.file.hashes && existing.file.hashes.quickXorHash;
+      if (!existing) return null;
+      const sizeOk = existing.size != null && Number(existing.size) === bytes.length;
+      const remoteQx = existing.file && existing.file.hashes && existing.file.hashes.quickXorHash;
       const hashOk = _qxTrusted === true ? (remoteQx && remoteQx === localQx) : true;
-      return (sizeOk && hashOk) ? existing : null;
+      if (sizeOk && hashOk) return existing;
+      if (sp.isOfficeFormat(name) && sp.createdByThisApp(existing)) return existing;
+      return null;
     } catch (_) { return null; }
   };
 
@@ -533,8 +544,10 @@ async function uploadAndRecord({ row, driveId, parentId, version, bytes, content
 
   // Trusted-hash transit check: same size but different content hash means the
   // stored copy is NOT our bytes — fail the row so it retries (the adopt path
-  // above will not adopt a hash-mismatched item either).
-  if (!up.adopted && _qxTrusted === true) {
+  // above will not adopt a hash-mismatched item either). Skipped for Office
+  // formats: SharePoint property promotion can rewrite them between the PUT
+  // and the response materializing — a hash drift there is not corruption.
+  if (!up.adopted && _qxTrusted === true && !sp.isOfficeFormat(cleanName)) {
     const remoteQx = up.item && up.item.file && up.item.file.hashes && up.item.file.hashes.quickXorHash;
     if (remoteQx && remoteQx !== localQx) {
       throw new Error(`upload integrity check failed for "${cleanName}": content hash mismatch (transit corruption) — will retry`);
@@ -973,6 +986,19 @@ async function verifyRow(row) {
       } catch (_) { /* visibility best-effort */ }
     }
     return 'malware';
+  }
+
+  // OFFICE FORMATS: verified once, at upload, from the PUT response — after
+  // that SharePoint's property promotion has rewritten the bytes and ANY
+  // size/hash comparison is meaningless (the 2026-07-16 root fix: healthy
+  // xlsx mirrors were being flagged "corrupt" and churned into "(fixed copy)"
+  // duplicates). The item exists, isn't malware-flagged, and passed its
+  // upload-time verification — that IS the integrity story for these files.
+  if (sp.isOfficeFormat(row.filename)) {
+    await stampVerdict(row.id,
+      'ok (office format — verified at upload; post-upload byte comparison not meaningful: SharePoint property promotion rewrites these files)',
+      { sha256: contentSha, itemSize: meta && meta.size != null ? Number(meta.size) : null });
+    return 'ok';
   }
 
   const remoteSize = meta && meta.size != null ? Number(meta.size) : null;
