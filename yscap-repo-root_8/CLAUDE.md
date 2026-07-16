@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## How to talk to the owner (ALWAYS)
+
+The owner is not a developer. **Every message to the owner must be in plain, everyday language a beginner can understand.** No developer jargon — no "endpoints", "payloads", "idempotent", "race conditions", "dead-letter queues". If a technical word is unavoidable, explain it in the same sentence with a real-life comparison (a mailman, a bookmark, a security guard). Explain what things mean for the BUSINESS (files, borrowers, ClickUp cards, emails), not what they mean in the code. Commit messages and code comments stay technical; chat with the owner never is.
+
 ## Repository layout gotcha
 
 The entire project lives in the **`yscap-repo-root_8/`** subfolder of the git root — `package.json`, `src/`, `db/`, `web/`, `app/` are all there, not at the git top level. Run all `npm` commands from inside `yscap-repo-root_8/`. Render auto-detects this nested `package.json`; deploys run from that folder.
