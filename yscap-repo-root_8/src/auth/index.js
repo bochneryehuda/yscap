@@ -119,6 +119,14 @@ function requirePermission(cap) {
 const requireAuth = authenticate;
 const requireBorrower = (req, res, next) =>
   req.actor?.kind === 'borrower' ? next() : res.status(403).json({ error: 'borrower only' });
+// A single "must be authenticated staff" wall for the admin surface (S1-16).
+// Defense-in-depth: every /api/admin route already gates internally, but a
+// blanket gate at the mount means a newly-added admin route can never
+// accidentally ship borrower-reachable. It is LOOSER than the per-route role
+// checks (any staff kind passes), so it never blocks a legitimately-permitted
+// staffer — the specific role/permission gate inside still applies.
+const requireStaff = (req, res, next) =>
+  req.actor?.kind === 'staff' ? next() : res.status(403).json({ error: 'staff only' });
 
 // ---------------- token helpers ----------------
 const borrowerToken = (id, tv) => C.signJwt({ sub: id, kind: 'borrower', role: 'borrower', tv });
@@ -259,6 +267,18 @@ router.post('/borrower/verify', async (req, res) => {
            WHERE kind='verify' AND used_at IS NULL AND expires_at > now()
              AND email=$1 AND code_hash=$2 LIMIT 1`, [email, C.sha256(code)]);
       row = r.rows[0];
+      if (!row) {
+        // S1-09: cap wrong-code guesses. Bump attempts on the active token for
+        // this email; once the cap (5) is hit, retire the token so the code can
+        // no longer be brute-forced (a fresh code must be requested). Mirrors the
+        // MFA lockout. Best-effort — a failure here never changes the response.
+        await db.query(
+          `UPDATE email_tokens
+              SET code_attempts = code_attempts + 1,
+                  used_at = CASE WHEN code_attempts + 1 >= 5 THEN now() ELSE used_at END
+            WHERE kind='verify' AND used_at IS NULL AND expires_at > now() AND email=$1`,
+          [email]).catch(() => {});
+      }
     } else {
       return res.status(400).json({ error: 'token or email+code required' });
     }
@@ -699,4 +719,4 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json({ kind: 'borrower', ...r.rows[0] });
 });
 
-module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, issueEmailToken };
+module.exports = { router, authenticate, requireAuth, requireRole, requirePermission, requireBorrower, requireStaff, issueEmailToken };

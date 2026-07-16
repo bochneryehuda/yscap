@@ -171,11 +171,18 @@ app.use('/api/staff', require('./routes/staff'));
   app.use('/api/admin/conditions', requireAuth, requirePermission('manage_conditions'), require('./routes/admin-conditions'));
   app.use('/api/admin/pricing', requireAuth, requirePermission('manage_pricing'), require('./routes/admin-pricing'));
 }
-// ClickUp Control Center (health, dry-run/backfill, activity, per-file re-sync).
-// The router applies its own requireAuth + platform_setup guards.
-app.use('/api/admin/clickup', require('./routes/admin-clickup'));
-app.use('/api/admin/sharepoint', require('./routes/admin-sharepoint'));
-app.use('/api/admin', require('./routes/admin'));
+// S1-16: a single blanket "must be authenticated staff" wall at the admin
+// entrance. Each admin router still gates internally (role/permission), but this
+// ensures no admin route can ever be reachable by a borrower or an anonymous
+// caller — defense-in-depth so a newly-added admin route is staff-only by default.
+{
+  const { requireAuth, requireStaff } = require('./auth');
+  // ClickUp Control Center (health, dry-run/backfill, activity, per-file re-sync).
+  // The router also applies its own requireAuth + platform_setup guards.
+  app.use('/api/admin/clickup', requireAuth, requireStaff, require('./routes/admin-clickup'));
+  app.use('/api/admin/sharepoint', requireAuth, requireStaff, require('./routes/admin-sharepoint'));
+  app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
+}
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
 // routers: EventSource can't send an Authorization header, so this route does
 // its own token verification from a query parameter.
