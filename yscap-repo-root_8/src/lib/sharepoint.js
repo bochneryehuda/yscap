@@ -592,6 +592,8 @@ module.exports = {
   ensurePilotColumns,
   stampItemFields,
   PILOT_COLUMNS,
+  credentialHealth,
+  deleteEnabled,
   ensureChildFolder,
   uploadNew,
   moveOwnItem,
