@@ -8,7 +8,7 @@ import { useAutosave } from '../lib/useAutosave.js';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import { US_STATES } from '../components/LlcManager.jsx';
-import { MoneyInput, PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
+import { MoneyInput, PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import TermSheetStudio, {
   buildStudioState, portalLoanType, portalProgram, selectionFromSnapshot, blobToBase64,
 } from '../components/TermSheetStudio.jsx';
@@ -750,7 +750,7 @@ export default function Apply() {
                 </div>
                 <div className="grid cols-2">
                   <div className="field"><label>Email</label>
-                    <input className="input" autoComplete="off" value={c.email || ''} onChange={e => setCo('email', e.target.value)} placeholder="They'll receive a PILOT invitation" /></div>
+                    <EmailInput autoComplete="off" value={c.email || ''} onChange={v => setCo('email', v)} placeholder="They'll receive a PILOT invitation" /></div>
                   <div className="field"><label>Phone</label>
                     <PhoneInput value={c.phone || ''} onChange={v => setCo('phone', v)} /></div>
                 </div>

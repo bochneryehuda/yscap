@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { PhoneInput } from './FormattedInputs.jsx';
+import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 
@@ -104,7 +104,7 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
             )}
             <div><label className="muted small">Company</label><input className="input" value={f.companyName} onChange={e => setF({ ...f, companyName: e.target.value })} /></div>
             <div><label className="muted small">Contact name</label><input className="input" value={f.contactName} onChange={e => setF({ ...f, contactName: e.target.value })} /></div>
-            <div><label className="muted small">Email</label><input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
+            <div><label className="muted small">Email</label><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></div>
             <div><label className="muted small">Phone</label><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></div>
             <div style={{ gridColumn: '1 / -1' }}><label className="muted small">Notes</label><input className="input" value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
           </div>

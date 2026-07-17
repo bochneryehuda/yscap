@@ -542,7 +542,7 @@
     h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
     return 4294967296 * (2097151 & h2) + (h1 >>> 0);
   }
-  function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : dflt; }
+  function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : dflt; }
   // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
   function syncAdminMarkup() {
     var std = adminNum("tsYspStd", CO.markupStd), gold = adminNum("tsYspGold", CO.markupGold);
@@ -554,10 +554,10 @@
   function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
   function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
   function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
-  function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(e.value) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
+  function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(String(e.value).replace(/,/g, "")) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
   function origPtStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + (p === 1 ? " pt" : " pts"); }
-  function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
+  function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
   // Fill the (blank) admin fee/markup inputs from the company defaults for
   // DISPLAY only. Never overwrite a value already present — a non-blank field is
   // an explicit per-file override (typed by staff or restored by the studio's
@@ -1560,10 +1560,59 @@
   }
 
   /* ===================== wiring ===================== */
+  // #143 — the DOLLAR inputs show a nice comma-grouped accounting figure. This is
+  // DISPLAY only and frozen-safe: YS.num() strips commas before parsing, so the
+  // number the engine reads is byte-identical. Whole-dollar fields (no cents are
+  // entered), so digit-grouping is all that's needed. Count/percent/FICO/term
+  // inputs are deliberately excluded — they aren't dollar amounts.
+  var MONEY_IDS = ["price", "origPrice", "assignFee", "construction", "asIs", "arv",
+    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr"];
+  function isMoneyInput(inp) { return inp && inp.id && MONEY_IDS.indexOf(inp.id) !== -1; }
+  function groupDigits(s) {
+    var d = String(s == null ? "" : s).replace(/[^\d]/g, "");
+    return d ? Number(d).toLocaleString("en-US") : "";
+  }
+  // Cursor-preserving format for the field currently being typed in.
+  function formatMoneyField(inp) {
+    var caret = inp.selectionStart == null ? inp.value.length : inp.selectionStart;
+    var digitsBefore = inp.value.slice(0, caret).replace(/[^\d]/g, "").length;
+    var out = groupDigits(inp.value);
+    if (out === inp.value) return;
+    inp.value = out;
+    var pos = 0, seen = 0;
+    while (pos < out.length && seen < digitsBefore) { if (/\d/.test(out.charAt(pos))) seen++; pos++; }
+    try { inp.setSelectionRange(pos, pos); } catch (e) {}
+  }
+  // Group every money field EXCEPT the one being typed in (never fight the caret).
+  function formatMoneyInputs() {
+    var active = document.activeElement;
+    MONEY_IDS.forEach(function (id) {
+      var e = el(id);
+      if (!e || e === active) return;
+      var out = groupDigits(e.value);
+      if (out !== e.value) e.value = out;
+    });
+  }
+  // Convert the dollar inputs to comma-capable text fields (number inputs reject
+  // commas) and group any value already present (e.g. a portal prefill).
+  function initMoneyInputs() {
+    MONEY_IDS.forEach(function (id) {
+      var e = el(id);
+      if (!e) return;
+      if (e.type === "number") { e.type = "text"; e.setAttribute("inputmode", "numeric"); }
+      e.value = groupDigits(e.value);
+    });
+  }
   function wire() {
     try { YS.applyState(YS.readState()); } catch (e) {}
+    initMoneyInputs();
     $$("#tsForm input, #tsForm select, #tsForm textarea").forEach(function (inp) {
-      var h = function () { recompute(); var f = inp.closest && inp.closest(".field"); if (f) f.classList.remove("invalid"); };
+      var h = function () {
+        if (isMoneyInput(inp)) formatMoneyField(inp);   // the typed field (caret-safe)
+        recompute();
+        formatMoneyInputs();                            // group the rest (incl. after a prefill)
+        var f = inp.closest && inp.closest(".field"); if (f) f.classList.remove("invalid");
+      };
       inp.addEventListener("input", h); inp.addEventListener("change", h);
     });
     ["origPrice", "price"].forEach(function (id) { var e = el(id); if (e) e.addEventListener("blur", validateAssign); });

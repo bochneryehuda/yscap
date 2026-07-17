@@ -105,12 +105,19 @@ function recipientsFromEvent(data) {
   return out;
 }
 
-/** First chat+<reply_key> guest address in the list (domain-checked like file+). */
+/** First chat+<reply_key> address in the list (domain-checked like file+).
+    The reply_key local part is CASE-SENSITIVE — a base64url external-guest key
+    (#75) contains A–Z, so lowercasing the whole address mangled it and the reply
+    never resolved (a pre-existing #75 regression on the primary Resend webhook,
+    surfaced by the #144 audit). Only the DOMAIN compare is case-insensitive.
+    Hex member keys (#144) are lowercase already, so they were never affected. */
 function chatKeyFromRecipients(recips) {
   for (const r of recips) {
-    const m = String(r || '').trim().toLowerCase().match(/^chat\+([a-z0-9_-]+)@([^@\s]+)$/i);
+    // `/i` makes the chat+ prefix + domain case-insensitive WITHOUT altering the
+    // captured key (a capture group preserves the input's case regardless of /i).
+    const m = String(r || '').trim().match(/^chat\+([A-Za-z0-9_-]+)@([^@\s]+)$/i);
     if (!m) continue;
-    if (cfg.chatReplyDomain && m[2] !== cfg.chatReplyDomain) continue;
+    if (cfg.chatReplyDomain && m[2].toLowerCase() !== String(cfg.chatReplyDomain).toLowerCase()) continue;
     return m[1];
   }
   return null;
@@ -499,7 +506,10 @@ async function processReceivedEvent(event) {
     try {
       const chat = require('./chat');   // lazy — chat.js is a heavy module graph
       const text = topReply(full.text || htmlToText(full.html));
-      const msg = text ? await chat.postExternalReply(chatKey, text) : null;
+      // #144 — resolve the key against BOTH an external guest (#75) AND an
+      // internal/borrower member, so ANY chat member's email reply posts back
+      // into the thread (not just guests').
+      const msg = text ? await chat.postInboundReply(chatKey, text) : null;
       appResults.__chat = 'posted';     // unknown/removed key is silently done, like the legacy route
       if (msg) forwardedTotal += 1;
     } catch (e) {

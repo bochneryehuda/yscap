@@ -4,7 +4,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
-import { PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
+import { PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import { passwordProblem } from '../lib/password.js';
 import { CITIZENSHIP, MARITAL, CONTACT_TYPE, withCurrent } from '../lib/enums.js';
 
@@ -196,7 +196,7 @@ function Overview({ b, onChanged }) {
         <h3 style={{ marginTop: 0 }}>Edit contact & CRM details</h3>
         {err && <div role="alert" className="notice err">{err}</div>}
         <div className="ts-inputs">
-          <label><span>Email</span><input className="input" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></label>
+          <label><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
           <label><span>Contact type</span>
             <select className="input" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })}>

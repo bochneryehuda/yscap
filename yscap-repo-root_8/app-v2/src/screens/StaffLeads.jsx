@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import { PhoneInput } from '../components/FormattedInputs.jsx';
+import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { fmtDay } from '../lib/dates.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
@@ -319,7 +319,7 @@ function AddLeadModal({ officers, seesAll, onClose, onCreated, onErr }) {
           </div>
           <label className="field"><span>Company / entity</span><input className="input" value={f.company} onChange={e => set('company', e.target.value)} placeholder="Acme Holdings LLC" /></label>
           <div className="grid cols-2">
-            <label className="field"><span>Email</span><input className="input" type="email" value={f.email} onChange={e => set('email', e.target.value)} /></label>
+            <label className="field"><span>Email</span><EmailInput value={f.email} onChange={v => set('email', v)} /></label>
             <label className="field"><span>Phone</span><PhoneInput value={f.phone} onChange={v => set('phone', v)} /></label>
           </div>
           <div className="grid cols-2">
@@ -387,7 +387,7 @@ function InviteToPortalModal({ officers, seesAll, onClose, onDone, onErr }) {
           They get a portal invite and are auto-assigned to {seesAll && f.officerId ? 'the chosen officer' : 'you'} as their loan officer, with a lead opened in the CRM.
         </p>
         <div className="field"><label>Email</label>
-          <input className="input" type="email" autoComplete="off" value={f.email} onChange={set('email')} placeholder="them@example.com" /></div>
+          <EmailInput autoComplete="off" value={f.email} onChange={v => set('email')({ target: { value: v } })} placeholder="them@example.com" /></div>
         <div className="grid cols-2">
           <div className="field"><label>First name <span className="muted small">(optional)</span></label>
             <input className="input" value={f.firstName} onChange={set('firstName')} /></div>

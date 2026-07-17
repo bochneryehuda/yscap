@@ -52,6 +52,31 @@ const seesAllBorrowers = (req) => seesAll(req) || (req.actor && req.actor.role =
 // IN-list so every active-work query shares a single definition — extends the #24
 // funded-muting to on_hold.
 const INACTIVE_FILE_STATUSES = "('funded','declined','withdrawn','on_hold')";
+
+// #145 — ONE definition per clickable dashboard figure, shared by the COUNT that
+// renders the KPI/exception tile AND the drill-down FILTER the click applies, so a
+// figure can NEVER show a number you can't reproduce by clicking into it. Before
+// this, /dashboard, /exceptions and the /applications flag filter each spelled out
+// their own predicates and drifted (the "stalled" count was >7 days while its
+// drill-down filtered >5; "New this week" excluded clickup_backfill rows the
+// drill-down still showed). All three now reference these fragments (alias `a`).
+const ACTIVE_FILE_SQL = `a.status NOT IN ${INACTIVE_FILE_STATUSES}`;
+const DASH_FILTER_SQL = {
+  // file-level "exception" buckets (mirrors /exceptions, drill into the pipeline)
+  unassigned: `a.loan_officer_id IS NULL AND ${ACTIVE_FILE_SQL}`,
+  needs_correction: `${ACTIVE_FILE_SQL} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue')`,
+  awaiting_borrower: `${ACTIVE_FILE_SQL} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested'))`,
+  awaiting_review: `${ACTIVE_FILE_SQL} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received')`,
+  unread_messages: `EXISTS(SELECT 1 FROM messages m WHERE m.application_id=a.id AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL)`,
+  open_conditions: `${ACTIVE_FILE_SQL} AND EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open')`,
+  post_closing_exceptions: `EXISTS(SELECT 1 FROM post_closing_items p WHERE p.application_id=a.id AND p.status='exception')`,
+  // KPI-grid buckets
+  stalled: `${ACTIVE_FILE_SQL} AND a.updated_at < now() - interval '7 days'`,
+  // a genuinely NEW file is a real intake this week — NOT a clickup backfill row
+  // (those default created_at=now() and would make the whole back-book look new).
+  newintake: `a.created_at > now() - interval '7 days' AND COALESCE(a.source,'') <> 'clickup_backfill'`,
+};
+
 // The standard post-closing trailing-doc set, seeded when a file funds.
 const POST_CLOSING_SET = [
   ['note', 'Final executed note'],
@@ -164,8 +189,9 @@ router.get('/dashboard', async (req, res) => {
     const CANCELLED_SQL = `status IN ('declined','withdrawn')`;
     // A genuinely NEW file is a real portal/staff intake this week — NOT a row the
     // ClickUp backfill just inserted (those default created_at=now() and would make
-    // the whole back-book look "new"). Exclude backfilled origin.
-    const NEW_SQL = `created_at > now() - interval '7 days' AND COALESCE(source,'') <> 'clickup_backfill'`;
+    // the whole back-book look "new"). Exclude backfilled origin. #145: the exact
+    // same predicate the "New this week" KPI drill-down applies (flag=newintake).
+    const NEW_SQL = DASH_FILTER_SQL.newintake;
     const [byStatus, totals, leads, aging, fundedByMonth] = await Promise.all([
       // Every figure must exclude archived (soft-deleted) files — otherwise an
       // archived/removed loan keeps inflating the counts and pipeline dollars.
@@ -185,8 +211,9 @@ router.get('/dashboard', async (req, res) => {
                        count(*) FILTER (WHERE status IN ('processing','underwriting','approved','clear_to_close'))::int actively_processing,
                        count(*) FILTER (WHERE status='on_hold')::int on_hold,
                        -- Ops/AI signal: active files gone stale (untouched > 7 days) — the
-                       -- files silently stalling in the pipeline that need a nudge.
-                       count(*) FILTER (WHERE ${ACTIVE_SQL} AND updated_at < now() - interval '7 days')::int stalled,
+                       -- files silently stalling in the pipeline that need a nudge. #145:
+                       -- the exact predicate the "Needs attention" drill-down uses (flag=stalled).
+                       count(*) FILTER (WHERE ${DASH_FILTER_SQL.stalled})::int stalled,
                        -- Funded bucketed by ACTUAL closing date (the ClickUp MTM basis).
                        count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('month', now()))::int funded_mtd,
                        count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('month', now()) - interval '1 month' AND actual_closing < date_trunc('month', now()))::int funded_last_month,
@@ -343,10 +370,14 @@ router.get('/applications', async (req, res) => {
       where.push(`${col} ${op} ${add(String(v))}`);
     }
 
-    // Ops flags — mirror the dashboard's stale (active + untouched > 5 days) and
-    // its dateless-funded (K1) bucket.
-    if (q.flag === 'stalled') {
-      where.push(`a.status NOT IN ${INACTIVE_FILE_STATUSES} AND a.updated_at < now() - interval '5 days'`);
+    // Ops flags — every flag mirrors EXACTLY the dashboard/exception COUNT of the
+    // same name via the single shared definition (DASH_FILTER_SQL), so clicking a
+    // KPI or exception tile drills into precisely the files it counted (#145).
+    // Covers stalled, newintake, unassigned, needs_correction, awaiting_borrower,
+    // awaiting_review, unread_messages, open_conditions, post_closing_exceptions.
+    // `nodate` is the K1 dateless-funded bucket used by the production block.
+    if (q.flag && Object.prototype.hasOwnProperty.call(DASH_FILTER_SQL, q.flag)) {
+      where.push(DASH_FILTER_SQL[q.flag]);
     } else if (q.flag === 'nodate') {
       where.push(`a.status = 'funded' AND a.actual_closing IS NULL`);
     }
@@ -540,17 +571,19 @@ router.get('/exceptions', async (req, res) => {
   const s = scopeClause(req);
   const w = s.where.replace(/\$SCOPE/g, '$1');
   try {
+    // #145 — each count uses the SAME predicate its drill-down filter applies
+    // (DASH_FILTER_SQL), so clicking a tile shows exactly the files it counted.
+    // Funded/terminal files stay quiet in every outside-the-file rollup
+    // (owner-directed 2026-07-14); their conditions remain inside the file.
     const r = await db.query(
       `SELECT
-         count(*) FILTER (WHERE a.loan_officer_id IS NULL AND a.status NOT IN ${INACTIVE_FILE_STATUSES})::int AS unassigned,
-         -- Funded/terminal files stay quiet in every outside-the-file rollup
-         -- (owner-directed 2026-07-14); their conditions remain inside the file.
-         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
-         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
-         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM messages m WHERE m.application_id=a.id AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL))::int AS unread_messages,
-         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM post_closing_items p WHERE p.application_id=a.id AND p.status='exception'))::int AS post_closing_exceptions
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.unassigned})::int AS unassigned,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.needs_correction})::int AS needs_correction,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.awaiting_borrower})::int AS awaiting_borrower,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.awaiting_review})::int AS awaiting_review,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.unread_messages})::int AS unread_messages,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.open_conditions})::int AS open_conditions,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.post_closing_exceptions})::int AS post_closing_exceptions
        FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params);
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -563,12 +596,17 @@ router.get('/my-tasks', async (req, res) => {
     `SELECT ci.id, ci.label, ci.status, ci.due_date, ci.role_scope, ci.item_kind,
             ci.application_id, a.ys_loan_number, a.property_address, a.status AS app_status,
             b.first_name, b.last_name,
+            -- #142: the completion state so the task list can offer the SAME inline
+            -- Done / Sign off / Waive actions the file's condition list does.
+            ci.reviewed_at, ci.signed_off_at, ci.waived_at, ci.is_required, ci.audience,
+            su2.full_name AS reviewed_by_name,
             (ci.assignee_staff_id=$1) AS assigned_to_me,
             (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
                AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL) AS unread
        FROM checklist_items ci
        JOIN applications a ON a.id=ci.application_id
        JOIN borrowers b ON b.id=a.borrower_id
+       LEFT JOIN staff_users su2 ON su2.id=ci.reviewed_by
       WHERE a.deleted_at IS NULL
         AND ci.status NOT IN ('satisfied')
         -- FUNDED/terminal/ON-HOLD files stay quiet OUTSIDE the file (owner-

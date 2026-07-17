@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import DocPreview from './DocPreview.jsx';
 import { fileToBase64 } from '../lib/files.js';
+import { EmailInput } from './FormattedInputs.jsx';
 
 /* One LLC, fully managed: entity details, ownership structure (the borrower's
    own % plus every other member until it totals 100%), and the three fixed
@@ -258,8 +259,8 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
               <input className="input" style={{ width: 110 }} type="number" min="0.01" max={m.memberKind === 'entity' ? 100 : 99.99} placeholder="%" value={m.ownershipPct} disabled={locked}
                 onChange={e => setMembers(ms => ms.map((x, j) => j === i ? { ...x, ownershipPct: e.target.value } : x))} />
               {m.memberKind !== 'entity' && (
-                <input className="input" style={{ flex: 2, minWidth: 160 }} type="email" placeholder="Email (optional)" value={m.email} disabled={locked}
-                  onChange={e => setMembers(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+                <EmailInput style={{ flex: 2, minWidth: 160 }} placeholder="Email (optional)" value={m.email} disabled={locked}
+                  onChange={v => setMembers(ms => ms.map((x, j) => j === i ? { ...x, email: v } : x))} />
               )}
               <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: locked || depth >= MAX_NESTED_DEPTH ? 'default' : 'pointer', whiteSpace: 'nowrap' }}
                 title="Layered entity: this slice is owned by ANOTHER LLC, not a person. Saving opens a full entity section for that LLC — its details, its owners, and its three documents.">

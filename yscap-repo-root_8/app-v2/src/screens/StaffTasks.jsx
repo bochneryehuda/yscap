@@ -1,20 +1,55 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { useAuth } from '../lib/auth.jsx';
 
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
 const STATUS_LABEL = { outstanding: 'Outstanding', requested: 'Requested', received: 'In review', issue: 'Needs attention' };
 const initials = (...parts) => parts.filter(Boolean).map(s => String(s).trim()[0] || '').join('').slice(0, 2).toUpperCase() || '—';
+// ONE completion rule, mirroring StaffApplication.roleDone — a task is off your
+// plate once it's signed off / waived / satisfied, or (for an LO) marked done.
+function roleDone(it, role) {
+  return it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at
+    || (role === 'loan_officer' && !!it.reviewed_at);
+}
+// Who may SIGN OFF / waive (mirrors StaffApplication.canComplete) — the loan
+// officer's step is "Done"; the back office signs off (#134). We hide Sign off /
+// Waive for non-completers so the task list doesn't show them a dead button the
+// backend would 403 (the file view hides them too).
+const COMPLETER_ROLES = ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'];
 
 /* Everything on the signed-in staffer's plate across all their files — tasks
-   assigned to them or role-routed to a file they own. Grouped by file. */
+   assigned to them or role-routed to a file they own. Grouped by file. #142: each
+   task carries the SAME inline Done / Sign off / Waive actions the file's
+   condition list does, so a staffer can finish it here without diving into the
+   file (the backend enforces the identical sign-off gate). */
 export default function StaffTasks() {
+  const { actor } = useAuth();
+  const role = actor && actor.role;
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(null);      // item id being acted on
   const [filter, setFilter] = useState('all'); // all | mine | overdue
   const [statusFilter, setStatusFilter] = useState('all'); // all | outstanding | requested | received | issue
 
-  useEffect(() => { api.staffMyTasks().then(setRows).catch(e => setErr(e.message)); }, []);
+  const reload = useCallback(() => api.staffMyTasks().then(setRows).catch(e => setErr(e.message)), []);
+  useEffect(() => { reload(); }, [reload]);
+
+  // Inline completion — the same PATCH the file's condition list issues. On
+  // success the list refetches (a signed-off task drops off; a Done task stays,
+  // marked done). A blocked sign-off surfaces the server's exact reason.
+  const patchItem = useCallback(async (itemId, body) => {
+    if (busy) return;
+    setBusy(itemId); setErr('');
+    try { await api.staffPatchItem(itemId, body); await reload(); }
+    catch (e) {
+      const msg = e.message || 'Update failed';
+      setErr(msg);
+      if (body && (body.signedOff === true || body.status === 'satisfied')) {
+        try { window.alert('Can’t sign off yet:\n\n' + msg); } catch (_) { /* no window */ }
+      }
+    } finally { setBusy(null); }
+  }, [busy, reload]);
 
   const shown = useMemo(() => {
     if (!rows) return [];
@@ -31,7 +66,9 @@ export default function StaffTasks() {
     return Object.values(g);
   }, [shown]);
 
-  if (err) return <div role="alert" className="notice err">{err}</div>;
+  // Load failure with nothing to show → full-page error. An INLINE-action error
+  // (rows already loaded) must NOT blank the list — it renders as a banner below.
+  if (err && !rows) return <div role="alert" className="notice err">{err}</div>;
   if (!rows) return <div className="panel pad muted">Loading your tasks…</div>;
 
   const today = new Date().toISOString().slice(0, 10);
@@ -62,6 +99,8 @@ export default function StaffTasks() {
           </select>
         </div>
       </div>
+      {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}
+        <button className="btn link small" onClick={() => setErr('')}>Dismiss</button></div>}
 
       <div className="stack">
         <div className="kpi-grid">
@@ -94,15 +133,20 @@ export default function StaffTasks() {
                   const isToday = it.due_date === today;
                   // Priority derived purely from the task's existing due_date.
                   const pri = !it.due_date ? null : (it.due_date < today ? 'high' : it.due_date <= soonBy ? 'soon' : 'normal');
+                  const done = roleDone(it, role);
+                  const b = busy === it.id;
                   return (
-                    <Link to={`/internal/app/${it.application_id}`} className="task" key={it.id}>
+                    <div className={`task${done ? ' task-done' : ''}`} key={it.id}>
                       <div className="who-wrap">
-                        <span className={`dot ${it.status === 'received' ? 'outstanding' : it.status === 'issue' ? '' : 'outstanding'}`} style={it.status === 'issue' ? { background: 'var(--danger)' } : undefined} />
+                        <span className={`dot ${done ? 'done' : ''}`} style={it.status === 'issue' && !done ? { background: 'var(--danger)' } : undefined} />
                         <div>
-                          <div className="who">{it.label}</div>
+                          {/* The label still opens the file for anything that needs more than a click. */}
+                          <Link to={`/internal/app/${it.application_id}`} className="who" style={{ textDecoration: 'none', color: 'inherit' }}>{it.label}</Link>
                           <div className="what">
                             {STATUS_LABEL[it.status] || it.status}
+                            {it.reviewed_at ? ` · done by ${it.reviewed_by_name || 'staff'}` : ''}
                             {it.role_scope && it.role_scope !== 'any' ? ` · ${it.role_scope}` : ''}
+                            {it.is_required === false ? ' · optional' : ''}
                             {it.assigned_to_me ? ' · assigned to you' : ''}
                           </div>
                         </div>
@@ -114,8 +158,25 @@ export default function StaffTasks() {
                             {overdue ? 'Overdue' : isToday ? 'Today' : `Due ${it.due_date}`}
                           </span>
                         )}
+                        {/* #142 — finish it right here. Same actions + backend gate as
+                            the file's condition list: Done (LO step) → Sign off
+                            (completes for everyone) → Waive (optional only). */}
+                        <div className="task-acts" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {it.reviewed_at
+                            ? <button className="btn ghost small" disabled={b} title={`Marked done by ${it.reviewed_by_name || 'staff'} — undo to put it back on your list`} onClick={() => patchItem(it.id, { reviewed: false })}>Done ✓</button>
+                            : <button className="btn ghost small" disabled={b} title="Mark this task done (loan-officer step). The processor still signs it off." onClick={() => patchItem(it.id, { reviewed: true })}>Done</button>}
+                          {/* Sign off / Waive are the back-office step (#134) — only shown to
+                              completers, matching the file view, so an LO never sees a dead button. */}
+                          {COMPLETER_ROLES.includes(role) && (it.waived_at
+                            ? <button className="btn ghost small" disabled={b} onClick={() => patchItem(it.id, { waived: false })}>Undo waive</button>
+                            : <>
+                                <button className="btn primary small" disabled={b} title="Sign off = the whole task is complete. This removes it from the list for everyone." onClick={() => patchItem(it.id, { signedOff: true })}>Sign off</button>
+                                {it.is_required === false && <button className="btn ghost small" disabled={b} title="Waive this optional task (clear without a document)" onClick={() => patchItem(it.id, { waived: true })}>Waive</button>}
+                              </>)}
+                          <Link className="btn ghost small" to={`/internal/app/${it.application_id}`} title="Open the file">Open</Link>
+                        </div>
                       </div>
-                    </Link>
+                    </div>
                   );
                 })}
               </div>
