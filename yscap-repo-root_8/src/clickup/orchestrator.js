@@ -160,6 +160,48 @@ async function loadPushContext(appId) {
   return ctx;
 }
 
+// ---- WO-1 (F-C1): a failed field write must never be swallowed ------------
+// Before this fix, the per-field setField catch below logged the error and
+// CONTINUED; pushApplication then returned normally and pushOutboxOnce marked
+// the queue job 'done' — so a ClickUp 429/500/timeout on a single field
+// silently dropped the staffer's edit, with no retry and no review row. These
+// two helpers make the failure loud: record() tracks it PII-FREE, and
+// assertPushComplete() builds the error the push THROWS at the end so the queue
+// retries (re-pushing is idempotent — landed fields are no-op-suppressed on the
+// retry's pre-read) and, on exhaustion, dead-letters to a visible review card.
+
+/**
+ * Record a failed field write into the push's running stats — PII-FREE.
+ * The client's error message is value-free by construction
+ * ("ClickUp POST /task/<id>/field/<id> -> 429"); we capture only the field id,
+ * HTTP status and error code, NEVER the value being written (GLBA: last_error /
+ * audit rows must not carry borrower data). Exported for the regression test.
+ */
+function recordFieldFailure(journalStats, failures, fieldId, e) {
+  journalStats.failed++;
+  failures.push({
+    fieldId,
+    status: (e && e.status) || null,
+    code: (e && e.code) || null,
+    message: String((e && e.message) || e).slice(0, 160),
+  });
+}
+
+/**
+ * If any intended write failed, return the Error the push must THROW (never
+ * mark a lossy push 'done'); otherwise null. The message is PII-free (field ids
+ * + HTTP status only). `code` lets pushOutboxOnce classify it. Exported for the
+ * regression test.
+ */
+function assertPushComplete(journalStats, failures) {
+  if (!journalStats || !journalStats.failed) return null;
+  const summary = (failures || []).map((f) => `${f.fieldId}:${f.status || f.code || 'err'}`).join(', ');
+  const err = new Error(`ClickUp push incomplete: ${journalStats.failed} field write(s) failed [${summary}]`);
+  err.code = 'CLICKUP_FIELD_WRITES_FAILED';
+  err.partial = { written: journalStats.written, failed: journalStats.failed };
+  return err;
+}
+
 /** Create or update the Pipeline task for an application. No-op if sync disabled. */
 async function pushApplication(appId, opts = {}) {
   if (!cfg.clickupSyncEnabled && !opts.force) return { skipped: 'sync disabled' };
@@ -249,7 +291,8 @@ async function pushApplication(appId, opts = {}) {
       }
       console.warn('[clickup] pre-write read failed (full repush proceeds without no-op suppression):', e.message);
     }
-    journalStats = { written: 0, suppressed: 0, blocked: 0 };
+    journalStats = { written: 0, suppressed: 0, blocked: 0, failed: 0 };
+    const failures = [];  // WO-1: per-field write failures (PII-free), thrown after the loop
     let overwrites = 0;   // writes that REPLACED an existing ClickUp value (not fills)
     const source = scoped ? 'scoped_push' : 'full_repush';
     for (const c of chosen) {
@@ -345,6 +388,9 @@ async function pushApplication(appId, opts = {}) {
         await journalFieldWrite(appId, id, c.id, old, c.value, source);
       } catch (e) {
         if (e && e.code === 'CLICKUP_CIRCUIT_OPEN') throw e;   // stop the whole push, queue retries later
+        // WO-1 (F-C1): do NOT swallow — record it and throw after the loop so
+        // the queue retries this job instead of marking a lossy push 'done'.
+        recordFieldFailure(journalStats, failures, c.id, e);
         console.error('[clickup] setField failed', c.id, e.message);
       }
     }
@@ -360,8 +406,19 @@ async function pushApplication(appId, opts = {}) {
       try {
         await clickup.updateTask(id, { status: built.statusName });
         await journalFieldWrite(appId, id, null, before ? before.__status : undefined, built.statusName, source, { fieldKey: 'status' });
-      } catch (_) {}
+      } catch (e) {
+        if (e && e.code === 'CLICKUP_CIRCUIT_OPEN') throw e;
+        // WO-1 (F-C1): the status write was silently swallowed too — track it.
+        recordFieldFailure(journalStats, failures, 'status', e);
+        console.error('[clickup] status update failed', id, e && e.message);
+      }
     }
+    // WO-1 (F-C1): if any intended write failed, do NOT mark the push complete
+    // (leave clickup_last_synced_at unstamped) — throw so pushOutboxOnce retries
+    // and, on exhaustion, dead-letters this file to a visible "push failed"
+    // review card. Writes that already landed are no-op-suppressed on the retry.
+    const pushErr = assertPushComplete(journalStats, failures);
+    if (pushErr) throw pushErr;
     await db.query(`UPDATE applications SET clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`, [appId]);
   }
 
@@ -518,4 +575,5 @@ module.exports = {
   pushApplication, createForNewFile, loadPushContext, resolveTargetList, firstListId, logSync,
   PII_OVERWRITE_SHIELD, PII_REVIEW_KEY, // exported for the write-safety tests
   circuitCheck, // the ONE shared volume breaker — every ClickUp write path counts into it (audit fix)
+  recordFieldFailure, assertPushComplete, // WO-1: exported for the push-failure regression test
 };
