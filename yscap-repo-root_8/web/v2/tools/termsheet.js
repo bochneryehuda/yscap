@@ -658,7 +658,7 @@
       var seller = num("origPrice"), total = num("price");
       if (!isRefi() && isAssign() && seller > 0 && total > seller) {
         var fee = Math.max(0, total - seller), a = d.asg;
-        var capPhrase = (a && a.dollarCap) ? ("the lesser of " + YS.fmtUSD(a.dollarCap) + " or 15% of the purchase price") : "15% of the purchase price";
+        var capPhrase = (a && a.dollarCap) ? ("the lesser of " + YS.fmtUSD(a.dollarCap) + " or 15% of the original contract price") : "15% of the original contract price";
         if (a && a.overLimit) {
           an.style.display = ""; an.className = "ts-assign warn";
           an.innerHTML = "<b>Assignment fee exceeds the financeable cap.</b> Up to " + YS.fmtUSD(a.maxFee) + " (" + capPhrase +
@@ -666,7 +666,7 @@
             " is paid out of pocket</b> and terms are sized on the recognized price of " + YS.fmtUSD(a.recognizedPrice) + ". A higher limit can be requested as an exception.";
         } else {
           an.style.display = ""; an.className = "ts-assign ok";
-          an.innerHTML = "Assignment fee of " + YS.fmtUSD(fee) + " is within the program cap (" + YS.fmtUSD(a ? a.maxFee : 0.15 * total) + " max \u2014 " + capPhrase + ") and is fully financeable.";
+          an.innerHTML = "Assignment fee of " + YS.fmtUSD(fee) + " is within the program cap (" + YS.fmtUSD(a ? a.maxFee : 0.15 * seller) + " max \u2014 " + capPhrase + ") and is fully financeable.";
         }
       } else { an.style.display = "none"; }
     }
