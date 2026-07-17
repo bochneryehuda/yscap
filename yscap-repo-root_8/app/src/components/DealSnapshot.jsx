@@ -19,8 +19,11 @@ export default function DealSnapshot({ app, gating }) {
     : app.purchase_price;
   const basis = (Number(purchase) || 0) + (Number(app.rehab_budget) || 0);
   const quote = app.registered_quote || null;
-  const ltc = quote?.sizing?.ltcPct ? pct(quote.sizing.ltcPct) : pctOf(app.loan_amount, basis);
-  const arvLtv = quote?.sizing?.arvPct ? pct(quote.sizing.arvPct) : pctOf(app.loan_amount, app.arv);
+  // Fallback ratios (no registered quote) use simple display math on raw columns —
+  // a different basis than the engine's; mark them approximate (owner audit 2026-07-17).
+  const approx = (v) => (v ? '\u2248 ' + v : v);
+  const ltc = quote?.sizing?.ltcPct ? pct(quote.sizing.ltcPct) : approx(pctOf(app.loan_amount, basis));
+  const arvLtv = quote?.sizing?.arvPct ? pct(quote.sizing.arvPct) : approx(pctOf(app.loan_amount, app.arv));
   const acqLtv = quote?.sizing?.acqLtvPct ? pct(quote.sizing.acqLtvPct) : null;
   const product = app.registered_product_label || (quote && [quote.programLabel, quote.productLabel].filter(Boolean).join(' · '));
   const priced = app.loan_amount != null && Number(app.loan_amount) > 0;

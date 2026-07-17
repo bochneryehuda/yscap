@@ -73,9 +73,11 @@ export function buildStudioState(x) {
   const isAssign = !!x.isAssignment && rawNum(x.underlyingContractPrice) !== '';
   const price = rawNum(x.purchasePrice) ||
     (isAssign ? String((Number(rawNum(x.underlyingContractPrice)) || 0) + (Number(rawNum(x.assignmentFee)) || 0)) : '');
-  // Empty as-is value defaults to the final purchase price — same rule the
-  // server-side pricing input builder applies.
-  const asIs = rawNum(x.asIsValue) || price;
+  // A blank/defaulted as-is value stays BLANK in the studio: the engines already
+  // price a blank as-is as "worth the purchase price", and materializing the
+  // default here displayed (and re-registered) it as if the borrower entered it —
+  // which also froze it against later purchase-price changes (owner audit 2026-07-17).
+  const asIs = x.asIsDefaulted ? '' : rawNum(x.asIsValue);
   const v = {
     borrowerName: x.borrowerName || '',
     coBorrowerName: x.coBorrowerName || '',

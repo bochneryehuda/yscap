@@ -109,6 +109,10 @@ function buildInputs(app, experience, overrides) {
     // blank on the application means "worth what I'm paying for it". Applies
     // everywhere these inputs flow (quotes, registrations, the studio prefill).
     asIsValue: num(app.as_is_value) || totalPrice,
+    // Display metadata only (engines ignore it): marks the value above as the
+    // auto-default rather than an entered figure, so the studio prefill and the
+    // registered-product panel never present it as if the borrower typed it.
+    asIsDefaulted: !(num(app.as_is_value) > 0),
     arv: num(app.arv),
     rehabBudget: num(app.rehab_budget),
     fico: num(app.fico),
@@ -150,6 +154,7 @@ function buildInputs(app, experience, overrides) {
     for (const k of NUMK) if (overrides[k] != null && overrides[k] !== '') out[k] = num(overrides[k]);
     for (const k of STRK) if (overrides[k] != null) out[k] = clean(overrides[k]);
     for (const k of BOOLK) if (overrides[k] != null) out[k] = !!overrides[k];
+    if (overrides.asIsValue != null && overrides.asIsValue !== '') out.asIsDefaulted = false;
     // Present-but-EMPTY means "clear it" (owner-reported 2026-07-16: a field the
     // user blanked in the studio must never silently revert to the previously-
     // saved value on re-register): markup '' → drop the sticky file markup so
