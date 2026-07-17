@@ -1304,6 +1304,7 @@ async function reconciliation() {
         count(*) FILTER (WHERE sharepoint_integrity LIKE 'malware%')::int                               AS malware_flagged,
         count(*) FILTER (WHERE sharepoint_integrity = 'item-missing')::int                              AS item_missing,
         count(*) FILTER (WHERE sharepoint_integrity = 'local-missing')::int                             AS local_missing,
+        count(*) FILTER (WHERE sharepoint_backup_ref IS NOT NULL AND sharepoint_stamped_at IS NOT NULL)::int AS id_stamped,
         EXTRACT(EPOCH FROM (now() - min(created_at) FILTER (
            WHERE sharepoint_backed_up_at IS NULL AND storage_ref IS NOT NULL
              AND COALESCE(storage_provider,'local')='local')))::bigint                                  AS oldest_pending_secs
@@ -1313,12 +1314,34 @@ async function reconciliation() {
   const oldestHrs = r.oldest_pending_secs != null ? Math.round(r.oldest_pending_secs / 360) / 10 : null;
   const thresholdHrs = Number(process.env.SHAREPOINT_BACKLOG_SLO_HOURS || 6);
   const backlogBreached = oldestHrs != null && oldestHrs > thresholdHrs;
+  // Count the audit-trailed sanctioned deletes (the SEC 17a-4 "audit-trail
+  // alternative to WORM" evidence — every corrupt-copy removal is attributed).
+  let sanctionedDeletes = null;
+  try {
+    sanctionedDeletes = Number((await db.query(
+      `SELECT count(*)::int n FROM audit_log WHERE action='sharepoint_corrupt_original_deleted'`)).rows[0].n);
+  } catch (_) { /* audit table optional in the count */ }
+  // CONTROL STATE for the compliance/chain-of-custody report (round-4 research:
+  // an auditor reads this to confirm the guarantees are actually enforced).
+  let credential = null;
+  try { credential = sp.credentialHealth(); } catch (_) { /* cert parse best-effort */ }
+  const controls = {
+    deleteSanctionedEnabled: sp.deleteEnabled(),      // the ONE delete path — on/off
+    metadataStampEnabled: !!cfg.sharepointStampMetadata,
+    idStampCoverage: r.mirrored > 0 ? Math.round((r.id_stamped / r.mirrored) * 1000) / 10 : null,  // %
+    sanctionedDeletesTotal: sanctionedDeletes,
+    backlogSloHours: thresholdHrs,
+    credential,
+    credentialWarning: credential && credential.warning ? credential.warning : null,
+  };
   return {
     ...r,
     oldest_pending_hours: oldestHrs,
     slo: { thresholdHours: thresholdHrs, oldestPendingHours: oldestHrs, breached: backlogBreached, exhausted: r.exhausted },
-    // A mirror is "healthy" when nothing is exhausted and the backlog is inside SLO.
-    healthy: r.exhausted === 0 && !backlogBreached,
+    controls,
+    // A mirror is "healthy" when nothing is exhausted, the backlog is inside
+    // SLO, and the auth credential is not about to expire.
+    healthy: r.exhausted === 0 && !backlogBreached && !(credential && credential.warning),
   };
 }
 
