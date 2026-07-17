@@ -414,7 +414,9 @@
     var tier = tierFromCount(pcount);
 
     // ---- assignment / wholesale 15% financeable cap ----------------------
-    // The program finances an assignment fee up to 15% of the TOTAL purchase price.
+    // The program finances an assignment fee up to 15% of the ORIGINAL (seller's)
+    // contract price — never the fee-inclusive total (owner-corrected 2026-07-17:
+    // seller $100k + fee $20k caps at $15k financeable → $115k recognized price).
     // Any excess is paid out of pocket; leverage and pricing size off the
     // "recognized" price = seller price + financeable assignment.
     var totalPP = Math.max(0, input.purchasePrice || 0);
@@ -424,7 +426,7 @@
     var effPurchase = totalPP;                        // price used for all leverage/pricing math
     if (isAssignment) {
       var rawFee = Math.max(0, totalPP - sellerPP);   // seller + fee always reconcile to the total
-      var maxFee = 0.15 * totalPP;                    // 15% of the TOTAL purchase price
+      var maxFee = 0.15 * sellerPP;                   // 15% of the ORIGINAL (seller's) contract price
       var financeableFee = Math.min(rawFee, maxFee);
       var excessFee = Math.max(0, rawFee - financeableFee);
       effPurchase = sellerPP + financeableFee;        // recognized price
@@ -563,7 +565,7 @@
     // ---- assignment over-limit messaging + cash-to-close adjustment ----
     if (assignment && assignment.overLimit) {
       add("MANUAL", "Assignment fee of " + usd(assignment.fee) + " exceeds the 15% program limit (" + usd(assignment.maxFee) +
-        ", 15% of the " + usd(assignment.totalPrice) + " purchase price). " + usd(assignment.financeableFee) + " is financeable; " +
+        ", 15% of the " + usd(assignment.sellerPrice) + " original contract price). " + usd(assignment.financeableFee) + " is financeable; " +
         usd(assignment.excessOOP) + " must be brought out of pocket at closing. A higher limit may be requested as an exception.");
       if (sizing) sizing.assignmentExcessOOP = assignment.excessOOP;
     }
