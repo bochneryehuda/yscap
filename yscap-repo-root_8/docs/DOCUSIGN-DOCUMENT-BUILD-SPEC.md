@@ -410,7 +410,10 @@ e-sign condition by setting the template's `esign_doc` descriptor (`db/037:36`) 
 it as rendering its own borrower label (`engine.js:225`). Each new signed `doc_kind` also needs a
 **SharePoint routing entry** alongside `term_sheet_signed` (`sharepoint-backup.js:164-209`,
 `folderPathFor`/`scopeKeyFor`/`KIND_STREAM`) — note `term_sheet_signed` is mapped there but *never
-produced by any code today*, so the completion handler is its first producer.
+produced by any code today*, so the completion handler is its first producer. **EXCEPTION:
+`heter_iska_signed` must NEVER be added to SharePoint routing** (and `rtl_cond_iska` is already
+`tpr_exclude=true`) — the Heter Iska package is kept only in-system + on DocuSign; see **Addendum A.3**
+for this hard rule and the finalized packaging/trigger logic that supersedes §1.
 
 ### 8.3 Bind the envelope to its condition AT SEND TIME (no guessing on the way back)
 `esign_envelopes` already carries `checklist_item_id` and `completed_document_id` (`db/037:82,87`). So
@@ -543,3 +546,130 @@ Business-purpose exemption: CFPB Reg Z §1026.3 https://www.consumerfinance.gov/
 Heter Iska: RabbiKaganoff https://rabbikaganoff.com/how-does-a-heter-iska-work-2/ · Halachipedia
 https://halachipedia.com/index.php?title=Heter_Iska · Bais HaVaad (e-signatures)
 https://baishavaad.org/are-electronic-signatures-valid-according-to-halacha/.
+
+---
+
+## Addendum A — Owner inputs & finalized logic (2026-07-17)
+
+_Supersedes the earlier assumptions in §1/§6 where they differ. The owner provided the two source
+documents and the appraisal-gated workflow. No document content, merge values, or secrets are stored
+here — only field names and structure._
+
+### A.1 Documents received
+- **`BORROWER_BUSINESS_PURPOSE_DISCLOSURE_AND_CERTIFICATION.docx`** — a **single combined Disclosure +
+  Certification** (not a separate affidavit). 6 numbered certifications (business/commercial purpose
+  only; proceeds for business only; non-owner-occupancy incl. guarantors; the consumer-law
+  non-applicability incl. TILA/RESPA/GLBA/SAFE/HPA; acknowledgment of receipt). Borrower + Co-Borrower
+  signature blocks. **E-signed, NOT notarized** for the initial application (owner: the notarized
+  version happens only at closing — out of scope now). This one document is the "business purpose"
+  piece — there is no separate initial affidavit.
+- **`YS_HETIR_ISKA.docx`** — the Heter Iska shtar (**Hebrew, right-to-left**), from a named
+  דומ"ץ/beis din, referencing YS Capital Group + NMLS; reads as a *kulo-pikadon* iska tied to the note
+  ("הנאו"ט"), with the standard witnesses/oath + fixed-payment-as-profit mechanism. Borrower + Co-Borrower
+  signature lines ("נאום"). **Open question:** the file also contains an unrelated "Processor
+  Certification – Title Seasoning Exception" block (appears to be template scaffolding/a stray text box)
+  — confirm only the שטר היתר עיסקא section is the document to generate.
+
+### A.2 CRITICAL generation finding — the provided docs are DOCX + merge fields → use DocuSign Document Generation (DocGen), NOT jsPDF
+Both provided documents are **Word DOCX templates with `«MERGEFIELD»` placeholders**. Rebuilding them in
+jsPDF would be wrong — the Heter Iska is **Hebrew RTL with exact rabbinic nusach that must never be
+altered**, and both are ready-made Word templates. Path per document:
+- **Business purpose + Heter Iska → DocuSign Document Generation (DocGen)** (BLUEPRINT §4.1 Option B):
+  upload each DOCX as a DocGen template, map its merge fields to loan-file data, DocuSign renders the
+  PDF at send. Preserves exact wording/RTL; the business can edit the Word doc without code. (Convert
+  the `«MERGEFIELD»` placeholders to DocGen's merge syntax once, in the DocuSign template.)
+- **Term sheet → keep jsPDF** (existing, frozen numbers, push our bytes).
+- **Application export → build it** (§A.4) — jsPDF following `termsheet.js` (recommended, keeps SSN
+  rendering on our side and matches the frozen term sheet), or DocGen.
+- **Build detail to confirm:** whether DocGen documents can ride in the *same* envelope as
+  pushed-bytes documents, or whether Package 1 uses DocGen for all its docs. Both are supported by
+  DocuSign; the exact composition is a wiring choice.
+
+**Merge-field → loan-file mapping (both provided docs, shared field names):**
+| Merge field | Loan-file source |
+|---|---|
+| `Loan_Number_364` | `applications.ys_loan_number` |
+| `Loan_Amount_1109` | `applications.loan_amount` |
+| `M_745` (application date) | `applications.submitted_at` |
+| `Subject_Property_Address_11` / `City_12` / `State_14` / `Zip_15` | `applications.property_address` (jsonb) |
+| `Borrower_First_And_Middle_Name_36` / `Borrower_Last_Name_4002` | `borrowers` (primary) |
+| `Co_Borrower_First_Name_4004` / `Co_Borrower_Last_Name_4006` | `borrowers` via `applications.co_borrower_id` |
+| `M_1859` / `M_1872` (signed dates) | leave to the DocuSign `dateSigned` tab |
+
+### A.3 Finalized packaging & trigger logic (SUPERSEDES §1)
+**Two packages, sent only after the appraisal is in and the structure is re-confirmed:**
+
+- **Package 1 — "Loan documents"** (synced + TPR as normal): **Term sheet + Application export +
+  Business-purpose disclosure/certification**, signed together. Signers: borrower + co-borrower
+  (= guarantor) if present. Signed copies → `term_sheet_signed` / `application_signed` /
+  `bp_disclosure_signed`, mirrored to SharePoint, clear their conditions.
+- **Package 2 — "Heter Iska"** (SEPARATE): Heter Iska only. **HARD RULE — NEVER exported in the TPR
+  export, NEVER synced to SharePoint.** Kept only in our system + on DocuSign. Enforcement:
+  `rtl_cond_iska` is already `tpr_exclude=true` (verified `db/051:83`); **`heter_iska_signed` must be
+  excluded from SharePoint routing** — do NOT add it to `sharepoint-backup.js` `KIND_STREAM` /
+  `folderPathFor`, and add an explicit denylist guard so it can never mirror.
+
+**TRIGGER for both packages — send only after ALL of:**
+1. Product **registered** (initial), AND
+2. **Appraisal condition uploaded + signed off** — `rtl_cond_appraisaldocs` ("Appraisal documents
+   received", `db/059`), AND
+3. Product **re-registered / structure re-confirmed on the appraised value** — P&P reverified after the
+   appraisal, when final numbers lock. (`db/096` already reopens `product_pricing` **and**
+   `rtl_cond_signedts` on any economics change, so an appraisal-driven value change forces the
+   re-register automatically.)
+
+Then a staff **"send for signature"** action (the manual-review checkpoint) sends Package 1 and
+Package 2. **Rationale (owner):** the signed term sheet must reflect the FINAL confirmed value, which
+only exists after the appraisal — so signing is deliberately gated to post-appraisal re-registration.
+_(Build item: an explicit send-gate that refuses to send until (1)+(2)+(3) hold, surfaced to staff.)_
+
+### A.4 Application export — the document I build (owner-directed)
+A full **business-purpose loan application** PDF I generate from the file (jsPDF, v1+v2, following
+`termsheet.js`), containing at minimum: borrower name(s); **DOB**; **SSN**; primary/mailing address;
+subject property; **loan amount applied for**; full loan-structure detail (program, loan type, purchase
+price, as-is/ARV, rehab budget, rate, term, LTC/LTV, IR, assignment fields); **LLC/entity name** +
+vesting; co-borrower details; and **signature slots at the bottom for one or more borrowers** (borrower
++ co-borrower, invisible anchors `/app_b1_sig/`, `/app_b2_sig/` per §3). New `doc_kind='application_export'`
+(unsigned) / `application_signed` (signed); extend the `docKind` whitelist (§4.1 step 5).
+
+### A.5 Signers — co-borrower = guarantor (CONFIRMED)
+A co-borrower is added **only when they are also a guarantor**; non-guarantor third parties are not
+added at all. So signers = **borrower + optional co-borrower(-guarantor)**. The existing `co_borrower_id`
+model is exactly right — **no new guarantor signer model is needed** (resolves §2.1's open item and
+§10 item 7).
+
+### A.6 Signing experience — email AND in-portal (both, owner-directed)
+The borrower should get an **email** and be able to **sign in the portal**. Recommended:
+**embedded signing (`clientUserId`) + our own PILOT-branded email** (via the existing `notify` fan-out)
+that deep-links to the portal "Sign" page → embedded DocuSign view. (A recipient with `clientUserId` is
+embedded and does **not** receive DocuSign's own email, so we send ours — consistent with PILOT branding
+and the existing email system; a recipient can't be both embedded and DocuSign-emailed.) Confirm this vs.
+DocuSign-hosted email signing.
+
+### A.7 SSN / PII on the application export (guard)
+The application export carries **SSN + DOB**. Guards: render + store via the existing chokepoints; the
+stored PDF is a `documents` row behind `canSeeDocument`; **Connect "Include Documents" stays OFF** (fetch
+signed PDFs via API over TLS); redact from any inbox payload/log/audit `detail`. **Owner/counsel
+decision:** full SSN vs last-4 on the signed application. The business-purpose doc and Heter Iska do not
+carry SSN.
+
+### A.8 Auth / key status — answer to "am I missing any keys before building the login?"
+**Provided (demo, non-secret identifiers — will be read from env, never hardcoded):** Integration Key
+(app "PILOT"), User ID, API Account ID, base URI (`https://demo.docusign.net`), auth host
+(`account-d.docusign.com`). These are enough on the identifier side.
+
+**STILL NEEDED before the JWT login/auth can run — three items, all owner-side, all set in the
+environment (never pasted to chat):**
+1. **A freshly generated RSA private key** → env `DOCUSIGN_PRIVATE_KEY`. **The key pasted in chat is
+   treated as compromised (house rule) and must be regenerated** in the DocuSign demo app (Apps & Keys →
+   the app → generate a new RSA keypair; copy the new private key straight into the environment). The
+   public key stays with DocuSign.
+2. **One-time consent** for the impersonated user (open the consent URL as that user; scopes
+   `signature impersonation`; Accept).
+3. **Connect webhook + HMAC key** configured in the demo account → HMAC secret to env
+   `DOCUSIGN_CONNECT_HMAC_KEY`.
+
+Once 1–3 are set in the environment, JWT auth + envelope send can be built and tested against demo. The
+Integration Key / User ID / Account ID / base URI go into env as `DOCUSIGN_INTEGRATION_KEY` /
+`DOCUSIGN_USER_ID` / `DOCUSIGN_ACCOUNT_ID` / `DOCUSIGN_BASE_URI` / `DOCUSIGN_OAUTH_BASE` (the config
+block `src/config.js:251-260` already reads these).
