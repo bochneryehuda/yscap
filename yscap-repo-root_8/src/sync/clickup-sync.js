@@ -685,22 +685,78 @@ async function ingestOne(taskId, opts = {}) {
 }
 
 // ---- reconciliation poll --------------------------------------------------
-let _watermark = 0;
+// WO-4 (F-M7 / F-H4): the reconcile "bookmark" is DURABLE and only moves forward
+// on a fully-successful pass.
+//   * Persisted in sync_runtime_state (db/125) so a restart RESUMES instead of
+//     re-scanning the last 24h on every deploy (the boot-storm driver).
+//   * Captured BEFORE the query (preQueryMs), so a task updated DURING the pass
+//     is caught next time instead of being skipped.
+//   * Advanced only if NO task in the pass failed — a thrown ingest no longer
+//     lets the bookmark slide past the task it choked on.
+//   * A small overlap re-covers the boundary (re-ingest is idempotent), and a
+//     72h clamp bounds the catch-up scan after a long outage.
+let _watermark = 0;   // in-process mirror of the persisted bookmark (fallback only)
+const RECON_KEY = 'clickup_reconcile_watermark';
+const RECON_OVERLAP_MS = 2 * 60 * 1000;        // re-cover the last 2 min (idempotent) so nothing on the boundary is missed
+const RECON_DEFAULT_LOOKBACK_MS = 24 * 3600 * 1000;
+const RECON_MAX_LOOKBACK_MS = 72 * 3600 * 1000; // never scan more than 72h in one catch-up pass
+
+async function loadState(key) {
+  try {
+    const r = await db.query(`SELECT value FROM sync_runtime_state WHERE key=$1`, [key]);
+    return (r.rows[0] && r.rows[0].value) || null;
+  } catch (_) { return null; }   // table missing / DB blip → behave like no bookmark yet
+}
+async function saveState(key, value) {
+  try {
+    await db.query(
+      `INSERT INTO sync_runtime_state (key, value, updated_at) VALUES ($1,$2,now())
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [key, JSON.stringify(value)]);
+  } catch (e) { console.warn('[clickup-sync] saveState failed:', e.message); }
+}
+
+/** The `dateUpdatedGt` to query with: the persisted bookmark, but never older
+ *  than maxLookback before now (bounds a catch-up after a long outage), and the
+ *  default lookback when there is no bookmark yet. Pure — unit tested. */
+function reconcileSince({ persisted, preQueryMs, defaultLookbackMs = RECON_DEFAULT_LOOKBACK_MS, maxLookbackMs = RECON_MAX_LOOKBACK_MS }) {
+  const floor = preQueryMs - maxLookbackMs;
+  const base = (typeof persisted === 'number' && persisted > 0) ? persisted : (preQueryMs - defaultLookbackMs);
+  // Clamp into [floor, preQueryMs]: never scan more than maxLookback (bounds a
+  // long-outage catch-up) and never into the future (a corrupted/clock-skewed
+  // bookmark self-corrects on the next clean pass instead of scanning nothing forever).
+  return Math.min(Math.max(base, floor), preQueryMs);
+}
+
+/** The bookmark to persist AFTER a pass: advance to just-before-this-pass (minus
+ *  an overlap) ONLY when the pass fully succeeded; otherwise keep the old value
+ *  so the failed/mid-pass tasks are re-covered next time. Pure — unit tested. */
+function nextWatermark({ preQueryMs, hadFailure, current, overlapMs = RECON_OVERLAP_MS }) {
+  if (hadFailure) return (typeof current === 'number' && current > 0) ? current : 0;
+  return Math.max(0, preQueryMs - overlapMs);
+}
+
 async function reconcileOnce() {
   const options = await optionMap();
-  const since = _watermark || (Date.now() - 24 * 3600 * 1000);
+  const preQueryMs = Date.now();                 // BEFORE the query — the safe new bookmark ceiling
+  const state = await loadState(RECON_KEY);
+  const current = state && typeof state.since_ms === 'number' ? state.since_ms : 0;
+  const since = reconcileSince({ persisted: current, preQueryMs });
   const res = await clickup.getFilteredTeamTasks(cfg.clickupTeamId, {
     folderIds: PIPELINE_FOLDERS(), includeClosed: true, dateUpdatedGt: since, subtasks: true,
   });
   const tasks = (res && res.tasks) || [];
+  let hadFailure = false;
   for (const t of tasks) {
     try {
       const full = t.custom_fields ? t : await clickup.getTask(t.id, { include: ['custom_fields'] });
       const read = mapper.readTaskFields(full, options);
       await ingest.ingestTask(full, options, { createFile: cfg.clickupInboundCreateFiles && canMaterialize(read) });
-    } catch (e) { console.error('[clickup] reconcile task failed', t.id, e.message); }
+    } catch (e) { hadFailure = true; console.error('[clickup] reconcile task failed', t.id, e.message); }
   }
-  _watermark = Date.now();
+  const advanced = nextWatermark({ preQueryMs, hadFailure, current });
+  _watermark = advanced;                         // keep the in-process mirror for anything that reads it
+  if (advanced !== current) await saveState(RECON_KEY, { since_ms: advanced });
   return tasks.length;
 }
 
@@ -1241,4 +1297,5 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS };
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
+  reconcileSince, nextWatermark }; // WO-4: exported for the durable-watermark test
