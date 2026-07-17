@@ -630,6 +630,7 @@
     YS.put("rAdvance", sized ? YS.fmtUSD(d.initialAdvance) : EM);
     var advLtvEl = el("rAdvanceLtv"); if (advLtvEl) advLtvEl.textContent = (sized && d.pricingReady && d.ltvPct > 0 && d.initialAdvance > 0) ? (YS.fmtPct(d.ltvPct, 1) + " LTV") : "";
     YS.put("rHoldback", sized ? YS.fmtUSD(d.rehabHoldback) : EM);
+    var hbTag = el("rHoldbackTag"); if (hbTag) hbTag.textContent = (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "(capped \u2014 see eligibility)" : "(= rehab, in draws)";
     YS.put("rRate", (sized && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
     // two interest-only payment lines: initial-advance payment + fully-drawn payment
     YS.put("rPmtInit", (sized && d.initialPayment > 0) ? YS.fmtUSD(d.initialPayment) + "/mo" : EM);
@@ -1072,7 +1073,7 @@
         if (d.financedIR > 0) { var finMo = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (d.irMonths || 0); yL = rowIn(xL, colW, "Financed interest reserve (" + finMo + " mo)", money(d.financedIR), yL); }
         yL = rowIn(xL, colW, "Total project cost", money(d.totalCost), yL, { bold: true });
         yL = rowIn(xL, colW, "Initial advance (at closing)", sized ? (money(d.initialAdvance) + (d.ltvPct > 0 ? "   (" + pc(d.ltvPct) + " LTV)" : "")) : "\u2014", yL);
-        yL = rowIn(xL, colW, "Construction holdback (= rehab)", sized ? money(d.rehabHoldback) : "\u2014", yL);
+        yL = rowIn(xL, colW, (d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "Construction holdback (capped \u2014 see eligibility)" : "Construction holdback (= rehab)", sized ? money(d.rehabHoldback) : "\u2014", yL);
       }
       yL = rowIn(xL, colW, isBridge ? "Total loan amount (disbursed at closing)" : "Total loan amount", sized ? money(d.totalLoan) : "\u2014", yL, { bold: true, accent: true });
       yL += 9;
@@ -1109,7 +1110,7 @@
 
       if (d.reserveCapped && d.maxReserve >= 0) {
         band("Interest reserve");
-        para("Maximum eligible interest reserve on this deal is " + money(d.maxReserve) + " (\u2248 " + d.maxReserveMonths.toFixed(1) + " months). The requested " + d.irMonths + " months exceed what " + d.reserveCapBy + " allows; the maximum eligible amount has been applied and the remainder is not eligible to finance. Interest on any period beyond the reserve is paid as billed.");
+        para("Maximum eligible interest reserve on this deal is " + money(d.maxReserve) + " (\u2248 " + d.maxReserveMonths.toFixed(1) + " months). The requested " + (num("irAmount") > 0 ? money(num("irAmount")) : d.irMonths + " months") + " exceeds what " + d.reserveCapBy + " allows; the maximum eligible amount has been applied and the remainder is not eligible to finance. Interest on any period beyond the reserve is paid as billed.");
       }
 
       if (!isRefi() && isAssign() && d.asg && d.asg.overLimit) {
@@ -1122,11 +1123,11 @@
       if (isBridge) {
         para("This is a stabilized bridge loan \u2014 it is sized against the as-is value only. The loan is capped at " + pc(d.caps ? d.caps.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. A bridge has no rehab holdback, no loan-to-cost limit and no after-repair-value limit." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
       } else {
-        para("Your maximum loan is the lesser of four program limits \u2014 the most conservative one sets your number. (1) The initial advance is capped at " + pc(d.caps ? d.caps.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. (2) 100% of your rehab budget is financed and released in draws as work is verified \u2014 no rehab comes out of pocket. (3) The total loan can't exceed " + pc(d.caps ? d.caps.maxLTC : 0) + " loan-to-cost (purchase + rehab). (4) The total loan can't exceed " + pc(d.caps ? d.caps.maxARLTV : 0) + " of the after-repair value." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
+        para("Your maximum loan is the lesser of four program limits \u2014 the most conservative one sets your number. (1) The initial advance is capped at " + pc(d.caps ? d.caps.maxAcqLTV : 0) + " of the lower of purchase price or as-is value. (2) 100% of your rehab budget is financed and released in draws as work is verified \u2014 no rehab comes out of pocket." + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? " (On this deal the program cap limits the holdback below the budget \u2014 see the eligibility notes.)" : "") + " (3) The total loan can't exceed " + pc(d.caps ? d.caps.maxLTC : 0) + " loan-to-cost (purchase + rehab). (4) The total loan can't exceed " + pc(d.caps ? d.caps.maxARLTV : 0) + " of the after-repair value." + (d.pricingReady && d.binding ? (" On this deal, " + d.binding + " is the binding limit.") : ""));
       }
 
       band("Eligibility snapshot");
-      rowFull("Verified experience tier", d.tierLabel || "\u2014");
+      rowFull("Experience tier (as entered)", d.tierLabel || "\u2014");
       rowFull("Estimated FICO", d.fico ? String(d.fico) : "Not provided");
       if (d.pricingReady) d.reasons.forEach(function (r) { para((r.level === "INELIGIBLE" ? "\u2022 Not eligible: " : r.level === "MANUAL" ? "\u2022 Manual underwrite: " : "\u2022 ") + r.msg, 7); });
       else para("\u2022 Add a representative FICO score to finalize pricing, leverage and your loan amount.", 7);
@@ -1559,7 +1560,7 @@
       derivRows.push(["Cost basis \u2014 lower of " + ((d.asg && d.asg.overLimit) ? "effective purchase price" : "price") + " / as-is", money(d.basisPrice)]);
       derivRows.push(["Initial advance at closing", money(d.initialAdvance)]);
       derivRows.push(["= " + pc(d.ltvPct) + " of as-is value (initial LTV)", "", "sub"]);
-      if (d.rehabHoldback > 0) derivRows.push(["Construction holdback \u2014 100% of budget", money(d.rehabHoldback)]);
+      if (d.rehabHoldback > 0) derivRows.push(["Construction holdback \u2014 " + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "capped below the budget" : "100% of budget"), money(d.rehabHoldback)]);
       if (d.financedIR > 0) { var fm = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (inp.irMonths || 0); derivRows.push(["Financed interest reserve (" + fm + " mo)", money(d.financedIR)]); }
       derivRows.push(["Total loan amount", money(d.totalLoan), "tot"]);
     }

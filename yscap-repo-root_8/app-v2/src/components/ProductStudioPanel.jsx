@@ -199,10 +199,10 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           <Row k="Purchase price" v={money(inp.purchasePrice)} />
           {inp.isAssignment && <Row k="Seller price / assignment fee" v={`${money(inp.sellerPrice)} / ${money(Math.max(0, (inp.purchasePrice || 0) - (inp.sellerPrice || 0)))}`} />}
-          <Row k="As-is value / ARV" v={`${money(inp.asIsValue)} / ${money(inp.arv)}`} />
+          <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
-          <Row k="Interest reserve" v={inp.irAmount ? money(inp.irAmount) : `${inp.irMonths || 0} months`} />
+          <Row k="Requested interest reserve" v={`${inp.irAmount ? money(inp.irAmount) : `${inp.irMonths || 0} months`}${(inp.irAmount > 0 || inp.irMonths > 0) ? ` · financed: ${money(s.financedReserve || 0)}` : ''}`} />
           {showAdmin && q.adminPricing && (q.adminPricing.markupPct != null || q.adminPricing.manualPricing) && (
             <Row k="Admin pricing" v={`${q.adminPricing.markupPct != null ? 'markup ' + q.adminPricing.markupPct + '%' : ''}${q.adminPricing.manualPricing ? ' · manual basis' : ''}`.trim()} />
           )}

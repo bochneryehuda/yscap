@@ -824,7 +824,7 @@
                 <div class="result"><div class="r-label">Total project cost</div><div class="r-value" id="snTotalCost">$0</div><div class="r-hint">purchase + rehab</div></div>
                 <div class="result"><div class="r-label">Experience tier</div><div class="r-value" id="snTier" style="font-size:1.02rem">—</div></div>
                 <div class="result"><div class="r-label">Initial advance</div><div class="r-value" id="snInitial">$0</div><div class="r-hint">at closing</div></div>
-                <div class="result"><div class="r-label">Rehab holdback</div><div class="r-value" id="snHoldback">$0</div><div class="r-hint">100% financed, in draws</div></div>
+                <div class="result"><div class="r-label">Rehab holdback</div><div class="r-value" id="snHoldback">$0</div><div class="r-hint" id="snHoldbackHint">100% financed, in draws</div></div>
                 <div class="result"><div class="r-label">Est. down payment</div><div class="r-value" id="snDown">$0</div></div>
                 <div class="result"><div class="r-label">Est. title / escrow</div><div class="r-value" id="snTitle">—</div><div class="r-hint">rough estimate — depends on your title vendor</div></div>
                 <div class="result"><div class="r-label">Est. cash to close</div><div class="r-value" id="snCash">$0</div><div class="r-hint">down payment + fees + est. title</div></div>
@@ -1341,7 +1341,16 @@
     var asg = R.assignment;
     var basisPrice = (asg ? asg.recognizedPrice : totalPrice);   // price leverage is sized on
     var totalCost = basisPrice + rehab;
-    var totalLoan = s.totalLoan || 0, sized = totalLoan > 0 && R.status !== "INELIGIBLE";
+    // Rounding policy (owner-directed 2026-07-09, extended to this snapshot 2026-07-17):
+    // report the loan floored DOWN to whole dollars and reconcile the breakdown EXACTLY —
+    // floor initial + holdback, the financed reserve absorbs the residual (the initial
+    // absorbs it on a no-reserve deal). Mirrors termsheet.js calc + server pricing.js.
+    var totalLoan = Math.floor(s.totalLoan || 0), sized = totalLoan > 0 && R.status !== "INELIGIBLE";
+    var snHoldbackR = Math.floor(s.rehabLoan || 0);
+    var snInitialR = Math.floor(s.acquisition || 0);
+    var snFinancedIR = 0;
+    if ((s.financedIR || 0) > 0.5) snFinancedIR = Math.max(0, totalLoan - snInitialR - snHoldbackR);
+    else snInitialR = Math.max(0, totalLoan - snHoldbackR);
 
     // ----- gating: don't surface pricing / leverage / loan until required fields exist -----
     var miss = appMissingFields();
@@ -1354,7 +1363,7 @@
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (titleEst.total || 0);
     var cashToClose = (s.downPayment || 0) + excessOOP + origFee + adminFeeUW() + adminFeeCredit() + titleCost;   // fees admin-overridable; reserve never brought to table; appraisal is POC
-    var financedIR = s.financedIR || 0;
+    var financedIR = snFinancedIR;
     var totalCostDisp = totalCost + financedIR;
 
     YS.put("snEffPrice", YS.fmtUSD(basisPrice));
@@ -1362,8 +1371,9 @@
     YS.put("snRehab", YS.fmtUSD(rehab));
     YS.put("snTotalCost", YS.fmtUSD(totalCostDisp));
     YS.put("snMaxLoan", (ready && sized) ? YS.fmtUSD(totalLoan) : EM);
-    YS.put("snInitial", ready ? YS.fmtUSD(s.acquisition || 0) : EM);
-    YS.put("snHoldback", ready ? YS.fmtUSD(s.rehabLoan || 0) : EM);
+    YS.put("snInitial", ready ? YS.fmtUSD(snInitialR) : EM);
+    YS.put("snHoldback", ready ? YS.fmtUSD(snHoldbackR) : EM);
+    YS.put("snHoldbackHint", (s && s.rehabOverCap) ? "capped \u2014 remainder out of pocket" : "100% financed, in draws");
     YS.put("snDown", ready ? YS.fmtUSD(s.downPayment || 0) : EM);
     YS.put("snTitle", (ready && titleCost > 0) ? YS.fmtUSD(titleCost) : EM);
     YS.put("snCash", ready ? YS.fmtUSD(cashToClose) : EM);
@@ -1441,8 +1451,8 @@
       if (ready && s.reserveCapped) {
         sIRn.style.display = "";
         sIRn.innerHTML = "<strong>Maximum eligible interest reserve: " + YS.fmtUSD(s.maxReserve || 0) +
-          "</strong> (\u2248 " + (s.maxReserveMonths || 0).toFixed(1) + " months). The requested " + resMonths +
-          " months exceed what " + (s.reserveCapBy || "the program") + " allows; the maximum eligible amount has been applied and the remainder isn't eligible to finance.";
+          "</strong> (\u2248 " + (s.maxReserveMonths || 0).toFixed(1) + " months). The requested " + (resAmount > 0 ? YS.fmtUSD(resAmount) : resMonths + " months") +
+          " exceeds what " + (s.reserveCapBy || "the program") + " allows; the maximum eligible amount has been applied and the remainder isn't eligible to finance.";
       } else { sIRn.style.display = "none"; sIRn.innerHTML = ""; }
     }
 
