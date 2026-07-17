@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
-const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
+const LABEL = { file_intake: 'Intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
 // Presentational only: map a file's status → PILOT pill colour variant (dot pill).
-const PILL = { new: 'info', in_review: 'info', processing: 'info', underwriting: 'warn', approved: 'ok', clear_to_close: 'ok', funded: 'ok', on_hold: 'alert', declined: 'crit', withdrawn: 'mut' };
+const PILL = { file_intake: 'mut', new: 'info', in_review: 'info', processing: 'info', underwriting: 'warn', approved: 'ok', clear_to_close: 'ok', funded: 'ok', on_hold: 'alert', declined: 'crit', withdrawn: 'mut' };
 // Two-letter monogram from a name (officer avatar) — display formatter.
 const initials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() || '—';
 // Status GROUPS (owner-defined). The pipeline defaults to ACTIVE so paused/
@@ -16,6 +16,9 @@ const initials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).map(
 // active view and every task surface, but stay reachable in their own bucket);
 // Closed = funded; Cancelled = withdrawn/declined.
 const STATUS_GROUPS = {
+  // #151: file_intake is deliberately NOT in 'active' — an intake prospect is
+  // in the system but not yet an active file. It gets its own bucket.
+  intake: ['file_intake'],
   active: ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close'],
   on_hold: ['on_hold'],
   closed: ['funded'],
@@ -23,7 +26,7 @@ const STATUS_GROUPS = {
 };
 // The 'closed' group is funded-only, so it's labelled "Funded" — that's the view
 // owners look for. ('Cancelled' covers withdrawn/declined.)
-const GROUP_LABEL = { active: 'Active', on_hold: 'On hold', closed: 'Funded', cancelled: 'Cancelled', all: 'All' };
+const GROUP_LABEL = { intake: 'Intake', active: 'Active', on_hold: 'On hold', closed: 'Funded', cancelled: 'Cancelled', all: 'All' };
 const inGroup = (g, status) => g === 'all' || (STATUS_GROUPS[g] || []).includes(status);
 const bigMoney = (n) => n == null ? '$0' : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? '$' + Math.round(n / 1e3) + 'K' : '$' + n;
 
@@ -106,6 +109,11 @@ function Kpis({ d, activeParams }) {
     // createdFrom filter would also show backfilled rows the count excludes.
     { k: 'New this week', v: d.newThisWeek, sub: 'real intakes',
       params: { flag: 'newintake' } },
+    // #151 — pre-processing intake prospects (ClickUp starting / prospect &
+    // pricing). In the system, but NOT active files; never inside the pipeline
+    // value or 'active' count above.
+    { k: 'Intake', v: d.intake != null ? d.intake : 0, sub: 'pre-processing prospects',
+      params: { group: 'intake' } },
     { k: 'Open leads', v: d.openLeads, to: '/internal/leads' },
     // Ops/AI signal: active files that have gone stale (untouched > 7 days).
     { k: 'Needs attention', v: d.stalled != null ? d.stalled : d.stale, alert: (d.stalled != null ? d.stalled : d.stale) > 0, sub: 'stalled > 7 days',
@@ -301,6 +309,7 @@ export default function StaffQueue() {
   const [dash, setDash] = useState(null);
   const [exc, setExc] = useState(null);
   const [err, setErr] = useState('');
+  const [exporting, setExporting] = useState(false);   // #152 Export to Excel in flight
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
 
@@ -459,7 +468,7 @@ export default function StaffQueue() {
   const mineLabel = seesAllFiles ? 'All applications' : 'My pipeline';
   // Status options are DERIVED from the data (+ the canonical set) so no file can
   // ever be un-selectable / hidden by a status not in a fixed list (e.g. on_hold).
-  const CANON = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
+  const CANON = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
   const present = [...new Set((allFiles || []).map(a => a.status).filter(Boolean))];
   const STATUS_ORDER = [...CANON, ...present.filter(s => !CANON.includes(s))];
 
@@ -502,10 +511,10 @@ export default function StaffQueue() {
           {/* Primary lens: Active (default) / Closed / Cancelled / All — so the
               working pipeline never shows funded or withdrawn files unless asked. */}
           <div className="tabs">
-            {['active', 'on_hold', 'closed', 'cancelled', 'all'].map(g => (
+            {['active', 'intake', 'on_hold', 'closed', 'cancelled', 'all'].map(g => (
               <button key={g} className={`tab ${(groupF === g || (groupF === '' && g === 'all')) ? 'on' : ''}`}
                 onClick={() => setParam({ group: g, status: '' })}
-                title={g === 'active' ? 'In-progress files (default)' : g === 'on_hold' ? 'Paused files (kept out of the active view and task lists)' : g === 'closed' ? 'Funded files' : g === 'cancelled' ? 'Withdrawn / declined' : 'Every file'}>
+                title={g === 'active' ? 'In-progress files (default)' : g === 'intake' ? 'File-intake prospects (pre-processing — not active files)' : g === 'on_hold' ? 'Paused files (kept out of the active view and task lists)' : g === 'closed' ? 'Funded files' : g === 'cancelled' ? 'Withdrawn / declined' : 'Every file'}>
                 {GROUP_LABEL[g]}{allFiles ? <span className="ct">{groupCount(g)}</span> : null}
               </button>
             ))}
@@ -576,6 +585,19 @@ export default function StaffQueue() {
               <button className="btn link small" onClick={clearFilters}>Clear filters</button>
             </>
           )}
+          {/* #152 — export EXACTLY this view (same filters, incl. "My files
+              only") to a real .xlsx with the maximum per-file information. */}
+          <button className="btn ghost small" style={{ marginLeft: 'auto' }} disabled={exporting}
+            onClick={async () => {
+              setExporting(true);
+              try {
+                const { blob, filename } = await api.staffExportPipeline({ ...serverParams, limit: undefined, offset: undefined, ...(mineOnly ? { mine: '1' } : {}) });
+                saveBlob(blob, filename || 'pilot-pipeline.xlsx');
+              } catch (e) { setErr(e.message || 'Export failed'); }
+              finally { setExporting(false); }
+            }}>
+            {exporting ? 'Exporting…' : 'Export to Excel'}
+          </button>
         </div>
       )}
       {tab === 'leads' && (

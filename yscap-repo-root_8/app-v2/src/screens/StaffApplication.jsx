@@ -374,8 +374,8 @@ function sowUrl(appId, itemId, app) {
   return `/tools/rehab-budget.html?${p.toString()}`;
 }
 const STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
-const APP_STATUSES = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
-const APP_STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
+const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -2433,7 +2433,7 @@ export default function StaffApplication() {
             </span>
           : <button className="btn link small" style={{ color: 'var(--danger,#e06666)', flex: 'none' }} onClick={archiveApp} title="Archive this file (reversible; leaves the dashboard figures)">Archive file</button>
         )}
-        <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{app.status}</span>
+        <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{APP_STATUS_LABEL[app.status] || app.status}</span>
       </div>
 
       {msg && <div className="notice ok">{msg}</div>}
@@ -2840,7 +2840,7 @@ export default function StaffApplication() {
         <div className="panel">
           <h3 style={{ marginBottom: 8 }}>File summary</h3>
           <div className="metrow"><span className="k">Loan number</span><span className="v">{app.ys_loan_number || 'Pending'}</span></div>
-          <div className="metrow"><span className="k">Status</span><span className="v">{app.status}</span></div>
+          <div className="metrow"><span className="k">Status</span><span className="v">{APP_STATUS_LABEL[app.status] || app.status}</span></div>
           <div className="metrow"><span className="k">Internal status</span><span className="v">{app.internal_status || '—'}</span></div>
           <div className="metrow"><span className="k">Program</span><span className="v">{app.program || '—'}</span></div>
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>

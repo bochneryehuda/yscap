@@ -15,6 +15,17 @@ import {
    full lead workspace (timeline, tasks, files, convert). Admins/underwriters see
    every lead; a loan officer sees theirs plus the shared (unassigned) desk. */
 
+// The EFFECTIVE source for filtering/labels: the generic 'marketing_site'
+// bucket (every public form lands there; the db/101 boot backfill stamps
+// lead_source with it) is useless as a filter — fall through to the TOOL so
+// "Newsletter / updates subscription" vs "Loan application" stay distinct.
+// This also keeps the bulk-archive (#153) keyed to ONE tool, never a sweep of
+// every public lead at once (audit-caught 2026-07-17).
+const effSource = (l) => {
+  const src = l.lead_source || l.source;
+  return (src && src !== 'marketing_site') ? src : (l.tool || src);
+};
+
 export default function StaffLeads() {
   const { actor, can } = useAuth();
   const nav = useNavigate();
@@ -47,7 +58,7 @@ export default function StaffLeads() {
       if (ownerF === 'me' && !(actor && l.officer_id === actor.id)) return false;
       if (ownerF === 'unassigned' && l.officer_id) return false;
       if (ownerF && ownerF !== 'me' && ownerF !== 'unassigned' && l.officer_id !== ownerF) return false;
-      if (sourceF && (l.lead_source || l.source || l.tool) !== sourceF) return false;
+      if (sourceF && effSource(l) !== sourceF) return false;
       if (term) {
         const hay = [leadName(l), l.company, l.email, l.phone, l.referral_partner].filter(Boolean).join(' ').toLowerCase();
         if (!hay.includes(term)) return false;
@@ -66,7 +77,7 @@ export default function StaffLeads() {
   const wonCount = cnt(l => l.status === 'converted');
   const pipelineValue = rows.filter(l => OPEN_STAGES.includes(l.status)).reduce((s, l) => s + (Number(l.loan_amount) || 0), 0);
 
-  const sources = [...new Set(rows.map(l => l.lead_source || l.source || l.tool).filter(Boolean))];
+  const sources = [...new Set(rows.map(effSource).filter(Boolean))];
 
   async function quickStage(l, status) {
     try { await api.staffUpdateLead(l.id, { status }); await load(); flash(`Moved to ${STAGE_LABEL[status]}`); }
@@ -126,6 +137,20 @@ export default function StaffLeads() {
             Include closed
           </label>
           <span className="muted small">{shown.length} shown</span>
+          {/* #153: one-click cleanup of a spam wave — archive every open lead
+              from the selected source (admin only; the source filter must be
+              chosen so it can never sweep the whole desk). */}
+          {sourceF && ['admin', 'super_admin'].includes(actor?.role) && (
+            <button className="btn ghost small" onClick={async () => {
+              const label = TOOL_LABEL[sourceF] || sourceF;
+              if (!window.confirm(`Archive ALL open "${label}" leads? Converted leads are never touched.`)) return;
+              try {
+                const key = TOOL_LABEL[sourceF] ? { tool: sourceF } : { source: sourceF };
+                const r = await api.staffLeadsBulkArchive(key);
+                await load(); flash(`Archived ${r.archived} ${label} lead${r.archived === 1 ? '' : 's'}.`);
+              } catch (e2) { setErr(e2.message || 'Bulk archive failed'); }
+            }}>Archive all “{TOOL_LABEL[sourceF] || sourceF}”</button>
+          )}
         </div>
 
         {view === 'board'
@@ -182,7 +207,7 @@ function LeadCard({ l, onOpen, onStage, actor }) {
       {l.company && <div className="lead-card-sub">{l.company}</div>}
       <div className="lead-card-meta">
         {l.program && <span className="tagm">{l.program}</span>}
-        {(l.lead_source || l.tool) && <span className="tagm mut">{TOOL_LABEL[l.lead_source || l.tool] || l.lead_source || l.tool}</span>}
+        {effSource(l) && <span className="tagm mut">{TOOL_LABEL[effSource(l)] || effSource(l)}</span>}
       </div>
       <div className="lead-card-foot">
         <span className="lead-card-owner">
@@ -218,7 +243,7 @@ function LeadList({ leads, onOpen, actor }) {
                     <span className="who"><span className="mono">{initials(leadName(l))}</span><span className="lead">{leadName(l)}</span></span>
                     {l.company && <div className="mut">{l.company}</div>}
                   </td>
-                  <td className="mut">{TOOL_LABEL[l.lead_source || l.tool] || l.lead_source || l.tool || '—'}</td>
+                  <td className="mut">{TOOL_LABEL[effSource(l)] || effSource(l) || '—'}</td>
                   <td><span className={`pill ${STAGE_PILL[l.status] || 'mut'}`}>{STAGE_LABEL[l.status] || l.status}</span></td>
                   <td>{l.officer_name
                     ? <span className="off"><span className="mono">{initials(l.officer_name)}</span>{mine ? 'You' : l.officer_name}</span>

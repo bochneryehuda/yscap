@@ -37,11 +37,11 @@ We store the **exact ClickUp status string** as the internal status. The 38 stat
 `starting` · `prospect / pricing` · `active / fill clickup(1-em` · `self procesing` · `assigned to processor` · `delegated initial` · `delegated conditional` · `delegated ctc submission` · `non del imported ba(2-em)` · `in underwriting` · `workflow` · `secondary workflow` · `approval processing (3-em)` · `file being worked` · `file on desk` · `waiting for docs` · `resubmitted (4-em)` · `final submission (4-em)` · `ctc (4-email)` · `scheduling closing` · `active closing` · `declined` · `rolled back` · `structuring loan` · `inactive / on hold` · `closed (6-email funded)` · `cancelled` · `refinanced` · `recalled` · `pre-recall` · `trash` · `cancelled & reconciled` · `in purchase review` · `purchase conditions` · `pa issued-post closing.` · `waiting for final docs` · `non del closed reconciled` · `closed reconciled`
 
 ### 2B. portal `internal_status` → borrower-facing `status` (derived; the translation you'll verify)
-Borrower-facing set = existing 9 **+ new `on_hold`**.
+Borrower-facing set = existing 9 **+ `on_hold` + `file_intake`** (#151, owner-directed 2026-07-17).
 
 | ClickUp / internal status | Borrower-facing | Reasoning |
 |---|---|---|
-| starting · prospect / pricing | **new** | file just created / pricing |
+| starting · prospect / pricing | **file_intake** | intake stage, BEFORE processing — in the system but NOT an active file (#151; excluded from every active-file KPI/filter, own Intake bucket) |
 | active / fill clickup(1-em · structuring loan · rolled back | **in_review** | being set up / re-examined |
 | self procesing · assigned to processor · workflow · secondary workflow · file being worked · file on desk · waiting for docs | **processing** | in the processing back-and-forth |
 | delegated initial · delegated conditional · non del imported ba(2-em) · in underwriting · approval processing (3-em) · resubmitted (4-em) | **underwriting** | with lender / underwriting |

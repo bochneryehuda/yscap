@@ -26,6 +26,71 @@ const TOOL_LABEL = {
 };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/* ------------------------------------------------------------------ #153 —
+ * Bot-spam defense. Root-caused 2026-07-17: the owner's inbox was getting
+ * "New newsletter / updates subscription from <random>@…" ALL DAY. It is NOT a
+ * resend loop (each notification sends exactly once per POST) — bots were
+ * hammering this public endpoint, and every hit stored a lead + sent up to two
+ * emails (owner notification + visitor "confirmation" backscatter to a spoofed
+ * address). Layers, all dependency-free:
+ *   1. FORM TOKEN — GET /api/leads/token hands the page an HMAC-signed
+ *      timestamp; the pure-email tools (subscribe / dscr_waitlist) must echo a
+ *      token that is valid AND at least LEADS_TOKEN_MIN_MS old (a human dwells
+ *      on the page; a curl replay never fetched one). Other tools keep working
+ *      without it (their forms carry real content + their own token later).
+ *   2. HONEYPOT — a hidden "website" field on the forms; any tool that arrives
+ *      with it filled is a bot.
+ *   3. DEDUP — the same email+tool within 30 days never creates a second lead
+ *      row or another email (also absorbs double-clicks).
+ *   4. MX CHECK — subscribe-class domains must resolve mail (best-effort,
+ *      fail-open on DNS trouble; kills invented domains, not spoofed real ones).
+ *   5. NO CONFIRMATION BACKSCATTER — subscribe-class tools never email the
+ *      submitted address (a bot-entered victim address must not get mail).
+ * Bots are answered with a FAKE 201 ok (drop silently — never teach the bot
+ * what tripped); every drop is console-logged with the reason + IP for ops.
+ */
+const LOW_SIGNAL_TOOLS = new Set(['subscribe', 'dscr_waitlist']);
+const TOKEN_MIN_MS = Number(process.env.LEADS_TOKEN_MIN_MS || 3000);
+const TOKEN_MAX_MS = Number(process.env.LEADS_TOKEN_MAX_MS || 2 * 60 * 60 * 1000);
+const MX_CHECK = process.env.LEADS_MX_CHECK !== '0';
+const cryptoLib = require('crypto');
+const cfg = require('../config');
+function signFormToken(ts) {
+  return ts + '.' + cryptoLib.createHmac('sha256', String(cfg.jwtSecret || 'dev')).update('leadform|' + ts).digest('hex').slice(0, 32);
+}
+function formTokenAgeMs(token) {
+  const m = /^(\d{10,16})\.([0-9a-f]{32})$/.exec(String(token || ''));
+  if (!m) return null;
+  if (signFormToken(m[1]) !== m[0]) return null;
+  const age = Date.now() - Number(m[1]);
+  return age >= 0 ? age : null;
+}
+const MX_CACHE = new Map(); // domain -> { ok, at }
+async function domainAcceptsMail(email) {
+  if (!MX_CHECK) return true;
+  const domain = String(email).split('@')[1].toLowerCase();
+  const hit = MX_CACHE.get(domain);
+  if (hit && Date.now() - hit.at < 24 * 60 * 60 * 1000) return hit.ok;
+  let ok = true; // fail-open: DNS trouble must never block a real visitor
+  try {
+    const dns = require('dns').promises;
+    const mx = await Promise.race([
+      dns.resolveMx(domain),
+      new Promise((resolve) => setTimeout(() => resolve(null), 2000)),
+    ]);
+    if (Array.isArray(mx)) ok = mx.length > 0;
+  } catch (e) {
+    if (e && (e.code === 'ENOTFOUND' || e.code === 'ENODATA')) ok = false;
+  }
+  if (MX_CACHE.size > 5000) MX_CACHE.clear();
+  MX_CACHE.set(domain, { ok, at: Date.now() });
+  return ok;
+}
+// The page fetches this when the visitor first touches a form; echoed on POST.
+router.get('/token', (req, res) => {
+  res.json({ t: signFormToken(String(Date.now())) });
+});
+
 // Newsletter/updates subscriptions notify ONLY this single inbox (owner-directed
 // 2026-07-15 — the whole admin desk was getting them and it made the team nervous).
 // A plain routing address, not a secret; env-overridable without a code change.
@@ -54,7 +119,37 @@ router.post('/', async (req, res) => {
   if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: 'invalid email' });
   if (rateLimited(req.ip)) return res.status(429).json({ error: 'too many submissions — please try again later' });
 
+  // #153 bot-drop: answer a fake 201 (never teach the bot what tripped), store
+  // nothing, email no one. Console-logged (address masked) so ops see the pressure.
+  const drop = (reason) => {
+    const masked = email ? String(email).replace(/^(.).*?(@.*)$/, '$1***$2') : '';
+    console.warn(`[leads] dropped ${tool} from ${req.ip} (${reason})${masked ? ' email=' + masked : ''}`);
+    return res.status(201).json({ ok: true, leadId: null, routedTo: 'the YS Capital Group loan desk' });
+  };
+  // Honeypot: hidden "website" field — humans never see it, form-fillers fill it.
+  if (b.website) return drop('honeypot');
+  if (LOW_SIGNAL_TOOLS.has(tool)) {
+    // Proof-of-page-visit + human dwell time for the pure-email tools.
+    const age = formTokenAgeMs(b.formToken);
+    if (age == null) return drop('missing/invalid form token');
+    if (age < TOKEN_MIN_MS || age > TOKEN_MAX_MS) return drop(`token age ${age}ms out of range`);
+    if (email && !(await domainAcceptsMail(email))) return drop('domain has no MX');
+  }
+
   try {
+    // Dedup — LOW-SIGNAL tools ONLY (audit-caught 2026-07-17): a repeat
+    // subscribe/waitlist for the same address inside 30 days is the SAME lead —
+    // no new row, no more emails. Content-carrying tools (contact, loan
+    // application, term sheet…) are NEVER deduped: a visitor's second message
+    // or corrected submission must always land and notify. Archived rows don't
+    // match — a genuine re-subscribe after a spam sweep gets a fresh lead.
+    if (email && LOW_SIGNAL_TOOLS.has(tool)) {
+      const dup = await db.query(
+        `SELECT id FROM leads WHERE tool=$1 AND lower(email)=lower($2)
+           AND status <> 'archived'
+           AND created_at > now() - interval '30 days' LIMIT 1`, [tool, email]);
+      if (dup.rows[0]) return res.status(201).json({ ok: true, leadId: dup.rows[0].id, routedTo: 'the YS Capital Group loan desk' });
+    }
     // Resolve the branded ?lo= officer code to a real, selectable staff row.
     let officerId = null, officerRow = null;
     const code = b.officerCode ? String(b.officerCode).toLowerCase().replace(/[^a-z0-9._-]/g, '') : '';
@@ -127,8 +222,11 @@ router.post('/', async (req, res) => {
       await db.query(`UPDATE leads SET emailed_officer=true WHERE id=$1`, [leadId]);
     } catch (_) { /* never fail the submission on a notify hiccup */ }
 
-    // Confirmation to the visitor (best-effort).
-    if (email) {
+    // Confirmation to the visitor (best-effort). NEVER for the subscribe-class
+    // tools (#153): a bot can enter any victim's address, and the confirmation
+    // becomes backscatter that burns the sending domain's reputation. A real
+    // newsletter signup needs no "we received your inquiry" letter.
+    if (email && !LOW_SIGNAL_TOOLS.has(tool)) {
       try {
         // The body promises "just reply to this email" — when the lead routed to
         // an officer, replies go to that officer instead of the no-reply sender.
@@ -137,7 +235,8 @@ router.post('/', async (req, res) => {
           firstName: name ? String(name).split(' ')[0] : '',
           toolLabel: label,
           officerName: officerRow ? officerRow.full_name : null,
-        }, { replyTo: officerRow?.email || null });
+          // #150: the confirmation arrives FROM the routed officer by name.
+        }, { replyTo: officerRow?.email || null, from: officerRow ? require('../lib/email').fromWithName(officerRow.full_name) : null });
         if (r && r.ok) await db.query(`UPDATE leads SET emailed_submitter=true WHERE id=$1`, [leadId]);
       } catch (_) {}
     }

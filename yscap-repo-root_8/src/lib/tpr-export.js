@@ -109,7 +109,7 @@ function colLetter(n) { let s = ''; n += 1; while (n > 0) { const m = (n - 1) % 
  * an array of arrays; a cell that is a finite number is written as a numeric
  * cell, everything else as an inline string. Returns a Buffer.
  */
-function buildXlsx(rows) {
+function buildXlsx(rows, sheetName = 'Track Record') {
   const sheetRows = rows.map((cells, ri) => {
     const r = ri + 1;
     const cs = cells.map((val, ci) => {
@@ -134,7 +134,7 @@ function buildXlsx(rows) {
       + '</Relationships>' },
     { name: 'xl/workbook.xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-      + '<sheets><sheet name="Track Record" sheetId="1" r:id="rId1"/></sheets>'
+      + `<sheets><sheet name="${xmlEsc(String(sheetName).slice(0, 31))}" sheetId="1" r:id="rId1"/></sheets>`
       + '</workbook>' },
     { name: 'xl/_rels/workbook.xml.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'

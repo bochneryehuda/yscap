@@ -41,9 +41,16 @@ CREATE INDEX IF NOT EXISTS idx_applications_internal_status ON applications(inte
 CREATE INDEX IF NOT EXISTS idx_applications_hot_poll ON applications(hot_poll_until) WHERE hot_poll_until IS NOT NULL;
 
 -- ---- new borrower-facing 'on_hold' status ---------------------------------
+-- RE-RUN-SAFETY AMENDMENT (2026-07-17, #151): 'file_intake' added to THIS list
+-- too. Migrations re-run on every boot; once db/123's backfill created
+-- file_intake rows, re-adding the original (narrower) constraint here failed
+-- validation on every boot ("violated by some row") and rolled this whole file
+-- back each time. The list below must always equal db/123's — widen both
+-- together. (Historical effect is unchanged: db/123 supersedes this constraint
+-- on the same boot for any database that predates file_intake.)
 ALTER TABLE applications DROP CONSTRAINT IF EXISTS applications_status_check;
 ALTER TABLE applications ADD  CONSTRAINT applications_status_check
-  CHECK (status IN ('new','in_review','processing','underwriting','approved',
+  CHECK (status IN ('file_intake','new','in_review','processing','underwriting','approved',
                     'clear_to_close','funded','on_hold','declined','withdrawn'));
 
 -- ---- borrowers: primary housing -------------------------------------------

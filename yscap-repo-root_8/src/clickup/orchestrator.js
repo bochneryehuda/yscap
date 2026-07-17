@@ -492,7 +492,9 @@ async function logSync(direction, appId, taskId, detail) {
  * A portal-originated file used to land unlinked and only got a ClickUp task as a
  * side effect of the first later edit (or a manual admin repush). This wires the
  * create at creation time: it seeds the internal-status mirror to the pipeline's
- * first status ('starting' → borrower sees 'new'), then runs a full push. For an
+ * first status ('starting' — which derives to the external 'file_intake' stage,
+ * #151; the portal file keeps its own submitted status until the next inbound
+ * status derive), then runs a full push. For an
  * unlinked file that resolves the target list (the officer's pipeline folder, or
  * Lead Capture when there's no/unknown officer) and creates the task. Best-effort
  * and idempotent (updates instead of duplicating if a task already exists), and

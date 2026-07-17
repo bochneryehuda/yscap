@@ -51,7 +51,10 @@ const seesAllBorrowers = (req) => seesAll(req) || (req.actor && req.actor.role =
 // on funded files; that carve-out is applied where it matters.) Kept as one SQL
 // IN-list so every active-work query shares a single definition — extends the #24
 // funded-muting to on_hold.
-const INACTIVE_FILE_STATUSES = "('funded','declined','withdrawn','on_hold')";
+// file_intake (#151) is the pre-processing intake stage — a prospect in the
+// system that is NOT an active file, so it sits with the other non-active
+// statuses here and falls out of every KPI/task/exception view built on this.
+const INACTIVE_FILE_STATUSES = "('funded','declined','withdrawn','on_hold','file_intake')";
 
 // #145 — ONE definition per clickable dashboard figure, shared by the COUNT that
 // renders the KPI/exception tile AND the drill-down FILTER the click applies, so a
@@ -143,6 +146,98 @@ function scopeClause(req, alias = 'a') {
 // Guard every /applications/:id* route: a non-privileged staffer may only touch
 // a file they are the loan officer or processor on. (Borrower :id routes live
 // under /borrowers/:id and are unaffected by this path-scoped middleware.)
+// #152 — export the CURRENT pipeline view to Excel. Registered BEFORE the
+// /applications/:id scope middleware (── 'export' must never be read as a file
+// id). Accepts the exact same filter params as GET /applications via the ONE
+// shared builder (buildPipelineFilter), so the spreadsheet always matches the
+// view on screen — that's the whole point (troubleshoot which files are/aren't
+// in a view, send a view onward). Maximum information per file, NEVER SSN/DOB/
+// card data, and no pricing internals (scalar registration columns only).
+router.get('/applications/export', async (req, res) => {
+  try {
+    const f = buildPipelineFilter(req, req.query);
+    if (f.error) return res.status(400).json({ error: f.error });
+    const sql = `
+      SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.status, a.internal_status,
+             a.program, a.loan_type, a.property_type, a.units, a.occupancy, a.channel, a.source,
+             COALESCE(a.property_address->>'oneLine',
+                      NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                       a.property_address->>'state', a.property_address->>'zip'), '')) AS address,
+             a.property_address->>'city'  AS city,
+             a.property_address->>'state' AS state,
+             a.property_address->>'zip'   AS zip,
+             b.first_name, b.last_name, b.email AS borrower_email, b.cell_phone AS borrower_phone,
+             b.fico AS borrower_fico, b.tier AS borrower_tier,
+             (cb.first_name || ' ' || cb.last_name) AS co_borrower_name, cb.email AS co_borrower_email,
+             COALESCE(lo.full_name, a.loan_officer_name) AS loan_officer, pr.full_name AS processor,
+             uw.full_name AS underwriter,
+             a.purchase_price, a.as_is_value, a.arv, a.rehab_budget, a.loan_amount, a.ltv, a.rate_pct,
+             a.term, a.requested_ir_months, a.requested_ir_amount,
+             a.is_assignment, a.underlying_contract_price, a.assignment_fee, a.lender,
+             reg.program AS registered_program, reg.product_label, reg.note_rate AS registered_rate,
+             reg.total_loan AS registered_loan, reg.status AS registration_status, reg.created_at AS registered_at,
+             a.created_at, a.clickup_created_at, a.submitted_at, a.status_changed_at,
+             a.expected_closing, a.actual_closing, a.updated_at,
+             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
+             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
+                AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
+             (SELECT count(*)::int FROM conditions c WHERE c.application_id=a.id AND c.status='open') AS open_conditions,
+             a.clickup_pipeline_task_id, a.sync_state, a.clickup_last_synced_at
+        FROM applications a
+        JOIN borrowers b ON b.id = a.borrower_id
+        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id
+        LEFT JOIN staff_users pr ON pr.id = a.processor_id
+        LEFT JOIN staff_users uw ON uw.id = a.underwriter_id
+        LEFT JOIN LATERAL (
+          SELECT r.program, r.product_label, r.note_rate, r.total_loan, r.status, r.created_at
+            FROM product_registrations r WHERE r.application_id = a.id AND r.is_current LIMIT 1
+        ) reg ON true
+       WHERE ${f.where.join(' AND ')} ORDER BY ${f.orderBy}
+       LIMIT 20000`;
+    const r = await db.query(sql, f.params);
+
+    const day = (v) => (v == null ? '' : String(v).slice(0, 10));
+    const ts = (v) => { if (v == null) return ''; try { return new Date(v).toISOString().replace('T', ' ').slice(0, 16); } catch (_) { return String(v); } };
+    const num = (v) => (v == null || v === '' ? '' : Number(v));
+    const yn = (v) => (v === true ? 'yes' : v === false ? 'no' : '');
+    const HEADERS = [
+      'YS loan #', 'Investor loan #', 'Status', 'ClickUp status', 'Program', 'Loan type', 'Property type', 'Units',
+      'Occupancy', 'Channel', 'Source', 'Address', 'City', 'State', 'Zip',
+      'Borrower first name', 'Borrower last name', 'Borrower email', 'Borrower phone', 'Borrower FICO', 'Tier',
+      'Co-borrower', 'Co-borrower email', 'Loan officer', 'Processor', 'Underwriter',
+      'Purchase price', 'As-is value', 'ARV', 'Rehab budget', 'Loan amount', 'LTV %', 'Rate %', 'Term',
+      'IR months', 'IR amount', 'Assignment?', 'Underlying contract', 'Assignment fee', 'Note buyer',
+      'Registered program', 'Registered product', 'Registered rate', 'Registered loan', 'Registration status', 'Registered at',
+      'Created', 'ClickUp created', 'Submitted', 'Status changed', 'Expected closing', 'Actual closing', 'Updated',
+      'Checklist items', 'Checklist done', 'Open conditions', 'ClickUp task ID', 'Sync state', 'Last synced', 'File ID',
+    ];
+    const rows = r.rows.map((x) => [
+      x.ys_loan_number || '', x.investor_loan_number || '', STATUS_LABEL[x.status] || x.status || '', x.internal_status || '',
+      x.program || '', x.loan_type || '', x.property_type || '', num(x.units), x.occupancy || '', x.channel || '', x.source || '',
+      x.address || '', x.city || '', x.state || '', x.zip || '',
+      x.first_name || '', x.last_name || '', x.borrower_email || '', x.borrower_phone || '', num(x.borrower_fico), x.borrower_tier || '',
+      x.co_borrower_name || '', x.co_borrower_email || '', x.loan_officer || '', x.processor || '', x.underwriter || '',
+      num(x.purchase_price), num(x.as_is_value), num(x.arv), num(x.rehab_budget), num(x.loan_amount), num(x.ltv), num(x.rate_pct), x.term || '',
+      num(x.requested_ir_months), num(x.requested_ir_amount), yn(x.is_assignment), num(x.underlying_contract_price), num(x.assignment_fee), x.lender || '',
+      x.registered_program || '', x.product_label || '', num(x.registered_rate), num(x.registered_loan), x.registration_status || '', ts(x.registered_at),
+      ts(x.created_at), ts(x.clickup_created_at), ts(x.submitted_at), ts(x.status_changed_at),
+      day(x.expected_closing), day(x.actual_closing), ts(x.updated_at),
+      num(x.total_items), num(x.done_items), num(x.open_conditions), x.clickup_pipeline_task_id || '', x.sync_state || '', ts(x.clickup_last_synced_at), x.id,
+    ]);
+    const { buildXlsx } = require('../lib/tpr-export');
+    const buf = buildXlsx([HEADERS, ...rows], 'Pipeline');
+    const pick = {};
+    for (const k of ['group', 'status', 'flag', 'q', 'officerId', 'processorId', 'program', 'loanType', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'mine', 'sort']) {
+      if (req.query[k] !== undefined && req.query[k] !== '') pick[k] = String(req.query[k]).slice(0, 80);
+    }
+    await audit(req, 'export_pipeline', 'application', null, { rows: r.rows.length, filters: pick });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="pilot-pipeline-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    res.send(buf);
+  } catch (e) { console.error('[export pipeline]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 router.use('/applications/:id', async (req, res, next) => {
   try {
     if (seesAll(req)) return next();
@@ -210,6 +305,9 @@ router.get('/dashboard', async (req, res) => {
                        -- and on_hold. Lets the portal show the same active number ClickUp does.
                        count(*) FILTER (WHERE status IN ('processing','underwriting','approved','clear_to_close'))::int actively_processing,
                        count(*) FILTER (WHERE status='on_hold')::int on_hold,
+                       -- #151: pre-processing intake prospects — in the system, NOT
+                       -- active. Their own KPI, never inside pipeline_value/active.
+                       count(*) FILTER (WHERE status='file_intake')::int intake,
                        -- Ops/AI signal: active files gone stale (untouched > 7 days) — the
                        -- files silently stalling in the pipeline that need a nudge. #145:
                        -- the exact predicate the "Needs attention" drill-down uses (flag=stalled).
@@ -268,7 +366,7 @@ router.get('/dashboard', async (req, res) => {
     res.json({
       byStatus: byStatus.rows,
       total: t.total, pipelineValue: Number(t.pipeline_value), active: t.active,
-      cancelled: t.cancelled, activelyProcessing: t.actively_processing, onHold: t.on_hold, stalled: t.stalled,
+      cancelled: t.cancelled, activelyProcessing: t.actively_processing, onHold: t.on_hold, intake: t.intake, stalled: t.stalled,
       funded: t.funded, newThisWeek: t.new_week,
       // funded broken out by actual closing date (MTM), + running dollar totals
       fundedMtd: t.funded_mtd, fundedLastMonth: t.funded_last_month, fundedYtd: t.funded_ytd,
@@ -295,17 +393,18 @@ router.get('/dashboard', async (req, res) => {
 // scopeClause() still enforces per-file authorization.
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-router.get('/applications', async (req, res) => {
-  try {
-    const q = req.query;
-    const s = scopeClause(req);
-    // Scope params always occupy the leading placeholders ($1 when present);
-    // add() appends each filter value and hands back its own placeholder so the
-    // numbering stays correct regardless of which filters are active.
-    const params = [...s.params];
-    const add = (val) => { params.push(val); return `$${params.length}`; };
-    const where = ['a.deleted_at IS NULL'];
-    if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
+// #152 — ONE filter/sort builder shared by the pipeline LIST and the pipeline
+// EXPORT, so the exported spreadsheet can never drift from the view on screen.
+// Returns { error } (→ 400) or { where, params, add, orderBy }.
+function buildPipelineFilter(req, q) {
+  const s = scopeClause(req);
+  // Scope params always occupy the leading placeholders ($1 when present);
+  // add() appends each filter value and hands back its own placeholder so the
+  // numbering stays correct regardless of which filters are active.
+  const params = [...s.params];
+  const add = (val) => { params.push(val); return `$${params.length}`; };
+  const where = ['a.deleted_at IS NULL'];
+  if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
 
     // status GROUP — same predicates the dashboard uses. An EXACT status filter
     // takes precedence over the group bucket: applying both (e.g. group=active
@@ -324,6 +423,10 @@ router.get('/applications', async (req, res) => {
       // Held files no longer live in the 'active' bucket (they're paused, not
       // being worked), so give them their own reachable bucket.
       where.push(`a.status = 'on_hold'`);
+    } else if (q.group === 'intake') {
+      // #151 — the pre-processing intake prospects (ClickUp 'starting' /
+      // 'Prospect / Pricing'): in the system, but not active files.
+      where.push(`a.status = 'file_intake'`);
     }
     // 'all'/absent group with no status → no status predicate.
 
@@ -339,11 +442,11 @@ router.get('/applications', async (req, res) => {
                    OR COALESCE(a.property_address->>'oneLine','') ILIKE ${p})`);
     }
     if (q.officerId) {
-      if (!UUID_RE.test(String(q.officerId))) return res.status(400).json({ error: 'invalid officerId' });
+      if (!UUID_RE.test(String(q.officerId))) return { error: 'invalid officerId' };
       where.push(`a.loan_officer_id = ${add(String(q.officerId))}`);
     }
     if (q.processorId) {
-      if (!UUID_RE.test(String(q.processorId))) return res.status(400).json({ error: 'invalid processorId' });
+      if (!UUID_RE.test(String(q.processorId))) return { error: 'invalid processorId' };
       where.push(`a.processor_id = ${add(String(q.processorId))}`);
     }
 
@@ -366,7 +469,7 @@ router.get('/applications', async (req, res) => {
     ]) {
       const v = q[key];
       if (v === undefined || v === '') continue;
-      if (!DATE_RE.test(String(v))) return res.status(400).json({ error: `invalid ${key}` });
+      if (!DATE_RE.test(String(v))) return { error: `invalid ${key}` };
       where.push(`${col} ${op} ${add(String(v))}`);
     }
 
@@ -382,11 +485,13 @@ router.get('/applications', async (req, res) => {
       where.push(`a.status = 'funded' AND a.actual_closing IS NULL`);
     }
 
-    let limit = parseInt(q.limit, 10);
-    if (!Number.isFinite(limit)) limit = 500;
-    limit = Math.min(1000, Math.max(1, limit));
-    let offset = parseInt(q.offset, 10);
-    if (!Number.isFinite(offset) || offset < 0) offset = 0;
+    // "My files only" — the same lens the UI's ?mine=1 checkbox applies as a
+    // client-side post-filter (LO OR processor of the file). Exposed as a
+    // server param so the EXPORT mirrors the checkbox exactly (#152).
+    if (q.mine === '1' && req.actor && req.actor.id) {
+      const p = add(req.actor.id);
+      where.push(`(a.loan_officer_id = ${p} OR a.processor_id = ${p})`);
+    }
 
     // Sort — strict whitelist (never interpolate user text into ORDER BY). NULLS
     // LAST keeps blank amounts/dates from floating to the top of a sort.
@@ -410,6 +515,21 @@ router.get('/applications', async (req, res) => {
     // those equal-key rows reshuffle between fetches, which reads as "the sort is
     // random / broken."
     const orderBy = (SORTS[String(q.sort || '')] || SORTS.created_desc) + ', a.id DESC';
+    return { where, params, add, orderBy };
+}
+
+router.get('/applications', async (req, res) => {
+  try {
+    const q = req.query;
+    const f = buildPipelineFilter(req, q);
+    if (f.error) return res.status(400).json({ error: f.error });
+    const { where, params, add, orderBy } = f;
+
+    let limit = parseInt(q.limit, 10);
+    if (!Number.isFinite(limit)) limit = 500;
+    limit = Math.min(1000, Math.max(1, limit));
+    let offset = parseInt(q.offset, 10);
+    if (!Number.isFinite(offset) || offset < 0) offset = 0;
 
     const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
@@ -837,14 +957,19 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
   const meta = await db.query(
     `SELECT COALESCE(property_address->>'oneLine', property_address->>'street', 'your loan') AS addr,
             ys_loan_number FROM applications WHERE id=$1`, [appId]);
-  const inviter = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+  // #150 — LO branding: the invite arrives FROM the inviting officer (display
+  // name) and carries their full contact block, so the client knows exactly
+  // who is inviting them — not just "the company."
+  const inviter = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [req.actor.id]);
+  const inv = inviter.rows[0] || {};
   await mail.send('borrowerInvite', email, {
     firstName,
     propertyLabel: meta.rows[0]?.addr || 'your loan',
     loanNumber: meta.rows[0]?.ys_loan_number || null,
-    inviter: inviter.rows[0]?.full_name || null,
+    inviter: inv.full_name || null,
+    officer: inv.full_name ? { name: inv.full_name, title: inv.title, email: inv.email, phone: inv.cell || inv.phone, nmls: inv.nmls } : null,
     acceptUrl, hasAccount: !!hasAuth.rows[0],
-  }, { replyTo: fileReplyTo(appId) });   // #68: a reply reaches the file's assigned team
+  }, { replyTo: fileReplyTo(appId), from: require('../lib/email').fromWithName(inv.full_name) });   // #68 reply reaches the team; #150 From = the officer
   await audit(req, 'invite_borrower', 'application', appId, { email });
   // Best-effort in-app notice to the file's team.
   return { emailed: true, hasAccount: !!hasAuth.rows[0], inviteToken: token };
@@ -908,15 +1033,19 @@ router.post('/invite-to-portal', async (req, res) => {
                       VALUES ($1,'borrower',$2,$3, now() + interval '14 days')`, [C.sha256(token), email, req.actor.id]);
       acceptUrl = mail.link('/accept?token=' + token);
     }
-    const inviter = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+    // #150 — the "Invite to PILOT" email comes FROM the inviting officer, with
+    // their contact block, and replies go straight to them.
+    const inviter = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [req.actor.id]);
+    const inv = inviter.rows[0] || {};
     try {
       await mail.send('borrowerInvite', email, {
         firstName: first,
         propertyLabel: 'the YS Capital borrower portal',
         loanNumber: null,
-        inviter: inviter.rows[0]?.full_name || null,
+        inviter: inv.full_name || null,
+        officer: inv.full_name ? { name: inv.full_name, title: inv.title, email: inv.email, phone: inv.cell || inv.phone, nmls: inv.nmls } : null,
         acceptUrl, hasAccount: !!hasAuth.rows[0],
-      });
+      }, { replyTo: inv.email || null, from: require('../lib/email').fromWithName(inv.full_name) });
     } catch (_) { /* invite email is best-effort; the profile + lead are already saved */ }
     // 3) open a CRM lead for the owning officer so the relationship is tracked from
     // first touch — unless one already exists for this email + officer (idempotent).
@@ -1389,7 +1518,10 @@ router.get('/applications/:id/pricing', async (req, res) => {
     const current = hist.rows.find((x) => x.is_current) || null;
     let quote = null;
     if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
-    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady() });
+    // The studio echoes econVersion back on register; a mismatch means the
+    // file's economics moved underneath the open sheet (409, never a silent
+    // stale re-register).
+    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app) });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
@@ -1397,14 +1529,34 @@ router.get('/applications/:id/pricing', async (req, res) => {
 // sync loan_amount / rate_pct onto the file, audit + notify the team.
 router.post('/applications/:id/pricing/register', async (req, res) => {
   const appId = req.params.id;
+  // Every refusal is AUDITED (register_product_refused) — "LO says register
+  // doesn't work" must be diagnosable from the logs alone, without reproducing
+  // (#148/#149: the 403/409/422 paths used to leave no trace).
+  const refuse = async (status, payload, reason, extra) => {
+    try { await audit(req, 'register_product_refused', 'application', appId, { reason, status, ...extra }); } catch (_) {}
+    return res.status(status).json(payload);
+  };
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
-    if (locked) return res.status(409).json({ error: locked });
+    if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
+
+    // Optimistic concurrency on the FILE-owned pricing basis: the studio sends
+    // back the econVersion it prefilled from; if the file's economics changed
+    // since (form edit, ClickUp inbound, another staffer), refuse rather than
+    // silently re-register — and write back — a stale scenario (#148 root:
+    // "re-register doesn't update the file" was a stale snapshot clobbering
+    // the file's newer values). Old bundles that don't send it are unaffected.
+    if (b.econVersion && b.econVersion !== pricing.econVersionFor(f.app)) {
+      return refuse(409, {
+        error: 'This file’s pricing inputs changed since the studio was opened. The latest values have been reloaded — review the scenario and register again.',
+        code: 'econ_version_conflict',
+      }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
+    }
 
     // NEVER register terms that silently differ from what the staffer saw
     // (root-caused 2026-07-16, Pinchus Wieder: a non-admin's rate/experience
@@ -1412,7 +1564,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // behind a success toast). If sanitize dropped keys, refuse loudly instead.
     const { overrides, strippedAdminKeys } = sanitizeOverrides(req, b.overrides || {});
     if (strippedAdminKeys)
-      return res.status(403).json({ error: 'Manual rate/leverage and experience overrides need an admin — ask an admin to register these terms, or clear the admin pricing fields and re-register.' });
+      return refuse(403, { error: 'Manual rate/leverage and experience overrides need an admin — ask an admin to register these terms, or clear the admin pricing fields and re-register.' }, 'admin_override_stripped');
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     // S3-06: this endpoint writes arv back onto the file and sizes the loan off
     // both the arv and the as-is value, so a raised arv/as-is OVERRIDE here is the
@@ -1428,17 +1580,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       if (oa != null && na != null && na > oa) raised.push('the ARV');
       if (oi != null && ni != null && ni > oi) raised.push('the as-is value');
       if (raised.length)
-        return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
+        return refuse(403, { error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` }, 'value_raise_blocked', { raised });
     }
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
     if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
     if (quote.status === 'INELIGIBLE' && !overrides.forcePrice) {
-      return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
+      return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote }, 'ineligible', { program });
     }
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
-    if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote });
+    if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote }, 'no_loan_sized', { program });
 
     // The superseded terms, captured before the new row lands — the audit trail
     // (and Activity feed) shows exactly what a reprice changed.
@@ -1529,6 +1681,37 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           type: 'product_registered', title: 'Product registered on ' + (row.ys_loan_number || 'a file'),
           body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file', exceptStaffId: req.actor.id });
+
+      // #150 — the CLIENT gets their loan-terms email too, branded to (and
+      // From) their assigned loan officer — recurring business stays with the
+      // officer's name, not a faceless company sender. Borrower-safe copy only
+      // (program label + the same terms the borrower portal already shows);
+      // type 'term_sheet' is in the borrower MAJOR-email allowlist (#88).
+      try {
+        let officer = null;
+        if (row.loan_officer_id) {
+          const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);
+          if (o.rows[0]) officer = { name: o.rows[0].full_name, title: o.rows[0].title, email: o.rows[0].email, phone: o.rows[0].cell || o.rows[0].phone, nmls: o.rows[0].nmls };
+        }
+        const officerLine = officer
+          ? `${officer.name}${officer.title ? ' · ' + officer.title : ''}${officer.nmls ? ' · NMLS #' + officer.nmls : ''}${officer.phone || officer.email ? ' · ' + [officer.phone, officer.email].filter(Boolean).join(' · ') : ''}`
+          : null;
+        await notify.notifyAppBorrowers(appId, {
+          type: 'term_sheet',
+          title: 'Your updated loan terms are ready',
+          body: `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate} · estimated cash to close ${money2(quote.cashToClose)}. Open your portal to review the full term sheet${officer ? ` — or reach out to ${officer.name} with any questions` : ''}.`,
+          meta: [
+            { label: 'Program', value: pricing.PROGRAM_LABEL[program] },
+            { label: 'Loan amount', value: `${dollars} @ ${pctRate}` },
+            quote.cashToClose != null ? { label: 'Estimated cash to close', value: money2(quote.cashToClose) } : null,
+            officerLine ? { label: 'Your loan officer', value: officerLine } : null,
+          ].filter(Boolean),
+          applicationId: appId,
+          link: `/app/${appId}`, ctaLabel: 'Review your terms',
+          from: officer ? require('../lib/email').fromWithName(officer.name) : null,
+          replyTo: officer ? officer.email : null,
+        });
+      } catch (_) { /* borrower terms email is best-effort */ }
     } catch (_) { /* notification is best-effort */ }
 
     res.status(201).json({ ok: true, registrationId: regId, quote });
@@ -3697,8 +3880,8 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
 });
 
 // ---------------- advance application status ----------------
-const APP_STATUS = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
-const STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+const APP_STATUS = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
+const STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 // #88: the DECISION milestones a borrower should be emailed about. Every status
 // change still posts in-app; only these also email (the in-between progress moves —
 // in_review / processing / underwriting — are in-app only, to keep the inbox quiet).
@@ -4450,6 +4633,36 @@ router.get('/leads', async (req, res) => {
         ORDER BY (l.status='new') DESC, COALESCE(l.next_follow_up,'9999-12-31') ASC,
                  l.last_activity_at DESC NULLS LAST, l.created_at DESC LIMIT 500`, params);
     res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// #153 — bulk-archive junk leads (admin). The bot-spam wave imported hundreds
+// of fake "subscribe" leads and the CRM only had a one-by-one PATCH; this
+// archives every non-converted lead matching a tool/source/status filter in
+// one audited call. At least one filter is required — a bare call must never
+// archive the whole desk.
+router.post('/leads/bulk-archive', requireRole('admin'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const conds = [`status NOT IN ('converted','archived')`], vals = []; let i = 1;
+    if (b.tool) { conds.push(`tool=$${i++}`); vals.push(String(b.tool).slice(0, 60)); }
+    if (b.source) {
+      // The generic 'marketing_site' bucket covers EVERY public form (and the
+      // db/101 boot backfill stamps it onto all of them) — archiving by it
+      // would sweep contact + loan-application + subscribe leads in one call
+      // (audit-caught 2026-07-17). Refuse it; archive by the specific tool.
+      if (String(b.source) === 'marketing_site') return res.status(400).json({ error: "archive by the specific tool instead of the generic 'marketing_site' source" });
+      conds.push(`COALESCE(lead_source, source)=$${i++}`); vals.push(String(b.source).slice(0, 60));
+    }
+    if (b.status) {
+      if (!LEAD_STATUSES.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+      conds.push(`status=$${i++}`); vals.push(b.status);
+    }
+    if (b.q) { conds.push(`(email ILIKE $${i} OR name ILIKE $${i} OR subject ILIKE $${i})`); vals.push('%' + String(b.q).slice(0, 80) + '%'); i++; }
+    if (vals.length === 0) return res.status(400).json({ error: 'a filter (tool, source, status or q) is required' });
+    const r = await db.query(`UPDATE leads SET status='archived', updated_at=now() WHERE ${conds.join(' AND ')} RETURNING id`, vals);
+    await audit(req, 'leads_bulk_archive', 'lead', null, { count: r.rowCount, tool: b.tool || null, source: b.source || null, status: b.status || null, q: b.q || null });
+    res.json({ ok: true, archived: r.rowCount });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

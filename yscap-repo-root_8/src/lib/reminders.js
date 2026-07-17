@@ -265,7 +265,9 @@ async function dispatchDue(client = db) {
   // pause: if the file later comes off hold (or is otherwise reactivated) the
   // reminder becomes eligible again and fires. The row is always visible inside
   // the file. (A reminder with no linked application still fires normally.)
-  const NOT_MUTED = `(a.id IS NULL OR a.status NOT IN ('funded','on_hold','declined','withdrawn'))`;
+  // file_intake (#151): pre-processing prospects are muted like held files —
+  // no task nudges until the file actually enters processing.
+  const NOT_MUTED = `(a.id IS NULL OR a.status NOT IN ('funded','on_hold','declined','withdrawn','file_intake'))`;
   // 1) Pre-due nudges (tasks with remind_at reached, not yet nudged, not fired).
   const leads = await client.query(
     `SELECT r.* FROM reminders r
