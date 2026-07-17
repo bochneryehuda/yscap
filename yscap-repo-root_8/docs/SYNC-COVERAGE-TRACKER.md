@@ -19,7 +19,7 @@
 | **F-H4** | Every deploy re-ingests the whole portfolio (storm) | ✅ DONE | watermark (WO-4a) + bounded rotating sweep (WO-4b) |
 | **F-M1** | Stale internal_status re-asserted onto ClickUp | ⬜ OPEN | WO-16 |
 | **F-M2** | Outbound DOB gate omits human-provenance | ⬜ OPEN | WO-11 |
-| **F-M3** | Enqueue failures swallowed; backstop sweep retired | ⬜ OPEN | WO-5 |
+| **F-M3** | Enqueue failures swallowed; backstop sweep retired | 🟡 PARTIAL | loud+traceable failure done (WO-5 ph1); transactional enqueue = WO-5 ph2 |
 | **F-M4** | Inbound human-edit-wins on one-sided evidence | ⬜ OPEN | WO-11 |
 | **F-M5** | Email+phone corroboration merges different-named people | ⬜ OPEN | WO-12 |
 | **F-M6** | Inbound webhook 'error' = silent terminal drop | ⬜ OPEN | WO-3 |
@@ -51,7 +51,7 @@
 | **WO-2** | Retry/rate-limit contract at the client (F-H1) | ✅ DONE (live) |
 | **WO-4a** | Durable reconcile watermark (F-M7, part of F-H4) | ✅ DONE (live) |
 | **WO-4b** | Bound+pace reconcileLinkedPrograms (F-H4) ✅; DB breaker (F-M16) + heartbeat (F-M15) still open | 🟡 PARTIAL |
-| **WO-5** | Transactional enqueue (F-M3) | ⬜ OPEN — next |
+| **WO-5** | Transactional enqueue (F-M3) | 🟡 PARTIAL (ph1 loud-failure done; ph2 transactional open) |
 | **WO-3** | Inbound dead-letters + webhook-health probe (F-M6) | ⬜ OPEN |
 | **WO-6** | Small-fixes bundle (F-M8/11/12/14/20; 113 renumber ✅ done) | 🟡 PARTIAL |
 | **WO-7** | Review-queue tiers + notification coalescer | ⬜ OPEN |

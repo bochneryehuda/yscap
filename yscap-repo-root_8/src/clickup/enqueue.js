@@ -1,8 +1,14 @@
 /**
  * Outbound push enqueue — a portal change to an application enqueues a ClickUp
  * push so it propagates within a few seconds (drained by pushOutboxOnce every
- * ~4s), rather than waiting for the dirty-sweep. The sweep remains the reliable
- * catch-all backstop, so a missed enqueue call never loses a change.
+ * ~4s).
+ *
+ * NOTE (WO-5 / F-M3): there is NO dirty-sweep backstop anymore (it was retired
+ * to a no-op). So an enqueue that fails to persist is a lost push. Until the
+ * enqueue is made transactional with the caller's write (WO-5 phase 2), a
+ * failure here is at least made LOUD and traceable — logged and recorded as a
+ * `clickup_enqueue_failed` audit_log row (PII-free) so a lost push is
+ * discoverable, never silent.
  *
  * Safety: this only ever enqueues an UPDATE push. There is NO delete op — a
  * portal deletion never propagates to ClickUp (enforced structurally by the
@@ -64,7 +70,19 @@ async function enqueueClickupPush(appId, only = [], opts = {}) {
       `INSERT INTO sync_queue (entity_type, entity_id, target, direction, op, status, payload, run_after)
        VALUES ('application', $1, 'clickup', 'push', 'update', 'queued', jsonb_build_object('only', $2::jsonb, 'humanEditKeys', $3::jsonb), now())`,
       [appId, keysJson, humanJson]);
-  } catch (_) { /* best-effort */ }
+  } catch (e) {
+    // WO-5 (F-M3): do NOT swallow — there is no backstop sweep, so a swallowed
+    // failure loses this edit's push forever with zero trace. Make it loud and
+    // discoverable. Detail is PII-free: the changed field KEYS (column names) and
+    // the error, never any borrower value.
+    console.error('[clickup-enqueue] FAILED to enqueue push for app', appId, 'keys', keysJson, '—', e.message);
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system', 'clickup_enqueue_failed', 'application', $1, $2)`,
+        [appId, JSON.stringify({ keys, error: String(e.message).slice(0, 300) })]);
+    } catch (_) { /* if even the audit write fails, the console.error above is the last resort */ }
+  }
 }
 
 // Enqueue a SCOPED push of ONE checklist condition's status to its ClickUp
