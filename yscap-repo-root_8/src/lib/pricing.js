@@ -146,7 +146,7 @@ function buildInputs(app, experience, overrides) {
     'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
     'markupStdPct', 'markupGoldPct', 'origStdPct', 'origGoldPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
-    'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths'];
+    'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice'];
   const STRK = ['loanType', 'strategy', 'state', 'city', 'address', 'propertyType'];
   const BOOLK = ['cashOut', 'isAssignment', 'heavyRehab', 'sqftAddition', 'forcePrice', 'manualPricing'];
   const out = Object.assign({}, base);

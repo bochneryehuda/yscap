@@ -1453,7 +1453,7 @@ async function loadFileForPricing(appId) {
 const ADMIN_ONLY_OVERRIDE_KEYS = [
   'forcePrice', 'manualPricing',
   'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths',
+  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
   'expFlips', 'expHolds', 'expGround',
 ];
 // The manual-PRICING knobs (rate / leverage / force-price). A non-admin sending
@@ -1467,7 +1467,7 @@ const ADMIN_ONLY_OVERRIDE_KEYS = [
 const MANUAL_PRICING_KEYS = [
   'forcePrice', 'manualPricing',
   'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
-  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths',
+  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
 ];
 // "Meaningfully engaged": a truthy flag, or a numeric override with a real value
 // — NOT a present-but-default key (manualPricing:false is sent on every staff

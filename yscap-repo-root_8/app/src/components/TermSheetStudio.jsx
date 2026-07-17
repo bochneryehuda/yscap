@@ -135,6 +135,7 @@ function readSnapshot(win) {
       rehabScope: val('rehabScope'), sqft: chk('sqft'),
       fico: val('fico'), expFlips: val('expFlips'), expBrrrr: val('expBrrrr'), expGround: val('expGround'),
       tsTerm: val('tsTerm'), irMonths: val('irMonths'), irAmount: val('irAmount'),
+      tsEffPrice: val('tsEffPrice'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'),
       tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'),

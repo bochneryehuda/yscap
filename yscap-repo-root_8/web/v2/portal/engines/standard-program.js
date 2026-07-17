@@ -430,10 +430,21 @@
       var financeableFee = Math.min(rawFee, maxFee);
       var excessFee = Math.max(0, rawFee - financeableFee);
       effPurchase = sellerPP + financeableFee;        // recognized price
+      // Admin exception (owner-directed 2026-07-17): an approved higher financeable
+      // fee is entered as an EFFECTIVE purchase price override. Clamped to
+      // [seller price, REAL total price] — the effective price may NEVER exceed
+      // what is actually being paid; every calculation sizes off it.
+      var ovrEff = Math.max(0, input.ovrEffPrice || 0);
+      if (ovrEff > 0) {
+        effPurchase = Math.min(Math.max(ovrEff, sellerPP), totalPP);
+        financeableFee = effPurchase - sellerPP;
+        excessFee = Math.max(0, rawFee - financeableFee);
+      }
       assignment = {
         sellerPrice: round2(sellerPP), totalPrice: round2(totalPP), fee: round2(rawFee),
         maxFee: round2(maxFee), financeableFee: round2(financeableFee), excessOOP: round2(excessFee),
-        recognizedPrice: round2(effPurchase), overLimit: excessFee > 0.5, maxPct: 0.15
+        recognizedPrice: round2(effPurchase), overLimit: excessFee > 0.5, maxPct: 0.15,
+        overridden: ovrEff > 0
       };
     }
 
@@ -563,7 +574,11 @@
     if (exitGap > 0) add("MANUAL", "The after-repair value doesn't cover the purchase plus rehab (short by " + usd(exitGap) + ") — the exit doesn't support the loan, so it's sent for manual pricing.");
 
     // ---- assignment over-limit messaging + cash-to-close adjustment ----
-    if (assignment && assignment.overLimit) {
+    if (assignment && assignment.overridden) {
+      add("MANUAL", "Admin exception: the effective purchase price is set to " + usd(assignment.recognizedPrice) + " — " +
+        usd(assignment.financeableFee) + " of the " + usd(assignment.fee) + " assignment fee is financed" +
+        (assignment.excessOOP > 0.5 ? ("; " + usd(assignment.excessOOP) + " is brought out of pocket at closing") : "") + ".");
+    } else if (assignment && assignment.overLimit) {
       add("MANUAL", "Assignment fee of " + usd(assignment.fee) + " exceeds the 15% program limit (" + usd(assignment.maxFee) +
         ", 15% of the " + usd(assignment.sellerPrice) + " original contract price). " + usd(assignment.financeableFee) + " is financeable; " +
         usd(assignment.excessOOP) + " must be brought out of pocket at closing. A higher limit may be requested as an exception.");
