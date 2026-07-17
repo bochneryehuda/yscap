@@ -4,7 +4,7 @@
 
 **Status legend:** ✅ DONE (live in `main`) · 🟡 PARTIAL · ⬜ OPEN (not started).
 
-**Bottom line as of 2026-07-17:** of ~27 verified findings, **3 fully closed + 2 partial**; of 19 work orders, **~4 done**. Roughly **15–20% of the audit is implemented and live.** The critical bug (silent lost edits) and the reliability core (rate-limiting, durable bookmark) are done and merged. The bulk — the structural work (field registry, provenance, identity tiers), the review-queue redesign, and the field-level fixes — remains. This is a multi-day body of work, tracked below.
+**Bottom line as of 2026-07-17:** of ~27 verified findings, **7 fully closed + 2 partial**; of 19 work orders, **4 fully done + 4 partial**. Roughly **~30% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
 
 ---
 
