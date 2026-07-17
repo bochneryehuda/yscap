@@ -4,7 +4,7 @@
 
 **Status legend:** ✅ DONE (live in `main`) · 🟡 PARTIAL · ⬜ OPEN (not started).
 
-**Bottom line as of 2026-07-17:** of ~27 verified findings, **7 fully closed + 2 partial**; of 19 work orders, **4 fully done + 4 partial**. Roughly **~30% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
+**Bottom line as of 2026-07-17:** of ~27 verified findings, **9 fully closed + 2 partial**; of 19 work orders, **5 fully done + 3 partial**. Roughly **~40% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
 
 ---
 
@@ -24,11 +24,11 @@
 | **F-M5** | Email+phone corroboration merges different-named people | ⬜ OPEN | WO-12 |
 | **F-M6** | Inbound webhook 'error' = silent terminal drop | ⬜ OPEN | WO-3 |
 | **F-M7** | Watermark advances past mid-pass / failed tasks | ✅ DONE | WO-4a, live |
-| **F-M8** | Year-range review cards carry no portal value | ⬜ OPEN | WO-6 |
+| **F-M8** | Year-range review cards carry no portal value | ✅ DONE | WO-6 (both producers pass the PILOT value) |
 | **F-M9** | Value-agnostic dismissals over-suppress new conflicts | ⬜ OPEN | WO-8 |
 | **F-M10** | sp_rematch clears the wrong scope cache | ⬜ OPEN | WO-14 |
 | **F-M11** | LLC/checklist dates skip normalizeTypedDate | ✅ DONE | WO-6 (5 write sites now year-0026-proof) |
-| **F-M12** | Legacy /approve writes DOB without sanitizeDob | ⬜ OPEN | WO-6 |
+| **F-M12** | Legacy /approve writes DOB without sanitizeDob | ✅ DONE | WO-6 (sanitizeDob + normalizeTypedDate on approve) |
 | **F-M13** | Inbound year guard is a hardcoded 2-field list | ⬜ OPEN | WO-10 (registry makes it structural) |
 | **F-M14** | 401-with-"not found" treated as task deletion | ✅ DONE | WO-6, live after next merge |
 | **F-M15** | 5-min reclaim can double-run a slow push | ⬜ OPEN | WO-4b (heartbeat) |
@@ -53,7 +53,7 @@
 | **WO-4b** | Bound+pace reconcileLinkedPrograms (F-H4) ✅; DB breaker (F-M16) + heartbeat (F-M15) still open | 🟡 PARTIAL |
 | **WO-5** | Transactional enqueue (F-M3) | 🟡 PARTIAL (ph1 loud-failure done; ph2 transactional open) |
 | **WO-3** | Inbound dead-letters + webhook-health probe (F-M6) | ⬜ OPEN |
-| **WO-6** | Small-fixes bundle (F-M14✅ F-M11✅ F-M20✅ done; F-M8/M12 open; 113 renumber✅) | 🟡 PARTIAL |
+| **WO-6** | Small-fixes bundle (F-M14✅ F-M11✅ F-M20✅ F-M12✅ F-M8✅; 113 renumber✅) | ✅ DONE |
 | **WO-7** | Review-queue tiers + notification coalescer | ⬜ OPEN |
 | **WO-8** | Sticky dismissals + noise telemetry + unlink (F-M9/17) | ⬜ OPEN |
 | **WO-9** | Dedicated bot identity + actor echo suppression | ⬜ OPEN (needs owner to create the ClickUp bot seat) |

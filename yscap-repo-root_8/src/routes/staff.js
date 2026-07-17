@@ -6015,16 +6015,26 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
       if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return res.status(422).json({ error: 'no valid proposed value to apply' });
       if (row.field_key === 'date_of_birth') {
         if (!row.borrower_id) return res.status(422).json({ error: 'no borrower on this review' });
+        // WO-6 (F-M12): the shape-only regex above lets year-0026 AND a child's
+        // DOB through — this legacy path wrote them unvalidated. Route through the
+        // same adult-plausibility guard every other DOB write uses; reject the
+        // implausible so it's fixed at the source, never blind-written.
+        const dob = require('../lib/fields').sanitizeDob(v);
+        if (!dob) return res.status(422).json({ error: 'not a valid adult date of birth — fix it at the source, then re-sync' });
         const before = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [row.borrower_id])).rows[0];
-        await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [row.borrower_id, v]);
+        await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [row.borrower_id, dob]);
         await audit(req, 'sync_review_apply', 'borrower', row.borrower_id,
-          { reviewId: row.id, field: 'date_of_birth', from: before && before.date_of_birth, to: v, reason: row.reason });
+          { reviewId: row.id, field: 'date_of_birth', from: before && before.date_of_birth, to: dob, reason: row.reason });
       } else if (REVIEW_APP_COLS.has(row.field_key)) {
         if (!row.application_id) return res.status(422).json({ error: 'no application on this review' });
+        // WO-6 (F-M12): year-window the date (0026 → 2026, garbage → reject) —
+        // the shape regex above let a mid-typed year through to a ::date write.
+        const d = require('../lib/fields').normalizeTypedDate(v);
+        if (!d) return res.status(422).json({ error: 'not a valid date — fix it at the source, then re-sync' });
         const before = (await db.query(`SELECT ${row.field_key} FROM applications WHERE id=$1`, [row.application_id])).rows[0];
-        await db.query(`UPDATE applications SET ${row.field_key}=$2::date, updated_at=now() WHERE id=$1`, [row.application_id, v]);
+        await db.query(`UPDATE applications SET ${row.field_key}=$2::date, updated_at=now() WHERE id=$1`, [row.application_id, d]);
         await audit(req, 'sync_review_apply', 'application', row.application_id,
-          { reviewId: row.id, field: row.field_key, from: before && before[row.field_key], to: v, reason: row.reason });
+          { reviewId: row.id, field: row.field_key, from: before && before[row.field_key], to: d, reason: row.reason });
       } else {
         return res.status(422).json({ error: `unsupported field ${row.field_key}` });
       }
