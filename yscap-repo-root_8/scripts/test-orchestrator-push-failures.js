@@ -38,8 +38,8 @@ function clickupErr(path, status) {
   eq('failed counter increments', stats.failed, 1);
   eq('one failure recorded', failures.length, 1);
   // The record must carry ONLY these keys — never the value being written.
-  eq('record keys are id/status/code/message only',
-    Object.keys(failures[0]).sort(), ['code', 'fieldId', 'message', 'status']);
+  eq('record keys are id/status/code/retryable/message only',
+    Object.keys(failures[0]).sort(), ['code', 'fieldId', 'message', 'retryable', 'status']);
   eq('captures field id', failures[0].fieldId, 'field-DOB-id');
   eq('captures HTTP status', failures[0].status, 429);
   ok('message is the value-free client message',
@@ -57,6 +57,17 @@ function clickupErr(path, status) {
   const serialized = JSON.stringify(failures[0]);
   ok('no borrower value anywhere in the record', !/1990-05-03|123-45-6789/.test(serialized));
   eq('captures error code', failures[0].code, 'BAD');
+  eq('permanent failure is not retryable', failures[0].retryable, false);
+}
+
+// WO-2: the client tags transient errors e.retryable; the record must carry it
+// faithfully so the queue can retry patiently vs dead-letter fast.
+{
+  const stats = { written: 0, suppressed: 0, blocked: 0, failed: 0 };
+  const failures = [];
+  const transient = new Error('ClickUp POST /t -> 503'); transient.status = 503; transient.retryable = true;
+  orch.recordFieldFailure(stats, failures, 'f503', transient);
+  eq('retryable flag propagates from the client error', failures[0].retryable, true);
 }
 
 // ---- 2. assertPushComplete: null when clean, throws-error when anything failed
@@ -78,6 +89,20 @@ function clickupErr(path, status) {
   ok('message lists field ids + statuses', /field-DOB-id:429/.test(err.message) && /status:500/.test(err.message));
   ok('message is PII-free (no DOB/SSN value)', !/1990|123-45-6789/.test(err.message));
   eq('partial counts exposed', err.partial, { written: 1, failed: 2 });
+}
+
+// WO-2: retryability of the whole push — all-transient retries patiently; any
+// permanent failure dead-letters sooner (so a bad value surfaces as a card).
+{
+  const allTransient = orch.assertPushComplete(
+    { written: 0, failed: 2 },
+    [{ fieldId: 'a', status: 429, retryable: true }, { fieldId: 'b', status: 503, retryable: true }]);
+  eq('all-transient push is retryable (queue waits it out)', allTransient.retryable, true);
+
+  const mixed = orch.assertPushComplete(
+    { written: 0, failed: 2 },
+    [{ fieldId: 'a', status: 429, retryable: true }, { fieldId: 'b', status: 400, retryable: false }]);
+  eq('one permanent failure → not retryable (dead-letters to a card)', mixed.retryable, false);
 }
 
 // ---- 3. the whole point: a lossy push cannot silently "succeed" -------------

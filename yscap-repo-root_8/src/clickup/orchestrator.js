@@ -183,6 +183,7 @@ function recordFieldFailure(journalStats, failures, fieldId, e) {
     fieldId,
     status: (e && e.status) || null,
     code: (e && e.code) || null,
+    retryable: !!(e && e.retryable),   // WO-2: transient (429/5xx/network) → queue retries patiently
     message: String((e && e.message) || e).slice(0, 160),
   });
 }
@@ -198,6 +199,12 @@ function assertPushComplete(journalStats, failures) {
   const summary = (failures || []).map((f) => `${f.fieldId}:${f.status || f.code || 'err'}`).join(', ');
   const err = new Error(`ClickUp push incomplete: ${journalStats.failed} field write(s) failed [${summary}]`);
   err.code = 'CLICKUP_FIELD_WRITES_FAILED';
+  // WO-2: if EVERY failure was transient (429/5xx/network), the whole push is
+  // retryable — pushOutboxOnce then retries patiently (outage class) instead of
+  // dead-lettering a good edit during a brief ClickUp outage. A single permanent
+  // failure (e.g. 400 bad value) makes it non-retryable → dead-letters to a
+  // review card sooner, which is what a truly bad value needs.
+  err.retryable = (failures || []).length > 0 && failures.every((f) => f.retryable);
   err.partial = { written: journalStats.written, failed: journalStats.failed };
   return err;
 }

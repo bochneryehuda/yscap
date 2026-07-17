@@ -98,7 +98,7 @@ async function pushOutboxOnce() {
     // fixed 10-minute spacing, dead only after 40 attempts (~7 hours). A task
     // deleted upstream resolves sooner anyway — the orphan reconcile archives
     // its file, and a push to an archived file completes as a skip.
-    const outage = e && (e.code === 'CLICKUP_CIRCUIT_OPEN' || e.code === 'CLICKUP_PREREAD_FAILED');
+    const outage = e && (e.code === 'CLICKUP_CIRCUIT_OPEN' || e.code === 'CLICKUP_PREREAD_FAILED' || e.retryable === true);
     const dead = attempts >= (outage ? 40 : 8);
     const backoff = outage ? 600 : Math.min(2 ** attempts, 3600);
     await db.query(
