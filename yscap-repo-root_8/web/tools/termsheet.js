@@ -542,7 +542,7 @@
     h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
     return 4294967296 * (2097151 & h2) + (h1 >>> 0);
   }
-  function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : dflt; }
+  function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : dflt; }
   // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
   function syncAdminMarkup() {
     var std = adminNum("tsYspStd", CO.markupStd), gold = adminNum("tsYspGold", CO.markupGold);
@@ -554,10 +554,10 @@
   function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
   function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
   function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
-  function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(e.value) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
+  function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(String(e.value).replace(/,/g, "")) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
   function origPtStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + (p === 1 ? " pt" : " pts"); }
-  function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
+  function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
   // Fill the (blank) admin fee/markup inputs from the company defaults for
   // DISPLAY only. Never overwrite a value already present — a non-blank field is
   // an explicit per-file override (typed by staff or restored by the studio's

@@ -33,7 +33,12 @@ const FEES = { lender: 2195, credit: 150, appraisal: 800 };
 const pricingSettings = require('./pricing-settings');
 
 /* ---- small coercers ---- */
-function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
+// Strips thousands-separator commas before parsing (#143): the studio's dollar
+// inputs now DISPLAY comma-grouped, so an override can arrive as "400,000". For a
+// comma-free value (the only form pre-#143) the replace is a no-op, so every
+// existing input parses BYTE-IDENTICALLY — this only rescues a comma'd string that
+// Number() would otherwise turn into NaN→0 and silently zero the loan. Frozen-safe.
+function num(v) { const n = Number(String(v == null ? '' : v).replace(/,/g, '')); return isFinite(n) ? n : 0; }
 function clean(s) { return String(s == null ? '' : s).trim(); }
 function round2(n) { return Math.round(num(n) * 100) / 100; }
 function reserveMonths(totalLoan) { return num(totalLoan) > 1000000 ? 4 : 2; }

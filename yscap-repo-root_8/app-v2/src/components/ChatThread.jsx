@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { api } from '../lib/api.js';
 import { subscribeChat, getConnId } from '../lib/chatEvents.js';
 import DocPreview from './DocPreview.jsx';
+import { EmailInput } from './FormattedInputs.jsx';
 
 /* ChatThread — the conversation view (staff + borrower share it).
    Realtime over SSE: live messages, WHO-is-typing, presence, per-member
@@ -805,8 +806,8 @@ export default function ChatThread({ conversationId, surface, me, onChanged, onT
                   onSubmit={async (e) => { e.preventDefault();
                     try { await A.addExternal({ email: extForm.email, name: extForm.name }); setExtForm({ email: '', name: '' }); setAddingExternal(false); }
                     catch (err) { setErr(err.message); } }}>
-                  <input className="input" type="email" required placeholder="email@example.com" style={{ flex: '1 1 150px' }}
-                    value={extForm.email} onChange={e => setExtForm(f => ({ ...f, email: e.target.value }))} />
+                  <EmailInput required placeholder="email@example.com" style={{ flex: '1 1 150px' }}
+                    value={extForm.email} onChange={v => setExtForm(f => ({ ...f, email: v }))} />
                   <input className="input" placeholder="Name (optional)" style={{ flex: '1 1 110px' }}
                     value={extForm.name} onChange={e => setExtForm(f => ({ ...f, name: e.target.value }))} />
                   <button className="btn primary small" type="submit">Add</button>

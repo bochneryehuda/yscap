@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
-import { PhoneInput } from '../components/FormattedInputs.jsx';
+import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, SOURCES, PROGRAMS, TOOL_LABEL, ACTIVITY_TYPES,
@@ -159,7 +159,7 @@ export default function StaffLeadDetail() {
               </div>
               <label className="field"><span>Company / entity</span><input className="input" value={form.company} onChange={e => setField('company', e.target.value)} placeholder="Acme Holdings LLC" /></label>
               <div className="grid cols-2">
-                <label className="field"><span>Email</span><input className="input" type="email" value={form.email} onChange={e => setField('email', e.target.value)} /></label>
+                <label className="field"><span>Email</span><EmailInput value={form.email} onChange={v => setField('email', v)} /></label>
                 <label className="field"><span>Phone</span><PhoneInput value={form.phone} onChange={v => setField('phone', v)} /></label>
               </div>
               <div className="grid cols-2">
@@ -458,7 +458,7 @@ function ConvertModal({ lead, officers, onClose, onConverted, onErr }) {
             <label className="field"><span>First name</span><input className="input" value={firstName} onChange={e => setFirstName(e.target.value)} /></label>
             <label className="field"><span>Last name</span><input className="input" value={lastName} onChange={e => setLastName(e.target.value)} /></label>
           </div>
-          <label className="field"><span>Borrower email</span><input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} /></label>
+          <label className="field"><span>Borrower email</span><EmailInput value={email} onChange={v => setEmail(v)} /></label>
           <label className="field"><span>Subject property address</span><input className="input" value={propertyOneLine} onChange={e => setProp(e.target.value)} placeholder="123 Main St, City, ST 00000" /></label>
           <div className="grid cols-2">
             <label className="field"><span>Program</span>

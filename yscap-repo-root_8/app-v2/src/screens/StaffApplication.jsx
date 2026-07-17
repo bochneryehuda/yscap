@@ -13,7 +13,7 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
-import { PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
+import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
@@ -853,8 +853,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                               <input className="input" style={{ width: 90 }} type="number" min="0.01" max={m.memberKind === 'entity' ? 100 : 99.99} placeholder="%" value={m.ownershipPct}
                                 onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, ownershipPct: e.target.value } : x))} />
                               {m.memberKind !== 'entity' && (
-                                <input className="input" style={{ flex: 2, minWidth: 150 }} type="email" placeholder="Email (optional)" value={m.email}
-                                  onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+                                <EmailInput style={{ flex: 2, minWidth: 150 }} placeholder="Email (optional)" value={m.email}
+                                  onChange={v => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: v } : x))} />
                               )}
                               <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
                                 title="Layered entity: this slice is owned by ANOTHER LLC, not a person. It gets its own full entity section (details, ownership, three documents) and must verify before this one.">
@@ -1608,7 +1608,7 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
         <div className="ts-inputs" style={{ marginTop: 6 }}>
           <label><span>First name</span><input className="input" value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
-          <label style={{ gridColumn: '1 / -1' }}><span>Email</span><input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Phone</span><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></label>
           <label><span>Date of birth</span><input className="input" type="date" value={f.dob} onChange={e => setF({ ...f, dob: e.target.value })} /></label>
           <label style={{ gridColumn: '1 / -1' }}><span>SSN (stored encrypted)</span><input className="input" inputMode="numeric" value={f.ssn} onChange={e => setF({ ...f, ssn: formatSSN(e.target.value) })} placeholder="XXX-XX-XXXX" /></label>

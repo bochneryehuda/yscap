@@ -750,7 +750,7 @@ export default function Apply() {
                 </div>
                 <div className="grid cols-2">
                   <div className="field"><label>Email</label>
-                    <EmailInput value={c.email || ''} onChange={v => setCo('email', v)} placeholder="They'll receive a PILOT invitation" /></div>
+                    <EmailInput autoComplete="off" value={c.email || ''} onChange={v => setCo('email', v)} placeholder="They'll receive a PILOT invitation" /></div>
                   <div className="field"><label>Phone</label>
                     <PhoneInput value={c.phone || ''} onChange={v => setCo('phone', v)} /></div>
                 </div>

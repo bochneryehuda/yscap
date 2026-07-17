@@ -12,6 +12,11 @@ function roleDone(it, role) {
   return it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at
     || (role === 'loan_officer' && !!it.reviewed_at);
 }
+// Who may SIGN OFF / waive (mirrors StaffApplication.canComplete) — the loan
+// officer's step is "Done"; the back office signs off (#134). We hide Sign off /
+// Waive for non-completers so the task list doesn't show them a dead button the
+// backend would 403 (the file view hides them too).
+const COMPLETER_ROLES = ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'];
 
 /* Everything on the signed-in staffer's plate across all their files — tasks
    assigned to them or role-routed to a file they own. Grouped by file. #142: each
@@ -160,12 +165,14 @@ export default function StaffTasks() {
                           {it.reviewed_at
                             ? <button className="btn ghost small" disabled={b} title={`Marked done by ${it.reviewed_by_name || 'staff'} — undo to put it back on your list`} onClick={() => patchItem(it.id, { reviewed: false })}>Done ✓</button>
                             : <button className="btn ghost small" disabled={b} title="Mark this task done (loan-officer step). The processor still signs it off." onClick={() => patchItem(it.id, { reviewed: true })}>Done</button>}
-                          {it.waived_at
+                          {/* Sign off / Waive are the back-office step (#134) — only shown to
+                              completers, matching the file view, so an LO never sees a dead button. */}
+                          {COMPLETER_ROLES.includes(role) && (it.waived_at
                             ? <button className="btn ghost small" disabled={b} onClick={() => patchItem(it.id, { waived: false })}>Undo waive</button>
                             : <>
                                 <button className="btn primary small" disabled={b} title="Sign off = the whole task is complete. This removes it from the list for everyone." onClick={() => patchItem(it.id, { signedOff: true })}>Sign off</button>
                                 {it.is_required === false && <button className="btn ghost small" disabled={b} title="Waive this optional task (clear without a document)" onClick={() => patchItem(it.id, { waived: true })}>Waive</button>}
-                              </>}
+                              </>)}
                           <Link className="btn ghost small" to={`/internal/app/${it.application_id}`} title="Open the file">Open</Link>
                         </div>
                       </div>

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
-import { PhoneInput } from '../components/FormattedInputs.jsx';
+import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 
@@ -266,7 +266,7 @@ export default function StaffTeam() {
           <div className="field"><label>Full name *</label>
             <input className="input" value={form.fullName} onChange={e => set('fullName', e.target.value)} required /></div>
           <div className="field"><label>Email *</label>
-            <input className="input" type="email" value={form.email} onChange={e => set('email', e.target.value)} required /></div>
+            <EmailInput value={form.email} onChange={v => set('email', v)} required /></div>
           <div className="field"><label>Role</label>
             <select className="input" value={form.role} onChange={e => set('role', e.target.value)}>
               {ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}

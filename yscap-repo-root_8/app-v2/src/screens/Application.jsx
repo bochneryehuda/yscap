@@ -13,7 +13,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
-import { MoneyInput, PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
+import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
@@ -340,7 +340,7 @@ function ContactCondition({ it, appId, onSaved }) {
       </div>
       <div className="grid cols-2">
         <div className="field"><label>Email</label>
-          <input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
+          <EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></div>
         <div className="field"><label>Phone</label>
           <PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></div>
       </div>
@@ -1364,7 +1364,7 @@ function CoBorrowerRail({ app, onChanged }) {
             <input className="input" placeholder="First name" value={f.firstName} onChange={e => setF(s => ({ ...s, firstName: e.target.value }))} />
             <input className="input" placeholder="Last name" value={f.lastName} onChange={e => setF(s => ({ ...s, lastName: e.target.value }))} />
           </div>
-          <input className="input" style={{ marginTop: 8 }} type="email" placeholder="Email" value={f.email} onChange={e => setF(s => ({ ...s, email: e.target.value }))} />
+          <EmailInput style={{ marginTop: 8 }} placeholder="Email" value={f.email} onChange={v => setF(s => ({ ...s, email: v }))} />
           {err && <div role="alert" className="notice err small" style={{ marginTop: 8 }}>{err}</div>}
           <div className="row" style={{ gap: 8, marginTop: 10 }}>
             <button className="btn primary small" disabled={busy} onClick={submit}>{busy ? 'Inviting…' : 'Send invite'}</button>

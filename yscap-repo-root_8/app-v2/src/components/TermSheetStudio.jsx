@@ -113,6 +113,12 @@ export function buildStudioState(x) {
 function readSnapshot(win) {
   const doc = win.document;
   const val = (id) => { const e = doc.getElementById(id); return e ? String(e.value).trim() : ''; };
+  // #143 — the dollar inputs DISPLAY comma-grouped ("400,000"); every money field
+  // captured here flows to the server (overridesFromSnapshot → the register/quote),
+  // so strip the separators so the server never sees a comma (its own num() also
+  // strips defensively — belt and suspenders). Non-money fields (names/addresses)
+  // keep val() untouched, since a comma can be meaningful there ("Smith, LLC").
+  const moneyVal = (id) => val(id).replace(/,/g, '');
   const chk = (id) => { const e = doc.getElementById(id); return !!(e && e.checked); };
   const active = (id) => { const e = doc.getElementById(id); return !!(e && e.classList.contains('pcard-active')); };
   const program = active('pcardGold') ? 'gold' : active('pcardStd') ? 'standard' : null;
@@ -129,16 +135,16 @@ function readSnapshot(win) {
       entityName: val('entityName'), borrowerName: val('borrowerName'), coBorrowerName: val('coBorrowerName'), propAddr: val('propAddr'), addrTBD: chk('addrTBD'),
       dealPurpose: val('dealPurpose'), dealType: val('dealType'),
       propState: val('propState'), propType: val('propType'),
-      price: val('price'), isAssign: chk('isAssign'), origPrice: val('origPrice'),
-      asIs: val('asIs'), arv: val('arv'), construction: val('construction'),
+      price: moneyVal('price'), isAssign: chk('isAssign'), origPrice: moneyVal('origPrice'),
+      asIs: moneyVal('asIs'), arv: moneyVal('arv'), construction: moneyVal('construction'),
       rehabScope: val('rehabScope'), sqft: chk('sqft'),
       fico: val('fico'), expFlips: val('expFlips'), expBrrrr: val('expBrrrr'), expGround: val('expGround'),
-      tsTerm: val('tsTerm'), irMonths: val('irMonths'), irAmount: val('irAmount'),
+      tsTerm: val('tsTerm'), irMonths: val('irMonths'), irAmount: moneyVal('irAmount'),
       // admin pricing knobs (staff mode) — same names the staff pricing API takes
       tsYspStd: val('tsYspStd'), tsYspGold: val('tsYspGold'),
       tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'),
-      tsFeeUW: val('tsFeeUW'), tsFeeCredit: val('tsFeeCredit'),
-      tsFeeAppr: val('tsFeeAppr'), tsFeeTitle: val('tsFeeTitle'),
+      tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
+      tsFeeAppr: moneyVal('tsFeeAppr'), tsFeeTitle: moneyVal('tsFeeTitle'),
       tsManualOn: chk('tsManualOn'),
       tsMLtv: val('tsMLtv'), tsMArv: val('tsMArv'), tsMLtc: val('tsMLtc'),
       tsMRate: val('tsMRate'), tsMIr: val('tsMIr'),
