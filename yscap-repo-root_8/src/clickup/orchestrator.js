@@ -508,6 +508,30 @@ function circuitCheck(appId, taskId, n = 1) {
   for (let i = 0; i < n; i++) _writeTimes.push(now);
 }
 
+/**
+ * WO-4b (F-M16): on boot, seed the in-memory breaker window from the durable
+ * write journal (clickup_write_log already timestamps every write), so a
+ * deploy/restart mid-storm no longer resets the breaker to zero and lets a
+ * runaway keep going. circuitCheck stays synchronous (it's called without await
+ * from many sites); this just primes _writeTimes once. Best-effort — a failure
+ * leaves the breaker starting empty, exactly as before. (A fully shared,
+ * multi-instance breaker would query the journal per check; single-instance —
+ * this deployment — is fully covered by seeding on boot.)
+ */
+async function seedBreakerFromDb() {
+  try {
+    const r = await db.query(
+      `SELECT extract(epoch from created_at) * 1000 AS ms
+         FROM clickup_write_log
+        WHERE blocked = false AND created_at > now() - ($1 || ' milliseconds')::interval
+        ORDER BY created_at`,
+      [String(CIRCUIT_WINDOW_MS)]);
+    const seeded = r.rows.map((x) => Number(x.ms)).filter((n) => Number.isFinite(n));
+    _writeTimes = seeded.slice(-CIRCUIT_MAX_WRITES * 2);
+    if (_writeTimes.length) console.log(`[clickup] breaker seeded from journal: ${_writeTimes.length} write(s) in the last ${Math.round(CIRCUIT_WINDOW_MS / 60000)} min`);
+  } catch (e) { console.warn('[clickup] breaker seed skipped:', e.message); }
+}
+
 /** Append-only journal of every ClickUp field write (before + after). PII rule:
  *  SSN / card values are masked before they land in the journal. Best-effort —
  *  a journal failure never blocks the push itself. */
@@ -584,5 +608,6 @@ module.exports = {
   pushApplication, createForNewFile, loadPushContext, resolveTargetList, firstListId, logSync,
   PII_OVERWRITE_SHIELD, PII_REVIEW_KEY, // exported for the write-safety tests
   circuitCheck, // the ONE shared volume breaker — every ClickUp write path counts into it (audit fix)
+  seedBreakerFromDb, // WO-4b (F-M16): prime the breaker window from the journal on boot
   recordFieldFailure, assertPushComplete, // WO-1: exported for the push-failure regression test
 };

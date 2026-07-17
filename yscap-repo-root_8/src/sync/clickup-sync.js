@@ -73,7 +73,22 @@ async function pushOutboxOnce() {
       // Keys a human typed directly into a portal form ride along so the DOB
       // gate can recognize the deliberate human decision it exists to demand.
       const humanEditKeys = job.payload && Array.isArray(job.payload.humanEditKeys) ? job.payload.humanEditKeys.filter(Boolean) : [];
-      if (only.length) await orchestrator.pushApplication(job.entity_id, { force: true, only, humanEditKeys });
+      if (only.length) {
+        // WO-4b (F-M15): heartbeat updated_at while the push runs, so the 5-min
+        // 'processing' reclaim floor can never catch a STILL-RUNNING push and
+        // double-run it (double journal + breaker double-count). WO-2's patient
+        // retries mean a throttled push can now exceed 5 min; this keeps the job
+        // claimed until it genuinely finishes.
+        const heartbeat = setInterval(() => {
+          db.query(`UPDATE sync_queue SET updated_at=now() WHERE id=$1 AND status='processing'`, [job.id]).catch(() => {});
+        }, 120000);
+        if (heartbeat.unref) heartbeat.unref();
+        try {
+          await orchestrator.pushApplication(job.entity_id, { force: true, only, humanEditKeys });
+        } finally {
+          clearInterval(heartbeat);
+        }
+      }
     }
     await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
     // A push landing means the file's outbound path works again — any open
@@ -1223,6 +1238,11 @@ function start() {
   // pushes silently dropped dropdown fields).
   optionMap().then(() => console.log('[clickup-sync] option cache warmed'))
     .catch((e) => console.error('[clickup-sync] option cache warm failed', e.message));
+
+  // WO-4b (F-M16): prime the volume breaker from the durable write journal so a
+  // deploy/restart mid-storm doesn't reset it to zero. Best-effort, before any
+  // outbound drain starts.
+  orchestrator.seedBreakerFromDb().catch(() => {});
 
   // Link any not-yet-linked staff (esp. processors created after the db/045 backfill)
   // to their ClickUp user id by email, so their officer/processor assignment syncs

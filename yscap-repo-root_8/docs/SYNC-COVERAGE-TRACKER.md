@@ -4,7 +4,7 @@
 
 **Status legend:** ✅ DONE (live in `main`) · 🟡 PARTIAL · ⬜ OPEN (not started).
 
-**Bottom line as of 2026-07-17:** of ~27 verified findings, **9 fully closed + 2 partial**; of 19 work orders, **5 fully done + 3 partial**. Roughly **~40% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
+**Bottom line as of 2026-07-17:** of ~27 verified findings, **11 fully closed + 2 partial**; of 19 work orders, **6 fully done + 2 partial**. Roughly **~45% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
 
 ---
 
@@ -31,8 +31,8 @@
 | **F-M12** | Legacy /approve writes DOB without sanitizeDob | ✅ DONE | WO-6 (sanitizeDob + normalizeTypedDate on approve) |
 | **F-M13** | Inbound year guard is a hardcoded 2-field list | ⬜ OPEN | WO-10 (registry makes it structural) |
 | **F-M14** | 401-with-"not found" treated as task deletion | ✅ DONE | WO-6, live after next merge |
-| **F-M15** | 5-min reclaim can double-run a slow push | ⬜ OPEN | WO-4b (heartbeat) |
-| **F-M16** | Volume breaker per-process, reset by deploy | ⬜ OPEN | WO-4b (DB-backed window) |
+| **F-M15** | 5-min reclaim can double-run a slow push | ✅ DONE | WO-4b (heartbeat keeps a long push claimed) |
+| **F-M16** | Volume breaker per-process, reset by deploy | ✅ DONE | WO-4b (seeded from journal on boot — survives restart; single-instance) |
 | **F-M17** | allow_shared_email irreversible, no confirmation | ⬜ OPEN | WO-8 |
 | **F-M18** | Additive contacts absorb a wrong person silently | ⬜ OPEN | WO-12 |
 | **F-M19** | No migration ledger; duplicate db/NNN numbers | 🟡 PARTIAL | dup-number CI check + 113 resolved (live); schema_migrations ledger = WO-13 |
@@ -50,7 +50,7 @@
 | **WO-1** | Throw on failed field writes (F-C1) | ✅ DONE (live) |
 | **WO-2** | Retry/rate-limit contract at the client (F-H1) | ✅ DONE (live) |
 | **WO-4a** | Durable reconcile watermark (F-M7, part of F-H4) | ✅ DONE (live) |
-| **WO-4b** | Bound+pace reconcileLinkedPrograms (F-H4) ✅; DB breaker (F-M16) + heartbeat (F-M15) still open | 🟡 PARTIAL |
+| **WO-4b** | Bound+pace reconcileLinkedPrograms (F-H4) + heartbeat (F-M15) + breaker-seed (F-M16) | ✅ DONE |
 | **WO-5** | Transactional enqueue (F-M3) | 🟡 PARTIAL (ph1 loud-failure done; ph2 transactional open) |
 | **WO-3** | Inbound dead-letters + webhook-health probe (F-M6) | ⬜ OPEN |
 | **WO-6** | Small-fixes bundle (F-M14✅ F-M11✅ F-M20✅ F-M12✅ F-M8✅; 113 renumber✅) | ✅ DONE |
