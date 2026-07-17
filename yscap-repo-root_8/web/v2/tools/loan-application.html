@@ -1045,7 +1045,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
 </div>
 <script src="../suite.js?v=admin8"></script>
 <script src="rb-logo.js?v=admin8"></script>
-<script src="standard-program.js?v=admin13"></script>
+<script src="standard-program.js?v=asgseller15"></script>
 <script src="title-cost.js?v=admin8"></script>
 <script src="address-autocomplete.js?v=admin9"></script>
 <script>
@@ -1492,14 +1492,14 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
         if (asg && asg.overLimit) {
           an.style.display = "";
           an.className = "assign-note warn";
-          an.innerHTML = "<b>Assignment fee exceeds the 15% program limit.</b> Up to " + YS.fmtUSD(asg.maxFee) + " (15% of the " + YS.fmtUSD(totalPrice) +
-            " purchase price) is financeable. Your fee is " + YS.fmtUSD(fee) +
+          an.innerHTML = "<b>Assignment fee exceeds the 15% program limit.</b> Up to " + YS.fmtUSD(asg.maxFee) + " (15% of the " + YS.fmtUSD(seller) +
+            " original contract price) is financeable. Your fee is " + YS.fmtUSD(fee) +
             ", so <b>" + YS.fmtUSD(asg.excessOOP) + " is paid out of pocket at closing</b> and terms are sized on the recognized price of " +
             YS.fmtUSD(asg.recognizedPrice) + ". A higher limit can be requested as an exception.";
         } else {
           an.style.display = "";
           an.className = "assign-note ok";
-          an.innerHTML = "Assignment fee of " + YS.fmtUSD(fee) + " is within the 15% limit (" + YS.fmtUSD(asg ? asg.maxFee : 0.15 * totalPrice) + " max, 15% of the purchase price) — fully financeable.";
+          an.innerHTML = "Assignment fee of " + YS.fmtUSD(fee) + " is within the 15% limit (" + YS.fmtUSD(asg ? asg.maxFee : 0.15 * seller) + " max, 15% of the original contract price) — fully financeable.";
         }
       } else { an.style.display = "none"; }
     }

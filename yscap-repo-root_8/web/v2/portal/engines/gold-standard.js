@@ -292,7 +292,8 @@
     if (input.ovrLTC > 0) caps.maxLTC = input.ovrLTC;
     var rateOvrG = (input.ovrRate > 0) ? input.ovrRate : 0;   // admin-set final note rate
 
-    // ---- assignment / wholesale cap: financeable fee = lesser of $75,000 or 15% of the purchase price ----
+    // ---- assignment / wholesale cap: financeable fee = lesser of $75,000 or 15% of the ORIGINAL (seller's) contract price ----
+    // (owner-corrected 2026-07-17: the 15% is on the seller's price, never the fee-inclusive total.)
     // Any excess is brought to the table (out of pocket); leverage/pricing size off the recognized price.
     var totalPP = Math.max(0, num(input.purchasePrice) || 0);
     var sellerPP = Math.max(0, num(input.sellerPrice) || 0);
@@ -301,7 +302,7 @@
     var effPurchase = totalPP;
     if (isAssign) {
       var rawFee = Math.max(0, totalPP - sellerPP);
-      var maxFee = Math.min(75000, 0.15 * totalPP);     // lesser of $75,000 or 15%
+      var maxFee = Math.min(75000, 0.15 * sellerPP);    // lesser of $75,000 or 15% of the seller's contract price
       var financeableFee = Math.min(rawFee, maxFee);
       var excessFee = Math.max(0, rawFee - financeableFee);
       effPurchase = sellerPP + financeableFee;          // recognized price
@@ -378,7 +379,7 @@
     // Any assignment requires escalation, but the deal remains eligible and fully priced.
     if (sizing) sizing.assignmentExcessOOP = assignment ? assignment.excessOOP : 0;
     if (assignment) {
-      if (assignment.overLimit) addEsc("the assignment fee of " + dollars(assignment.fee) + " exceeds the financeable cap (lesser of $75,000 or 15% = " + dollars(assignment.maxFee) + "), so " + dollars(assignment.excessOOP) + " is brought to the table");
+      if (assignment.overLimit) addEsc("the assignment fee of " + dollars(assignment.fee) + " exceeds the financeable cap (lesser of $75,000 or 15% of the seller's contract price = " + dollars(assignment.maxFee) + "), so " + dollars(assignment.excessOOP) + " is brought to the table");
       else addEsc("the purchase includes an assignment of contract");
     }
 
