@@ -4,7 +4,7 @@
 
 **Status legend:** ✅ DONE (live in `main`) · 🟡 PARTIAL · ⬜ OPEN (not started).
 
-**Bottom line as of 2026-07-17:** of ~27 verified findings, **11 fully closed + 2 partial**; of 19 work orders, **6 fully done + 2 partial**. Roughly **~45% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
+**Bottom line as of 2026-07-17:** of ~27 verified findings, **12 fully closed + 2 partial**; of 19 work orders, **7 fully done + 2 partial**. Roughly **~50% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
 
 ---
 
@@ -17,7 +17,7 @@
 | **F-H2** | SharePoint name-only fuzzy match auto-files a doc | ⬜ OPEN | WO-14 (mirror never ran in prod — fix before enabling) |
 | **F-H3** | Backdating DOB auto-adopt can overwrite a portal DOB | ⬜ OPEN | WO-11 |
 | **F-H4** | Every deploy re-ingests the whole portfolio (storm) | ✅ DONE | watermark (WO-4a) + bounded rotating sweep (WO-4b) |
-| **F-M1** | Stale internal_status re-asserted onto ClickUp | ⬜ OPEN | WO-16 |
+| **F-M1** | Stale internal_status re-asserted onto ClickUp | ✅ DONE | WO-16 (task-status pushed only on a deliberate internal-status change) |
 | **F-M2** | Outbound DOB gate omits human-provenance | ⬜ OPEN | WO-11 |
 | **F-M3** | Enqueue failures swallowed; backstop sweep retired | 🟡 PARTIAL | loud+traceable failure done (WO-5 ph1); transactional enqueue = WO-5 ph2 |
 | **F-M4** | Inbound human-edit-wins on one-sided evidence | ⬜ OPEN | WO-11 |
@@ -63,7 +63,7 @@
 | **WO-13** | 12 incident regression tests + schema_migrations ledger | 🟡 PARTIAL (5 new test suites added; ledger + incident tests open) |
 | **WO-14** | SharePoint pre-launch safety (F-H2/M10) + go-live | ⬜ OPEN |
 | **WO-15** | SSN minimization in ClickUp (last-4) + GLBA memo | ⬜ OPEN (owner decision) |
-| **WO-16** | Status ownership decoupling (F-M1) | ⬜ OPEN |
+| **WO-16** | Status ownership decoupling (F-M1) | ✅ DONE |
 | **WO-17** | Runtime pause switches + flood hold | ⬜ OPEN |
 | **WO-18** | Nightly portal-vs-ClickUp reconciliation report | ⬜ OPEN |
 | **WO-19** | Deploy discipline (app-v2 build wiring / drift gate) | ⬜ OPEN |

@@ -243,7 +243,13 @@ async function pushApplication(appId, opts = {}) {
   // e.g. the admin per-file "repush" button).
   const scoped = (taskId && Array.isArray(opts.only) && opts.only.length) ? mapper.resolveOnly(opts.only) : null;
   const fieldsToPush = scoped ? built.customFields.filter((c) => scoped.cuIds.has(c.id)) : built.customFields;
-  const pushStatus = scoped ? scoped.status : true;
+  // WO-16 (F-M1): the ClickUp-owned TASK status is written ONLY on a deliberate
+  // internal-status change (scoped 'internal_status') — never as a side effect of
+  // a borrower-facing status change or a full economics repush, which carry a
+  // stale internal_status mirror that would revert ClickUp's live status. The
+  // portal-owned borrower_portal_status MIRROR field still syncs normally (it's a
+  // custom field in the scoped/full field set).
+  const pushInternalStatus = scoped ? !!scoped.internalStatus : false;
   // Checklist option-writes are appended ONLY for explicitly-scoped checklist
   // keys, and NEVER on create (built.customFields alone builds a new task). This
   // is the structural guarantee that a create/full-repush can't touch a ClickUp
@@ -411,7 +417,7 @@ async function pushApplication(appId, opts = {}) {
       console.warn(`[clickup] OVERWRITE STORM: push rewrote ${overwrites} existing values on task ${id} (app ${appId})`);
       await logSync('push_overwrite_storm', appId, id, { overwrites, scoped: !!scoped });
     }
-    if (pushStatus && built.statusName && (!before || before.__status !== built.statusName)) {
+    if (pushInternalStatus && built.statusName && (!before || before.__status !== built.statusName)) {
       try {
         await clickup.updateTask(id, { status: built.statusName });
         await journalFieldWrite(appId, id, null, before ? before.__status : undefined, built.statusName, source, { fieldKey: 'status' });

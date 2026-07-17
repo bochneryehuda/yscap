@@ -4313,7 +4313,7 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     await db.query(
       `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, internalStatus, external]);
-    enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // push ONLY the status (task status + borrower_portal_status mirror)
+    enqueueClickupPush(req.params.id, ['internal_status']).catch(() => {}); // WO-16 (F-M1): a DELIBERATE internal-status change pushes the ClickUp task status + the mirror
     // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.
     await db.query(
       `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
