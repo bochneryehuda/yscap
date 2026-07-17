@@ -4,7 +4,7 @@
 
 **Status legend:** ✅ DONE (live in `main`) · 🟡 PARTIAL · ⬜ OPEN (not started).
 
-**Bottom line as of 2026-07-17:** of ~27 verified findings, **12 fully closed + 3 partial**; of 19 work orders, **7 fully done + 3 partial**. Roughly **~50% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
+**Bottom line as of 2026-07-17:** of ~27 verified findings, **13 fully closed + 2 partial**; of 19 work orders, **7 fully done + 3 partial**. Roughly **~55% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
 
 ---
 
@@ -35,7 +35,7 @@
 | **F-M16** | Volume breaker per-process, reset by deploy | ✅ DONE | WO-4b (seeded from journal on boot — survives restart; single-instance) |
 | **F-M17** | allow_shared_email irreversible, no confirmation | ⬜ OPEN | WO-8 |
 | **F-M18** | Additive contacts absorb a wrong person silently | ⬜ OPEN | WO-12 |
-| **F-M19** | No migration ledger; duplicate db/NNN numbers | 🟡 PARTIAL | dup-number CI check + 113 resolved (live); schema_migrations ledger = WO-13 |
+| **F-M19** | No migration ledger; duplicate db/NNN numbers | ✅ DONE | dup-number CI check + 113 resolved + schema_migrations ledger with checksum-drift alarm |
 | **F-M20** | Outbound DOB review rows can never auto-close | ✅ DONE | WO-6 (borrowerId added → dedup + auto-close) |
 | **F-M21** | Skipped materialization with no review row | ⬜ OPEN | WO-3 area |
 | **F-M22** | upsertTrackRecord address-key race (dup rows) | ⬜ OPEN | WO-6 area |
@@ -60,7 +60,7 @@
 | **WO-10** | Typed field registry (direction+authority+PII as data) | ⬜ OPEN (structural centerpiece) |
 | **WO-11** | Per-field provenance + decideField (F-H3/M2/M4) | ⬜ OPEN |
 | **WO-12** | Deterministic-only identity tiers (F-M5/M18) | ⬜ OPEN |
-| **WO-13** | 12 incident regression tests + schema_migrations ledger | 🟡 PARTIAL (5 new test suites added; ledger + incident tests open) |
+| **WO-13** | 12 incident regression tests + schema_migrations ledger | 🟡 PARTIAL (ledger✅ + 7 new test suites; the full 12 incident tests open) |
 | **WO-14** | SharePoint pre-launch safety (F-H2/M10) + go-live | ⬜ OPEN |
 | **WO-15** | SSN minimization in ClickUp (last-4) + GLBA memo | ⬜ OPEN (owner decision) |
 | **WO-16** | Status ownership decoupling (F-M1) | ✅ DONE |
