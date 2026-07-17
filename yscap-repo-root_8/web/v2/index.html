@@ -907,6 +907,8 @@ section[id], main[id]{ scroll-margin-top:96px; }
         </div>
         <form class="fsub-form" id="subscribeForm" novalidate>
             <input type="email" name="email" inputmode="email" autocomplete="email" placeholder="you@email.com" aria-label="Email address" required>
+            <!-- honeypot: humans never see or fill this; form-filling bots do -->
+            <input type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;top:-9999px;height:1px;width:1px;opacity:0">
             <button type="submit" class="btn btn-gold">Subscribe</button>
         </form>
         <p class="fsub-status" id="subscribeStatus" role="status" aria-live="polite"></p>
@@ -1089,6 +1091,8 @@ section[id], main[id]{ scroll-margin-top:96px; }
     <p>We're building instant DSCR rental pricing right into the site. Leave your email and we'll let you know the moment it's live — and in the meantime a loan officer can price your DSCR deal by hand.</p>
     <form id="dscrWaitForm" novalidate>
       <input type="email" name="email" inputmode="email" autocomplete="email" placeholder="you@email.com" aria-label="Email address" required>
+      <!-- honeypot: humans never see or fill this; form-filling bots do -->
+      <input type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;top:-9999px;height:1px;width:1px;opacity:0">
       <button type="submit" class="btn btn-gold">Notify me</button>
       <p class="status" id="dscrWaitStatus" role="status" aria-live="polite"></p>
     </form>
@@ -1099,11 +1103,19 @@ section[id], main[id]{ scroll-margin-top:96px; }
   // Shared, dependency-free lead capture → POST /api/leads (same endpoint the
   // marketing tools use). No visitor login; server stores + notifies + confirms.
   var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  function submitLead(tool, email, statusEl, okMsg){
+  // #153 anti-bot form token: fetched at page load (a human has dwelled well
+  // past the server's minimum by the time they reach a form) and refreshed
+  // hourly so a long-lived tab never submits an expired one. The server drops
+  // subscribe-class submissions that never fetched a token — the signature of
+  // a bot replaying the POST without loading the page.
+  var leadToken = '';
+  function fetchLeadToken(){ fetch('/api/leads/token').then(function(r){ return r.json(); }).then(function(d){ leadToken = (d && d.t) || ''; }).catch(function(){}); }
+  fetchLeadToken(); setInterval(fetchLeadToken, 60*60*1000);
+  function submitLead(tool, email, statusEl, okMsg, hp){
     if(!EMAIL_RE.test(email)){ statusEl.style.color=''; statusEl.textContent='Please enter a valid email.'; return Promise.resolve(false); }
     statusEl.textContent='Sending…';
     return fetch('/api/leads', { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ tool: tool, email: email, subject: tool, message: 'Captured from the marketing site ('+tool+').' }) })
+        body: JSON.stringify({ tool: tool, email: email, subject: tool, message: 'Captured from the marketing site ('+tool+').', formToken: leadToken, website: hp || '' }) })
       .then(function(r){ return r.ok ? r.json().catch(function(){return {};}) : Promise.reject(r); })
       .then(function(){ statusEl.textContent = okMsg; return true; })
       .catch(function(){ statusEl.textContent = 'Something went wrong — please try again.'; return false; });
@@ -1111,7 +1123,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
   // Subscribe (footer)
   var sf = document.getElementById('subscribeForm');
   if(sf){ sf.addEventListener('submit', function(e){ e.preventDefault();
-    submitLead('subscribe', sf.email.value.trim(), document.getElementById('subscribeStatus'), 'Thanks — you’re on the list.')
+    submitLead('subscribe', sf.email.value.trim(), document.getElementById('subscribeStatus'), 'Thanks — you’re on the list.', sf.website ? sf.website.value : '')
       .then(function(ok){ if(ok) sf.reset(); }); }); }
   // DSCR waitlist modal
   var back = document.getElementById('dscrWaitlist');
@@ -1124,7 +1136,7 @@ section[id], main[id]{ scroll-margin-top:96px; }
   document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeM(); });
   var wf = document.getElementById('dscrWaitForm');
   if(wf){ wf.addEventListener('submit', function(e){ e.preventDefault();
-    submitLead('dscr_waitlist', wf.email.value.trim(), document.getElementById('dscrWaitStatus'), 'You’re on the waitlist — we’ll be in touch.')
+    submitLead('dscr_waitlist', wf.email.value.trim(), document.getElementById('dscrWaitStatus'), 'You’re on the waitlist — we’ll be in touch.', wf.website ? wf.website.value : '')
       .then(function(ok){ if(ok){ wf.reset(); setTimeout(closeM, 1600); } }); }); }
 })();
 </script>

@@ -7,6 +7,8 @@ import { fmtDay } from '../lib/dates.js';
    Declined / withdrawn are shown as a terminal state off the main path. */
 
 const PATH = [
+  // #151: the true first stage — a file in intake, before processing begins.
+  { s: 'file_intake', label: 'Intake' },
   { s: 'new', label: 'Submitted' },
   { s: 'in_review', label: 'In review' },
   { s: 'processing', label: 'Processing' },
@@ -30,6 +32,8 @@ export default function StatusTimeline({ appId, status, createdAt, expectedClosi
   const reachedAt = {};
   for (const h of (hist || [])) if (!reachedAt[h.to_status]) reachedAt[h.to_status] = h.created_at;
   if (!reachedAt['new'] && createdAt) reachedAt['new'] = createdAt;
+  // The intake milestone starts at file creation when no explicit row exists.
+  if (!reachedAt['file_intake'] && createdAt) reachedAt['file_intake'] = createdAt;
 
   const terminal = TERMINAL[status];
   const curIdx = terminal ? -1 : (IDX[status] != null ? IDX[status] : 0);

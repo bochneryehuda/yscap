@@ -14,17 +14,23 @@
  * (e.g. "rolled back ", "self procesing").
  */
 
-// The borrower-facing set (matches applications.status CHECK incl. on_hold).
+// The borrower-facing set (matches applications.status CHECK incl. on_hold and
+// file_intake — db/123). file_intake is the FIRST stage, BEFORE processing: a
+// prospect that exists in the system but is NOT yet an active file (owner-
+// directed 2026-07-17) — excluded from every active-file KPI/filter/count.
 const EXTERNAL = [
-  'new', 'in_review', 'processing', 'underwriting', 'approved',
+  'file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved',
   'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn',
 ];
 
 // Live ClickUp statuses (Loan Pipeline list) → borrower-facing status.
 // Keys are normalized (trim + lowercase) at lookup time.
 const EXTERNAL_FOR = {
-  'starting': 'new',
-  'prospect / pricing': 'new',
+  // The two ClickUp intake stages land as file_intake — NOT processing, NOT
+  // active (owner-directed 2026-07-17). They used to derive to 'new', which
+  // counted these prospects into every active-pipeline KPI.
+  'starting': 'file_intake',
+  'prospect / pricing': 'file_intake',
   'active / fill clickup(1-em': 'in_review',
   'structuring loan': 'in_review',
   'rolled back': 'in_review',
@@ -78,7 +84,10 @@ function fallbackExternal(n) {
   if (/fund|reconcil|post.?closing|purchase review|purchase conditions|refinanc/.test(n)) return 'funded';
   if (/ctc|closing/.test(n)) return 'clear_to_close';
   if (/underwrit|delegated|approval|resubmit|imported to ?ba|import.*bank/.test(n)) return 'underwriting';
-  if (/pricing|prospect|starting|structuring|rolled back/.test(n)) return 'in_review';
+  // Intake-stage keywords bucket to file_intake (pre-processing, non-active);
+  // structuring / rolled back are mid-pipeline and stay in_review.
+  if (/pricing|prospect|starting/.test(n)) return 'file_intake';
+  if (/structuring|rolled back/.test(n)) return 'in_review';
   return 'processing';
 }
 

@@ -5,6 +5,9 @@ import { useAuth } from '../lib/auth.jsx';
 
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
 const STATUS_LABEL = { outstanding: 'Outstanding', requested: 'Requested', received: 'In review', issue: 'Needs attention' };
+// File-status label for the group header pill (#151: file_intake must read
+// "Intake", never the raw enum). Mirrors StaffQueue's LABEL map.
+const APP_STATUS_LABEL = { file_intake: 'Intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
 const initials = (...parts) => parts.filter(Boolean).map(s => String(s).trim()[0] || '').join('').slice(0, 2).toUpperCase() || '—';
 // ONE completion rule, mirroring StaffApplication.roleDone — a task is off your
 // plate once it's signed off / waived / satisfied, or (for an LO) marked done.
@@ -124,7 +127,7 @@ export default function StaffTasks() {
                 </div>
                 <div className="task-meta">
                   {file.unread > 0 && <span className="chat-badge" title="Unread borrower messages">{file.unread}</span>}
-                  <span className={`pill ${file.app_status}`}>{file.app_status}</span>
+                  <span className={`pill ${file.app_status}`}>{APP_STATUS_LABEL[file.app_status] || file.app_status}</span>
                 </div>
               </div>
               <div className="grp-b">

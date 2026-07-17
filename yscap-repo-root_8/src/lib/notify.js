@@ -50,7 +50,9 @@ async function _emailRow(id, to, opts, audience) {
     // derive it from the applicationId. Null when no inbound domain is configured or
     // this isn't a file email (unchanged behavior then).
     const replyTo = opts.replyTo || fileReplyTo(opts.applicationId);
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo });
+    // #150: an optional LO-branded From display name rides through untouched
+    // (resend honors it; other providers ignore it).
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null });
     await _mark(id, res && res.ok ? 'sent' : 'skipped');
   } catch (e) {
     await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);

@@ -48,6 +48,7 @@ function NavIcon({ name }) {
 // borrower, or the LLC's owning borrower on select.
 const searchAddr = (a) => !a ? '' : (a.oneLine || [a.street || a.line1, a.city, a.state].filter(Boolean).join(', ') || '');
 const STATUS_LABEL = {
+  file_intake: 'Intake',
   new: 'New', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting',
   approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded',
   on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn',

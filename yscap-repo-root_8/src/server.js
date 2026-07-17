@@ -111,7 +111,7 @@ app.get('/api/health', async (req, res) => {
                                 JOIN checklist_templates t ON t.id=ci.template_id
                                WHERE ci.application_id=a.id AND t.code='rtl_p1_contract'))::int AS no_contract
              FROM applications a
-            WHERE a.deleted_at IS NULL AND a.status NOT IN ('declined','withdrawn','cancelled','funded')`),
+            WHERE a.deleted_at IS NULL AND a.status NOT IN ('declined','withdrawn','cancelled','funded','file_intake')`),
         new Promise((_, rej) => setTimeout(() => rej(new Error('guard timeout')), 2500)),
       ]);
       conditionsGuard = { filesZeroItems: g.rows[0].zero_items, rtlFilesMissingContract: g.rows[0].no_contract };

@@ -620,7 +620,9 @@ router.get('/applications/:id/pricing', async (req, res) => {
     let quote = null;
     // The live what-if quote embeds adminPricing too — strip it before it leaves.
     if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
-    res.json({ current, history, quote, enginesReady: pricing.enginesReady() });
+    // Echoed back on register — a mismatch means the file's economics moved
+    // underneath the open studio (409, never a silent stale re-register).
+    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app) });
   } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -637,13 +639,27 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
 
 router.post('/applications/:id/pricing/register', async (req, res) => {
   const appId = req.params.id;
+  // Refusals are audited (register_product_refused) so "register didn't work"
+  // is diagnosable from the logs alone (#148/#149) — same as the staff route.
+  const refuse = async (status, payload, reason, extra) => {
+    try { await audit(req, 'register_product_refused', 'application', appId, { reason, status, ...extra }); } catch (_) {}
+    return res.status(status).json(payload);
+  };
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
-    if (locked) return res.status(409).json({ error: locked });
+    if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const f = await loadFileForPricing(appId, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const b = req.body || {};
+    // Same optimistic-concurrency guard as the staff route (#148): a stale
+    // studio session must never re-register economics the file no longer has.
+    if (b.econVersion && b.econVersion !== pricing.econVersionFor(f.app)) {
+      return refuse(409, {
+        error: 'This file’s pricing inputs changed since the studio was opened. The latest values have been reloaded — review the scenario and register again.',
+        code: 'econ_version_conflict',
+      }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
+    }
     const program = b.program === 'gold' ? 'gold' : 'standard';
     const overrides = borrowerPricingOverrides(b.overrides || {});
     // A REGISTERED product is authoritative terms. Never let borrower-claimed
@@ -657,9 +673,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
     if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
-    if (quote.status === 'INELIGIBLE') return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote: stripQuoteInternal(quote) });
+    if (quote.status === 'INELIGIBLE') return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote: stripQuoteInternal(quote) }, 'ineligible', { program });
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
-    if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote: stripQuoteInternal(quote) });
+    if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote: stripQuoteInternal(quote) }, 'no_loan_sized', { program });
 
     // Superseded terms, captured before the new registration lands — so the
     // audit trail / Activity feed can say exactly what the reprice changed.
@@ -2615,12 +2631,22 @@ async function inviteCoBorrower(appId, primaryName, co) {
        VALUES ($1,'borrower',$2, now() + interval '14 days')`, [C.sha256(token), co.email]);
   }
   try {
+    // #150 — brand the invite to the FILE's assigned loan officer (From display
+    // name + contact block) when one is assigned.
+    let officer = null;
+    try {
+      const o = await db.query(
+        `SELECT s.full_name, s.title, s.email, s.phone, s.cell, s.nmls
+           FROM applications a JOIN staff_users s ON s.id=a.loan_officer_id WHERE a.id=$1`, [appId]);
+      if (o.rows[0]) officer = { name: o.rows[0].full_name, title: o.rows[0].title, email: o.rows[0].email, phone: o.rows[0].cell || o.rows[0].phone, nmls: o.rows[0].nmls };
+    } catch (_) { /* officer branding is best-effort */ }
     await mail.send('coBorrowerInvite', co.email, {
       firstName: co.firstName || '',
       primaryName: primaryName || 'your co-borrower',
       acceptUrl: hasAuth.rows[0] ? mail.link('/login') : mail.link('/accept?token=' + token),
       hasAccount: !!hasAuth.rows[0],
-    }, { replyTo: fileReplyTo(appId) });   // #68: a reply reaches the file's assigned team
+      officer,
+    }, { replyTo: fileReplyTo(appId), from: officer ? require('../lib/email').fromWithName(officer.name) : null });   // #68 + #150
   } catch (_) {}
   return coId;
 }

@@ -194,7 +194,19 @@ function leadReceived({ firstName, toolLabel, officerName } = {}) {
 /** Invitation sent to a co-borrower named on an application: set up portal
  *  access (or just sign in, if they already have an account) to follow the
  *  loan file alongside the primary borrower. */
-function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount } = {}) {
+// #150 — the assigned officer's contact block, appended to an email's meta rows
+// so the client always sees WHO their loan officer is and how to reach them.
+// officer = { name, title?, email?, phone?, nmls? } (a staff_users row shape).
+function officerMeta(meta, officer) {
+  if (!officer || !officer.name) return meta;
+  const bits = [officer.name, officer.title || 'Loan Officer'].filter(Boolean).join(' · ');
+  meta.push({ label: 'Your loan officer', value: bits + (officer.nmls ? ` · NMLS #${officer.nmls}` : '') });
+  const reach = [officer.phone, officer.email].filter(Boolean).join(' · ');
+  if (reach) meta.push({ label: 'Reach them at', value: reach });
+  return meta;
+}
+
+function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount, officer } = {}) {
   return render({
     audience: 'borrower',
     title: 'You have been added to a loan application',
@@ -206,6 +218,7 @@ function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount } = {}
         ? 'Your existing portal account now has access to this loan file — sign in to review the application, upload documents, and follow every milestone.'
         : 'Set up your portal access below to review the application, upload your documents, and follow every milestone through closing. This invitation expires in 14 days.',
     ],
+    meta: officerMeta([], officer),
     cta: acceptUrl ? { label: hasAccount ? 'Sign in to the portal' : 'Set up your access', url: acceptUrl } : null,
     note: 'If you were not expecting this, you can disregard it and no access will be created.',
   });
@@ -214,10 +227,11 @@ function coBorrowerInvite({ firstName, primaryName, acceptUrl, hasAccount } = {}
 /** Invitation to the borrower on a staff-originated loan file: their loan team
  *  has already opened the file — set up portal access (or sign in) to follow it,
  *  upload documents, and message the team. */
-function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptUrl, hasAccount } = {}) {
+function borrowerInvite({ firstName, propertyLabel, loanNumber, inviter, acceptUrl, hasAccount, officer } = {}) {
   const meta = [];
   if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
   if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  officerMeta(meta, officer);   // #150 — the inviting officer's contact block
   return render({
     audience: 'borrower',
     title: 'Your loan file is ready in the portal',
@@ -328,8 +342,10 @@ const builders = {
 async function deliver(built, to, opts = {}) {
   if (!built) return { ok: false, error: 'no email built' };
   try {
+    // #150: opts.from carries an LO-branded From display name when the email
+    // is sent on a specific officer's behalf (invites, registrations).
     const r = await provider.sendMail({ to, subject: built.subject, html: built.html, text: built.text,
-      replyTo: opts.replyTo || null });
+      replyTo: opts.replyTo || null, from: opts.from || null });
     if (r && r.skipped) console.log('[email] provider=none, skipped:', built.subject, '->', to);
     return { ok: !!(r && r.ok), id: r && r.id, skipped: r && r.skipped };
   } catch (e) {

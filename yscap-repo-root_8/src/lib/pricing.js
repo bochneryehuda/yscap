@@ -384,7 +384,42 @@ function safeQuote(program, input) {
   catch (e) { return { program, programLabel: PROGRAM_LABEL[program], status: 'ERROR', eligible: false, reasons: [{ level: 'INELIGIBLE', msg: e.message || 'pricing error' }], sizing: null }; }
 }
 
+// Optimistic-concurrency fingerprint of the FILE-owned pricing basis. GET
+// /pricing hands it to the studio; register refuses (409) when the file's
+// economics moved in between — so a stale studio session (long-open tab, old
+// autosave, an edit that landed from the form/ClickUp while the sheet was open)
+// can never silently re-register OLD economics and write them back onto the
+// file (root-caused 2026-07-17: LO re-registers were clobbering later file
+// edits with the previously-registered scenario). Only file-owned inputs that
+// buildInputs reads participate — registration itself rewrites several of them,
+// so a fresh GET is required after every register (the panel already reloads).
+function econVersionFor(app) {
+  const crypto = require('crypto');
+  const f = (v) => {
+    if (v == null || v === '') return '';
+    if (typeof v === 'boolean') return v ? '1' : '0';
+    const n = Number(v);
+    return isFinite(n) && String(v).trim() !== '' && /^-?[\d.]+$/.test(String(v).trim()) ? String(n) : String(v).trim().toLowerCase();
+  };
+  const basis = [
+    app.purchase_price, app.as_is_value, app.arv, app.rehab_budget,
+    app.term, app.requested_ir_months, app.requested_ir_amount,
+    app.requested_exp_flips, app.requested_exp_holds, app.requested_exp_ground,
+    app.is_assignment, app.underlying_contract_price, app.assignment_fee,
+    app.program, app.loan_type, app.property_type, app.units,
+    // Also file-owned pricing inputs buildInputs reads (audit 2026-07-17):
+    // rehab scope, sqft addition, the property STATE (title cost/eligibility),
+    // the file's pricing FICO (computed onto f.app by loadFileForPricing), and
+    // the sticky per-file markups.
+    app.rehab_type, app.sqft_pre, app.sqft_post,
+    (app.property_address && app.property_address.state) || '',
+    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct,
+  ].map(f).join('|');
+  return crypto.createHash('sha1').update(basis).digest('hex').slice(0, 16);
+}
+
 module.exports = {
   enginesReady, loadErr: () => loadErr,
   buildInputs, quoteProgram, quoteAll, parseTermMonths, PROGRAM_LABEL,
+  econVersionFor,
 };

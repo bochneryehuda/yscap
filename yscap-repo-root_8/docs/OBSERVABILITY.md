@@ -1,4 +1,11 @@
-# Observability & the audit/event log (#147)
+# Observability & the audit/event log (#147, #149)
+
+> **Standing rule (owner-directed 2026-07-17): every integration — ClickUp,
+> SharePoint, email, and ANY integration added in the future — must journal its
+> conversations (what was sent, what came back, what was refused) into one of
+> the streams below at build time.** Troubleshooting must always be possible
+> from the database alone, without API keys or provider dashboards. A new
+> integration that leaves no queryable trail is not done.
 
 This is the map of **everything the PILOT backend records about what happened** —
 who did what, when, and across which system (the portal, ClickUp, SharePoint,
@@ -40,6 +47,14 @@ one.
 ### 1. Portal audit trail — `audit_log` (`db/schema.sql`)
 Every meaningful portal action: sign-ins, SSN views, document uploads/downloads,
 condition sign-offs, application edits, assignments, admin changes, PII access.
+**REFUSALS are audited too (#148/#149, 2026-07-17):** every product-register
+refusal lands as `register_product_refused` with the reason
+(`econ_version_conflict`, `admin_override_stripped`, `value_raise_blocked`,
+`ineligible`, `no_loan_sized`, `structural_lock`) — "the register button doesn't
+work" is diagnosable from the log alone. Pipeline Excel exports are audited
+(`export_pipeline`, with the filter set + row count), bulk lead archives as
+`leads_bulk_archive`, and public-form bot drops are console-logged with the
+masked address + reason (`[leads] dropped …`).
 Columns: `actor_kind` (staff/borrower/system), `actor_id`, `action` (a stable
 code — see `src/lib/audit-actions.js` for the code→label→category map), `entity_type`/
 `entity_id`, `ip_address`, `user_agent`, `detail` (jsonb), `created_at`. Written

@@ -12,6 +12,9 @@ import ChatThread from '../components/ChatThread.jsx';
    thread. Live over SSE: unread badges, presence dots, previews. */
 
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
+// File-status label for the open conversation's context pill (#151: file_intake
+// must read "Intake", never the raw enum). Mirrors StaffQueue's LABEL map.
+const APP_STATUS_LABEL = { file_intake: 'Intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
 const ago = (t) => {
   if (!t) return '';
   const s = (Date.now() - new Date(t).getTime()) / 1000;
@@ -194,7 +197,7 @@ export default function StaffChat() {
                   📂 {openConv.borrower_first} {openConv.borrower_last} — {addrLine(openConv.property_address)}{openConv.ys_loan_number ? ` · ${openConv.ys_loan_number}` : ''}
                 </a>
                 <div className="cv-context-meta">
-                  {openConv.app_status && <span className={`pill ${openConv.app_status}`}>{openConv.app_status}</span>}
+                  {openConv.app_status && <span className={`pill ${openConv.app_status}`}>{APP_STATUS_LABEL[openConv.app_status] || openConv.app_status}</span>}
                   {openConv.borrower_visible
                     ? <span className="cv-ctx-tag">Borrower can see this chat</span>
                     : <span className="cv-ctx-tag mut">Internal only</span>}
