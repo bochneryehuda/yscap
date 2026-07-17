@@ -331,7 +331,8 @@ async function pushApplication(appId, opts = {}) {
         await journalFieldWrite(appId, id, c.id, null, c.value, source, { blocked: true });
         await logSync('dob_blind_write_blocked', appId, id, { fieldId: c.id, to: String(c.value) });
         await require('../lib/sync-review').queueReview({
-          applicationId: appId, taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
+          applicationId: appId, borrowerId: ctx._row.borrower_id, // WO-6 (F-M20): so the row can auto-close when the DOB conflict resolves
+          taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
           proposedValue: T.fromEpochMs(c.value), rawValue: String(c.value),
           reason: 'dob_change_blocked_pending_review',
           clickupValue: null, portalValue: T.fromEpochMs(c.value) });
@@ -358,7 +359,8 @@ async function pushApplication(appId, opts = {}) {
             await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
             await logSync('dob_change_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value), reason });
             await require('../lib/sync-review').queueReview({
-              applicationId: appId, taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
+              applicationId: appId, borrowerId: ctx._row.borrower_id, // WO-6 (F-M20): so the row can auto-close when the DOB conflict resolves
+              taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
               currentValue: oldLoose, proposedValue: newDay, rawValue: String(c.value),
               reason, clickupValue: oldLoose, portalValue: newDay });
             continue;

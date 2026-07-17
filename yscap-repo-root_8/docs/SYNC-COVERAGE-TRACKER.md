@@ -27,7 +27,7 @@
 | **F-M8** | Year-range review cards carry no portal value | ⬜ OPEN | WO-6 |
 | **F-M9** | Value-agnostic dismissals over-suppress new conflicts | ⬜ OPEN | WO-8 |
 | **F-M10** | sp_rematch clears the wrong scope cache | ⬜ OPEN | WO-14 |
-| **F-M11** | LLC/checklist dates skip normalizeTypedDate | ⬜ OPEN | WO-6 |
+| **F-M11** | LLC/checklist dates skip normalizeTypedDate | ✅ DONE | WO-6 (5 write sites now year-0026-proof) |
 | **F-M12** | Legacy /approve writes DOB without sanitizeDob | ⬜ OPEN | WO-6 |
 | **F-M13** | Inbound year guard is a hardcoded 2-field list | ⬜ OPEN | WO-10 (registry makes it structural) |
 | **F-M14** | 401-with-"not found" treated as task deletion | ✅ DONE | WO-6, live after next merge |
@@ -36,7 +36,7 @@
 | **F-M17** | allow_shared_email irreversible, no confirmation | ⬜ OPEN | WO-8 |
 | **F-M18** | Additive contacts absorb a wrong person silently | ⬜ OPEN | WO-12 |
 | **F-M19** | No migration ledger; duplicate db/NNN numbers | 🟡 PARTIAL | dup-number CI check + 113 resolved (live); schema_migrations ledger = WO-13 |
-| **F-M20** | Outbound DOB review rows can never auto-close | ⬜ OPEN | WO-6 |
+| **F-M20** | Outbound DOB review rows can never auto-close | ✅ DONE | WO-6 (borrowerId added → dedup + auto-close) |
 | **F-M21** | Skipped materialization with no review row | ⬜ OPEN | WO-3 area |
 | **F-M22** | upsertTrackRecord address-key race (dup rows) | ⬜ OPEN | WO-6 area |
 
@@ -53,7 +53,7 @@
 | **WO-4b** | Bound+pace reconcileLinkedPrograms (F-H4) ✅; DB breaker (F-M16) + heartbeat (F-M15) still open | 🟡 PARTIAL |
 | **WO-5** | Transactional enqueue (F-M3) | 🟡 PARTIAL (ph1 loud-failure done; ph2 transactional open) |
 | **WO-3** | Inbound dead-letters + webhook-health probe (F-M6) | ⬜ OPEN |
-| **WO-6** | Small-fixes bundle (F-M8/11/12/14/20; 113 renumber ✅ done) | 🟡 PARTIAL |
+| **WO-6** | Small-fixes bundle (F-M14✅ F-M11✅ F-M20✅ done; F-M8/M12 open; 113 renumber✅) | 🟡 PARTIAL |
 | **WO-7** | Review-queue tiers + notification coalescer | ⬜ OPEN |
 | **WO-8** | Sticky dismissals + noise telemetry + unlink (F-M9/17) | ⬜ OPEN |
 | **WO-9** | Dedicated bot identity + actor echo suppression | ⬜ OPEN (needs owner to create the ClickUp bot seat) |
