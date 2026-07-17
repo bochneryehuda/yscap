@@ -98,21 +98,119 @@ function guardTaskUpdatePayload(payload) {
   }
 }
 
+// ── WO-2 (F-H1): rate-limit manners + retry contract ─────────────────────────
+// Before this, call() was a single bare fetch: no timeout, no retry, and a 429
+// ("slow down") was thrown as a generic error that burned a dead-letter attempt
+// — so ClickUp's 100-req/min/token limit routinely turned into lost edits. This
+// ports the proven SharePoint client discipline (src/lib/sharepoint.js graph()):
+// honor Retry-After on 429/5xx, capped exponential backoff + jitter otherwise,
+// a per-request timeout, and a per-minute token bucket that paces us UNDER the
+// limit so we rarely get throttled in the first place.
+//
+// Division of labor: a SHORT in-call retry budget (a few quick tries) smooths
+// over blips, because ClickUp writes sit behind a DURABLE Postgres queue that
+// owns the long game. Errors are tagged e.retryable / e.status / e.retryAfter so
+// pushOutboxOnce can retry transient failures PATIENTLY instead of dead-lettering
+// a good edit during a brief outage.
+const RPM = Math.max(1, parseInt(process.env.CLICKUP_MAX_RPM || '70', 10) || 70);        // pace under ClickUp's 100/min
+const MAX_TRIES = Math.max(1, parseInt(process.env.CLICKUP_MAX_TRIES || '3', 10) || 3);  // short in-call budget
+const TIMEOUT_MS = Math.max(1000, parseInt(process.env.CLICKUP_TIMEOUT_MS || '20000', 10) || 20000);
+const BASE_BACKOFF_MS = 500;
+const MAX_BACKOFF_MS = 8000;   // in-call cap; the queue owns anything longer
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Transient statuses worth retrying: 429 (rate limit) + 5xx. A 4xx client
+ *  error (400/401/403/404) can't be fixed by retrying, so it fails fast. */
+function isRetryableStatus(status) {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+/** In-call wait before the next retry. Honors Retry-After (seconds) when the
+ *  server sent one; otherwise capped exponential backoff. Jitter is added by the
+ *  caller so this stays deterministic and testable. */
+function backoffMs(attempt, retryAfterSec) {
+  if (retryAfterSec && retryAfterSec > 0) return Math.min(retryAfterSec * 1000, MAX_BACKOFF_MS);
+  return Math.min(BASE_BACKOFF_MS * 2 ** (attempt - 1), MAX_BACKOFF_MS);
+}
+
+/** Build the thrown error for a non-OK response, tagged for the queue. The
+ *  message is value-free ("ClickUp POST /task/x/field/y -> 429") — never PII. */
+function httpError(method, path, status, retryAfterSec) {
+  const err = new Error(`ClickUp ${method} ${path} -> ${status}`);
+  err.status = status;
+  err.retryable = isRetryableStatus(status);
+  if (retryAfterSec) err.retryAfter = retryAfterSec;
+  return err;
+}
+
+// Per-process token bucket. Refills continuously at RPM/minute. Per-process (like
+// the volume breaker) — multiple instances each get their own budget; a shared
+// DB-backed limiter is a later refinement. Still turns "fire as fast as we can"
+// into "never exceed ~RPM/min", which is the whole point.
+let _tokens = RPM;
+let _lastRefill = Date.now();
+async function takeToken() {
+  for (;;) {
+    const now = Date.now();
+    _tokens = Math.min(RPM, _tokens + ((now - _lastRefill) / 60000) * RPM);
+    _lastRefill = now;
+    if (_tokens >= 1) { _tokens -= 1; return; }
+    await sleep(Math.ceil((1 - _tokens) * (60000 / RPM)));
+  }
+}
+
+async function fetchWithTimeout(url, opts, ms) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ac.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function call(path, { method = 'GET', body } = {}) {
   guardNoTaskDeletion(method, path); // never delete a ClickUp file — see guard above
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: { Authorization: token(), 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-  if (!res.ok) {
-    const err = new Error(`ClickUp ${method} ${path} -> ${res.status}`);
-    err.status = res.status; err.body = data;
-    throw err;
+  const payload = body ? JSON.stringify(body) : undefined;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+    await takeToken(); // pre-throttle: never exceed ~RPM/min, so we rarely get 429'd
+    let res;
+    try {
+      res = await fetchWithTimeout(`${BASE}${path}`, {
+        method,
+        headers: { Authorization: token(), 'Content-Type': 'application/json' },
+        body: payload,
+      }, TIMEOUT_MS);
+    } catch (netErr) {
+      // network failure / timeout / abort — transient, retryable.
+      netErr.retryable = true;
+      lastErr = netErr;
+      if (attempt < MAX_TRIES) { await sleep(backoffMs(attempt) + Math.floor(Math.random() * 250)); continue; }
+      throw netErr;
+    }
+    const remaining = res.headers.get('x-ratelimit-remaining');
+    if (remaining != null && Number(remaining) <= 5) {
+      console.warn(`[clickup] rate-limit headroom low: ${remaining} left on ${method} ${path}`);
+    }
+    if (isRetryableStatus(res.status) && attempt < MAX_TRIES) {
+      const ra = parseInt(res.headers.get('retry-after') || '0', 10);
+      const wait = backoffMs(attempt, ra) + Math.floor(Math.random() * 250);
+      console.warn(`[clickup] ${res.status} on ${method} ${path} — retry ${attempt}/${MAX_TRIES} in ${Math.round(wait / 1000)}s${ra ? ` (Retry-After ${ra}s)` : ''}`);
+      await sleep(wait);
+      continue;
+    }
+    const text = await res.text();
+    let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+    if (!res.ok) {
+      const err = httpError(method, path, res.status, parseInt(res.headers.get('retry-after') || '0', 10) || undefined);
+      err.body = data;
+      throw err;
+    }
+    return data;
   }
-  return data;
+  throw lastErr || new Error(`ClickUp ${method} ${path} failed after ${MAX_TRIES} attempts`);
 }
 
 // Create a task in a given LIST (folders contain lists; resolve list at runtime/config).
@@ -211,4 +309,5 @@ module.exports = {
   createWebhook, listWebhooks, updateWebhook, deleteWebhook, verifyWebhookSignature,
   guardNoTaskDeletion, // exported for the safety test; the guard is enforced inside call()
   guardNoFieldClearing, guardTaskUpdatePayload, // exported for the safety tests; enforced inside setField()/updateTask()
+  isRetryableStatus, backoffMs, httpError, // WO-2: exported for the retry-contract test
 };

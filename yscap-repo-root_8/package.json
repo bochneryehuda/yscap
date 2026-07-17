@@ -10,7 +10,9 @@
     "dev": "RUN_SYNC=1 node src/server.js",
     "migrate": "node db/migrate.js",
     "create-admin": "node db/create-admin.js",
-    "sync": "node -e \"require('./src/sync/queue').start()\""
+    "sync": "node -e \"require('./src/sync/queue').start()\"",
+    "check:migrations": "node scripts/check-migrations.js",
+    "test": "node scripts/check-migrations.js && node scripts/test-clickup-transforms.js && node scripts/test-clickup-mapper.js && node scripts/test-clickup-write-guards.js && node scripts/test-clickup-delete-guard.js && node scripts/test-checklist-sync.js && node scripts/test-sync-autoresolve.js && node scripts/test-sync-file-review.js && node scripts/test-orchestrator-push-failures.js && node scripts/test-clickup-retry.js && node scripts/test-reconcile-watermark.js && node test/borrower-safe.test.js"
   },
   "dependencies": {
     "express": "^4.19.2",
