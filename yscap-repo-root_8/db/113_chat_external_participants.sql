@@ -1,5 +1,5 @@
 -- =====================================================================
--- 112_chat_external_participants.sql — external EMAIL participants on a chat.
+-- 113_chat_external_participants.sql — external EMAIL participants on a chat.
 --
 -- #75 (owner-directed 2026-07-15): staff can add an outside person (a
 -- borrower's partner / secretary / attorney) to a conversation by EMAIL. They

@@ -1,0 +1,31 @@
+name: tests
+
+# The safety net. Runs the 8 incident-derived test suites + the migration-number
+# gate on every pull request and every push to main. These suites need no
+# database, no env, and no network — they load the sync modules and exercise
+# them with pure-function assertions and light stubs, so CI is fast (~1 min,
+# dominated by checkout of the committed bundles).
+#
+# NOTE: the whole project lives in the nested yscap-repo-root_8/ folder (not the
+# git root), so every step runs with working-directory set there.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: yscap-repo-root_8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: yscap-repo-root_8/package-lock.json
+      - run: npm ci
+      - run: npm test
