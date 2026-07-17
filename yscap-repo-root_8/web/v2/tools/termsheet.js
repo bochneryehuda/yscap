@@ -1108,7 +1108,7 @@
 
       if (!isRefi() && isAssign() && d.asg && d.asg.overLimit) {
         band("Assignment");
-        var capDesc = d.asg.dollarCap ? ("the financeable cap (lesser of " + money(d.asg.dollarCap) + " or 15% of the " + money(d.asg.totalPrice) + " purchase price = " + money(d.asg.maxFee) + ")") : ("the program's 15% limit (" + money(d.asg.maxFee) + ", 15% of the " + money(d.asg.totalPrice) + " purchase price)");
+        var capDesc = d.asg.dollarCap ? ("the financeable cap (lesser of " + money(d.asg.dollarCap) + " or 15% of the " + money(d.asg.sellerPrice) + " original contract price = " + money(d.asg.maxFee) + ")") : ("the program's 15% limit (" + money(d.asg.maxFee) + ", 15% of the " + money(d.asg.sellerPrice) + " original contract price)");
         para("Your assignment fee of " + money(d.asg.fee) + " exceeds " + capDesc + ". " + money(d.asg.financeableFee) + " is financeable and all terms are sized on the recognized price of " + money(d.asg.recognizedPrice) + "; the remaining " + money(d.asg.excessOOP) + " is paid out of pocket at closing. A higher assignment limit may be requested as an exception, subject to credit-committee approval.");
       }
 
