@@ -122,8 +122,8 @@ generating a brand-new bureau pull. Exact reissue semantics and required identif
 Matches the existing integration pattern in this codebase (raw `fetch`, credentials from
 `src/config.js`, one module per vendor under `src/lib/integrations/`). There is already a
 stub: **`src/lib/integrations/xactus.js`** — but it currently assumes a *JSON* `/credit/order`
-API with a bearer-token login. **That stub is a placeholder and does not match the real Xactus
-credit API**, which is **MISMO XML over HTTP Basic**. The stub's `authHeader()`/`pullCredit()`
+API with a bearer-token login (falling back to HTTP Basic). **That stub is a placeholder and does
+not match the real Xactus credit API**, which is **MISMO XML over HTTP Basic**. The stub's `authHeader()`/`pullCredit()`
 JSON shapes must be replaced with the XML request/response mapping below; keep its
 `configured()`/`ensure()` guard pattern.
 
@@ -141,10 +141,13 @@ v3 needs namespace-aware handling. No new heavyweight dependency is warranted.
 
 ---
 
-## 3. Reissue semantics (the crux) — ✅ confirmed from developer.xactus.com
+## 3. Reissue semantics (the crux) — ✅ per Xactus's published docs (verify in test before build)
+
+_The facts below come from Xactus's live developer documentation (§10), not from anything we can
+check in our own code — reconfirm them against the test environment during build._
 
 **`CreditReportRequestActionType="Reissue"` re-retrieves an EXISTING report — it does NOT re-pull
-the bureaus.** Verified from the Xactus build-request docs: Reissue *"permits a reissue of an
+the bureaus.** Per the Xactus build-request docs: Reissue *"permits a reissue of an
 existing credit report"* and *"will always return the original credit report, even if that report
 has subsequently been upgraded."* **No new hard/soft inquiry is generated.** This is exactly the
 behavior our feature wants: re-retrieve the already-ordered report as XML+PDF for staff review and
