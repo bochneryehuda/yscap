@@ -306,10 +306,20 @@
       var financeableFee = Math.min(rawFee, maxFee);
       var excessFee = Math.max(0, rawFee - financeableFee);
       effPurchase = sellerPP + financeableFee;          // recognized price
+      // Admin exception (owner-directed 2026-07-17): an approved higher financeable
+      // fee is entered as an EFFECTIVE purchase price override. Clamped to
+      // [seller price, REAL total price] — never above what is actually paid.
+      var ovrEff = Math.max(0, num(input.ovrEffPrice) || 0);
+      if (ovrEff > 0) {
+        effPurchase = Math.min(Math.max(ovrEff, sellerPP), totalPP);
+        financeableFee = effPurchase - sellerPP;
+        excessFee = Math.max(0, rawFee - financeableFee);
+      }
       assignment = {
         sellerPrice: round2g(sellerPP), totalPrice: round2g(totalPP), fee: round2g(rawFee),
         maxFee: round2g(maxFee), financeableFee: round2g(financeableFee), excessOOP: round2g(excessFee),
-        recognizedPrice: round2g(effPurchase), overLimit: excessFee > 0.5, maxPct: 0.15, dollarCap: 75000
+        recognizedPrice: round2g(effPurchase), overLimit: excessFee > 0.5, maxPct: 0.15, dollarCap: 75000,
+        overridden: ovrEff > 0
       };
     }
     // ---- HARD GATE: if any ineligible reason fired above, no terms are offered — never price an
@@ -379,7 +389,8 @@
     // Any assignment requires escalation, but the deal remains eligible and fully priced.
     if (sizing) sizing.assignmentExcessOOP = assignment ? assignment.excessOOP : 0;
     if (assignment) {
-      if (assignment.overLimit) addEsc("the assignment fee of " + dollars(assignment.fee) + " exceeds the financeable cap (lesser of $75,000 or 15% of the seller's contract price = " + dollars(assignment.maxFee) + "), so " + dollars(assignment.excessOOP) + " is brought to the table");
+      if (assignment.overridden) addEsc("admin exception: the effective purchase price is set to " + dollars(assignment.recognizedPrice) + " (" + dollars(assignment.financeableFee) + " of the " + dollars(assignment.fee) + " assignment fee financed" + (assignment.excessOOP > 0.5 ? ("; " + dollars(assignment.excessOOP) + " brought to the table") : "") + ")");
+      else if (assignment.overLimit) addEsc("the assignment fee of " + dollars(assignment.fee) + " exceeds the financeable cap (lesser of $75,000 or 15% of the seller's contract price = " + dollars(assignment.maxFee) + "), so " + dollars(assignment.excessOOP) + " is brought to the table");
       else addEsc("the purchase includes an assignment of contract");
     }
 
