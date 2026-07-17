@@ -60,6 +60,7 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       required,
       cashToClose: Number(quote.cashToClose) || 0,
       downPayment: Number(sizing.downPayment) || 0,
+      assignmentExcess: Number(sizing.assignmentExcessOOP) || 0,
       closingCosts: Number(cc.dueAtClosing) || 0,
       reserveRequirement: Number(quote.reserveRequirement) || 0,
       reserveBasis: quote.reserveBasis || null,
@@ -68,7 +69,9 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
     const hint =
       `${bankStatementLine(program)} ` +
       `Required liquidity: ${money2(required)} — the borrower's bank statements must show at least this in liquid assets. ` +
-      `Down payment ${money2(breakdown.downPayment)} + closing costs due at closing ${money2(breakdown.closingCosts)} ` +
+      `Down payment ${money2(breakdown.downPayment)} + ` +
+      `${breakdown.assignmentExcess > 0 ? `assignment excess ${money2(breakdown.assignmentExcess)} + ` : ''}` +
+      `closing costs due at closing ${money2(breakdown.closingCosts)} ` +
       `= cash to close ${money2(breakdown.cashToClose)}; plus reserves ${money2(breakdown.reserveRequirement)}` +
       `${breakdown.reserveBasis ? ` (${breakdown.reserveBasis})` : ''}.`;
 
