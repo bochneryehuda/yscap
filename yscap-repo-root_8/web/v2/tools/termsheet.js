@@ -617,8 +617,13 @@
     YS.put("rLoan2", sized ? YS.fmtUSD(d.totalLoan) : EM);
     YS.put("rBind", !ready ? "Complete the highlighted fields to see your terms" : (d.status === "INELIGIBLE" ? "See eligibility below" : (d.cityReview ? "Confirm the property location — see below" : (d.totalLoan > 0 ? "Limited by " + d.binding : "Couldn't size a loan from these inputs — see why below"))));
     var nudgeEl = el("tierNudge"); if (nudgeEl) { var nm = ready ? tierNudge(d) : ""; nudgeEl.innerHTML = nm; nudgeEl.style.display = nm ? "" : "none"; }
-    YS.put("rEff", YS.fmtUSD(d.basisPrice));
+    // "Purchase price" always shows the REAL price paid (seller + full assignment fee);
+    // the capped sizing basis renders on its own "Effective purchase price" line (owner-directed 2026-07-17).
+    YS.put("rEff", YS.fmtUSD(isRefi() ? d.basisPrice : (num("price") || d.basisPrice)));
     var rEffLbl = el("rEffLbl"); if (rEffLbl) rEffLbl.textContent = isRefi() ? "As-is value" : "Purchase price";
+    var asgCapped = !isRefi() && isAssign() && d.asg && d.asg.overLimit;
+    show($('[data-cond="asgEff"]'), asgCapped);
+    if (asgCapped) YS.put("rEffAsg", YS.fmtUSD(d.asg.recognizedPrice));
     YS.put("rConstr", YS.fmtUSD(d.constr));
     YS.put("rIR", d.financedIR > 0 ? YS.fmtUSD(d.financedIR) : EM);
     YS.put("rCost", YS.fmtUSD(d.totalCost));
@@ -663,7 +668,7 @@
           an.style.display = ""; an.className = "ts-assign warn";
           an.innerHTML = "<b>Assignment fee exceeds the financeable cap.</b> Up to " + YS.fmtUSD(a.maxFee) + " (" + capPhrase +
             ") is financeable; your fee is " + YS.fmtUSD(fee) + ", so <b>" + YS.fmtUSD(a.excessOOP) +
-            " is paid out of pocket</b> and terms are sized on the recognized price of " + YS.fmtUSD(a.recognizedPrice) + ". A higher limit can be requested as an exception.";
+            " is paid out of pocket</b> and terms are sized on the effective purchase price of " + YS.fmtUSD(a.recognizedPrice) + ". A higher limit can be requested as an exception.";
         } else {
           an.style.display = ""; an.className = "ts-assign ok";
           an.innerHTML = "Assignment fee of " + YS.fmtUSD(fee) + " is within the program cap (" + YS.fmtUSD(a ? a.maxFee : 0.15 * seller) + " max \u2014 " + capPhrase + ") and is fully financeable.";
@@ -1059,8 +1064,9 @@
       // TWO COLUMNS
       var colGap = 16, colW = (W - 2 * M - colGap) / 2, xL = M, xR = M + colW + colGap, yL = y, yR = y;
       yL = cardHead(xL, colW, "Loan structure", yL);
-      yL = rowIn(xL, colW, isRefi() ? "As-is value" : "Purchase price", money(d.basisPrice), yL);
+      yL = rowIn(xL, colW, isRefi() ? "As-is value" : "Purchase price", money(isRefi() ? d.basisPrice : (num("price") || d.basisPrice)), yL);
       if (!isRefi() && isAssign()) yL = rowIn(xL, colW, "Seller price / assignment fee", money(num("origPrice")) + " / " + money(Math.max(0, num("price") - num("origPrice"))), yL);
+      if (!isRefi() && isAssign() && d.asg && d.asg.overLimit) yL = rowIn(xL, colW, "Effective purchase price (fee capped at 15%)", money(d.asg.recognizedPrice), yL);
       if (!isBridge) {
         yL = rowIn(xL, colW, "Construction / rehab budget", money(d.constr), yL);
         if (d.financedIR > 0) { var finMo = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (d.irMonths || 0); yL = rowIn(xL, colW, "Financed interest reserve (" + finMo + " mo)", money(d.financedIR), yL); }
@@ -1109,7 +1115,7 @@
       if (!isRefi() && isAssign() && d.asg && d.asg.overLimit) {
         band("Assignment");
         var capDesc = d.asg.dollarCap ? ("the financeable cap (lesser of " + money(d.asg.dollarCap) + " or 15% of the " + money(d.asg.sellerPrice) + " original contract price = " + money(d.asg.maxFee) + ")") : ("the program's 15% limit (" + money(d.asg.maxFee) + ", 15% of the " + money(d.asg.sellerPrice) + " original contract price)");
-        para("Your assignment fee of " + money(d.asg.fee) + " exceeds " + capDesc + ". " + money(d.asg.financeableFee) + " is financeable and all terms are sized on the recognized price of " + money(d.asg.recognizedPrice) + "; the remaining " + money(d.asg.excessOOP) + " is paid out of pocket at closing. A higher assignment limit may be requested as an exception, subject to credit-committee approval.");
+        para("Your assignment fee of " + money(d.asg.fee) + " exceeds " + capDesc + ". " + money(d.asg.financeableFee) + " is financeable and all terms are sized on the effective purchase price of " + money(d.asg.recognizedPrice) + "; the remaining " + money(d.asg.excessOOP) + " is paid out of pocket at closing. A higher assignment limit may be requested as an exception, subject to credit-committee approval.");
       }
 
       band("How your loan amount is built");
@@ -1276,7 +1282,9 @@
       var tbd = chk("addrTBD"), addr = tbd ? "" : (val("propAddr") || "").trim(), st = (val("propState") || (d.inp && d.inp.state) || "").trim();
       var propLine = tbd ? "A residential investment property to be identified"
         : (addr ? (addr + (st ? ", " + st : "")) : (st ? ("A residential investment property in " + st) : "A residential investment property to be identified"));
-      var price = d.basisPrice || d.eff || 0;
+      // The letter states the REAL purchase price (seller + full assignment fee) — the
+      // capped effective basis stays internal to sizing (owner-directed 2026-07-17).
+      var price = isRefiTxn ? (d.basisPrice || 0) : (num("price") || d.basisPrice || d.eff || 0);
       var stratWord = isBridge ? "acquisition" : (YSP.normStrategy(d.inp.strategy) === "NC" ? "acquisition and ground-up construction" : "acquisition and renovation");
       function refNo() {
         var y = today.getFullYear(), m = ("0" + (today.getMonth() + 1)).slice(-2), dd = ("0" + today.getDate()).slice(-2);
@@ -1532,6 +1540,7 @@
       [isRefi ? "As-is value entered" : "Purchase price entered", money(isRefi ? num("asIs") : num("price"))],
       assignOn ? ["Assignment \u2014 seller's contract price", money(num("origPrice"))] : null,
       assignOn ? ["Assignment fee", money(num("assignFee"))] : null,
+      (assignOn && d.asg && d.asg.overLimit) ? ["Effective purchase price \u2014 fee counted up to 15% of the seller's price", money(d.asg.recognizedPrice)] : null,
       (!isRefi && num("asIs") > 0) ? ["As-is value entered", money(num("asIs"))] : null,
       num("arv") > 0 ? ["After-repair value (ARV)", money(num("arv"))] : null,
       num("construction") > 0 ? ["Construction / rehab budget", money(num("construction"))] : null,
@@ -1547,7 +1556,7 @@
       derivRows.push(["Basis (as-is value)", money(d.basisPrice)]);
       derivRows.push(["Loan advanced", money(d.totalLoan), "tot"]);
     } else {
-      derivRows.push(["Cost basis \u2014 lower of price / as-is", money(d.basisPrice)]);
+      derivRows.push(["Cost basis \u2014 lower of " + ((d.asg && d.asg.overLimit) ? "effective purchase price" : "price") + " / as-is", money(d.basisPrice)]);
       derivRows.push(["Initial advance at closing", money(d.initialAdvance)]);
       derivRows.push(["= " + pc(d.ltvPct) + " of as-is value (initial LTV)", "", "sub"]);
       if (d.rehabHoldback > 0) derivRows.push(["Construction holdback \u2014 100% of budget", money(d.rehabHoldback)]);
