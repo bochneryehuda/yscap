@@ -1,5 +1,5 @@
 -- ============================================================================
--- 115_address_canon_cache.sql — canonical-address cache (owner-directed
+-- 124_address_canon_cache.sql — canonical-address cache (owner-directed
 -- 2026-07-15: "Ave/Avenue, Unit 114/114, Village of Spring Valley/Spring
 -- Valley is technically the same — we need the Google Maps API for this").
 -- Each distinct free-text address resolves ONCE through Google Geocoding to a

@@ -5,7 +5,7 @@
  * 2026-07-15: formatting variants of the SAME property — "Ave"/"Avenue",
  * "Unit 114"/"114", "Village of Spring Valley"/"Spring Valley" — must compare
  * as the same). Each distinct input resolves ONCE to a stable `place_id`
- * (cached forever in address_canon_cache, db/115); comparisons after that are
+ * (cached forever in address_canon_cache, db/124); comparisons after that are
  * cache hits. Fully degradable: no GOOGLE_PLACES_API_KEY / network error /
  * unresolvable input → null, and every caller falls back to the existing
  * heuristics (same-street comparator, normalized identity) — canonicalization
