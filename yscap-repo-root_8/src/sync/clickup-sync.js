@@ -854,7 +854,27 @@ async function resolveOrphans(orphans, liveTaskIds) {
   return { archived, merged, flagged };
 }
 
-// ---- program reconcile + orphan sweep (one-shot) --------------------------
+// ---- program reconcile + orphan sweep -------------------------------------
+// WO-4b (F-H4): this used to re-ingest EVERY linked file on every boot — the
+// other half of the deploy re-ingest storm (13 deploys/day × the whole
+// portfolio). Now it processes a BOUNDED slice per pass, OLDEST-SNAPSHOT-FIRST,
+// so the portfolio rotates through instead of being hammered all at once
+// (mirrors retryStuckTasksOnce). A slow periodic tick (see start()) keeps the
+// rotation going even when deploys are rare, and the client's token bucket (WO-2)
+// paces the ClickUp calls.
+const RECON_PROGRAMS_LIMIT = Math.max(1, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_LIMIT || '150', 10) || 150);
+const RECON_PROGRAMS_INTERVAL_SEC = Math.max(0, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_INTERVAL_SEC || '900', 10) || 900); // 0 disables the periodic tick
+
+/** Orphan-resolution safety breaker (preserves the prior inline semantics): a
+ *  large 404 fraction — or NOTHING resolving live — is almost certainly an
+ *  API/token outage, not mass task deletion, so we must NOT archive/merge this
+ *  pass. Pure — unit tested. */
+function shouldSkipOrphanResolution({ orphanCount, checked, liveCount }) {
+  if (!orphanCount) return false;                    // nothing to resolve
+  if (liveCount === 0) return true;                  // no task resolved live at all → outage, not deletions
+  return orphanCount > Math.max(5, checked * 0.5);   // majority of a bounded slice 404'd → outage
+}
+
 // Re-check every LINKED, non-descoped RTL file against its CURRENT ClickUp task:
 //   • program flipped to a non-RTL type (e.g. Short-Term Rehab → DSCR) → ingestTask
 //     descopes it (removed from the portal, ClickUp untouched).
@@ -869,9 +889,11 @@ async function reconcileLinkedProgramsOnce() {
     `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
             a.property_address->>'oneLine' AS one_line
        FROM applications a
+       LEFT JOIN clickup_task_index cti ON cti.task_id = a.clickup_pipeline_task_id
       WHERE a.clickup_pipeline_task_id IS NOT NULL AND a.deleted_at IS NULL
         AND a.sync_state NOT IN ('descoped','manual_review','dead')
-      ORDER BY a.updated_at DESC`);
+      ORDER BY cti.snapshot_at ASC NULLS FIRST
+      LIMIT $1`, [RECON_PROGRAMS_LIMIT]);   // WO-4b: bounded slice, least-recently-checked first (rotates)
   let checked = 0, descoped = 0;
   const orphans = [];               // files whose ClickUp task returned a hard 404
   const liveTaskIds = new Set();    // task ids confirmed present this run
@@ -916,7 +938,7 @@ async function reconcileLinkedProgramsOnce() {
   // Circuit-breaker: a large 404 fraction (or NO task resolving at all) is almost
   // certainly an API/token outage, not mass task deletion — do nothing this run.
   let orphan = { archived: 0, merged: 0, flagged: 0, skipped: 0 };
-  if (orphans.length && (liveTaskIds.size === 0 || orphans.length > Math.max(5, checked * 0.5))) {
+  if (shouldSkipOrphanResolution({ orphanCount: orphans.length, checked, liveCount: liveTaskIds.size })) {
     orphan.skipped = orphans.length;
     console.warn(`[clickup-sync] reconcile-programs: ${orphans.length}/${orphans.length + checked} tasks 404'd — treating as an API outage, skipping orphan resolution`);
   } else if (orphans.length) {
@@ -1283,6 +1305,13 @@ function start() {
       : 'identity-graph + linked-file updates only — new-file creation OFF (CLICKUP_INBOUND_CREATE_FILES!=1)'));
   setInterval(() => tick(processInboxOnce, 'inbox'), 4000);
   setInterval(() => { reconcileOnce().catch((e) => console.error('[clickup-sync] reconcile', e.message)); }, (cfg.clickupPollSec || 300) * 1000);
+  // WO-4b: keep the bounded program reconcile ROTATING on a slow cadence, so
+  // bounding the boot pass doesn't leave the tail of the portfolio unchecked
+  // when deploys are rare. Each tick processes the next oldest-snapshot slice;
+  // the token bucket paces the ClickUp calls. Set the interval to 0 to disable.
+  if (RECON_PROGRAMS_INTERVAL_SEC > 0) {
+    setInterval(() => { reconcileLinkedProgramsOnce().catch((e) => console.error('[clickup-sync] reconcile-programs (periodic)', e.message)); }, RECON_PROGRAMS_INTERVAL_SEC * 1000).unref();
+  }
 
   // Stage 2 — outbound loops (portal → ClickUp writes) are gated separately so
   // inbound/backfill can run and be validated first, before the portal is
@@ -1303,4 +1332,5 @@ function start() {
 
 module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
   reconcileSince, nextWatermark, // WO-4: exported for the durable-watermark test
-  isTaskDeletedError }; // WO-6: exported for the token-rotation-safety test
+  isTaskDeletedError, // WO-6: exported for the token-rotation-safety test
+  shouldSkipOrphanResolution }; // WO-4b: exported for the orphan-breaker test

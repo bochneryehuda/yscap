@@ -16,7 +16,7 @@
 | **F-H1** | No 429/Retry-After anywhere | ✅ DONE | WO-2, live |
 | **F-H2** | SharePoint name-only fuzzy match auto-files a doc | ⬜ OPEN | WO-14 (mirror never ran in prod — fix before enabling) |
 | **F-H3** | Backdating DOB auto-adopt can overwrite a portal DOB | ⬜ OPEN | WO-11 |
-| **F-H4** | Every deploy re-ingests the whole portfolio (storm) | 🟡 PARTIAL | watermark done (WO-4a); bounded sweep = WO-4b |
+| **F-H4** | Every deploy re-ingests the whole portfolio (storm) | ✅ DONE | watermark (WO-4a) + bounded rotating sweep (WO-4b) |
 | **F-M1** | Stale internal_status re-asserted onto ClickUp | ⬜ OPEN | WO-16 |
 | **F-M2** | Outbound DOB gate omits human-provenance | ⬜ OPEN | WO-11 |
 | **F-M3** | Enqueue failures swallowed; backstop sweep retired | ⬜ OPEN | WO-5 |
@@ -50,7 +50,7 @@
 | **WO-1** | Throw on failed field writes (F-C1) | ✅ DONE (live) |
 | **WO-2** | Retry/rate-limit contract at the client (F-H1) | ✅ DONE (live) |
 | **WO-4a** | Durable reconcile watermark (F-M7, part of F-H4) | ✅ DONE (live) |
-| **WO-4b** | Bound+pace reconcileLinkedPrograms; DB breaker; heartbeat (F-H4, F-M15, F-M16) | ⬜ OPEN — next |
+| **WO-4b** | Bound+pace reconcileLinkedPrograms (F-H4) ✅; DB breaker (F-M16) + heartbeat (F-M15) still open | 🟡 PARTIAL |
 | **WO-5** | Transactional enqueue (F-M3) | ⬜ OPEN — next |
 | **WO-3** | Inbound dead-letters + webhook-health probe (F-M6) | ⬜ OPEN |
 | **WO-6** | Small-fixes bundle (F-M8/11/12/14/20; 113 renumber ✅ done) | 🟡 PARTIAL |
