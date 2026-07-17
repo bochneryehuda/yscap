@@ -199,6 +199,7 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           <Row k="Purchase price" v={money(inp.purchasePrice)} />
           {inp.isAssignment && <Row k="Seller price / assignment fee" v={`${money(inp.sellerPrice)} / ${money(Math.max(0, (inp.purchasePrice || 0) - (inp.sellerPrice || 0)))}`} />}
+          {inp.isAssignment && q.assignment && q.assignment.overLimit && <Row k="Effective purchase price (fee capped at 15%)" v={money(q.assignment.recognizedPrice)} />}
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />

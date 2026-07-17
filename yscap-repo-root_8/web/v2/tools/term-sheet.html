@@ -544,6 +544,12 @@
                     <div class="field"><label for="tsFeeTitle">Title / escrow ($)</label><div class="input"><input id="tsFeeTitle" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto-estimate"></div></div>
                 </div>
 
+                <div class="ts-admin-group">Assignment exception <span class="ts-admin-note">— approved effective purchase price</span></div>
+                <div class="ts-admin-grid2">
+                    <div class="field"><label for="tsEffPrice">Effective purchase price ($)</label><div class="input"><span class="adorn">$</span><input id="tsEffPrice" data-noshare type="text" inputmode="numeric" placeholder="auto"></div></div>
+                </div>
+                <p class="ts-admin-mnote" id="tsEffPriceHint"></p>
+
                 <div class="ts-admin-group">Manual scenario <span class="ts-admin-note">— set the basis yourself</span></div>
                 <label class="ts-admin-check"><input type="checkbox" id="tsManualOn" data-noshare> Price as a manual scenario (admin-set basis)</label>
                 <div class="ts-admin-grid2" id="tsManualFields" hidden>
@@ -735,10 +741,31 @@
 
 <script src="../suite.js?v=admin8"></script>
 <script src="rb-logo.js?v=admin8"></script>
-<script src="standard-program.js?v=asgseller15"></script>
-<script src="gold-standard.js?v=asgseller15"></script>
+<script src="standard-program.js?v=asgseller16"></script>
+<script src="gold-standard.js?v=asgseller16"></script>
 <script src="title-cost.js?v=admin8"></script>
-<script src="termsheet.js?v=pilot13-realprice"></script>
+<script src="address-autocomplete.js?v=admin9"></script>
+<script src="termsheet.js?v=pilot14-effovr"></script>
 <script src="../float-actions.js?v=admin8"></script>
+<script>
+/* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr
+   typeahead the loan application and rehab budget use — suggestions from our own
+   /api/address/suggest proxy; degrades silently to manual typing offline. */
+(function () {
+  function wire() {
+    var inp = document.getElementById("propAddr");
+    if (!inp || !window.YSAddr) return;
+    window.YSAddr.attach(inp, function (a) {
+      var line = [a.line1, a.city].filter(Boolean).join(", ") + (a.zip ? " " + a.zip : "");
+      inp.value = line || inp.value;
+      var st = document.getElementById("propState");
+      if (st && a.state) { st.value = a.state; st.dispatchEvent(new Event("change", { bubbles: true })); }
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
+})();
+</script>
+
 </body>
 </html>

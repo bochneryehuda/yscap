@@ -88,6 +88,9 @@
       heavyRehab: (YSP.normStrategy(dealType()) === "FF") ? (val("rehabScope") === "heavy") : false,
       isAssignment: isAssign() && !isRefi(), sellerPrice: num("origPrice")
     };
+    // Admin assignment exception: an approved effective purchase price (clamped by the
+    // engine to never exceed the REAL price) — applies to assignment purchases only.
+    var effOvr = adminNumRaw("tsEffPrice"); if (effOvr != null && effOvr > 0) o.ovrEffPrice = effOvr;
     if (manualOn()) {                                        // admin manual scenario: set the basis directly
       o.forcePrice = true;                                   // allow sizing even if the deal is otherwise ineligible
       var mIr = adminNumRaw("tsMIr"); if (mIr != null) o.irMonths = mIr;
@@ -621,9 +624,15 @@
     // the capped sizing basis renders on its own "Effective purchase price" line (owner-directed 2026-07-17).
     YS.put("rEff", YS.fmtUSD(isRefi() ? d.basisPrice : (num("price") || d.basisPrice)));
     var rEffLbl = el("rEffLbl"); if (rEffLbl) rEffLbl.textContent = isRefi() ? "As-is value" : "Purchase price";
-    var asgCapped = !isRefi() && isAssign() && d.asg && d.asg.overLimit;
+    var asgCapped = !isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden);
     show($('[data-cond="asgEff"]'), asgCapped);
     if (asgCapped) YS.put("rEffAsg", YS.fmtUSD(d.asg.recognizedPrice));
+    // Admin panel: show the live pre-approved effective price + the never-exceed cap.
+    var effFld = el("tsEffPrice"), effHint = el("tsEffPriceHint");
+    if (effFld) effFld.placeholder = (!isRefi() && isAssign() && d.asg) ? ("auto: " + YS.fmtUSD(d.asg.recognizedPrice)) : "auto";
+    if (effHint) effHint.textContent = (!isRefi() && isAssign() && d.asg)
+      ? ("Pre-approved effective purchase price: " + YS.fmtUSD(d.asg.recognizedPrice) + (d.asg.overridden ? " (override in effect)" : "") + ". Enter an approved exception figure \u2014 it can never exceed the real purchase price of " + YS.fmtUSD(d.asg.totalPrice) + ". All calculations size off this figure.")
+      : "Applies to assignment purchases only \u2014 the effective price equals the purchase price on every other deal.";
     YS.put("rConstr", YS.fmtUSD(d.constr));
     YS.put("rIR", d.financedIR > 0 ? YS.fmtUSD(d.financedIR) : EM);
     YS.put("rCost", YS.fmtUSD(d.totalCost));
@@ -665,7 +674,13 @@
       if (!isRefi() && isAssign() && seller > 0 && total > seller) {
         var fee = Math.max(0, total - seller), a = d.asg;
         var capPhrase = (a && a.dollarCap) ? ("the lesser of " + YS.fmtUSD(a.dollarCap) + " or 15% of the original contract price") : "15% of the original contract price";
-        if (a && a.overLimit) {
+        if (a && a.overridden) {
+          an.style.display = ""; an.className = "ts-assign ok";
+          an.innerHTML = "<b>Admin exception in effect.</b> The effective purchase price is set to " + YS.fmtUSD(a.recognizedPrice) +
+            " \u2014 " + YS.fmtUSD(a.financeableFee) + " of the " + YS.fmtUSD(a.fee) + " assignment fee is financed" +
+            (a.excessOOP > 0.5 ? (", and <b>" + YS.fmtUSD(a.excessOOP) + " is paid out of pocket</b>") : "") +
+            ". All terms are sized on the effective purchase price.";
+        } else if (a && a.overLimit) {
           an.style.display = ""; an.className = "ts-assign warn";
           an.innerHTML = "<b>Assignment fee exceeds the financeable cap.</b> Up to " + YS.fmtUSD(a.maxFee) + " (" + capPhrase +
             ") is financeable; your fee is " + YS.fmtUSD(fee) + ", so <b>" + YS.fmtUSD(a.excessOOP) +
@@ -1108,10 +1123,11 @@
         para("Maximum eligible interest reserve on this deal is " + money(d.maxReserve) + " (\u2248 " + d.maxReserveMonths.toFixed(1) + " months). The requested " + (num("irAmount") > 0 ? money(num("irAmount")) : d.irMonths + " months") + " exceeds what " + d.reserveCapBy + " allows; the maximum eligible amount has been applied and the remainder is not eligible to finance. Interest on any period beyond the reserve is paid as billed.");
       }
 
-      if (!isRefi() && isAssign() && d.asg && d.asg.overLimit) {
+      if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) {
         band("Assignment");
         var capDesc = d.asg.dollarCap ? ("the financeable cap (lesser of " + money(d.asg.dollarCap) + " or 15% of the " + money(d.asg.sellerPrice) + " original contract price = " + money(d.asg.maxFee) + ")") : ("the program's 15% limit (" + money(d.asg.maxFee) + ", 15% of the " + money(d.asg.sellerPrice) + " original contract price)");
-        para("Your assignment fee of " + money(d.asg.fee) + " exceeds " + capDesc + ". " + money(d.asg.financeableFee) + " is financeable and all terms are sized on the effective purchase price of " + money(d.asg.recognizedPrice) + "; the remaining " + money(d.asg.excessOOP) + " is paid out of pocket at closing. A higher assignment limit may be requested as an exception, subject to credit-committee approval.");
+        if (d.asg.overridden) para("An approved exception sets the effective purchase price at " + money(d.asg.recognizedPrice) + ": " + money(d.asg.financeableFee) + " of the " + money(d.asg.fee) + " assignment fee is financed and all terms are sized on the effective purchase price" + (d.asg.excessOOP > 0.5 ? ("; the remaining " + money(d.asg.excessOOP) + " is paid out of pocket at closing") : "") + ".");
+        else para("Your assignment fee of " + money(d.asg.fee) + " exceeds " + capDesc + ". " + money(d.asg.financeableFee) + " is financeable and all terms are sized on the effective purchase price of " + money(d.asg.recognizedPrice) + "; the remaining " + money(d.asg.excessOOP) + " is paid out of pocket at closing. A higher assignment limit may be requested as an exception, subject to credit-committee approval.");
       }
 
       band("How your loan amount is built");
@@ -1576,7 +1592,7 @@
   // entered), so digit-grouping is all that's needed. Count/percent/FICO/term
   // inputs are deliberately excluded — they aren't dollar amounts.
   var MONEY_IDS = ["price", "origPrice", "assignFee", "construction", "asIs", "arv",
-    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr"];
+    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr", "tsEffPrice"];
   function isMoneyInput(inp) { return inp && inp.id && MONEY_IDS.indexOf(inp.id) !== -1; }
   function groupDigits(s) {
     var d = String(s == null ? "" : s).replace(/[^\d]/g, "");
