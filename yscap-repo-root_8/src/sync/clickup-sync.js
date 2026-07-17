@@ -767,9 +767,13 @@ async function reconcileOnce() {
 // the whole portfolio). The reconcile circuit-breaker below is the second guard.
 function isTaskDeletedError(e) {
   if (!e) return false;
-  if (e.status === 404) return true;
-  const msg = (e.body && (e.body.err || e.body.error || e.body.ECODE)) || e.message || '';
-  return e.status === 401 && /not\s*found|does not exist|deleted/i.test(String(msg));
+  // WO-6 (F-M14): a genuinely deleted/nonexistent ClickUp task returns a hard
+  // 404. A 401 means an AUTH problem (a bad, missing, or ROTATING token) —
+  // ClickUp's "Authorization token not found" message previously matched the
+  // deleted-task regex here, so a token rotation could misclassify live files as
+  // orphans and (past the 50% breaker) archive them. Never treat a 401 as a
+  // deletion: require the 404. A real deletion is always a 404.
+  return e.status === 404;
 }
 
 // Best-effort system audit row (no request context; used by the sync worker).
@@ -1298,4 +1302,5 @@ function start() {
 }
 
 module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
-  reconcileSince, nextWatermark }; // WO-4: exported for the durable-watermark test
+  reconcileSince, nextWatermark, // WO-4: exported for the durable-watermark test
+  isTaskDeletedError }; // WO-6: exported for the token-rotation-safety test
