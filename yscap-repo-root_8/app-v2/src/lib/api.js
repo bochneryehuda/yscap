@@ -290,6 +290,10 @@ export const api = {
   staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
   staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+  // #147 — the cross-system observability timeline for a file (portal + ClickUp +
+  // SharePoint + sync-review events, time-ordered). Scoped by the file's access.
+  staffObservability: (id, opts = {}) => req('GET', `/api/staff/applications/${id}/observability`
+    + (opts.sources ? `?sources=${encodeURIComponent(opts.sources)}` : '')),
   staffAppDocuments:(id) => req('GET', `/api/staff/applications/${id}/documents`),
   staffReviewDoc:   (id, action, reason, opts) => req('POST', `/api/staff/documents/${id}/review`, { action, reason, ...(opts || {}) }),
   // Permanently delete a document (mistake-upload) — removes bytes + row, never

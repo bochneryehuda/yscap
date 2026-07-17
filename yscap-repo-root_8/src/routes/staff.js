@@ -5605,6 +5605,107 @@ router.get('/audit-log/facets', async (req, res) => {
   }
 });
 
+// ---------------- per-file observability timeline (#147) --------------------
+// ONE cross-system "what happened to this file" feed, time-ordered, merging every
+// event stream the platform already journals: the portal audit trail (audit_log),
+// the OUTBOUND ClickUp field-write journal (clickup_write_log, incl. guard-blocked
+// writes), the two-sided sync review queue (sync_review_queue), and the SharePoint
+// mirror lifecycle (documents' sharepoint_* stamps: backed-up / verified / skipped
+// / errored). Access is the file's own scope (the /applications/:id middleware
+// above already gated it), so a file's team sees its own history; nothing new is
+// exposed. Read-only aggregation — never emits a raw SSN/card (the ClickUp journal
+// is already masked; we surface field KEYS + outcomes, not full values). The
+// companion docs/OBSERVABILITY.md maps every source and how they compose.
+router.get('/applications/:id/observability', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 250, 1), 500);
+    const sources = String(req.query.sources || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const want = (name) => sources.length === 0 || sources.includes(name);
+
+    const [portal, cuOut, reviews, sp] = await Promise.all([
+      // Portal actions on this file: entity is the application, OR the detail
+      // names this application (many writes stamp detail.applicationId).
+      want('portal') ? db.query(
+        `SELECT al.created_at AS ts, al.actor_kind, al.action, al.detail,
+                COALESCE(su.full_name, bo.first_name || ' ' || bo.last_name, 'System') AS actor
+           FROM audit_log al
+           LEFT JOIN staff_users su ON su.id = al.actor_id AND al.actor_kind = 'staff'
+           LEFT JOIN borrowers bo   ON bo.id = al.actor_id AND al.actor_kind = 'borrower'
+          WHERE (al.entity_type = 'application' AND al.entity_id = $1)
+             OR al.detail->>'applicationId' = $1::text
+          ORDER BY al.created_at DESC LIMIT $2`, [appId, limit]) : { rows: [] },
+      // Outbound ClickUp field writes (incl. guard-blocked ones).
+      want('clickup') ? db.query(
+        `SELECT created_at AS ts, field_key, field_id, changed, blocked, source
+           FROM clickup_write_log WHERE application_id = $1
+          ORDER BY created_at DESC LIMIT $2`, [appId, limit]) : { rows: [] },
+      // Cross-system sync reviews (suspicious changes parked / resolved).
+      want('sync') ? db.query(
+        `SELECT created_at AS ts, resolved_at, direction, field_key, reason, status, winner, auto_resolved
+           FROM sync_review_queue WHERE application_id = $1
+          ORDER BY created_at DESC LIMIT $2`, [appId, limit]) : { rows: [] },
+      // SharePoint mirror lifecycle per document on the file.
+      want('sharepoint') ? db.query(
+        `SELECT filename, sharepoint_backed_up_at, sharepoint_verified_at, sharepoint_stamped_at,
+                sharepoint_backup_error, sharepoint_skipped_reason, sharepoint_integrity, sharepoint_web_url,
+                created_at
+           FROM documents
+          WHERE application_id = $1
+            AND (sharepoint_backed_up_at IS NOT NULL OR sharepoint_verified_at IS NOT NULL
+                 OR sharepoint_backup_error IS NOT NULL OR sharepoint_skipped_reason IS NOT NULL)
+          ORDER BY COALESCE(sharepoint_verified_at, sharepoint_backed_up_at, created_at) DESC LIMIT $2`, [appId, limit]) : { rows: [] },
+    ]);
+
+    const events = [];
+    for (const r of portal.rows) {
+      const meta = describeAuditAction(r.action);
+      events.push({ ts: r.ts, source: 'portal', category: meta.cat || 'other',
+        actor: r.actor, action: r.action, summary: meta.label || r.action,
+        detail: { entity: r.detail && (r.detail.entityType || undefined) } });
+    }
+    for (const r of cuOut.rows) {
+      const key = r.field_key || r.field_id || 'field';
+      events.push({ ts: r.ts, source: 'clickup', category: 'sync',
+        actor: 'ClickUp sync', action: r.blocked ? 'clickup_write_blocked' : 'clickup_write',
+        summary: r.blocked ? `ClickUp write BLOCKED by a guardrail (${key})`
+          : r.changed ? `Wrote ${key} to ClickUp` : `No-op ${key} (already equal)`,
+        detail: { field: key, changed: r.changed, blocked: r.blocked, via: r.source } });
+    }
+    for (const r of reviews.rows) {
+      events.push({ ts: r.resolved_at || r.ts, source: 'sync', category: 'sync',
+        actor: r.auto_resolved ? 'Auto-resolver' : 'Sync review',
+        action: `sync_review_${r.status}`,
+        summary: `Sync review (${r.direction || '—'} ${r.field_key || ''}) — ${r.status}${r.winner ? ` · kept ${r.winner}` : ''}`,
+        detail: { reason: r.reason, status: r.status, winner: r.winner || undefined, autoResolved: !!r.auto_resolved } });
+    }
+    for (const r of sp.rows) {
+      const ts = r.sharepoint_verified_at || r.sharepoint_backed_up_at || r.sharepoint_stamped_at || r.created_at;
+      const state = r.sharepoint_backup_error ? 'errored'
+        : r.sharepoint_skipped_reason ? `skipped (${r.sharepoint_skipped_reason})`
+          : r.sharepoint_verified_at ? `verified (${r.sharepoint_integrity || 'ok'})`
+            : 'mirrored';
+      events.push({ ts, source: 'sharepoint', category: 'sync', actor: 'SharePoint sync',
+        action: 'sharepoint_mirror', summary: `${r.filename || 'Document'} — ${state}`,
+        detail: { integrity: r.sharepoint_integrity || undefined, skipped: r.sharepoint_skipped_reason || undefined,
+          error: r.sharepoint_backup_error ? String(r.sharepoint_backup_error).slice(0, 160) : undefined,
+          url: r.sharepoint_web_url || undefined } });
+    }
+
+    // One time-ordered feed (newest first), capped after the merge.
+    events.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    const trimmed = events.slice(0, limit);
+    res.json({
+      applicationId: appId,
+      counts: { portal: portal.rows.length, clickup: cuOut.rows.length, sync: reviews.rows.length, sharepoint: sp.rows.length, total: events.length },
+      events: trimmed,
+    });
+  } catch (e) {
+    console.error('[observability] timeline failed', appId, e.message);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // ---------------- sync review queue (2026-07-15 date incident) --------------
 // The human gate for suspicious cross-system changes (db/108): blocked outbound
 // DOB shifts, inbound out-of-range years (mid-typing / 2-digit "26"), and
