@@ -14,8 +14,10 @@ const storage = require('../lib/storage');
 const { requireAuth, requireBorrower } = require('../auth');
 const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
+const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
+const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const pricing = require('../lib/pricing');
 const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
@@ -63,7 +65,7 @@ function stripToolAttachments(payload) {
   const raw = Array.isArray(payload && payload.attachments) ? payload.attachments : [];
   const attachments = raw.slice(0, 4)
     .map((a) => ({
-      filename: String(a.filename || 'tool-export.txt').replace(/[\\/:*?"<>|]/g, '_').slice(0, 160),
+      filename: safeFilename(a.filename || 'tool-export.txt'),
       contentType: String(a.contentType || 'application/octet-stream').slice(0, 120),
       dataBase64: String(a.dataBase64 || ''),
     }))
@@ -77,6 +79,19 @@ function stripToolAttachments(payload) {
 }
 async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, attachments }) {
   if (!attachments || !attachments.length) return [];
+  // Validate/decode FIRST (strict decode — a data:-URL prefix or non-base64
+  // junk must never garble stored bytes), and only supersede the previous
+  // exports when at least one valid replacement exists: a submission whose
+  // attachments all fail must not strip the condition of its current documents.
+  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  const valid = [];
+  for (const a of attachments) {
+    let buf;
+    try { ({ buf } = decodeUploadBase64(a.dataBase64)); } catch (_) { continue; }
+    if (!buf.length || buf.length > maxBytes) continue;
+    valid.push({ a, buf });
+  }
+  if (!valid.length) return [];
   await db.query(
     `UPDATE documents
         SET is_current=false,
@@ -88,10 +103,7 @@ async function storeToolAttachments({ req, appId, borrowerId, itemId, toolKey, a
     [itemId, borrowerId]);
 
   const out = [];
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  for (const a of attachments) {
-    const buf = Buffer.from(a.dataBase64, 'base64');
-    if (!buf.length || buf.length > maxBytes) continue;
+  for (const { a, buf } of valid) {
     const { ref, provider } = await storage.save(buf, { filename: a.filename });
     const r = await db.query(
       `INSERT INTO documents
@@ -232,8 +244,10 @@ router.put('/profile', async (req, res) => {
 router.post('/profile/photo-id', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   let appId = null, appItemId = null;
@@ -315,9 +329,18 @@ router.post('/applications/:id/request-draw', async (req, res) => {
       body: `We received your request to set up draws on ${addr}. Our draws team will follow up.`,
       applicationId: a.id, link: `/app/${a.id}` });
     // Branded email to the draws desk + assigned team + borrower.
+    // `team` = the active assigned staff (primary LO/processor + assistants, #113).
+    // (This was previously an undeclared identifier — the branded draws-desk email
+    // threw ReferenceError and was silently swallowed by the surrounding try; the
+    // in-app notices above still fired, so it wasn't visible. Fixed here.)
+    const teamRows = await db.query(
+      `SELECT DISTINCT staff_id FROM application_assignees
+        WHERE application_id=$1 AND removed_at IS NULL AND staff_id IS NOT NULL`, [a.id]);
+    const team = teamRows.rows.map((r) => r.staff_id);
     const staff = team.length ? await db.query(`SELECT email FROM staff_users WHERE id = ANY($1::uuid[])`, [team]) : { rows: [] };
     const recipients = ['draws@yscapgroup.com', a.email, ...staff.rows.map(r => r.email)].filter(Boolean);
-    await mail.deliver(mail.drawRequest({ borrowerName, propertyLabel: addr, loanNumber: a.ys_loan_number }), recipients);
+    await mail.deliver(mail.drawRequest({ borrowerName, propertyLabel: addr, loanNumber: a.ys_loan_number }), recipients,
+      { replyTo: fileReplyTo(a.id) });   // #68: a reply to the draw email reaches the whole assigned team
   } catch (e) { /* in-app notice already written; email is best-effort */ }
   await audit(req, 'request_draw', 'application', a.id);
   res.json({ ok: true });
@@ -597,8 +620,10 @@ router.get('/applications/:id/pricing', async (req, res) => {
     let quote = null;
     // The live what-if quote embeds adminPricing too — strip it before it leaves.
     if (pricing.enginesReady()) { try { quote = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp)); quote.experience = f.exp; } catch (_) {} }
-    res.json({ current, history, quote, enginesReady: pricing.enginesReady() });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+    // Echoed back on register — a mismatch means the file's economics moved
+    // underneath the open studio (409, never a silent stale re-register).
+    res.json({ current, history, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app) });
+  } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 router.post('/applications/:id/pricing/quote', async (req, res) => {
@@ -609,18 +634,32 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     const overrides = borrowerPricingOverrides((req.body && req.body.overrides) || {});
     const out = borrowerSafeQuoteBundle(pricing.quoteAll(f.app, f.exp, overrides));
     res.json({ ...out, experience: f.exp });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 router.post('/applications/:id/pricing/register', async (req, res) => {
   const appId = req.params.id;
+  // Refusals are audited (register_product_refused) so "register didn't work"
+  // is diagnosable from the logs alone (#148/#149) — same as the staff route.
+  const refuse = async (status, payload, reason, extra) => {
+    try { await audit(req, 'register_product_refused', 'application', appId, { reason, status, ...extra }); } catch (_) {}
+    return res.status(status).json(payload);
+  };
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
-    if (locked) return res.status(409).json({ error: locked });
+    if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const f = await loadFileForPricing(appId, me(req));
     if (!f) return res.status(404).json({ error: 'not found' });
     const b = req.body || {};
+    // Same optimistic-concurrency guard as the staff route (#148): a stale
+    // studio session must never re-register economics the file no longer has.
+    if (b.econVersion && b.econVersion !== pricing.econVersionFor(f.app)) {
+      return refuse(409, {
+        error: 'This file’s pricing inputs changed since the studio was opened. The latest values have been reloaded — review the scenario and register again.',
+        code: 'econ_version_conflict',
+      }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
+    }
     const program = b.program === 'gold' ? 'gold' : 'standard';
     const overrides = borrowerPricingOverrides(b.overrides || {});
     // A REGISTERED product is authoritative terms. Never let borrower-claimed
@@ -634,9 +673,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
     if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
-    if (quote.status === 'INELIGIBLE') return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote: stripQuoteInternal(quote) });
+    if (quote.status === 'INELIGIBLE') return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote: stripQuoteInternal(quote) }, 'ineligible', { program });
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
-    if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote: stripQuoteInternal(quote) });
+    if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote: stripQuoteInternal(quote) }, 'no_loan_sized', { program });
 
     // Superseded terms, captured before the new registration lands — so the
     // audit trail / Activity feed can say exactly what the reprice changed.
@@ -709,7 +748,7 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     } catch (_) {}
 
     res.status(201).json({ ok: true, registrationId: regId, quote: stripQuoteInternal(quote) });
-  } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
+  } catch (e) { console.error('[borrower pricing]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // Borrower-safe file activity feed (never internal chat/notes/conditions).
@@ -1538,6 +1577,28 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
   res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: scId });
 });
+// Edit a file contact in place (owner-directed 2026-07-16 — parity with staff).
+router.patch('/file-contacts/:linkId', async (req, res) => {
+  const b = req.body || {};
+  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  // Own-file guard: resolve the link to its service_contact only for files the
+  // borrower owns.
+  const link = await db.query(
+    `SELECT l.service_contact_id FROM application_service_contacts l JOIN applications a ON a.id=l.application_id
+      WHERE l.id=$1 AND a.deleted_at IS NULL AND (${OWN_FILE_SQL("a", "$2")})`, [req.params.linkId, me(req)]);
+  if (!link.rows[0]) return res.status(404).json({ error: 'not found' });
+  const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : null;
+  const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
+  await db.query(
+    `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type),
+        custom_type=CASE WHEN $2::text IS NULL THEN custom_type ELSE $3 END,
+        company_name=$4, contact_name=$5, email=$6, phone=$7, address=$8, notes=$9, updated_at=now()
+      WHERE id=$1`,
+    [link.rows[0].service_contact_id, type, custom, b.companyName || null, b.contactName || null,
+     b.email || null, b.phone || null, b.address || null, b.notes || null]);
+  if (type) await db.query(`UPDATE application_service_contacts SET contact_type=$2 WHERE id=$1`, [req.params.linkId, type]);
+  res.json({ ok: true });
+});
 router.delete('/file-contacts/:linkId', async (req, res) => {
   const r = await db.query(
     `DELETE FROM application_service_contacts l USING applications a
@@ -1788,10 +1849,12 @@ router.get('/track-records/:id/documents', async (req, res) => {
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const own = await db.query(`SELECT 1 FROM track_records WHERE id=$1 AND borrower_id=$2`, [req.params.id, me(req)]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
@@ -1869,6 +1932,7 @@ router.get('/track-record/snapshot', async (req, res) => {
 router.post('/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   // ownership check for whichever owner is supplied
   if (b.applicationId) {
     const o = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [b.applicationId, me(req)]);
@@ -1915,8 +1979,9 @@ router.post('/documents', async (req, res) => {
       if (v.rows[0] && v.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — ask your loan team to unlock it before replacing documents' });
     }
   }
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   // Optional kind tag. 'term_sheet' marks the registered-product term sheet
@@ -2067,8 +2132,10 @@ router.post('/documents', async (req, res) => {
           // bytes only when small enough for the mail providers (Graph caps inline
           // attachments ~3 MB) — larger files are still one tap away in the portal.
           files: [b.filename],
+          // Re-encode the DECODED bytes (never the raw client payload): the
+          // stored document and the emailed copy must be the same bytes.
           attachments: buf.length <= 3 * 1024 * 1024
-            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: b.dataBase64 }]
+            ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: buf.toString('base64') }]
             : undefined,
         };
         await notify.notifyAppStaff(b.applicationId, opts);   // #113: whole team (primary + assistants)
@@ -2126,7 +2193,7 @@ router.post('/plaid/link-token', async (req, res) => {
   const plaid = require('../lib/integrations').plaid;
   if (!plaid.configured()) return res.status(503).json({ error: 'Instant bank verification is not enabled yet — please upload statements instead.' });
   try { res.json(await plaid.createLinkToken({ userId: me(req) })); }
-  catch (e) { res.status(502).json({ error: e.message }); }
+  catch (e) { console.error('[plaid]', e && e.message); res.status(502).json({ error: 'bank verification is temporarily unavailable — please try again.' }); }
 });
 router.post('/plaid/exchange', async (req, res) => {
   const plaid = require('../lib/integrations').plaid;
@@ -2564,12 +2631,22 @@ async function inviteCoBorrower(appId, primaryName, co) {
        VALUES ($1,'borrower',$2, now() + interval '14 days')`, [C.sha256(token), co.email]);
   }
   try {
+    // #150 — brand the invite to the FILE's assigned loan officer (From display
+    // name + contact block) when one is assigned.
+    let officer = null;
+    try {
+      const o = await db.query(
+        `SELECT s.full_name, s.title, s.email, s.phone, s.cell, s.nmls
+           FROM applications a JOIN staff_users s ON s.id=a.loan_officer_id WHERE a.id=$1`, [appId]);
+      if (o.rows[0]) officer = { name: o.rows[0].full_name, title: o.rows[0].title, email: o.rows[0].email, phone: o.rows[0].cell || o.rows[0].phone, nmls: o.rows[0].nmls };
+    } catch (_) { /* officer branding is best-effort */ }
     await mail.send('coBorrowerInvite', co.email, {
       firstName: co.firstName || '',
       primaryName: primaryName || 'your co-borrower',
       acceptUrl: hasAuth.rows[0] ? mail.link('/login') : mail.link('/accept?token=' + token),
       hasAccount: !!hasAuth.rows[0],
-    });
+      officer,
+    }, { replyTo: fileReplyTo(appId), from: officer ? require('../lib/email').fromWithName(officer.name) : null });   // #68 + #150
   } catch (_) {}
   return coId;
 }

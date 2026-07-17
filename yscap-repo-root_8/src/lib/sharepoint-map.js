@@ -119,6 +119,55 @@ function addressMatches(candidate, target) {
   return true;
 }
 
+// Typo-tolerant address match (field-study #4): the HOUSE NUMBER must still be
+// EXACTLY equal (the safety anchor — stage folders and different houses can
+// never match) and the token count identical, but each street token tolerates
+// one Damerau-Levenshtein edit ("654 Hamiltion St" ↔ "654 Hamilton Street").
+// Fallback-only + single-candidate + review-flagged, like the borrower pass.
+function addressMatchesTypo(candidate, target) {
+  const c = addressCore(candidate), t = addressCore(target);
+  if (!c || !t || c.num !== t.num) return false;
+  if (c.unit && t.unit && c.unit !== t.unit) return false;
+  if (!c.street.length || c.street.length !== t.street.length) return false;
+  for (let i = 0; i < c.street.length; i++) if (!tokenClose(c.street[i], t.street[i])) return false;
+  return true;
+}
+
+// --- typo tolerance (field-study items #3/#4, owner-directed 2026-07-16) ---
+// Damerau-Levenshtein distance capped at 2 (we only care about <=1). Chosen
+// over Jaro-Winkler deliberately: JW scores prefix EXTENSIONS high ("Katz" vs
+// "Katzman" ~0.96), which would violate the hard rule that "Moshe Katz" must
+// never link to "Moshe Katzman". DL<=1 catches real typos ("Jonh"/"John" is
+// one transposition, "Hamiltion"/"Hamilton" one insertion) while extensions
+// of 2+ letters can never match.
+function dlDistance(a, b) {
+  a = String(a); b = String(b);
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 1) return 2;   // capped — caller only tests <=1
+  const m = a.length, n = b.length;
+  let prev2 = null, prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        v = Math.min(v, prev2[j - 2] + 1);           // transposition
+      }
+      cur.push(v);
+    }
+    prev2 = prev; prev = cur;
+  }
+  return prev[n];
+}
+// One typo allowed only on tokens long enough that a single edit can't turn
+// one real name/street into a different one ("st" vs "s" must never match).
+function tokenClose(a, b) {
+  if (a === b) return true;
+  if (Math.min(String(a).length, String(b).length) < 4) return false;
+  return dlDistance(a, b) <= 1;
+}
+
 // Does candidate folder name match borrower "<first> <last>"? Exact normalized
 // match, or first/last token equality with middle tokens ignored on both sides.
 function borrowerMatches(candidate, first, last) {
@@ -134,6 +183,21 @@ function borrowerMatches(candidate, first, last) {
   const lParts = l.split(' ');
   const lTok = lParts[lParts.length - 1];
   return cand.length >= 2 && cand[0] === fTok && cand[cand.length - 1] === lTok;
+}
+
+// Second-pass TYPO matcher for borrower folders (field-study #3): first and
+// last tokens each within one Damerau-Levenshtein edit ("Jonh Smith" folder ↔
+// borrower "John Smith"). Used only as a FALLBACK when the exact rules found
+// nothing, only when exactly ONE candidate clears it, and the resolution is
+// flagged for sync review — never a silent guess.
+function borrowerMatchesTypo(candidate, first, last) {
+  const cand = nameTokens(candidate);
+  const f = norm(first), l = norm(last);
+  if (cand.length < 2 || !f || !l) return false;
+  const fTok = f.split(' ')[0];
+  const lParts = l.split(' ');
+  const lTok = lParts[lParts.length - 1];
+  return tokenClose(cand[0], fTok) && tokenClose(cand[cand.length - 1], lTok);
 }
 
 // Officer folders are person names; match exact, else first+last agreement.
@@ -190,7 +254,10 @@ async function resolveSyncFolder(ctx) {
     && cached.details.flags.includes('no-officer:unfiled');
   if (cached && !(wasUnfiled && ctx.officerName)) {
     const out = { driveId, syncFolderId: cached.sync_folder_id, webUrl: cached.web_url, fullPath: cached.full_path, details: cached.details };
-    _memCache.set(ctx.scopeKey, out);
+    // Same rule as the fresh-resolution path below: an Unfiled resolution is
+    // never memory-cached, or a doc mirrored before officer assignment would
+    // pin the whole process to Unfiled even after the officer arrives.
+    if (!wasUnfiled) _memCache.set(ctx.scopeKey, out);
     return out;
   }
 
@@ -251,6 +318,16 @@ async function resolveSyncFolder(ctx) {
     const bm = pickMatch(borrowers, (n) => borrowerMatches(n, ctx.borrowerFirst, ctx.borrowerLast), borrowerName);
     let borrowerFolder = bm.hit;
     if (bm.ambiguous) details.flags.push('borrower-ambiguous');
+    // Typo fallback (#3): only when the exact rules found NOTHING (not even an
+    // ambiguous pair) and exactly one candidate is within one edit — and the
+    // resolution is flagged so it surfaces in sync review, never silent.
+    if (!borrowerFolder && !bm.ambiguous) {
+      const tm = pickMatch(borrowers, (n) => borrowerMatchesTypo(n, ctx.borrowerFirst, ctx.borrowerLast), borrowerName);
+      if (tm.hit && !tm.ambiguous) {
+        borrowerFolder = tm.hit;
+        details.flags.push('borrower-typo-ambiguous-review');
+      }
+    }
     if (!borrowerFolder) {
       borrowerFolder = await createMarked(parentId, borrowerName);
       details.created.push('borrower');
@@ -268,6 +345,15 @@ async function resolveSyncFolder(ctx) {
         : { hit: null, ambiguous: false };
       let addressFolder = am.hit;
       if (am.ambiguous) details.flags.push('address-ambiguous');
+      // Typo fallback (#4): house number exact, one edit per street token,
+      // single candidate only, review-flagged.
+      if (!addressFolder && !am.ambiguous && ctx.addressOneLine) {
+        const tm = pickMatch(kids, (n) => addressMatchesTypo(n, ctx.addressOneLine), ctx.addressOneLine);
+        if (tm.hit && !tm.ambiguous) {
+          addressFolder = tm.hit;
+          details.flags.push('address-typo-ambiguous-review');
+        }
+      }
       if (!addressFolder) {
         addressFolder = await createMarked(parentId, addressName);
         details.created.push('address');
@@ -293,7 +379,12 @@ async function resolveSyncFolder(ctx) {
     [ctx.scopeKey, sync.id, sync.webUrl || null, fullPath, JSON.stringify(details)]);
 
   const out = { driveId, syncFolderId: sync.id, webUrl: sync.webUrl, fullPath, details };
-  _memCache.set(ctx.scopeKey, out);
+  // An officer-less (Unfiled) resolution is NOT memory-cached: the in-memory
+  // hit would short-circuit the Unfiled→officer upgrade above for the whole
+  // process lifetime, stranding every later document in "Pilot — Unfiled"
+  // after an officer is assigned. The DB-cache read (which knows how to
+  // upgrade) is cheap.
+  if (!details.flags.includes('no-officer:unfiled')) _memCache.set(ctx.scopeKey, out);
   // SHAREPOINT UNCERTAINTY → SYNC REVIEW (owner-directed 2026-07-15 night:
   // "when it finds something it's not sure is the correct one, it should come
   // up for manual review with options"). The resolver never guesses — an
@@ -363,5 +454,6 @@ module.exports = {
   invalidateScope,
   // exported for unit tests
   addressCore, addressMatches, borrowerMatches, officerMatches, norm,
+  addressMatchesTypo, borrowerMatchesTypo, dlDistance, tokenClose,
   _resetMemory,
 };

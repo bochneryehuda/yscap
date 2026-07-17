@@ -29,6 +29,11 @@ app.use('/api/clickup/webhook', require('./routes/clickup-webhook'));
 // #75 — inbound email → chat: an external guest's email reply lands back in the
 // conversation (dormant until an inbound-email domain is configured in Resend).
 app.use('/api/inbound/chat', require('./routes/inbound-chat'));
+// #68 — inbound email → per-file forward: a reply to file+<appId>@<domain> is
+// verified (Svix signature over the RAW body) and fanned out to every assignee.
+// Mounted BEFORE the JSON parser for the same raw-body reason as the chat/ClickUp
+// webhooks. Separate URL from /api/inbound/chat (which is unchanged).
+app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
@@ -106,7 +111,7 @@ app.get('/api/health', async (req, res) => {
                                 JOIN checklist_templates t ON t.id=ci.template_id
                                WHERE ci.application_id=a.id AND t.code='rtl_p1_contract'))::int AS no_contract
              FROM applications a
-            WHERE a.deleted_at IS NULL AND a.status NOT IN ('declined','withdrawn','cancelled','funded')`),
+            WHERE a.deleted_at IS NULL AND a.status NOT IN ('declined','withdrawn','cancelled','funded','file_intake')`),
         new Promise((_, rej) => setTimeout(() => rej(new Error('guard timeout')), 2500)),
       ]);
       conditionsGuard = { filesZeroItems: g.rows[0].zero_items, rtlFilesMissingContract: g.rows[0].no_contract };
@@ -166,10 +171,18 @@ app.use('/api/staff', require('./routes/staff'));
   app.use('/api/admin/conditions', requireAuth, requirePermission('manage_conditions'), require('./routes/admin-conditions'));
   app.use('/api/admin/pricing', requireAuth, requirePermission('manage_pricing'), require('./routes/admin-pricing'));
 }
-// ClickUp Control Center (health, dry-run/backfill, activity, per-file re-sync).
-// The router applies its own requireAuth + platform_setup guards.
-app.use('/api/admin/clickup', require('./routes/admin-clickup'));
-app.use('/api/admin', require('./routes/admin'));
+// S1-16: a single blanket "must be authenticated staff" wall at the admin
+// entrance. Each admin router still gates internally (role/permission), but this
+// ensures no admin route can ever be reachable by a borrower or an anonymous
+// caller — defense-in-depth so a newly-added admin route is staff-only by default.
+{
+  const { requireAuth, requireStaff } = require('./auth');
+  // ClickUp Control Center (health, dry-run/backfill, activity, per-file re-sync).
+  // The router also applies its own requireAuth + platform_setup guards.
+  app.use('/api/admin/clickup', requireAuth, requireStaff, require('./routes/admin-clickup'));
+  app.use('/api/admin/sharepoint', requireAuth, requireStaff, require('./routes/admin-sharepoint'));
+  app.use('/api/admin', requireAuth, requireStaff, require('./routes/admin'));
+}
 // SSE stream (live chat/presence/receipts). Mounted OUTSIDE the authenticated
 // routers: EventSource can't send an Authorization header, so this route does
 // its own token verification from a query parameter.

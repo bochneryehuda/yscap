@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
@@ -29,7 +29,7 @@ const REASON_COPY = {
   file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Create its ClickUp task now, or dismiss if this file intentionally lives outside ClickUp.',
   identity_mismatch_audit: 'The portfolio audit found the two systems carrying DIFFERENT values for this borrower-identity field. Nothing was changed anywhere (identity fields never overwrite silently) — compare the sides and adopt the correct one; it is applied to both systems. If both are fine (e.g. an old phone number), dismiss and this stays closed.',
   sharepoint_match_uncertain: 'The SharePoint mirror was NOT SURE which folder this file’s documents belong in (an ambiguous folder match, or no officer yet), so it filed into a safe, clearly-marked new folder — shown under “In PILOT”. If that is the wrong tree: merge or rename the folders IN SharePoint (the mirror never moves or renames anything itself), then click Re-match. Dismiss keeps the new folder.',
-  sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the last error is recorded on the row. Usually a permissions problem, a folder issue, or an unreadable file. Fix the cause, then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
+  sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the exact error is shown on the “Last error” line above. Fix the cause if it needs a human (a folder problem, an unreadable file), then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
   borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: this file’s ClickUp task and the PILOT profile disagree on identity (name, phone, or SSN), and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either value — that would change the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
   shared_email_needs_reassignment: 'TWO BORROWER PROFILES are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). Two ways to settle it: (1) if the sharing is RIGHT — spouses on the same deals, or the same person twice — click Allow: the two profiles are LINKED, whoever logs in with the email sees BOTH sets of files, and this never flags again (nothing is merged; each keeps their own profile and officer). (2) If they are unrelated people, give one of them their OWN email — edit it on their borrower screen in PILOT or on the ClickUp task — and this card closes itself. Until settled, the system deliberately refuses to link files by this email.',
 };
@@ -67,6 +67,22 @@ const REASON_FILE_ACTIONS = {
     { action: 'allow_shared_email', label: 'Allow — same email for both', title: 'Link the two profiles: whoever logs in with this email sees BOTH people’s files. Nothing is merged; each keeps their own profile and officer, and this pair never flags again' },
   ],
 };
+// The ACTUAL recorded failure for a SharePoint document row (owner-reported
+// 2026-07-16: the card said "the last error is recorded on the row" without
+// SHOWING it, so every failure read as "a permissions problem"). The error
+// travels in raw_value from the producer (recordFailure / the verify pass).
+function spError(r) {
+  try {
+    const raw = r.raw_value ? JSON.parse(r.raw_value) : null;
+    if (!raw) return '';
+    if (raw.error) return String(raw.error);
+    if (raw.kind === 'item-missing') return 'the mirror copy is no longer in SharePoint (deleted or moved by a person)';
+    if (raw.kind === 'local-missing') return 'the portal’s own stored bytes are unreadable — the SharePoint copy may be the only surviving one';
+    if (raw.kind === 'source-suspect') return `the file’s content looks like ${raw.sniffed || 'unrecognized data'}, not ${raw.expected || 'its declared type'} — it was already damaged when it was uploaded`;
+    return '';
+  } catch { return ''; }
+}
+
 // Candidate files the matcher surfaced (enriched into raw_value at queue time).
 function linkCandidates(r) {
   try {
@@ -142,10 +158,16 @@ export default function SyncReviews() {
     } catch (e) { setErr(e.message || 'Bulk action failed'); }
     finally { setBusyId(null); }
   }
+  // Last-request-wins: a slow response for a PREVIOUS status tab must never
+  // overwrite the current tab's rows (vanishing-search bug class, 2026-07-16).
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const mine = ++loadSeq.current;
     setErr('');
-    try { setRows((await api.get(`/api/staff/sync-reviews?status=${status}`)).reviews || []); }
-    catch (e) { setErr(e.message || 'Could not load the review queue'); setRows([]); }
+    try {
+      const rows = (await api.get(`/api/staff/sync-reviews?status=${status}`)).reviews || [];
+      if (mine === loadSeq.current) setRows(rows);
+    } catch (e) { if (mine === loadSeq.current) { setErr(e.message || 'Could not load the review queue'); setRows([]); } }
   }, [status]);
   useEffect(() => { load(); }, [load]);
 
@@ -220,6 +242,9 @@ export default function SyncReviews() {
             <div className="metrow"><span className="k">Who</span><span className="v">{r.borrower_name || '—'}{r.property ? ` — ${r.property}` : ''}</span></div>
             <div className="metrow"><span className="k">In ClickUp</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
             <div className="metrow"><span className="k">In PILOT</span><span className="v"><strong>{showVal(p)}</strong>{isDob ? <em className="muted small">{dobNote(p)}</em> : null}</span></div>
+            {(r.field_key === 'sharepoint_doc' || r.field_key === 'sharepoint_folder') && spError(r) ? (
+              <div className="metrow"><span className="k">Last error</span><span className="v"><em className="muted">{spError(r)}</em></span></div>
+            ) : null}
             <p className="muted small" style={{ margin: '8px 0' }}>
               {sidesEqual && r.reason === 'clickup_dob_differs_from_portal'
                 ? REASON_COPY.dob_same_but_impossible   /* legacy rows queued before the common-sense reasons */

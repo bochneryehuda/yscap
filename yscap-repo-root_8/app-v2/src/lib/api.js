@@ -194,7 +194,7 @@ export const api = {
   requestDraw:  (id) => req('POST', `/api/borrower/applications/${id}/request-draw`),
   borrowerPricing:      (appId) => req('GET', `/api/borrower/applications/${appId}/pricing`),
   borrowerPricingQuote: (appId, overrides) => req('POST', `/api/borrower/applications/${appId}/pricing/quote`, { overrides }),
-  borrowerRegisterProduct: (appId, program, overrides, adminKey) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey }),
+  borrowerRegisterProduct: (appId, program, overrides, adminKey, econVersion) => req('POST', `/api/borrower/applications/${appId}/pricing/register`, { program, overrides, adminKey, econVersion }),
   checklist:    (id) => req('GET', `/api/borrower/applications/${id}/checklist`),
   conditions:   (id) => req('GET', `/api/borrower/applications/${id}/conditions`),
   // Borrower change-request sandbox (S5-03) — borrower side. List their requests,
@@ -230,6 +230,7 @@ export const api = {
   // general file contacts (#144) — any vendor, many per file, shared on the file
   fileContacts:    (appId) => req('GET', `/api/borrower/applications/${appId}/file-contacts`),
   addFileContact:  (appId, b) => req('POST', `/api/borrower/applications/${appId}/file-contacts`, b),
+  editFileContact: (linkId, b) => req('PATCH', `/api/borrower/file-contacts/${linkId}`, b),
   delFileContact:  (linkId) => req('DELETE', `/api/borrower/file-contacts/${linkId}`),
   myContacts:      () => req('GET', '/api/borrower/my-contacts'),
 
@@ -289,6 +290,10 @@ export const api = {
   staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
   staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+  // #147 — the cross-system observability timeline for a file (portal + ClickUp +
+  // SharePoint + sync-review events, time-ordered). Scoped by the file's access.
+  staffObservability: (id, opts = {}) => req('GET', `/api/staff/applications/${id}/observability`
+    + (opts.sources ? `?sources=${encodeURIComponent(opts.sources)}` : '')),
   staffAppDocuments:(id) => req('GET', `/api/staff/applications/${id}/documents`),
   staffReviewDoc:   (id, action, reason, opts) => req('POST', `/api/staff/documents/${id}/review`, { action, reason, ...(opts || {}) }),
   // Permanently delete a document (mistake-upload) — removes bytes + row, never
@@ -348,9 +353,11 @@ export const api = {
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
+  // #152 — export the current pipeline VIEW (same filter params as staffApplications).
+  staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
   staffPricing:      (appId) => req('GET', `/api/staff/applications/${appId}/pricing`),
   staffPricingQuote: (appId, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/quote`, { overrides }),
-  staffRegisterProduct: (appId, program, overrides) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides }),
+  staffRegisterProduct: (appId, program, overrides, econVersion) => req('POST', `/api/staff/applications/${appId}/pricing/register`, { program, overrides, econVersion }),
   staffUploadAppDoc: (appId, b) => coalesceUpload('appDoc:' + appId, b, () => req('POST', `/api/staff/applications/${appId}/documents`, normalizeUpload(b))),
   staffAddLoanCondition: (appId, b) => req('POST', `/api/staff/applications/${appId}/loan-conditions`, b),
   staffClearCondition:   (cid) => req('POST', `/api/staff/loan-conditions/${cid}/clear`),
@@ -389,6 +396,7 @@ export const api = {
   staffArchivedApps:() => req('GET', '/api/staff/archived-applications'),
   staffNotifs:      () => req('GET', '/api/staff/notifications'),
   staffLeads:       () => req('GET', '/api/staff/leads'),
+  staffLeadsBulkArchive: (filters) => req('POST', '/api/staff/leads/bulk-archive', filters),
   staffCreateLead:  (b) => req('POST', '/api/staff/leads', b),
   staffLead:        (id) => req('GET', `/api/staff/leads/${id}`),
   staffUpdateLead:  (id, b) => req('PATCH', `/api/staff/leads/${id}`, b),
@@ -483,6 +491,7 @@ export const api = {
   // general file contacts (#144) — staff side + a borrower's whole vendor list
   staffFileContacts:   (appId) => req('GET', `/api/staff/applications/${appId}/file-contacts`),
   staffAddFileContact: (appId, b) => req('POST', `/api/staff/applications/${appId}/file-contacts`, b),
+  staffEditFileContact:(linkId, b) => req('PATCH', `/api/staff/file-contacts/${linkId}`, b),
   staffDelFileContact: (linkId) => req('DELETE', `/api/staff/file-contacts/${linkId}`),
   staffBorrowerContacts: (borrowerId) => req('GET', `/api/staff/borrowers/${borrowerId}/contacts`),
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),

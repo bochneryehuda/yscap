@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api.js';
-import { PhoneInput } from '../components/FormattedInputs.jsx';
+import { PhoneInput , EmailInput} from '../components/FormattedInputs.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 
@@ -39,16 +39,20 @@ function FileGrants({ staffer, flash, onError }) {
   useEffect(() => { load(); }, [staffer.id]);
 
   // Debounced loan search (reuses the staff omnibox; admins see every file).
+  // `alive` guards the in-flight response too — the timer cleanup alone can't
+  // stop a request that already left, and a slow stale response must never
+  // overwrite a newer query's results (the vanishing-search bug class).
   useEffect(() => {
     const term = q.trim();
     if (term.length < 2) { setResults([]); setSearching(false); return; }
     setSearching(true);
+    let alive = true;
     const t = setTimeout(async () => {
-      try { const r = await api.staffGlobalSearch(term); setResults(r.loans || []); }
-      catch { setResults([]); }
-      finally { setSearching(false); }
+      try { const r = await api.staffGlobalSearch(term); if (alive) setResults(r.loans || []); }
+      catch { if (alive) setResults([]); }
+      finally { if (alive) setSearching(false); }
     }, 300);
-    return () => clearTimeout(t);
+    return () => { alive = false; clearTimeout(t); };
   }, [q]);
 
   const grantedIds = new Set((grants || []).map(g => g.applicationId));
@@ -262,7 +266,7 @@ export default function StaffTeam() {
           <div className="field"><label>Full name *</label>
             <input className="input" value={form.fullName} onChange={e => set('fullName', e.target.value)} required /></div>
           <div className="field"><label>Email *</label>
-            <input className="input" type="email" value={form.email} onChange={e => set('email', e.target.value)} required /></div>
+            <EmailInput value={form.email} onChange={v => set('email', v)} required /></div>
           <div className="field"><label>Role</label>
             <select className="input" value={form.role} onChange={e => set('role', e.target.value)}>
               {ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}

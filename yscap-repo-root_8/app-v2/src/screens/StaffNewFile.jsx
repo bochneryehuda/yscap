@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import AddressAutocomplete from '../components/AddressAutocomplete.jsx';
-import { MoneyInput, PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
+import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 
 /* Staff-side file origination. An admin, loan officer, or operations user opens
    a mortgage file from their end — the borrower does NOT need to be signed up.
@@ -105,7 +105,7 @@ function CoBorrowerPicker({ value, onChange }) {
         <div className="field"><label>Co-borrower last name</label>
           <input className="input" value={co.lastName} autoComplete="off" onChange={e => setField('lastName', e.target.value)} /></div>
         <div className="field"><label>Co-borrower email</label>
-          <input className="input" type="email" value={co.email} onChange={e => setField('email', e.target.value)} placeholder="coborrower@email.com" /></div>
+          <EmailInput value={co.email} onChange={v => setField('email', v)} placeholder="coborrower@email.com" /></div>
         <div className="field"><label>Co-borrower cell phone</label>
           <PhoneInput value={co.phone} onChange={v => setField('phone', v)} placeholder="Optional" /></div>
       </div>
@@ -335,7 +335,7 @@ export default function StaffNewFile() {
             <div className="field"><label>Last name</label>
               <input className="input" value={f.lastName} autoComplete="off" onChange={e => setBorrowerField('lastName', e.target.value)} /></div>
             <div className="field"><label>Email *</label>
-              <input className="input" type="email" value={f.email} onChange={e => setBorrowerField('email', e.target.value)} required
+              <EmailInput value={f.email} onChange={v => setBorrowerField('email', v)} required
                 placeholder="borrower@email.com" /></div>
             <div className="field"><label>Cell phone</label>
               <PhoneInput value={f.phone} onChange={v => setBorrowerField('phone', v)} placeholder="Optional" /></div>

@@ -11,4 +11,19 @@ switch ((cfg.emailProvider || 'none').toLowerCase()) {
   case 'resend': provider = require('./resend'); break;
   default:       provider = require('./noop');   break;
 }
-module.exports = provider;
+
+/** #150 — LO-branded From: "<Officer Name> — YS Capital <no-reply@…>".
+    The ADDRESS is always our verified sender (taken from NOTIFY_FROM); only
+    the display name changes, so deliverability/DMARC is untouched. Providers
+    that can't rebrand the sender (Graph mailboxes) simply ignore `from`.
+    Returns null when no name is given → callers fall back to the default. */
+function fromWithName(name) {
+  const n = String(name || '').trim().replace(/["<>]/g, '');
+  if (!n) return null;
+  const m = /<([^>]+)>/.exec(cfg.notifyFrom || '');
+  const addr = m ? m[1] : String(cfg.notifyFrom || '').trim();
+  if (!addr) return null;
+  return `"${n} — YS Capital" <${addr}>`;
+}
+
+module.exports = Object.assign({}, provider, { fromWithName });

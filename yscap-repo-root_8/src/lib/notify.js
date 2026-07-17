@@ -13,6 +13,7 @@ const tpl = require('./email/template');
 const { link: portalLink } = require('./email/catalog');
 const cfg = require('../config');
 const { scrubText, scrubTextExcept } = require('./borrower-safe');
+const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
 /* Turn a notification's opts into a branded {subject,html,text}. */
 function buildEmail(opts, audience) {
@@ -44,7 +45,14 @@ async function _emailRow(id, to, opts, audience) {
     // file(s). Each is { filename, contentType, content (base64) }. Bounded +
     // sanitized at the call site; providers that don't support attachments ignore them.
     const attachments = Array.isArray(opts.attachments) ? opts.attachments.filter((a) => a && a.filename && a.content) : [];
-    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments });
+    // #68: file-scoped emails carry a per-file Reply-To (file+<appId>@<domain>) so
+    // any reply forwards to every assignee. An explicit opts.replyTo wins; otherwise
+    // derive it from the applicationId. Null when no inbound domain is configured or
+    // this isn't a file email (unchanged behavior then).
+    const replyTo = opts.replyTo || fileReplyTo(opts.applicationId);
+    // #150: an optional LO-branded From display name rides through untouched
+    // (resend honors it; other providers ignore it).
+    const res = await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments, replyTo, from: opts.from || null });
     await _mark(id, res && res.ok ? 'sent' : 'skipped');
   } catch (e) {
     await db.query(`UPDATE notifications SET email_status='error', email_error=$2 WHERE id=$1`, [id, String(e.message).slice(0, 400)]);
@@ -202,7 +210,8 @@ async function notifyAdmins(opts) {
   // also copy the configured NOTIFY_ADMINS inbox list, if any (branded)
   if (cfg.notifyAdmins.length) {
     const msg = buildEmail(opts, 'staff');
-    email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html }).catch(() => {});
+    email.sendMail({ to: cfg.notifyAdmins, subject: msg.subject, text: msg.text, html: msg.html,
+      replyTo: opts.replyTo || fileReplyTo(opts.applicationId) }).catch(() => {});
   }
   return ids;
 }

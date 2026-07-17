@@ -363,7 +363,7 @@
     var stdSized = ready && d.totalLoan > 0 && d.status !== "INELIGIBLE" && !stdExit && !stdCity;
     YS.put("stdLoanBig", (stdExit || stdCity) ? "Manual" : (stdSized ? YS.fmtUSD(d.totalLoan) : ((ready && d.status !== "INELIGIBLE") ? "$0" : EM)));
     YS.put("stdRateBig", (stdSized && d.pricingReady && d.rate > 0) ? d.rate.toFixed(2) + "%" : EM);
-    YS.put("stdOrigBig", stdSized ? YS.fmtUSD(d.origFee) : EM);
+    YS.put("stdOrigBig", stdSized ? YS.fmtUSD2(d.origFee) : EM);
     YS.put("stdOrigPts", origPtStr(adminOrigPct("standard")));
     setBadge("stdBadge", d.status, ready);
     var stdWhy = stdExit ? shortMsg(exitMsg(d.reasons)) : (d.status !== "ELIGIBLE" ? shortReason(d.reasons) : "");
@@ -542,7 +542,7 @@
     h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
     return 4294967296 * (2097151 & h2) + (h1 >>> 0);
   }
-  function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : dflt; }
+  function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : dflt; }
   // Read the admin markup fields (default 0.5% each; Gold Tier 1 is exempt in-engine) and push into both engines.
   function syncAdminMarkup() {
     var std = adminNum("tsYspStd", CO.markupStd), gold = adminNum("tsYspGold", CO.markupGold);
@@ -554,10 +554,10 @@
   function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
   function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
   function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
-  function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(e.value) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
+  function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(String(e.value).replace(/,/g, "")) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
   function origPtStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + (p === 1 ? " pt" : " pts"); }
-  function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
+  function adminNumRaw(id) { var e = el(id); if (!e) return null; var v = parseFloat(String(e.value).replace(/,/g, "")); return (isFinite(v) && v >= 0) ? v : null; }  // null = blank/unset
   // Fill the (blank) admin fee/markup inputs from the company defaults for
   // DISPLAY only. Never overwrite a value already present — a non-blank field is
   // an explicit per-file override (typed by staff or restored by the studio's
@@ -635,13 +635,13 @@
     YS.put("rLtv", (sized && d.ltvPct) ? YS.fmtPct(d.ltvPct, 1) : EM);
     YS.put("rDown", sized ? YS.fmtUSD(d.downPayment) : EM);
     YS.put("rOrigLbl", "Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")");
-    YS.put("rOrig", sized ? YS.fmtUSD(d.origFee) : EM);
-    YS.put("rLender", sized ? YS.fmtUSD(d.lenderFee) : EM);
-    YS.put("rCredit", sized ? YS.fmtUSD(d.creditFee) : EM);
-    YS.put("rAppr", sized ? (YS.fmtUSD(d.apprFee) + " POC") : EM);
-    YS.put("rTitle", (sized && d.titleCost > 0) ? YS.fmtUSD(d.titleCost) : EM);
-    YS.put("rCash", sized ? YS.fmtUSD(d.cashToClose) : EM);
-    YS.put("rLiquidity", sized ? YS.fmtUSD(d.liquidity) : EM);
+    YS.put("rOrig", sized ? YS.fmtUSD2(d.origFee) : EM);
+    YS.put("rLender", sized ? YS.fmtUSD2(d.lenderFee) : EM);
+    YS.put("rCredit", sized ? YS.fmtUSD2(d.creditFee) : EM);
+    YS.put("rAppr", sized ? (YS.fmtUSD2(d.apprFee) + " POC") : EM);
+    YS.put("rTitle", (sized && d.titleCost > 0) ? YS.fmtUSD2(d.titleCost) : EM);
+    YS.put("rCash", sized ? YS.fmtUSD2(d.cashToClose) : EM);
+    YS.put("rLiquidity", sized ? YS.fmtUSD2(d.liquidity) : EM);
     YS.put("rTier", d.tierLabel || EM);
     YS.put("rFico", d.fico ? String(d.fico) : EM);
 
@@ -855,13 +855,13 @@
       ["Rehab / construction holdback", stdOk ? money(d.rehabHoldback) : EM],
       ["Down payment (equity)", stdOk ? money(d.downPayment) : EM],
       ["Leverage \u2014 LTC / as-is / ARV", stdOk ? (pct(d.ltcPct) + " / " + pct(d.ltvPct) + " / " + pct(d.arvPct)) : EM],
-      ["Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", (stdOk && d.totalLoan) ? money(d.origFee) : EM],
-      ["UW / processing / legal", stdOk ? money(d.lenderFee) : EM],
-      ["Credit report", stdOk ? money(d.creditFee) : EM],
-      ["Appraisal (est., POC)", stdOk ? money(d.apprFee) : EM],
-      ["Title / escrow (est.)", (stdOk && d.titleCost > 0) ? money(d.titleCost) : EM],
-      ["Estimated cash to close", stdOk ? money(d.cashToClose) : EM],
-      ["Liquidity to show", stdOk ? money(d.liquidity) : EM]
+      ["Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", (stdOk && d.totalLoan) ? money2(d.origFee) : EM],
+      ["UW / processing / legal", stdOk ? money2(d.lenderFee) : EM],
+      ["Credit report", stdOk ? money2(d.creditFee) : EM],
+      ["Appraisal (est., POC)", stdOk ? money2(d.apprFee) : EM],
+      ["Title / escrow (est.)", (stdOk && d.titleCost > 0) ? money2(d.titleCost) : EM],
+      ["Estimated cash to close", stdOk ? money2(d.cashToClose) : EM],
+      ["Liquidity to show", stdOk ? money2(d.liquidity) : EM]
     ];
     var gold;
     if (!gd || gd.unavailable) { gold = [["Availability", "Not offered in this state"]]; }
@@ -877,13 +877,13 @@
         ["Rehab / construction holdback", gOk ? money(gd.rehabHoldback) : EM],
         ["Down payment (equity)", gOk ? money(gd.downPayment) : EM],
         ["Leverage \u2014 LTC / as-is / ARV", gOk ? (pct(gd.ltcPct) + " / " + pct(gd.ltvPct) + " / " + pct(gd.arvPct)) : EM],
-        ["Origination (" + origPctStr((gd.origPct != null ? gd.origPct : 0.0125)) + ")", (gOk && gd.totalLoan) ? money(gd.origFee) : EM],
-        ["UW / processing / legal", gOk ? money(gd.lenderFee) : EM],
-        ["Credit report", gOk ? money(gd.creditFee) : EM],
-        ["Appraisal (est., POC)", gOk ? money(gd.apprFee) : EM],
-        ["Title / escrow (est.)", (gOk && gd.titleCost > 0) ? money(gd.titleCost) : EM],
-        ["Estimated cash to close", gOk ? money(gd.cashToClose) : EM],
-        ["Liquidity to show", gOk ? money(gd.liquidity) : EM]
+        ["Origination (" + origPctStr((gd.origPct != null ? gd.origPct : 0.0125)) + ")", (gOk && gd.totalLoan) ? money2(gd.origFee) : EM],
+        ["UW / processing / legal", gOk ? money2(gd.lenderFee) : EM],
+        ["Credit report", gOk ? money2(gd.creditFee) : EM],
+        ["Appraisal (est., POC)", gOk ? money2(gd.apprFee) : EM],
+        ["Title / escrow (est.)", (gOk && gd.titleCost > 0) ? money2(gd.titleCost) : EM],
+        ["Estimated cash to close", gOk ? money2(gd.cashToClose) : EM],
+        ["Liquidity to show", gOk ? money2(gd.liquidity) : EM]
       ];
     }
     return [{ title: "Deal & property", items: deal }, { title: "Purchase & project costs", items: costs },
@@ -950,7 +950,7 @@
     var nm = (borrowerOfRecord() || "Applicant").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "Applicant";
     return "YS_Term_Sheet_" + nm + "_" + new Date().toISOString().slice(0, 10);
   }
-  function money(n) { return YS.fmtUSD(n); }
+  function money(n) { return YS.fmtUSD(n); } function money2(n) { return YS.fmtUSD2(n); }
 
   async function exportPdf(btn, returnBlob) {
     var label = btn ? btn.textContent : ""; if (btn) { btn.textContent = "Building term sheet\u2026"; btn.disabled = true; }
@@ -966,7 +966,7 @@
       var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [91, 103, 112], DARK = [19, 32, 28], LINE = [228, 224, 214];
       var today = new Date(), exp = new Date(today.getTime() + 14 * 864e5);
       var fmtD = function (dt) { return dt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }); };
-      var money = function (n) { return YS.fmtUSD(n); };
+      var money = function (n) { return YS.fmtUSD(n); }; var money2 = function (n) { return YS.fmtUSD2(n); };
       var pc = function (x) { return (Math.round(x * 1000) / 10) + "%"; };
       var sized = d.pricingReady && d.totalLoan > 0 && d.status !== "INELIGIBLE";
       var stTxt = d.status === "ELIGIBLE" ? "Eligible" : d.status === "MANUAL" ? "Eligible \u2014 manual underwrite" : "Not eligible as entered";
@@ -1084,16 +1084,16 @@
       yR = rowIn(xR, colW, isBridge ? "As-is value" : "As-is / ARV value", isBridge ? money(d.asIs) : (money(d.asIs) + " / " + money(d.arv)), yR);
       yR += 9;
       yR = cardHead(xR, colW, "Estimated cash to close", yR);
-      yR = rowIn(xR, colW, "Origination fee (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", sized ? money(d.origFee) : "\u2014", yR);
-      yR = rowIn(xR, colW, "Underwriting / processing / legal", sized ? money(d.lenderFee) : "\u2014", yR);
-      yR = rowIn(xR, colW, "Credit report (avg)", sized ? money(d.creditFee) : "\u2014", yR);
-      yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money(d.apprFee) : "\u2014", yR);
-      yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money(d.titleCost) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Origination fee (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", sized ? money2(d.origFee) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Underwriting / processing / legal", sized ? money2(d.lenderFee) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Credit report (avg)", sized ? money2(d.creditFee) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
+      yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
       if (d.excessOOP > 0) yR = rowIn(xR, colW, "Assignment over 15% (out of pocket)", money(d.excessOOP), yR);
-      yR = rowIn(xR, colW, "Estimated cash to close", sized ? money(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
+      yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
       var liqLbl = d.gold ? ("Liquidity to show (" + Math.round((d.liquidityPct || 0.05) * 100) + "% of loan)") : ("Liquidity to show (" + d.reserveMo + " mo)");
-      yR = rowIn(xR, colW, liqLbl, sized ? money(d.liquidity) : "\u2014", yR);
+      yR = rowIn(xR, colW, liqLbl, sized ? money2(d.liquidity) : "\u2014", yR);
       y = Math.max(yL, yR) + 4;
 
       if (d.reserveCapped && d.maxReserve >= 0) {
@@ -1263,7 +1263,7 @@
       var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [95, 103, 110], DARK = [19, 32, 28], LINE = [223, 219, 209], SOFT = [247, 245, 239], BODY = [40, 46, 52];
       var today = new Date(), exp = new Date(today.getTime() + 30 * 864e5);
       var fmtD = function (dt) { return dt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }); };
-      var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); };
+      var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); }; var money2 = function (n) { return YS.fmtUSD2(n || 0); };
       var borrower = borrower0;
       var tbd = chk("addrTBD"), addr = tbd ? "" : (val("propAddr") || "").trim(), st = (val("propState") || (d.inp && d.inp.state) || "").trim();
       var propLine = tbd ? "A residential investment property to be identified"
@@ -1451,7 +1451,7 @@
     doc.addPage();
     var W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 56;
     var INK = [11, 16, 20], TEAL = [31, 58, 64], GOLD = [150, 123, 68], GRAY = [95, 103, 110], DARK = [19, 32, 28], LINE = [223, 219, 209], BODY = [40, 46, 52];
-    var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); };
+    var money = function (n) { return YS.fmtUSD(Math.round(n || 0)); }; var money2 = function (n) { return YS.fmtUSD2(n || 0); };
     var pc = function (x) { return (Math.round((x || 0) * 1000) / 10) + "%"; };
     var inp = d.inp || {}, isRefi = inp.loanType === "Refinance";
     var sc = YSP.normStrategy(inp.strategy), isBridge = sc === "BR", hasRehab = num("construction") > 0 || sc === "NC" || sc === "FF";
@@ -1560,10 +1560,59 @@
   }
 
   /* ===================== wiring ===================== */
+  // #143 — the DOLLAR inputs show a nice comma-grouped accounting figure. This is
+  // DISPLAY only and frozen-safe: YS.num() strips commas before parsing, so the
+  // number the engine reads is byte-identical. Whole-dollar fields (no cents are
+  // entered), so digit-grouping is all that's needed. Count/percent/FICO/term
+  // inputs are deliberately excluded — they aren't dollar amounts.
+  var MONEY_IDS = ["price", "origPrice", "assignFee", "construction", "asIs", "arv",
+    "payoff", "irAmount", "tsFeeUW", "tsFeeCredit", "tsFeeTitle", "tsFeeAppr"];
+  function isMoneyInput(inp) { return inp && inp.id && MONEY_IDS.indexOf(inp.id) !== -1; }
+  function groupDigits(s) {
+    var d = String(s == null ? "" : s).replace(/[^\d]/g, "");
+    return d ? Number(d).toLocaleString("en-US") : "";
+  }
+  // Cursor-preserving format for the field currently being typed in.
+  function formatMoneyField(inp) {
+    var caret = inp.selectionStart == null ? inp.value.length : inp.selectionStart;
+    var digitsBefore = inp.value.slice(0, caret).replace(/[^\d]/g, "").length;
+    var out = groupDigits(inp.value);
+    if (out === inp.value) return;
+    inp.value = out;
+    var pos = 0, seen = 0;
+    while (pos < out.length && seen < digitsBefore) { if (/\d/.test(out.charAt(pos))) seen++; pos++; }
+    try { inp.setSelectionRange(pos, pos); } catch (e) {}
+  }
+  // Group every money field EXCEPT the one being typed in (never fight the caret).
+  function formatMoneyInputs() {
+    var active = document.activeElement;
+    MONEY_IDS.forEach(function (id) {
+      var e = el(id);
+      if (!e || e === active) return;
+      var out = groupDigits(e.value);
+      if (out !== e.value) e.value = out;
+    });
+  }
+  // Convert the dollar inputs to comma-capable text fields (number inputs reject
+  // commas) and group any value already present (e.g. a portal prefill).
+  function initMoneyInputs() {
+    MONEY_IDS.forEach(function (id) {
+      var e = el(id);
+      if (!e) return;
+      if (e.type === "number") { e.type = "text"; e.setAttribute("inputmode", "numeric"); }
+      e.value = groupDigits(e.value);
+    });
+  }
   function wire() {
     try { YS.applyState(YS.readState()); } catch (e) {}
+    initMoneyInputs();
     $$("#tsForm input, #tsForm select, #tsForm textarea").forEach(function (inp) {
-      var h = function () { recompute(); var f = inp.closest && inp.closest(".field"); if (f) f.classList.remove("invalid"); };
+      var h = function () {
+        if (isMoneyInput(inp)) formatMoneyField(inp);   // the typed field (caret-safe)
+        recompute();
+        formatMoneyInputs();                            // group the rest (incl. after a prefill)
+        var f = inp.closest && inp.closest(".field"); if (f) f.classList.remove("invalid");
+      };
       inp.addEventListener("input", h); inp.addEventListener("change", h);
     });
     ["origPrice", "price"].forEach(function (id) { var e = el(id); if (e) e.addEventListener("blur", validateAssign); });

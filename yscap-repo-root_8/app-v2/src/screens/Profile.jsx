@@ -8,6 +8,7 @@ import { BorrowerContacts } from '../components/FileContacts.jsx';
 import TwoFactorPanel from '../components/TwoFactorPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
+import { CITIZENSHIP, MARITAL } from '../lib/enums.js';
 import { Link } from 'react-router-dom';
 
 /* Canonical borrower profile — the single home for personal information so the
@@ -15,8 +16,6 @@ import { Link } from 'react-router-dom';
    Physical (residence) address is separate from the mailing address; a photo ID
    uploaded here is collected ONCE and reused across every file. */
 
-const CITIZENSHIP = ['US Citizen', 'Permanent Resident', 'Foreign National'];
-const MARITAL = ['Single', 'Married', 'Separated', 'Divorced', 'Widowed'];
 
 export default function Profile() {
   const [p, setP] = useState(null);

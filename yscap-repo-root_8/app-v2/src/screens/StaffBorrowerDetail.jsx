@@ -4,8 +4,9 @@ import { api, saveBlob } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
-import { PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
+import { PhoneInput, ZipInput, EmailInput } from '../components/FormattedInputs.jsx';
 import { passwordProblem } from '../lib/password.js';
+import { CITIZENSHIP, MARITAL, CONTACT_TYPE, withCurrent } from '../lib/enums.js';
 
 // Borrower CRM hub — the single place staff see everything about a person:
 // personal info + editable CRM fields, their loan files ("mortgages with us"),
@@ -195,11 +196,20 @@ function Overview({ b, onChanged }) {
         <h3 style={{ marginTop: 0 }}>Edit contact & CRM details</h3>
         {err && <div role="alert" className="notice err">{err}</div>}
         <div className="ts-inputs">
-          <label><span>Email</span><input className="input" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></label>
+          <label><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Cell phone</span><PhoneInput value={f.cellPhone} onChange={v => setF({ ...f, cellPhone: v })} /></label>
-          <label><span>Contact type</span><input className="input" placeholder="INVESTOR / PRIMARY / …" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })} /></label>
-          <label><span>Marital status</span><input className="input" value={f.maritalStatus} onChange={e => setF({ ...f, maritalStatus: e.target.value })} /></label>
-          <label><span>Citizenship</span><input className="input" value={f.citizenship} onChange={e => setF({ ...f, citizenship: e.target.value })} /></label>
+          <label><span>Contact type</span>
+            <select className="input" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })}>
+              <option value="">Select…</option>{withCurrent(CONTACT_TYPE, f.contactType).map(c => <option key={c} value={c}>{c}</option>)}
+            </select></label>
+          <label><span>Marital status</span>
+            <select className="input" value={f.maritalStatus} onChange={e => setF({ ...f, maritalStatus: e.target.value })}>
+              <option value="">Select…</option>{withCurrent(MARITAL, f.maritalStatus).map(c => <option key={c} value={c}>{c}</option>)}
+            </select></label>
+          <label><span>Citizenship</span>
+            <select className="input" value={f.citizenship} onChange={e => setF({ ...f, citizenship: e.target.value })}>
+              <option value="">Select…</option>{withCurrent(CITIZENSHIP, f.citizenship).map(c => <option key={c} value={c}>{c}</option>)}
+            </select></label>
           <label><span>Date of birth</span><input className="input" type="date" value={f.dob}
             onChange={e => setF({ ...f, dob: e.target.value })}
             title="Saving applies to the borrower profile and every linked ClickUp task (audited)" /></label>

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { api } from '../lib/api.js';
 import { MoneyInput } from './FormattedInputs.jsx';
 import { US_STATES } from './LlcManager.jsx';
+import { PROGRAMS, PROPERTY_TYPES, withCurrent } from '../lib/enums.js';
 
 /* Staff edit of the loan-file data after creation — EVERY field the
    application collects is correctable here (typo'd price, wrong property
@@ -93,14 +94,20 @@ export default function EditFileDetails({ app, onSaved }) {
               </select></label>
             <label><span>ZIP</span><input className="input" value={f.addrZip} onChange={(e) => set('addrZip', e.target.value)} /></label>
             <label><span>Apt / Unit</span><input className="input" value={f.addrUnit} onChange={(e) => set('addrUnit', e.target.value)} /></label>
-            <label><span>Property type</span><input className="input" value={f.propertyType} onChange={(e) => set('propertyType', e.target.value)} /></label>
+            <label><span>Property type</span>
+              <select className="input" value={f.propertyType} onChange={(e) => set('propertyType', e.target.value)}>
+                <option value="">—</option>{withCurrent(PROPERTY_TYPES, f.propertyType).map(x => <option key={x} value={x}>{x}</option>)}
+              </select></label>
             <label><span>Units</span><input className="input" type="number" min="0" value={f.units} onChange={(e) => set('units', e.target.value)} /></label>
             {/* Occupancy is intentionally NOT shown (owner-directed) — kept in the
                 data model and round-tripped unchanged, never surfaced in the UI. */}
           </div>
           <p className="muted small" style={{ margin: '14px 0 8px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Loan &amp; economics</p>
           <div className="edit-grid">
-            <label><span>Program</span><input className="input" value={f.program} onChange={(e) => set('program', e.target.value)} /></label>
+            <label><span>Program</span>
+              <select className="input" value={f.program} onChange={(e) => set('program', e.target.value)}>
+                <option value="">—</option>{withCurrent(PROGRAMS, f.program).map(x => <option key={x} value={x}>{x}</option>)}
+              </select></label>
             <label><span>Loan type</span>
               <select className="input" value={f.loanType} onChange={(e) => set('loanType', e.target.value)}>
                 <option value="">—</option><option>Purchase</option><option>Refinance</option>

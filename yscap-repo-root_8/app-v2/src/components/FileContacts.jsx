@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { PhoneInput } from './FormattedInputs.jsx';
+import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 
@@ -32,6 +32,7 @@ const BLANK = { contactType: 'realtor', customType: '', companyName: '', contact
 export default function FileContacts({ appId, isStaff, heading = 'File contacts' }) {
   const [list, setList] = useState(null);
   const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState(null);   // link_id being edited in place
   const [f, setF] = useState(BLANK);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -51,6 +52,25 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
     } catch (e) { setErr((e && e.message) || 'Could not add the contact.'); }
     finally { setBusy(false); gate.leave(); }
   }
+  // Open the inline editor prefilled from a contact row.
+  function startEdit(c) {
+    setErr(''); setAdding(false); setEditId(c.link_id);
+    setF({
+      contactType: c.contact_type || 'other', customType: c.custom_type || '',
+      companyName: c.company_name || '', contactName: c.contact_name || '',
+      email: c.email || '', phone: c.phone || '', address: c.address || '', notes: c.notes || '',
+    });
+  }
+  async function saveEdit() {
+    setErr('');
+    if (!f.companyName && !f.contactName && !f.email && !f.phone) { setErr('Enter at least one detail (company, name, email or phone).'); return; }
+    setBusy(true);
+    try {
+      await (isStaff ? api.staffEditFileContact(editId, f) : api.editFileContact(editId, f));
+      setF(BLANK); setEditId(null); await load();
+    } catch (e) { setErr((e && e.message) || 'Could not save the contact.'); }
+    finally { setBusy(false); }
+  }
   async function remove(linkId) {
     if (!window.confirm('Remove this contact from the file? (It stays in the company vendor directory.)')) return;
     try { await (isStaff ? api.staffDelFileContact(linkId) : api.delFileContact(linkId)); await load(); } catch (_) { /* ignore */ }
@@ -61,13 +81,13 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
       <div className="row" style={{ alignItems: 'center', marginBottom: 6 }}>
         <h3 style={{ margin: 0 }}>{heading}</h3>
         <div className="spacer" />
-        {!adding && <button className="btn ghost small" onClick={() => { setF(BLANK); setErr(''); setAdding(true); }}>+ Add contact</button>}
+        {!adding && !editId && <button className="btn ghost small" onClick={() => { setF(BLANK); setErr(''); setEditId(null); setAdding(true); }}>+ Add contact</button>}
       </div>
       <p className="muted small" style={{ marginTop: 0 }}>
         Realtors, attorneys, title, insurance, flood, contractors and anyone else on this deal. Everyone on the file sees them, and they're saved to the company vendor directory.
       </p>
 
-      {adding && (
+      {(adding || editId) && (
         <div className="panel" style={{ background: 'var(--surface-soft, var(--ink-2))', marginBottom: 12 }}>
           <div className="grid cols-2" style={{ gap: 8 }}>
             <div>
@@ -84,14 +104,14 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
             )}
             <div><label className="muted small">Company</label><input className="input" value={f.companyName} onChange={e => setF({ ...f, companyName: e.target.value })} /></div>
             <div><label className="muted small">Contact name</label><input className="input" value={f.contactName} onChange={e => setF({ ...f, contactName: e.target.value })} /></div>
-            <div><label className="muted small">Email</label><input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
+            <div><label className="muted small">Email</label><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></div>
             <div><label className="muted small">Phone</label><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></div>
             <div style={{ gridColumn: '1 / -1' }}><label className="muted small">Notes</label><input className="input" value={f.notes} onChange={e => setF({ ...f, notes: e.target.value })} /></div>
           </div>
           {err && <div role="alert" className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>{err}</div>}
           <div className="row" style={{ gap: 8, marginTop: 10 }}>
-            <button className="btn primary small" disabled={busy} onClick={add}>{busy ? 'Saving…' : 'Save contact'}</button>
-            <button className="btn ghost small" onClick={() => { setAdding(false); setErr(''); }}>Cancel</button>
+            <button className="btn primary small" disabled={busy} onClick={editId ? saveEdit : add}>{busy ? 'Saving…' : editId ? 'Save changes' : 'Save contact'}</button>
+            <button className="btn ghost small" onClick={() => { setAdding(false); setEditId(null); setErr(''); }}>Cancel</button>
           </div>
         </div>
       )}
@@ -110,6 +130,7 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
                     {c.notes ? ` — ${c.notes}` : ''}
                   </div>
                 </div>
+                <button className="btn ghost small" title="Edit this contact's details" onClick={() => startEdit(c)}>Edit</button>
                 <button className="btn ghost small" title="Remove from this file" onClick={() => remove(c.link_id)}>Remove</button>
               </div>
             ))}

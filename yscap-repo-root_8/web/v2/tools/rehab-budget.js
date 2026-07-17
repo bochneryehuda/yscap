@@ -716,7 +716,7 @@ const RB = (function(){
     if(inp.dataset.acWired) return; inp.dataset.acWired="1";
     const wrap=inp.parentNode; if(wrap) wrap.style.position="relative";
     const box=document.createElement("div"); box.className="rb-ac";
-    box.style.cssText="position:absolute;left:0;right:0;top:100%;z-index:60;background:#0e141a;border:1px solid rgba(127,169,176,.4);border-radius:8px;margin-top:2px;max-height:220px;overflow:auto;display:none";
+    box.style.cssText="position:absolute;left:0;right:0;top:100%;z-index:60;background:var(--ink-1);color:var(--ivory);border:1px solid var(--line);border-radius:8px;margin-top:2px;max-height:220px;overflow:auto;display:none";
     if(wrap) wrap.appendChild(box);
     let t=null, seq=0;
     const hide=()=>{ box.style.display="none"; box.innerHTML=""; };
@@ -732,7 +732,7 @@ const RB = (function(){
           box.innerHTML="";
           list.slice(0,6).forEach(s=>{ const label=s.label||s.address||""; if(!label) return;
             const row=document.createElement("div"); row.textContent=label;
-            row.style.cssText="padding:.5rem .6rem;cursor:pointer;font-size:.92rem;border-bottom:1px solid rgba(127,169,176,.12)";
+            row.style.cssText="padding:.5rem .6rem;cursor:pointer;font-size:.92rem;color:var(--ivory);border-bottom:1px solid var(--line-2, rgba(127,169,176,.12))";
             row.onmouseenter=()=>{row.style.background="rgba(127,169,176,.15)";}; row.onmouseleave=()=>{row.style.background="";};
             row.onmousedown=(e)=>{ e.preventDefault(); pick(label); };   // fire before blur
             box.appendChild(row);

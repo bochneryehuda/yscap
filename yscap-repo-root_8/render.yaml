@@ -62,6 +62,18 @@ services:
       # domain (yscapgroup.com) must be a verified domain in your Resend account.
       - key: RESEND_API_KEY
         sync: false
+      # #68/#75 reply-by-email — full go-live steps in docs/EMAIL-REPLY-INBOX-SETUP.md.
+      # CHAT_REPLY_DOMAIN: the verified Resend INBOUND domain (e.g. reply.yscapgroup.com).
+      # RESEND_WEBHOOK_SECRET: the whsec_… signing secret of the Resend webhook that
+      #   points at /api/inbound/file-email (the endpoint refuses everything without it).
+      # RESEND_INBOUND_API_KEY: a FULL-ACCESS Resend key (reads received email bodies;
+      #   optional if RESEND_API_KEY already has full access).
+      - key: CHAT_REPLY_DOMAIN
+        sync: false
+      - key: RESEND_WEBHOOK_SECRET
+        sync: false
+      - key: RESEND_INBOUND_API_KEY
+        sync: false
       # Fill these in the dashboard when you wire the rest:
       # NOTIFY_ADMINS, MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, CLICKUP_API_TOKEN
       # SharePoint one-way sync (Pipeline Drive mirror — docs/SHAREPOINT-POLICY.md):

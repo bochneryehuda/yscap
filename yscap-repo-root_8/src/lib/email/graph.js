@@ -35,7 +35,7 @@ async function getToken() {
 
 module.exports = {
   name: 'graph',
-  async sendMail({ to, subject, text, html, attachments }) {
+  async sendMail({ to, subject, text, html, attachments, replyTo }) {
     const token = await getToken();
     // NOTIFY_FROM may be a display-name form ("YS Capital <noreply@ys.com>"); the
     // Graph /users/{id} path needs a BARE address/UPN or every send fails with 400.
@@ -48,6 +48,11 @@ module.exports = {
       body: { contentType: html ? 'HTML' : 'Text', content: html || text || '' },
       toRecipients: (Array.isArray(to) ? to : [to]).map(a => ({ emailAddress: { address: a } })),
     };
+    // Reply-To (file+<appId> / chat+<key>, #68/#75) — the resend provider maps
+    // this to reply_to; without it Graph deployments silently lose every
+    // reply-by-email thread.
+    const replies = (Array.isArray(replyTo) ? replyTo : [replyTo]).filter(Boolean);
+    if (replies.length) message.replyTo = replies.map(a => ({ emailAddress: { address: String(a) } }));
     // Graph fileAttachment: { name, contentBytes (base64) }. (Under ~3 MB total;
     // larger sends need an upload session — out of scope here, so the email still
     // lists the file and the doc is available in the portal.)

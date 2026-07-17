@@ -5,8 +5,10 @@ import { api } from '../lib/api.js';
 // Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
 // ON-HOLD loans never nag in the cross-file "to complete" rollup or the per-loan
 // outstanding badge (#109) — their items stay visible inside the file itself.
-// Mirrors the staff-side inactive set (funded/declined/withdrawn/on_hold).
-const QUIET_STATUSES = ['funded', 'closed', 'on_hold', 'declined', 'withdrawn', 'cancelled'];
+// Mirrors the staff-side inactive set (funded/declined/withdrawn/on_hold), plus
+// file_intake (#151): a pre-processing intake file never prompts tasks (the
+// server mutes its reminders the same way); its items wait inside the file.
+const QUIET_STATUSES = ['funded', 'closed', 'on_hold', 'declined', 'withdrawn', 'cancelled', 'file_intake'];
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city, a.state].filter(Boolean).join(', ') || '—');
 const dstr = (s) => s ? new Date(s).toLocaleDateString() : '';

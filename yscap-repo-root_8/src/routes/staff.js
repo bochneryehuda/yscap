@@ -12,7 +12,9 @@ const C = require('../lib/crypto');
 const notify = require('../lib/notify');
 const changeRequests = require('../lib/change-requests');
 const mail = require('../lib/email/catalog');
+const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
 const { serveDocument } = require('../lib/serve-document');
+const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 const cfg = require('../config');
 const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
@@ -49,7 +51,35 @@ const seesAllBorrowers = (req) => seesAll(req) || (req.actor && req.actor.role =
 // on funded files; that carve-out is applied where it matters.) Kept as one SQL
 // IN-list so every active-work query shares a single definition — extends the #24
 // funded-muting to on_hold.
-const INACTIVE_FILE_STATUSES = "('funded','declined','withdrawn','on_hold')";
+// file_intake (#151) is the pre-processing intake stage — a prospect in the
+// system that is NOT an active file, so it sits with the other non-active
+// statuses here and falls out of every KPI/task/exception view built on this.
+const INACTIVE_FILE_STATUSES = "('funded','declined','withdrawn','on_hold','file_intake')";
+
+// #145 — ONE definition per clickable dashboard figure, shared by the COUNT that
+// renders the KPI/exception tile AND the drill-down FILTER the click applies, so a
+// figure can NEVER show a number you can't reproduce by clicking into it. Before
+// this, /dashboard, /exceptions and the /applications flag filter each spelled out
+// their own predicates and drifted (the "stalled" count was >7 days while its
+// drill-down filtered >5; "New this week" excluded clickup_backfill rows the
+// drill-down still showed). All three now reference these fragments (alias `a`).
+const ACTIVE_FILE_SQL = `a.status NOT IN ${INACTIVE_FILE_STATUSES}`;
+const DASH_FILTER_SQL = {
+  // file-level "exception" buckets (mirrors /exceptions, drill into the pipeline)
+  unassigned: `a.loan_officer_id IS NULL AND ${ACTIVE_FILE_SQL}`,
+  needs_correction: `${ACTIVE_FILE_SQL} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue')`,
+  awaiting_borrower: `${ACTIVE_FILE_SQL} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested'))`,
+  awaiting_review: `${ACTIVE_FILE_SQL} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received')`,
+  unread_messages: `EXISTS(SELECT 1 FROM messages m WHERE m.application_id=a.id AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL)`,
+  open_conditions: `${ACTIVE_FILE_SQL} AND EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open')`,
+  post_closing_exceptions: `EXISTS(SELECT 1 FROM post_closing_items p WHERE p.application_id=a.id AND p.status='exception')`,
+  // KPI-grid buckets
+  stalled: `${ACTIVE_FILE_SQL} AND a.updated_at < now() - interval '7 days'`,
+  // a genuinely NEW file is a real intake this week — NOT a clickup backfill row
+  // (those default created_at=now() and would make the whole back-book look new).
+  newintake: `a.created_at > now() - interval '7 days' AND COALESCE(a.source,'') <> 'clickup_backfill'`,
+};
+
 // The standard post-closing trailing-doc set, seeded when a file funds.
 const POST_CLOSING_SET = [
   ['note', 'Final executed note'],
@@ -116,6 +146,98 @@ function scopeClause(req, alias = 'a') {
 // Guard every /applications/:id* route: a non-privileged staffer may only touch
 // a file they are the loan officer or processor on. (Borrower :id routes live
 // under /borrowers/:id and are unaffected by this path-scoped middleware.)
+// #152 — export the CURRENT pipeline view to Excel. Registered BEFORE the
+// /applications/:id scope middleware (── 'export' must never be read as a file
+// id). Accepts the exact same filter params as GET /applications via the ONE
+// shared builder (buildPipelineFilter), so the spreadsheet always matches the
+// view on screen — that's the whole point (troubleshoot which files are/aren't
+// in a view, send a view onward). Maximum information per file, NEVER SSN/DOB/
+// card data, and no pricing internals (scalar registration columns only).
+router.get('/applications/export', async (req, res) => {
+  try {
+    const f = buildPipelineFilter(req, req.query);
+    if (f.error) return res.status(400).json({ error: f.error });
+    const sql = `
+      SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.status, a.internal_status,
+             a.program, a.loan_type, a.property_type, a.units, a.occupancy, a.channel, a.source,
+             COALESCE(a.property_address->>'oneLine',
+                      NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                       a.property_address->>'state', a.property_address->>'zip'), '')) AS address,
+             a.property_address->>'city'  AS city,
+             a.property_address->>'state' AS state,
+             a.property_address->>'zip'   AS zip,
+             b.first_name, b.last_name, b.email AS borrower_email, b.cell_phone AS borrower_phone,
+             b.fico AS borrower_fico, b.tier AS borrower_tier,
+             (cb.first_name || ' ' || cb.last_name) AS co_borrower_name, cb.email AS co_borrower_email,
+             COALESCE(lo.full_name, a.loan_officer_name) AS loan_officer, pr.full_name AS processor,
+             uw.full_name AS underwriter,
+             a.purchase_price, a.as_is_value, a.arv, a.rehab_budget, a.loan_amount, a.ltv, a.rate_pct,
+             a.term, a.requested_ir_months, a.requested_ir_amount,
+             a.is_assignment, a.underlying_contract_price, a.assignment_fee, a.lender,
+             reg.program AS registered_program, reg.product_label, reg.note_rate AS registered_rate,
+             reg.total_loan AS registered_loan, reg.status AS registration_status, reg.created_at AS registered_at,
+             a.created_at, a.clickup_created_at, a.submitted_at, a.status_changed_at,
+             a.expected_closing, a.actual_closing, a.updated_at,
+             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id) AS total_items,
+             (SELECT count(*)::int FROM checklist_items ci WHERE ci.application_id=a.id
+                AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
+             (SELECT count(*)::int FROM conditions c WHERE c.application_id=a.id AND c.status='open') AS open_conditions,
+             a.clickup_pipeline_task_id, a.sync_state, a.clickup_last_synced_at
+        FROM applications a
+        JOIN borrowers b ON b.id = a.borrower_id
+        LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+        LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id
+        LEFT JOIN staff_users pr ON pr.id = a.processor_id
+        LEFT JOIN staff_users uw ON uw.id = a.underwriter_id
+        LEFT JOIN LATERAL (
+          SELECT r.program, r.product_label, r.note_rate, r.total_loan, r.status, r.created_at
+            FROM product_registrations r WHERE r.application_id = a.id AND r.is_current LIMIT 1
+        ) reg ON true
+       WHERE ${f.where.join(' AND ')} ORDER BY ${f.orderBy}
+       LIMIT 20000`;
+    const r = await db.query(sql, f.params);
+
+    const day = (v) => (v == null ? '' : String(v).slice(0, 10));
+    const ts = (v) => { if (v == null) return ''; try { return new Date(v).toISOString().replace('T', ' ').slice(0, 16); } catch (_) { return String(v); } };
+    const num = (v) => (v == null || v === '' ? '' : Number(v));
+    const yn = (v) => (v === true ? 'yes' : v === false ? 'no' : '');
+    const HEADERS = [
+      'YS loan #', 'Investor loan #', 'Status', 'ClickUp status', 'Program', 'Loan type', 'Property type', 'Units',
+      'Occupancy', 'Channel', 'Source', 'Address', 'City', 'State', 'Zip',
+      'Borrower first name', 'Borrower last name', 'Borrower email', 'Borrower phone', 'Borrower FICO', 'Tier',
+      'Co-borrower', 'Co-borrower email', 'Loan officer', 'Processor', 'Underwriter',
+      'Purchase price', 'As-is value', 'ARV', 'Rehab budget', 'Loan amount', 'LTV %', 'Rate %', 'Term',
+      'IR months', 'IR amount', 'Assignment?', 'Underlying contract', 'Assignment fee', 'Note buyer',
+      'Registered program', 'Registered product', 'Registered rate', 'Registered loan', 'Registration status', 'Registered at',
+      'Created', 'ClickUp created', 'Submitted', 'Status changed', 'Expected closing', 'Actual closing', 'Updated',
+      'Checklist items', 'Checklist done', 'Open conditions', 'ClickUp task ID', 'Sync state', 'Last synced', 'File ID',
+    ];
+    const rows = r.rows.map((x) => [
+      x.ys_loan_number || '', x.investor_loan_number || '', STATUS_LABEL[x.status] || x.status || '', x.internal_status || '',
+      x.program || '', x.loan_type || '', x.property_type || '', num(x.units), x.occupancy || '', x.channel || '', x.source || '',
+      x.address || '', x.city || '', x.state || '', x.zip || '',
+      x.first_name || '', x.last_name || '', x.borrower_email || '', x.borrower_phone || '', num(x.borrower_fico), x.borrower_tier || '',
+      x.co_borrower_name || '', x.co_borrower_email || '', x.loan_officer || '', x.processor || '', x.underwriter || '',
+      num(x.purchase_price), num(x.as_is_value), num(x.arv), num(x.rehab_budget), num(x.loan_amount), num(x.ltv), num(x.rate_pct), x.term || '',
+      num(x.requested_ir_months), num(x.requested_ir_amount), yn(x.is_assignment), num(x.underlying_contract_price), num(x.assignment_fee), x.lender || '',
+      x.registered_program || '', x.product_label || '', num(x.registered_rate), num(x.registered_loan), x.registration_status || '', ts(x.registered_at),
+      ts(x.created_at), ts(x.clickup_created_at), ts(x.submitted_at), ts(x.status_changed_at),
+      day(x.expected_closing), day(x.actual_closing), ts(x.updated_at),
+      num(x.total_items), num(x.done_items), num(x.open_conditions), x.clickup_pipeline_task_id || '', x.sync_state || '', ts(x.clickup_last_synced_at), x.id,
+    ]);
+    const { buildXlsx } = require('../lib/tpr-export');
+    const buf = buildXlsx([HEADERS, ...rows], 'Pipeline');
+    const pick = {};
+    for (const k of ['group', 'status', 'flag', 'q', 'officerId', 'processorId', 'program', 'loanType', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'mine', 'sort']) {
+      if (req.query[k] !== undefined && req.query[k] !== '') pick[k] = String(req.query[k]).slice(0, 80);
+    }
+    await audit(req, 'export_pipeline', 'application', null, { rows: r.rows.length, filters: pick });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="pilot-pipeline-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    res.send(buf);
+  } catch (e) { console.error('[export pipeline]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 router.use('/applications/:id', async (req, res, next) => {
   try {
     if (seesAll(req)) return next();
@@ -162,8 +284,9 @@ router.get('/dashboard', async (req, res) => {
     const CANCELLED_SQL = `status IN ('declined','withdrawn')`;
     // A genuinely NEW file is a real portal/staff intake this week — NOT a row the
     // ClickUp backfill just inserted (those default created_at=now() and would make
-    // the whole back-book look "new"). Exclude backfilled origin.
-    const NEW_SQL = `created_at > now() - interval '7 days' AND COALESCE(source,'') <> 'clickup_backfill'`;
+    // the whole back-book look "new"). Exclude backfilled origin. #145: the exact
+    // same predicate the "New this week" KPI drill-down applies (flag=newintake).
+    const NEW_SQL = DASH_FILTER_SQL.newintake;
     const [byStatus, totals, leads, aging, fundedByMonth] = await Promise.all([
       // Every figure must exclude archived (soft-deleted) files — otherwise an
       // archived/removed loan keeps inflating the counts and pipeline dollars.
@@ -182,9 +305,13 @@ router.get('/dashboard', async (req, res) => {
                        -- and on_hold. Lets the portal show the same active number ClickUp does.
                        count(*) FILTER (WHERE status IN ('processing','underwriting','approved','clear_to_close'))::int actively_processing,
                        count(*) FILTER (WHERE status='on_hold')::int on_hold,
+                       -- #151: pre-processing intake prospects — in the system, NOT
+                       -- active. Their own KPI, never inside pipeline_value/active.
+                       count(*) FILTER (WHERE status='file_intake')::int intake,
                        -- Ops/AI signal: active files gone stale (untouched > 7 days) — the
-                       -- files silently stalling in the pipeline that need a nudge.
-                       count(*) FILTER (WHERE ${ACTIVE_SQL} AND updated_at < now() - interval '7 days')::int stalled,
+                       -- files silently stalling in the pipeline that need a nudge. #145:
+                       -- the exact predicate the "Needs attention" drill-down uses (flag=stalled).
+                       count(*) FILTER (WHERE ${DASH_FILTER_SQL.stalled})::int stalled,
                        -- Funded bucketed by ACTUAL closing date (the ClickUp MTM basis).
                        count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('month', now()))::int funded_mtd,
                        count(*) FILTER (WHERE status='funded' AND actual_closing >= date_trunc('month', now()) - interval '1 month' AND actual_closing < date_trunc('month', now()))::int funded_last_month,
@@ -239,7 +366,7 @@ router.get('/dashboard', async (req, res) => {
     res.json({
       byStatus: byStatus.rows,
       total: t.total, pipelineValue: Number(t.pipeline_value), active: t.active,
-      cancelled: t.cancelled, activelyProcessing: t.actively_processing, onHold: t.on_hold, stalled: t.stalled,
+      cancelled: t.cancelled, activelyProcessing: t.actively_processing, onHold: t.on_hold, intake: t.intake, stalled: t.stalled,
       funded: t.funded, newThisWeek: t.new_week,
       // funded broken out by actual closing date (MTM), + running dollar totals
       fundedMtd: t.funded_mtd, fundedLastMonth: t.funded_last_month, fundedYtd: t.funded_ytd,
@@ -266,17 +393,18 @@ router.get('/dashboard', async (req, res) => {
 // scopeClause() still enforces per-file authorization.
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-router.get('/applications', async (req, res) => {
-  try {
-    const q = req.query;
-    const s = scopeClause(req);
-    // Scope params always occupy the leading placeholders ($1 when present);
-    // add() appends each filter value and hands back its own placeholder so the
-    // numbering stays correct regardless of which filters are active.
-    const params = [...s.params];
-    const add = (val) => { params.push(val); return `$${params.length}`; };
-    const where = ['a.deleted_at IS NULL'];
-    if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
+// #152 — ONE filter/sort builder shared by the pipeline LIST and the pipeline
+// EXPORT, so the exported spreadsheet can never drift from the view on screen.
+// Returns { error } (→ 400) or { where, params, add, orderBy }.
+function buildPipelineFilter(req, q) {
+  const s = scopeClause(req);
+  // Scope params always occupy the leading placeholders ($1 when present);
+  // add() appends each filter value and hands back its own placeholder so the
+  // numbering stays correct regardless of which filters are active.
+  const params = [...s.params];
+  const add = (val) => { params.push(val); return `$${params.length}`; };
+  const where = ['a.deleted_at IS NULL'];
+  if (s.where) where.push(s.where.replace(/\$SCOPE/g, '$1').replace(/^AND\s+/, ''));
 
     // status GROUP — same predicates the dashboard uses. An EXACT status filter
     // takes precedence over the group bucket: applying both (e.g. group=active
@@ -295,6 +423,10 @@ router.get('/applications', async (req, res) => {
       // Held files no longer live in the 'active' bucket (they're paused, not
       // being worked), so give them their own reachable bucket.
       where.push(`a.status = 'on_hold'`);
+    } else if (q.group === 'intake') {
+      // #151 — the pre-processing intake prospects (ClickUp 'starting' /
+      // 'Prospect / Pricing'): in the system, but not active files.
+      where.push(`a.status = 'file_intake'`);
     }
     // 'all'/absent group with no status → no status predicate.
 
@@ -310,11 +442,11 @@ router.get('/applications', async (req, res) => {
                    OR COALESCE(a.property_address->>'oneLine','') ILIKE ${p})`);
     }
     if (q.officerId) {
-      if (!UUID_RE.test(String(q.officerId))) return res.status(400).json({ error: 'invalid officerId' });
+      if (!UUID_RE.test(String(q.officerId))) return { error: 'invalid officerId' };
       where.push(`a.loan_officer_id = ${add(String(q.officerId))}`);
     }
     if (q.processorId) {
-      if (!UUID_RE.test(String(q.processorId))) return res.status(400).json({ error: 'invalid processorId' });
+      if (!UUID_RE.test(String(q.processorId))) return { error: 'invalid processorId' };
       where.push(`a.processor_id = ${add(String(q.processorId))}`);
     }
 
@@ -337,23 +469,29 @@ router.get('/applications', async (req, res) => {
     ]) {
       const v = q[key];
       if (v === undefined || v === '') continue;
-      if (!DATE_RE.test(String(v))) return res.status(400).json({ error: `invalid ${key}` });
+      if (!DATE_RE.test(String(v))) return { error: `invalid ${key}` };
       where.push(`${col} ${op} ${add(String(v))}`);
     }
 
-    // Ops flags — mirror the dashboard's stale (active + untouched > 5 days) and
-    // its dateless-funded (K1) bucket.
-    if (q.flag === 'stalled') {
-      where.push(`a.status NOT IN ${INACTIVE_FILE_STATUSES} AND a.updated_at < now() - interval '5 days'`);
+    // Ops flags — every flag mirrors EXACTLY the dashboard/exception COUNT of the
+    // same name via the single shared definition (DASH_FILTER_SQL), so clicking a
+    // KPI or exception tile drills into precisely the files it counted (#145).
+    // Covers stalled, newintake, unassigned, needs_correction, awaiting_borrower,
+    // awaiting_review, unread_messages, open_conditions, post_closing_exceptions.
+    // `nodate` is the K1 dateless-funded bucket used by the production block.
+    if (q.flag && Object.prototype.hasOwnProperty.call(DASH_FILTER_SQL, q.flag)) {
+      where.push(DASH_FILTER_SQL[q.flag]);
     } else if (q.flag === 'nodate') {
       where.push(`a.status = 'funded' AND a.actual_closing IS NULL`);
     }
 
-    let limit = parseInt(q.limit, 10);
-    if (!Number.isFinite(limit)) limit = 500;
-    limit = Math.min(1000, Math.max(1, limit));
-    let offset = parseInt(q.offset, 10);
-    if (!Number.isFinite(offset) || offset < 0) offset = 0;
+    // "My files only" — the same lens the UI's ?mine=1 checkbox applies as a
+    // client-side post-filter (LO OR processor of the file). Exposed as a
+    // server param so the EXPORT mirrors the checkbox exactly (#152).
+    if (q.mine === '1' && req.actor && req.actor.id) {
+      const p = add(req.actor.id);
+      where.push(`(a.loan_officer_id = ${p} OR a.processor_id = ${p})`);
+    }
 
     // Sort — strict whitelist (never interpolate user text into ORDER BY). NULLS
     // LAST keeps blank amounts/dates from floating to the top of a sort.
@@ -377,6 +515,21 @@ router.get('/applications', async (req, res) => {
     // those equal-key rows reshuffle between fetches, which reads as "the sort is
     // random / broken."
     const orderBy = (SORTS[String(q.sort || '')] || SORTS.created_desc) + ', a.id DESC';
+    return { where, params, add, orderBy };
+}
+
+router.get('/applications', async (req, res) => {
+  try {
+    const q = req.query;
+    const f = buildPipelineFilter(req, q);
+    if (f.error) return res.status(400).json({ error: f.error });
+    const { where, params, add, orderBy } = f;
+
+    let limit = parseInt(q.limit, 10);
+    if (!Number.isFinite(limit)) limit = 500;
+    limit = Math.min(1000, Math.max(1, limit));
+    let offset = parseInt(q.offset, 10);
+    if (!Number.isFinite(offset) || offset < 0) offset = 0;
 
     const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
@@ -538,17 +691,19 @@ router.get('/exceptions', async (req, res) => {
   const s = scopeClause(req);
   const w = s.where.replace(/\$SCOPE/g, '$1');
   try {
+    // #145 — each count uses the SAME predicate its drill-down filter applies
+    // (DASH_FILTER_SQL), so clicking a tile shows exactly the files it counted.
+    // Funded/terminal files stay quiet in every outside-the-file rollup
+    // (owner-directed 2026-07-14); their conditions remain inside the file.
     const r = await db.query(
       `SELECT
-         count(*) FILTER (WHERE a.loan_officer_id IS NULL AND a.status NOT IN ${INACTIVE_FILE_STATUSES})::int AS unassigned,
-         -- Funded/terminal files stay quiet in every outside-the-file rollup
-         -- (owner-directed 2026-07-14); their conditions remain inside the file.
-         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='issue'))::int AS needs_correction,
-         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.audience IN ('borrower','both') AND ci.status IN ('outstanding','requested')))::int AS awaiting_borrower,
-         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM checklist_items ci WHERE ci.application_id=a.id AND ci.status='received'))::int AS awaiting_review,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM messages m WHERE m.application_id=a.id AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL))::int AS unread_messages,
-         count(*) FILTER (WHERE a.status NOT IN ${INACTIVE_FILE_STATUSES} AND EXISTS(SELECT 1 FROM conditions c WHERE c.application_id=a.id AND c.status='open'))::int AS open_conditions,
-         count(*) FILTER (WHERE EXISTS(SELECT 1 FROM post_closing_items p WHERE p.application_id=a.id AND p.status='exception'))::int AS post_closing_exceptions
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.unassigned})::int AS unassigned,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.needs_correction})::int AS needs_correction,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.awaiting_borrower})::int AS awaiting_borrower,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.awaiting_review})::int AS awaiting_review,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.unread_messages})::int AS unread_messages,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.open_conditions})::int AS open_conditions,
+         count(*) FILTER (WHERE ${DASH_FILTER_SQL.post_closing_exceptions})::int AS post_closing_exceptions
        FROM applications a WHERE a.deleted_at IS NULL ${w}`, s.params);
     res.json(r.rows[0]);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -561,12 +716,17 @@ router.get('/my-tasks', async (req, res) => {
     `SELECT ci.id, ci.label, ci.status, ci.due_date, ci.role_scope, ci.item_kind,
             ci.application_id, a.ys_loan_number, a.property_address, a.status AS app_status,
             b.first_name, b.last_name,
+            -- #142: the completion state so the task list can offer the SAME inline
+            -- Done / Sign off / Waive actions the file's condition list does.
+            ci.reviewed_at, ci.signed_off_at, ci.waived_at, ci.is_required, ci.audience,
+            su2.full_name AS reviewed_by_name,
             (ci.assignee_staff_id=$1) AS assigned_to_me,
             (SELECT count(*)::int FROM messages m WHERE m.application_id=a.id
                AND m.channel='borrower' AND m.sender_kind='borrower' AND m.read_at IS NULL) AS unread
        FROM checklist_items ci
        JOIN applications a ON a.id=ci.application_id
        JOIN borrowers b ON b.id=a.borrower_id
+       LEFT JOIN staff_users su2 ON su2.id=ci.reviewed_by
       WHERE a.deleted_at IS NULL
         AND ci.status NOT IN ('satisfied')
         -- FUNDED/terminal/ON-HOLD files stay quiet OUTSIDE the file (owner-
@@ -797,14 +957,19 @@ async function inviteBorrowerToFile({ appId, borrowerId, email, firstName, req }
   const meta = await db.query(
     `SELECT COALESCE(property_address->>'oneLine', property_address->>'street', 'your loan') AS addr,
             ys_loan_number FROM applications WHERE id=$1`, [appId]);
-  const inviter = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+  // #150 — LO branding: the invite arrives FROM the inviting officer (display
+  // name) and carries their full contact block, so the client knows exactly
+  // who is inviting them — not just "the company."
+  const inviter = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [req.actor.id]);
+  const inv = inviter.rows[0] || {};
   await mail.send('borrowerInvite', email, {
     firstName,
     propertyLabel: meta.rows[0]?.addr || 'your loan',
     loanNumber: meta.rows[0]?.ys_loan_number || null,
-    inviter: inviter.rows[0]?.full_name || null,
+    inviter: inv.full_name || null,
+    officer: inv.full_name ? { name: inv.full_name, title: inv.title, email: inv.email, phone: inv.cell || inv.phone, nmls: inv.nmls } : null,
     acceptUrl, hasAccount: !!hasAuth.rows[0],
-  });
+  }, { replyTo: fileReplyTo(appId), from: require('../lib/email').fromWithName(inv.full_name) });   // #68 reply reaches the team; #150 From = the officer
   await audit(req, 'invite_borrower', 'application', appId, { email });
   // Best-effort in-app notice to the file's team.
   return { emailed: true, hasAccount: !!hasAuth.rows[0], inviteToken: token };
@@ -868,15 +1033,19 @@ router.post('/invite-to-portal', async (req, res) => {
                       VALUES ($1,'borrower',$2,$3, now() + interval '14 days')`, [C.sha256(token), email, req.actor.id]);
       acceptUrl = mail.link('/accept?token=' + token);
     }
-    const inviter = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
+    // #150 — the "Invite to PILOT" email comes FROM the inviting officer, with
+    // their contact block, and replies go straight to them.
+    const inviter = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [req.actor.id]);
+    const inv = inviter.rows[0] || {};
     try {
       await mail.send('borrowerInvite', email, {
         firstName: first,
         propertyLabel: 'the YS Capital borrower portal',
         loanNumber: null,
-        inviter: inviter.rows[0]?.full_name || null,
+        inviter: inv.full_name || null,
+        officer: inv.full_name ? { name: inv.full_name, title: inv.title, email: inv.email, phone: inv.cell || inv.phone, nmls: inv.nmls } : null,
         acceptUrl, hasAccount: !!hasAuth.rows[0],
-      });
+      }, { replyTo: inv.email || null, from: require('../lib/email').fromWithName(inv.full_name) });
     } catch (_) { /* invite email is best-effort; the profile + lead are already saved */ }
     // 3) open a CRM lead for the owning officer so the relationship is tracked from
     // first touch — unless one already exists for this email + officer (idempotent).
@@ -1287,13 +1456,35 @@ const ADMIN_ONLY_OVERRIDE_KEYS = [
   'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths',
   'expFlips', 'expHolds', 'expGround',
 ];
+// The manual-PRICING knobs (rate / leverage / force-price). A non-admin sending
+// one of these MEANINGFULLY engaged means the studio displayed terms the server
+// won't honor — that must be refused loudly, not registered differently
+// (Pinchus Wieder). Experience keys are NOT here on purpose: the studio always
+// carries the file's own experience, and a non-admin's experience change belongs
+// in the audited application form — silently sizing off the file's claim is the
+// correct long-standing behavior, so it must not trip the loud refusal (that
+// would 403 EVERY vanilla non-admin register).
+const MANUAL_PRICING_KEYS = [
+  'forcePrice', 'manualPricing',
+  'ovrAcqLTV', 'ovrARLTV', 'ovrLTC', 'ovrRate',
+  'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths',
+];
+// "Meaningfully engaged": a truthy flag, or a numeric override with a real value
+// — NOT a present-but-default key (manualPricing:false is sent on every staff
+// register, so mere presence must never count).
+const engaged = (v) => v === true || (v != null && v !== '' && v !== false && !(typeof v === 'number' && Number.isNaN(v)));
 function sanitizeOverrides(req, raw) {
   const overrides = (raw && typeof raw === 'object') ? { ...raw } : {};
   const role = req.actor && req.actor.role;
   if (role === 'admin' || role === 'super_admin') return { overrides, strippedAdminKeys: false };
   let stripped = false;
   for (const k of ADMIN_ONLY_OVERRIDE_KEYS) {
-    if (k in overrides) { delete overrides[k]; stripped = true; }
+    if (k in overrides) {
+      // Only a MEANINGFULLY-engaged MANUAL-PRICING knob makes the studio diverge
+      // from what the server will register — that's what we refuse loudly.
+      if (MANUAL_PRICING_KEYS.includes(k) && engaged(overrides[k])) stripped = true;
+      delete overrides[k];
+    }
   }
   return { overrides, strippedAdminKeys: stripped };
 }
@@ -1304,7 +1495,11 @@ router.post('/applications/:id/pricing/quote', async (req, res) => {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const f = await loadFileForPricing(req.params.id);
     if (!f) return res.status(404).json({ error: 'not found' });
-    const { overrides } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
+    // Same no-silent-divergence rule as register: a quote must never PREVIEW
+    // numbers the server would refuse to register for this role.
+    const { overrides, strippedAdminKeys } = sanitizeOverrides(req, (req.body && req.body.overrides) || {});
+    if (strippedAdminKeys)
+      return res.status(403).json({ error: 'Manual rate/leverage and experience overrides need an admin — clear the admin pricing fields to quote as your role.' });
     const out = pricing.quoteAll(f.app, f.exp, overrides);
     res.json({ ...out, experience: f.exp });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
@@ -1323,7 +1518,10 @@ router.get('/applications/:id/pricing', async (req, res) => {
     const current = hist.rows.find((x) => x.is_current) || null;
     let quote = null;
     if (pricing.enginesReady()) { try { quote = pricing.quoteAll(f.app, f.exp); quote.experience = f.exp; } catch (_) {} }
-    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady() });
+    // The studio echoes econVersion back on register; a mismatch means the
+    // file's economics moved underneath the open sheet (409, never a silent
+    // stale re-register).
+    res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(), econVersion: pricing.econVersionFor(f.app) });
   } catch (e) { res.status(500).json({ error: 'server error', detail: e.message }); }
 });
 
@@ -1331,16 +1529,42 @@ router.get('/applications/:id/pricing', async (req, res) => {
 // sync loan_amount / rate_pct onto the file, audit + notify the team.
 router.post('/applications/:id/pricing/register', async (req, res) => {
   const appId = req.params.id;
+  // Every refusal is AUDITED (register_product_refused) — "LO says register
+  // doesn't work" must be diagnosable from the logs alone, without reproducing
+  // (#148/#149: the 403/409/422 paths used to leave no trace).
+  const refuse = async (status, payload, reason, extra) => {
+    try { await audit(req, 'register_product_refused', 'application', appId, { reason, status, ...extra }); } catch (_) {}
+    return res.status(status).json(payload);
+  };
   try {
     if (!pricing.enginesReady()) return res.status(503).json({ error: 'pricing engines unavailable', detail: pricing.loadErr() });
     const locked = await require('../lib/file-lock').structuralLockReason(appId);   // #84
-    if (locked) return res.status(409).json({ error: locked });
+    if (locked) return refuse(409, { error: locked }, 'structural_lock');
     const b = req.body || {};
     const program = b.program === 'gold' ? 'gold' : 'standard';
     const f = await loadFileForPricing(appId);
     if (!f) return res.status(404).json({ error: 'not found' });
 
-    const { overrides } = sanitizeOverrides(req, b.overrides || {});
+    // Optimistic concurrency on the FILE-owned pricing basis: the studio sends
+    // back the econVersion it prefilled from; if the file's economics changed
+    // since (form edit, ClickUp inbound, another staffer), refuse rather than
+    // silently re-register — and write back — a stale scenario (#148 root:
+    // "re-register doesn't update the file" was a stale snapshot clobbering
+    // the file's newer values). Old bundles that don't send it are unaffected.
+    if (b.econVersion && b.econVersion !== pricing.econVersionFor(f.app)) {
+      return refuse(409, {
+        error: 'This file’s pricing inputs changed since the studio was opened. The latest values have been reloaded — review the scenario and register again.',
+        code: 'econ_version_conflict',
+      }, 'econ_version_conflict', { sent: String(b.econVersion).slice(0, 32) });
+    }
+
+    // NEVER register terms that silently differ from what the staffer saw
+    // (root-caused 2026-07-16, Pinchus Wieder: a non-admin's rate/experience
+    // overrides were stripped and the file re-registered with OLD economics
+    // behind a success toast). If sanitize dropped keys, refuse loudly instead.
+    const { overrides, strippedAdminKeys } = sanitizeOverrides(req, b.overrides || {});
+    if (strippedAdminKeys)
+      return refuse(403, { error: 'Manual rate/leverage and experience overrides need an admin — ask an admin to register these terms, or clear the admin pricing fields and re-register.' }, 'admin_override_stripped');
     const inputs = pricing.buildInputs(f.app, f.exp, overrides);
     // S3-06: this endpoint writes arv back onto the file and sizes the loan off
     // both the arv and the as-is value, so a raised arv/as-is OVERRIDE here is the
@@ -1356,17 +1580,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       if (oa != null && na != null && na > oa) raised.push('the ARV');
       if (oi != null && ni != null && ni > oi) raised.push('the as-is value');
       if (raised.length)
-        return res.status(403).json({ error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` });
+        return refuse(403, { error: `Only an underwriter or admin can raise ${raised.join(' and ')} on a priced file.` }, 'value_raise_blocked', { raised });
     }
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
     if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
     if (quote.status === 'INELIGIBLE' && !overrides.forcePrice) {
-      return res.status(422).json({ error: 'ineligible', reasons: quote.reasons, quote });
+      return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote }, 'ineligible', { program });
     }
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
-    if (!(total > 0)) return res.status(422).json({ error: 'no loan sized', quote });
+    if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote }, 'no_loan_sized', { program });
 
     // The superseded terms, captured before the new row lands — the audit trail
     // (and Activity feed) shows exactly what a reprice changed.
@@ -1457,6 +1681,37 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
           type: 'product_registered', title: 'Product registered on ' + (row.ys_loan_number || 'a file'),
           body, meta: (ctx && ctx.meta) || undefined, applicationId: appId,
           link: `/internal/app/${appId}`, ctaLabel: 'Open the loan file', exceptStaffId: req.actor.id });
+
+      // #150 — the CLIENT gets their loan-terms email too, branded to (and
+      // From) their assigned loan officer — recurring business stays with the
+      // officer's name, not a faceless company sender. Borrower-safe copy only
+      // (program label + the same terms the borrower portal already shows);
+      // type 'term_sheet' is in the borrower MAJOR-email allowlist (#88).
+      try {
+        let officer = null;
+        if (row.loan_officer_id) {
+          const o = await db.query(`SELECT full_name, title, email, phone, cell, nmls FROM staff_users WHERE id=$1`, [row.loan_officer_id]);
+          if (o.rows[0]) officer = { name: o.rows[0].full_name, title: o.rows[0].title, email: o.rows[0].email, phone: o.rows[0].cell || o.rows[0].phone, nmls: o.rows[0].nmls };
+        }
+        const officerLine = officer
+          ? `${officer.name}${officer.title ? ' · ' + officer.title : ''}${officer.nmls ? ' · NMLS #' + officer.nmls : ''}${officer.phone || officer.email ? ' · ' + [officer.phone, officer.email].filter(Boolean).join(' · ') : ''}`
+          : null;
+        await notify.notifyAppBorrowers(appId, {
+          type: 'term_sheet',
+          title: 'Your updated loan terms are ready',
+          body: `${pricing.PROGRAM_LABEL[program]} · ${dollars} @ ${pctRate} · estimated cash to close ${money2(quote.cashToClose)}. Open your portal to review the full term sheet${officer ? ` — or reach out to ${officer.name} with any questions` : ''}.`,
+          meta: [
+            { label: 'Program', value: pricing.PROGRAM_LABEL[program] },
+            { label: 'Loan amount', value: `${dollars} @ ${pctRate}` },
+            quote.cashToClose != null ? { label: 'Estimated cash to close', value: money2(quote.cashToClose) } : null,
+            officerLine ? { label: 'Your loan officer', value: officerLine } : null,
+          ].filter(Boolean),
+          applicationId: appId,
+          link: `/app/${appId}`, ctaLabel: 'Review your terms',
+          from: officer ? require('../lib/email').fromWithName(officer.name) : null,
+          replyTo: officer ? officer.email : null,
+        });
+      } catch (_) { /* borrower terms email is best-effort */ }
     } catch (_) { /* notification is best-effort */ }
 
     res.status(201).json({ ok: true, registrationId: regId, quote });
@@ -1577,17 +1832,29 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
     try { await db.query(`UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`, [req.params.itemId, note]); } catch (_) {}
     try { await conditionEngine.evaluateApplication(req.params.id, { actor: req.actor, reason: 'rehab_budget_saved' }); } catch (_) {}
   }
-  // A resubmission outdates the previous exports: the old PDF/Excel are
-  // superseded and the fresh ones become the current versions on the condition.
-  await db.query(
-    `UPDATE documents SET is_current=false,
-        review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-      WHERE checklist_item_id=$1 AND source_type='system' AND is_current=true`, [req.params.itemId]);
-  const out = [];
+  // Validate/decode the replacement exports FIRST (strict decode — a data:-URL
+  // prefix or non-base64 junk must never garble stored bytes), and only
+  // supersede the previous exports when at least one valid replacement exists:
+  // a submission whose attachments all fail must not strip the condition of
+  // its current documents.
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  const valid = [];
   for (const a of attachments) {
-    const buf = Buffer.from(a.dataBase64, 'base64');
+    let buf;
+    try { ({ buf } = decodeUploadBase64(a.dataBase64)); } catch (_) { continue; }
     if (!buf.length || buf.length > maxBytes) continue;
+    valid.push({ a, buf });
+  }
+  if (valid.length) {
+    // A resubmission outdates the previous exports: the old PDF/Excel are
+    // superseded and the fresh ones become the current versions on the condition.
+    await db.query(
+      `UPDATE documents SET is_current=false,
+          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
+        WHERE checklist_item_id=$1 AND source_type='system' AND is_current=true`, [req.params.itemId]);
+  }
+  const out = [];
+  for (const { a, buf } of valid) {
     const { ref, provider } = await storage.save(buf, { filename: a.filename });
     const r = await db.query(
       `INSERT INTO documents
@@ -1861,34 +2128,20 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'export failed' }); }
 });
 // Readiness preview (counts + missing list) without building the whole zip.
+// Draws from the SAME shared selection as the zip builder (owner-directed
+// 2026-07-16: the export packages EVERY current document on the file), so the
+// promised count can never disagree with the package.
 router.get('/applications/:id/export/tpr/preview', async (req, res) => {
   try {
-    const included = (await db.query(
-      `SELECT count(*)::int c FROM documents
-        WHERE (application_id=$1
-               OR (application_id IS NULL AND llc_id IS NOT NULL
-                   AND llc_id=(SELECT llc_id FROM applications WHERE id=$1)))
-          AND review_status='accepted' AND is_current=true AND source_type<>'chat_attachment'
-          AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.id = documents.checklist_item_id AND ci.tpr_exclude IS TRUE)`, [req.params.id])).rows[0].c;
-    // The DPR also packages the borrower's (+ co-borrower's) track-record
-    // verification documents — count them so the panel promise matches the ZIP.
-    const trackDocs = (await db.query(
-      `SELECT count(*)::int c FROM documents
-        WHERE is_current=true AND source_type<>'chat_attachment' AND review_status<>'rejected'
-          AND track_record_id IN (
-            SELECT id FROM track_records WHERE borrower_id IN (
-              SELECT borrower_id FROM applications WHERE id=$1
-              UNION SELECT co_borrower_id FROM applications WHERE id=$1 AND co_borrower_id IS NOT NULL))`, [req.params.id])).rows[0].c;
-    // A document condition only counts as "missing" for the export when it has
-    // NO accepted current document and isn't satisfied/signed off. (Accepting a
-    // document now leaves the condition 'received' until sign-off — #135 — so
-    // 'satisfied' alone would wrongly flag accepted-but-unsigned docs as missing.)
-    const missing = (await db.query(
-      `SELECT COALESCE(label,'(document)') AS label FROM checklist_items ci
-        WHERE application_id=$1 AND item_kind='document' AND status<>'satisfied'
-          AND signed_off_at IS NULL AND tpr_exclude IS NOT TRUE
-          AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id=ci.id AND d.is_current AND d.review_status='accepted')
-        ORDER BY sort_order`, [req.params.id])).rows.map(r => r.label);
+    const tpr = require('../lib/tpr-export');
+    const included = (await tpr.selectTprDocuments(req.params.id)).length;
+    const trIds = (await db.query(
+      `SELECT id FROM track_records WHERE borrower_id IN (
+         SELECT borrower_id FROM applications WHERE id=$1
+         UNION SELECT co_borrower_id FROM applications WHERE id=$1 AND co_borrower_id IS NOT NULL)`,
+      [req.params.id])).rows.map(r => r.id);
+    const trackDocs = (await tpr.selectTrackRecordDocs(trIds)).length;
+    const missing = await tpr.selectTprMissing(req.params.id);
     res.json({ includedCount: included, trackDocs, missing });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -1904,8 +2157,8 @@ router.get('/applications/:id/activity', async (req, res) => {
 // its EMAIL delivery status, so the team can see at a glance exactly what has been
 // sent, to whom, and whether the email actually went out (sent / in-app only /
 // error). Reads the notifications table we already fan out through; scoped to
-// anyone who can touch the file. (Inbound REPLIES are a separate integration —
-// see #68 — and are appended here once that lands.)
+// anyone who can touch the file. Inbound REPLIES (#68) are interleaved as
+// direction:'inbound' rows so the monitor shows both sides of the thread.
 router.get('/applications/:id/emails', async (req, res) => {
   if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -1921,7 +2174,33 @@ router.get('/applications/:id/emails', async (req, res) => {
         WHERE n.application_id = $1
         ORDER BY n.created_at DESC
         LIMIT 300`, [req.params.id]);
-    res.json(r.rows);
+    let inbound = [];
+    try {
+      const inb = await db.query(
+        `SELECT id, from_email, subject, status, forwarded_count, received_at, processed_at
+           FROM inbound_file_emails
+          WHERE application_id = $1 OR app_results ? $2
+          ORDER BY received_at DESC
+          LIMIT 100`, [req.params.id, String(req.params.id)]);
+      inbound = inb.rows.map((row) => ({
+        id: `in-${row.id}`,
+        direction: 'inbound',
+        type: 'inbound_reply',
+        title: row.subject ? `Reply: ${row.subject}` : 'Reply on this file',
+        body: null,
+        recipient_kind: 'inbound',
+        recipient_name: null,
+        recipient_email: row.from_email || null,   // shown as the SENDER on inbound rows
+        email_status: row.status,
+        emailed_at: row.processed_at,
+        created_at: row.received_at,
+        forwarded_count: row.forwarded_count,
+      }));
+    } catch (_) { /* inbound history is additive — never break the monitor over it */ }
+    const merged = r.rows.concat(inbound)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 300);
+    res.json(merged);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -1970,7 +2249,7 @@ router.post('/applications/:id/loan-conditions', async (req, res) => {
 // cleared. Mirrors the checklist sign-off gate + the sibling /waive gate.
 router.post('/loan-conditions/:cid/clear', async (req, res) => {
   if (!can(req.actor, 'sign_off_conditions'))
-    return res.status(403).json({ error: 'Only a processor or underwriter can clear (sign off) a condition — mark it reviewed instead.' });
+    return res.status(403).json({ error: 'Only a processor or underwriter can sign a condition off — click Done to record your completion; the back office signs off after you.' });
   try {
     const c = await db.query(`SELECT application_id FROM conditions WHERE id=$1`, [req.params.cid]);
     if (!c.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -2120,7 +2399,7 @@ router.post('/change-requests/:cid/reject', async (req, res) => {
 //                     verify more, until they agree).
 async function signOffGate(itemId, actor) {
   const it = await db.query(
-    `SELECT ci.application_id, ci.tool_key, ci.tool_payload, ci.item_kind,
+    `SELECT ci.application_id, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
@@ -2141,7 +2420,12 @@ async function signOffGate(itemId, actor) {
   // rules below, and the entity-fulfilled LLC condition is verified from the
   // linked LLC — those are exempt. Insurance/title/fraud have stricter slot
   // rules handled just below (and return before reaching here).
-  if (item.item_kind === 'document' && !item.tool_key
+  // An OPTIONAL document condition (is_required=false — e.g. the Investor
+  // Structure Printout) may be signed off with nothing uploaded: "optional"
+  // means the file can complete without the document, so demanding one before
+  // sign-off contradicted the flag (owner-reported 2026-07-16). Required
+  // document conditions keep the gate exactly as before.
+  if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
       && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud) {
     if (!actor || actor.role !== 'super_admin') {
       const has = await db.query(
@@ -2278,7 +2562,7 @@ router.patch('/checklist/:itemId', async (req, res) => {
   // officer marks it reviewed instead — a lighter stamp, never "satisfied".
   const canComplete = can(req.actor, 'sign_off_conditions');
   if ((b.signedOff === true || b.status === 'satisfied') && !canComplete) {
-    return res.status(403).json({ error: 'Only a processor or underwriter can complete a condition — mark it reviewed instead.' });
+    return res.status(403).json({ error: 'Only a processor or underwriter can sign a condition off — click Done to record your completion; the back office signs off after you.' });
   }
   // The lighter "reviewed" stamp is tied to its own capability (loan officers have
   // it; processors/underwriters/admins do too). Sign-off holders implicitly may
@@ -2701,12 +2985,19 @@ router.post('/borrowers/:id/set-password', async (req, res) => {
     if (!b) return res.status(404).json({ error: 'not found' });
     const hash = await C.hashPassword(pw);
     const existing = await db.query(`SELECT 1 FROM borrower_auth WHERE borrower_id=$1`, [req.params.id]);
+    // Staff-provisioned credentials are trusted the same way an invite-accept is
+    // (S1-08): mark the email verified so the borrower isn't bounced to the
+    // "confirm your email" gate on the sign-in the LO just set up for them.
     if (existing.rows[0]) {
       await db.query(
         `UPDATE borrower_auth SET password_hash=$2, token_version=token_version+1,
-             failed_attempts=0, locked_until=NULL WHERE borrower_id=$1`, [req.params.id, hash]);
+             failed_attempts=0, locked_until=NULL,
+             email_verified=true, email_verified_at=COALESCE(email_verified_at, now())
+         WHERE borrower_id=$1`, [req.params.id, hash]);
     } else {
-      await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,$2,0)`, [req.params.id, hash]);
+      await db.query(
+        `INSERT INTO borrower_auth (borrower_id,password_hash,token_version,email_verified,email_verified_at)
+         VALUES ($1,$2,0,true,now())`, [req.params.id, hash]);
     }
     await audit(req, 'borrower_set_password', 'borrower', b.id, {});
     try { if (b.email) await mail.send('passwordChanged', b.email, { firstName: b.first_name }); } catch (_) {}
@@ -3108,11 +3399,13 @@ const trDocType = (v) => (TR_DOC_TYPE_SET.has(String(v || '').trim()) ? String(v
 router.post('/track-records/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const { ref, provider } = await storage.save(buf, { filename: b.filename });
@@ -3264,6 +3557,8 @@ router.post('/llcs/:id/documents', async (req, res) => {
   try {
     const b = req.body || {};
     if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+    b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
     const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
     if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
@@ -3272,8 +3567,9 @@ router.post('/llcs/:id/documents', async (req, res) => {
       const ci = await db.query(`SELECT id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, req.params.id]);
       if (!ci.rows[0]) return res.status(404).json({ error: 'checklist item not found on this entity' });
     }
-    const buf = Buffer.from(b.dataBase64, 'base64');
-    if (!buf.length) return res.status(400).json({ error: 'empty file' });
+    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     const maxBytes = cfg.maxUploadMb * 1024 * 1024;
     if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
     const slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
@@ -3584,8 +3880,8 @@ router.post('/llcs/:id/raise-issue', async (req, res) => {
 });
 
 // ---------------- advance application status ----------------
-const APP_STATUS = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
-const STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+const APP_STATUS = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
+const STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 // #88: the DECISION milestones a borrower should be emailed about. Every status
 // change still posts in-app; only these also email (the in-between progress moves —
 // in_review / processing / underwriting — are in-app only, to keep the inbox quiet).
@@ -4146,8 +4442,14 @@ router.get('/applications/:id/mentionables', async (req, res) => {
       db.query(`SELECT id, full_name AS label FROM staff_users WHERE is_active=true ORDER BY full_name`),
       db.query(`SELECT id, label, status FROM checklist_items WHERE application_id=$1 ORDER BY sort_order LIMIT 300`, [req.params.id]),
       db.query(`SELECT id, filename AS label FROM documents WHERE application_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.params.id]),
+      // S3-11: the borrower's OTHER files are only mentionable if THIS officer can
+      // access them — a non-seesAll officer never sees a file they aren't on.
       db.query(`SELECT a.id, COALESCE(a.property_address->>'oneLine', a.property_address->>'street', 'Application') AS label
-                  FROM applications a WHERE a.borrower_id=(SELECT borrower_id FROM applications WHERE id=$1)`, [req.params.id]),
+                  FROM applications a
+                 WHERE a.borrower_id=(SELECT borrower_id FROM applications WHERE id=$1)
+                   AND a.deleted_at IS NULL
+                   ${seesAll(req) ? '' : `AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`}`,
+        seesAll(req) ? [req.params.id] : [req.params.id, req.actor.id]),
     ]);
     res.json({ users: users.rows, tasks: tasks.rows, documents: docs.rows, applications: apps.rows });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -4331,6 +4633,36 @@ router.get('/leads', async (req, res) => {
         ORDER BY (l.status='new') DESC, COALESCE(l.next_follow_up,'9999-12-31') ASC,
                  l.last_activity_at DESC NULLS LAST, l.created_at DESC LIMIT 500`, params);
     res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// #153 — bulk-archive junk leads (admin). The bot-spam wave imported hundreds
+// of fake "subscribe" leads and the CRM only had a one-by-one PATCH; this
+// archives every non-converted lead matching a tool/source/status filter in
+// one audited call. At least one filter is required — a bare call must never
+// archive the whole desk.
+router.post('/leads/bulk-archive', requireRole('admin'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const conds = [`status NOT IN ('converted','archived')`], vals = []; let i = 1;
+    if (b.tool) { conds.push(`tool=$${i++}`); vals.push(String(b.tool).slice(0, 60)); }
+    if (b.source) {
+      // The generic 'marketing_site' bucket covers EVERY public form (and the
+      // db/101 boot backfill stamps it onto all of them) — archiving by it
+      // would sweep contact + loan-application + subscribe leads in one call
+      // (audit-caught 2026-07-17). Refuse it; archive by the specific tool.
+      if (String(b.source) === 'marketing_site') return res.status(400).json({ error: "archive by the specific tool instead of the generic 'marketing_site' source" });
+      conds.push(`COALESCE(lead_source, source)=$${i++}`); vals.push(String(b.source).slice(0, 60));
+    }
+    if (b.status) {
+      if (!LEAD_STATUSES.includes(b.status)) return res.status(400).json({ error: 'bad status' });
+      conds.push(`status=$${i++}`); vals.push(b.status);
+    }
+    if (b.q) { conds.push(`(email ILIKE $${i} OR name ILIKE $${i} OR subject ILIKE $${i})`); vals.push('%' + String(b.q).slice(0, 80) + '%'); i++; }
+    if (vals.length === 0) return res.status(400).json({ error: 'a filter (tool, source, status or q) is required' });
+    const r = await db.query(`UPDATE leads SET status='archived', updated_at=now() WHERE ${conds.join(' AND ')} RETURNING id`, vals);
+    await audit(req, 'leads_bulk_archive', 'lead', null, { count: r.rowCount, tool: b.tool || null, source: b.source || null, status: b.status || null, q: b.q || null });
+    res.json({ ok: true, archived: r.rowCount });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
@@ -4584,10 +4916,12 @@ router.get('/leads/:id/documents', async (req, res) => {
 router.post('/leads/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   try {
     if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
-    const buf = Buffer.from(b.dataBase64, 'base64');
-    if (!buf.length) return res.status(400).json({ error: 'empty file' });
+    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     const maxBytes = cfg.maxUploadMb * 1024 * 1024;
     if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
     const { ref, provider } = await storage.save(buf, { filename: b.filename });
@@ -4720,6 +5054,7 @@ router.get('/applications/:id/documents', async (req, res) => {
 router.post('/applications/:id/documents', async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
+  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const appOk = await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!appOk.rows[0]) return res.status(404).json({ error: 'not found' });
   let borrowerId = appOk.rows[0].borrower_id;
@@ -4764,8 +5099,9 @@ router.post('/applications/:id/documents', async (req, res) => {
   // borrower: store the document staff-only and skip the borrower notification.
   const staffOnly = itemAudience === 'staff';
   const docVisibility = staffOnly ? 'staff_only' : 'borrower';
-  const buf = Buffer.from(b.dataBase64, 'base64');
-  if (!buf.length) return res.status(400).json({ error: 'empty file' });
+  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
+  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const maxBytes = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
   const docKind = b.docKind === 'term_sheet' ? 'term_sheet' : null;
@@ -5281,6 +5617,35 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   }
   res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: sc.rows[0].id });
 });
+// Edit a file contact in place (owner-directed 2026-07-16: staff had only a
+// Remove button — a mistyped title/insurance/realtor contact needs an Edit, not
+// a delete-and-re-add). Updates the shared vendor row's details + the link's
+// contact type. Mirrored on the borrower side.
+router.patch('/file-contacts/:linkId', async (req, res) => {
+  const f = await db.query(
+    `SELECT l.application_id, l.service_contact_id
+       FROM application_service_contacts l JOIN applications a ON a.id=l.application_id
+      WHERE l.id=$1 AND a.deleted_at IS NULL`, [req.params.linkId]);
+  if (!f.rows[0]) return res.status(404).json({ error: 'not found' });
+  if (!(await canTouchApp(req, f.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  if (!b.companyName && !b.contactName && !b.email && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
+  const type = FILE_CONTACT_TYPES.includes(b.contactType) ? b.contactType : null;
+  const custom = type === 'other' ? (String(b.customType || '').trim().slice(0, 60) || null) : null;
+  // COALESCE the type so a request that omits it keeps the stored value; keep the
+  // stored custom_type too when no valid type is given (only reset it when the
+  // type is actually being changed).
+  await db.query(
+    `UPDATE service_contacts SET contact_type=COALESCE($2, contact_type),
+        custom_type=CASE WHEN $2::text IS NULL THEN custom_type ELSE $3 END,
+        company_name=$4, contact_name=$5, email=$6, phone=$7, address=$8, notes=$9, updated_at=now()
+      WHERE id=$1`,
+    [f.rows[0].service_contact_id, type, custom, b.companyName || null, b.contactName || null,
+     b.email || null, b.phone || null, b.address || null, b.notes || null]);
+  if (type) await db.query(`UPDATE application_service_contacts SET contact_type=$2 WHERE id=$1`, [req.params.linkId, type]);
+  await audit(req, 'edit_file_contact', 'application', f.rows[0].application_id, { contactType: type || undefined });
+  res.json({ ok: true });
+});
 router.delete('/file-contacts/:linkId', async (req, res) => {
   const f = await db.query(`SELECT application_id FROM application_service_contacts WHERE id=$1`, [req.params.linkId]);
   if (!f.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -5449,6 +5814,107 @@ router.get('/audit-log/facets', async (req, res) => {
     });
     res.json({ actions, categories: AUDIT_CATEGORIES, staff: staff.rows });
   } catch (e) {
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ---------------- per-file observability timeline (#147) --------------------
+// ONE cross-system "what happened to this file" feed, time-ordered, merging every
+// event stream the platform already journals: the portal audit trail (audit_log),
+// the OUTBOUND ClickUp field-write journal (clickup_write_log, incl. guard-blocked
+// writes), the two-sided sync review queue (sync_review_queue), and the SharePoint
+// mirror lifecycle (documents' sharepoint_* stamps: backed-up / verified / skipped
+// / errored). Access is the file's own scope (the /applications/:id middleware
+// above already gated it), so a file's team sees its own history; nothing new is
+// exposed. Read-only aggregation — never emits a raw SSN/card (the ClickUp journal
+// is already masked; we surface field KEYS + outcomes, not full values). The
+// companion docs/OBSERVABILITY.md maps every source and how they compose.
+router.get('/applications/:id/observability', async (req, res) => {
+  const appId = req.params.id;
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 250, 1), 500);
+    const sources = String(req.query.sources || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const want = (name) => sources.length === 0 || sources.includes(name);
+
+    const [portal, cuOut, reviews, sp] = await Promise.all([
+      // Portal actions on this file: entity is the application, OR the detail
+      // names this application (many writes stamp detail.applicationId).
+      want('portal') ? db.query(
+        `SELECT al.created_at AS ts, al.actor_kind, al.action, al.detail,
+                COALESCE(su.full_name, bo.first_name || ' ' || bo.last_name, 'System') AS actor
+           FROM audit_log al
+           LEFT JOIN staff_users su ON su.id = al.actor_id AND al.actor_kind = 'staff'
+           LEFT JOIN borrowers bo   ON bo.id = al.actor_id AND al.actor_kind = 'borrower'
+          WHERE (al.entity_type = 'application' AND al.entity_id = $1)
+             OR al.detail->>'applicationId' = $1::text
+          ORDER BY al.created_at DESC LIMIT $2`, [appId, limit]) : { rows: [] },
+      // Outbound ClickUp field writes (incl. guard-blocked ones).
+      want('clickup') ? db.query(
+        `SELECT created_at AS ts, field_key, field_id, changed, blocked, source
+           FROM clickup_write_log WHERE application_id = $1
+          ORDER BY created_at DESC LIMIT $2`, [appId, limit]) : { rows: [] },
+      // Cross-system sync reviews (suspicious changes parked / resolved).
+      want('sync') ? db.query(
+        `SELECT created_at AS ts, resolved_at, direction, field_key, reason, status, winner, auto_resolved
+           FROM sync_review_queue WHERE application_id = $1
+          ORDER BY created_at DESC LIMIT $2`, [appId, limit]) : { rows: [] },
+      // SharePoint mirror lifecycle per document on the file.
+      want('sharepoint') ? db.query(
+        `SELECT filename, sharepoint_backed_up_at, sharepoint_verified_at, sharepoint_stamped_at,
+                sharepoint_backup_error, sharepoint_skipped_reason, sharepoint_integrity, sharepoint_web_url,
+                created_at
+           FROM documents
+          WHERE application_id = $1
+            AND (sharepoint_backed_up_at IS NOT NULL OR sharepoint_verified_at IS NOT NULL
+                 OR sharepoint_backup_error IS NOT NULL OR sharepoint_skipped_reason IS NOT NULL)
+          ORDER BY COALESCE(sharepoint_verified_at, sharepoint_backed_up_at, created_at) DESC LIMIT $2`, [appId, limit]) : { rows: [] },
+    ]);
+
+    const events = [];
+    for (const r of portal.rows) {
+      const meta = describeAuditAction(r.action);
+      events.push({ ts: r.ts, source: 'portal', category: meta.cat || 'other',
+        actor: r.actor, action: r.action, summary: meta.label || r.action,
+        detail: { entity: r.detail && (r.detail.entityType || undefined) } });
+    }
+    for (const r of cuOut.rows) {
+      const key = r.field_key || r.field_id || 'field';
+      events.push({ ts: r.ts, source: 'clickup', category: 'sync',
+        actor: 'ClickUp sync', action: r.blocked ? 'clickup_write_blocked' : 'clickup_write',
+        summary: r.blocked ? `ClickUp write BLOCKED by a guardrail (${key})`
+          : r.changed ? `Wrote ${key} to ClickUp` : `No-op ${key} (already equal)`,
+        detail: { field: key, changed: r.changed, blocked: r.blocked, via: r.source } });
+    }
+    for (const r of reviews.rows) {
+      events.push({ ts: r.resolved_at || r.ts, source: 'sync', category: 'sync',
+        actor: r.auto_resolved ? 'Auto-resolver' : 'Sync review',
+        action: `sync_review_${r.status}`,
+        summary: `Sync review (${r.direction || '—'} ${r.field_key || ''}) — ${r.status}${r.winner ? ` · kept ${r.winner}` : ''}`,
+        detail: { reason: r.reason, status: r.status, winner: r.winner || undefined, autoResolved: !!r.auto_resolved } });
+    }
+    for (const r of sp.rows) {
+      const ts = r.sharepoint_verified_at || r.sharepoint_backed_up_at || r.sharepoint_stamped_at || r.created_at;
+      const state = r.sharepoint_backup_error ? 'errored'
+        : r.sharepoint_skipped_reason ? `skipped (${r.sharepoint_skipped_reason})`
+          : r.sharepoint_verified_at ? `verified (${r.sharepoint_integrity || 'ok'})`
+            : 'mirrored';
+      events.push({ ts, source: 'sharepoint', category: 'sync', actor: 'SharePoint sync',
+        action: 'sharepoint_mirror', summary: `${r.filename || 'Document'} — ${state}`,
+        detail: { integrity: r.sharepoint_integrity || undefined, skipped: r.sharepoint_skipped_reason || undefined,
+          error: r.sharepoint_backup_error ? String(r.sharepoint_backup_error).slice(0, 160) : undefined,
+          url: r.sharepoint_web_url || undefined } });
+    }
+
+    // One time-ordered feed (newest first), capped after the merge.
+    events.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    const trimmed = events.slice(0, limit);
+    res.json({
+      applicationId: appId,
+      counts: { portal: portal.rows.length, clickup: cuOut.rows.length, sync: reviews.rows.length, sharepoint: sp.rows.length, total: events.length },
+      events: trimmed,
+    });
+  } catch (e) {
+    console.error('[observability] timeline failed', appId, e.message);
     res.status(500).json({ error: 'server error' });
   }
 });

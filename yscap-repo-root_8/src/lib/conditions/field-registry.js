@@ -143,6 +143,7 @@ const FIELDS = [
   { key: 'is_assignment', label: 'Assignment purchase?', group: 'Loan & program', type: 'boolean' },
   { key: 'status', label: 'File status', group: 'Loan & program', type: 'enum',
     options: [
+      { v: 'file_intake', label: 'File intake' },
       { v: 'new', label: 'Submitted' }, { v: 'in_review', label: 'In review' }, { v: 'processing', label: 'Processing' },
       { v: 'underwriting', label: 'Underwriting' }, { v: 'approved', label: 'Approved' },
       { v: 'clear_to_close', label: 'Clear to close' }, { v: 'funded', label: 'Funded' },

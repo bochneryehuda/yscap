@@ -13,7 +13,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
-import { MoneyInput, PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
+import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
@@ -21,8 +21,10 @@ import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+// Fees / cash-to-close / liquidity show EXACT cents (owner-directed 2026-07-16).
+const money2 = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city, a.state].filter(Boolean).join(', ') || '—');
-const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded' };
+const LABEL = { file_intake: 'Intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded' };
 
 const isDone = (s) => s === 'received' || s === 'satisfied' || s === 'done';
 const statusText = (it) => it.status === 'issue' ? 'Needs attention' : it.status === 'received' ? 'Submitted' : it.status === 'satisfied' ? 'Completed' : 'To do';
@@ -338,7 +340,7 @@ function ContactCondition({ it, appId, onSaved }) {
       </div>
       <div className="grid cols-2">
         <div className="field"><label>Email</label>
-          <input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></div>
+          <EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></div>
         <div className="field"><label>Phone</label>
           <PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></div>
       </div>
@@ -1050,9 +1052,9 @@ export default function Application() {
                     issue={assetsItem.status === 'issue'}
                     title={q ? 'Assets & liquidity — your registered requirement' : assetsItem.label}
                     subtitle={q
-                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} registration: verify ${money(liq)} in liquidity`
+                      ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : 'Standard'} registration: verify ${money2(liq)} in liquidity`
                         + (q.reserveRequirement ? ` (incl. ${money(q.reserveRequirement)} reserve${q.reserveBasis ? ` — ${q.reserveBasis}` : ''})` : '')
-                        + (q.cashToClose ? ` · estimated cash to close ${money(q.cashToClose)}` : '')
+                        + (q.cashToClose ? ` · estimated cash to close ${money2(q.cashToClose)}` : '')
                         + '. Upload the bank statements that show it.'
                       : [assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
                     status={statusText(assetsItem)}
@@ -1362,7 +1364,7 @@ function CoBorrowerRail({ app, onChanged }) {
             <input className="input" placeholder="First name" value={f.firstName} onChange={e => setF(s => ({ ...s, firstName: e.target.value }))} />
             <input className="input" placeholder="Last name" value={f.lastName} onChange={e => setF(s => ({ ...s, lastName: e.target.value }))} />
           </div>
-          <input className="input" style={{ marginTop: 8 }} type="email" placeholder="Email" value={f.email} onChange={e => setF(s => ({ ...s, email: e.target.value }))} />
+          <EmailInput style={{ marginTop: 8 }} placeholder="Email" value={f.email} onChange={v => setF(s => ({ ...s, email: v }))} />
           {err && <div role="alert" className="notice err small" style={{ marginTop: 8 }}>{err}</div>}
           <div className="row" style={{ gap: 8, marginTop: 10 }}>
             <button className="btn primary small" disabled={busy} onClick={submit}>{busy ? 'Inviting…' : 'Send invite'}</button>

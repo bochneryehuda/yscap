@@ -16,6 +16,9 @@ import TermSheetStudio, {
    and re-registering any number of times is the intended workflow. */
 
 const money = (n) => (n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
+// Fees / cash-to-close / liquidity show EXACT cents (owner-directed 2026-07-16);
+// loan amount / advance / holdback stay whole-dollar (frozen loan rounding).
+const money2 = (n) => (n == null || n === '' ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const pct = (f, d = 2) => (f == null || f === '' ? '—' : (Number(f) * 100).toFixed(d) + '%');
 const when = (t) => (t ? new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
 
@@ -76,20 +79,27 @@ function compact(obj) {
 export function overridesFromSnapshot(snap, mode) {
   const f = snap.fields;
   const d = snap.d || {};
-  const base = compact({
-    targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
-    irMonths: f.irMonths === '' ? null : f.irMonths,
-    // Interest reserve may instead be an exact dollar amount (owner-directed
-    // 2026-07-12) — carried through to the frozen engine, which honors it over
-    // months and fits it under the same caps. A BLANK amount is sent as 0 (not
-    // null) so it actively clears any previously-registered amount: null would be
-    // skipped by the override loop, leaving a stale amount to wrongly win over a
-    // freshly-chosen months value when a file switches from amount back to months.
-    irAmount: f.irAmount === '' ? 0 : f.irAmount,
-    term: f.tsTerm,
-    fico: f.fico,
-    expFlips: f.expFlips, expHolds: f.expBrrrr, expGround: f.expGround,
-  });
+  const base = {
+    ...compact({
+      targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
+      // Interest reserve may instead be an exact dollar amount (owner-directed
+      // 2026-07-12) — carried through to the frozen engine, which honors it over
+      // months and fits it under the same caps. A BLANK amount is sent as 0 (not
+      // null) so it actively clears any previously-registered amount: null would be
+      // skipped by the override loop, leaving a stale amount to wrongly win over a
+      // freshly-chosen months value when a file switches from amount back to months.
+      irAmount: f.irAmount === '' ? 0 : f.irAmount,
+      term: f.tsTerm,
+      fico: f.fico,
+      expFlips: f.expFlips, expHolds: f.expBrrrr, expGround: f.expGround,
+    }),
+    // A blanked months field actively CLEARS the requested reserve on
+    // re-register (root-caused 2026-07-16: compact() omitted it, so the server
+    // silently fell back to the previously-registered months). buildInputs
+    // maps '' → 0 — the same contract irAmount already has. An ABSENT field
+    // (undefined — the studio never rendered it) still sends nothing.
+    ...(f.irMonths === '' ? { irMonths: '' } : f.irMonths != null ? { irMonths: f.irMonths } : {}),
+  };
   if (mode !== 'staff') return base;
   const refi = /refinance/i.test(f.dealPurpose || '');
   return {
@@ -105,7 +115,6 @@ export function overridesFromSnapshot(snap, mode) {
       asIsValue: f.asIs,
       arv: f.arv,
       rehabBudget: f.construction,
-      markupStdPct: f.tsYspStd, markupGoldPct: f.tsYspGold,
       origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
       titleFee: f.tsFeeTitle,
@@ -120,6 +129,12 @@ export function overridesFromSnapshot(snap, mode) {
     heavyRehab: f.rehabScope === 'heavy',
     sqftAddition: !!f.sqft,
     manualPricing: !!f.tsManualOn,
+    // Markup: an EXPLICITLY blanked field sends '' — the server drops the
+    // sticky per-file markup and prices at the company default (root-caused
+    // 2026-07-16: compact() omitted it, so the old sticky silently re-applied).
+    // An untouched/absent field still sends nothing.
+    ...(f.tsYspStd === '' ? { markupStdPct: '' } : f.tsYspStd != null ? { markupStdPct: f.tsYspStd } : {}),
+    ...(f.tsYspGold === '' ? { markupGoldPct: '' } : f.tsYspGold != null ? { markupGoldPct: f.tsYspGold } : {}),
   };
 }
 
@@ -171,15 +186,15 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
         </div>
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
-          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money(q.origination)} />
-          <Row k="UW / processing / legal" v={money(cc.lenderFee)} />
-          <Row k="Credit report" v={money(cc.creditFee)} />
-          <Row k="Title / escrow (est.)" v={money(cc.titleAndSettlement)} />
-          <Row k="Appraisal (est., POC)" v={money(cc.appraisalPoc)} />
-          <Row k="Closing costs due at closing" v={money(cc.dueAtClosing)} />
-          <Row k="Estimated cash to close" v={<strong>{money(q.cashToClose)}</strong>} />
-          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money(q.reserveRequirement)} />
-          <Row k="Liquidity to verify" v={<strong>{money(q.liquidity ?? q.liquidityRequired)}</strong>} />
+          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
+          <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
+          <Row k="Credit report" v={money2(cc.creditFee)} />
+          <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
+          <Row k="Appraisal (est., POC)" v={money2(cc.appraisalPoc)} />
+          <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
+          <Row k="Estimated cash to close" v={<strong>{money2(q.cashToClose)}</strong>} />
+          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money2(q.reserveRequirement)} />
+          <Row k="Liquidity to verify" v={<strong>{money2(q.liquidity ?? q.liquidityRequired)}</strong>} />
           <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Scenario as registered</p>
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           <Row k="Purchase price" v={money(inp.purchasePrice)} />
@@ -208,8 +223,14 @@ function studioStateFromFields(f) {
   return { v, c: checks };
 }
 
-const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered, toolItemId }, ref) {
+const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, mode = 'borrower', onRegistered, toolItemId, staffRole }, ref) {
   const isStaff = mode === 'staff';
+  // The admin pricing zone (manual rate/leverage basis, experience overrides)
+  // only renders for roles the SERVER will honor (root-caused 2026-07-16,
+  // Pinchus Wieder: every other staff role had those knobs silently stripped
+  // on register — the studio displayed terms the file never got). Non-admin
+  // staff never see knobs their register would now be refused for.
+  const staffAdmin = isStaff && ['admin', 'super_admin'].includes(staffRole || '');
   const [data, setData] = useState(null);       // { current, history }
   const [profile, setProfile] = useState(null); // borrower profile (name + fico)
   const [snap, setSnap] = useState(null);       // live studio state
@@ -327,8 +348,59 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // exactly what was registered), otherwise the loan file itself.
   const prefill = useMemo(() => {
     if (!data || savedStudio === undefined) return null;
-    // The last working scenario (autosaved) wins — reopening resumes it.
-    if (savedStudio && savedStudio.v) return savedStudio;
+    // The file-owned pricing basis, from the RAW app columns and ONLY when a
+    // column genuinely carries a value (never buildInputs/quote output — that
+    // layer coerces null→0 and fills defaults, which would wipe a draft;
+    // audit-caught 2026-07-17). Shared by both prefill sources below.
+    const fileEcon = () => {
+      const out = {};
+      const set = (k, v) => { if (v != null && v !== '') out[k] = v; };
+      set('purchasePrice', app.purchase_price);
+      set('asIsValue', app.as_is_value);
+      set('arv', app.arv);
+      set('rehabBudget', app.rehab_budget);
+      set('expFlips', app.requested_exp_flips);
+      set('expHolds', app.requested_exp_holds);
+      set('expGround', app.requested_exp_ground);
+      set('termMonths', app.term);
+      set('irMonths', app.requested_ir_months);
+      set('irAmount', app.requested_ir_amount);
+      // is_assignment is NOT NULL DEFAULT false (db/016), so only a TRUE file
+      // value is authoritative here — a false default must never uncheck an
+      // assignment the officer is drafting in the studio ahead of the form
+      // (the econVersion guard still refuses a register if the file moved).
+      if (app.is_assignment === true) out.isAssignment = true;
+      set('underlyingContractPrice', app.underlying_contract_price);
+      set('assignmentFee', app.assignment_fee);
+      return out;
+    };
+    // The last working scenario (autosaved) resumes — but the file-owned
+    // economics/experience SNAP to the file's CURRENT values first (#148): an
+    // autosave made before the file was edited must never carry the old
+    // numbers into a re-register. Studio-only work (names, fees, product
+    // choice, scenario type) keeps resuming untouched, and a field the FILE
+    // doesn't carry keeps the draft's value.
+    if (savedStudio && savedStudio.v) {
+      const ae = fileEcon();
+      const st2 = buildStudioState(ae);
+      const v = { ...savedStudio.v };
+      const ID_FOR = {
+        purchasePrice: 'price', asIsValue: 'asIs', arv: 'arv', rehabBudget: 'construction',
+        expFlips: 'expFlips', expHolds: 'expBrrrr', expGround: 'expGround', termMonths: 'tsTerm',
+        irMonths: 'irMonths', irAmount: 'irAmount', underlyingContractPrice: 'origPrice',
+      };
+      for (const [srcKey, id] of Object.entries(ID_FOR)) {
+        if (!(srcKey in ae)) continue;               // app column empty → keep the draft
+        const val = st2.v[id];
+        if (val != null && val !== '') v[id] = val;
+      }
+      const c = { ...savedStudio.c };
+      if ('isAssignment' in ae) c.isAssign = st2.c.isAssign;
+      // A pre-fix autosave could carry an invisibly restored manual-pricing
+      // flag (the #148 LO-403 poison) — non-admin staff never resume it.
+      if (isStaff && !staffAdmin) c.tsManualOn = false;
+      return { v, c };
+    }
     const name = isStaff
       ? ([app.first_name, app.last_name].filter(Boolean).join(' ') || '')
       : ([profile && profile.first_name, profile && profile.last_name].filter(Boolean).join(' ') || '');
@@ -340,12 +412,48 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const coName = (isStaff && app.co_borrower_id)
       ? ([app.co_first_name, app.co_last_name].filter(Boolean).join(' ') || '')
       : '';
+    // #143 — the stored engine inputs ARE the exact registered scenario, but
+    // older registrations / server quotes sometimes omit an economics field (most
+    // often the construction / rehab budget), so reopening the studio left that
+    // field blank even though the application carries the number ("some files
+    // missing the construction budget prefill"). Fill ONLY the fields the stored
+    // input left empty from the application's authoritative economics — never
+    // override a real stored value (incl. a genuine 0 on a bridge/purchase-only
+    // deal). Spread LAST into scenarioFromEngineInputs' `extra`, which overrides.
+    const econFallback = (inp) => {
+      const out = {};
+      const fill = (k, v) => { if ((inp[k] == null || inp[k] === '') && v != null && v !== '') out[k] = v; };
+      fill('rehabBudget', app.rehab_budget);
+      fill('purchasePrice', app.purchase_price);
+      fill('asIsValue', app.as_is_value);
+      fill('arv', app.arv);
+      return out;
+    };
     let st;
     if (cur && cur.inputs) {
+      // #148 — the registered scenario prefills, but the FILE's current
+      // file-owned economics overlay it (fileEcon above): a file edited AFTER
+      // the last registration (form edit, ClickUp inbound — the exact change
+      // that reopens the P&P condition) used to prefill the STALE economics; a
+      // re-register then wrote those old numbers back onto the file
+      // ("re-register doesn't update the file"), or a stale higher ARV tripped
+      // the raise-block 403 for LOs. Scenario-only choices (strategy, loan
+      // type, property/rehab type, fico) stay with the registered scenario.
       const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : cur.inputs;
-      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address) }));
+      st = buildStudioState(scenarioFromEngineInputs(inp, { entityName: entity, borrowerName: name, coBorrowerName: coName, address: inp.address || addrLine(app.property_address), ...econFallback(inp), ...fileEcon() }));
       if (isStaff) {
+        // Admin knobs restore ONLY for roles the server will honor. The zone is
+        // already hidden for non-admin staff (Pinchus), but the RESTORE used to
+        // run for all staff — so a previously admin-manual-priced file silently
+        // re-armed manualPricing/ovrRate* inside the hidden zone and every LO
+        // re-register was refused 403 with a remedy the LO couldn't perform
+        // (#148 root). Fees/markups still restore for all staff (the server
+        // accepts those and they're the registered fee structure).
         const adm = adminStateFromEngineInputs(inp);
+        if (!staffAdmin) {
+          for (const k of ['tsMLtv', 'tsMArv', 'tsMLtc', 'tsMRate', 'tsMIr']) delete adm.v[k];
+          delete adm.c.tsManualOn;
+        }
         st = { v: { ...st.v, ...adm.v }, c: { ...st.c, ...adm.c } };
       }
     } else if (data.quote && data.quote.inputs) {
@@ -360,6 +468,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
         expHolds: app.requested_exp_holds ?? inp.expHolds,
         expGround: app.requested_exp_ground ?? inp.expGround,
         fico: inp.fico || (profile && profile.fico) || '',
+        ...econFallback(inp),
       }));
     } else {
       st = buildStudioState({
@@ -389,10 +498,21 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
   // Borrowers can price/choose but never change the file's deal economics
   // from here — those change through the loan team. Staff edit everything.
-  const lockedIds = useMemo(() => (isStaff ? [] : [
-    'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
-    'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
-  ]), [isStaff]);
+  const lockedIds = useMemo(() => {
+    const ids = isStaff ? [] : [
+      'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
+      'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
+    ];
+    // #148: the server strips experience overrides from every non-admin STAFF
+    // register (the claim of record prices the deal), so a non-admin staffer
+    // editing these fields would see a tier the register won't honor — the
+    // exact "studio showed the max-experience loan, the file registered
+    // smaller" class. Lock them; the claim is edited on the (audited)
+    // application form. Borrowers keep the fields editable — their what-if
+    // quoting honors exp (#103) and their register path handles the strip.
+    if (isStaff && !staffAdmin) ids.push('expFlips', 'expBrrrr', 'expGround');
+    return ids;
+  }, [isStaff, staffAdmin]);
 
   const d = snap && snap.d;
   const canRegister = !!(snap && snap.ready && snap.program && d && d.status !== 'INELIGIBLE' && d.totalLoan > 0);
@@ -418,8 +538,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       // — the admin key rides along even when the zone is locked shut, so the
       // changes made in admin mode STAY in the registration and the exports.
       const overrides = overridesFromSnapshot(s, adminActive ? 'staff' : mode);
-      if (isStaff) await api.staffRegisterProduct(appId, s.program, overrides);
-      else await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined);
+      // econVersion: the file-basis fingerprint this studio session prefilled
+      // from — the server refuses (409) if the file's economics moved since,
+      // so a stale sheet can never write old numbers back onto the file (#148).
+      const econVersion = data && data.econVersion;
+      if (isStaff) await api.staffRegisterProduct(appId, s.program, overrides, econVersion);
+      else await api.borrowerRegisterProduct(appId, s.program, overrides, adminKey || undefined, econVersion);
       let note = 'Product registered — the loan file now carries these terms, the liquidity requirement and the term sheet.';
       if (pdf && pdf.blob) {
         try {
@@ -437,14 +561,26 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       setMsg(note);
       if (onRegistered) onRegistered();
     } catch (e) {
-      const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
-      setErr(detail);
+      if (e.status === 409 && e.data && e.data.code === 'econ_version_conflict') {
+        // The file's economics moved while the sheet was open. Close WITHOUT
+        // saving the stale snapshot as the resume-state — including the pending
+        // debounced autosave, which would otherwise fire after close and PUT
+        // the stale scenario anyway — reload the pricing basis, and let the
+        // reopen prefill snap to the fresh values (#148).
+        clearTimeout(studioSaveT.current);
+        setOpenStudio(false);
+        try { const dNew = await loadPricing(); setData(dNew); } catch (_) { /* keep old */ }
+        setErr(e.data.error || 'This file changed since the studio was opened — reopen the studio to pick up the latest values, then register again.');
+      } else {
+        const detail = e.data && e.data.reasons ? e.data.reasons.map((r) => r.msg).join(' ') : (e.message || 'Could not register');
+        setErr(detail);
+      }
     } finally { setBusy(false); gate.leave(); }
   }
 
   const statusLine = snap && !snap.ready ? 'Missing: ' + snap.missing.join(', ')
     : snap && !snap.program ? 'Tap a program card above to choose Standard or Gold Standard.'
-    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money(d.cashToClose)} · liquidity ${money(d.liquidity)}`
+    : d && d.totalLoan > 0 ? `${snap.program === 'gold' ? 'Gold Standard' : 'Standard'} · ${money(d.totalLoan)} @ ${d.rate ? d.rate.toFixed(2) + '%' : '—'} · cash to close ${money2(d.cashToClose)} · liquidity ${money2(d.liquidity)}`
     : '';
   // A PLAIN-LANGUAGE reason the product can't be registered yet — shown as a
   // prominent banner in the studio so the Register action never silently
@@ -474,6 +610,21 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
       {err && !openStudio && <div role="alert" className="notice err" style={{ marginTop: 10 }}>{err}</div>}
       {msg && !openStudio && <div className="notice ok" style={{ marginTop: 10 }}>{msg}</div>}
+      {/* #148: the current terms carry an admin manual-pricing basis this role
+          cannot re-register. Say so UPFRONT — the old behavior silently
+          re-armed the admin knobs and refused the register after the fact. */}
+      {isStaff && !staffAdmin && cur && (() => {
+        try {
+          const inp = typeof cur.inputs === 'string' ? JSON.parse(cur.inputs) : (cur.inputs || {});
+          return inp.manualPricing ? (
+            <div className="notice" style={{ marginTop: 10 }}>
+              The current registered terms use an admin manual-pricing basis (negotiated rate/leverage).
+              Re-registering under your role prices on the standard engine basis — ask an admin to
+              re-register if the negotiated terms must be preserved.
+            </div>
+          ) : null;
+        } catch { return null; }
+      })()}
 
       {!cur && data && (
         <p className="muted small" style={{ margin: '10px 0 0' }}>
@@ -482,7 +633,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
           requirement all flow onto this file.
         </p>
       )}
-      {cur && <RegisteredProductDetails reg={cur} showAdmin={isStaff} />}
+      {cur && <RegisteredProductDetails reg={cur} showAdmin={staffAdmin} />}
       {superseded.length > 0 && (
         <p className="muted small" style={{ margin: '8px 0 0' }}>
           {superseded.length} previous registration{superseded.length === 1 ? '' : 's'} on this file (superseded):{' '}
@@ -514,12 +665,12 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
             <div className="toolsheet-inner">
               <p className="muted small" style={{ margin: '12px 0 8px' }}>
                 {isStaff
-                  ? 'The live Term Sheet Studio, prefilled from this file. Adjust anything — including the admin pricing controls — pick the program and leverage, then register. Every detail saves back onto the file and the exact term sheet PDF is attached (previous sheets are marked superseded).'
+                  ? 'The live Term Sheet Studio, prefilled from this file. Adjust anything — pick the program and leverage, then register. Every detail saves back onto the file and the exact term sheet PDF is attached (previous sheets are marked superseded).'
                   : 'Prefilled from your loan file. Adjust your experience, credit and reserve, compare the programs, pick your leverage — then register your product. Deal numbers come from your file; ask your loan team to change those.'}
               </p>
               {prefill
                 ? <TermSheetStudio ref={studioRef} prefill={prefill} lockedIds={lockedIds}
-                    showAdmin={isStaff} onState={onStudioState} />
+                    showAdmin={staffAdmin} onState={onStudioState} />
                 : <p className="muted small">Loading your scenario…</p>}
               <div className="toolsheet-actions">
                 <button className="btn primary" disabled={busy} onClick={register}>

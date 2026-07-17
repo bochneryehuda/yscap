@@ -19,6 +19,7 @@
 const db = require('../db');
 const notify = require('./notify');
 const email = require('./email');
+const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
 const KINDS = new Set(['reminder', 'task']);
 
@@ -244,7 +245,11 @@ async function _deliver(row, { lead } = {}) {
         const msg = notify.buildEmail({
           title: titleLine, body, link: staffLink, ctaLabel: 'Open the loan file',
         }, 'staff');
-        await email.sendMail({ to: [rcp.email], subject: msg.subject, text: msg.text, html: msg.html }).catch(() => {});
+        // #68: the ad-hoc recipient (title co, escrow…) is the one most likely
+        // to reply with the answer — route it to the file's assigned team like
+        // the staff/borrower copies of this same reminder.
+        await email.sendMail({ to: [rcp.email], subject: msg.subject, text: msg.text, html: msg.html,
+          replyTo: fileReplyTo(row.application_id) }).catch(() => {});
       }
     } catch (_) { /* one bad recipient never blocks the rest */ }
   }
@@ -260,7 +265,9 @@ async function dispatchDue(client = db) {
   // pause: if the file later comes off hold (or is otherwise reactivated) the
   // reminder becomes eligible again and fires. The row is always visible inside
   // the file. (A reminder with no linked application still fires normally.)
-  const NOT_MUTED = `(a.id IS NULL OR a.status NOT IN ('funded','on_hold','declined','withdrawn'))`;
+  // file_intake (#151): pre-processing prospects are muted like held files —
+  // no task nudges until the file actually enters processing.
+  const NOT_MUTED = `(a.id IS NULL OR a.status NOT IN ('funded','on_hold','declined','withdrawn','file_intake'))`;
   // 1) Pre-due nudges (tasks with remind_at reached, not yet nudged, not fired).
   const leads = await client.query(
     `SELECT r.* FROM reminders r

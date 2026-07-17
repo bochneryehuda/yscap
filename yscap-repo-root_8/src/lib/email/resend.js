@@ -8,7 +8,7 @@ const cfg = require('../../config');
 
 module.exports = {
   name: 'resend',
-  async sendMail({ to, subject, text, html, attachments, replyTo }) {
+  async sendMail({ to, subject, text, html, attachments, replyTo, from }) {
     if (!cfg.resendApiKey) {
       throw new Error('RESEND_API_KEY is not set — add it in the Render environment to send email.');
     }
@@ -33,7 +33,11 @@ module.exports = {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(Object.assign({
-          from: cfg.notifyFrom,
+          // #150 — LO branding: an optional per-message From display name
+          // ("Chaim Klein — YS Capital <no-reply@…>"). The ADDRESS is always
+          // ours (the verified sending domain); only the display name varies.
+          // Absent → the corporate default, unchanged.
+          from: from || cfg.notifyFrom,
           to: recipients,
           subject,
           text,

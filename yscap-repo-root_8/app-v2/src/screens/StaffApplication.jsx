@@ -13,7 +13,7 @@ import PropertyPhoto from '../components/PropertyPhoto.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import ProductStudioPanel from '../components/ProductStudioPanel.jsx';
 import DealSnapshot from '../components/DealSnapshot.jsx';
-import { PhoneInput, ZipInput } from '../components/FormattedInputs.jsx';
+import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
@@ -342,6 +342,9 @@ function ClickupFileData({ app }) {
 }
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+// Fees / cash-to-close / liquidity / reserves show EXACT cents (owner-directed
+// 2026-07-16); loan amount / advance / holdback stay whole-dollar (frozen).
+const money2 = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street || a.line1, a.city, a.state, a.zip].filter(Boolean).join(', ') || '—');
 // Build the Rehab Budget / Scope of Work builder URL SEEDED from the file —
@@ -371,8 +374,8 @@ function sowUrl(appId, itemId, app) {
   return `/tools/rehab-budget.html?${p.toString()}`;
 }
 const STATUSES = ['outstanding', 'requested', 'received', 'satisfied', 'issue'];
-const APP_STATUSES = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
-const APP_STATUS_LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
+const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'declined', 'withdrawn'];
+const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', declined: 'Declined', withdrawn: 'Withdrawn' };
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -390,11 +393,46 @@ function Badge({ children, tone }) {
 // capability (incl. the loan-coordinator persona and per-user overrides).
 const canComplete = (role) => ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
 
+/* ONE "off my plate" rule for every conditions/checklist surface (owner-directed
+   2026-07-16): the loan officer's terminal action is DONE (reviewed_at); the
+   back office's is SIGN-OFF. Once YOUR role's action is complete, the item
+   leaves your default view and renders collapsed (reopenable). */
+function roleDone(it, role) {
+  return it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at
+    || (role === 'loan_officer' && !!it.reviewed_at);
+}
+// Per-user sticky filters (client-side; keyed per filter surface).
+function useStickyFilter(key, fallback) {
+  const [v, setV] = useState(() => { try { return localStorage.getItem('pilot.filter.' + key) || fallback; } catch { return fallback; } });
+  const set = (nv) => { setV(nv); try { localStorage.setItem('pilot.filter.' + key, nv); } catch { /* private mode */ } };
+  return [v, set];
+}
+
 function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview }) {
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState(it.notes || '');
+  // Collapse-when-complete: once YOUR role-action is done the row renders as a
+  // one-line summary; expand/collapse is a per-item manual override on top.
+  const [expandOverride, setExpandOverride] = useState(null);   // null = automatic
   const signed = !!it.signed_off_at;
   const completer = canComplete(role);
+  const myDone = roleDone(it, role);
+  const collapsed = expandOverride === null ? myDone : !expandOverride;
+  if (collapsed) {
+    return (
+      <div className="checkitem" style={{ alignItems: 'center', gap: 8, cursor: 'pointer', opacity: .8 }}
+        onClick={() => setExpandOverride(true)} title="Show the full condition">
+        <span className={`dot ${signed || it.status === 'satisfied' ? 'done' : 'outstanding'}`} />
+        <div style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</div>
+        {it.waived_at ? <Badge>not required</Badge>
+          : signed ? <Badge tone="gold">signed off</Badge>
+          : it.status === 'satisfied' ? <Badge tone="gold">satisfied</Badge>
+          : it.reviewed_at ? <Badge>done ✓ awaiting sign-off</Badge>
+          : <Badge>{it.status}</Badge>}
+        <button className="btn link small" onClick={(e) => { e.stopPropagation(); setExpandOverride(true); }}>Expand</button>
+      </div>
+    );
+  }
   // Staff-only DOCUMENT conditions (e.g. Insurance, Title) get an upload area in
   // the internal checklist, mirroring the borrower-conditions document block.
   // `it.slots` is a FIXED named-slot array (Insurance → binder + invoice) or
@@ -414,9 +452,11 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
             <Badge>{it.audience}</Badge>
             {it.role_scope && <Badge>{it.role_scope}</Badge>}
             <Badge>{it.item_kind}</Badge>
+            {it.is_required === false && <Badge>optional</Badge>}
             {it.is_gate && <Badge tone="gold">gate</Badge>}
             {it.is_milestone && <Badge tone="gold">milestone</Badge>}
             {it.tool_key && <Badge tone="gold">{it.tool_submitted ? 'borrower submitted' : 'borrower task'}</Badge>}
+            {!signed && it.reviewed_at && <Badge>done ✓ awaiting sign-off</Badge>}
           </div>
           {it.hint && <div className="muted small" style={{ marginTop: 4 }}>{it.hint}</div>}
           {it.assignee_name && <div className="muted small">Assigned to {it.assignee_name}</div>}
@@ -529,10 +569,10 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
           ? <button className="btn ghost" title="You marked this done — undo to put it back on your list" onClick={() => onPatch(it.id, { reviewed: false })}>Undo done</button>
           : <button className="btn ghost" title="Mark this condition done (loan-officer step). The processor still signs it off." onClick={() => onPatch(it.id, { reviewed: true })}>Done</button>}
         {completer && (signed
-          ? <button className="btn ghost" onClick={() => onPatch(it.id, it.waived_at ? { waived: false } : { signedOff: false })}>{it.waived_at ? 'Undo waive' : 'Undo sign-off'}</button>
+          ? <button className="btn ghost" onClick={() => onPatch(it.id, it.waived_at ? { waived: false } : { signedOff: false })}>{it.waived_at ? 'Undo not-required' : 'Undo sign-off'}</button>
           : <>
               <button className="btn primary" title="Sign off = the whole condition is complete (processor step). This is what removes it from the list for everyone." onClick={() => onPatch(it.id, { signedOff: true })}>Sign off</button>
-              {it.is_required === false && <button className="btn ghost" title="Waive = this optional condition doesn't apply; clear it without a document. Optional conditions only." onClick={() => onPatch(it.id, { waived: true })}>Waive</button>}
+              {it.is_required === false && <button className="btn ghost" title="This optional condition doesn't apply to this file — clear it without a document (waive). Optional conditions only." onClick={() => onPatch(it.id, { waived: true })}>Not required</button>}
             </>)}
         {it.audience !== 'staff' && (
           <button className="btn ghost" title="Send this condition back to the borrower with a reason (reopens it, clears any sign-off)"
@@ -544,7 +584,9 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
               onPatch(it.id, { pushBack: true, issueReason: reason.trim() });
             }}>{signed || it.status === 'satisfied' ? 'Reopen / send back' : 'Send back'}</button>
         )}
-        {!completer && <span className="muted small" style={{ alignSelf: 'center' }}>Completion is the processor's sign-off.</span>}
+        {!completer && !it.reviewed_at &&
+          <span className="muted small" style={{ alignSelf: 'center' }}>Done records your completion — the back office signs off after you.</span>}
+        {myDone && <button className="btn link small" style={{ marginLeft: 'auto' }} onClick={() => setExpandOverride(false)}>Collapse</button>}
       </div>
       <div className="row" style={{ width: '100%', gap: 8 }}>
         <input className="input" placeholder="Add a note…" value={notes} onChange={e => setNotes(e.target.value)} />
@@ -811,8 +853,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                               <input className="input" style={{ width: 90 }} type="number" min="0.01" max={m.memberKind === 'entity' ? 100 : 99.99} placeholder="%" value={m.ownershipPct}
                                 onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, ownershipPct: e.target.value } : x))} />
                               {m.memberKind !== 'entity' && (
-                                <input className="input" style={{ flex: 2, minWidth: 150 }} type="email" placeholder="Email (optional)" value={m.email}
-                                  onChange={e => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: e.target.value } : x))} />
+                                <EmailInput style={{ flex: 2, minWidth: 150 }} placeholder="Email (optional)" value={m.email}
+                                  onChange={v => setEm(ms => ms.map((x, j) => j === i ? { ...x, email: v } : x))} />
                               )}
                               <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer', whiteSpace: 'nowrap' }}
                                 title="Layered entity: this slice is owned by ANOTHER LLC, not a person. It gets its own full entity section (details, ownership, three documents) and must verify before this one.">
@@ -1252,21 +1294,38 @@ function EmailMonitor({ appId }) {
     const color = s === 'sent' ? 'var(--ok)' : s === 'error' ? 'var(--danger)' : 'var(--muted-2)';
     return <span className="pill small" style={{ borderColor: color, color }}>{label}</span>;
   };
+  // #68 — inbound replies (direction:'inbound') interleave with outbound rows.
+  // Their email_status is the inbound processing status, not a delivery status.
+  const inboundPill = (s, n) => {
+    const label = s === 'forwarded' ? `Forwarded to the team${n > 1 ? ` (${n})` : ''}`
+      : s === 'auto_reply' ? 'Auto-reply (not forwarded)'
+        : s === 'no_recipients' ? 'No one to receive it'
+          : s === 'chat_posted' ? 'Posted to chat'
+            : s === 'archived_app' ? 'Archived file (not forwarded)'
+              : s === 'rate_limited' ? 'Rate limited'
+                : s === 'failed_permanent' ? 'Could not be processed'
+                  : ['retrieval_failed', 'forward_failed', 'lookup_failed', 'error'].includes(s) ? 'Delivery issue — retrying'
+                    : 'Processing';
+    const color = s === 'forwarded' || s === 'chat_posted' ? 'var(--ok)'
+      : (s === 'no_recipients' || s === 'failed_permanent') ? 'var(--danger)' : 'var(--muted-2)';
+    return <span className="pill small" style={{ borderColor: color, color }}>{label}</span>;
+  };
   const when = (r) => { try { return new Date(r.emailed_at || r.created_at).toLocaleString(); } catch { return ''; } };
   const shown = open ? rows : rows.slice(0, 8);
   return (
     <div className="panel" style={{ padding: 10 }}>
-      <div className="muted small" style={{ marginBottom: 6 }}>{rows.length} notification{rows.length === 1 ? '' : 's'} on this file · newest first.</div>
+      <div className="muted small" style={{ marginBottom: 6 }}>{rows.length} notification{rows.length === 1 ? '' : 's'} on this file · newest first · inbound replies included.</div>
       {shown.map((r) => (
         <div key={r.id} className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '5px 0', borderTop: '1px solid rgba(127,169,176,.15)' }}>
           <span className="small" style={{ flex: 1, minWidth: 200 }}>
             <strong>{r.title}</strong>
             <span className="muted" style={{ marginLeft: 6 }}>
-              → {r.recipient_name || r.recipient_email || (r.recipient_kind === 'staff' ? 'staff' : 'borrower')}
-              {r.recipient_email ? ` · ${r.recipient_email}` : ''}
+              {r.direction === 'inbound'
+                ? <>← {r.recipient_email || 'unknown sender'}</>
+                : <>→ {r.recipient_name || r.recipient_email || (r.recipient_kind === 'staff' ? 'staff' : 'borrower')}{r.recipient_email ? ` · ${r.recipient_email}` : ''}</>}
             </span>
           </span>
-          {statusPill(r.email_status)}
+          {r.direction === 'inbound' ? inboundPill(r.email_status, r.forwarded_count) : statusPill(r.email_status)}
           <span className="muted small" style={{ minWidth: 132, textAlign: 'right' }}>{when(r)}</span>
         </div>
       ))}
@@ -1440,13 +1499,17 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
   const [q, setQ] = useState('');
   const [matches, setMatches] = useState(null);
   const [searchBusy, setSearchBusy] = useState(false);
+  // Last-request-wins: while typing, a SLOW earlier response must never
+  // overwrite a newer query's matches (vanishing-search bug class, 2026-07-16).
+  const searchSeq = useRef(0);
   async function runSearch(text) {
     setQ(text);
+    const mine = ++searchSeq.current;
     if (text.trim().length < 2) { setMatches(null); return; }
     setSearchBusy(true);
-    try { setMatches(await api.staffBorrowerSearch(text.trim())); }
-    catch (_) { setMatches([]); }
-    finally { setSearchBusy(false); }
+    try { const m = await api.staffBorrowerSearch(text.trim()); if (mine === searchSeq.current) setMatches(m); }
+    catch (_) { if (mine === searchSeq.current) setMatches([]); }
+    finally { if (mine === searchSeq.current) setSearchBusy(false); }
   }
   async function linkExisting(m) {
     setBusy(true); setErr('');
@@ -1545,7 +1608,7 @@ function CoBorrowerBlock({ appId, app, onChanged }) {
         <div className="ts-inputs" style={{ marginTop: 6 }}>
           <label><span>First name</span><input className="input" value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} /></label>
           <label><span>Last name</span><input className="input" value={f.lastName} onChange={e => setF({ ...f, lastName: e.target.value })} /></label>
-          <label style={{ gridColumn: '1 / -1' }}><span>Email</span><input className="input" type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} /></label>
+          <label style={{ gridColumn: '1 / -1' }}><span>Email</span><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></label>
           <label><span>Phone</span><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></label>
           <label><span>Date of birth</span><input className="input" type="date" value={f.dob} onChange={e => setF({ ...f, dob: e.target.value })} /></label>
           <label style={{ gridColumn: '1 / -1' }}><span>SSN (stored encrypted)</span><input className="input" inputMode="numeric" value={f.ssn} onChange={e => setF({ ...f, ssn: formatSSN(e.target.value) })} placeholder="XXX-XX-XXXX" /></label>
@@ -1603,8 +1666,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   const [cardBusy, setCardBusy] = useState(false);
   // #66 — role-aware visibility: default hides what's already off THIS viewer's
   // plate (LO clears on review/"complete"; processor·underwriter on sign-off;
-  // anyone on satisfied). The picker re-shows cleared items or everything.
-  const [condFilter, setCondFilter] = useState('mine');
+  // anyone on satisfied). The picker re-shows cleared items or everything —
+  // and the choice is persisted per user (owner-directed 2026-07-16).
+  const [condFilter, setCondFilter] = useStickyFilter('conds', 'mine');
   // The LLC condition stays its OWN dedicated section (LlcReview) AND is also
   // surfaced here as a condition to close, rendered with the full entity template
   // (owner-directed). It's excluded from the generic list below (so it isn't a bare
@@ -1638,7 +1702,8 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // a processor/underwriter only clears it by SIGNING IT OFF — so an accepted
   // (received) document keeps the condition on the processor's list until she
   // signs off. This is why accept now sets 'received', not 'satisfied'.
-  const offMyPlate = (it) => it.status === 'satisfied' || !!it.signed_off_at || (isLO && !!it.reviewed_at);
+  // ONE shared rule for every surface — see roleDone() above.
+  const offMyPlate = (it) => roleDone(it, role);
   const matchFilter = (it) => {
     switch (condFilter) {
       case 'awaiting':  return ['outstanding', 'requested'].includes(it.status) && !it.signed_off_at;      // nothing submitted yet
@@ -1758,7 +1823,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                         // on the internal login too (#85), not just a bare "document".
                         const liq = it.tool_payload && it.tool_payload.liquidity;
                         return liq && liq.required != null
-                          ? `Required liquidity ${money(liq.required)}${liq.cashToClose ? ` · cash to close ${money(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money(liq.reserveRequirement)}` : ''}`
+                          ? `Required liquidity ${money2(liq.required)}${liq.cashToClose ? ` · cash to close ${money2(liq.cashToClose)}` : ''}${liq.reserveRequirement ? ` · reserves ${money2(liq.reserveRequirement)}` : ''}`
                           : 'Assets & bank statements — the required liquidity is set the moment a product is registered';
                       })()
                     : it.item_kind}
@@ -2294,12 +2359,15 @@ export default function StaffApplication() {
     catch (e) { setErr(e.message || 'Failed'); }
   }
 
-  const [itemFilter, setItemFilter] = useState('all');
-  const [internalCondFilter, setInternalCondFilter] = useState('todo');   // #66 internal-conditions role-aware filter
+  // Role-aware defaults + per-user persistence (owner-directed 2026-07-16): the
+  // internal CHECKLIST now defaults to "Open for me" like the other sections —
+  // an LO's Done (and a processor's sign-off) clears the item off their default
+  // view; the picker (persisted per user) re-shows everything, collapsed.
+  const [itemFilter, setItemFilter] = useStickyFilter('checklist', 'todo');
+  const [internalCondFilter, setInternalCondFilter] = useStickyFilter('internalConds', 'todo');
   const bucketOf = (s) => s === 'issue' ? 'rejected' : s === 'received' ? 'submitted' : s === 'satisfied' ? 'satisfied' : 'outstanding';
-  // #66 — role-aware "off my plate": LO clears on review, processor/underwriter
-  // on sign-off, anyone on satisfied. Default hides those; picker re-shows them.
-  const condOffPlate = (it) => it.status === 'satisfied' || !!it.signed_off_at || (role === 'loan_officer' && !!it.reviewed_at);
+  // ONE "off my plate" rule for every surface — see roleDone() above.
+  const condOffPlate = (it) => roleDone(it, role);
   // The internal checklist shows ONLY staff-facing work items — the borrower's
   // conditions (audience borrower/both) already live in "Conditions to close",
   // so they must not be listed twice.
@@ -2311,12 +2379,14 @@ export default function StaffApplication() {
   const internalItems = useMemo(() => items.filter(it => it.audience === 'staff' && it.item_kind !== 'document'), [items]);
   const phases = useMemo(() => {
     const groups = {};
-    const src = itemFilter === 'all' ? internalItems : internalItems.filter(it => bucketOf(it.status) === itemFilter);
+    const src = itemFilter === 'all' ? internalItems
+      : itemFilter === 'todo' ? internalItems.filter(it => !roleDone(it, role))
+      : internalItems.filter(it => bucketOf(it.status) === itemFilter);
     for (const it of src) { const k = it.phase || 'general'; (groups[k] = groups[k] || []).push(it); }
     return Object.entries(groups)
       .map(([k, arr]) => [k, arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))])
       .sort((a, b) => (a[1][0].sort_order || 0) - (b[1][0].sort_order || 0));
-  }, [internalItems, itemFilter]);
+  }, [internalItems, itemFilter, role]);
 
   if (err && !app) return <div role="alert" className="notice err">{err}</div>;
   if (!app) return <div className="panel muted">Loading…</div>;
@@ -2363,7 +2433,7 @@ export default function StaffApplication() {
             </span>
           : <button className="btn link small" style={{ color: 'var(--danger,#e06666)', flex: 'none' }} onClick={archiveApp} title="Archive this file (reversible; leaves the dashboard figures)">Archive file</button>
         )}
-        <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{app.status}</span>
+        <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{APP_STATUS_LABEL[app.status] || app.status}</span>
       </div>
 
       {msg && <div className="notice ok">{msg}</div>}
@@ -2562,7 +2632,7 @@ export default function StaffApplication() {
       <Section id="sec-pricing" title="Loan structure & pricing"
         info="The registered product with its full economics, and the live Term Sheet Studio to reprice or re-register — every registration attaches the exact term sheet PDF."
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
-      <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff"
+      <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       </Section>
 
@@ -2627,17 +2697,23 @@ export default function StaffApplication() {
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Internal checklist</h3>
           <div className="spacer" />
-          <select className="input" style={{ maxWidth: 160 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
+          <select className="input" style={{ maxWidth: 170 }} value={itemFilter} onChange={e => setItemFilter(e.target.value)}>
+            <option value="todo">Open for me ({internalItems.filter(it => !roleDone(it, role)).length})</option>
             <option value="all">All ({internalItems.length})</option>
             <option value="outstanding">Outstanding</option>
             <option value="submitted">Submitted (in review)</option>
             <option value="rejected">Needs attention</option>
             <option value="satisfied">Satisfied</option>
           </select>
-          <span className="muted small">{internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off</span>
+          <span className="muted small">
+            {internalItems.filter(i => i.signed_off_at).length}/{internalItems.length} signed off
+            {internalItems.some(i => !i.signed_off_at && i.reviewed_at) ? ` · ${internalItems.filter(i => !i.signed_off_at && i.reviewed_at).length} done, awaiting sign-off` : ''}
+          </span>
         </div>
         {phases.length === 0
-          ? <p className="muted small">No internal-only checklist items. Borrower-facing conditions are in “Conditions to close” above.</p>
+          ? (internalItems.length === 0
+              ? <p className="muted small">No internal-only checklist items. Borrower-facing conditions are in “Conditions to close” above.</p>
+              : <p className="muted small">Everything here is done on your side — switch to “All” to see the completed items (collapsed).</p>)
           : phases.map(([k, arr]) => (
             <div key={k} style={{ marginTop: 10 }}>
               <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>{phaseName(k)}</div>
@@ -2764,7 +2840,7 @@ export default function StaffApplication() {
         <div className="panel">
           <h3 style={{ marginBottom: 8 }}>File summary</h3>
           <div className="metrow"><span className="k">Loan number</span><span className="v">{app.ys_loan_number || 'Pending'}</span></div>
-          <div className="metrow"><span className="k">Status</span><span className="v">{app.status}</span></div>
+          <div className="metrow"><span className="k">Status</span><span className="v">{APP_STATUS_LABEL[app.status] || app.status}</span></div>
           <div className="metrow"><span className="k">Internal status</span><span className="v">{app.internal_status || '—'}</span></div>
           <div className="metrow"><span className="k">Program</span><span className="v">{app.program || '—'}</span></div>
           <div className="metrow"><span className="k">Loan amount</span><span className="v">{money(app.loan_amount)}</span></div>

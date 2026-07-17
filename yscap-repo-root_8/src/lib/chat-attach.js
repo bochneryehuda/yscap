@@ -7,6 +7,7 @@
 const db = require('../db');
 const cfg = require('../config');
 const storage = require('./storage');
+const { decodeUploadBase64 } = require('./upload-bytes');
 
 function kindOf(contentType, filename) {
   const ct = String(contentType || '').toLowerCase();
@@ -22,8 +23,9 @@ function kindOf(contentType, filename) {
 // staff and MUST never reach a borrower surface. source_type='chat_attachment'
 // keeps these out of the borrower document library (they render inside chat).
 async function saveChatAttachment({ applicationId, borrowerId, filename, contentType, dataBase64, byKind, byId, channel }) {
-  const buf = Buffer.from(String(dataBase64 || ''), 'base64');
-  if (!buf.length) { const e = new Error('empty attachment'); e.status = 400; throw e; }
+  // Strict decode (lib/upload-bytes): a data:-URL prefix or non-base64 junk
+  // throws a 400 instead of silently garbling the stored bytes.
+  const { buf } = decodeUploadBase64(dataBase64);
   const max = cfg.maxUploadMb * 1024 * 1024;
   if (buf.length > max) { const e = new Error(`attachment too large (max ${cfg.maxUploadMb} MB)`); e.status = 413; throw e; }
   const visibility = channel === 'borrower' ? 'borrower' : 'staff_only';

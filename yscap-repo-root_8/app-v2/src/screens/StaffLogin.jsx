@@ -27,6 +27,11 @@ export default function StaffLogin() {
     try {
       const r = await api.staffLogin(email.trim(), password);
       if (r.mfaRequired) { setChallenge(r.challenge); setMode('mfa'); }
+      // Cross-surface routing can return a BORROWER outcome here (someone with a
+      // borrower account typed into staff sign-in): an unconfirmed borrower gets
+      // verifyRequired — show a clear message instead of a blank dead-end.
+      else if (r.verifyRequired) { setErr('This is a borrower account that still needs email confirmation. Check your email for the activation link, then sign in on the client login.'); }
+      else if (!r.token) { setErr('Sign-in failed'); }
       else done(r.token);
     } catch (e) { setErr(e.message || 'Sign-in failed'); }
     finally { setBusy(false); }

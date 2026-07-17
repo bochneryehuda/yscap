@@ -28,11 +28,29 @@ Pipeline Drive / <Loan Officer> / <Borrower> / <Property Address> / YS portal sy
 
 ## The hard rules
 
-1. **Nothing in this system may ever DELETE or recycle anything in SharePoint.** Not a file,
-   not a folder, not a version — anywhere, for any reason, including "cleanup," "dedupe," or
-   "correcting a mistake." There is no Graph `DELETE` in the codebase; the storage provider's
-   `remove()` permanently throws. Only a **human**, acting manually in the SharePoint UI, may
-   delete. Confidence is not an exception.
+1. **Nothing in this system may ever DELETE or recycle anything in SharePoint** — with ONE
+   owner-sanctioned exception (amendment, owner-directed 2026-07-16). Not a file, not a folder,
+   not a version — anywhere, for any reason, including "cleanup," "dedupe," or "correcting a
+   mistake." The storage provider's `remove()` permanently throws. Only a **human**, acting
+   manually in the SharePoint UI, may delete. Confidence is not an exception.
+
+   **The single sanctioned exception — replacing a corrupted mirror copy.** When the integrity
+   audit has DIAGNOSED a mirror copy as corrupt (size/hash mismatch against the portal's bytes)
+   and the sync has uploaded a **verified good "(fixed copy)" replacement**, the corrupt
+   original — and ONLY it — may be deleted, so staff never open the bad file by mistake. This
+   lives in exactly one function (`sharepoint.deleteReplacedCorruptMirror`) behind seven
+   mandatory guards, none of which may ever be relaxed or reused for any other purpose:
+   G1 kill switch (`SHAREPOINT_DELETE_REPLACED_CORRUPT=0` disables); G2 DB ownership (only the
+   item recorded as the document's own mirror ref); G3 replacement-first (the fixed copy is
+   re-read live and must size-match the portal bytes — no verified replacement, no delete);
+   G4 same-bytes-as-diagnosed (the item's current size must equal the size recorded at
+   diagnosis — a human fixing the file in the meantime makes it undeletable); G5 expected
+   parent (the item must still sit in the exact portal-created folder our records say);
+   G6 Pilot-tree ancestry (an ancestor folder must be a `Synced by Pilot` / `YS portal
+   syncing` leaf — the delete can never reach outside a Pilot-created sync tree); G7 If-Match
+   eTag pinning (any concurrent human change → Graph answers 412 → nothing happens). Every
+   delete (and every refusal) is audited. `remove()` still throws for everything else, and no
+   other Graph `DELETE` may exist in the codebase.
 2. **Nothing may overwrite or replace an existing file.** Uploads fail on name conflict and
    retry under a uniquified name.
 3. **Moves and renames are forbidden, with one owner-approved exception:** the sync may move

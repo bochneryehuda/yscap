@@ -33,7 +33,12 @@ const FEES = { lender: 2195, credit: 150, appraisal: 800 };
 const pricingSettings = require('./pricing-settings');
 
 /* ---- small coercers ---- */
-function num(v) { const n = Number(v); return isFinite(n) ? n : 0; }
+// Strips thousands-separator commas before parsing (#143): the studio's dollar
+// inputs now DISPLAY comma-grouped, so an override can arrive as "400,000". For a
+// comma-free value (the only form pre-#143) the replace is a no-op, so every
+// existing input parses BYTE-IDENTICALLY — this only rescues a comma'd string that
+// Number() would otherwise turn into NaN→0 and silently zero the loan. Frozen-safe.
+function num(v) { const n = Number(String(v == null ? '' : v).replace(/,/g, '')); return isFinite(n) ? n : 0; }
 function clean(s) { return String(s == null ? '' : s).trim(); }
 function round2(n) { return Math.round(num(n) * 100) / 100; }
 function reserveMonths(totalLoan) { return num(totalLoan) > 1000000 ? 4 : 2; }
@@ -145,6 +150,14 @@ function buildInputs(app, experience, overrides) {
     for (const k of NUMK) if (overrides[k] != null && overrides[k] !== '') out[k] = num(overrides[k]);
     for (const k of STRK) if (overrides[k] != null) out[k] = clean(overrides[k]);
     for (const k of BOOLK) if (overrides[k] != null) out[k] = !!overrides[k];
+    // Present-but-EMPTY means "clear it" (owner-reported 2026-07-16: a field the
+    // user blanked in the studio must never silently revert to the previously-
+    // saved value on re-register): markup '' → drop the sticky file markup so
+    // the company default governs; irMonths '' → 0 (no reserve requested) —
+    // mirroring irAmount's existing blank-sends-0 contract.
+    if (overrides.markupStdPct === '') delete out.markupStdPct;
+    if (overrides.markupGoldPct === '') delete out.markupGoldPct;
+    if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
   if (out.manualPricing) {
@@ -371,7 +384,42 @@ function safeQuote(program, input) {
   catch (e) { return { program, programLabel: PROGRAM_LABEL[program], status: 'ERROR', eligible: false, reasons: [{ level: 'INELIGIBLE', msg: e.message || 'pricing error' }], sizing: null }; }
 }
 
+// Optimistic-concurrency fingerprint of the FILE-owned pricing basis. GET
+// /pricing hands it to the studio; register refuses (409) when the file's
+// economics moved in between — so a stale studio session (long-open tab, old
+// autosave, an edit that landed from the form/ClickUp while the sheet was open)
+// can never silently re-register OLD economics and write them back onto the
+// file (root-caused 2026-07-17: LO re-registers were clobbering later file
+// edits with the previously-registered scenario). Only file-owned inputs that
+// buildInputs reads participate — registration itself rewrites several of them,
+// so a fresh GET is required after every register (the panel already reloads).
+function econVersionFor(app) {
+  const crypto = require('crypto');
+  const f = (v) => {
+    if (v == null || v === '') return '';
+    if (typeof v === 'boolean') return v ? '1' : '0';
+    const n = Number(v);
+    return isFinite(n) && String(v).trim() !== '' && /^-?[\d.]+$/.test(String(v).trim()) ? String(n) : String(v).trim().toLowerCase();
+  };
+  const basis = [
+    app.purchase_price, app.as_is_value, app.arv, app.rehab_budget,
+    app.term, app.requested_ir_months, app.requested_ir_amount,
+    app.requested_exp_flips, app.requested_exp_holds, app.requested_exp_ground,
+    app.is_assignment, app.underlying_contract_price, app.assignment_fee,
+    app.program, app.loan_type, app.property_type, app.units,
+    // Also file-owned pricing inputs buildInputs reads (audit 2026-07-17):
+    // rehab scope, sqft addition, the property STATE (title cost/eligibility),
+    // the file's pricing FICO (computed onto f.app by loadFileForPricing), and
+    // the sticky per-file markups.
+    app.rehab_type, app.sqft_pre, app.sqft_post,
+    (app.property_address && app.property_address.state) || '',
+    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct,
+  ].map(f).join('|');
+  return crypto.createHash('sha1').update(basis).digest('hex').slice(0, 16);
+}
+
 module.exports = {
   enginesReady, loadErr: () => loadErr,
   buildInputs, quoteProgram, quoteAll, parseTermMonths, PROGRAM_LABEL,
+  econVersionFor,
 };

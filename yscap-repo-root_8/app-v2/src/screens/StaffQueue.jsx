@@ -1,13 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { api } from '../lib/api.js';
+import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const addrLine = (a) => !a ? '—' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '—');
-const LABEL = { new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
+const LABEL = { file_intake: 'Intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
 // Presentational only: map a file's status → PILOT pill colour variant (dot pill).
-const PILL = { new: 'info', in_review: 'info', processing: 'info', underwriting: 'warn', approved: 'ok', clear_to_close: 'ok', funded: 'ok', on_hold: 'alert', declined: 'crit', withdrawn: 'mut' };
+const PILL = { file_intake: 'mut', new: 'info', in_review: 'info', processing: 'info', underwriting: 'warn', approved: 'ok', clear_to_close: 'ok', funded: 'ok', on_hold: 'alert', declined: 'crit', withdrawn: 'mut' };
 // Two-letter monogram from a name (officer avatar) — display formatter.
 const initials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase() || '—';
 // Status GROUPS (owner-defined). The pipeline defaults to ACTIVE so paused/
@@ -16,6 +16,9 @@ const initials = (name) => (name || '').trim().split(/\s+/).filter(Boolean).map(
 // active view and every task surface, but stay reachable in their own bucket);
 // Closed = funded; Cancelled = withdrawn/declined.
 const STATUS_GROUPS = {
+  // #151: file_intake is deliberately NOT in 'active' — an intake prospect is
+  // in the system but not yet an active file. It gets its own bucket.
+  intake: ['file_intake'],
   active: ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close'],
   on_hold: ['on_hold'],
   closed: ['funded'],
@@ -23,7 +26,7 @@ const STATUS_GROUPS = {
 };
 // The 'closed' group is funded-only, so it's labelled "Funded" — that's the view
 // owners look for. ('Cancelled' covers withdrawn/declined.)
-const GROUP_LABEL = { active: 'Active', on_hold: 'On hold', closed: 'Funded', cancelled: 'Cancelled', all: 'All' };
+const GROUP_LABEL = { intake: 'Intake', active: 'Active', on_hold: 'On hold', closed: 'Funded', cancelled: 'Cancelled', all: 'All' };
 const inGroup = (g, status) => g === 'all' || (STATUS_GROUPS[g] || []).includes(status);
 const bigMoney = (n) => n == null ? '$0' : n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? '$' + Math.round(n / 1e3) + 'K' : '$' + n;
 
@@ -47,27 +50,37 @@ const paramsEqual = (a, b) => {
   return ak.length === bk.length && ak.every((k) => String(a[k]) === String(b[k]));
 };
 
+// #145 — every exception tile drills into the pipeline filtered to EXACTLY the
+// files it counts. The `flag` matches the server /exceptions count key 1:1
+// (DASH_FILTER_SQL), so the count and the drilled list can never disagree. The
+// tiles render on the pipeline screen itself, so ?flag=<key> applies in place.
 const EXC = [
-  { k: 'needs_correction', label: 'Docs need correction', to: '/internal/tasks' },
-  { k: 'awaiting_review', label: 'Awaiting your review', to: '/internal/tasks' },
-  { k: 'awaiting_borrower', label: 'Awaiting borrower', to: '/internal/tasks' },
-  { k: 'unread_messages', label: 'Unread messages', to: '/internal/chat' },
-  { k: 'open_conditions', label: 'Open conditions', to: '/internal/tasks' },
-  { k: 'unassigned', label: 'Unassigned', to: '/internal' },
-  { k: 'post_closing_exceptions', label: 'Post-closing exceptions', to: '/internal/tasks' },
+  { k: 'needs_correction', label: 'Docs need correction' },
+  { k: 'awaiting_review', label: 'Awaiting your review' },
+  { k: 'awaiting_borrower', label: 'Awaiting borrower' },
+  { k: 'unread_messages', label: 'Unread messages' },
+  { k: 'open_conditions', label: 'Open conditions' },
+  { k: 'unassigned', label: 'Unassigned' },
+  { k: 'post_closing_exceptions', label: 'Post-closing exceptions' },
 ];
-function ExceptionStrip({ e }) {
+function ExceptionStrip({ e, activeFlag }) {
   if (!e) return null;
   const live = EXC.filter(x => (e[x.k] || 0) > 0);
   if (live.length === 0) return null;
   return (
     <div className="tiles">
-      {live.map(x => (
-        <Link key={x.k} to={x.to} className={`tile${x.k === 'needs_correction' ? ' acc' : ''}`} style={{ textDecoration: 'none' }}>
-          <span className="fig">{e[x.k]}</span>
-          <span className="lab">{x.label}</span>
-        </Link>
-      ))}
+      {live.map(x => {
+        const active = activeFlag === x.k;
+        return (
+          <Link key={x.k} to={`?flag=${x.k}`}
+            className={`tile${x.k === 'needs_correction' ? ' acc' : ''}`}
+            aria-current={active ? 'true' : undefined}
+            style={{ textDecoration: 'none', borderColor: active ? 'var(--teal)' : undefined }}>
+            <span className="fig">{e[x.k]}</span>
+            <span className="lab">{x.label}</span>
+          </Link>
+        );
+      })}
     </div>
   );
 }
@@ -91,8 +104,16 @@ function Kpis({ d, activeParams }) {
     { k: 'Funded (all time)', v: d.funded,
       sub: `${d.fundedLifetimeValue != null ? bigMoney(d.fundedLifetimeValue) : ''}${d.fundedNoDate ? ` · ${d.fundedNoDate} awaiting date` : ''}`,
       params: { group: 'closed' } },
+    // #145 — drills via flag=newintake so the list reproduces the KPI count
+    // EXACTLY (real intakes < 7 days, excluding clickup_backfill rows). A plain
+    // createdFrom filter would also show backfilled rows the count excludes.
     { k: 'New this week', v: d.newThisWeek, sub: 'real intakes',
-      params: { createdFrom: daysAgoISO(7) } },
+      params: { flag: 'newintake' } },
+    // #151 — pre-processing intake prospects (ClickUp starting / prospect &
+    // pricing). In the system, but NOT active files; never inside the pipeline
+    // value or 'active' count above.
+    { k: 'Intake', v: d.intake != null ? d.intake : 0, sub: 'pre-processing prospects',
+      params: { group: 'intake' } },
     { k: 'Open leads', v: d.openLeads, to: '/internal/leads' },
     // Ops/AI signal: active files that have gone stale (untouched > 7 days).
     { k: 'Needs attention', v: d.stalled != null ? d.stalled : d.stale, alert: (d.stalled != null ? d.stalled : d.stale) > 0, sub: 'stalled > 7 days',
@@ -288,6 +309,7 @@ export default function StaffQueue() {
   const [dash, setDash] = useState(null);
   const [exc, setExc] = useState(null);
   const [err, setErr] = useState('');
+  const [exporting, setExporting] = useState(false);   // #152 Export to Excel in flight
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
 
@@ -316,11 +338,25 @@ export default function StaffQueue() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qs]);
 
+  // Last-request-wins (root-caused 2026-07-16: "search results vanish after
+  // 10–20s"). A slow EARLIER response — the heavy unfiltered mount fetch, or a
+  // delayed sync-refresh — used to land after the filtered one and overwrite
+  // the visible list with unfiltered rows while the query stayed in the bar.
+  // Every response now applies only if it's still the LATEST request.
+  const listSeq = useRef(0);
   const fetchList = useCallback(() => {
+    const mine = ++listSeq.current;
     setList(null);
-    return api.staffApplications(serverParams).then(setList).catch(e => { setList([]); setErr(e.message); });
+    return api.staffApplications(serverParams)
+      .then(d => { if (mine === listSeq.current) setList(d); })
+      .catch(e => { if (mine === listSeq.current) { setList([]); setErr(e.message); } });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverKey]);
+  // Delayed refreshes (the ClickUp sync timers) must read the LIVE filters, not
+  // the ones captured at click time — a stale closure refetched WITHOUT the
+  // user's query and reset the list. The ref always points at the current fn.
+  const fetchListRef = useRef(fetchList);
+  useEffect(() => { fetchListRef.current = fetchList; }, [fetchList]);
 
   // Leads, exceptions, and the unfiltered facet list load once.
   const loadContext = useCallback(() => {
@@ -342,7 +378,11 @@ export default function StaffQueue() {
     const p = {};
     if (mine) p.mine = '1';
     if (officerId) p.officerId = officerId;
-    api.staffDashboard(p).then(setDash).catch(() => {});
+    // Same last-request-wins guard as the list — a slow earlier KPI response
+    // must never overwrite a newer view's numbers.
+    let alive = true;
+    api.staffDashboard(p).then(d => { if (alive) setDash(d); }).catch(() => {});
+    return () => { alive = false; };
   }, [dashKey]);
 
   useEffect(() => { loadContext(); }, [loadContext]);
@@ -353,9 +393,12 @@ export default function StaffQueue() {
     try {
       await api.staffSyncMyClickup();
       setSyncMsg('Pulling your files from ClickUp… this refreshes in a moment.');
-      // the backfill runs server-side; reload the pipeline a few times as it lands
-      setTimeout(() => { loadContext(); fetchList(); }, 4000);
-      setTimeout(() => { loadContext(); fetchList(); setSyncMsg('Synced ✓'); setTimeout(() => setSyncMsg(''), 4000); }, 12000);
+      // the backfill runs server-side; reload the pipeline a few times as it
+      // lands — via the ref, so the refresh honors whatever the user has
+      // typed/filtered SINCE clicking sync (a stale closure used to refetch
+      // without the query and wipe their search results).
+      setTimeout(() => { loadContext(); fetchListRef.current(); }, 4000);
+      setTimeout(() => { loadContext(); fetchListRef.current(); setSyncMsg('Synced ✓'); setTimeout(() => setSyncMsg(''), 4000); }, 12000);
     } catch (e) { setSyncMsg(e.message || 'Sync failed'); }
     finally { setTimeout(() => setSyncing(false), 12000); }
   }
@@ -425,7 +468,7 @@ export default function StaffQueue() {
   const mineLabel = seesAllFiles ? 'All applications' : 'My pipeline';
   // Status options are DERIVED from the data (+ the canonical set) so no file can
   // ever be un-selectable / hidden by a status not in a fixed list (e.g. on_hold).
-  const CANON = ['new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
+  const CANON = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
   const present = [...new Set((allFiles || []).map(a => a.status).filter(Boolean))];
   const STATUS_ORDER = [...CANON, ...present.filter(s => !CANON.includes(s))];
 
@@ -462,16 +505,16 @@ export default function StaffQueue() {
         <ProductionBlock d={dash} />
         <HealthBlock d={dash} />
       </div>
-      <ExceptionStrip e={exc} />
+      <ExceptionStrip e={exc} activeFlag={curFilter.flag || ''} />
       {tab === 'mine' && (
         <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           {/* Primary lens: Active (default) / Closed / Cancelled / All — so the
               working pipeline never shows funded or withdrawn files unless asked. */}
           <div className="tabs">
-            {['active', 'on_hold', 'closed', 'cancelled', 'all'].map(g => (
+            {['active', 'intake', 'on_hold', 'closed', 'cancelled', 'all'].map(g => (
               <button key={g} className={`tab ${(groupF === g || (groupF === '' && g === 'all')) ? 'on' : ''}`}
                 onClick={() => setParam({ group: g, status: '' })}
-                title={g === 'active' ? 'In-progress files (default)' : g === 'on_hold' ? 'Paused files (kept out of the active view and task lists)' : g === 'closed' ? 'Funded files' : g === 'cancelled' ? 'Withdrawn / declined' : 'Every file'}>
+                title={g === 'active' ? 'In-progress files (default)' : g === 'intake' ? 'File-intake prospects (pre-processing — not active files)' : g === 'on_hold' ? 'Paused files (kept out of the active view and task lists)' : g === 'closed' ? 'Funded files' : g === 'cancelled' ? 'Withdrawn / declined' : 'Every file'}>
                 {GROUP_LABEL[g]}{allFiles ? <span className="ct">{groupCount(g)}</span> : null}
               </button>
             ))}
@@ -542,6 +585,19 @@ export default function StaffQueue() {
               <button className="btn link small" onClick={clearFilters}>Clear filters</button>
             </>
           )}
+          {/* #152 — export EXACTLY this view (same filters, incl. "My files
+              only") to a real .xlsx with the maximum per-file information. */}
+          <button className="btn ghost small" style={{ marginLeft: 'auto' }} disabled={exporting}
+            onClick={async () => {
+              setExporting(true);
+              try {
+                const { blob, filename } = await api.staffExportPipeline({ ...serverParams, limit: undefined, offset: undefined, ...(mineOnly ? { mine: '1' } : {}) });
+                saveBlob(blob, filename || 'pilot-pipeline.xlsx');
+              } catch (e) { setErr(e.message || 'Export failed'); }
+              finally { setExporting(false); }
+            }}>
+            {exporting ? 'Exporting…' : 'Export to Excel'}
+          </button>
         </div>
       )}
       {tab === 'leads' && (

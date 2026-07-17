@@ -28,6 +28,7 @@ const email = require('./email');
 const storage = require('./storage');
 const { can } = require('./permissions');
 const { scrubText } = require('./borrower-safe');
+const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
 const CHAT_EMAIL_DELAY_MIN = 10;      // email fallback only if still unread after this
 const URGENT_RENOTIFY_MIN = 2;        // Teams-style urgent re-ping cadence
@@ -263,6 +264,68 @@ async function postExternalReply(replyKey, body) {
   return message;
 }
 
+/** The per-conversation reply-to for an internal/borrower MEMBER, or null when no
+    inbound domain is configured (the caller then falls back to the file+ inbox
+    reply-to — existing behavior). The member's reply_key (#144) routes an email
+    reply straight back into THIS conversation as THAT member — the internal/
+    borrower analog of the external guest's chat+ address. */
+async function memberReplyToFor(conversationId, memberKind, memberId) {
+  if (!cfg.chatReplyDomain) return null;
+  try {
+    const r = await db.query(
+      `SELECT reply_key FROM conversation_members
+        WHERE conversation_id=$1 AND member_kind=$2 AND member_id=$3 AND removed_at IS NULL`,
+      [conversationId, memberKind, memberId]);
+    const key = r.rows[0] && r.rows[0].reply_key;
+    return key ? replyToFor(key) : null;
+  } catch (_) { return null; }
+}
+
+/** Post an inbound email reply from an internal/borrower MEMBER back into the
+    chat (#144). Matches the opaque per-member reply_key; a removed member no
+    longer resolves (removed_at IS NULL — the same boundary as live-chat access).
+    Posts AS that member so the normal fan-out notifies the whole thread (every
+    other member, incl. the assignees). Returns the posted message, or null for an
+    unknown/removed key, a dead conversation, or a borrower PII block (terminal —
+    never retried). */
+async function postMemberReply(replyKey, body) {
+  const text = String(body || '').trim();
+  if (!text) return null;
+  const r = await db.query(
+    `SELECT conversation_id, member_kind, member_id, role_label
+       FROM conversation_members
+      WHERE reply_key=$1 AND removed_at IS NULL`, [String(replyKey || '')]);
+  const cm = r.rows[0];
+  if (!cm) return null;
+  const conv = await getConversation(cm.conversation_id);
+  if (!conv || conv.app_deleted_at || conv.archived_at) return null;
+  try {
+    const { message } = await postMessage({
+      conv, actor: { kind: cm.member_kind, id: cm.member_id, roleLabel: cm.role_label },
+      body: text.slice(0, 8000),
+    });
+    return message;
+  } catch (e) {
+    // A borrower PII block (or any 400-class rejection) is TERMINAL — the reply
+    // can't post as-is and retrying won't help; swallow to null so the inbound
+    // webhook marks it done instead of looping. Genuine transient errors (DB/
+    // network) rethrow so the webhook can return retryable.
+    if (e && (e.code === 'pii_blocked' || e.status === 400)) return null;
+    throw e;
+  }
+}
+
+/** Resolve an inbound chat reply key against BOTH participant families (#144):
+    an external guest (#75) OR an internal/borrower member. The external table is
+    tried first (a distinct key space); a member key is tried when no external one
+    matches. Returns the posted message or null. This is the single resolver every
+    inbound path should call. */
+async function postInboundReply(replyKey, body) {
+  const ext = await postExternalReply(replyKey, body);
+  if (ext) return ext;
+  return postMemberReply(replyKey, body);
+}
+
 /* --------------------------------------------------------------- messages */
 
 // One shared projection so REST responses and SSE payloads carry the same shape.
@@ -373,6 +436,23 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
       }
       text = scan.redacted;                       // staff: redact in place, keep last 4
       piiFlag = scan.kinds;
+    }
+  }
+
+  // S4-06: the SSN/card guard also applies to an attachment's FILE NAME. A file
+  // named "my ssn 123-45-6789.pdf" would otherwise leak the number into storage,
+  // the transcript, exports and email. Borrower → block the send; staff → rename
+  // the attachment to the redacted form before it persists.
+  if (attachment && attachment.filename) {
+    const fscan = pii.scan(attachment.filename);
+    if (fscan.found) {
+      if (actor.kind === 'borrower') {
+        const e = new Error(pii.BORROWER_BLOCK_MESSAGE);
+        e.status = 400; e.code = 'pii_blocked';
+        throw e;
+      }
+      attachment = { ...attachment, filename: fscan.redacted };
+      piiFlag = piiFlag ? [...new Set([...piiFlag, ...fscan.kinds])] : fscan.kinds;
     }
   }
 
@@ -781,7 +861,14 @@ async function fireChatEmail(j) {
         meta: ctx ? ctx.meta : [],
         attachments,
       }, isBorrower ? 'borrower' : 'staff');
-      await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments }).catch(() => {});
+      // #144 — the recipient's own per-member chat+ reply key routes their email
+      // reply straight back INTO this conversation as themselves (they see it in
+      // the thread, and the normal fan-out notifies everyone else, incl. the
+      // assignees). Only when no inbound domain is configured do we fall back to
+      // the file+ inbox reply-to, which fans a reply out to the assigned team (#68).
+      const chatReplyTo = await memberReplyToFor(conv.id, j.recipient_kind, j.recipient_id);
+      await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments,
+        replyTo: chatReplyTo || fileReplyTo(conv.application_id) }).catch(() => {});
     }
   }
   // One digest covers every pending email job for this recipient+conversation.
@@ -826,7 +913,8 @@ module.exports = {
   ensureConversationsForApp, getConversation, getMessage,
   staffCanAccess, borrowerCanAccess, isMember, membersOf,
   externalParticipantsOf, addExternalParticipant, removeExternalParticipant,
-  emailExternalParticipants, postExternalReply, replyToFor,
+  emailExternalParticipants, postExternalReply, postMemberReply, postInboundReply,
+  memberReplyToFor, replyToFor,
   fetchMessages, postMessage, postSystemMessage,
   markRead, markUnread, markDelivered, recountUnread, totalUnread, pushUnreadUpdate,
   runNotificationJobs, startSweeper, SEES_ALL_ROLES,

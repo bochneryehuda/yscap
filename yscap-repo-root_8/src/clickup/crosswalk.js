@@ -88,9 +88,14 @@ const FIELDS = {
     },
   },
   // Borrower-facing status mirror ON the ClickUp task (option labels == our values).
+  // file_intake (#151): resolves only once a 'file_intake' option is added to the
+  // ClickUp dropdown — until then the mirror write is silently skipped (the
+  // label→id lookup returns null and the mapper's put() drops nulls), never a
+  // guard trip or a wrong option.
   borrower_portal_status: {
     id: 'a47ce5e3-eea7-4f70-93ca-8062dee4d1b7',
     to: {
+      file_intake: 'file_intake',
       new: 'new', in_review: 'in_review', processing: 'processing', underwriting: 'underwriting',
       approved: 'approved', clear_to_close: 'clear_to_close', funded: 'funded',
       on_hold: 'on_hold', declined: 'declined', withdrawn: 'withdrawn',

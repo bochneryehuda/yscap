@@ -1,10 +1,11 @@
 /**
- * Inbound email → chat (#75). When an external chat guest replies to the unique
+ * Inbound email → chat (#75, #144). When ANY chat member replies to their unique
  * reply-to address (chat+<reply_key>@<CHAT_REPLY_DOMAIN>), the email provider's
  * inbound webhook POSTs the parsed message here, and we post it back into the
- * conversation as that guest.
+ * conversation as that member — an external guest (#75) OR an internal/borrower
+ * member (#144), resolved by chat.postInboundReply against both families.
  *
- * The reply_key IS the secret — 144 bits of unguessable entropy — so an unknown
+ * The reply_key IS the secret — 122+ bits of unguessable entropy — so an unknown
  * or removed key is a silent no-op (200, so the provider doesn't retry). This
  * endpoint stays dormant until an inbound-email domain is configured in Resend
  * (CHAT_REPLY_DOMAIN + an inbound route/webhook); no key ever matches before then.
@@ -56,7 +57,8 @@ router.post('/', express.json({ limit: '2mb' }), async (req, res) => {
     if (!key) return res.json({ ok: true, skipped: 'no reply key' });
     const text = topReply(d.text || d.plain || d['stripped-text'] || d.body || '');
     if (!text) return res.json({ ok: true, skipped: 'empty body' });
-    const msg = await chat.postExternalReply(key, text);
+    // #144 — an external guest OR an internal/borrower member: resolve against both.
+    const msg = await chat.postInboundReply(key, text);
     return res.json({ ok: true, posted: !!msg });
   } catch (e) {
     // Never 500 back to a provider (it would retry forever); log + accept.
