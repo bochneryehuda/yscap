@@ -4,7 +4,7 @@
 
 **Status legend:** ✅ DONE (live in `main`) · 🟡 PARTIAL · ⬜ OPEN (not started).
 
-**Bottom line as of 2026-07-17:** of ~27 verified findings, **12 fully closed + 2 partial**; of 19 work orders, **7 fully done + 2 partial**. Roughly **~50% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
+**Bottom line as of 2026-07-17:** of ~27 verified findings, **12 fully closed + 3 partial**; of 19 work orders, **7 fully done + 3 partial**. Roughly **~50% of the audit is implemented** (the first 5 fixes live in `main`; the rest staged on PR #314). Done: the critical silent-lost-edit bug, the reliability core (rate-limiting, durable bookmark, both boot-storm drivers), token-rotation safety, loud enqueue failures, year-0026-proof LLC/checklist dates, and auto-closable DOB review rows. The bulk still remaining — the structural work (field registry, provenance, identity tiers), the review-queue redesign, SharePoint pre-launch, and SSN minimization — is a multi-day body of work, tracked below.
 
 ---
 
@@ -22,7 +22,7 @@
 | **F-M3** | Enqueue failures swallowed; backstop sweep retired | 🟡 PARTIAL | loud+traceable failure done (WO-5 ph1); transactional enqueue = WO-5 ph2 |
 | **F-M4** | Inbound human-edit-wins on one-sided evidence | ⬜ OPEN | WO-11 |
 | **F-M5** | Email+phone corroboration merges different-named people | ⬜ OPEN | WO-12 |
-| **F-M6** | Inbound webhook 'error' = silent terminal drop | ⬜ OPEN | WO-3 |
+| **F-M6** | Inbound webhook 'error' = silent terminal drop | 🟡 PARTIAL | traceable (audit_log) + boot re-drive self-heal done (WO-3 ph1); visible card + webhook-health probe = ph2 |
 | **F-M7** | Watermark advances past mid-pass / failed tasks | ✅ DONE | WO-4a, live |
 | **F-M8** | Year-range review cards carry no portal value | ✅ DONE | WO-6 (both producers pass the PILOT value) |
 | **F-M9** | Value-agnostic dismissals over-suppress new conflicts | ⬜ OPEN | WO-8 |
@@ -52,7 +52,7 @@
 | **WO-4a** | Durable reconcile watermark (F-M7, part of F-H4) | ✅ DONE (live) |
 | **WO-4b** | Bound+pace reconcileLinkedPrograms (F-H4) + heartbeat (F-M15) + breaker-seed (F-M16) | ✅ DONE |
 | **WO-5** | Transactional enqueue (F-M3) | 🟡 PARTIAL (ph1 loud-failure done; ph2 transactional open) |
-| **WO-3** | Inbound dead-letters + webhook-health probe (F-M6) | ⬜ OPEN |
+| **WO-3** | Inbound dead-letters + webhook-health probe (F-M6) | 🟡 PARTIAL (ph1 traceable+self-heal done; ph2 review card + webhook health) |
 | **WO-6** | Small-fixes bundle (F-M14✅ F-M11✅ F-M20✅ F-M12✅ F-M8✅; 113 renumber✅) | ✅ DONE |
 | **WO-7** | Review-queue tiers + notification coalescer | ⬜ OPEN |
 | **WO-8** | Sticky dismissals + noise telemetry + unlink (F-M9/17) | ⬜ OPEN |

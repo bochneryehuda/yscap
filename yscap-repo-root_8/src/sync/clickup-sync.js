@@ -680,10 +680,45 @@ async function processInboxOnce() {
     await db.query(`UPDATE clickup_webhook_inbox SET status='done', processed_at=now() WHERE id=$1`, [row.id]);
   } catch (e) {
     const attempts = row.attempts + 1;
+    const terminal = attempts >= 6;
     await db.query(`UPDATE clickup_webhook_inbox SET status=$1, attempts=$2, last_error=$3 WHERE id=$4`,
-      [attempts >= 6 ? 'error' : 'received', attempts, String(e.message).slice(0, 500), row.id]);
+      [terminal ? 'error' : 'received', attempts, String(e.message).slice(0, 500), row.id]);
+    // WO-3 (F-M6): a terminal inbox failure used to be a SILENT drop — the row
+    // sat in 'error' and nothing ever looked at it, so a ClickUp update never
+    // reached the portal and no one knew. Make it traceable (audit_log, PII-free)
+    // so it surfaces in the evidence report; the boot re-drive
+    // (redriveInboxErrorsOnce) re-attempts error rows on the next deploy so a
+    // transient failure self-heals. (Phase 2: a visible review card + a
+    // webhook-health probe.)
+    if (terminal) {
+      try {
+        await db.query(
+          `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+           VALUES ('system', 'clickup_ingest_failed', 'application', NULL, $1)`,
+          [JSON.stringify({ inboxId: row.id, taskId: row.task_id || null, error: String(e.message).slice(0, 300) })]);
+      } catch (_) { /* the row is already in 'error' with last_error; audit is the extra trace */ }
+    }
   }
   return true;
+}
+
+// WO-3 (F-M6): re-attempt terminally-failed inbox rows on boot so a transient
+// failure (a brief outage, a since-fixed bug) self-heals instead of sitting in
+// 'error' forever, silently dropping a ClickUp update. Bounded + newest-per-task
+// so a persistent failure can't spin; ingestOne is idempotent, so re-driving is
+// safe. attempts are NOT reset, so a still-broken row terminals again after one
+// more try (one retry per deploy, never an infinite loop).
+async function redriveInboxErrorsOnce() {
+  const sel = await db.query(
+    `SELECT DISTINCT ON (task_id) id FROM clickup_webhook_inbox
+      WHERE status='error' AND task_id IS NOT NULL AND received_at > now() - interval '7 days'
+      ORDER BY task_id, received_at DESC
+      LIMIT 100`).catch(() => ({ rows: [] }));
+  if (!sel.rows.length) return 0;
+  const ids = sel.rows.map((x) => x.id);
+  await db.query(`UPDATE clickup_webhook_inbox SET status='received' WHERE id = ANY($1) AND status='error'`, [ids]).catch(() => {});
+  console.log(`[clickup-sync] inbox re-drive: reset ${ids.length} terminal error row(s) to retry`);
+  return ids.length;
 }
 
 /** Fetch + ingest a single task by id, applying the materialization gate.
@@ -1302,6 +1337,10 @@ function start() {
     // handling) heals the entire stuck backlog on deploy — not only the tasks
     // that happen to receive a new webhook.
     retryStuckTasksOnce().catch((e) => console.error('[clickup-sync] stuck-task retry', e.message));
+    // WO-3 (F-M6): re-attempt any terminally-failed inbound webhook rows so a
+    // transient/ since-fixed failure self-heals instead of silently dropping a
+    // ClickUp update forever.
+    redriveInboxErrorsOnce().catch((e) => console.error('[clickup-sync] inbox re-drive', e.message));
   }, cfg.clickupRunBackfill ? 120000 : 15000);
 
   // Review-queue upkeep (mega-audit enhancements #2/#5): the aging sweep
@@ -1350,7 +1389,7 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
   reconcileSince, nextWatermark, // WO-4: exported for the durable-watermark test
   isTaskDeletedError, // WO-6: exported for the token-rotation-safety test
   shouldSkipOrphanResolution }; // WO-4b: exported for the orphan-breaker test
