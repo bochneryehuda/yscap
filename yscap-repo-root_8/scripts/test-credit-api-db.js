@@ -122,6 +122,10 @@ const importTransport = async () => ({ status: 200, headers: { get: () => 'text/
   ok('review-queue surfaces the fatal-finding imported report as kind=finding',
      Array.isArray(rq.j.queue) && rq.j.queue.some((x) => x.id === repF && x.kind === 'finding'));
   ok('review-queue finding row carries a reason', !!(rq.j.queue.find((x) => x.id === repF) || {}).reason);
+  // Scoped (off-file) officer must NOT see this file's finding in their queue (no IDOR).
+  const rqOff = await call('GET', '/credit/review-queue', OFF);
+  ok('scoped off-file officer review-queue 200', rqOff.status === 200);
+  ok('scoped off-file officer does NOT see the off-file finding', Array.isArray(rqOff.j.queue) && !rqOff.j.queue.some((x) => x.id === repF));
   ok('GET /credit/health 200', (await call('GET', '/credit/health', A)).status === 200);
   ok('POST /credit/order 400 (missing appId)', (await call('POST', '/credit/order', A, {})).status === 400);
   ok('POST /credit/order 403 (off-file LO)', (await call('POST', '/credit/order', OFF, { applicationId: appId, action: 'Reissue', creditReportIdentifier: 'X' })).status === 403);

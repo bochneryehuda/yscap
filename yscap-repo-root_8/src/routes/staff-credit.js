@@ -255,43 +255,54 @@ router.get('/credit/review-queue', requirePull, async (req, res) => {
   try {
     const scoped = !can(req.actor, 'see_all_files');
     const underwriting = require('../lib/credit/underwriting');
-    const scopeSql = scoped ? `AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')}` : '';
+    // deleted_at IS NULL is UNCONDITIONAL (never surface a soft-deleted file); the
+    // officer-visibility clause is added only for scoped staff.
+    const scopeSql = scoped ? `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}` : '';
     const params = scoped ? [req.actor.id] : [];
 
-    // (a) status-based review items.
+    // (a) status-based review items — a frozen/no-score 'review' or a timed-out
+    // 'in_doubt'. Only when it's STILL the current state: a later successful
+    // IMPORTED re-pull supersedes it (matches the gate; keeps stale rows out).
     const reviewRows = (await db.query(
       `SELECT cr.id, cr.application_id, cr.representative_score, cr.review_reason, cr.status, cr.created_at,
               b.first_name, b.last_name
          FROM credit_reports cr
-         LEFT JOIN applications a ON a.id = cr.application_id
+         JOIN applications a ON a.id = cr.application_id AND a.deleted_at IS NULL
          LEFT JOIN borrowers b ON b.id = a.borrower_id
-        WHERE cr.status IN ('review','in_doubt') ${scopeSql}
+        WHERE cr.status IN ('review','in_doubt')
+          AND NOT EXISTS (
+            SELECT 1 FROM credit_reports later
+             WHERE later.application_id = cr.application_id AND later.status = 'imported'
+               AND (later.created_at, later.id) > (cr.created_at, cr.id))
+          ${scopeSql}
         ORDER BY cr.created_at DESC LIMIT 200`, params)).rows
       .map((r) => ({ ...r, kind: r.status, reason: r.review_reason }));
 
-    // (b) the LATEST imported report per file, kept only when it carries an active
-    // fatal finding (matches the gate: a later clean import supersedes/clears it).
+    // (b) the LATEST imported report per file, kept ONLY when it carries an active
+    // fatal finding — filtered IN SQL via credit_active_fatal_count (db/171) so the
+    // set is already just the blocked files (no LIMIT-before-filter that could hide
+    // blocked files at scale). Matches the gate: a later clean import supersedes.
     const findingRows = (await db.query(
       `SELECT * FROM (
          SELECT DISTINCT ON (cr.application_id)
                 cr.id, cr.application_id, cr.representative_score, cr.status, cr.created_at,
                 cr.underwriting_finding, cr.underwriting_finding_reconciled_at, b.first_name, b.last_name
            FROM credit_reports cr
-           LEFT JOIN applications a ON a.id = cr.application_id
+           JOIN applications a ON a.id = cr.application_id AND a.deleted_at IS NULL
            LEFT JOIN borrowers b ON b.id = a.borrower_id
           WHERE cr.status = 'imported' ${scopeSql}
           ORDER BY cr.application_id, cr.created_at DESC, cr.id DESC
        ) latest
+       WHERE credit_active_fatal_count(latest.underwriting_finding, latest.underwriting_finding_reconciled_at) > 0
        ORDER BY latest.created_at DESC LIMIT 200`, params)).rows
       .map((r) => {
         const fatal = underwriting.activeFatalFindings(r.underwriting_finding, r.underwriting_finding_reconciled_at);
-        return fatal.length ? {
+        return {
           id: r.id, application_id: r.application_id, representative_score: r.representative_score,
           status: r.status, created_at: r.created_at, first_name: r.first_name, last_name: r.last_name,
           kind: 'finding', reason: fatal.map((f) => f.message).join(' • '),
-        } : null;
-      })
-      .filter(Boolean);
+        };
+      });
 
     // Merge, newest first (a file can legitimately appear for both a stuck re-pull
     // and an earlier blocking finding — different rows, different reasons).
