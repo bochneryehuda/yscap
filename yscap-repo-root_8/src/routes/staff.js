@@ -6293,6 +6293,28 @@ router.post('/sync-reviews/:id/reject', async (req, res) => {
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
 });
 
+// ---------------- e-signature (DocuSign) tracking — read model --------------
+// The internal "our own DocuSign" dashboard + the per-file section. Read-only
+// monitoring; management actions (send/resend/void) are added with the send
+// orchestration. Access: the cross-file dashboard is officer-scoped; the
+// per-file route rides the /applications/:id scope guard above.
+const esignTracking = require('../lib/esign/tracking');
+
+router.get('/esign/dashboard', async (req, res) => {
+  try {
+    const scope = seesAll(req)
+      ? { where: '', params: [] }
+      : { where: `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`, params: [req.actor.id] };
+    res.json(await esignTracking.dashboard(db, scope));
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
+router.get('/applications/:id/esign', async (req, res) => {
+  try {
+    res.json(await esignTracking.fileEsign(db, req.params.id));
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
 // ---------------- chat v3: conversations, receipts, presence ----------------
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).

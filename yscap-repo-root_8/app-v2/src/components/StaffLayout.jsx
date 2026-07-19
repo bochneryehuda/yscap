@@ -31,6 +31,7 @@ const NAV_ICON = {
   team: <><circle cx="9" cy="8.5" r="3.2" /><path d="M3 19a6 6 0 0 1 12 0" /><path d="M16 5.6a3.2 3.2 0 0 1 0 5.8" /><path d="M17 14.2A6 6 0 0 1 21 19" /></>,
   clickup: <><path d="M20.5 11a8.5 8.5 0 0 0-14.4-5L3 9" /><path d="M3.5 13a8.5 8.5 0 0 0 14.4 5L21 15" /><path d="M3 4v5h5M21 20v-5h-5" /></>,
   audit: <><path d="M12 3.5 5.5 6v5.2c0 4.1 2.8 6.9 6.5 8.3 3.7-1.4 6.5-4.2 6.5-8.3V6L12 3.5Z" /><path d="m9.2 11.8 2 2 3.6-3.6" /></>,
+  esign: <><path d="M4 17.5c1.8-.4 2.6-2.2 3.4-4.3.7-2 1.3-4.2 2.3-4.2.8 0 .9 1.2.7 2.8-.3 2-.8 3.9 0 4.4.9.6 2-.7 2.8-1.6" /><path d="M14 20h6" /></>,
 };
 function NavIcon({ name }) {
   return (
@@ -344,6 +345,7 @@ export default function StaffLayout({ children }) {
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
+        <NavLink className="sb-link" to="/internal/esign" title="E-Signatures — PILOT’s own DocuSign cockpit: every package, every signer, live"><NavIcon name="esign" />E-signatures</NavLink>
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
         {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><NavIcon name="archived" />Archived</NavLink>}
