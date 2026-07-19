@@ -118,10 +118,16 @@ function intField(v) {
 }
 
 async function audit(req, action, entity_type, entity_id, detail) {
+  // `detail` lands in a jsonb column. pg serializes a JS OBJECT to valid JSON, but
+  // a bare scalar (string/number/bool) is handed to jsonb verbatim and rejected
+  // ("invalid input syntax for type json"), which would turn an otherwise-successful
+  // action into a failed request. Wrap any scalar so a logging write can never do that.
+  let d = detail;
+  if (d != null && typeof d !== 'object') d = { note: String(d) };
   await db.query(
     `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
      VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
-    [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, detail || null]);
+    [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
 }
 // officers/processors only see their files; admins/super-admins/underwriters see all.
 // PLUS: a staffer may be granted access to specific loan officers' files (their
@@ -6485,7 +6491,7 @@ async function loadEsignEnvelope(req, rowId) {
 router.post('/esign/test-send', requireRole('admin'), async (req, res) => {
   try {
     const out = await require('../lib/esign/test-send').sendTestEnvelope({ actorId: req.actor.id, db, docusign: docusignLib });
-    await audit(req, 'esign_test_send', 'esign_test', null, out.to);
+    await audit(req, 'esign_test_send', 'esign_test', null, { to: out.to, envelopeId: out.envelopeId });
     res.json({ ok: true, ...out });
   } catch (e) { res.status(esignErrStatus(e)).json({ error: e.message }); }
 });
@@ -6496,7 +6502,7 @@ router.post('/applications/:id/esign/send', async (req, res) => {
   if (!esignOrchestrate.PACKAGES[purpose]) return res.status(400).json({ error: 'unknown package' });
   try {
     const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib });
-    await audit(req, 'esign_send', 'application', req.params.id, purpose);
+    await audit(req, 'esign_send', 'application', req.params.id, { purpose });
     // Return the REAL outcome — a dead-lettered send (missing document, recipient
     // not on the pre-go-live allow-list, validation error) must NOT report success
     // (that showed a false "Sent for signature." toast). ok mirrors sendPackage's
@@ -6518,7 +6524,7 @@ router.post('/esign/:rowId/resend', async (req, res) => {
     if (!row) return res.status(status).json({ error });
     if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
     await docusignLib.resendEnvelope(row.envelope_id);
-    await audit(req, 'esign_resend', 'application', row.application_id, row.purpose);
+    await audit(req, 'esign_resend', 'application', row.application_id, { purpose: row.purpose });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -6536,7 +6542,7 @@ router.post('/esign/:rowId/void', async (req, res) => {
     await db.query(
       `UPDATE esign_envelopes SET status='voided', voided_at=now(), void_reason=$2, updated_at=now() WHERE id=$1`,
       [row.id, reason]);
-    await audit(req, 'esign_void', 'application', row.application_id, `${row.purpose}: ${reason}`);
+    await audit(req, 'esign_void', 'application', row.application_id, { purpose: row.purpose, reason });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -6558,7 +6564,7 @@ router.post('/esign/:rowId/countersign-view', async (req, res) => {
       returnUrl, email: rec.email, userName: rec.name,
       clientUserId: rec.client_user_id, recipientId: rec.recipient_id_ds,
     });
-    await audit(req, 'esign_countersign_view', 'application', row.application_id, row.purpose);
+    await audit(req, 'esign_countersign_view', 'application', row.application_id, { purpose: row.purpose });
     res.json({ url });
   } catch (e) { res.status(esignErrStatus(e)).json({ error: e.message }); }
 });
