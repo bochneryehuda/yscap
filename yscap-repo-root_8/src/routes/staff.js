@@ -6298,4 +6298,9 @@ router.post('/sync-reviews/:id/reject', async (req, res) => {
 // application-scoped chat routes (create chat / export).
 router.use(require('./staff-chat'));
 
+// ---------------- credit reports (Xactus reissue + FICO verification) --------
+// Per-user vendor credentials + order/reissue/import. Inherits the staff auth
+// wall above; individual routes add the pull_credit capability gate.
+router.use(require('./staff-credit'));
+
 module.exports = router;

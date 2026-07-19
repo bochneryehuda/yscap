@@ -125,6 +125,30 @@ function decryptSSN(buf) {
   } catch { return null; }
 }
 
+// ---------- generic at-rest secret (AES-256-GCM) ----------
+// A third-party vendor login (Xactus operator password) is not an SSN, but it
+// is the same class of at-rest secret and rides the SAME master key + GCM frame
+// as encryptSSN (iv|tag|ciphertext bytea). Named separately so intent is clear
+// at every call site (a credential, not PII) and so a future key-separation is a
+// one-line change here. Throws on a decrypt whose auth tag fails (tamper/wrong
+// key) — a credential that silently decrypts to garbage would authenticate as a
+// blank password, so callers must see the failure, not a null.
+function encryptSecret(plain) {
+  if (plain == null || plain === '') return null;
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', _key(), iv);
+  const enc = Buffer.concat([c.update(String(plain), 'utf8'), c.final()]);
+  return Buffer.concat([iv, c.getAuthTag(), enc]); // stored in bytea
+}
+function decryptSecret(buf) {
+  if (!buf) return null;
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  const iv = b.subarray(0, 12), tag = b.subarray(12, 28), enc = b.subarray(28);
+  const d = crypto.createDecipheriv('aes-256-gcm', _key(), iv);
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(enc), d.final()]).toString('utf8'); // throws on bad tag
+}
+
 // #91/#92 — the SINGLE chokepoint for persisting an SSN. Normalizes to the 9
 // digits and returns { encrypted, last4, digits } — or NULL when the value isn't a
 // full 9-digit SSN. Every write path should go through this instead of hand-rolling
@@ -204,6 +228,7 @@ module.exports = {
   signJwt, verifyJwt,
   newTotpSecret, verifyTotp, totpUri,
   encryptSSN, decryptSSN, ssnForStorage,
+  encryptSecret, decryptSecret,
   sha256, randomToken,
   passwordProblem, PASSWORD_MIN, PASSWORD_MAX,
   newBackupCodes, hashBackupCode, normalizeBackupCode,

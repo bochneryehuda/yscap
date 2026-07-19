@@ -264,11 +264,29 @@ module.exports = {
     secret:   process.env.PLAID_SECRET,
     env:      (process.env.PLAID_ENV || 'sandbox').toLowerCase(),  // sandbox | development | production
   },
-  // Xactus (credit reports) — B2B credentials:
+  // Xactus (credit reports). The LOGIN is PER-USER, not here: each loan officer
+  // stores their own LoginAccountIdentifier + password (encrypted) in
+  // user_credit_credentials — this block is only the platform-level wiring the
+  // adapter needs (the assigned API endpoint, the party names echoed in the
+  // MISMO envelope, timeouts). The legacy username/password/clientId remain as an
+  // optional platform fallback for a single-login deployment, but the portal
+  // orders under the acting staffer's own credential.
   xactus: {
-    username: process.env.XACTUS_USERNAME,
-    password: process.env.XACTUS_PASSWORD,
-    clientId: process.env.XACTUS_CLIENT_ID,
-    endpoint: process.env.XACTUS_ENDPOINT,   // your assigned API base URL
+    // Assigned Xactus360 API base URL (e.g. https://<host>/...). No default —
+    // the integration stays dormant until this is set in the environment.
+    endpoint:            (process.env.XACTUS_ENDPOINT || '').trim().replace(/\/+$/, '') || null,
+    // Names echoed into the MISMO REQUEST envelope.
+    requestingPartyName: process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group',
+    submittingPartyName: process.env.XACTUS_SUBMITTING_PARTY || 'YS Capital Group LOS',
+    // Network budget for a single order/reissue POST (billable — never blind-retry).
+    timeoutMs:           parseInt(process.env.XACTUS_TIMEOUT_MS || '45000', 10),
+    // Verify a newly-saved credential by attempting a lightweight auth probe.
+    // Off by default so saving a credential never accidentally bills; flip on
+    // once the endpoint is live.
+    verifyOnSave:        process.env.XACTUS_VERIFY_ON_SAVE === '1',
+    // Optional platform-level fallback login (single-login deployments only).
+    username:            process.env.XACTUS_USERNAME,
+    password:            process.env.XACTUS_PASSWORD,
+    clientId:            process.env.XACTUS_CLIENT_ID,
   },
 };
