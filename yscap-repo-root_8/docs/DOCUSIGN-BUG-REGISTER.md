@@ -108,3 +108,22 @@ further punch-list (all in not-yet-live code; **all now FIXED + re-tested**):
 
 _Verified: `scripts/test-docusign-lib.js` (23 pure-logic assertions incl. L-A parallel routing + L-C
 origin pin) and `scripts/test-esign-send.js` (21 DB-backed send-once assertions) — all pass._
+
+---
+
+## F. Signing-redirect + sending-identity research round — designed-out before build
+
+Bug-hunt on the post-signing redirect + the single "PILOT by YS Capital" sender (full design in
+`DOCUSIGN-REDIRECT-AND-ACCOUNT-SETUP.md`). These are **designed out** — the Phase-6 build follows the
+bounce-endpoint pattern rather than the naive approach, so they never ship.
+
+| ID | Severity | Defect (naive approach) | Design that prevents it |
+|----|----------|-------------------------|--------------------------|
+| RB-A | **Blocker** | A hardcoded `?signed=1` (or any redirect param) is present on **decline/cancel/timeout** too — DocuSign uses the same returnUrl for every outcome and only varies `event=`. Trusting it marks a declined file as "signed"; anyone can type `?signed=1`. | Redirect is a **UI hint only**; the condition clears solely from the HMAC-verified Connect webhook + `Envelopes:get`. `signed=1` is attached by **our** server only after it confirms completion. |
+| RB-B | **Blocker** | HashRouter footgun: DocuSign concatenates `event=` onto `…/#/app/123`, so it lands **inside the `#` fragment** — `window.location.search` is empty, unreadable; fragments also drop across 302s. | A **non-hash server bounce endpoint** `/api/esign/return?app=&env=` reads `event` reliably, verifies status, then 302s into `#/app/<id>?signed=1`. The fragment is added by us, after DocuSign is out of the loop. |
+| RB-C | High | Redirect vs Connect webhook **race** (webhook is 20s–min late, not guaranteed) → file shows "awaiting signature" after the borrower just signed, or vice-versa. | Backend is the single source of truth; the bounce endpoint polls `Envelopes:get` with short backoff; whichever of {webhook, poll} arrives first is applied idempotently. |
+| RB-D | High | Email signers have **no per-envelope API redirect** — a Brand Destination URL is account/brand-global, so it can't know which file. | Carry the loan id via an **Envelope Custom Field** (`LoanFileId`) merge field in the Brand Destination URL → the same bounce endpoint. |
+| RB-E | High | The single dedicated sender is a **SPOF**: deactivation / lost consent / wrong GUID kills ALL sending with an obscure auth error (`consent_required`, `user_not_found`). | Scheduled sender **health check** (`ping()`) with alerting; assert GUID (not email), pin per environment. |
+| RB-F | Med | The embedded recipient-view URL is single-use + ~5-min TTL; storing/reusing it 404s or double-fires. | Mint on demand right before launch; regenerate on `session_timeout`/`ttl_expired`; guard against double-generation (React double-render/back button). |
+| RB-G | Med | Co-borrower: the first signer's `signing_complete` fires while the envelope is still `sent` → "all done" shown wrongly. | Distinguish **recipient-complete** vs **envelope-complete** in the thank-you copy. |
+| RB-H | Med | "via DocuSign" from `dse@docusign.net` is a heavily-impersonated phishing brand; bounces/spam strip an email-only signer of any path to the file. | **Embedded-first** signing (no email); email as fallback with Connect non-delivery monitoring + a "sign in the portal" nudge. |
