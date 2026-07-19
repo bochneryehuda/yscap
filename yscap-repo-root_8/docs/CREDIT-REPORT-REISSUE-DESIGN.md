@@ -674,6 +674,19 @@ The test login (`yscap.test` / the shared test password) was used ONLY for live 
 ONLY in the local test environment — it is **never** in any committed file, and it should be
 rotated at Xactus before go-live.
 
+### 14.3 Pre-release test checklist (DB-backed — NOT in `npm test`)
+By repo convention `npm test` is **DB-free** (pure logic only), so the billing/freeze/concurrency
+tests — which need a real Postgres — are manual scripts that **must be run against a fresh migrated
+DB before any release**. Each self-skips without `DATABASE_URL`, so they can also drop into a
+DB-provisioned CI lane later. Run (with `DATABASE_URL` + `XACTUS_ENDPOINT` set):
+- `node scripts/test-credit-import.js` — order→import→freeze, in-doubt, idempotency replay, spend
+  breaker, AND the **concurrent double-bill** regression (2 orders → 1 POST).
+- `node scripts/test-credit-adverse-action.js` — the adverse-action draft scaffold.
+- `psql -f scripts/test-credit-freeze.sql` — the FICO-freeze DB trigger (adversarial).
+- `psql -f scripts/test-fico-bracket-reopen.sql` — the bracket-aware reopen trigger.
+The DB-free `npm test` (credit-scoring / mismo / mismo3 / credentials / outcomes) still gates the
+pure logic on every run.
+
 ---
 
 _Phases 1a–1e + the research-driven improvements + MISMO 3.4 are built and **verified live against
