@@ -908,8 +908,8 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
                 <span class="snap-constraint" id="snConstraint">Enter a price &amp; ARV to begin</span>
                 <div class="limits-row">
                     <span class="limit-chip">Max as-is <b id="snMaxLtv">—</b></span>
-                    <span class="limit-chip">Max ARV <b id="snMaxArv">—</b></span>
-                    <span class="limit-chip">Max LTC <b id="snMaxLtc">—</b></span>
+                    <span class="limit-chip" id="chipMaxArv">Max ARV <b id="snMaxArv">—</b></span>
+                    <span class="limit-chip" id="chipMaxLtc">Max LTC <b id="snMaxLtc">—</b></span>
                 </div>
                 <div class="sn-elig"><span class="verdict" id="snStatus">—</span><span class="sn-rate" id="snRate"></span></div>
                 <ul class="reasons" id="snReasons"></ul>
@@ -1438,7 +1438,7 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
       asIsValue: num("asIs"),
       arv: arv,
       rehabBudget: rehab,
-      term: 12, irMonths: resMonths, irAmount: resAmount, accrual: "Non-Dutch", reserveInCost: true,
+      term: num("termMonths") || 12, irMonths: resMonths, irAmount: resAmount, accrual: "Non-Dutch", reserveInCost: true,
       sqftAddition: rehabType() === "Adding square footage" && !isGroundUp(),
       heavyRehab: rehabType() === "Heavy",
       propertyType: propTypeToken(),
@@ -1493,6 +1493,12 @@ html:has(.la-scope),body:has(.la-scope){background:#F4F0E7;}
     YS.put("snMaxLtv", (R.pricingReady && c) ? YS.fmtPct(c.maxAcqLTV, 0) : EM);
     YS.put("snMaxArv", (R.pricingReady && c) ? YS.fmtPct(c.maxARLTV, 0) : EM);
     YS.put("snMaxLtc", (R.pricingReady && c) ? YS.fmtPct(c.maxLTC, (c.maxLTC * 100 % 1) ? 1 : 0) : EM);
+    // Bridge is sized on the as-is value only — the ARV / LTC caps don't apply, so
+    // don't show those chips for a bridge deal (audit #36).
+    var _isBridgeSn = inp && typeof YSP !== "undefined" && YSP.normStrategy && YSP.normStrategy(inp.strategy) === "BR";
+    var _cA = el("chipMaxArv"), _cL = el("chipMaxLtc");
+    if (_cA) _cA.style.display = _isBridgeSn ? "none" : "";
+    if (_cL) _cL.style.display = _isBridgeSn ? "none" : "";
 
     // assignment note (financeable vs out-of-pocket)
     var an = el("assignNote");
