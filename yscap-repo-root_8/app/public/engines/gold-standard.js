@@ -216,10 +216,17 @@
       ["ground lease","properties subject to a ground lease"], ["earthen","earthen homes"],
       ["assisted living","assisted-living or non-profit facilities"], ["non-profit","assisted-living or non-profit facilities"], ["nonprofit","assisted-living or non-profit facilities"],
       ["native american","properties on Native American land"], ["tribal","properties on Native American land"],
-      ["fractional","fractional-ownership properties"], ["unique","unique properties"]
+      ["fractional","fractional-ownership properties"], ["unique","unique properties"],
+      // Parity with the Standard engine's ineligible-property list + the normalized
+      // labels buildInputs emits (mixed-use / commercial / multifamily 5+). Without
+      // these Gold priced a mixed-use, commercial, or label-only 5+ building as
+      // eligible even though Standard blocks it (final audit 2026-07-17).
+      ["mixed","mixed-use properties"], ["commercial","commercial properties"]
     ];
     for (var _p = 0; _p < PT.length; _p++) { if (ptype.indexOf(PT[_p][0]) > -1) { add("INELIGIBLE", "This program does not lend on " + PT[_p][1] + "."); break; } }
-    if (num(input.units) >= 5) add("INELIGIBLE", "Properties with 5 or more units are not eligible — 1–4 unit residential only.");
+    // 5+ units by the numeric field OR by the property-type label ("multifamily 5+",
+    // "5+ units") — a label-only 5+ with a blank units field must still be blocked.
+    if (num(input.units) >= 5 || /5\s*\+|multifamily\s*5|5\s*or\s*more\s*unit/.test(ptype)) add("INELIGIBLE", "Properties with 5 or more units are not eligible — 1–4 unit residential only.");
     if (num(input.condoStories) > 6) add("INELIGIBLE", "Condos in buildings over 6 stories are not eligible.");
     if (input.shortTermRental === true || /short.?term|vacation rental|\bstr\b|airbnb/.test(ptype)) add("INELIGIBLE", "Short-term / vacation rentals are not eligible.");
     if (input.rural === true) add("INELIGIBLE", "Rural properties are not eligible on this program.");

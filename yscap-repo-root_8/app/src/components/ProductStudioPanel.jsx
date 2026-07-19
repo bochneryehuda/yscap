@@ -78,7 +78,10 @@ export function overridesFromSnapshot(snap, mode) {
   const d = snap.d || {};
   const base = compact({
     targetLTC: d.inp && d.inp.targetLTC ? d.inp.targetLTC : null,
-    irMonths: f.irMonths === '' ? null : f.irMonths,
+    // A BLANK months is sent as 0 (not null) so it actively CLEARS a previously-
+    // registered reserve — null is dropped by compact(), leaving the stale reserve
+    // to stick on re-register (mirrors irAmount below; final audit 2026-07-17).
+    irMonths: f.irMonths === '' ? 0 : f.irMonths,
     // Interest reserve may instead be an exact dollar amount (owner-directed
     // 2026-07-12) — carried through to the frozen engine, which honors it over
     // months and fits it under the same caps. A BLANK amount is sent as 0 (not
@@ -192,7 +195,8 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           <Row k="Purchase price" v={money(inp.purchasePrice)} />
           {inp.isAssignment && <Row k="Seller price / assignment fee" v={`${money(inp.sellerPrice)} / ${money(Math.max(0, (inp.purchasePrice || 0) - (inp.sellerPrice || 0)))}`} />}
-          {inp.isAssignment && q.assignment && q.assignment.overLimit && <Row k="Effective purchase price (fee capped at 15%)" v={money(q.assignment.recognizedPrice)} />}
+          {inp.isAssignment && q.assignment && (q.assignment.overLimit || q.assignment.overridden) &&
+            <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : '(fee capped at 15%)'}`} v={money(q.assignment.recognizedPrice)} />}
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />

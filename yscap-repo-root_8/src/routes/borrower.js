@@ -581,7 +581,11 @@ function borrowerPricingOverrides(raw) {
   const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
   const targetLTC = Number(raw && raw.targetLTC);
   if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
-  if (raw && raw.irMonths != null && raw.irMonths !== '') { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
+  // An explicit blank clears the reserve: pass '' through so buildInputs resolves
+  // it to 0 (its blank-clears contract). Dropping the blank left the prior reserve
+  // sticking, so a borrower couldn't zero it on re-register (final audit 2026-07-17).
+  if (raw && raw.irMonths === '') { out.irMonths = ''; }
+  else if (raw && raw.irMonths != null) { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
   // Interest reserve may instead be an exact dollar amount (the engine caps it at
   // the loan term). 0 is allowed and clears any prior amount → months path.
   if (raw && raw.irAmount != null && raw.irAmount !== '') { const v = clamp(raw.irAmount, 0, 100000000); if (v != null) out.irAmount = Math.round(v); }
