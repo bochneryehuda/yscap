@@ -51,9 +51,13 @@ function configured() {
 function ensure() {
   if (!configured()) throw dsError('DocuSign not configured — add DOCUSIGN_* env vars', { code: 'DOCUSIGN_NOT_CONFIGURED' });
 }
-/** Are we pointed at the DEMO (sandbox) world? Used by the M-13 test gate above us. */
+/** Are we pointed at the DEMO (sandbox) world? Used by the M-13 test gate above us.
+ * Determined by the OAuth host (authoritative: account-d = demo, account = prod).
+ * NOT by baseUri — a production account whose DOCUSIGN_BASE_URI was left at the
+ * demo default would otherwise be mislabeled "demo" (the real data-center base,
+ * e.g. na4.docusign.net, is discovered via userinfo at call time anyway). */
 function isDemoHost() {
-  return /account-d\.docusign\.com|demo\.docusign\.net/i.test(`${cfg.oauthBase} ${cfg.baseUri}`);
+  return /account-d\.docusign\.com/i.test(cfg.oauthBase || '');
 }
 
 // ---- fetch with timeout + H-3 read-before-ok --------------------------------
