@@ -146,6 +146,22 @@ const jointNoRel = jointResp.replace(/<RELATIONSHIPS>[\s\S]*<\/RELATIONSHIPS>/, 
 const jnr = P.parseCreditResponse(jointNoRel);
 ok('3.4 joint w/o links is flagged unsplit (review, not guessed)', jnr.multiBorrowerUnsplit === true);
 
+// B1/C1 ordering must follow the SCORE-referenced role label, NOT a raw
+// SequenceNumber — a per-bureau CREDIT_FILE echo party that carries the
+// co-borrower's Borrower ROLE label with a LOW SequenceNumber must not flip the
+// primary. Inject such an echo for Mary (Borrower02) at SequenceNumber 1: John
+// (Borrower01, the label the scores actually reference) must still be B1.
+const jointEchoPollute = jointResp.replace('</PARTIES>',
+  `</PARTIES><CREDIT_FILE><PARTIES><PARTY SequenceNumber="1"><INDIVIDUAL><NAME><FirstName>MARY</FirstName><LastName>FREDDIE</LastName></NAME></INDIVIDUAL>` +
+  `<ROLES><ROLE xlink:label="B02echo"><ROLE_DETAIL><PartyRoleType>Borrower</PartyRoleType></ROLE_DETAIL></ROLE></ROLES>` +
+  `<TAXPAYER_IDENTIFIERS><TAXPAYER_IDENTIFIER><TaxpayerIdentifierValue>990200002</TaxpayerIdentifierValue></TAXPAYER_IDENTIFIER></TAXPAYER_IDENTIFIERS></PARTY></PARTIES></CREDIT_FILE>`);
+const jep = P.parseCreditResponse(jointEchoPollute);
+eq('3.4 joint echo-pollution: John still B1', [jep.borrowers[0].firstName, jep.borrowers[0].borrowerId], ['JOHN', 'B1']);
+eq('3.4 joint echo-pollution: Mary still C1', [jep.borrowers[1].firstName, jep.borrowers[1].borrowerId], ['MARY', 'C1']);
+eq('3.4 joint echo-pollution: John keeps his 3 scores', jep.borrowers[0].scores.length, 3);
+eq('3.4 joint echo-pollution: Mary keeps her 3 scores', jep.borrowers[1].scores.length, 3);
+ok('3.4 joint echo-pollution: John scores are HIS only', jep.borrowers[0].scores.every((s) => ['760', '785', '779'].includes(s.value)));
+
 // hardening
 throws('3.4 DOCTYPE rejected', () => P.parseCreditResponse('<?xml version="1.0"?><!DOCTYPE x><MESSAGE></MESSAGE>'));
 throws('3.4 truncated rejected', () => P.parseCreditResponse('<?xml version="1.0"?><MESSAGE><DEAL_SETS>'));

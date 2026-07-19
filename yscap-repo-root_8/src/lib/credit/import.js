@@ -266,8 +266,10 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
     // to the correct borrowers row even if the vendor echoes them out of order.
     const dbIdFor = (pb) => {
       const ssn = String((pb.identity && pb.identity.ssn) || '').replace(/\D/g, '');
-      return (ssn.length === 9 && (orderMeta.borrowerDbIdBySsn || {})[ssn])
-        || orderMeta.borrowerDbIdByReportId[pb.reportBorrowerId] || null;
+      const bySsn = ssn.length === 9 ? (orderMeta.borrowerDbIdBySsn || {})[ssn] : null;
+      if (bySsn != null) return bySsn;
+      const byLabel = orderMeta.borrowerDbIdByReportId[pb.reportBorrowerId];
+      return byLabel != null ? byLabel : null;
     };
 
     // Per-bureau score rows (every score node, usable or not — full audit).

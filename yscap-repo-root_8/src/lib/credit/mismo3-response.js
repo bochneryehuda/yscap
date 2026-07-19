@@ -179,12 +179,11 @@ function parseCreditResponse(xml) {
   const seen = new Map();
   const noteParty = (entry, p) => {
     if (!entry.roleLabels) entry.roleLabels = new Set();
-    const labels = roleLabelsOf(p);
-    for (const l of labels) entry.roleLabels.add(l);
+    for (const l of roleLabelsOf(p)) entry.roleLabels.add(l);
+    // Fallback ordering signal only (used when no score references a role label,
+    // e.g. an all-frozen co-borrower). The PRIMARY ordering is by the score-
+    // referenced role label below, which a per-bureau echo party cannot pollute.
     const s = seqOf(p);
-    // Order borrowers by the request-echo party's SequenceNumber (the party that
-    // carries the role label) so the primary borrower resolves to B1.
-    if (labels.length && (entry.roleSeq == null || s < entry.roleSeq)) entry.roleSeq = s;
     if (entry.anySeq == null || s < entry.anySeq) entry.anySeq = s;
   };
   for (const p of borrowerParties) {
@@ -210,30 +209,50 @@ function parseCreditResponse(xml) {
     }
     noteParty(entry, p);
   }
-  // Order by request position (role-echo SequenceNumber) so the primary is B1.
-  const identities = [...seen.values()].sort((a, b) =>
-    (a.roleSeq ?? a.anySeq ?? 9999) - (b.roleSeq ?? b.anySeq ?? 9999));
+  const identities = [...seen.values()];
+  if (!identities.length) identities.push({ firstName: findFirstText(message, 'FirstName'), lastName: findFirstText(message, 'LastName'), ssn: null, scores: [], roleLabels: new Set() });
+
+  // ---- Score↔borrower linkage via MISMO RELATIONSHIP: each CREDIT_SCORE's
+  // xlink:label is the `to` of a relationship whose `from` is the owning borrower
+  // ROLE's xlink:label. Built once — it drives BOTH the per-borrower score split
+  // and the primary/co ordering below. ----
+  const fromsByScore = new Map();   // score xlink:label -> Set(from-labels)
+  for (const rel of findAll(message, 'RELATIONSHIP')) {
+    const from = attr(rel, 'xlink:from'), to = attr(rel, 'xlink:to');
+    if (!from || !to) continue;
+    if (!fromsByScore.has(to)) fromsByScore.set(to, new Set());
+    fromsByScore.get(to).add(from);
+  }
+  const idByRoleLabel = new Map();
+  for (const id of identities) for (const l of (id.roleLabels || [])) idByRoleLabel.set(l, id);
+
+  // Order primary→co by the borrower ROLE label the SCORES reference (e.g.
+  // Borrower01 < Borrower02). Echo-proof: a per-bureau CREDIT_FILE echo party can
+  // carry a Borrower role label with a low SequenceNumber, but the scores only ever
+  // link to the request-echo labels — so ordering by SequenceNumber alone could
+  // flip B1/C1, ordering by the referenced label cannot. Fall back to the min
+  // SequenceNumber only when no score references a label (all-frozen co-borrower).
+  const scoreRefLabels = new Set();
+  for (const s of scoreNodes) {
+    const froms = s.label ? fromsByScore.get(s.label) : null;
+    if (!froms) continue;
+    for (const f of froms) if (idByRoleLabel.has(f)) scoreRefLabels.add(f);
+  }
+  const orderKey = (id) => {
+    const auth = [...(id.roleLabels || [])].filter((l) => scoreRefLabels.has(l)).sort();
+    return auth.length ? `0${auth[0]}` : `1${String(id.anySeq ?? 9999).padStart(6, '0')}`;
+  };
+  identities.sort((a, b) => { const ka = orderKey(a), kb = orderKey(b); return ka < kb ? -1 : ka > kb ? 1 : 0; });
   identities.forEach((b, i) => { b.borrowerId = i === 0 ? 'B1' : `C${i}`; });
-  if (!identities.length) identities.push({ borrowerId: 'B1', firstName: findFirstText(message, 'FirstName'), lastName: findFirstText(message, 'LastName'), ssn: null, scores: [], roleLabels: new Set() });
 
   // Score→borrower mapping. Single borrower → all scores. Multiple → split via the
-  // MISMO RELATIONSHIP links (each CREDIT_SCORE's xlink:label is the `to` of a
-  // relationship whose `from` is the owning borrower ROLE's xlink:label). This is
-  // the only reliable split for a joint tri-merge, where all six scores share ONE
-  // CREDIT_SCORES block. Fallbacks: per-borrower CREDIT_RESPONSE subtree (older
-  // shapes), else leave on the primary and flag for review (never guess).
+  // RELATIONSHIP links above (the only reliable split for a joint tri-merge, where
+  // all six scores share ONE CREDIT_SCORES block). Fallbacks: per-borrower
+  // CREDIT_RESPONSE subtree (older shapes), else leave on the primary and flag for
+  // review (never guess whose score is whose).
   if (identities.length === 1) {
     identities[0].scores = scoreNodes;
   } else {
-    const fromsByScore = new Map();   // score xlink:label -> Set(from-labels)
-    for (const rel of findAll(message, 'RELATIONSHIP')) {
-      const from = attr(rel, 'xlink:from'), to = attr(rel, 'xlink:to');
-      if (!from || !to) continue;
-      if (!fromsByScore.has(to)) fromsByScore.set(to, new Set());
-      fromsByScore.get(to).add(from);
-    }
-    const idByRoleLabel = new Map();
-    for (const id of identities) for (const l of (id.roleLabels || [])) idByRoleLabel.set(l, id);
     let assigned = 0;
     if (idByRoleLabel.size) {
       for (const s of scoreNodes) {
