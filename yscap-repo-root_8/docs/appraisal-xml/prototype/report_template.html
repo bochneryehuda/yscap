@@ -1,0 +1,462 @@
+<style>
+  :root{
+    --paper:#F6F3EC; --card:#FFFFFF; --ink:#141B22; --muted:#4B585C;
+    --gold:#AE8746; --teal:#2F7F86; --teal-deep:#256168;
+    --line:#E7E1D3; --line-soft:#EFEADD;
+    --good:#3F7A5B; --amber:#B7791F; --crit:#B4483C;
+    --good-bg:#E9F1EA; --amber-bg:#F6EEDD; --crit-bg:#F6E7E4;
+    --shadow:0 1px 2px rgba(20,27,34,.04),0 8px 30px rgba(20,27,34,.06);
+    --shadow-lift:0 2px 6px rgba(20,27,34,.08),0 18px 48px rgba(20,27,34,.12);
+    --serif:'Fraunces','Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;
+    --sans:'Hanken Grotesk',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --r:16px; --r-sm:10px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#12181F; --card:#1B242E; --ink:#F3EFE6; --muted:#9AA7AE;
+      --gold:#C79A54; --teal:#5AACB3; --teal-deep:#7FC3C9;
+      --line:#2B3843; --line-soft:#242F39;
+      --good:#6FB089; --amber:#D9AE63; --crit:#D98679;
+      --good-bg:#1B2A24; --amber-bg:#2A2418; --crit-bg:#2C1F1D;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 34px rgba(0,0,0,.4);
+      --shadow-lift:0 2px 8px rgba(0,0,0,.4),0 22px 54px rgba(0,0,0,.55);
+    }
+  }
+  :root[data-theme="dark"]{
+      --paper:#12181F; --card:#1B242E; --ink:#F3EFE6; --muted:#9AA7AE;
+      --gold:#C79A54; --teal:#5AACB3; --teal-deep:#7FC3C9;
+      --line:#2B3843; --line-soft:#242F39;
+      --good:#6FB089; --amber:#D9AE63; --crit:#D98679;
+      --good-bg:#1B2A24; --amber-bg:#2A2418; --crit-bg:#2C1F1D;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 34px rgba(0,0,0,.4);
+      --shadow-lift:0 2px 8px rgba(0,0,0,.4),0 22px 54px rgba(0,0,0,.55);
+  }
+  :root[data-theme="light"]{
+      --paper:#F6F3EC; --card:#FFFFFF; --ink:#141B22; --muted:#4B585C;
+      --gold:#AE8746; --teal:#2F7F86; --teal-deep:#256168;
+      --line:#E7E1D3; --line-soft:#EFEADD;
+      --good:#3F7A5B; --amber:#B7791F; --crit:#B4483C;
+      --good-bg:#E9F1EA; --amber-bg:#F6EEDD; --crit-bg:#F6E7E4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+    font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+  h1,h2,h3{font-family:var(--serif);font-weight:600;margin:0;text-wrap:balance;letter-spacing:-.01em}
+  .lbl{font-size:11.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--gold)}
+  .num{font-variant-numeric:tabular-nums}
+  a{color:var(--teal-deep);text-underline-offset:3px}
+
+  /* Topbar */
+  .topbar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--paper) 86%,transparent);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .topbar .wrap{display:flex;align-items:center;gap:18px;height:60px}
+  .lockup{display:flex;align-items:center;gap:9px;font-family:var(--serif);font-weight:600;font-size:19px;letter-spacing:.02em}
+  .lockup svg{width:20px;height:20px;flex:none}
+  .lockup small{font-family:var(--sans);font-weight:500;font-size:11px;color:var(--muted);letter-spacing:.04em}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-left:6px}
+  .chip{font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .chip.teal{color:var(--teal-deep);border-color:color-mix(in srgb,var(--teal) 40%,var(--line))}
+  .spacer{flex:1}
+  .btn{font-family:var(--sans);font-weight:600;font-size:14px;border:0;cursor:pointer;border-radius:10px;
+    padding:9px 16px;background:var(--teal);color:#fff;display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+  .btn:hover{background:var(--teal-deep)}
+  .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  .btn.ghost:hover{border-color:var(--gold)}
+
+  section{padding:40px 0;border-top:1px solid var(--line-soft)}
+  section:first-of-type{border-top:0}
+  .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:22px}
+  .sec-head h2{font-size:26px}
+  .sec-head .lbl{margin-bottom:6px}
+
+  /* Hero */
+  .hero{padding-top:34px}
+  .hero-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:28px;align-items:stretch}
+  .hero-photo{position:relative;border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow);min-height:340px;background:var(--line)}
+  .hero-photo img{width:100%;height:100%;object-fit:cover;display:block;position:absolute;inset:0}
+  .hero-photo .tag{position:absolute;left:14px;bottom:14px;background:color-mix(in srgb,var(--ink) 78%,transparent);
+    color:#fff;font-size:12px;font-weight:600;padding:5px 11px;border-radius:999px;backdrop-filter:blur(4px)}
+  .hero-info{display:flex;flex-direction:column;gap:18px}
+  .hero-info .eyebrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .badge{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:6px;display:inline-flex;align-items:center;gap:5px}
+  .badge.good{background:var(--good-bg);color:var(--good)}
+  .badge.amber{background:var(--amber-bg);color:var(--amber)}
+  .badge.teal{background:color-mix(in srgb,var(--teal) 15%,transparent);color:var(--teal-deep)}
+  .hero-info h1{font-size:40px;line-height:1.04}
+  .hero-sub{color:var(--muted);font-size:15px;margin-top:-6px}
+  .val-tiles{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:auto}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 16px;box-shadow:var(--shadow)}
+  .tile.hl{border-color:color-mix(in srgb,var(--teal) 45%,var(--line));background:linear-gradient(180deg,color-mix(in srgb,var(--teal) 7%,var(--card)),var(--card))}
+  .tile .k{font-size:12px;font-weight:600;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .tile .v{font-family:var(--serif);font-size:27px;font-weight:600;margin-top:3px;letter-spacing:-.02em}
+  .tile.hl .v{color:var(--teal-deep)}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .dot.good{background:var(--good)} .dot.amber{background:var(--amber)} .dot.teal{background:var(--teal)}
+
+  /* Facts strip */
+  .facts{display:grid;grid-template-columns:repeat(6,1fr);gap:0;background:var(--card);border:1px solid var(--line);
+    border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow)}
+  .fact{padding:16px 18px;border-right:1px solid var(--line-soft)}
+  .fact:last-child{border-right:0}
+  .fact .k{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .fact .v{font-family:var(--serif);font-size:22px;font-weight:600;margin-top:4px}
+  .fact .v small{font-size:12px;font-family:var(--sans);color:var(--muted);font-weight:500}
+
+  /* Gallery */
+  .gallery{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+  .gal-item{margin:0;position:relative;border-radius:var(--r-sm);overflow:hidden;cursor:pointer;aspect-ratio:4/3;background:var(--line);box-shadow:var(--shadow)}
+  .gal-item:first-child{grid-column:span 2;grid-row:span 2;aspect-ratio:auto}
+  .gal-item img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .4s ease}
+  .gal-item:hover img{transform:scale(1.05)}
+  .gal-item figcaption{position:absolute;left:0;right:0;bottom:0;padding:16px 10px 7px;font-size:11.5px;font-weight:600;color:#fff;
+    background:linear-gradient(transparent,rgba(0,0,0,.62))}
+
+  /* Cards grid */
+  .cards{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:20px 22px;box-shadow:var(--shadow)}
+  .card h3{font-size:16px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .card h3 .lbl{color:var(--muted)}
+  dl.kv{margin:0;display:grid;grid-template-columns:auto 1fr;gap:9px 18px}
+  dl.kv dt{color:var(--muted);font-size:14px}
+  dl.kv dd{margin:0;text-align:right;font-weight:600;font-size:14px}
+  dl.kv dd .src{display:block;font-weight:500;font-size:11px;color:var(--muted)}
+
+  /* Valuation */
+  .valgrid{display:grid;grid-template-columns:1.3fr 1fr;gap:16px;align-items:start}
+  .valbars{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:22px 24px;box-shadow:var(--shadow)}
+  .bar-row{margin:18px 0}
+  .bar-row:first-child{margin-top:8px}
+  .bar-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+  .bar-top .name{font-size:13.5px;font-weight:600}
+  .bar-top .amt{font-family:var(--serif);font-size:18px;font-weight:600}
+  .bar-track{height:12px;border-radius:999px;background:var(--line-soft);overflow:hidden}
+  .bar-fill{height:100%;border-radius:999px}
+  .bar-fill.arv{background:linear-gradient(90deg,var(--teal),var(--teal-deep))}
+  .bar-fill.asis{background:var(--gold)}
+  .bar-fill.pp{background:color-mix(in srgb,var(--muted) 55%,var(--line))}
+  .spread{margin-top:20px;padding-top:16px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:center}
+  .spread .k{font-size:13px;color:var(--muted)}
+  .spread .v{font-family:var(--serif);font-size:22px;font-weight:600;color:var(--good)}
+  .approaches{display:flex;flex-direction:column;gap:12px}
+  .appr-tile{background:var(--card);border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 16px;display:flex;justify-content:space-between;align-items:center;box-shadow:var(--shadow)}
+  .appr-tile .k{font-size:13px;font-weight:600}
+  .appr-tile .k small{display:block;color:var(--muted);font-weight:500;font-size:11.5px}
+  .appr-tile .v{font-family:var(--serif);font-size:20px;font-weight:600}
+  .basis{margin-top:18px;background:var(--card);border:1px solid var(--line);border-left:3px solid var(--teal);
+    border-radius:var(--r-sm);padding:16px 18px;box-shadow:var(--shadow)}
+  .basis .lbl{color:var(--teal-deep)}
+  .basis p{margin:6px 0 0;font-size:14px;color:var(--ink)}
+  .basis p b{font-weight:700}
+
+  /* condition/verify note */
+  .verify{margin-top:16px;background:var(--amber-bg);border:1px solid color-mix(in srgb,var(--amber) 35%,var(--line));
+    border-radius:var(--r-sm);padding:14px 16px;font-size:13.5px;color:var(--ink);display:flex;gap:12px}
+  .verify svg{flex:none;margin-top:2px}
+
+  /* Comps table */
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);background:var(--card)}
+  table.comps{width:100%;border-collapse:collapse;min-width:560px}
+  table.comps th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+    font-weight:600;padding:13px 16px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--gold) 5%,var(--card))}
+  table.comps th.num,table.comps td.num{text-align:right}
+  table.comps td{padding:13px 16px;border-bottom:1px solid var(--line-soft);font-size:14px}
+  table.comps tr:last-child td{border-bottom:0}
+  .cmp-seq{font-family:var(--serif);color:var(--gold);font-weight:600}
+  .cmp-addr{font-weight:600}
+  .cmp-addr span{display:block;font-weight:500;color:var(--muted);font-size:12px}
+  td.strong{font-weight:700}
+
+  /* Appraiser */
+  .prepared{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .prep-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:22px;box-shadow:var(--shadow)}
+  .prep-card .who{font-family:var(--serif);font-size:20px;font-weight:600}
+  .prep-card .firm{color:var(--muted);margin-bottom:14px}
+  .verifs{display:flex;flex-direction:column;gap:9px;margin-top:6px}
+  .verif{display:flex;align-items:center;gap:9px;font-size:13.5px}
+  .verif svg{flex:none}
+
+  /* Exhibits */
+  .exhibit{display:flex;align-items:center;gap:16px;background:var(--card);border:1px solid var(--line);
+    border-radius:var(--r);padding:18px 20px;box-shadow:var(--shadow)}
+  .exhibit .pdficon{width:44px;height:44px;border-radius:10px;background:var(--crit-bg);color:var(--crit);
+    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:none}
+  .exhibit .meta{flex:1}
+  .exhibit .meta .t{font-weight:600}
+  .exhibit .meta .s{font-size:13px;color:var(--muted)}
+
+  footer{padding:34px 0 60px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line)}
+  footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center}
+  footer b{color:var(--ink);font-weight:600}
+
+  /* Lightbox */
+  .lb{position:fixed;inset:0;z-index:60;background:rgba(10,14,18,.9);display:none;align-items:center;justify-content:center;padding:30px}
+  .lb.open{display:flex}
+  .lb img{max-width:94vw;max-height:88vh;border-radius:10px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+  .lb .close{position:absolute;top:20px;right:24px;color:#fff;font-size:30px;cursor:pointer;line-height:1;background:none;border:0}
+
+  .fade{opacity:0;transform:translateY(10px);animation:rise .6s ease forwards}
+  @keyframes rise{to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){.fade{animation:none;opacity:1;transform:none}.gal-item:hover img{transform:none}}
+
+  @media (max-width:880px){
+    .hero-grid{grid-template-columns:1fr}
+    .facts{grid-template-columns:repeat(3,1fr)}.fact:nth-child(3){border-right:0}
+    .fact:nth-child(n+4){border-top:1px solid var(--line-soft)}
+    .cards,.valgrid,.prepared{grid-template-columns:1fr}
+    .gallery{grid-template-columns:repeat(3,1fr)}
+    .hero-info h1{font-size:32px}
+  }
+  @media (max-width:560px){
+    .facts{grid-template-columns:repeat(2,1fr)}
+    .gallery{grid-template-columns:repeat(2,1fr)}
+    .val-tiles{grid-template-columns:1fr 1fr}
+    .chips{display:none}
+  }
+  @media print{
+    .topbar{position:static} .btn{display:none} body{background:#fff}
+    section{break-inside:avoid} .gal-item:first-child{grid-column:span 2}
+  }
+</style>
+
+<div class="topbar">
+  <div class="wrap">
+    <span class="lockup">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12L20 4L14 12L20 20L4 12Z" fill="var(--gold)"/></svg>
+      PILOT <small>by YS Capital</small>
+    </span>
+    <div class="chips">
+      <span class="chip teal">Form 1025 · 2–4 Unit</span>
+      <span class="chip">Effective __EFFDATE__</span>
+      <span class="chip">Subject-to-Repairs</span>
+    </div>
+    <span class="spacer"></span>
+    <button class="btn ghost" onclick="window.print()">Export PILOT Report</button>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <!-- HERO -->
+  <section class="hero fade">
+    <div class="hero-grid">
+      <div class="hero-photo">
+        <img src="__HERO_PHOTO__" alt="Subject property front view">
+        <span class="tag">Subject · Front View</span>
+      </div>
+      <div class="hero-info">
+        <div class="eyebrow">
+          <span class="lbl">Property Profile</span>
+          <span class="badge good">✓ Data verified</span>
+          <span class="badge teal">6 comparables</span>
+        </div>
+        <h1>__ADDRESS__</h1>
+        <p class="hero-sub">__CITYLINE__</p>
+        <div class="val-tiles">
+          <div class="tile hl">
+            <div class="k"><span class="dot teal"></span>After-Repair Value</div>
+            <div class="v">__ARV__</div>
+          </div>
+          <div class="tile">
+            <div class="k"><span class="dot good"></span>As-Is Value</div>
+            <div class="v">__ASIS__</div>
+          </div>
+          <div class="tile">
+            <div class="k">Purchase Price</div>
+            <div class="v">__PP__</div>
+          </div>
+          <div class="tile">
+            <div class="k">Renovation Upside</div>
+            <div class="v" style="color:var(--good)">+__SPREAD__</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FACTS -->
+  <section>
+    <div class="facts">
+      <div class="fact"><div class="k">Type</div><div class="v">__UNITS__-Unit <small>__TYPE__</small></div></div>
+      <div class="fact"><div class="k">Year Built</div><div class="v">__YEAR__</div></div>
+      <div class="fact"><div class="k">Gross Living Area</div><div class="v">__GLA__</div></div>
+      <div class="fact"><div class="k">Beds / Baths</div><div class="v">__BEDS__ / __BATHS__</div></div>
+      <div class="fact"><div class="k">Lot</div><div class="v">__LOT__</div></div>
+      <div class="fact"><div class="k">Cond / Qual</div><div class="v">__COND__ / __QUAL__</div></div>
+    </div>
+  </section>
+
+  <!-- GALLERY -->
+  <section>
+    <div class="sec-head"><div><div class="lbl">Photographs</div><h2>Property gallery</h2></div></div>
+    <div class="gallery">
+      __PHOTO_CARDS__
+    </div>
+    <p style="color:var(--muted);font-size:13px;margin-top:12px">Photos extracted from the appraiser's embedded report. Click any photo to enlarge.</p>
+  </section>
+
+  <!-- SUBJECT DETAILS -->
+  <section>
+    <div class="sec-head"><div><div class="lbl">The Subject</div><h2>Property details</h2></div></div>
+    <div class="cards">
+      <div class="card">
+        <h3>Identity &amp; location</h3>
+        <dl class="kv">
+          <dt>Address</dt><dd>__ADDRESS__</dd>
+          <dt>County</dt><dd>New Haven</dd>
+          <dt>Parcel / APN</dt><dd class="num">__APN__</dd>
+          <dt>Census tract</dt><dd class="num">__CENSUS__</dd>
+          <dt>Neighborhood</dt><dd>__NEIGH__</dd>
+          <dt>Property rights</dt><dd>Fee Simple</dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h3>Structure</h3>
+        <dl class="kv">
+          <dt>Design</dt><dd>__DESIGN__</dd>
+          <dt>Units</dt><dd>__UNITS__</dd>
+          <dt>Total rooms</dt><dd>__ROOMS__</dd>
+          <dt>Stories</dt><dd>__STORIES__</dd>
+          <dt>Gross living area</dt><dd>__GLA__</dd>
+          <dt>Condition / Quality</dt><dd>__COND__ / __QUAL__ <span class="src">UAD rating</span></dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h3>Site &amp; zoning</h3>
+        <dl class="kv">
+          <dt>Lot size</dt><dd>__LOT__</dd>
+          <dt>Zoning</dt><dd>__ZONING__ <span class="src">__ZONINGDESC__</span></dd>
+          <dt>Zoning compliance</dt><dd>__ZONINGOK__</dd>
+          <dt>Site value (cost)</dt><dd class="num">__SITEVAL__</dd>
+          <dt>Remaining econ. life</dt><dd>__ECONLIFE__ yrs</dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h3>Income &amp; rents <span class="lbl">1025</span></h3>
+        <dl class="kv">
+          <dt>Gross rent (actual)</dt><dd class="num">__GROSS_ACTUAL__ / mo</dd>
+          <dt>Gross rent (market)</dt><dd class="num">__GROSS_MARKET__ / mo</dd>
+          <dt>Gross rent multiplier</dt><dd class="num">__GRM__</dd>
+          <dt>Value — income approach</dt><dd class="num">__INCOME__</dd>
+        </dl>
+        <div class="tablewrap" style="margin-top:14px;box-shadow:none">
+          <table class="comps"><thead><tr><th>Unit</th><th class="num">Actual rent</th><th class="num">Market rent</th></tr></thead>
+          <tbody>__UNIT_ROWS__</tbody></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- VALUATION -->
+  <section>
+    <div class="sec-head"><div><div class="lbl">Valuation</div><h2>What it's worth</h2></div></div>
+    <div class="valgrid">
+      <div class="valbars">
+        <div class="bar-row">
+          <div class="bar-top"><span class="name">After-Repair Value (ARV)</span><span class="amt" style="color:var(--teal-deep)">__ARV__</span></div>
+          <div class="bar-track"><div class="bar-fill arv" style="width:__ARV_PCT__%"></div></div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-top"><span class="name">As-Is Value</span><span class="amt" style="color:var(--gold)">__ASIS__</span></div>
+          <div class="bar-track"><div class="bar-fill asis" style="width:__ASIS_PCT__%"></div></div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-top"><span class="name">Purchase Price</span><span class="amt">__PP__</span></div>
+          <div class="bar-track"><div class="bar-fill pp" style="width:__PP_PCT__%"></div></div>
+        </div>
+        <div class="spread"><span class="k">Renovation upside (ARV − As-Is)</span><span class="v">+__SPREAD__</span></div>
+      </div>
+      <div>
+        <div class="approaches">
+          <div class="appr-tile"><div class="k">Sales comparison <small>reconciled opinion</small></div><div class="v" style="color:var(--teal-deep)">__SALES__</div></div>
+          <div class="appr-tile"><div class="k">Cost approach <small>replacement</small></div><div class="v">__COST__</div></div>
+          <div class="appr-tile"><div class="k">Income approach <small>GRM __GRM__</small></div><div class="v">__INCOME__</div></div>
+        </div>
+        <div class="basis">
+          <div class="lbl">Value basis</div>
+          <p>The headline <b>__ARV__</b> is the <b>After-Repair Value</b> — the appraisal is made <b>subject to completion of repairs</b>. The <b>As-Is value of __ASIS__</b> was read from the report's addendum text. Both are stored separately so pricing never confuses them.</p>
+        </div>
+        <div class="verify">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+          <span><b>Error handling:</b> when the As-Is value can't be read for certain, PILOT doesn't guess — it opens an internal task for the officer to enter it off the report (with a comp-based suggestion shown alongside).</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- COMPS -->
+  <section>
+    <div class="sec-head"><div><div class="lbl">Evidence</div><h2>Comparable sales</h2></div><span class="chip">__NCOMPS__ comps used</span></div>
+    <div class="tablewrap">
+      <table class="comps">
+        <thead><tr><th>#</th><th>Address</th><th class="num">Proximity</th><th class="num">Sale price</th><th class="num">Adjusted</th></tr></thead>
+        <tbody>__COMP_ROWS__</tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- APPRAISER -->
+  <section>
+    <div class="sec-head"><div><div class="lbl">Provenance</div><h2>Prepared by</h2></div></div>
+    <div class="prepared">
+      <div class="prep-card">
+        <div class="who">__APPRAISER__</div>
+        <div class="firm">__COMPANY__</div>
+        <dl class="kv">
+          <dt>License #</dt><dd class="num">__LICENSE__</dd>
+          <dt>State</dt><dd>__LICSTATE__</dd>
+          <dt>Expires</dt><dd>__LICEXP__</dd>
+          <dt>Client / lender</dt><dd>__LENDER__</dd>
+        </dl>
+      </div>
+      <div class="prep-card">
+        <div class="lbl" style="color:var(--muted);margin-bottom:12px">Trust checks</div>
+        <div class="verifs">
+          <div class="verif"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--good)" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg> License active — expires __LICEXP__</div>
+          <div class="verif"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--good)" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg> Effective date __EFFDATE__ — within recency window</div>
+          <div class="verif"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--good)" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg> Report signed __SIGNED__</div>
+          <div class="verif"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--good)" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg> ARV supports the requested loan</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- EXHIBITS -->
+  <section>
+    <div class="sec-head"><div><div class="lbl">Source document</div><h2>Original appraisal</h2></div></div>
+    <div class="exhibit">
+      <div class="pdficon">PDF</div>
+      <div class="meta">
+        <div class="t">Full appraisal report (34 pages)</div>
+        <div class="s">Pulled straight from the appraisal file — always kept as the source of record, with every photo, sketch and map.</div>
+      </div>
+      <button class="btn">Open PDF</button>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <span class="lockup" style="font-size:16px">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12L20 4L14 12L20 20L4 12Z" fill="var(--gold)"/></svg>
+      PILOT <small>by YS Capital</small>
+    </span>
+    <span>Property profile generated from the appraisal file · <b>__ADDRESS__</b> · a PILOT report</span>
+  </div>
+</footer>
+
+<div class="lb" id="lb" onclick="this.classList.remove('open')">
+  <button class="close" aria-label="Close">&times;</button>
+  <img id="lbimg" src="" alt="Enlarged property photo">
+</div>
+
+<script>
+  document.querySelectorAll('.gal-item img').forEach(function(img){
+    img.parentElement.addEventListener('click',function(){
+      var lb=document.getElementById('lb');
+      document.getElementById('lbimg').src=img.src;
+      lb.classList.add('open');
+    });
+  });
+</script>

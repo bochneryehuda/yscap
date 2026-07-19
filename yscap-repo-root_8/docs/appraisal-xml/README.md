@@ -20,6 +20,9 @@ prototype parser and `per-file-extraction-proof.md` cover all 33.)
 | `1025-SmallIncome-field-map.md` | Complete field map for **Form 1025 (2–4 unit)** — adds units, per-unit rent schedule, income/GRM approach. |
 | `industry-research.md` | MISMO 2.6 / UAD standards, As-Is vs ARV encoding, RTL underwriting ratios, DSCR, parsing pitfalls, 20 CTC match rules. |
 | `photos-comps-variation.md` | Image/photo taxonomy, comparable structure, comp As-Is/ARV split signal, cross-vendor gotchas + primary/fallback strategy. |
+| `expanded-field-catalog.md` | The long-tail field inventory across all 33 (construction, cost-approach breakdown, full comp adjustment grids, flood/site, neighborhood + 1004MC market stats, 1025 income detail) with per-field reliability. |
+| `property-report-design-research.md` | Premium property-report design research → the PILOT report section stack + visual treatment. |
+| `error-handling-and-confidence.md` | Confidence model (definite/estimate/non-UAD/missing); ARV mandatory; As-Is → officer condition; PDF + photo extraction findings. |
 | `field-reliability.md` | Every field + how often it's present across all 33 (ALWAYS/USUALLY/SOMETIMES/RARELY) + borrower/LLC matching rule + error-handling principles. |
 | `placement-variability.md` | The "can't use one-size-fits-all" map: which fields are ONE-WAY (safe) vs NEEDS-FALLBACK (same field, different spot/format — error-prone) vs SOMETIMES-MISSING. |
 | `per-file-extraction-proof.md` | The prototype parser's output for **every one of the 33 files** — evidence placement was verified per file. |
