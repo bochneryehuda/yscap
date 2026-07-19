@@ -816,8 +816,16 @@ router.get('/applications/:id/appraisal', async (req, res) => {
                ORDER BY (severity='fatal') DESC, created_at`, [appId]),
   ]);
   const open = findings.rows.map((f) => ({ ...f, title: scrubText(f.title) }));
+  // Borrower-safe appraisal object: drop staff-only bookkeeping (who imported it, the
+  // source document ids) and defensively scrub the free-text lender/AMC/client fields so a
+  // capital-partner name can never reach a borrower even if one landed in the appraisal.
+  const safeAppr = (() => {
+    if (!appr) return null;
+    const { imported_by, source_xml_document_id, pdf_document_id, ...rest } = appr; // eslint-disable-line no-unused-vars
+    return { ...rest, lender_name: scrubText(rest.lender_name), amc_name: scrubText(rest.amc_name) };
+  })();
   res.json({
-    appraisal: appr, comparables: comps.rows, units: units.rows, findings: open,
+    appraisal: safeAppr, comparables: comps.rows, units: units.rows, findings: open,
     summary: {
       fatal: open.filter((f) => f.severity === 'fatal').length,
       warning: open.filter((f) => f.severity === 'warning').length,

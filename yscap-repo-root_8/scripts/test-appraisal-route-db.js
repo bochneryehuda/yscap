@@ -52,6 +52,23 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
     const cond2 = (await pool.query(`SELECT count(*)::int n FROM (${condSql}) x`, [appId])).rows[0].n;
     assert(cond2 === 1, 'materialize is idempotent (no duplicate condition)');
 
+    // --- OCR advisory note-write SQL (route's /import As-Is branch) ---
+    // Materialize the verify-As-Is condition, then write an advisory note onto it exactly
+    // as the route does (UPDATE checklist_items FROM checklist_templates by code). The OCR
+    // network call is best-effort and not exercised here; the note-write SQL is the risk.
+    const { buildOcrNote } = require('../src/lib/appraisal/ocr');
+    await pool.query(ENSURE, [appId, 'appraisal_as_is_verify']);
+    const advNote = buildOcrNote({ attempted: true, candidate: 431000, confidence: 'single-match', snippet: "'as is' value $431,000" });
+    await pool.query(
+      `UPDATE checklist_items ci SET notes=$2 FROM checklist_templates t
+        WHERE ci.template_id=t.id AND t.code='appraisal_as_is_verify' AND ci.application_id=$1`,
+      [appId, advNote]);
+    const noteRow = (await pool.query(
+      `SELECT ci.notes FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='appraisal_as_is_verify'`, [appId])).rows[0];
+    assert(noteRow && /OCR/.test(noteRow.notes) && /431,000/.test(noteRow.notes), 'OCR advisory note written onto the verify-As-Is condition');
+    assert(noteRow && /NOT been applied|never filled/i.test(noteRow.notes), 'advisory note states the value was not applied to the file');
+
     // --- resolve the arv_mismatch with "replace" (route's /findings/:fid/resolve) ---
     const fnd = (await pool.query(`SELECT * FROM appraisal_findings WHERE application_id=$1 AND code='arv_mismatch' AND status='open'`, [appId])).rows[0];
     assert(!!fnd, 'arv_mismatch finding is open before resolve');

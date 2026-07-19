@@ -26,6 +26,7 @@ const { can, assigneeExistsSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const { importAppraisal } = require('../lib/appraisal/import');
+const { ocrAsIsCandidate, buildOcrNote } = require('../lib/appraisal/ocr');
 const X = require('../lib/appraisal/xml');
 
 // Upload cap: aligned to the per-file limit the JSON body-parser actually allows,
@@ -128,6 +129,8 @@ router.post('/:appId/import', async (req, res, next) => {
     // failure here must not lose the imported data, but we LOG it (a silent null doc-id
     // means the appraisal has no source document on file — worth surfacing).
     let xmlDocId = null, pdfDocId = null;
+    // PDF base64 kept at function scope so the advisory OCR step (below) can read it.
+    const pdfB64 = b.pdfBase64 || X.embeddedPdfBase64(xml);
     try {
       const xbuf = Buffer.from(xml, 'utf8');
       const s = await storage.save(xbuf, { filename: b.filename || 'appraisal.xml' });
@@ -137,7 +140,6 @@ router.post('/:appId/import', async (req, res, next) => {
         [app.id, app.borrower_id, b.filename || 'appraisal.xml', xbuf.length, s.provider, s.ref, req.actor.id])).rows[0].id;
 
       // PDF: use the uploaded slot if given, else the PDF embedded in the XML.
-      const pdfB64 = b.pdfBase64 || X.embeddedPdfBase64(xml);
       if (pdfB64) {
         const { buf: pbuf } = decodeUploadBase64(pdfB64, { maxBytes: MAX_UPLOAD_BYTES });
         const ps = await storage.save(pbuf, { filename: (b.filename || 'appraisal').replace(/\.xml$/i, '') + '.pdf' });
@@ -156,7 +158,22 @@ router.post('/:appId/import', async (req, res, next) => {
 
     // Materialize the review gate; open the verify-As-Is task only when needed.
     await ensureCondition(app.id, 'appraisal_review_cleared');
-    if (out.needsAsIsCondition) await ensureCondition(app.id, 'appraisal_as_is_verify');
+    if (out.needsAsIsCondition) {
+      await ensureCondition(app.id, 'appraisal_as_is_verify');
+      // Advisory only: try to READ a candidate As-Is off the PDF and attach it to the
+      // verify task as a note. NEVER written to the loan file — the officer confirms by
+      // hand. Fully best-effort so it can never break the import; audited either way.
+      try {
+        const adv = await ocrAsIsCandidate({ pdfBase64: pdfB64 });
+        await db.query(
+          `UPDATE checklist_items ci SET notes = $2
+             FROM checklist_templates t
+            WHERE ci.template_id = t.id AND t.code = 'appraisal_as_is_verify' AND ci.application_id = $1`,
+          [app.id, buildOcrNote(adv)]);
+        await audit(req.actor.id, 'appraisal_ocr_advisory', app.id,
+          { attempted: !!adv.attempted, candidate: adv.candidate != null ? adv.candidate : null, confidence: adv.confidence || null });
+      } catch (e) { console.error('[appraisal] OCR advisory failed (non-fatal):', e && e.message); }
+    }
     await audit(req.actor.id, 'appraisal_import', app.id,
       { appraisalId: out.appraisalId, findings: out.summary, warnings: (out.warnings || []).map((w) => w.code) });
 
