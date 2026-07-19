@@ -1,5 +1,5 @@
 -- ============================================================================
--- 127_esign_send_bookkeeping.sql — retry bookkeeping for the esign send drainer
+-- 130_esign_send_bookkeeping.sql — retry bookkeeping for the esign send drainer
 --
 -- The DocuSign send path is driven directly off esign_envelopes (which already
 -- carries the send-once claim on send_claimed_at), NOT the ClickUp-coupled

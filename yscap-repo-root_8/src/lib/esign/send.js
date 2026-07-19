@@ -11,7 +11,7 @@
  *      alone calls DocuSign; a racing/duplicate call claims 0 rows and skips.
  *   2. Deterministic X-DocuSign-Idempotency-Key so a retry/reclaim replays the
  *      SAME key — DocuSign returns the original envelope, never a duplicate (M-7).
- *   3. The partial unique index uq_esign_inflight (in db/126) is the DB backstop.
+ *   3. The partial unique index uq_esign_inflight (in db/129) is the DB backstop.
  *   4. Crash-between-claim-and-envelope_id (M-12): a stale claim (>5min, still no
  *      envelope_id) is re-claimed and re-POSTs the same key.
  *
