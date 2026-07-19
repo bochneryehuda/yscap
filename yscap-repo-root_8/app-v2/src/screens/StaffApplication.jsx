@@ -17,6 +17,7 @@ import { PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import EsignFileSection from '../components/EsignFileSection.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
@@ -2456,6 +2457,7 @@ export default function StaffApplication() {
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
     { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
     { id: 'sec-entity', label: 'LLC condition', badge: app.llc_id && app.llc_verified ? '✓' : '' },
+    { id: 'sec-esign', label: 'E-signatures' },
     { id: 'sec-track', label: 'Track record' },
     { id: 'sec-checklist', label: 'Internal checklist', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
     { id: 'sec-documents', label: 'Documents & exports', badge: docs.length || '' },
@@ -2779,6 +2781,11 @@ export default function StaffApplication() {
       <LlcReview appId={id} app={app} role={role} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc}
         dlBusy={dlBusy} onChanged={load} reviewBusy={busyAct === 'review'} onPreview={openPreview} />
       <VestingLlcOwners appId={id} app={app} />
+      </Section>
+
+      <Section id="sec-esign" title="E-signatures"
+        info="PILOT's own DocuSign section for this file: what's outstanding before you can send, the two Send buttons (term-sheet package + Heter Iska), and live per-signer tracking (sent / viewed / signed, who we're waiting on, the admin counter-signature) with resend, void, re-issue and downloads. The cross-file cockpit lives at E-signatures in the sidebar.">
+      <EsignFileSection appId={id} role={role} />
       </Section>
 
       <Section id="sec-documents" title="Documents & exports"

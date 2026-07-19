@@ -79,10 +79,25 @@ async function dashboard(db, scope = { where: '', params: [] }) {
   return { envelopes, counts };
 }
 
-/** Per-file: the send-gate + the two packages' envelopes. */
+/** Per-file: the send-gate + the two packages' envelopes (with signed-doc links). */
 async function fileEsign(db, applicationId) {
   const g = await gate.esignSendGate(applicationId, { db });
   const { envelopes } = await dashboard(db, { where: 'AND a.id = $1', params: [applicationId] });
+  // Attach the STORED signed documents per envelope (for download links); only
+  // rows whose completed copy has been filed. The signed Heter Iska is included
+  // here (staff can download it in-app) — it is only excluded from TPR/SharePoint.
+  if (envelopes.length) {
+    const docs = (await db.query(
+      `SELECT ed.envelope_row_id AS "envelopeRowId", ed.doc_kind AS "docKind",
+              d.id AS "documentId", d.filename
+         FROM esign_envelope_docs ed
+         JOIN documents d ON d.id = ed.completed_document_id
+        WHERE ed.envelope_row_id = ANY($1) AND ed.completed_document_id IS NOT NULL
+        ORDER BY ed.document_id`, [envelopes.map((e) => e.id)])).rows;
+    const byEnv = {};
+    for (const d of docs) (byEnv[d.envelopeRowId] = byEnv[d.envelopeRowId] || []).push(d);
+    for (const e of envelopes) e.documents = byEnv[e.id] || [];
+  }
   const byPurpose = { term_sheet_package: [], heter_iska: [] };
   for (const e of envelopes) { (byPurpose[e.purpose] = byPurpose[e.purpose] || []).push(e); }
   return { gate: g, packages: byPurpose, envelopes };

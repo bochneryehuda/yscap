@@ -2314,3 +2314,16 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
   display:flex;gap:2px;flex-wrap:wrap}
 .esign-env{font-variant-numeric:tabular-nums;opacity:.8}
 @media(max-width:560px){.esr-steps li{min-width:calc(50% - 4px)}}
+
+/* e-sign: SLA aging chip + per-file readiness gate */
+.pill.esign-aging.ok{color:var(--text-muted);border-color:var(--border)}
+.pill.esign-aging.warn{color:var(--warning);border-color:rgba(176,122,30,.45)}
+.pill.esign-aging.late{color:var(--danger);border-color:rgba(163,42,42,.45);font-weight:700}
+.esign-gate{list-style:none;margin:10px 0 14px;padding:0;display:flex;flex-direction:column;gap:6px}
+.esign-gate li{font-size:14px;display:flex;gap:8px;align-items:baseline}
+.esign-gate li.ok{color:var(--ok)}
+.esign-gate li.bad{color:var(--text)}
+.esign-gate-ic{flex:none;font-weight:700}
+.esign-gate li.ok .esign-gate-ic{color:var(--ok)}
+.esign-gate li.bad .esign-gate-ic{color:var(--danger)}
+.esign-file h4{font-family:var(--serif);font-weight:500;font-size:15px;margin:0}

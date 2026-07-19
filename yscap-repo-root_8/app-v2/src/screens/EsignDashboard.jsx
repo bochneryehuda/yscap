@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import {
+  PHASE, PURPOSE, ROLE, timeAgo, absTime as abs, recipientSteps,
+  agingHours, agingLevel, agingLabel,
+} from '../lib/esign.js';
 
 /* E-Signatures — PILOT's own DocuSign cockpit (owner-directed 2026-07-19:
  * "our own page that would sound like we have our own DocuSign system within
@@ -9,30 +13,10 @@ import { api } from '../lib/api.js';
  * This is the CROSS-FILE live view: every envelope we've sent, its derived
  * human-facing phase (DocuSign has no native "awaiting counter-signature"
  * status — we derive it from routing order + recipients; see
- * docs/DOCUSIGN-WORKFORCE-BUILD-SPEC.md §11), and a per-signer timeline
- * (sent → viewed → signed, with timestamps). It polls live so the floor can
- * watch a package move without leaving the screen. Read-only for now;
- * management actions (send / resend / void) mount here with the send
- * orchestration and are gated by DOCUSIGN_SEND_ENABLED. */
-
-const PHASE = {
-  draft:                { label: 'Draft',                    cls: 'muted',   dot: '#4B585C' },
-  awaiting_borrower:    { label: 'Awaiting borrower',        cls: 'new',     dot: '#2F7F86' },
-  awaiting_countersign: { label: 'Awaiting counter-signature', cls: 'gold',  dot: '#AE8746' },
-  completed:            { label: 'Completed',                cls: 'ok',      dot: '#2E7A5E' },
-  declined:             { label: 'Declined',                 cls: 'declined', dot: '#A32A2A' },
-  voided:               { label: 'Voided',                   cls: 'muted',   dot: '#4B585C' },
-  error:                { label: 'Send failed',              cls: 'declined', dot: '#A32A2A' },
-};
-const PURPOSE = {
-  term_sheet_package: 'Term-Sheet Package',
-  heter_iska: 'Heter Iska',
-};
-const ROLE = {
-  borrower: 'Borrower',
-  co_borrower: 'Co-borrower',
-  admin: 'Counter-signature',
-};
+ * docs/DOCUSIGN-WORKFORCE-BUILD-SPEC.md §11), a per-signer timeline
+ * (sent → viewed → signed, with timestamps), and an SLA aging clock so a stalled
+ * package is obvious. It polls live so the floor can watch a package move without
+ * leaving the screen. Management actions live per-file (EsignFileSection). */
 
 // Filter tabs: which phases each shows. "attention" is the human-action bucket.
 const TABS = [
@@ -43,37 +27,6 @@ const TABS = [
   { key: 'attention', label: 'Needs attention' },   // declined / error / dead-lettered
   { key: 'closed',    label: 'Declined / voided', phases: ['declined', 'voided'] },
 ];
-
-function timeAgo(iso) {
-  if (!iso) return '';
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return '';
-  const s = Math.round((Date.now() - then) / 1000);
-  if (s < 45) return 'just now';
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.round(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-const abs = (iso) => (iso ? new Date(iso).toLocaleString() : '');
-
-// A recipient's own progress: sent → viewed → signed, or terminal decline.
-function recipientSteps(r) {
-  const signed = r.signedAt || r.status === 'completed' || r.status === 'signed';
-  const declined = r.declinedAt || r.status === 'declined';
-  const viewed = r.deliveredAt || r.status === 'delivered' || signed;
-  const sent = r.sentAt || r.status === 'sent' || viewed || signed;
-  return [
-    { key: 'sent', label: 'Sent', at: r.sentAt, done: !!sent },
-    { key: 'viewed', label: 'Viewed', at: r.deliveredAt, done: !!viewed },
-    declined
-      ? { key: 'declined', label: 'Declined', at: r.declinedAt, done: true, bad: true }
-      : { key: 'signed', label: 'Signed', at: r.signedAt, done: !!signed },
-  ];
-}
 
 function Recipient({ r }) {
   const steps = recipientSteps(r);
@@ -115,6 +68,8 @@ function EnvelopeCard({ e }) {
   const recips = (e.recipients || []).slice().sort(
     (a, b) => Number(a.routingOrder) - Number(b.routingOrder) || String(a.role).localeCompare(String(b.role)));
   const sentSummary = e.sentAt ? `Sent ${timeAgo(e.sentAt)}` : (e.status === 'not_sent' ? 'Not sent yet' : '');
+  const h = agingHours(e);
+  const lvl = agingLevel(h);
   return (
     <div className="panel esign-card" style={{ marginBottom: 12 }}>
       <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
@@ -122,6 +77,9 @@ function EnvelopeCard({ e }) {
         <strong>{e.loanNumber || who || `File #${e.applicationId}`}</strong>
         {e.propertyAddress ? <span className="muted small">{e.propertyAddress}</span> : null}
         <div className="spacer" />
+        {e.waitingOn && lvl ? (
+          <span className={`pill esign-aging ${lvl}`} title={`No progress for ${agingLabel(h)}`}>⏱ {agingLabel(h)}</span>
+        ) : null}
         <span className={`pill ${ph.cls}`} title={`DocuSign envelope ${e.envelopeId || '(not created yet)'}`}>
           <span className="esign-dot" style={{ background: ph.dot }} aria-hidden="true" />{ph.label}
         </span>
