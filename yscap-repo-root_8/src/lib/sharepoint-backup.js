@@ -216,46 +216,53 @@ function stateKeyFor(row, scopeKey) {
 // COALESCE walks document → checklist item → llc so condition- and entity-
 // attached documents route to the right file/borrower. Oldest first so the
 // backfill replays supersede history in order.
+// The enrichment (SELECT list + joins) shared by pendingBatch AND the
+// force-attempt path, so a document loaded by id carries the EXACT same fields
+// the mirror needs — no drift between "what the batch sees" and "what a forced
+// attempt sees".
+const ENRICH_SELECT = `
+    SELECT d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider,
+           d.slot_label, d.doc_kind, d.source_type, d.is_current, d.size_bytes,
+           d.sharepoint_backup_ref, d.sharepoint_parent_id, d.sharepoint_version,
+           d.sharepoint_integrity, d.sharepoint_item_size,
+           d.checklist_item_id, d.llc_id, d.created_at,
+           COALESCE(d.track_record_id, ci.track_record_id)                     AS track_record_id,
+           COALESCE(d.application_id, ci.application_id)                        AS app_id,
+           COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
+           ci.label                                                            AS item_label,
+           ct.code                                                             AS template_code,
+           l.id                                                                AS llc_resolved_id,
+           l.llc_name,
+           COALESCE(tr.property_address->>'oneLine',
+                    tr.property_address->>'street', tr.property_address->>'line1') AS tr_address,
+           a.ys_loan_number,
+           COALESCE(a.property_address->>'oneLine',
+                    NULLIF(TRIM(CONCAT_WS(', ',
+                      COALESCE(a.property_address->>'street', a.property_address->>'line1'),
+                      a.property_address->>'city', a.property_address->>'state')), '')) AS address_one_line,
+           COALESCE(su.full_name, a.loan_officer_name, recent.officer_name)    AS officer_name,
+           b.first_name  AS borrower_first,
+           b.last_name   AS borrower_last
+      FROM documents d
+      LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+      LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+      LEFT JOIN track_records tr   ON tr.id = COALESCE(d.track_record_id, ci.track_record_id)
+      LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
+      LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
+      LEFT JOIN staff_users su     ON su.id = a.loan_officer_id
+      LEFT JOIN borrowers b        ON b.id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id)
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(su2.full_name, a2.loan_officer_name) AS officer_name
+          FROM applications a2
+          LEFT JOIN staff_users su2 ON su2.id = a2.loan_officer_id
+         WHERE COALESCE(d.application_id, ci.application_id) IS NULL
+           AND a2.borrower_id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id)
+         ORDER BY a2.created_at DESC LIMIT 1
+      ) recent ON true`;
+
 async function pendingBatch(limit) {
   const { rows } = await db.query(
-    `SELECT d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider,
-            d.slot_label, d.doc_kind, d.source_type, d.is_current, d.size_bytes,
-            d.sharepoint_backup_ref, d.sharepoint_parent_id, d.sharepoint_version,
-            d.sharepoint_integrity, d.sharepoint_item_size,
-            d.checklist_item_id, d.llc_id, d.created_at,
-            COALESCE(d.track_record_id, ci.track_record_id)                     AS track_record_id,
-            COALESCE(d.application_id, ci.application_id)                        AS app_id,
-            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
-            ci.label                                                            AS item_label,
-            ct.code                                                             AS template_code,
-            l.id                                                                AS llc_resolved_id,
-            l.llc_name,
-            COALESCE(tr.property_address->>'oneLine',
-                     tr.property_address->>'street', tr.property_address->>'line1') AS tr_address,
-            a.ys_loan_number,
-            COALESCE(a.property_address->>'oneLine',
-                     NULLIF(TRIM(CONCAT_WS(', ',
-                       COALESCE(a.property_address->>'street', a.property_address->>'line1'),
-                       a.property_address->>'city', a.property_address->>'state')), '')) AS address_one_line,
-            COALESCE(su.full_name, a.loan_officer_name, recent.officer_name)    AS officer_name,
-            b.first_name  AS borrower_first,
-            b.last_name   AS borrower_last
-       FROM documents d
-       LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
-       LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
-       LEFT JOIN track_records tr   ON tr.id = COALESCE(d.track_record_id, ci.track_record_id)
-       LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
-       LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
-       LEFT JOIN staff_users su     ON su.id = a.loan_officer_id
-       LEFT JOIN borrowers b        ON b.id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id)
-       LEFT JOIN LATERAL (
-         SELECT COALESCE(su2.full_name, a2.loan_officer_name) AS officer_name
-           FROM applications a2
-           LEFT JOIN staff_users su2 ON su2.id = a2.loan_officer_id
-          WHERE COALESCE(d.application_id, ci.application_id) IS NULL
-            AND a2.borrower_id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id)
-          ORDER BY a2.created_at DESC LIMIT 1
-       ) recent ON true
+    `${ENRICH_SELECT}
       WHERE d.sharepoint_backed_up_at IS NULL
         AND d.storage_ref IS NOT NULL
         AND COALESCE(d.storage_provider, 'local') = 'local'
@@ -268,8 +275,11 @@ async function pendingBatch(limit) {
         AND d.created_at < now() - (CASE WHEN ${REGEN_KIND_SQL}
               THEN make_interval(secs => $3) ELSE interval '3 seconds' END)
         -- A superseded regen-kind snapshot never uploads (runOnce marks these
-        -- skipped; this predicate is the belt to that suspender).
-        AND NOT (${REGEN_KIND_SQL} AND d.is_current = false)
+        -- skipped; this predicate is the belt to that suspender). NULL-safe:
+        -- COALESCE(is_current,true) so a NULL is_current is treated as CURRENT
+        -- (selected + attempted) rather than silently excluded here AND from
+        -- the settle pass — the gap that stranded a doc "not yet attempted".
+        AND NOT (${REGEN_KIND_SQL} AND COALESCE(d.is_current, true) = false)
       -- attempts ASC first: fresh uploads are never starved behind a head-of-
       -- queue clump of repeatedly-failing rows; created_at ASC within a tier
       -- keeps the backfill's version replay chronological.
@@ -278,6 +288,15 @@ async function pendingBatch(limit) {
     [limit, MAX_ATTEMPTS, snapshotSettleSec()],
   );
   return rows;
+}
+
+// Load ONE document's fully-enriched row by id, with NO selection filters —
+// used by the force-attempt path so a document that pendingBatch skipped for
+// ANY reason can still be mirrored (or produce a real, classifiable error
+// instead of sitting "not yet attempted" forever).
+async function enrichedRowById(id) {
+  const { rows } = await db.query(`${ENRICH_SELECT} WHERE d.id = $1`, [id]);
+  return rows[0] || null;
 }
 
 // Superseded-before-mirror regen snapshots are settled WITHOUT uploading: the
@@ -292,7 +311,7 @@ async function settleSupersededSnapshots() {
         sharepoint_skipped_reason = 'superseded before mirror — a newer copy of this autosaved snapshot mirrors instead',
         sharepoint_backup_error = NULL
       WHERE d.sharepoint_backed_up_at IS NULL
-        AND d.is_current = false
+        AND COALESCE(d.is_current, true) = false
         AND ${REGEN_KIND_SQL}
         AND d.storage_ref IS NOT NULL
       RETURNING d.id`);
@@ -1450,10 +1469,33 @@ function stuckEscalateHours() {
   const v = Number(process.env.SHAREPOINT_STUCK_ESCALATE_HOURS || 0);
   return v > 0 ? v : Math.max(12, slo * 2);
 }
+// Force ONE document through the mirror, bypassing pendingBatch selection, with
+// a hard timeout so a hanging upload (a poison-pill file) can't strand the doc
+// "not yet attempted" forever — it either mirrors or produces a REAL,
+// classifiable error that recordFailure turns into an actionable card.
+const FORCE_ATTEMPT_TIMEOUT_MS = 90000;
+async function forceAttemptDoc(id) {
+  const row = await enrichedRowById(id);
+  if (!row) return { gone: true };
+  if (row.sharepoint_backed_up_at) return { alreadyDone: true };
+  try {
+    await Promise.race([
+      mirrorRow(row),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('force-attempt timed out after 90s (possible poison-pill file)')), FORCE_ATTEMPT_TIMEOUT_MS)),
+    ]);
+    return { mirrored: true };
+  } catch (e) {
+    // Give the real error a home: recordFailure classifies it (permanent →
+    // fast card; throttle/transient → retry) so it stops being "not attempted".
+    try { await recordFailure(row, e); } catch (_) {}
+    return { failed: true, error: e.message };
+  }
+}
+
 async function escalateStuckDocs() {
   const escalateHrs = stuckEscalateHours();
   const docs = (await stuckDocuments(50)).filter((d) => Number(d.age_hours) >= escalateHrs);
-  let settled = 0, carded = 0;
+  let settled = 0, carded = 0, forced = 0, forceMirrored = 0;
   for (const d of docs) {
     if (d.phantom) {
       // Self-heal: settle the superseded snapshot exactly like the settle pass.
@@ -1469,22 +1511,45 @@ async function escalateStuckDocs() {
       } catch (_) { /* best-effort */ }
       continue;
     }
+    // NEVER-ATTEMPTED but stuck (attempts 0 and no error) means pendingBatch
+    // skipped it for some reason (the "not yet attempted" bug). FORCE an
+    // attempt so it either mirrors now or yields a real error — don't just
+    // card a doc that was never actually tried.
+    const neverTried = Number(d.attempts || 0) === 0 && !d.last_error;
+    let realError = d.last_error;
+    if (neverTried) {
+      forced++;
+      const res = await forceAttemptDoc(d.id).catch((e) => ({ failed: true, error: e.message }));
+      if (res.mirrored) { forceMirrored++; continue; }   // uploaded — card (if any) closed by the success path
+      // The force-attempt produced a REAL error (or the doc vanished); use it
+      // so the card no longer says "not yet attempted".
+      realError = res.error || realError;
+    }
     // Anything else stuck this long is human-actionable — ensure a card exists
-    // (queueReview dedups per doc, so this is idempotent across sweeps).
+    // with the REAL error (re-read fresh in case recordFailure already classified
+    // it). queueReview dedups per doc, so this is idempotent across sweeps.
     try {
+      const fresh = await enrichedRowById(d.id);
+      if (!fresh || fresh.sharepoint_backed_up_at) continue;   // gone, or force-attempt mirrored it
+      const rawErr = fresh.sharepoint_backup_error || realError || d.why;
+      // Show the FRIENDLY cause on the card when the error is classifiable
+      // (e.g. "the document's own saved copy could not be read…" instead of a
+      // raw ENOENT), falling back to the raw error otherwise.
+      const verdict = classifyMirrorError(rawErr);
+      const shown = verdict.class === 'permanent' ? verdict.cause : String(rawErr);
       await require('./sync-review').queueReview({
         applicationId: d.app_id || null, borrowerId: d.borrower_id || null,
         taskId: `spdoc:${d.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
         reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
         clickupValue: null,
-        portalValue: `${d.filename || 'document'} — stuck ${d.age_hours}h: ${d.why}`.slice(0, 300),
+        portalValue: `${d.filename || 'document'} — stuck ${d.age_hours}h: ${shown}`.slice(0, 300),
         rawValue: JSON.stringify({ docId: d.id, attempts: d.attempts, stuckHours: d.age_hours,
-          error: (d.last_error || d.why || '').slice(0, 300), escalated: true }).slice(0, 500) });
+          errorClass: verdict.class, error: String(rawErr).slice(0, 280), escalated: true }).slice(0, 500) });
       carded++;
     } catch (_) { /* visibility best-effort */ }
   }
-  if (settled || carded) console.log(`[sp-sync] stuck-escalation: settled ${settled} phantom(s), carded ${carded} stuck doc(s)`);
-  return { settled, carded, considered: docs.length };
+  if (settled || carded || forced) console.log(`[sp-sync] stuck-escalation: settled ${settled} phantom(s), force-attempted ${forced} (${forceMirrored} mirrored), carded ${carded}`);
+  return { settled, carded, forced, forceMirrored, considered: docs.length };
 }
 
 // R4 — the SLO watchdog: on each interval sweep, if the oldest un-mirrored doc
