@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
+import { useAuth } from '../lib/auth.jsx';
 
 /* Sync review queue — the human gate for PILOT ⇄ ClickUp disagreements
  * (2026-07-15). The auto-resolution engine settles the provable conflicts by
@@ -52,11 +53,11 @@ const REASON_FILE_ACTIONS = {
     { action: 'retry_push', label: 'Retry the push', title: 'Re-queue the failed update through the normal guarded push' },
   ],
   file_unlinked_no_task: [
-    { action: 'relink_task', label: 'Link an existing card', title: 'Move an existing ClickUp card onto this file (asks to confirm if the card is on another file)', needsTaskInput: true },
+    { action: 'relink_task', label: 'Link an existing card', title: 'Move an existing ClickUp card onto this file (asks to confirm if the card is on another file). Admin only.', needsTaskInput: true, adminOnly: true },
     { action: 'create_task', label: 'Create its ClickUp task', title: 'Create the ClickUp task for this file via the normal create path' },
   ],
   file_dead_unlinked: [
-    { action: 'relink_task', label: 'Move the correct card here', title: 'Move an existing ClickUp card onto this file (asks to confirm if the card is currently on another file)', needsTaskInput: true },
+    { action: 'relink_task', label: 'Move the correct card here', title: 'Move an existing ClickUp card onto this file (asks to confirm if the card is currently on another file). Admin only.', needsTaskInput: true, adminOnly: true },
     { action: 'create_task', label: 'Create a fresh card', title: 'Create a brand-new ClickUp task for this file' },
     { action: 'archive_file', label: 'Archive the file', title: 'Soft-archive (reversible; ClickUp untouched)' },
     { action: 'keep_file', label: 'Keep as-is', title: 'Keep it in PILOT without a ClickUp card' },
@@ -143,6 +144,10 @@ function sides(r) {
 }
 
 export default function SyncReviews() {
+  const { role } = useAuth();
+  // relink_task (moving a ClickUp card between files) is admin-only — hide it
+  // from processors/LOs/underwriters (the server also enforces this).
+  const isAdmin = role === 'admin' || role === 'super_admin';
   const [status, setStatus] = useState('open');
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
@@ -256,7 +261,7 @@ export default function SyncReviews() {
         const sidesEqual = cu != null && p != null && String(cu) === String(p);
         const canResolve = RESOLVABLE.has(r.field_key) && !sidesEqual;
         const isDob = r.field_key === 'date_of_birth';
-        const fileActions = REASON_FILE_ACTIONS[r.reason] || null;
+        const fileActions = (REASON_FILE_ACTIONS[r.reason] || null)?.filter((a) => !a.adminOnly || isAdmin) || null;
         const candidates = fileActions && fileActions.some((a) => a.needsTarget) ? linkCandidates(r) : [];
         return (
           <div className="panel" key={r.id} style={{ marginBottom: 10 }}>
