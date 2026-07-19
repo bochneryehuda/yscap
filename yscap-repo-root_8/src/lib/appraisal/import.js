@@ -31,7 +31,7 @@ async function importAppraisal(db, {
   let f = file;
   if (!f) {
     const r = await db.query(
-      `SELECT id, property_address, property_type, units, purchase_price, as_is_value, arv
+      `SELECT id, property_address, property_type, units, purchase_price, as_is_value, arv, rehab_budget
          FROM applications WHERE id = $1`, [applicationId]);
     f = r.rows[0] || {};
   }

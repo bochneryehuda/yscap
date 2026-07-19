@@ -24,6 +24,7 @@ const { persistProductRegistration } = require('../lib/product-registration');
 const { syncExperienceChecklistForApplication, syncExperienceChecklistForBorrower, RECENT_EXIT_SQL } = require('../lib/experience');
 const llcLib = require('../lib/llc');
 const apprCard = require('../lib/appraisal-card');
+const apprScore = require('../lib/appraisal/scoring');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const changeRequests = require('../lib/change-requests');
@@ -829,14 +830,18 @@ router.get('/applications/:id/appraisal', async (req, res) => {
     const { imported_by, source_xml_document_id, pdf_document_id, ...rest } = appr; // eslint-disable-line no-unused-vars
     return { ...rest, lender_name: scrubText(rest.lender_name), amc_name: scrubText(rest.amc_name) };
   })();
+  const bSummary = {
+    fatal: open.filter((f) => f.severity === 'fatal').length,
+    warning: open.filter((f) => f.severity === 'warning').length,
+    info: open.filter((f) => f.severity === 'info').length,
+    blocksCtc: open.some((f) => f.severity === 'fatal' && f.blocks_ctc),
+  };
+  // Borrowers see the collateral read (a neutral quality summary of THEIR property) but NOT the
+  // ARV-defensibility cross-check — that's an underwriting-scrutiny signal, staff-only.
+  const score = { collateral: apprScore.collateralScore({ a: safeAppr, comps: comps.rows, summary: bSummary }), arv: null };
   res.json({
     appraisal: safeAppr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows,
-    summary: {
-      fatal: open.filter((f) => f.severity === 'fatal').length,
-      warning: open.filter((f) => f.severity === 'warning').length,
-      info: open.filter((f) => f.severity === 'info').length,
-      blocksCtc: open.some((f) => f.severity === 'fatal' && f.blocks_ctc),
-    },
+    summary: bSummary, score,
   });
 });
 
