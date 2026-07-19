@@ -71,9 +71,10 @@ const BRACKETS = [
 function parseScoreValue(raw, min = SCORE_MIN, max = SCORE_MAX) {
   if (raw == null) return null;
   const s = String(raw).trim();
-  if (!/^\d{1,4}$/.test(s)) return null;         // non-numeric / junk
+  if (!/^\d{1,4}$/.test(s)) return null;          // non-numeric / junk
+  if (s.length > 1 && s[0] === '0') return null;  // leading-zero => malformed, fail safe (→ no-score)
   const n = parseInt(s, 10);
-  if (!Number.isInteger(n) || n < min || n > max) return null;
+  if (n < min || n > max) return null;
   return n;
 }
 
@@ -113,9 +114,13 @@ function classifyScore(raw, opts = {}) {
     out.reason = 'excluded'; out.exclusionReason = EXCLUSION_VALUE_CODES[rawNum]; return out;
   }
 
-  // (3) model assertion for a known bureau
-  if (opts.requireModel !== false && bureau && MORTGAGE_MODELS[bureau]) {
-    if (model !== MORTGAGE_MODELS[bureau]) { out.reason = 'model_mismatch'; return out; }
+  // (3) model assertion — FAIL CLOSED: an unknown/absent bureau cannot have its
+  //     model asserted, so it is NOT usable when model-checking is on (else an
+  //     untagged VantageScore/FICO-8, also 300-850, would slip through).
+  if (opts.requireModel !== false) {
+    const expected = bureau ? MORTGAGE_MODELS[bureau] : undefined;
+    if (!expected) { out.reason = 'unknown_bureau'; return out; }
+    if (model !== expected) { out.reason = 'model_mismatch'; return out; }
   }
 
   // (4) range-guard the integer
@@ -131,8 +136,16 @@ function classifyScore(raw, opts = {}) {
  * 2 → lower; 1 → that one; 0 → null (no-score). Returns a detail object. */
 function borrowerMiddle(scoreNodes, opts = {}) {
   const classified = (Array.isArray(scoreNodes) ? scoreNodes : []).map((s) => classifyScore(s, opts));
-  const usable = classified.filter((c) => c.usable).map((c) => c.value);
-  usable.sort((a, b) => a - b);                  // ascending; duplicates kept
+  // ONE usable score per bureau — each bureau reports one score, so collapse any
+  // duplicate-bureau nodes (first usable wins) before the median. This keeps the
+  // median over ≤3 distinct bureaus (so a stray 4th node can't skew it) while
+  // preserving genuine ties across *different* bureaus ({Eq:680, Ex:680, TU:720}
+  // → 680, not deduped by value).
+  const perBureau = new Map();
+  for (const c of classified) {
+    if (c.usable && !perBureau.has(c.bureau)) perBureau.set(c.bureau, c.value);
+  }
+  const usable = [...perBureau.values()].sort((a, b) => a - b); // ascending; ≤3 distinct bureaus
 
   let middle = null;
   if (usable.length >= 3) middle = usable[1];    // median of the three

@@ -103,6 +103,43 @@ eq('rep flags no-score borrower', S.loanRepresentative([720, null]).hasNoScoreBo
 eq('rep all no-score -> null', S.loanRepresentative([null, null]).score, null);
 eq('rep bracket label', S.loanRepresentative([720, 660]).bracket, '720-739');
 
+// ---- fail-closed: unknown/absent bureau can't assert a model (audit fix 1) ----
+eq('unknown bureau rejected', S.classifyScore({ bureau: null, model: 'VantageScore4.0', value: '734' }).usable, false);
+eq('unknown bureau reason', S.classifyScore({ bureau: null, model: 'VantageScore4.0', value: '734' }).reason, 'unknown_bureau');
+eq('mistyped bureau rejected', S.classifyScore({ bureau: 'Equifaxx', model: 'VantageScore4.0', value: '734' }).usable, false);
+eq('known bureau missing model = model_mismatch', S.classifyScore({ bureau: 'Equifax', value: '734' }).reason, 'model_mismatch');
+
+// ---- duplicate-bureau node can't skew the median (audit fix 2) ----
+eq('dup-bureau collapses, median=720', S.borrowerMiddle([
+  { bureau: 'Equifax', model: 'EquifaxBeacon5.0', value: '700' },
+  { bureau: 'Equifax', model: 'EquifaxBeacon5.0', value: '701' },   // same bureau -> collapses
+  { bureau: 'Experian', model: 'ExperianFairIsaac', value: '720' },
+  { bureau: 'TransUnion', model: 'FICORiskScoreClassic04', value: '740' },
+]).middle, 720);
+eq('dup-bureau usableCount = 3 distinct', S.borrowerMiddle([
+  { bureau: 'Equifax', model: 'EquifaxBeacon5.0', value: '700' },
+  { bureau: 'Equifax', model: 'EquifaxBeacon5.0', value: '701' },
+  { bureau: 'Experian', model: 'ExperianFairIsaac', value: '720' },
+  { bureau: 'TransUnion', model: 'FICORiskScoreClassic04', value: '740' },
+]).usableCount, 3);
+
+// ---- parse edge cases (audit) ----
+eq('parse whitespace', S.parseScoreValue(' 700 '), 700);
+eq('parse leading-zero -> null', S.parseScoreValue('0700'), null);
+eq('parse numeric input', S.parseScoreValue(734), 734);
+eq('bracket lower edge 300', S.bracketOf(300), '<620');
+
+// ---- loanRepresentative empty + non-mutation ----
+eq('rep empty -> null', S.loanRepresentative([]).score, null);
+const _mutIn = [
+  { bureau: 'Equifax', model: 'EquifaxBeacon5.0', value: '734' },
+  { bureau: 'Experian', model: 'ExperianFairIsaac', value: '732' },
+  { bureau: 'TransUnion', model: 'FICORiskScoreClassic04', value: '730' },
+];
+const _mutCopy = JSON.stringify(_mutIn);
+S.borrowerMiddle(_mutIn);
+eq('borrowerMiddle does not mutate input', JSON.stringify(_mutIn), _mutCopy);
+
 // ---- end-to-end: two-borrower file, per-owner rules ----
 const borrowerA = S.borrowerMiddle(b1).middle;                 // 732
 const borrowerB = S.borrowerMiddle([
