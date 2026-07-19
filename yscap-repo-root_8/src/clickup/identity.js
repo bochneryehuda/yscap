@@ -90,6 +90,18 @@ function nameToken(v) {
   const tok = s.split(/\s+/)[0];
   return NAME_PLACEHOLDERS.has(tok) ? null : tok;
 }
+/**
+ * FULL surname, lowercased + whitespace-collapsed — or null when placeholder/blank.
+ * A surname is NOT one word: "Cohen Katz" and "Cohen Weiss" are DIFFERENT families
+ * that share a first token, so comparing only the first token (nameToken) would
+ * wrongly treat them as the same surname. Compound and double-barrelled surnames
+ * must be compared whole.
+ */
+function surnameNorm(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!s || NAME_PLACEHOLDERS.has(s)) return null;
+  return s;
+}
 
 /**
  * Corroboration gate for an EMAIL match (blueprint §3.4 — "one field is never
@@ -147,8 +159,9 @@ function emailMatchCorroborated(a = {}, b = {}) {
  * row: adopting a same-email row whose NAME belongs to someone else is how a
  * different person's profile (and their officer) swallowed a real borrower's
  * file. Placeholders never conflict; a single-letter initial matches its full
- * name ("M" vs "Moshe"); differing first tokens OR differing last names — both
- * real on both sides — is a conflict.
+ * name ("M" vs "Moshe"); differing first tokens OR differing FULL surnames — both
+ * real on both sides — is a conflict. The surname is compared WHOLE (not just its
+ * first token) so "Cohen Katz" and "Cohen Weiss" register as different families.
  */
 function nameConflict(aFirst, aLast, bFirst, bLast) {
   const differs = (x, y) => {
@@ -156,8 +169,8 @@ function nameConflict(aFirst, aLast, bFirst, bLast) {
     if (x.length === 1 || y.length === 1) return x[0] !== y[0];   // initial vs full name
     return true;
   };
-  return differs(nameToken(aFirst), nameToken(bFirst)) ||
-         differs(nameToken(aLast),  nameToken(bLast));
+  return differs(nameToken(aFirst),  nameToken(bFirst)) ||
+         differs(surnameNorm(aLast),  surnameNorm(bLast));
 }
 
 /**
