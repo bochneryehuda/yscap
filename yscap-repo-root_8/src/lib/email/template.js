@@ -163,6 +163,26 @@ function render(p) {
       'line-height:1.5;color:' + BRAND.muted + ';">' + esc(note) + '</p>'
     : '';
 
+  /* ---------------- REPLY-ABOVE-THIS-LINE MARKER (chat emails) ----------------
+     A visible delimiter so a reply-by-email posts ONLY the freshly typed text
+     back into the chat. It is rendered at the TOP of the message content (and in
+     plaintext) so that when a mail client quotes the whole email below the
+     recipient's fresh reply, the marker sits ABOVE the quoted body — and the
+     inbound parser (src/routes/inbound-chat.js) can cut at the FIRST occurrence of
+     the phrase "Reply above this line" (or the client's own quote attribution,
+     whichever comes first) and keep exactly what was typed. Keep the phrase
+     verbatim in both HTML and plaintext — it's the stable token both sides key on.*/
+  var marker = p.replyMarker ? String(p.replyMarker) : '';
+  var markerHtml = marker
+    ? '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 20px;">' +
+        '<tr><td style="padding:0 0 8px;font-family:Arial,Helvetica,sans-serif;font-size:11px;' +
+          'letter-spacing:.04em;color:' + BRAND.soft2 + ';text-align:center;">' + esc(marker) + '</td></tr>' +
+        '<tr>' +
+          '<td style="width:100%;border-top:1px solid ' + BRAND.line + ';font-size:0;line-height:0;">&nbsp;</td>' +
+        '</tr>' +
+      '</table>'
+    : '';
+
   var greetHtml = greeting
     ? '<p style="margin:0 0 14px;font-family:Arial,Helvetica,sans-serif;font-size:15px;' +
       'color:' + BRAND.ink + ';">' + esc(greeting) + '</p>'
@@ -199,6 +219,7 @@ function render(p) {
         '<tr><td style="height:3px;line-height:3px;font-size:0;background:' + BRAND.gold + ';">&nbsp;</td></tr>' +
         /* title + body */
         '<tr><td style="padding:30px 34px 8px;">' +
+          markerHtml +
           '<h1 style="margin:0 0 18px;font-family:Georgia,\'Times New Roman\',serif;font-size:21px;' +
             'line-height:1.3;font-weight:700;color:' + BRAND.ink + ';">' + esc(title) + '</h1>' +
           greetHtml + body + codeHtml + metaHtml + filesHtml + ctaHtml + noteHtml +
@@ -227,7 +248,13 @@ function render(p) {
 '</body></html>';
 
   /* ---------------- PLAINTEXT FALLBACK ---------------- */
-  var t = ['PILOT · by YS Capital', '', title, ''];
+  // The reply-above-this-line delimiter is the VERY FIRST plaintext line (above
+  // even the brand line) so that when a client quotes the plaintext part on reply,
+  // NOTHING of ours sits above the marker — the inbound parser cuts at the phrase
+  // and keeps only what the recipient typed.
+  var t = [];
+  if (marker) t.push(marker, '');
+  t.push('PILOT · by YS Capital', '', title, '');
   if (greeting) t.push(greeting, '');
   if (intro) t.push(intro, '');
   lines.forEach(function (l) { t.push(l, ''); });
