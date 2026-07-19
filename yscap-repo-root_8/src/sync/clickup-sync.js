@@ -73,7 +73,22 @@ async function pushOutboxOnce() {
       // Keys a human typed directly into a portal form ride along so the DOB
       // gate can recognize the deliberate human decision it exists to demand.
       const humanEditKeys = job.payload && Array.isArray(job.payload.humanEditKeys) ? job.payload.humanEditKeys.filter(Boolean) : [];
-      if (only.length) await orchestrator.pushApplication(job.entity_id, { force: true, only, humanEditKeys });
+      if (only.length) {
+        // WO-4b (F-M15): heartbeat updated_at while the push runs, so the 5-min
+        // 'processing' reclaim floor can never catch a STILL-RUNNING push and
+        // double-run it (double journal + breaker double-count). WO-2's patient
+        // retries mean a throttled push can now exceed 5 min; this keeps the job
+        // claimed until it genuinely finishes.
+        const heartbeat = setInterval(() => {
+          db.query(`UPDATE sync_queue SET updated_at=now() WHERE id=$1 AND status='processing'`, [job.id]).catch(() => {});
+        }, 120000);
+        if (heartbeat.unref) heartbeat.unref();
+        try {
+          await orchestrator.pushApplication(job.entity_id, { force: true, only, humanEditKeys });
+        } finally {
+          clearInterval(heartbeat);
+        }
+      }
     }
     await db.query(`UPDATE sync_queue SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
     // A push landing means the file's outbound path works again — any open
@@ -665,10 +680,45 @@ async function processInboxOnce() {
     await db.query(`UPDATE clickup_webhook_inbox SET status='done', processed_at=now() WHERE id=$1`, [row.id]);
   } catch (e) {
     const attempts = row.attempts + 1;
+    const terminal = attempts >= 6;
     await db.query(`UPDATE clickup_webhook_inbox SET status=$1, attempts=$2, last_error=$3 WHERE id=$4`,
-      [attempts >= 6 ? 'error' : 'received', attempts, String(e.message).slice(0, 500), row.id]);
+      [terminal ? 'error' : 'received', attempts, String(e.message).slice(0, 500), row.id]);
+    // WO-3 (F-M6): a terminal inbox failure used to be a SILENT drop — the row
+    // sat in 'error' and nothing ever looked at it, so a ClickUp update never
+    // reached the portal and no one knew. Make it traceable (audit_log, PII-free)
+    // so it surfaces in the evidence report; the boot re-drive
+    // (redriveInboxErrorsOnce) re-attempts error rows on the next deploy so a
+    // transient failure self-heals. (Phase 2: a visible review card + a
+    // webhook-health probe.)
+    if (terminal) {
+      try {
+        await db.query(
+          `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+           VALUES ('system', 'clickup_ingest_failed', 'application', NULL, $1)`,
+          [JSON.stringify({ inboxId: row.id, taskId: row.task_id || null, error: String(e.message).slice(0, 300) })]);
+      } catch (_) { /* the row is already in 'error' with last_error; audit is the extra trace */ }
+    }
   }
   return true;
+}
+
+// WO-3 (F-M6): re-attempt terminally-failed inbox rows on boot so a transient
+// failure (a brief outage, a since-fixed bug) self-heals instead of sitting in
+// 'error' forever, silently dropping a ClickUp update. Bounded + newest-per-task
+// so a persistent failure can't spin; ingestOne is idempotent, so re-driving is
+// safe. attempts are NOT reset, so a still-broken row terminals again after one
+// more try (one retry per deploy, never an infinite loop).
+async function redriveInboxErrorsOnce() {
+  const sel = await db.query(
+    `SELECT DISTINCT ON (task_id) id FROM clickup_webhook_inbox
+      WHERE status='error' AND task_id IS NOT NULL AND received_at > now() - interval '7 days'
+      ORDER BY task_id, received_at DESC
+      LIMIT 100`).catch(() => ({ rows: [] }));
+  if (!sel.rows.length) return 0;
+  const ids = sel.rows.map((x) => x.id);
+  await db.query(`UPDATE clickup_webhook_inbox SET status='received' WHERE id = ANY($1) AND status='error'`, [ids]).catch(() => {});
+  console.log(`[clickup-sync] inbox re-drive: reset ${ids.length} terminal error row(s) to retry`);
+  return ids.length;
 }
 
 /** Fetch + ingest a single task by id, applying the materialization gate.
@@ -767,9 +817,13 @@ async function reconcileOnce() {
 // the whole portfolio). The reconcile circuit-breaker below is the second guard.
 function isTaskDeletedError(e) {
   if (!e) return false;
-  if (e.status === 404) return true;
-  const msg = (e.body && (e.body.err || e.body.error || e.body.ECODE)) || e.message || '';
-  return e.status === 401 && /not\s*found|does not exist|deleted/i.test(String(msg));
+  // WO-6 (F-M14): a genuinely deleted/nonexistent ClickUp task returns a hard
+  // 404. A 401 means an AUTH problem (a bad, missing, or ROTATING token) —
+  // ClickUp's "Authorization token not found" message previously matched the
+  // deleted-task regex here, so a token rotation could misclassify live files as
+  // orphans and (past the 50% breaker) archive them. Never treat a 401 as a
+  // deletion: require the 404. A real deletion is always a 404.
+  return e.status === 404;
 }
 
 // Best-effort system audit row (no request context; used by the sync worker).
@@ -850,7 +904,27 @@ async function resolveOrphans(orphans, liveTaskIds) {
   return { archived, merged, flagged };
 }
 
-// ---- program reconcile + orphan sweep (one-shot) --------------------------
+// ---- program reconcile + orphan sweep -------------------------------------
+// WO-4b (F-H4): this used to re-ingest EVERY linked file on every boot — the
+// other half of the deploy re-ingest storm (13 deploys/day × the whole
+// portfolio). Now it processes a BOUNDED slice per pass, OLDEST-SNAPSHOT-FIRST,
+// so the portfolio rotates through instead of being hammered all at once
+// (mirrors retryStuckTasksOnce). A slow periodic tick (see start()) keeps the
+// rotation going even when deploys are rare, and the client's token bucket (WO-2)
+// paces the ClickUp calls.
+const RECON_PROGRAMS_LIMIT = Math.max(1, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_LIMIT || '150', 10) || 150);
+const RECON_PROGRAMS_INTERVAL_SEC = Math.max(0, parseInt(process.env.CLICKUP_RECONCILE_PROGRAMS_INTERVAL_SEC || '900', 10) || 900); // 0 disables the periodic tick
+
+/** Orphan-resolution safety breaker (preserves the prior inline semantics): a
+ *  large 404 fraction — or NOTHING resolving live — is almost certainly an
+ *  API/token outage, not mass task deletion, so we must NOT archive/merge this
+ *  pass. Pure — unit tested. */
+function shouldSkipOrphanResolution({ orphanCount, checked, liveCount }) {
+  if (!orphanCount) return false;                    // nothing to resolve
+  if (liveCount === 0) return true;                  // no task resolved live at all → outage, not deletions
+  return orphanCount > Math.max(5, checked * 0.5);   // majority of a bounded slice 404'd → outage
+}
+
 // Re-check every LINKED, non-descoped RTL file against its CURRENT ClickUp task:
 //   • program flipped to a non-RTL type (e.g. Short-Term Rehab → DSCR) → ingestTask
 //     descopes it (removed from the portal, ClickUp untouched).
@@ -865,9 +939,11 @@ async function reconcileLinkedProgramsOnce() {
     `SELECT a.id, a.clickup_pipeline_task_id AS task_id, a.borrower_id,
             a.property_address->>'oneLine' AS one_line
        FROM applications a
+       LEFT JOIN clickup_task_index cti ON cti.task_id = a.clickup_pipeline_task_id
       WHERE a.clickup_pipeline_task_id IS NOT NULL AND a.deleted_at IS NULL
         AND a.sync_state NOT IN ('descoped','manual_review','dead')
-      ORDER BY a.updated_at DESC`);
+      ORDER BY cti.snapshot_at ASC NULLS FIRST
+      LIMIT $1`, [RECON_PROGRAMS_LIMIT]);   // WO-4b: bounded slice, least-recently-checked first (rotates)
   let checked = 0, descoped = 0;
   const orphans = [];               // files whose ClickUp task returned a hard 404
   const liveTaskIds = new Set();    // task ids confirmed present this run
@@ -912,7 +988,7 @@ async function reconcileLinkedProgramsOnce() {
   // Circuit-breaker: a large 404 fraction (or NO task resolving at all) is almost
   // certainly an API/token outage, not mass task deletion — do nothing this run.
   let orphan = { archived: 0, merged: 0, flagged: 0, skipped: 0 };
-  if (orphans.length && (liveTaskIds.size === 0 || orphans.length > Math.max(5, checked * 0.5))) {
+  if (shouldSkipOrphanResolution({ orphanCount: orphans.length, checked, liveCount: liveTaskIds.size })) {
     orphan.skipped = orphans.length;
     console.warn(`[clickup-sync] reconcile-programs: ${orphans.length}/${orphans.length + checked} tasks 404'd — treating as an API outage, skipping orphan resolution`);
   } else if (orphans.length) {
@@ -1198,6 +1274,11 @@ function start() {
   optionMap().then(() => console.log('[clickup-sync] option cache warmed'))
     .catch((e) => console.error('[clickup-sync] option cache warm failed', e.message));
 
+  // WO-4b (F-M16): prime the volume breaker from the durable write journal so a
+  // deploy/restart mid-storm doesn't reset it to zero. Best-effort, before any
+  // outbound drain starts.
+  orchestrator.seedBreakerFromDb().catch(() => {});
+
   // Link any not-yet-linked staff (esp. processors created after the db/045 backfill)
   // to their ClickUp user id by email, so their officer/processor assignment syncs
   // outbound (#89). One-shot, best-effort; the push path also self-heals per-staffer.
@@ -1256,6 +1337,10 @@ function start() {
     // handling) heals the entire stuck backlog on deploy — not only the tasks
     // that happen to receive a new webhook.
     retryStuckTasksOnce().catch((e) => console.error('[clickup-sync] stuck-task retry', e.message));
+    // WO-3 (F-M6): re-attempt any terminally-failed inbound webhook rows so a
+    // transient/ since-fixed failure self-heals instead of silently dropping a
+    // ClickUp update forever.
+    redriveInboxErrorsOnce().catch((e) => console.error('[clickup-sync] inbox re-drive', e.message));
   }, cfg.clickupRunBackfill ? 120000 : 15000);
 
   // Review-queue upkeep (mega-audit enhancements #2/#5): the aging sweep
@@ -1279,6 +1364,13 @@ function start() {
       : 'identity-graph + linked-file updates only — new-file creation OFF (CLICKUP_INBOUND_CREATE_FILES!=1)'));
   setInterval(() => tick(processInboxOnce, 'inbox'), 4000);
   setInterval(() => { reconcileOnce().catch((e) => console.error('[clickup-sync] reconcile', e.message)); }, (cfg.clickupPollSec || 300) * 1000);
+  // WO-4b: keep the bounded program reconcile ROTATING on a slow cadence, so
+  // bounding the boot pass doesn't leave the tail of the portfolio unchecked
+  // when deploys are rare. Each tick processes the next oldest-snapshot slice;
+  // the token bucket paces the ClickUp calls. Set the interval to 0 to disable.
+  if (RECON_PROGRAMS_INTERVAL_SEC > 0) {
+    setInterval(() => { reconcileLinkedProgramsOnce().catch((e) => console.error('[clickup-sync] reconcile-programs (periodic)', e.message)); }, RECON_PROGRAMS_INTERVAL_SEC * 1000).unref();
+  }
 
   // Stage 2 — outbound loops (portal → ClickUp writes) are gated separately so
   // inbound/backfill can run and be validated first, before the portal is
@@ -1297,5 +1389,7 @@ function start() {
   }
 }
 
-module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
-  reconcileSince, nextWatermark }; // WO-4: exported for the durable-watermark test
+module.exports = { start, pushOutboxOnce, sweepDirtyOnce, processInboxOnce, redriveInboxErrorsOnce, ingestOne, reconcileOnce, reconcileLinkedProgramsOnce, recoverUnlinkedFilesOnce, retryStuckTasksOnce, flagUnsyncableFilesOnce, auditIdentityMismatchesOnce, sharedEmailReviewSweepOnce, runBackfill, dryRunBackfill, auditData, auditFieldDiff, backfillMemberLinksOnce, canMaterialize, PIPELINE_FOLDERS,
+  reconcileSince, nextWatermark, // WO-4: exported for the durable-watermark test
+  isTaskDeletedError, // WO-6: exported for the token-rotation-safety test
+  shouldSkipOrphanResolution }; // WO-4b: exported for the orphan-breaker test

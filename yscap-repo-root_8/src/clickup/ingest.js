@@ -1436,9 +1436,17 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
         }
       }
     } catch (_) { /* audit is best-effort — never blocks the pull */ }
-    for (const p of pendingYearReviews) {
-      await review.queueReview({ applicationId: targetId, borrowerId, taskId: task.id, direction: 'inbound',
-        fieldKey: p.fieldKey, proposedValue: p.proposed, rawValue: p.raw, reason: 'clickup_year_out_of_range' });
+    if (pendingYearReviews.length) {
+      // WO-6 (F-M8): show the card what PILOT actually holds (the year-guard kept
+      // it via COALESCE), so a blank "In PILOT" column can't mislead a reviewer
+      // into adopting ClickUp's bad-year value over a good portal date.
+      const cur = (await db.query(`SELECT expected_closing, actual_closing FROM applications WHERE id=$1`, [targetId])).rows[0] || {};
+      for (const p of pendingYearReviews) {
+        const portalVal = cur[p.fieldKey] ? String(cur[p.fieldKey]).slice(0, 10) : null;
+        await review.queueReview({ applicationId: targetId, borrowerId, taskId: task.id, direction: 'inbound',
+          fieldKey: p.fieldKey, currentValue: portalVal, proposedValue: p.proposed, rawValue: p.raw,
+          reason: 'clickup_year_out_of_range', clickupValue: p.proposed, portalValue: portalVal });
+      }
     }
     // Restore-on-reflip: if this file had been auto-descoped because its program
     // was previously changed to a non-RTL type, flipping it back to an RTL program
@@ -1527,8 +1535,11 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   // Year-guard reviews for a BRAND-NEW file land immediately too (the update
   // branch has its own insert) — a bad year must never wait for the next pass.
   for (const p of pendingYearReviews) {
+    // WO-6 (F-M8): a brand-new file genuinely has no portal date yet, so "In
+    // PILOT" is honestly blank here — pass it explicitly for a clear two-sided card.
     await review.queueReview({ applicationId: newId, borrowerId, taskId: task.id, direction: 'inbound',
-      fieldKey: p.fieldKey, proposedValue: p.proposed, rawValue: p.raw, reason: 'clickup_year_out_of_range' });
+      fieldKey: p.fieldKey, currentValue: null, proposedValue: p.proposed, rawValue: p.raw,
+      reason: 'clickup_year_out_of_range', clickupValue: p.proposed, portalValue: null });
   }
   // A freshly-created file already carries llc_id (in the INSERT above), but its LLC
   // document slots + condition are not built until we run the wiring — do it now so

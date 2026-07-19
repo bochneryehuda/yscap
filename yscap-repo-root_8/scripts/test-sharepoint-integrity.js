@@ -99,6 +99,25 @@ ok('term_sheet is NOT regen (point-in-time offer, keeps versions)', !backup.isRe
 ok('track_record_doc is NOT regen (human verification doc)', !backup.isRegenKind('track_record_doc'));
 ok('chat attachment kind (null) is NOT regen', !backup.isRegenKind(null));
 
+// -------------------------------- stuck-document visibility + escalation (R4+)
+ok('stuckDocuments is exported', typeof backup.stuckDocuments === 'function');
+ok('escalateStuckDocs is exported', typeof backup.escalateStuckDocs === 'function');
+ok('reconciliation is exported', typeof backup.reconciliation === 'function');
+
+// ---------------------------------- error classification (why docs get stuck)
+const cls = (m) => backup.classifyMirrorError(m).class;
+eq('no-scope error is PERMANENT (surface fast, don\'t retry)', cls('document has no application or borrower to file under'), 'permanent');
+eq('missing local file is PERMANENT', cls("ENOENT: no such file or directory, open '/var/data/uploads/ab/x.pdf'"), 'permanent');
+eq('auth failure is PERMANENT', cls('Graph token via secret: AADSTS7000215 invalid client secret'), 'permanent');
+eq('access denied is PERMANENT', cls('Graph PUT -> 403 accessDenied: permission'), 'permanent');
+eq('name-conflict-persisted is PERMANENT', cls('name conflict persisted after uniquification'), 'permanent');
+eq('429 is THROTTLE (keep retrying)', cls('Graph 429 too many requests, retry-after 30'), 'throttle');
+eq('throttled upload is THROTTLE', cls('SharePoint chunk upload 503: throttled'), 'throttle');
+eq('timeout is TRANSIENT', cls('the operation was aborted due to timeout'), 'transient');
+eq('ECONNRESET is TRANSIENT', cls('read ECONNRESET'), 'transient');
+eq('unknown error defaults to TRANSIENT (safe — retry)', cls('some weird thing happened'), 'transient');
+ok('permanent verdict carries a plain-language cause', /borrower|file/i.test(backup.classifyMirrorError('document has no application or borrower to file under').cause));
+
 // ---------------------------------------- metadata ID stamping (roadmap R1)
 eq('PILOT_COLUMNS are the four identity columns', sp.PILOT_COLUMNS,
   ['PilotDocumentId', 'PilotFileId', 'PilotBorrower', 'PilotSyncedAt']);

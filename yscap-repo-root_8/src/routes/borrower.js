@@ -1153,6 +1153,10 @@ router.patch('/llcs/:id', async (req, res) => {
   }
   const sets = [], vals = []; let i = 1;
   const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  // WO-6 (F-M11): a mid-typed formation date ('0026-07-15') must not persist as
+  // year 26 — normalize it (2-digit year → 2026, garbage → null) like every
+  // other typed date field, so the year-0026 class can't corrupt LLC ages.
+  if (b.formationDate !== undefined) b.formationDate = require('../lib/fields').normalizeTypedDate(b.formationDate);
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
   if (b.llcName !== undefined && !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName cannot be empty' });
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
