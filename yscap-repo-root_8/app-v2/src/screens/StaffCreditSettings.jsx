@@ -14,10 +14,21 @@ const STATUS_LABEL = {
   none: { text: 'Not set up yet', cls: '' },
 };
 
+const dayFmt = (v) => {
+  if (!v) return null;
+  try { return new Date(v).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }); } catch (_) { return null; }
+};
+const daysSince = (v) => {
+  if (!v) return null;
+  const ms = Date.now() - new Date(v).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 86400000) : null;
+};
+
 function ProviderCard({ p, onSaved }) {
   const [ident, setIdent] = useState(p.operatorIdentifier || '');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
 
@@ -34,6 +45,15 @@ function ProviderCard({ p, onSaved }) {
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   }
+  async function test() {
+    setErr(''); setMsg(''); setTesting(true);
+    try {
+      const r = await api.creditTestCredential({ providerId: p.providerId });
+      setMsg(r.message || (r.ok ? 'Login verified.' : 'Login could not be verified.'));
+      await onSaved();
+    } catch (e) { setErr(e.message); }
+    finally { setTesting(false); }
+  }
   async function remove() {
     if (!window.confirm(`Remove your ${p.displayName} login?`)) return;
     setBusy(true); setErr(''); setMsg('');
@@ -43,6 +63,11 @@ function ProviderCard({ p, onSaved }) {
   }
 
   const st = STATUS_LABEL[p.status] || STATUS_LABEL.none;
+  const verifiedOn = dayFmt(p.lastVerifiedAt);
+  const ageDays = daysSince(p.updatedAt);
+  // A gentle rotation nudge: a login not updated/verified in 6 months is worth
+  // re-entering (passwords rotate, and a stale one fails a pull mid-file).
+  const stale = p.hasCredential && ageDays != null && ageDays >= 180;
   return (
     <div className="panel" style={{ marginTop: 12 }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
@@ -61,11 +86,18 @@ function ProviderCard({ p, onSaved }) {
             onChange={e => setPassword(e.target.value)} placeholder={p.hasCredential ? '••••••••' : 'Your Xactus password'} />
         </div>
       </div>
+      {p.hasCredential && (
+        <div className="muted small" style={{ marginTop: 8 }}>
+          {verifiedOn ? `Last verified ${verifiedOn}.` : 'Not verified yet.'}
+          {stale && <span style={{ color: 'var(--gold)' }}> · This login is over 6 months old — consider re-entering it.</span>}
+        </div>
+      )}
       {err && <div className="notice err" role="alert" style={{ marginTop: 8 }}>{err}</div>}
       {msg && <div className="notice ok" style={{ marginTop: 8 }}>{msg}</div>}
       <div className="row" style={{ marginTop: 10, gap: 8 }}>
-        <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save login'}</button>
-        {p.hasCredential && <button className="btn ghost" disabled={busy} onClick={remove}>Remove</button>}
+        <button className="btn primary" disabled={busy || testing} onClick={save}>{busy ? 'Saving…' : 'Save login'}</button>
+        {p.hasCredential && <button className="btn ghost" disabled={busy || testing} onClick={test}>{testing ? 'Testing…' : 'Test my login'}</button>}
+        {p.hasCredential && <button className="btn ghost" disabled={busy || testing} onClick={remove}>Remove</button>}
       </div>
     </div>
   );

@@ -73,6 +73,26 @@ const importTransport = async () => ({ status: 200, headers: { get: () => 'text/
   ok('GET /credit/credentials 403 (no pull_credit)', (await call('GET', '/credit/credentials', NP)).status === 403);
   ok('PUT /credit/credentials 403 (no pull_credit)', (await call('PUT', '/credit/credentials', NP, { providerKey: 'xactus', operatorIdentifier: 'x', password: 'y' })).status === 403);
   ok('DELETE /credit/credentials 403 (no pull_credit)', (await call('DELETE', `/credit/credentials/${prov}`, NP)).status === 403);
+
+  // ---- E4: "Test my login" (verifyForUser + endpoint) ----
+  // Direct lib test with an injected no-charge probe (endpoint+verifyPath needed
+  // for verifyCredential to actually probe; production uses the configured pair).
+  const okProbe = async () => ({ status: 200 });
+  const badProbe = async () => ({ status: 401 });
+  const vOk = await credentials.verifyForUser(admin, prov, { endpoint: 'http://x', verifyPath: '/verify', transport: okProbe });
+  ok('verifyForUser ok → status ok + lastVerifiedAt set', vOk.status === 'ok' && vOk.ok === true && !!vOk.lastVerifiedAt);
+  ok('verifyForUser persisted status=ok', (await db.query(`SELECT status FROM user_credit_credentials WHERE user_id=$1 AND provider_id=$2`, [admin, prov])).rows[0].status === 'ok');
+  const vBad = await credentials.verifyForUser(admin, prov, { endpoint: 'http://x', verifyPath: '/verify', transport: badProbe });
+  ok('verifyForUser rejected login → status invalid', vBad.status === 'invalid' && vBad.ok === false);
+  ok('verifyForUser persisted status=invalid', (await db.query(`SELECT status FROM user_credit_credentials WHERE user_id=$1 AND provider_id=$2`, [admin, prov])).rows[0].status === 'invalid');
+  let noCredThrew = false;
+  try { await credentials.verifyForUser(offLo, prov, { endpoint: 'http://x', verifyPath: '/verify', transport: okProbe }); } catch (_) { noCredThrew = true; }
+  ok('verifyForUser with no saved login throws', noCredThrew);
+  // HTTP endpoint gating.
+  ok('POST /credit/credentials/test 403 (no pull_credit)', (await call('POST', '/credit/credentials/test', NP, { providerId: prov })).status === 403);
+  ok('POST /credit/credentials/test 200 (own login)', (await call('POST', '/credit/credentials/test', A, { providerId: prov })).status === 200);
+  // restore the admin credential to 'ok' so downstream order tests aren't affected by the invalid mark.
+  await credentials.setForUser(admin, { providerKey: 'xactus', operatorIdentifier: 'LO', secret: 'p', verify: false });
   ok('GET /credit/reports 200 (own file)', (await call('GET', `/credit/reports?applicationId=${appId}`, A)).status === 200);
   ok('GET /credit/reports 400 (missing appId)', (await call('GET', '/credit/reports', A)).status === 400);
   ok('GET /credit/reports 403 (off-file LO)', (await call('GET', `/credit/reports?applicationId=${appId}`, OFF)).status === 403);

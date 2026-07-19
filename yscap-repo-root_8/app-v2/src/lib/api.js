@@ -464,6 +464,7 @@ export const api = {
   creditProviders:     () => req('GET', '/api/staff/credit/providers'),
   creditCredentials:   () => req('GET', '/api/staff/credit/credentials'),
   creditSetCredential: (b) => req('PUT', '/api/staff/credit/credentials', b),
+  creditTestCredential:(b) => req('POST', '/api/staff/credit/credentials/test', b),
   creditDelCredential: (providerId) => req('DELETE', `/api/staff/credit/credentials/${providerId}`),
   // Order/reissue (billable — pull_credit) + report views.
   creditOrder:         (b) => req('POST', '/api/staff/credit/order', b),

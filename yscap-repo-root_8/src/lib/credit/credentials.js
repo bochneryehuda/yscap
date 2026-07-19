@@ -46,7 +46,7 @@ function badRequest(msg) { const e = new Error(msg); e.status = 400; return e; }
 async function listForUser(userId) {
   const enabled = await providers.listEnabled();
   const { rows } = await db.query(
-    `SELECT provider_id, operator_identifier, status, last_verified_at
+    `SELECT provider_id, operator_identifier, status, last_verified_at, updated_at
        FROM user_credit_credentials WHERE user_id = $1`, [userId]);
   const byProvider = new Map(rows.map((r) => [r.provider_id, r]));
   return enabled.map((p) => {
@@ -58,6 +58,7 @@ async function listForUser(userId) {
       operatorIdentifier: c ? c.operator_identifier : null,
       status: c ? c.status : 'none',
       lastVerifiedAt: c ? c.last_verified_at : null,
+      updatedAt: c ? c.updated_at : null,   // for the rotation nudge (a very old login may be stale)
       hasCredential: !!c,
     };
   });
@@ -149,4 +150,36 @@ async function markStatus(userId, providerId, status) {
       WHERE user_id=$1 AND provider_id=$2`, [userId, providerId, s]);
 }
 
-module.exports = { listForUser, setForUser, removeForUser, getUsable, markStatus, cleanIdentifier };
+/**
+ * On-demand "test my login" (E4): decrypt the acting user's stored credential,
+ * probe the provider's NO-CHARGE verify endpoint, persist the resulting status
+ * (ok / invalid / unverified), and return it. Never places a billable pull; the
+ * decrypted secret is transient (never returned or logged). A transport can be
+ * injected for tests. Throws 400 when there is no saved login to test.
+ */
+async function verifyForUser(userId, providerId, opts = {}) {
+  const provider = opts.providerId != null || providerId != null
+    ? await providers.getById(providerId != null ? providerId : opts.providerId)
+    : await providers.getByKey(opts.providerKey || 'xactus');
+  if (!provider) throw badRequest('unknown credit provider');
+  if (provider.key !== 'xactus') throw badRequest(`${provider.displayName} cannot be tested yet`);
+  const cred = await getUsable(userId, provider.id);
+  if (!cred) throw badRequest('no login saved to test — save your login first');
+  let v;
+  try {
+    v = await xactus.verifyCredential({
+      operatorIdentifier: cred.operatorIdentifier, secret: cred.secret,
+      // production uses the configured endpoint/verify path; these are injectable for tests.
+      transport: opts.transport, endpoint: opts.endpoint, verifyPath: opts.verifyPath,
+    });
+  } catch (_) {
+    v = { status: 'unverified', message: 'Could not reach the provider to test the login right now.' };
+  }
+  const status = v && v.status ? v.status : 'unverified';
+  await markStatus(userId, provider.id, status);
+  const row = (await db.query(
+    `SELECT last_verified_at FROM user_credit_credentials WHERE user_id=$1 AND provider_id=$2`, [userId, provider.id])).rows[0];
+  return { ok: status === 'ok', status, message: (v && v.message) || 'Tested.', lastVerifiedAt: row ? row.last_verified_at : null, providerId: provider.id };
+}
+
+module.exports = { listForUser, setForUser, removeForUser, getUsable, markStatus, verifyForUser, cleanIdentifier };

@@ -92,6 +92,18 @@ router.delete('/credit/credentials/:pid', requirePull, async (req, res) => {
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
+// "Test my login" (E4): probe the acting user's OWN saved login against the
+// provider's no-charge verify endpoint and persist the result. Never billable;
+// only ever tests the caller's own credential (no id in the body can widen it).
+router.post('/credit/credentials/test', requirePull, async (req, res) => {
+  const b = req.body || {};
+  try {
+    const out = await credentials.verifyForUser(req.actor.id, b.providerId, { providerKey: b.providerKey });
+    await audit(req, 'credit_credential_test', { providerId: out.providerId, status: out.status });
+    res.json({ ok: out.ok, status: out.status, message: out.message, lastVerifiedAt: out.lastVerifiedAt });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
 // ---- order / reissue (BILLABLE — pull_credit only) -------------------------
 // Body: { applicationId, product?, action?, creditReportIdentifier?,
 //         repositories?, providerKey?, idempotencyKey }. The idempotency key
