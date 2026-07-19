@@ -279,6 +279,10 @@ module.exports = {
     // DB-backed send circuit breaker: more than this many envelopes sent in a
     // rolling 10 min opens the breaker (a runaway loop mailing borrowers stops hard).
     maxSends10min:  parseInt(process.env.DOCUSIGN_MAX_SENDS_10MIN || '100', 10),
+    // The admin counter-signer on the term-sheet package (routingOrder 2, signs
+    // LAST — the envelope is binding only after this signature). Owner-directed.
+    countersignEmail: (process.env.DOCUSIGN_COUNTERSIGN_EMAIL || 'yehuda@yscapgroup.com').toLowerCase(),
+    countersignName:  process.env.DOCUSIGN_COUNTERSIGN_NAME || 'YS Capital Group — Lender',
   },
   // Plaid (bank / asset verification):
   plaid: {
