@@ -68,6 +68,29 @@ assert.strictEqual(R.baseLabelFromName('Common Areas - Roof'), 'Roof');
 assert.strictEqual(R.baseLabelFromName('Cabinets'), 'Cabinets');
 ok('rollup: base-label derivation strips only the exact explode prefixes');
 
+// audit F3: buildReallocationCells is PER UNIT on multi-unit lines, so cutting one unit below
+// its drawn amount can't hide behind a raise on another unit.
+const bcLinks = [
+  { sitewire_job_item_id: 10, sow_line_key: 'interior:4', section_token: 'u1', unit_index: 1, name: 'Unit 1 - Painting', budgeted_cents: 1000000, is_media_item: false, state: 'live' },
+  { sitewire_job_item_id: 11, sow_line_key: 'interior:4', section_token: 'u2', unit_index: 2, name: 'Unit 2 - Painting', budgeted_cents: 1000000, is_media_item: false, state: 'live' },
+];
+const bcDraws = [{ sitewire_draw_id: 90, number: 1, status: 'approved', total_requested_cents: 800000, total_approved_cents: 800000 }];
+const bcReqs = [{ sitewire_draw_id: 90, sitewire_job_item_id: 10, requested_cents: 800000, approved_cents: 800000, inspection_count: 2 }]; // unit1 drawn $8,000
+const bcRoll = R.computeRollup({ links: bcLinks, draws: bcDraws, requests: bcReqs });
+// proposed: cut unit1 to $6,000 (below its $8,000 drawn) and raise unit2 to $14,000 — net-zero at the LINE level
+const proposedItems = [
+  { sow_line_key: 'interior:4', unit_index: 1, budgeted_cents: 600000, is_media_item: false },
+  { sow_line_key: 'interior:4', unit_index: 2, budgeted_cents: 1400000, is_media_item: false },
+];
+const bcCells = R.buildReallocationCells(bcRoll, proposedItems);
+assert.strictEqual(bcCells.length, 2, 'two per-unit cells for a 2-unit line');
+const u1 = bcCells.find((c) => c.key === 'interior:4:u1');
+assert.ok(u1 && u1.drawn_cents === 800000 && u1.new_cents === 600000, 'unit1 cell carries its own drawn + proposed');
+const bcPlan = RA.planReallocation(bcCells, { phase: 'after_ctc' });
+assert.ok(bcPlan.violations.some((v) => v.code === 'below_drawn'), 'cutting a UNIT below its drawn is caught (not hidden behind another unit)');
+assert.strictEqual(bcPlan.ok, false, 'per-unit below-drawn blocks the reallocation');
+ok('reallocation: cells are per-unit — cutting one unit below its drawn is blocked (audit F3)');
+
 // ============================ REALLOCATION ============================
 // current: line A $10,000 (drawn $4,000), line B $6,000 (drawn 0)
 const cellsMove = [

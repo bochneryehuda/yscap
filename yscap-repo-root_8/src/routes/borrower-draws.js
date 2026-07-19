@@ -30,7 +30,9 @@ const OWN_FILE_SQL = (alias, p) => {
     ` OR ${a}borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p})` +
     ` OR ${a}co_borrower_id IN (SELECT linked_borrower_id FROM borrower_profile_links WHERE borrower_id=${p}))`;
 };
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 async function ownsApp(req, appId) {
+  if (!isUuid(appId)) return false; // malformed id → no ownership (avoid a 22P02 async-rejection hang, audit F1)
   const r = await db.query(`SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND (${OWN_FILE_SQL('a', '$2')})`, [appId, me(req)]);
   return r.rowCount > 0;
 }
@@ -99,6 +101,7 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   const f = (await db.query(`SELECT * FROM draw_findings WHERE id=$1`, [req.params.findingId])).rows[0];
   if (!f || !(await ownsApp(req, f.application_id))) return res.status(403).json({ error: 'forbidden' });
   if (f.status === 'accepted') return res.status(409).json({ error: 'you already accepted these results' });
+  if (f.status === 'resolved') return res.status(409).json({ error: 'these results have already been reviewed and resolved' }); // audit F4 — resolved is terminal
   const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
   if (!lines.length) return res.status(400).json({ error: 'a dispute must name at least one line' });
   let count = 0;
@@ -130,10 +133,7 @@ router.post('/draws/:appId/change-request', async (req, res) => {
     const a = (await db.query(`SELECT status FROM applications WHERE id=$1`, [appId])).rows[0];
     const rollup = await rollupMod.loadRollup(db, appId);
     const ex = M.explodeSow(proposedPayload.state, {});
-    // reuse the staff cell-builder logic inline (per sow_line_key)
-    const cur = new Map(); for (const l of rollup.lines) { if (l.kind === 'media') continue; cur.set(l.sow_line_key, { label: l.label, budget: l.budgeted, drawn: l.drawn }); }
-    const prop = new Map(); for (const it of ex.items) { if (it.is_media_item || String(it.sow_line_key).indexOf('__media__') === 0) continue; prop.set(it.sow_line_key, (prop.get(it.sow_line_key) || 0) + Number(it.budgeted_cents || 0)); }
-    const cells = [...new Set([...cur.keys(), ...prop.keys()])].map((k) => { const c = cur.get(k) || { label: rollupMod.baseLabelFromName(k), budget: 0, drawn: 0 }; return { key: k, label: c.label, budget_cents: c.budget, drawn_cents: c.drawn, new_cents: prop.has(k) ? prop.get(k) : 0 }; });
+    const cells = rollupMod.buildReallocationCells(rollup, ex.items); // per-unit on multi-unit lines (audit F3)
     const phase = String(a && a.status) === 'funded' ? 'after_ctc' : 'before_ctc';
     let vpct = 10; try { const v = (await db.query(`SELECT value FROM sitewire_settings WHERE key='variance_pct'`)).rows[0]; vpct = Number(v && v.value) || 10; } catch (_) {}
     const plan = planReallocation(cells, { phase, variancePct: vpct });

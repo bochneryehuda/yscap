@@ -205,4 +205,50 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
   return rollup;
 }
 
-module.exports = { computeRollup, loadRollup, baseLabelFromName };
+/**
+ * Build the reallocation cells for a SOW change request from the current rollup + a proposed
+ * explosion. Cells are PER UNIT on multi-unit lines (key `sow_line_key:uN`) so the
+ * "never cut a line below what's already drawn" rule is enforced per unit, not just per line
+ * (pre-merge audit F3) — a move that cuts unit 1 below its drawn amount can no longer hide
+ * behind a raise on unit 2. Single-unit / section / contingency / GC lines stay one cell.
+ * Media lines are excluded (no budget).
+ *   proposedItems: explodeSow(...).items  [{ sow_line_key, unit_index, budgeted_cents, is_media_item }]
+ * Returns [{ key, label, budget_cents, drawn_cents, new_cents }].
+ */
+function buildReallocationCells(rollup, proposedItems) {
+  const cellKey = (lineKey, unitIndex) => (unitIndex != null ? `${lineKey}:u${unitIndex}` : lineKey);
+  // current cells from the rollup (per unit where the line has units)
+  const cur = new Map();
+  for (const l of rollup.lines) {
+    if (l.kind === 'media') continue;
+    if (l.units && l.units.length > 1) {
+      for (const u of l.units) cur.set(cellKey(l.sow_line_key, u.unit_index), { label: `${l.label} — Unit ${u.unit_index}`, budget: N(u.budgeted), drawn: N(u.drawn) });
+    } else {
+      cur.set(l.sow_line_key, { label: l.label, budget: N(l.budgeted), drawn: N(l.drawn) });
+    }
+  }
+  // proposed amounts aggregated to the same cell identity
+  const multiLine = new Set(); // sow_line_keys that are multi-unit in EITHER current or proposed
+  const unitCountByLine = {};
+  for (const it of proposedItems) {
+    if (it.is_media_item || String(it.sow_line_key).indexOf('__media__') === 0) continue;
+    if (it.unit_index != null) { (unitCountByLine[it.sow_line_key] = unitCountByLine[it.sow_line_key] || new Set()).add(it.unit_index); }
+  }
+  for (const l of rollup.lines) if (l.units && l.units.length > 1) multiLine.add(l.sow_line_key);
+  for (const k of Object.keys(unitCountByLine)) if (unitCountByLine[k].size > 1) multiLine.add(k);
+  const prop = new Map();
+  for (const it of proposedItems) {
+    if (it.is_media_item || String(it.sow_line_key).indexOf('__media__') === 0) continue;
+    const key = multiLine.has(it.sow_line_key) && it.unit_index != null ? cellKey(it.sow_line_key, it.unit_index) : it.sow_line_key;
+    prop.set(key, (prop.get(key) || 0) + N(it.budgeted_cents));
+  }
+  const keys = new Set([...cur.keys(), ...prop.keys()]);
+  const out = [];
+  for (const k of keys) {
+    const c = cur.get(k) || { label: baseLabelFromName(k.split(':')[0]), budget: 0, drawn: 0 };
+    out.push({ key: k, label: c.label, budget_cents: c.budget, drawn_cents: c.drawn, new_cents: prop.has(k) ? prop.get(k) : 0 });
+  }
+  return out;
+}
+
+module.exports = { computeRollup, loadRollup, baseLabelFromName, buildReallocationCells };

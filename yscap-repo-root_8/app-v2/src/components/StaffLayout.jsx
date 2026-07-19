@@ -354,6 +354,7 @@ export default function StaffLayout({ children }) {
         {canManageTeam && <NavLink className="sb-link" to="/internal/team"><NavIcon name="team" />Team</NavLink>}
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
+        {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}
         <NavLink className="sb-link" to="/internal/sync-reviews" title="Sync review — suspicious PILOT ⇄ ClickUp changes held for human approval before anything is rewritten"><NavIcon name="audit" />Sync review
           {reviewCount > 0 && <span className="sb-badge">{reviewCount > 99 ? '99+' : reviewCount}</span>}</NavLink>

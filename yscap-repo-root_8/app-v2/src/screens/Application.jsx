@@ -17,6 +17,7 @@ import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/Form
 import DocPreview from '../components/DocPreview.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
+import BorrowerDraws from '../components/BorrowerDraws.jsx';
 import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
@@ -725,6 +726,7 @@ export default function Application() {
     { id: 'sec-overview', label: 'Loan overview' },
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
+    ...(app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
     { id: 'sec-conditions', label: 'Conditions to close', badge: nOpen || '' },
     { id: 'sec-contacts', label: 'Contacts' },
     ...(uploads.length ? [{ id: 'sec-documents', label: 'Document history', badge: uploads.length }] : []),
@@ -870,6 +872,13 @@ export default function Application() {
       <div id="product-studio"><ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="borrower"
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} /></div>
       </Section>
+
+      {app.status === 'funded' && (
+        <Section id="sec-draws" title="Construction draws"
+          info="Your construction budget vs. what's been released, and your inspection results — accept them to start your release, or dispute a line with the amount you expect.">
+          <BorrowerDraws appId={id} />
+        </Section>
+      )}
 
       {/* ================= CONDITIONS — one list, everything the file needs ================= */}
       <Section id="sec-conditions" title="Conditions to close"

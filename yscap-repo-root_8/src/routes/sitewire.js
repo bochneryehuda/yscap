@@ -27,30 +27,15 @@ router.use(requireAuth, requireStaff);
 
 // a funded file is past clear-to-close; a SOW change after CTC must net to zero
 const phaseFor = (status) => (String(status) === 'funded' ? 'after_ctc' : 'before_ctc');
+// applications.id / change_requests.id are UUIDs. A malformed value makes Postgres throw
+// 22P02, and an async-handler rejection in Express 4 doesn't reach the error middleware —
+// the request would hang. Guard the UUID params up front so bad input returns 404 (audit F1).
+const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 
 async function variancePct() {
-  try { const r = await db.query(`SELECT value FROM sitewire_settings WHERE key='variance_pct'`); return Number(r.rows[0] && r.rows[0].value) || 10; } catch (_) { return 10; }
+  try { const r = await db.query(`SELECT value FROM sitewire_settings WHERE key='variance_pct'`); const v = Number(r.rows[0] && r.rows[0].value); return Number.isFinite(v) && v >= 0 ? v : 10; } catch (_) { return 10; }
 }
-
-// Build the per-SOW-line reallocation cells from the current rollup + a proposed explosion.
-// current budget/drawn come from the live rollup (per sow_line_key); proposed from the new
-// SOW explosion aggregated by line. Contingency/GC are real movable lines; media excluded.
-function buildReallocationCells(rollup, proposedItems) {
-  const cur = new Map();
-  for (const l of rollup.lines) { if (l.kind === 'media') continue; cur.set(l.sow_line_key, { label: l.label, budget: l.budgeted, drawn: l.drawn }); }
-  const prop = new Map();
-  for (const it of proposedItems) {
-    if (it.is_media_item || String(it.sow_line_key).indexOf('__media__') === 0) continue;
-    prop.set(it.sow_line_key, (prop.get(it.sow_line_key) || 0) + Number(it.budgeted_cents || 0));
-  }
-  const keys = new Set([...cur.keys(), ...prop.keys()]);
-  const cells = [];
-  for (const k of keys) {
-    const c = cur.get(k) || { label: rollupMod.baseLabelFromName(k), budget: 0, drawn: 0 };
-    cells.push({ key: k, label: c.label, budget_cents: c.budget, drawn_cents: c.drawn, new_cents: prop.has(k) ? prop.get(k) : 0 });
-  }
-  return cells;
-}
+const buildReallocationCells = rollupMod.buildReallocationCells;
 
 // scope helper: see_all_files -> everything; else only assigned files
 function fileScope(req, alias, startIdx) {
@@ -58,6 +43,7 @@ function fileScope(req, alias, startIdx) {
   return { where: ` AND ${assigneeExistsSql(alias, '$' + startIdx)}`, params: [req.actor.id] };
 }
 async function canSeeFile(req, appId) {
+  if (!isUuid(appId)) return false; // malformed id can never own a file (audit F1 — avoid 22P02 hang)
   if (can(req.actor, 'see_all_files')) {
     const r = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
     return r.rowCount > 0;
@@ -273,6 +259,9 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     const rollup = await rollupMod.loadRollup(db, appId, { sowState });
     const link = (await db.query(`SELECT l.*, cs.full_name AS coordinator_name FROM sitewire_property_links l LEFT JOIN staff_users cs ON cs.id=l.coordinator_staff_id WHERE l.application_id=$1`, [appId])).rows[0] || null;
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
+    const requests = (await db.query(
+      `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id, r.job_item_name, r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
+         FROM sitewire_draw_requests r JOIN sitewire_draws d ON d.sitewire_draw_id=r.sitewire_draw_id WHERE d.application_id=$1 ORDER BY r.sitewire_request_id`, [appId])).rows;
     const ledger = (await db.query(`SELECT * FROM draw_disbursements WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
     const findings = (await db.query(`SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC`, [appId])).rows;
     const changeRequests = (await db.query(
@@ -282,7 +271,7 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // merge risk flags onto the rollup draw summaries
     const riskByDraw = new Map(draws.map((d) => [Number(d.sitewire_draw_id), { level: d.risk_level, flags: d.risk_flags, pdf_src: d.pdf_src }]));
     for (const d of rollup.draws) { const r = riskByDraw.get(d.sitewire_draw_id); if (r) { d.risk_level = r.level; d.risk_flags = r.flags; d.pdf_src = r.pdf_src; } }
-    res.json({ rollup, link, draws, ledger, findings, change_requests: changeRequests });
+    res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -321,6 +310,7 @@ router.post('/files/:id/coordinator', requirePermission('platform_setup'), async
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   const staffId = req.body.coordinator_staff_id || null;
+  if (staffId && !isUuid(staffId)) return res.status(400).json({ error: 'unknown staff user' });
   if (staffId) { const ok = (await db.query(`SELECT 1 FROM staff_users WHERE id=$1 AND is_active`, [staffId])).rowCount; if (!ok) return res.status(400).json({ error: 'unknown staff user' }); }
   await db.query(`UPDATE sitewire_property_links SET coordinator_staff_id=$2, updated_at=now() WHERE application_id=$1`, [appId, staffId]);
   res.json({ ok: true });
@@ -338,6 +328,13 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
   if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
   const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [drawId, appId]);
   if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
+  // Never re-deliver over a finding the borrower has already acted on — persisting would wipe
+  // their acceptance / dispute evidence and leave a stale wire deadline (audit F2). Re-pulling
+  // a still-'delivered' finding to refresh photos is fine.
+  const existing = (await db.query(`SELECT status FROM draw_findings WHERE sitewire_draw_id=$1`, [drawId])).rows[0];
+  if (existing && ['accepted', 'disputed', 'resolved'].includes(existing.status) && !req.body.force) {
+    return res.status(409).json({ error: `these findings were already ${existing.status} by the borrower — re-delivering would erase that. Pass force:true only if you intend to reset it.` });
+  }
   try {
     const f = (await db.query(`SELECT a.property_address->>'oneLine' AS address, b.id AS borrower_id, b.email AS borrower_email FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId])).rows[0] || {};
     const deliveredTo = { borrower: f.borrower_email || null };
@@ -447,6 +444,7 @@ router.post('/files/:id/change-requests', requirePermission('manage_draws'), asy
 
 // ---- POST /change-requests/:crId/capital-partner — record capital-partner decision ----
 router.post('/change-requests/:crId/capital-partner', requirePermission('manage_draws'), async (req, res) => {
+  if (!isUuid(req.params.crId)) return res.status(404).json({ error: 'not found' });
   const status = ['approved', 'rejected', 'pending'].includes(req.body.status) ? req.body.status : null;
   if (!status) return res.status(400).json({ error: 'status must be approved, rejected, or pending' });
   const d = (await db.query(`SELECT d.*, cr.application_id FROM sow_change_request_details d JOIN change_requests cr ON cr.id=d.change_request_id WHERE d.change_request_id=$1`, [req.params.crId])).rows[0];
@@ -458,6 +456,7 @@ router.post('/change-requests/:crId/capital-partner', requirePermission('manage_
 // ---- POST /change-requests/:crId/apply — apply an approved reallocation ----
 router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), async (req, res) => {
   const crId = req.params.crId;
+  if (!isUuid(crId)) return res.status(404).json({ error: 'not found' });
   const cr = (await db.query(`SELECT cr.*, d.proposed_payload, d.net_zero, d.after_ctc, d.needs_capital_partner, d.capital_partner_status FROM change_requests cr JOIN sow_change_request_details d ON d.change_request_id=cr.id WHERE cr.id=$1 AND cr.field='sow_reallocation'`, [crId])).rows[0];
   if (!cr || !(await canSeeFile(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
   if (cr.status === 'approved') return res.status(409).json({ error: 'already applied' });
@@ -502,10 +501,15 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
 
 // ---- GET /change-requests/:crId/export — Version 1 vs Version 2 as an Excel-openable CSV ----
 router.get('/change-requests/:crId/export', requirePermission('manage_draws'), async (req, res) => {
+  if (!isUuid(req.params.crId)) return res.status(404).json({ error: 'not found' });
   const cr = (await db.query(`SELECT cr.*, d.deltas FROM change_requests cr JOIN sow_change_request_details d ON d.change_request_id=cr.id WHERE cr.id=$1 AND cr.field='sow_reallocation'`, [req.params.crId])).rows[0];
   if (!cr || !(await canSeeFile(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
   const deltas = Array.isArray(cr.deltas) ? cr.deltas : [];
-  const esc = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const esc = (v) => {
+    let s = String(v == null ? '' : v);
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // neutralize spreadsheet formula injection on a leading =,+,-,@
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
   const usd = (c) => (Number(c || 0) / 100).toFixed(2);
   const lines = [['Line item', 'Version 1 (current)', 'Already drawn', 'Version 2 (proposed)', 'Change', 'Movable (undrawn)', 'Over threshold'].map(esc).join(',')];
   let b = 0, aTot = 0, dr = 0;

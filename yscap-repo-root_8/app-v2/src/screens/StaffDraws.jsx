@@ -22,6 +22,7 @@ const fmtDay = (v) => (v ? String(v).slice(0, 10) : '—');
 export default function StaffDraws() {
   const { can } = useAuth();
   const [status, setStatus] = useState(null);
+  const [portfolio, setPortfolio] = useState(null);
   const [draws, setDraws] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -29,8 +30,12 @@ export default function StaffDraws() {
 
   useEffect(() => {
     let live = true;
-    Promise.all([api.get('/api/sitewire/status').catch(() => null), api.get('/api/sitewire/draws').catch((e) => { throw e; })])
-      .then(([st, d]) => { if (!live) return; setStatus(st); setDraws((d && d.draws) || []); })
+    Promise.all([
+      api.get('/api/sitewire/status').catch(() => null),
+      api.get('/api/sitewire/portfolio').catch(() => null),
+      api.get('/api/sitewire/draws').catch((e) => { throw e; }),
+    ])
+      .then(([st, pf, d]) => { if (!live) return; setStatus(st); setPortfolio(pf); setDraws((d && d.draws) || []); })
       .catch((e) => live && setErr(e?.data?.error || e.message || 'Could not load draws'))
       .finally(() => live && setLoading(false));
     return () => { live = false; };
@@ -62,11 +67,19 @@ export default function StaffDraws() {
         )}
       </div>
 
-      {status && (
+      {portfolio && portfolio.totals && (
         <div className="grid cols-4" style={{ marginTop: 14, gap: 12 }}>
+          <Stat label="Committed budget" value={usd(portfolio.totals.budget_cents)} />
+          <Stat label="Released" value={usd(portfolio.totals.drawn_cents)} sub={`${portfolio.totals.pct_complete}% complete`} />
+          <Stat label="Remaining exposure" value={usd(portfolio.totals.remaining_cents)} accent />
+          <Stat label="In the pipeline" value={usd(portfolio.totals.pending_requested_cents)} sub={`${portfolio.totals.pending_count} awaiting approval`} accent={portfolio.totals.pending_count > 0} />
+        </div>
+      )}
+      {status && (
+        <div className="grid cols-4" style={{ marginTop: 12, gap: 12 }}>
           <Stat label="Files in Sitewire" value={status.linked_files} />
           <Stat label="Draws tracked" value={status.mirrored_draws} />
-          <Stat label="Awaiting your approval" value={pendingCount} accent={pendingCount > 0} />
+          <Stat label="Flagged high-risk" value={portfolio && portfolio.totals ? portfolio.totals.high_risk_count : '—'} accent={!!(portfolio && portfolio.totals && portfolio.totals.high_risk_count > 0)} />
           <Stat label="Needs review" value={status.open_reviews} accent={status.open_reviews > 0} link="/internal/sync-reviews" />
         </div>
       )}
@@ -117,11 +130,12 @@ export default function StaffDraws() {
   );
 }
 
-function Stat({ label, value, accent, link }) {
+function Stat({ label, value, accent, link, sub }) {
   const body = (
     <div className="panel" style={{ padding: '14px 16px' }}>
       <div className="muted" style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</div>
       <div style={{ fontSize: 26, fontWeight: 700, marginTop: 4, color: accent ? 'var(--gold, #ae8746)' : 'inherit' }}>{value ?? '—'}</div>
+      {sub && <div className="muted small" style={{ marginTop: 2 }}>{sub}</div>}
     </div>
   );
   return link ? <Link to={link} style={{ textDecoration: 'none', color: 'inherit' }}>{body}</Link> : body;
