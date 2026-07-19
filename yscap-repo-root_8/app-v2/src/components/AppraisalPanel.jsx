@@ -210,7 +210,7 @@ function Finding({ appId, f, onChange, readOnly }) {
       {f.how_to && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: readOnly ? 0 : 10 }}>{f.how_to}</div>}
       {/* Borrowers SEE every finding but never act on it — the actions are our team's. */}
       {!readOnly && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <div className="appr-noprint" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {canWriteBack && <button disabled={busy} onClick={() => act('replace')} style={btn(true)}>Replace with appraisal · re-prices</button>}
           {canPreview && <button disabled={busy || (preview && preview.loading)} onClick={doPreview} style={btn()} title="See how this would re-price the loan — without changing anything">↻ Preview the re-price</button>}
           <button disabled={busy} onClick={() => act('keep')} style={btn()}>Keep file value</button>
@@ -544,6 +544,12 @@ const PRINT_CSS = `
   .appr-print-only { display: block !important; }
   .appr-avoid { break-inside: avoid; }
   h2, h3, h4 { break-after: avoid; }
+  /* Wide comp tables carry an inline min-width for the screen's horizontal scroll; on paper that
+     clips off the right edge. Drop the min-width, let the scroll container overflow visibly, and
+     tighten the type so the full grid (both the As-Is and ARV grids) fits the page width. */
+  .appr-print-root [style*="overflow"] { overflow: visible !important; }
+  .appr-print-root table { min-width: 0 !important; width: 100% !important; font-size: 9.5px !important; table-layout: fixed !important; }
+  .appr-print-root td, .appr-print-root th { padding: 3px 4px !important; overflow-wrap: anywhere !important; }
   * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
 }
 `;
@@ -898,7 +904,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
                     : 'No photos yet — they’re pulled from the appraisal PDF. If the PDF is on file, pull them now; otherwise upload the PDF to the appraisal condition.'}
                 </div>
               </div>
-              {!readOnly && <button onClick={pullPhotos} disabled={pulling} style={{ ...OPEN_BTN, marginLeft: 0 }}>{pulling ? 'Pulling photos…' : '⤓ Pull photos from the PDF'}</button>}
+              {!readOnly && <button className="appr-noprint" onClick={pullPhotos} disabled={pulling} style={{ ...OPEN_BTN, marginLeft: 0 }}>{pulling ? 'Pulling photos…' : '⤓ Pull photos from the PDF'}</button>}
             </div>
           )}
 
