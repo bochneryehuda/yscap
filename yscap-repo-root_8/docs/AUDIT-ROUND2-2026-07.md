@@ -242,4 +242,25 @@ Fact-checked against ClickUp's docs, bidirectional-sync vendor writeups (Unito/S
 
 ---
 
-*Prepared read-only against `origin/main` @ `b1bfb68`. No code was modified. Top confirmed bugs (N-1, N-2, N-3, N-4) were traced to their exact source lines; `client.js:177-213`, `borrower.js:2624-2628`, `transforms.js:174`, and `db/126:48,50` were each read and verified for this report.*
+## Section 7 — Resolution log (fixes shipped)
+
+This batch fixed the confirmed HIGH/MEDIUM bugs that live in THIS session's own
+code (the WO-1/WO-2 sync-safety work). N-4/N-5 are the parallel team's `db/126`
+migration and are intentionally **left to that owner** (Decision B) — touching
+another session's already-applied migration is exactly the collision the merge
+rules forbid.
+
+| Bug | Severity | Fix | Where |
+|-----|----------|-----|-------|
+| **N-1** | HIGH | A `createTask`/`addComment` POST is never retried on a network/timeout (it may already have landed → duplicate PII card). New pure helper `inCallRetryAllowed(idempotent, status)` gates every in-call retry: network/timeout retries only for idempotent methods, 429 always retries (rejected, never applied), 5xx retries only when idempotent. `setField` marked `idempotent:true`. | `src/clickup/client.js` + 10 assertions in `scripts/test-clickup-retry.js` |
+| **N-2** | HIGH | Both co-borrower adoption paths now consult the name-conflict guard before reusing a same-email row: `inviteCoBorrower` fails closed + audit-logs `coborrower_email_conflict_blocked`; `attachCoBorrower` throws 409. | `src/routes/borrower.js`, `src/routes/staff.js` |
+| **N-3** | HIGH | `parseMoney` now returns `null` (not 0) when the input has no digit ("N/A", "—"), and `readValue`'s currency/number branch drops an unparseable value instead of writing 0 — so a blank/garbage ClickUp money field can never erase a real loan amount (COALESCE-inbound keeps the portal value). | `src/clickup/transforms.js`, `src/clickup/mapper.js` + 7 assertions |
+| **N-6** | MEDIUM | Task-title name recovery now tests for ANY Unicode letter (`/\p{L}/u`) instead of ASCII-only (`/[a-z]/i`), so a Hebrew/Yiddish borrower name in the task title is recovered instead of minting "Unknown Unknown". | `src/clickup/mapper.js` |
+| **N-7** | MEDIUM | The blocked-DOB-push log line no longer prints the from/to birth dates (PII) — it logs only `appId`/`taskId`/`reason`. | `src/clickup/orchestrator.js` |
+| **N-12** | MEDIUM | `nameConflict` now compares the FULL surname (`surnameNorm`), not just its first token, so "Cohen Katz" vs "Cohen Weiss" register as different families on a shared email. | `src/clickup/identity.js` + 3 assertions |
+
+**Still open (not this batch):** N-4/N-5 (db/126 — parallel team, Decision B), N-8/N-9/N-10 (copied loan number, inbound assignment invariant, outbound "0" overwrite), N-11/N-13–N-25 cleanup batch. Full test suite (all 12 suites; 136 transform assertions incl. 7 new N-3 + 3 new N-12, 33 retry assertions incl. 10 new N-1) green after this batch.
+
+---
+
+*Prepared read-only against `origin/main` @ `b1bfb68`. Section 7 records the fixes subsequently shipped on `claude/sync-error-handling-audit-vh7feq`. Top confirmed bugs (N-1, N-2, N-3, N-4) were traced to their exact source lines; `client.js:177-213`, `borrower.js:2624-2628`, `transforms.js:174`, and `db/126:48,50` were each read and verified for this report.*

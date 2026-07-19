@@ -287,7 +287,10 @@ function readValue(f, cf, options) {
       if (label == null) return undefined;
       return f.enumKey ? X.fromClickUpLabel(f.enumKey, label) : label;   // free dropdown -> raw label
     }
-    case 'currency': case 'number': return T.parseMoney(cf.value);
+    // N-3 (round-2): an unparseable money/number value (e.g. "N/A") yields null
+    // from parseMoney — return undefined so it's OMITTED from the patch and
+    // COALESCE keeps the real portal value instead of writing a stray 0.
+    case 'currency': case 'number': { const m = T.parseMoney(cf.value); return m == null ? undefined : m; }
     case 'date': return T.fromEpochMs(cf.value);
     case 'checkbox': return cf.value === true || cf.value === 'true';
     default: return typeof cf.value === 'string' ? cf.value : String(cf.value);
@@ -343,7 +346,7 @@ function readTaskFields(task, options = {}) {
   // field always wins when present.
   if (!out.borrower.first_name && task && task.name) {
     const head = String(task.name).split(' - ')[0].trim();
-    if (head && head.length <= 60 && !/\d/.test(head) && /[a-z]/i.test(head)
+    if (head && head.length <= 60 && !/\d/.test(head) && /\p{L}/u.test(head)
         && head.split(/\s+/).length >= 2 && !T.isPlaceholderName(head)) {
       const p = T.splitName(head);
       if (p.first && p.last) { out.borrower.first_name = p.first; out.borrower.last_name = p.last; }

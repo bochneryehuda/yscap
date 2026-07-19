@@ -361,7 +361,10 @@ async function pushApplication(appId, opts = {}) {
           if (d.outcome === 'review') {
             journalStats.blocked++;
             const reason = isSuspectDobShift(c.id, old, c.value) ? 'dob_one_day_shift_blocked' : 'dob_change_blocked_pending_review';
-            console.error('[clickup] BLOCKED DOB change push', { appId, taskId: id, from: old, to: c.value, reason });
+            // N-7 (round-2): never log the DOB values themselves (epochs decode
+            // to the exact date of birth — PII in plain logs). The structured
+            // audit/journal rows below capture the change safely.
+            console.error('[clickup] BLOCKED DOB change push', { appId, taskId: id, reason });
             await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
             await logSync('dob_change_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value), reason });
             await require('../lib/sync-review').queueReview({

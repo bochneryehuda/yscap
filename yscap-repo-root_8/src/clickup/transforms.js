@@ -173,7 +173,12 @@ function dateOnlyToClickUpEpoch(v, tz = CLICKUP_DATE_TZ) {
 // ---- money / numbers ------------------------------------------------------
 function parseMoney(v) {
   if (v == null || v === '') return null;
-  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  const cleaned = String(v).replace(/[^0-9.\-]/g, '');
+  // N-3 (round-2): "N/A" (or any text with no digit) strips to "" and Number("")
+  // is 0 — a real zero that silently overwrites a six/seven-figure loan amount.
+  // Require at least one digit; otherwise it's not a number, return null.
+  if (!/[0-9]/.test(cleaned)) return null;
+  const n = Number(cleaned);
   return isFinite(n) ? n : null;
 }
 const numToString = (n) => (n == null || n === '' || !isFinite(Number(n)) ? null : String(Number(n)));

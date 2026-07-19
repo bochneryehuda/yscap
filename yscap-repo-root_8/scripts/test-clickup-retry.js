@@ -59,5 +59,22 @@ ok('every attempt yields a positive wait', [1, 2, 3, 4, 5].every((a) => client.b
   ok('a borrower SSN never appears in the error', !/\d{3}-\d{2}-\d{4}/.test(e.message));
 }
 
+// ---- N-1 (round-2): non-idempotent create is not re-sent when it may have landed
+const R = (idem, status) => client.inCallRetryAllowed(idem, status);
+// Idempotent (GET/PUT/setField): retry all transient — network, 429, 5xx.
+eq('idempotent + network → retry', R(true, null), true);
+eq('idempotent + 429 → retry', R(true, 429), true);
+eq('idempotent + 503 → retry', R(true, 503), true);
+// Non-idempotent (createTask/addComment): a 429 was rejected (nothing created) →
+// safe to retry; a network/timeout or 5xx MIGHT have created the card → do NOT
+// re-send (that's the duplicate-PII bug N-1).
+eq('create + 429 → retry (rejected, not created)', R(false, 429), true);
+eq('create + network → NO retry (may have landed)', R(false, null), false);
+eq('create + 502 → NO retry (ambiguous outcome)', R(false, 502), false);
+eq('create + 500 → NO retry', R(false, 500), false);
+// Never retry a non-transient status regardless of idempotency.
+eq('idempotent + 400 → no retry', R(true, 400), false);
+eq('create + 404 → no retry', R(false, 404), false);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

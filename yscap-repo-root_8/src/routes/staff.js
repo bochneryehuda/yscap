@@ -1140,6 +1140,15 @@ async function attachCoBorrowerToApp(appId, primaryBorrowerId, b) {
       if (m.rows[0]) coId = m.rows[0].id;
     }
     if (!coId) {
+      // N-2 (round-2): never silently adopt a DIFFERENT existing borrower who
+      // shares this email (family emails are common) — that would grant them
+      // access to this file's PII. If the email is on record under a conflicting
+      // name, stop and make staff resolve it (same guard the primary paths use).
+      const conflict = await emailAdoptionConflict(email, first, last);
+      if (conflict) {
+        const e = new Error(`That email is already on file for a different borrower (${(conflict.first_name || '').trim()} ${(conflict.last_name || '').trim()}). Use a different email or resolve the match first.`);
+        e.status = 409; throw e;
+      }
       const ins = await db.query(
         `INSERT INTO borrowers (first_name,last_name,email,cell_phone,date_of_birth,ssn_encrypted,ssn_last4,ssn_hash,origin)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'co_borrower')
