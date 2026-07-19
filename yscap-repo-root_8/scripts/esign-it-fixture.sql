@@ -15,6 +15,9 @@ CREATE TABLE applications (
   borrower_id uuid REFERENCES borrowers(id),
   co_borrower_id uuid REFERENCES borrowers(id),
   property_address jsonb,
+  loan_amount numeric(14,2),
+  purchase_price numeric(14,2),
+  submitted_at timestamptz,
   deleted_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
