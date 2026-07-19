@@ -188,13 +188,13 @@ CREATE INDEX IF NOT EXISTS idx_appr_findings_appraisal ON appraisal_findings(app
 --     fatal PILOT finding is open (enforced in the app layer + a later trigger).
 -- ------------------------------------------------------------------------
 INSERT INTO checklist_templates
-  (code, label, scope, audience, item_kind, applies_loan_type, role_scope, phase, sort_order, category, hint, is_required)
+  (code, label, scope, audience, item_kind, applies_loan_type, role_scope, phase, sort_order, category, hint, is_required, auto_apply)
 SELECT 'appraisal_as_is_verify', 'Verify As-Is value on the appraisal', 'application', 'staff', 'condition', 'rtl', 'underwriter', '4', 452, 'prior_to_docs',
-       'We could not read the As-Is value from the appraisal data. Open the report and enter the As-Is value.', true
+       'We could not read the As-Is value from the appraisal data. Open the report and enter the As-Is value.', true, 'manual'
  WHERE NOT EXISTS (SELECT 1 FROM checklist_templates WHERE code='appraisal_as_is_verify');
 
 INSERT INTO checklist_templates
-  (code, label, scope, audience, item_kind, applies_loan_type, role_scope, phase, sort_order, category, hint, is_required)
+  (code, label, scope, audience, item_kind, applies_loan_type, role_scope, phase, sort_order, category, hint, is_required, auto_apply)
 SELECT 'appraisal_review_cleared', 'Appraisal review cleared (all PILOT findings resolved)', 'application', 'staff', 'condition', 'rtl', 'underwriter', '4', 455, 'prior_to_docs',
-       'Every fatal PILOT finding (appraisal vs file) must be resolved before clear-to-close.', true
+       'Every fatal PILOT finding (appraisal vs file) must be resolved before clear-to-close.', true, 'manual'
  WHERE NOT EXISTS (SELECT 1 FROM checklist_templates WHERE code='appraisal_review_cleared');

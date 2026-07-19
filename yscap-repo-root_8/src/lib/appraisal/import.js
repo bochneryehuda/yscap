@@ -36,8 +36,10 @@ async function importAppraisal(db, {
     f = r.rows[0] || {};
   }
 
-  // 1. supersede prior appraisals on this file
+  // 1. supersede prior appraisals AND their still-open findings on this file, so a
+  //    re-import doesn't leave stale findings inflating the open-count / blocksCtc summary.
   await db.query(`UPDATE appraisals SET superseded = true WHERE application_id = $1 AND superseded = false`, [applicationId]);
+  await db.query(`UPDATE appraisal_findings SET status = 'superseded' WHERE application_id = $1 AND status = 'open'`, [applicationId]);
 
   // 2. insert the appraisal row
   const s = A.subject, v = A.values, ap = A.appraiser, condo = A.condo || {};
@@ -77,9 +79,9 @@ async function importAppraisal(db, {
     keys.map((k) => cols[k]));
   const appraisalId = ins.rows[0].id;
 
-  // 3. comparables (incl. seq-0 subject), then real comps
-  if (A.subjectComp || A.comparables) {
-    for (const c of A.comparables || []) {
+  // 3. comparables (real comps; seq-0 subject is excluded by the parser)
+  if (A.comparables && A.comparables.length) {
+    for (const c of A.comparables) {
       await db.query(
         `INSERT INTO appraisal_comparables
            (appraisal_id, seq, is_subject, address, city, state, zip, proximity, sale_price, adjusted_price, net_adjustment, net_adj_pct, gross_adj_pct)

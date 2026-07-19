@@ -22,8 +22,9 @@ function toNum(v) {
   const f = Number(s);
   return Number.isFinite(f) ? f : null;
 }
-// money must be a positive amount after comma-strip; reject meaningless 0 / decoys
-function money(v) { const n = toNum(v); return n != null && n > 0 ? n : null; }
+// money must be a positive amount after comma-strip; reject meaningless 0 / decoys and an
+// absurd magnitude (defensive: keeps a corrupt value from overflowing numeric(14,2) on insert).
+function money(v) { const n = toNum(v); return n != null && n > 0 && n < 1e12 ? n : null; }
 function clean(v) {
   if (v == null) return null;
   const s = String(v).trim();
