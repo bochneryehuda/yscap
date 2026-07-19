@@ -752,8 +752,9 @@ router.get('/project', requirePermission('platform_setup'), async (req, res) => 
             l.retainage_pct, l.require_lien_waivers
        FROM applications a LEFT JOIN sitewire_property_links l ON l.application_id=a.id
       WHERE upper(a.ys_loan_number)=upper($1) AND a.deleted_at IS NULL LIMIT 1`, [loan])).rows[0];
-  if (!a) return res.status(404).json({ error: `no file found for loan number "${loan}"` });
-  if (!(await canSeeFile(req, a.id))) return res.status(403).json({ error: 'forbidden' });
+  // 404 (not 403) when the actor can't see the file, so a scoped setup user can't use this to probe
+  // whether a loan number exists on someone else's file — same response as a genuinely-missing loan.
+  if (!a || !(await canSeeFile(req, a.id))) return res.status(404).json({ error: `no file found for loan number "${loan}"` });
   res.json({ application_id: a.id, ys_loan_number: a.ys_loan_number, address: a.address, status: a.status,
     retainage_pct: a.retainage_pct != null ? Number(a.retainage_pct) : null, require_lien_waivers: a.require_lien_waivers });
 });

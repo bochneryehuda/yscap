@@ -207,11 +207,18 @@ function AdvancedFeatures({ settings, saveSetting }) {
   }
   async function saveProject() {
     if (!proj) return;
-    setErr(''); setNote(''); setBusy(true);
+    setErr(''); setNote('');
+    // validate retainage client-side (blank = inherit; else a real 0..100 number) so a typo can't
+    // silently become "inherit" on the wire.
+    let ret = null;
+    if (pRet.trim() !== '') {
+      const n = Number(pRet);
+      if (!Number.isFinite(n) || n < 0 || n > 100) { setErr('Retainage % must be a number between 0 and 100 (or blank to inherit).'); return; }
+      ret = n;
+    }
+    setBusy(true);
     try {
-      const body = { require_lien_waivers: pLien };
-      body.retainage_pct = pRet.trim() === '' ? null : Number(pRet);
-      await api.post(`/api/sitewire/files/${proj.application_id}/advanced-settings`, body);
+      await api.post(`/api/sitewire/files/${proj.application_id}/advanced-settings`, { require_lien_waivers: pLien, retainage_pct: ret });
       setNote(`Saved for ${proj.ys_loan_number}.`);
     } catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); } finally { setBusy(false); }
   }

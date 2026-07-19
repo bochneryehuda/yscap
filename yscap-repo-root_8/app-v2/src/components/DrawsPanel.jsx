@@ -109,7 +109,7 @@ export default function DrawsPanel({ appId }) {
 
           {/* ---- lien waivers — OFF by default; opt in per project ---- */}
           <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
-            canSetup={can('platform_setup')} waivers={waivers} draws={draws} busy={busy} act={act} onChanged={load} />
+            canSetup={can('platform_setup')} waivers={waivers} draws={draws} onChanged={load} />
 
           {/* ---- Scope-of-Work reallocations ---- */}
           <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
@@ -518,7 +518,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
   );
 }
 
-function LienWaivers({ appId, enabled, fileOverride, canSetup, waivers, draws, busy, act, onChanged }) {
+function LienWaivers({ appId, enabled, fileOverride, canSetup, waivers, draws, onChanged }) {
   // Lien waivers are an OPT-IN feature most projects don't use — they're turned on per project from
   // the admin Draw settings, not here. So the desk shows this section ONLY when the project already
   // has them enabled (or waivers exist); otherwise it stays completely hidden (out of the workflow).
