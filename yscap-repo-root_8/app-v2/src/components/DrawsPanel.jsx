@@ -51,6 +51,11 @@ export default function DrawsPanel({ appId }) {
   for (const f of findings) findingByDraw[f.sitewire_draw_id] = f;
 
   const notLinked = !link || !link.sitewire_property_id;
+  // A draw approval / release / findings write 503s unless BOTH the master switch and the write
+  // gate are on. Surface that up front (read-only banner + disabled write buttons) so the coordinator
+  // isn't clicking into repeated "writes are turned off" errors while the integration is staged off.
+  const sw = data.switches || {};
+  const writesOff = !!data.switches && !(sw.enabled && sw.outbound);
 
   async function act(key, fn) {
     setBusy(key); setMsg('');
@@ -66,6 +71,16 @@ export default function DrawsPanel({ appId }) {
       ) : (
         <>
           {msg && <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
+
+          {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
+          {writesOff && (
+            <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--gold,#ae8746)' }}>
+              <b>Sitewire is turned off.</b>
+              <div className="muted small" style={{ marginTop: 3 }}>
+                Approving a draw syncs to Sitewire, so <b>Approve / Amend / Reopen</b> and setting approved amounts are paused until it's switched on{sw.enabled && !sw.outbound ? ' (reads are on; writing is still off)' : ''}. Everything else here — the money ledger, releases, findings and records — is kept in PILOT and still works.
+              </div>
+            </div>
+          )}
 
           {/* ---- rollup summary tiles ---- */}
           <div className="grid cols-4" style={{ marginTop: 12, gap: 12 }}>
@@ -83,7 +98,7 @@ export default function DrawsPanel({ appId }) {
           {draws.length === 0 && <div className="muted">No draws yet on this file.</div>}
           {draws.map((d) => (
             <DrawCard key={d.sitewire_draw_id} appId={appId} draw={d} requests={reqsByDraw[d.sitewire_draw_id] || []}
-              finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} />
+              finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} />
           ))}
 
           {/* ---- money ledger ---- */}
@@ -311,7 +326,8 @@ function RollupTable({ rollup }) {
   );
 }
 
-function DrawCard({ appId, draw, requests, finding, busy, act, reload }) {
+function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff }) {
+  const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const isOpen = draw.status !== 'approved';
   const flags = Array.isArray(draw.risk_flags) ? draw.risk_flags : [];
   const risk = RISK[draw.risk_level] || null;
@@ -359,8 +375,8 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload }) {
                   {isOpen && (
                     <td>
                       <div className="row" style={{ gap: 6 }}>
-                        <input className="input" style={{ width: 100 }} placeholder="$" value={edits[r.sitewire_request_id] ?? ''} onChange={(e) => setEdits((s) => ({ ...s, [r.sitewire_request_id]: e.target.value }))} />
-                        <button className="btn btn-sm ghost" disabled={busy === 'appr:' + r.sitewire_request_id} onClick={() => setApproved(r)}>Save</button>
+                        <input className="input" style={{ width: 100 }} placeholder="$" disabled={writesOff} value={edits[r.sitewire_request_id] ?? ''} onChange={(e) => setEdits((s) => ({ ...s, [r.sitewire_request_id]: e.target.value }))} />
+                        <button className="btn btn-sm ghost" title={offTip} disabled={writesOff || busy === 'appr:' + r.sitewire_request_id} onClick={() => setApproved(r)}>Save</button>
                       </div>
                     </td>
                   )}
@@ -373,7 +389,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload }) {
 
       <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
         {isOpen && ['approve', 'amend', 'reopen'].map((a) => (
-          <button key={a} className={'btn btn-sm ' + (a === 'approve' ? 'primary' : 'ghost')} disabled={busy === a + draw.sitewire_draw_id}
+          <button key={a} className={'btn btn-sm ' + (a === 'approve' ? 'primary' : 'ghost')} title={offTip} disabled={writesOff || busy === a + draw.sitewire_draw_id}
             onClick={() => act(a + draw.sitewire_draw_id, async () => { await api.post(`/api/sitewire/draws/${draw.sitewire_draw_id}/${a}`, {}); return { msg: `Draw ${a}d.` }; })}>
             {a[0].toUpperCase() + a.slice(1)}
           </button>
@@ -415,6 +431,9 @@ function FindingStatus({ appId, finding, reload }) {
 }
 
 function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: parentBusy }) {
+  // map the Sitewire draw id -> the friendly draw number so the ledger reads "Draw #1", not "#8001"
+  const numByDraw = {};
+  for (const d of draws) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
   const [f, setF] = useState({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -457,7 +476,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
             <tbody>
               {ledger.map((d) => (
                 <tr key={d.id}>
-                  <td>{d.kind === 'retainage_release' ? 'Retainage' : (d.sitewire_draw_id ? '#' + d.sitewire_draw_id : '—')}</td>
+                  <td>{d.kind === 'retainage_release' ? 'Retainage' : (d.sitewire_draw_id ? 'Draw #' + (numByDraw[String(d.sitewire_draw_id)] ?? d.sitewire_draw_id) : '—')}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.approved_cents)}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.fee_cents)}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.retainage_held_cents)}</td>

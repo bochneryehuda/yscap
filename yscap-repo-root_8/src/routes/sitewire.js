@@ -552,7 +552,10 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // project) — the panel shows only when enabled or already in use.
     const lienWaiversEnabled = await lienGateEnabled(appId);
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, waivers,
-      lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null });
+      lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
+      // so the desk can show a proactive read-only banner + disable write buttons when writes are off
+      // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
+      switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
