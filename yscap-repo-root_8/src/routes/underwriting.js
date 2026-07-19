@@ -35,6 +35,7 @@ const registry = require('../lib/underwriting/registry');
 const fileView = require('../lib/underwriting/file-view');
 const { computeCrossDocumentFindings } = require('../lib/underwriting/cross-document');
 const { underwriterActions } = require('../lib/underwriting/actions');
+const { falseAlarmReport } = require('../lib/underwriting/feedback');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 // today as a calendar string — no `new Date()` math in the date paths (CLAUDE.md rule).
@@ -62,10 +63,45 @@ async function audit(actorId, action, entityId, detail) {
   } catch (_) { /* audit is best-effort; never block the action */ }
 }
 
-// Attach the underwriter's action menu + a display severity flag to a stored finding row.
+// Attach the underwriter's action menu to a finding. Stored rows carry the check's suggested
+// verbs in `suggested_actions` (jsonb); freshly-computed findings carry them in `actions`. Feed
+// whichever is present to underwriterActions so the GET reload offers the SAME menu the analyze
+// response did (no drift), falling back to the severity default when neither is set.
 function decorate(f) {
-  return Object.assign({}, f, { availableActions: underwriterActions(f) });
+  const actions = Array.isArray(f.actions) ? f.actions
+    : (Array.isArray(f.suggested_actions) ? f.suggested_actions : undefined);
+  return Object.assign({}, f, { availableActions: underwriterActions(actions ? { ...f, actions } : f) });
 }
+
+// The file's cross-document reconciliation, derived (not stored) from its current extractions:
+// the SAME facts (seller / price / property address) must agree across the contract, title, and
+// appraisal. Computed the same way for GET and for the resolve gate so the two never disagree.
+async function crossForFile(client, appId) {
+  const { rows } = await client.query(
+    `SELECT doc_type, fields FROM document_extractions WHERE application_id=$1 AND is_current`, [appId]);
+  const input = {};
+  for (const e of rows) {
+    const norm = fileView.normalizeForCrossDoc(e.doc_type, e.fields);
+    if (norm) input[e.doc_type] = norm;
+  }
+  return computeCrossDocumentFindings(input);
+}
+
+// ---- GET /insights/feedback: the "training" report ------------------------
+// Per finding type, how often the team ACTED on it (real) vs threw it away (false alarm),
+// learned from how underwriters resolved findings — so the desk sees which checks earn their
+// keep and which cry wolf. Portfolio-wide, so it's for staff who see every file (admins /
+// underwriters); registered BEFORE '/:appId' so 'insights' isn't read as an application id.
+router.get('/insights/feedback', async (req, res, next) => {
+  try {
+    if (!can(req.actor, 'see_all_files')) return res.status(403).json({ error: 'this report needs access to every file' });
+    // Only resolved/dismissed findings carry a signal; still-open ones are pending.
+    const { rows } = await db.query(
+      `SELECT code, severity, status, resolution FROM document_findings
+        WHERE status IN ('resolved','dismissed','open')`);
+    res.json(falseAlarmReport(rows));
+  } catch (e) { next(e); }
+});
 
 // ---- GET: the whole file's underwriting picture ----------------------------
 router.get('/:appId', async (req, res, next) => {
@@ -82,12 +118,7 @@ router.get('/:appId', async (req, res, next) => {
     ]);
 
     // Cross-document reconciliation over the file's current extractions.
-    const crossInput = {};
-    for (const e of exts.rows) {
-      const norm = fileView.normalizeForCrossDoc(e.doc_type, e.fields);
-      if (norm) crossInput[e.doc_type] = norm;
-    }
-    const cross = computeCrossDocumentFindings(crossInput);
+    const cross = await crossForFile(db, app.id);
 
     const perDoc = ff.findings.map(decorate);
     // Roll cross-document findings into the same fatal/warning gate.
@@ -121,12 +152,16 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
       return res.status(400).json({ error: `unknown document type — choose one of: ${registry.docTypes().join(', ')}` });
     }
 
-    // The document must belong to THIS file (or its borrower) and be the current version.
+    // The document must belong to THIS file, or be a PROFILE-LEVEL document of this file's
+    // borrower (application_id IS NULL — e.g. a government ID / bank statement filed at the
+    // borrower profile and legitimately shared across their files). A document tied to a
+    // DIFFERENT application of the same borrower must NOT resolve here — otherwise file B's
+    // document could be analyzed and mis-filed onto file A (both are the same borrower).
     const doc = (await db.query(
       `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref
          FROM documents
         WHERE id=$1 AND is_current
-          AND (application_id=$2 OR (borrower_id IS NOT NULL AND borrower_id=$3))`,
+          AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
       [req.params.documentId, app.id, app.borrower_id])).rows[0];
     if (!doc) return res.status(404).json({ error: 'document not found on this file' });
     if (!doc.storage_ref) return res.status(422).json({ error: 'this document has no stored file to read' });
@@ -210,7 +245,7 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
         });
       } catch (e) {
         // validateResolution rejects unknown actions / a missing required note or value.
-        await client.query('ROLLBACK');
+        await client.query('ROLLBACK').catch(() => {});
         return res.status(400).json({ error: e.message });
       }
       await client.query('COMMIT');
@@ -222,12 +257,16 @@ router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditi
     await audit(req.actor.id, 'underwriting_finding_resolve', app.id,
       { finding: fnd.code, action, status: updated.status, note: note.slice(0, 300) });
 
-    // Remaining open fatal per-document findings gate the review-cleared condition.
+    // Remaining open fatal findings gate clear-to-close — the stored per-document fatals AND
+    // the derived cross-document fatals (which have no stored row but still block). Both are
+    // folded in so this gate matches exactly what GET reports.
     const openFatal = (await db.query(
       `SELECT count(*)::int n FROM document_findings
         WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [app.id])).rows[0].n;
+    const cross = await crossForFile(db, app.id);
+    const crossFatal = cross.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
 
-    res.json({ ok: true, finding: decorate(updated), openFatal, blocksCtc: openFatal > 0 });
+    res.json({ ok: true, finding: decorate(updated), openFatal, crossFatal, blocksCtc: (openFatal + crossFatal) > 0 });
   } catch (e) { next(e); }
 });
 

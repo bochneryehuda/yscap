@@ -96,7 +96,31 @@ const ADDR = { line1: '76 Thompson St', city: 'Austin', state: 'TX', zip: '78701
       `SELECT count(*)::int n FROM document_findings WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [app.id])).rows[0].n;
     assert.strictEqual(await gate(), 1, 'one open fatal blocks CTC before resolve');
     await store.resolveFinding(client, { findingId: r.findingIds[0], action: 'fix_file', value: '412000', by: b.id });
-    assert.strictEqual(await gate(), 0, 'resolving the fatal clears the CTC gate');
+    assert.strictEqual(await gate(), 0, 'resolving the fatal clears the stored CTC gate');
+
+    // ---- M2: the combined gate still blocks on a CROSS-document fatal (no stored row) ----
+    // The seeded contract/title sellers disagree → a cross-doc fatal with no document_findings
+    // row. With every STORED fatal resolved (gate()==0), the file must STILL be blocked because
+    // the derived cross-document fatal blocks CTC. This is what the resolve endpoint folds in.
+    const crossNow = computeCrossDocumentFindings(crossInput);
+    const crossFatal = crossNow.filter((f) => f.severity === 'fatal' && f.blocksCtc).length;
+    assert.ok(crossFatal >= 1, 'a cross-document seller mismatch is a fatal that blocks CTC');
+    assert.strictEqual((await gate()) + crossFatal > 0, true, 'combined gate blocks while a cross-doc fatal is open');
+
+    // ---- M1: analyze scoping must NOT reach a doc on a DIFFERENT application of same borrower ----
+    const app2 = (await client.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [b.id])).rows[0];
+    const docOtherApp = (await client.query(
+      `INSERT INTO documents (application_id,borrower_id,filename,storage_provider) VALUES ($1,$2,'other.pdf','local') RETURNING id`, [app2.id, b.id])).rows[0];
+    const docProfile = (await client.query(
+      `INSERT INTO documents (application_id,borrower_id,filename,storage_provider) VALUES (NULL,$1,'id.jpg','local') RETURNING id`, [b.id])).rows[0];
+    // Replicate the route's exact scoping predicate ($2 = app.id, $3 = borrower_id).
+    const scoped = (id) => client.query(
+      `SELECT id FROM documents WHERE id=$1 AND is_current
+         AND (application_id=$2 OR (application_id IS NULL AND borrower_id IS NOT NULL AND borrower_id=$3))`,
+      [id, app.id, b.id]);
+    assert.strictEqual((await scoped(docC.id)).rows.length, 1, 'a document ON this file resolves');
+    assert.strictEqual((await scoped(docProfile.id)).rows.length, 1, 'a profile-level (app-less) borrower document resolves');
+    assert.strictEqual((await scoped(docOtherApp.id)).rows.length, 0, 'a document on ANOTHER application of the same borrower is BLOCKED');
 
     await client.query('ROLLBACK');
     console.log('✓ test-underwriting-route-db: file-view subjects, cross-document GET roll-up, resolve gate pass');

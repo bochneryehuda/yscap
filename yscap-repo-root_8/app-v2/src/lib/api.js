@@ -531,6 +531,8 @@ export const api = {
   underwritingGet:            (appId) => req('GET', `/api/underwriting/${appId}`),
   underwritingAnalyze:        (appId, docId, b) => req('POST', `/api/underwriting/${appId}/documents/${docId}/analyze`, b),
   underwritingResolveFinding: (appId, fid, b) => req('POST', `/api/underwriting/${appId}/findings/${fid}/resolve`, b),
+  // Portfolio-wide "training" report: which finding types turned out real vs false alarms.
+  underwritingFeedback:       () => req('GET', '/api/underwriting/insights/feedback'),
 
   // ---- admin: team / staff management ----
   adminStaff:        () => req('GET', '/api/admin/staff'),

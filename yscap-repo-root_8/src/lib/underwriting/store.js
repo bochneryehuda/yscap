@@ -81,13 +81,14 @@ async function saveAnalysis(client, { documentId, applicationId, borrowerId, doc
   // 3. Insert findings.
   const findingIds = [];
   for (const f of (findings || [])) {
+    const actions = Array.isArray(f.actions) && f.actions.length ? JSON.stringify(f.actions) : null;
     const { rows: fr } = await client.query(
       `INSERT INTO document_findings
-         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+         (application_id, borrower_id, document_id, extraction_id, source, code, severity, field, doc_value, file_value, title, how_to, blocks_ctc, suggested_actions, opens_condition)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
       [appId, borId, documentId, extractionId, f.source || docType, f.code,
        f.severity || 'warning', f.field || null, str(f.docValue), str(f.fileValue),
-       f.title || null, f.howTo || null, !!f.blocksCtc]);
+       f.title || null, f.howTo || null, !!f.blocksCtc, actions, f.opensCondition || null]);
     findingIds.push(fr[0].id);
   }
 
