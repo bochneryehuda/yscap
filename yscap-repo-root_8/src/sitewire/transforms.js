@@ -39,7 +39,8 @@ function slugify(s) {
 }
 
 // Map our property_address jsonb -> Sitewire address (street/city/state/zip[/unit]).
-// Tolerant of legacy shapes (oneLine/line1/street). Never guesses missing parts.
+// street comes from line1 (or legacy street/street_with_unit). Never guesses missing parts —
+// an address with no line1 yields street:null and is parked by the completeness check on push.
 function addressForSitewire(addr) {
   if (!addr || typeof addr !== 'object') return null;
   const street = addr.line1 || addr.street || addr.street_with_unit || null;
