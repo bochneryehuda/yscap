@@ -62,14 +62,17 @@ function resolveEmailProvider() {
 }
 
 // The public base URL used for EVERY link that leaves the system (emails, reset
-// links, redirects). NEVER emit an onrender.com link — the custom domain
-// (yscapgroup.com) is live (owner-directed 2026-07-14). If APP_URL is still
-// pointed at the onrender subdomain (e.g. a stale Render dashboard var that
-// overrides render.yaml), rewrite it to the custom domain so nothing external
-// ever shows onrender.
+// links, redirects) AND for server-to-server callbacks (the DocuSign Connect
+// webhook + the embedded-signing return bounce). NEVER emit an onrender.com link —
+// the custom domain (yscapgroup.com) is live (owner-directed 2026-07-14). If APP_URL
+// is still pointed at the onrender subdomain (e.g. a stale Render dashboard var that
+// overrides render.yaml), rewrite it to the custom domain so nothing external ever
+// shows onrender. Use the APEX host (yscapgroup.com): `www.` 301/307-redirects to
+// the apex, and a redirect on a server-to-server POST (the DocuSign webhook) is not
+// reliably followed — so the callback must hit the canonical host DIRECTLY.
 function publicBaseUrl() {
-  let u = (process.env.APP_URL || 'https://www.yscapgroup.com').replace(/\/+$/, '');
-  if (/onrender\.com/i.test(u)) u = 'https://www.yscapgroup.com';
+  let u = (process.env.APP_URL || 'https://yscapgroup.com').replace(/\/+$/, '');
+  if (/onrender\.com/i.test(u)) u = 'https://yscapgroup.com';
   return u;
 }
 
