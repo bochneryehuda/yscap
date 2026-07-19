@@ -78,6 +78,17 @@ async function call(path, { method = 'GET', body } = {}) {
     console.warn(`[sitewire][DRYRUN] would ${method} ${path} body=${body ? JSON.stringify(body) : '(none)'}`);
     return { __dryrun: true };
   }
+  // Defense-in-depth: the outbound write gate is enforced at every caller, but also fail-closed HERE
+  // so a future write path that forgets the check can never send a live write while OUTBOUND is off.
+  if (isWrite && !cfg.sitewireOutboundEnabled) {
+    const e = new Error(`SITEWIRE_OUTBOUND_DISABLED: refusing ${method} ${path} — writes are gated off`);
+    e.code = 'SITEWIRE_OUTBOUND_DISABLED'; throw e;
+  }
+  // A non-idempotent POST must NOT be retried in-call: the first attempt may have COMMITTED
+  // server-side before the response/connection was lost, so a retry would create a DUPLICATE
+  // (Sitewire doesn't dedupe on loan_number). Fail fast + retryable; the durable queue re-drives
+  // through the G-DUPEPROP-guarded birth path. PATCH/GET stay retryable (idempotent).
+  const retryInCall = method !== 'POST';
   const payload = body ? JSON.stringify(body) : undefined;
   let lastErr;
   for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
@@ -87,10 +98,10 @@ async function call(path, { method = 'GET', body } = {}) {
       res = await fetchWithTimeout(`${base()}${path}`, { method, headers: authHeaders(), body: payload }, TIMEOUT_MS);
     } catch (netErr) {
       netErr.retryable = true; lastErr = netErr;
-      if (attempt < MAX_TRIES) { await sleep(backoffMs(attempt) + Math.floor(Math.random() * 250)); continue; }
+      if (attempt < MAX_TRIES && retryInCall) { await sleep(backoffMs(attempt) + Math.floor(Math.random() * 250)); continue; }
       throw netErr;
     }
-    if (isRetryableStatus(res.status) && attempt < MAX_TRIES) {
+    if (isRetryableStatus(res.status) && attempt < MAX_TRIES && retryInCall) {
       const ra = parseInt(res.headers.get('retry-after') || '0', 10);
       await sleep(backoffMs(attempt, ra) + Math.floor(Math.random() * 250));
       continue;

@@ -61,6 +61,16 @@ router.get('/draws/:appId/rollup', async (req, res) => {
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [req.params.appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
     const rollup = await rollupMod.loadRollup(db, req.params.appId, { sowState });
     for (const l of rollup.lines) l.label = scrub(l.label);
+    // borrower-safe: loadRollup folds our internal per-draw economics onto each draw (our fee, net
+    // release, fee kind, release date, the released flag). NEVER expose the fee or net wired to the
+    // borrower — strip them from the response even though the UI doesn't render them (they'd still
+    // be visible in the network payload). The borrower keeps requested/approved/status/number.
+    if (Array.isArray(rollup.draws)) {
+      rollup.draws = rollup.draws.map((d) => {
+        const { fee_cents, fee_kind, net_release_cents, released, release_date, ...safe } = d;
+        return safe;
+      });
+    }
     res.json({ rollup });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -75,16 +85,17 @@ router.get('/draws/:appId/findings', async (req, res) => {
   const out = [];
   for (const f of findings) {
     const lines = (await db.query(
-      `SELECT id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, lender_comments, photo_count, video_count, media, dispute_status, dispute_desired_cents, dispute_note
+      `SELECT id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, photo_count, video_count, media, dispute_status, dispute_desired_cents, dispute_note
          FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows
       // scrub every free-text field a capital-partner name could hide in — including each inspection
-      // media NOTE (was leaking unscrubbed to the borrower). Keep the photo/video src (inspection evidence).
+      // media NOTE (was leaking unscrubbed to the borrower). Keep the photo/video src (inspection
+      // evidence) but drop the media GPS lat/lng. lender_comments is a staff-leaning field the borrower
+      // never needs — not selected at all above.
       .map((l) => ({
         ...l,
         name: scrub(l.name),
         inspector_comments: scrub(l.inspector_comments),
-        lender_comments: scrub(l.lender_comments),
-        media: Array.isArray(l.media) ? l.media.map((m) => (m && typeof m === 'object' ? { ...m, note: scrub(m.note) } : m)) : l.media,
+        media: Array.isArray(l.media) ? l.media.map((m) => { if (!m || typeof m !== 'object') return m; const { lat, lng, ...mm } = m; return { ...mm, note: scrub(mm.note) }; }) : l.media,
       }));
     out.push({ ...f, lines });
   }
@@ -116,7 +127,9 @@ router.post('/findings/:findingId/dispute', async (req, res) => {
   if (!f || !(await ownsApp(req, f.application_id))) return res.status(403).json({ error: 'forbidden' });
   if (f.status === 'accepted') return res.status(409).json({ error: 'you already accepted these results' });
   if (f.status === 'resolved') return res.status(409).json({ error: 'these results have already been reviewed and resolved' }); // audit F4 — resolved is terminal
-  const lines = Array.isArray(req.body.lines) ? req.body.lines : [];
+  // cap the number of lines so a giant body can't fan out into hundreds of thousands of sequential
+  // queries on one pooled connection (authenticated DoS). A real draw never has anywhere near 200 lines.
+  const lines = (Array.isArray(req.body.lines) ? req.body.lines : []).slice(0, 200);
   if (!lines.length) return res.status(400).json({ error: 'a dispute must name at least one line' });
   let count = 0;
   for (const ln of lines) {
@@ -146,7 +159,11 @@ router.post('/draws/:appId/change-request', async (req, res) => {
   try {
     const a = (await db.query(`SELECT status FROM applications WHERE id=$1`, [appId])).rows[0];
     const rollup = await rollupMod.loadRollup(db, appId);
-    const ex = M.explodeSow(proposedPayload.state, {});
+    // Reconcile the proposed explosion to the frozen budget (same target the crosswalk was reconciled
+    // to at birth) so a ≤$1 rounding drift can't make a genuine net-zero move read as non-net-zero.
+    const rawEx = M.explodeSow(proposedPayload.state, {});
+    const budgetCents = Number(rollup && rollup.project && rollup.project.budget) || 0;
+    const ex = budgetCents > 0 ? M.reconcileToBudget(rawEx, budgetCents) : rawEx;
     const cells = rollupMod.buildReallocationCells(rollup, ex.items); // per-unit on multi-unit lines (audit F3)
     const phase = String(a && a.status) === 'funded' ? 'after_ctc' : 'before_ctc';
     let vpct = 10; try { const v = (await db.query(`SELECT value FROM sitewire_settings WHERE key='variance_pct'`)).rows[0]; vpct = Number(v && v.value) || 10; } catch (_) {}

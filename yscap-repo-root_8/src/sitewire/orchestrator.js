@@ -377,6 +377,7 @@ async function pushFile(appId, opts = {}) {
 
   // assign borrower (best-effort; parks on 422)
   if (a.borrower_email) {
+    await circuitCheck(1); // count this write toward the breaker so a runaway re-push loop still halts here
     try {
       const res = await client.assignBorrower(propertyId, a.borrower_email);
       if (!(res && res.__dryrun)) await journal({ appId, propertyId, entity: 'borrower', field: 'contact_email', newValue: a.borrower_email, source: 'push' });
