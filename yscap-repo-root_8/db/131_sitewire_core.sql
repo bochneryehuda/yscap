@@ -1,4 +1,4 @@
--- 126_sitewire_core.sql — Sitewire construction-draw-management integration (core schema).
+-- 131_sitewire_core.sql — Sitewire construction-draw-management integration (core schema).
 --
 -- Idempotent (safe to re-run every boot). PILOT manages ONLY the properties it created
 -- (the owner "only-ours" rule): a property enters draw management when WE push it on the
