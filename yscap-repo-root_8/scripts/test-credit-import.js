@@ -75,6 +75,11 @@ async function seedBorrower(email, first) {
   const bId = await seedBorrower(`b-${suffix}@t.test`, 'Nickie');
   const appR = await db.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [bId]);
   const appId = appR.rows[0].id;
+  // Seed the internal credit-report condition (outstanding) to prove wiring.
+  const credTmpl = (await db.query(
+    `INSERT INTO checklist_templates (code,label,scope) VALUES ('rtl_cond_credit','Credit report','application')
+       ON CONFLICT (code) DO UPDATE SET label=EXCLUDED.label RETURNING id`)).rows[0].id;
+  await db.query(`INSERT INTO checklist_items (scope,label,application_id,template_id,status) VALUES ('application','Credit report',$1,$2,'outstanding')`, [appId, credTmpl]);
 
   const out = await creditImport.orderAndImport({
     applicationId: appId, actorId, action: 'Reissue', creditReportIdentifier: 'RPT1',
@@ -101,6 +106,26 @@ async function seedBorrower(email, first) {
   eq('3 usable', Number(scRows.usable), 3);
   const appPriced = (await db.query(`SELECT fico_used_for_pricing FROM applications WHERE id=$1`, [appId])).rows[0];
   eq('fico_used_for_pricing captured', appPriced.fico_used_for_pricing, 732);
+
+  // condition wired: outstanding -> received on import
+  const condStatus = (await db.query(`SELECT status FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appId, credTmpl])).rows[0];
+  eq('credit condition -> received on import', condStatus.status, 'received');
+
+  // ---- 120-DAY SWEEP: aged report reopens a satisfied condition ----
+  const sweep = require('../src/lib/credit/reopen-sweep');
+  await db.query(`UPDATE credit_reports SET first_issued_date = current_date - 130 WHERE application_id=$1`, [appId]);
+  await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_at=now() WHERE application_id=$1 AND template_id=$2`, [appId, credTmpl]);
+  const sweptOut = await sweep.sweepAgedCreditConditions();
+  ok('sweep reopened >=1 item', sweptOut.reopenedItems >= 1);
+  const afterSweep = (await db.query(`SELECT status, signed_off_at FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appId, credTmpl])).rows[0];
+  eq('aged credit condition reopened', afterSweep.status, 'outstanding');
+  ok('aged condition sign-off cleared', afterSweep.signed_off_at === null);
+  // fresh report resets the clock: a recent report means no reopen
+  await db.query(`UPDATE checklist_items SET status='satisfied', signed_off_at=now() WHERE application_id=$1 AND template_id=$2`, [appId, credTmpl]);
+  await db.query(`UPDATE credit_reports SET first_issued_date = current_date - 5 WHERE application_id=$1`, [appId]);
+  const sweep2 = await sweep.sweepAgedCreditConditions();
+  const afterFresh = (await db.query(`SELECT status FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appId, credTmpl])).rows[0];
+  eq('fresh report not reopened', afterFresh.status, 'satisfied');
 
   // ---- IDEMPOTENCY: same key returns the prior report, no new order ----
   const dup = await creditImport.orderAndImport({
@@ -133,6 +158,7 @@ async function seedBorrower(email, first) {
   eq('review left verified_fico null', b2After.verified_fico, null);
 
   // cleanup
+  await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1)`, [[appId, app2]]);
   await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id = ANY($1))`, [[appId, app2]]);
   await db.query(`DELETE FROM credit_reports WHERE application_id = ANY($1)`, [[appId, app2]]);
   await db.query(`DELETE FROM documents WHERE application_id = ANY($1)`, [[appId, app2]]);

@@ -154,6 +154,39 @@ function assessReport(parsed, scored) {
   return { decision: 'imported', reason: null };
 }
 
+// ---- internal credit-report condition wiring -------------------------------
+// The import outcome flows onto the file's credit checklist items (the pull
+// checkpoint, the "scores verified" checkpoint, and the "Credit report"
+// condition). imported -> evidence received (a human still signs off); review ->
+// flagged 'issue' with the reason (can't be signed off until cleared). Never
+// overrides a human sign-off. Runs inside the import transaction.
+const CREDIT_CONDITION_CODES = ['rtl_p3_credit', 'rtl_p3_credit2', 'rtl_cond_credit'];
+async function wireCreditCondition(client, applicationId, decision, note) {
+  if (decision === 'imported') {
+    await client.query(
+      `UPDATE checklist_items ci
+          SET status='received',
+              notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%' THEN $2 ELSE ci.notes END,
+              updated_at=now()
+         FROM checklist_templates t
+        WHERE t.id = ci.template_id AND t.code = ANY($3)
+          AND ci.application_id=$1 AND ci.signed_off_at IS NULL
+          AND ci.status IN ('outstanding','requested','issue')`,
+      [applicationId, note, CREDIT_CONDITION_CODES]);
+  } else if (decision === 'review') {
+    await client.query(
+      `UPDATE checklist_items ci
+          SET status='issue',
+              notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%' THEN $2 ELSE ci.notes END,
+              updated_at=now()
+         FROM checklist_templates t
+        WHERE t.id = ci.template_id AND t.code = ANY($3)
+          AND ci.application_id=$1 AND ci.signed_off_at IS NULL
+          AND ci.status <> 'issue'`,
+      [applicationId, note, CREDIT_CONDITION_CODES]);
+  }
+}
+
 // ---- persistence (transaction B) -------------------------------------------
 async function persistImport({ reportRowId, applicationId, actorId, providerId, parsed, scored, assessment, rawXml, orderMeta }) {
   // Decode + write the PDF to storage BEFORE opening the transaction: disk I/O
@@ -244,6 +277,12 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
         `UPDATE applications SET fico_used_for_pricing = COALESCE(fico_used_for_pricing, $2) WHERE id=$1`,
         [applicationId, scored.rep.score]);
     }
+
+    // Wire the internal credit-report condition to the outcome.
+    const condNote = assessment.decision === 'imported'
+      ? `[auto] Credit report imported from Xactus and FICO verified (representative ${scored.rep.score ?? 'n/a'}). Review and sign off.`
+      : `[auto] Credit report needs manual review: ${assessment.reason || 'see report'}. It cannot be signed off until cleared.`;
+    await wireCreditCondition(client, applicationId, assessment.decision, condNote);
 
     await client.query('COMMIT');
     return { pdfDocumentId, froze };
