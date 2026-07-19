@@ -8,6 +8,7 @@
 DO $$
 DECLARE bid uuid; blocked boolean;
 BEGIN
+  DELETE FROM borrowers WHERE email='freeze-test@example.com';   -- re-runnable after a prior aborted run
   INSERT INTO borrowers (first_name,last_name,email) VALUES ('Test','Freeze','freeze-test@example.com') RETURNING id INTO bid;
   UPDATE borrowers SET fico=700 WHERE id=bid;                    -- estimate editable pre-lock
   UPDATE borrowers SET verified_fico=732, fico=732, verified_fico_source='experian_fairisaac',
@@ -33,6 +34,31 @@ BEGIN
   IF (SELECT count(*) FROM credit_fico_audit WHERE borrower_id=bid) < 3 THEN RAISE EXCEPTION 'FAIL: audit rows missing'; END IF;
 
   RAISE NOTICE 'ALL FREEZE TRIGGER TESTS PASSED (audit rows: %)', (SELECT count(*) FROM credit_fico_audit WHERE borrower_id=bid);
+  DELETE FROM credit_fico_audit WHERE borrower_id=bid;
+  DELETE FROM borrowers WHERE id=bid;
+END $$;
+
+-- Adversarial: INSERT can't plant a locked row; the full lineage (timestamps +
+-- importer) is frozen too.
+DO $$
+DECLARE bid uuid; blocked boolean;
+BEGIN
+  DELETE FROM borrowers WHERE email='freeze-adv@example.com';
+  blocked:=false;
+  BEGIN INSERT INTO borrowers (first_name,last_name,email,fico,verified_fico,fico_locked)
+        VALUES ('Adv','Insert','freeze-adv@example.com',815,815,true); EXCEPTION WHEN check_violation THEN blocked:=true; END;
+  IF NOT blocked THEN RAISE EXCEPTION 'FAIL: INSERT already-locked was allowed'; END IF;
+
+  INSERT INTO borrowers (first_name,last_name,email) VALUES ('Adv','Insert','freeze-adv@example.com') RETURNING id INTO bid;
+  UPDATE borrowers SET verified_fico=740, fico=740, verified_pulled_at='2026-07-19',
+         verified_imported_at=now(), verified_imported_by=gen_random_uuid(), fico_locked=true WHERE id=bid;
+
+  blocked:=false; BEGIN UPDATE borrowers SET verified_pulled_at='2000-01-01' WHERE id=bid; EXCEPTION WHEN check_violation THEN blocked:=true; END;
+  IF NOT blocked THEN RAISE EXCEPTION 'FAIL: verified_pulled_at editable while locked'; END IF;
+  blocked:=false; BEGIN UPDATE borrowers SET verified_imported_by=gen_random_uuid() WHERE id=bid; EXCEPTION WHEN check_violation THEN blocked:=true; END;
+  IF NOT blocked THEN RAISE EXCEPTION 'FAIL: verified_imported_by editable while locked'; END IF;
+
+  RAISE NOTICE 'ADVERSARIAL FREEZE CHECKS PASSED (INSERT-lock + full lineage)';
   DELETE FROM credit_fico_audit WHERE borrower_id=bid;
   DELETE FROM borrowers WHERE id=bid;
 END $$;

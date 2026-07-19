@@ -27,6 +27,8 @@ INSERT INTO credit_providers (key, display_name, enabled, is_default, capabiliti
 VALUES ('xactus', 'Xactus', true, true,
         '{"reissue":true,"softPull":true,"hardPull":true,"joint":true,"bureaus":["Equifax","Experian","TransUnion"]}'::jsonb)
 ON CONFLICT (key) DO NOTHING;
+-- at most one default provider
+CREATE UNIQUE INDEX IF NOT EXISTS uq_credit_providers_one_default ON credit_providers (is_default) WHERE is_default;
 
 -- ---- B. per-user credentials (encrypted; write-only from the UI) ------------
 CREATE TABLE IF NOT EXISTS user_credit_credentials (
@@ -119,21 +121,40 @@ CREATE TABLE IF NOT EXISTS credit_fico_audit (
   changed_at    timestamptz NOT NULL DEFAULT now()
 );
 
--- The BEFORE UPDATE belt: once fico_locked, the frozen score / lineage / lock
--- cannot change from ANY path (portal, ClickUp inbound sync, manual, migration,
--- a raw psql UPDATE) EXCEPT the sanctioned re-import, which sets the GUC
--- app.credit_reverify='on' for exactly its own transaction. Real authorization
--- (which staff, capability) is enforced in the app before the GUC is set; this
--- trigger blocks every other path. Uses IS DISTINCT FROM so a change to/from
--- NULL is caught. Editing OTHER borrower fields while locked is unaffected.
+-- The BEFORE INSERT/UPDATE belt: once fico_locked, the frozen score, its FULL
+-- lineage (source, report id, pulled/imported timestamps, importer), and the
+-- lock cannot change from ANY path (portal, ClickUp inbound sync, manual,
+-- migration, a raw psql write) EXCEPT the sanctioned re-import, which sets the
+-- GUC app.credit_reverify='on' for exactly its own transaction. Real
+-- authorization (which staff, capability) is enforced in the app before the GUC
+-- is set; this trigger blocks every other path. Uses IS DISTINCT FROM so a
+-- change to/from NULL is caught. Editing OTHER borrower fields while locked is
+-- unaffected. INSERT branch: a borrower can't be CREATED already-locked outside
+-- a sanctioned import (borrowers are created unlocked; import is an UPDATE) — so
+-- a raw INSERT can't plant an unverified "locked" score.
+--
+-- App invariant (must hold): the import routine sets the GUC with is_local=true
+-- (transaction scope) in a FRESH transaction per import, so it can never leak
+-- across a pooled connection. Never switch to a session-scoped SET.
 CREATE OR REPLACE FUNCTION guard_frozen_fico() RETURNS trigger AS $$
 BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.fico_locked AND coalesce(current_setting('app.credit_reverify', true), '') <> 'on' THEN
+      RAISE EXCEPTION 'a borrower cannot be created already FICO-locked — import a credit report to lock'
+        USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+  END IF;
+
   IF OLD.fico_locked
      AND coalesce(current_setting('app.credit_reverify', true), '') <> 'on'
      AND (   NEW.fico                 IS DISTINCT FROM OLD.fico
           OR NEW.verified_fico        IS DISTINCT FROM OLD.verified_fico
           OR NEW.verified_fico_source IS DISTINCT FROM OLD.verified_fico_source
           OR NEW.verified_report_id   IS DISTINCT FROM OLD.verified_report_id
+          OR NEW.verified_pulled_at   IS DISTINCT FROM OLD.verified_pulled_at
+          OR NEW.verified_imported_at IS DISTINCT FROM OLD.verified_imported_at
+          OR NEW.verified_imported_by IS DISTINCT FROM OLD.verified_imported_by
           OR NEW.fico_locked          IS DISTINCT FROM OLD.fico_locked)
   THEN
     RAISE EXCEPTION 'FICO is verified and frozen for borrower % — it cannot be changed except by importing a new credit report', OLD.id
@@ -145,7 +166,7 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_guard_frozen_fico ON borrowers;
 CREATE TRIGGER trg_guard_frozen_fico
-  BEFORE UPDATE ON borrowers
+  BEFORE INSERT OR UPDATE ON borrowers
   FOR EACH ROW
   EXECUTE FUNCTION guard_frozen_fico();
 
