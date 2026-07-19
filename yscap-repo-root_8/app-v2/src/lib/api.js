@@ -352,6 +352,11 @@ export const api = {
   staffPatchPostClosing: (pid, b) => req('PATCH', `/api/staff/post-closing/${pid}`, b),
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
+  // MISMO 3.4 — the mortgage industry's shared file format. Export downloads the
+  // file as MISMO XML; import parses (preview, no writes) then creates a new file.
+  staffExportMismo:  (appId) => download(`/api/staff/applications/${appId}/export/mismo`),
+  staffMismoPreview: (xml) => req('POST', '/api/staff/mismo/preview', { xml }),
+  staffMismoCreate:  (xml) => req('POST', '/api/staff/mismo/create', { xml }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
   // #152 — export the current pipeline VIEW (same filter params as staffApplications).
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),
