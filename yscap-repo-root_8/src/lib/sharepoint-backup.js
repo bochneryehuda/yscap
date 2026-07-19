@@ -399,6 +399,28 @@ async function settleSupersededSnapshots() {
   return r.rowCount || 0;
 }
 
+// NEVER-MIRROR kinds (the signed Heter Iska) are SETTLED without uploading, the
+// same way superseded snapshots are — stamp sharepoint_backed_up_at so they
+// leave the pending/oldest-pending/stuck/backlog-SLO population entirely. Without
+// this a signed Heter would sit backed_up_at IS NULL forever and (a) drive a
+// permanent backlog-SLO breach + false "not mirrored" admin alerts, and (b) get
+// force-attempted every sweep. The mirrorRow chokepoint guard stamps the same on
+// a force-attempt; this pass catches the rows the excluding selectors never even
+// hand to mirrorRow. (Audit HIGH, 2026-07-19.)
+async function settleNeverMirror() {
+  const r = await db.query(
+    `UPDATE documents d SET
+        sharepoint_backed_up_at = now(),
+        sharepoint_skipped_reason = 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
+        sharepoint_backup_error = NULL
+      WHERE d.sharepoint_backed_up_at IS NULL
+        AND COALESCE(d.doc_kind,'') = ANY($1)
+        AND d.storage_ref IS NOT NULL
+      RETURNING d.id`, [Array.from(NEVER_MIRROR_KINDS)]);
+  if (r.rowCount) console.log(`[sp-sync] settled ${r.rowCount} never-mirror doc(s) (kept in-system only)`);
+  return r.rowCount || 0;
+}
+
 // ------------------------------------------------------------------ versioning
 async function getConditionState(stateKey) {
   return (await db.query(
@@ -694,8 +716,13 @@ async function mirrorRow(row, retried = false) {
   // enrichedRowById path, which bypasses pendingBatch's filters) cannot upload
   // it. Stamped skipped so a human can see WHY it isn't in the tree.
   if (NEVER_MIRROR_KINDS.has(row.doc_kind)) {
+    // Settle it (backed_up_at + reason) so it leaves the pending/stuck/backlog-SLO
+    // population — never left backed_up_at IS NULL, which would trip a permanent
+    // backlog alert and re-force-attempt every sweep (audit HIGH).
     await db.query(
-      `UPDATE documents SET sharepoint_skipped_reason = 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)'
+      `UPDATE documents SET sharepoint_backed_up_at = now(),
+          sharepoint_skipped_reason = 'never mirrored (owner policy: the Heter Iska is kept in-system + on DocuSign only)',
+          sharepoint_backup_error = NULL
         WHERE id = $1 AND sharepoint_backed_up_at IS NULL`, [row.id]);
     return { skipped: true, reason: 'never_mirror_kind' };
   }
@@ -1301,6 +1328,7 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
   // Version-churn fix: settle superseded autosave snapshots WITHOUT uploading
   // before selecting work — an editing burst mirrors one file, not N.
   try { await settleSupersededSnapshots(); } catch (e) { console.warn('[sp-sync] snapshot settle error:', e.message); }
+  try { await settleNeverMirror(); } catch (e) { console.warn('[sp-sync] never-mirror settle error:', e.message); }
   const rows = await pendingBatch(limit);
   let mirrored = 0, failed = 0;
   for (const row of rows) {

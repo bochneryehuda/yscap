@@ -56,6 +56,8 @@ CREATE TABLE documents (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE UNIQUE INDEX uq_documents_esign_signed ON documents(application_id, doc_kind, filename) WHERE doc_kind IN ('term_sheet_signed','application_signed','bp_disclosure_signed','heter_iska_signed','esign_certificate');
+
 CREATE TABLE staff_users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), full_name text);
 
 -- esign_envelopes: the db/037 stub grown by db/132/133/134 (only touched cols).

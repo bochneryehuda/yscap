@@ -6415,7 +6415,7 @@ async function loadEsignEnvelope(req, rowId) {
   if (!row) return { status: 404, error: 'not found' };
   if (!seesAll(req)) {
     const vis = await db.query(
-      `SELECT 1 FROM applications a WHERE a.id = $1 AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`,
+      `SELECT 1 FROM applications a WHERE a.id = $1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`,
       [row.application_id, req.actor.id]);
     if (!vis.rows.length) return { status: 403, error: 'forbidden' };
   }

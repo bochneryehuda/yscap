@@ -54,8 +54,10 @@ function start() {
     return;
   }
   if (timer) return;
-  // First tick shortly after boot, then on the interval.
-  setTimeout(() => { tick().catch(() => {}); }, 8000);
+  // First tick shortly after boot, then on the interval. Both handles unref'd so
+  // a short-lived process is never kept alive waiting on the e-sign heartbeat.
+  const boot = setTimeout(() => { tick().catch(() => {}); }, 8000);
+  if (boot.unref) boot.unref();
   timer = setInterval(() => { tick().catch(() => {}); }, POLL_SEC * 1000);
   if (timer.unref) timer.unref();
   console.log(`[esign-poll] started (every ${POLL_SEC}s; reconcile stale > ${STALE_MIN}m)`);

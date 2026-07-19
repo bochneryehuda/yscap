@@ -58,15 +58,28 @@ async function storeSignedDocument(db, storage, { applicationId, checklistItemId
   // uploaded_by_kind is CHECK IN ('borrower','staff') — a system fill uses
   // 'staff' + source_type='system' (exactly like tpr-export / track-record
   // snapshots); 'system' would violate the constraint.
-  const ins = await db.query(
-    `INSERT INTO documents
-       (application_id, checklist_item_id, filename, content_type, size_bytes,
-        storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind,
-        source_type, visibility, is_current, review_status)
-     VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'pending')
-     RETURNING id`,
-    [applicationId, checklistItemId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility || 'borrower']);
-  return ins.rows[0].id;
+  try {
+    const ins = await db.query(
+      `INSERT INTO documents
+         (application_id, checklist_item_id, filename, content_type, size_bytes,
+          storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind,
+          source_type, visibility, is_current, review_status)
+       VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'pending')
+       RETURNING id`,
+      [applicationId, checklistItemId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility || 'borrower']);
+    return ins.rows[0].id;
+  } catch (e) {
+    // A concurrent drain (poller tick + manual /esign/drain interleaving at an
+    // await) can pass the existence check and both INSERT — the uq_documents_
+    // esign_signed partial index (db/136) rejects the loser; reuse the winner.
+    if (e && e.code === '23505') {
+      const again = await db.query(
+        `SELECT id FROM documents WHERE application_id=$1 AND doc_kind=$2 AND filename=$3 LIMIT 1`,
+        [applicationId, docKind, filename]);
+      if (again.rows.length) return again.rows[0].id;
+    }
+    throw e;
+  }
 }
 
 // ---- update the recipient roster from fetched truth -------------------------
