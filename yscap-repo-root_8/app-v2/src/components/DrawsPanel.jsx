@@ -196,9 +196,12 @@ function StartDrawCard({ appId, onStarted }) {
     // if the coordinator hasn't customized the fee, follow the new method's default
     if (!feeEdited) { const d = defaultFeeForMethod(m); setFeeInput(d != null ? String(Math.round(Number(d) / 100)) : ''); }
   }
-  const feeCents = Math.round(Number(String(feeInput).replace(/[^0-9.]/g, '')) * 100);
-  const feeValid = Number.isFinite(feeCents) && feeCents >= 0 && feeCents <= 10000000;
-  const isCustomFee = feeValid && feeCents !== Number(defaultFeeForMethod(effMethod));
+  // A BLANK fee box means "use the rule default" — never $0. Only a typed number is sent as an
+  // override; blank leaves the stored fee untouched (so clearing the box can't silently push a $0 fee).
+  const feeBlank = String(feeInput).trim() === '';
+  const feeCents = feeBlank ? null : Math.round(Number(String(feeInput).replace(/[^0-9.]/g, '')) * 100);
+  const feeValid = feeBlank || (Number.isFinite(feeCents) && feeCents >= 0 && feeCents <= 10000000);
+  const isCustomFee = !feeBlank && feeValid && feeCents !== Number(defaultFeeForMethod(effMethod));
   const alreadyStarted = !!s.started_at; // coordinator pressed Start earlier; awaiting the switch/push
 
   async function start() {
@@ -206,7 +209,7 @@ function StartDrawCard({ appId, onStarted }) {
     try {
       const body = {};
       if (method && method !== insp.method) body.inspection_method = method;
-      if (feeValid) body.fee_cents = feeCents; // backend clears the override when it equals the rule fee
+      if (!feeBlank && feeValid) body.fee_cents = feeCents; // a typed fee only; blank = leave the fee as-is (backend clears the override when it equals the rule fee)
       const r = await api.post(`/api/sitewire/files/${appId}/start-draw`, body);
       setMsg(r && r.note ? r.note : 'Draw process started — everything was sent to Sitewire.');
       load();

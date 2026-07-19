@@ -232,7 +232,11 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     if (body.fee_cents != null && body.fee_cents !== '') {
       const fc = Math.round(Number(body.fee_cents));
       if (!Number.isFinite(fc) || fc < 0 || fc > 10000000) return res.status(400).json({ error: 'The draw fee must be a dollar amount between $0 and $100,000.' });
-      const methodForFee = chosen || (rule && rule.inspection_method) || 'mobile';
+      // Compare against the rule fee for the file's EFFECTIVE method — the coordinator's new pick, else
+      // the already-stored per-file method, else the rule default — so "fee == default → clear override"
+      // matches what resolveInspection will actually charge (never the wrong method's fee).
+      const existingLink = await orchestrator.getLink(appId);
+      const methodForFee = chosen || (existingLink && existingLink.inspection_method) || (rule && rule.inspection_method) || 'mobile';
       const ruleFee = rule ? (methodForFee === 'traditional' ? (rule.fee_cents_physical != null ? Number(rule.fee_cents_physical) : Number(rule.fee_cents_virtual)) : Number(rule.fee_cents_virtual)) : 29900;
       feeOverride = (fc === Number(ruleFee)) ? null : fc;
     }
