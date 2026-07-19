@@ -925,6 +925,15 @@ async function fireChatEmail(j) {
         AND NOT (sender_kind=$3 AND sender_id=$4)
         AND NOT (seq = ANY($5::bigint[]))`,
     [j.conversation_id, watermark, j.recipient_kind, j.recipient_id, emailedSeqs]);
+  // SNAPSHOT UPPER BOUND. This digest only accounts for messages that existed at
+  // this point (max_seq when there's anything unread; else the seq that triggered
+  // this sweep). A message posted AFTER, while we spend time reading attachments +
+  // calling the provider, must NOT be swept up by the post-send append or the
+  // job-completion below — for an online recipient it got no immediate send, so its
+  // OWN deferred job is the only thing that will email it. Bounding both writes by
+  // boundSeq leaves that job open. (Without this bound a mid-send arrival is marked
+  // emailed-and-done and silently dropped — the exact class this change prevents.)
+  const boundSeq = Number(pending.rows[0].max_seq) || Number(j.message_seq) || 0;
   // The actual unread messages (body + any attachment), newest last, so the
   // email can WRITE OUT the conversation (owner-directed 2026-07-14) instead of a
   // bare "you have messages" — capped so a long thread can't bloat the email.
@@ -1054,23 +1063,26 @@ async function fireChatEmail(j) {
             SELECT COALESCE(array_agg(DISTINCT x), '{}') FROM unnest(
               emailed_seqs || COALESCE((
                 SELECT array_agg(m.seq) FROM messages m
-                 WHERE m.conversation_id=$1 AND m.seq > $4 AND m.kind='text' AND m.deleted_at IS NULL
+                 WHERE m.conversation_id=$1 AND m.seq > $4 AND m.seq <= $5 AND m.kind='text' AND m.deleted_at IS NULL
                    AND NOT (m.sender_kind=$2 AND m.sender_id=$3)
                    AND NOT (m.seq = ANY(emailed_seqs))), '{}'::bigint[])
-            ) x)
+            ) x
+            WHERE x > $4 /* self-prune: drop seqs already past the read watermark */)
           WHERE conversation_id=$1 AND member_kind=$2 AND member_id=$3`,
-        [j.conversation_id, j.recipient_kind, j.recipient_id, watermark]).catch(() => {});
+        [j.conversation_id, j.recipient_kind, j.recipient_id, watermark, boundSeq]).catch(() => {});
     }
   }
   // Reached only when nothing needed sending (already read / opted out / no address)
   // OR the send succeeded — complete every pending chat_email job for this
-  // recipient+conversation. A thrown send never gets here, so its job stays open
-  // and the sweeper retries it.
+  // recipient+conversation UP TO the snapshot bound. A job for a message that
+  // arrived mid-send (message_seq > boundSeq) stays open so it emails on its own
+  // turn. A thrown send never gets here, so its job stays open and the sweeper
+  // retries it.
   await db.query(
     `UPDATE chat_notification_jobs SET done_at=now()
       WHERE conversation_id=$1 AND recipient_kind=$2 AND recipient_id=$3
-        AND job_kind='chat_email' AND done_at IS NULL`,
-    [j.conversation_id, j.recipient_kind, j.recipient_id]);
+        AND job_kind='chat_email' AND done_at IS NULL AND message_seq <= $4`,
+    [j.conversation_id, j.recipient_kind, j.recipient_id, boundSeq]);
 }
 
 async function fireUrgentRenotify(j) {
