@@ -56,6 +56,74 @@ passwords, SSNs, or live PII appear in this document.**_
 
 ---
 
+## 0.1 Confirmed answers → build decisions (2026-07-19, round 2)
+
+The owner answered the open questions and supplied Xactus's full request/response schema. Locked
+decisions:
+
+1. **Credentials are per-user; each officer sets their OWN Xactus login.** Surrogate ("on-behalf-of")
+   ordering is **NOT** used (owner declined). So we store each user's `LoginAccountIdentifier` +
+   password, **encrypted, write-only, verify-on-save** (§2). No shared system account.
+2. **Auth transport recommendation: HTTP Basic (Authorization header), not URL-parameter auth.**
+   Xactus's Communications page describes credentials as **URL parameters**, and the API also
+   declares a `basicAuth` scheme. Prefer **Basic** — it keeps the password in a header instead of the
+   URL, so it never lands in access logs / APM / proxy logs (URL-param credentials are the #1 leak
+   vector, per the bug-hunt). Confirm in the test environment which the endpoint accepts; if only
+   URL-params work, use them **but never log the URL** (redact query strings).
+3. **Products & actions — build all, with defaults:**
+   - **Default product = Pre-QualificationX (soft pull).** Also build **Credit ReportX (hard pull)**
+     as a selectable option (owner added this), and Refresh. Actions per Xactus:
+     Pre-Qualification = Submit / ForceNew / Reissue / Upgrade; Credit ReportX adds **Unmerge**;
+     Refresh = Submit / Reissue.
+   - **Default action = Reissue** (re-pull an existing report). The user can switch to a **brand-new
+     order** (Submit/ForceNew) for reports not yet pulled, and can switch the product to the **hard
+     pull** when they want. Soft-pull request uses `CreditReportType="Other"` +
+     `CreditReportTypeOtherDescription="SoftCheck"`.
+4. **Testing = the TEST environment** (`test.ultraamps.com`), using the Xactus **test personas**
+   (synthetic names + SSNs) and the **test login**. No billing/compliance concern for tests.
+   Certification: Xactus **reviews our incoming test requests** (mapping/format) and then grants
+   **go-live** — so the build target is "clean, correctly-mapped requests Xactus can approve."
+5. **Egress IP for Xactus allow-list:** the portal runs on the **same Render service**. We fetch the
+   static outbound IP at test/go-live time (via a **rotated** Render key set in the environment — the
+   one pasted in chat must be rotated first, §7).
+6. **Score-mismatch = bracket-based (see §8.1).** On import, **always** set the verified FICO and
+   **freeze** it. If the verified score lands in the **same pricing bracket** as the estimate the
+   loan was priced on → just update + freeze, **no re-registration**. If it **crosses a bracket** →
+   set the new FICO, freeze, and **reopen the pricing/registration condition for a HUMAN to
+   re-register** (never auto-re-register).
+7. **Frozen bureau / no score → manual review.** The credit condition **cannot be signed off** until
+   a human clears manual review confirming the program guidelines allow it. Leave a **per-program
+   config hook** ("how many frozen/no-score bureaus each program allows") for later.
+8. **Adverse-action / decline notices are built IN our system** (owner directive) — research the
+   FCRA/ECOA-Reg B requirements and implement (compliance basis in `CREDIT-REPORT-INTEGRATION-BUGS.md`
+   §8). **Permission to pull is taken verbally** — do **not** add a "capture signed authorization"
+   step to the workflow (owner directive; noted as a compliance consideration, not a blocker).
+9. **Borrower-facing view:** only **staff** can pull/reissue. Once a report is pulled, the **borrower**
+   gets a **read-only section in their loan file** showing **their credit-report PDF** and **all their
+   per-bureau credit scores** (Equifax / Experian / TransUnion). Staff-only for ordering; borrower-read
+   for viewing.
+
+### 0.1.1 ⚠️ One thing to confirm — what counts as a "bracket"
+
+Your pricing engine's real FICO breakpoints today (frozen — see CLAUDE.md) are:
+- **Rate bands:** `≥740`, `700–739`, `<700` (Standard `fico740/fico700/ficoLt`; Gold `fico740/ficoLt700`).
+- **Eligibility floors:** Standard `<600` ineligible + below each tier's minimum = waiver/manual;
+  Gold `<660` ineligible, below the tier floor (`680`/`680`/`700`) = manual.
+
+The safest, most accurate definition of "crossed a bracket" is: **re-run the frozen pricing engine
+with the verified score and see whether the rate or eligibility RESULT changes.** Same result → same
+bracket → update+freeze only. Different result → reopen pricing. This ties the trigger to what
+actually affects the deal and **changes none of the frozen pricing numbers**.
+
+**Please confirm this definition** — because your example ("720 estimate vs 719 back = different
+bracket") implies a breakpoint at **720**, which the current engine does **not** have (720 and 719 are
+both in the `700–739` band, so today they're the *same* bracket). If you want finer brackets (e.g. a
+720 line), that's a **pricing-guideline change** you'd need to explicitly approve (the engine is
+frozen). So: do you want (a) "re-register only if the actual price/eligibility changes" (recommended,
+no frozen-number change), or (b) specific fixed FICO brackets you'll define? (Open Item §11.)
+
+---
+
 ## 1. The whole flow, end to end
 
 ```
@@ -88,14 +156,13 @@ The owner wants **each user** to use **their own** Xactus login, selectable **pe
 **provider dropdown** that can grow to more providers. So we move from one system credential to a
 **per-operator credential store** plus a **provider registry**.
 
-**Strong recommendation surfaced by the research — the Xactus "surrogate operator" pattern.**
-Xactus supports `LoginAccountIdentifier = genericoperator:specificoperator` (e.g. `losmain:john.smith`),
-where **only the generic operator's password is sent** and **billing lands under the specific
-operator**. This gives full per-officer attribution and billing **without storing every loan
-officer's password** — we store each officer's operator ID (not secret) plus one system-level
-generic password (in env/secret store). This is materially more secure than collecting individual
-passwords and is worth confirming with Xactus before we build. **Design for both:** a provider
-adapter declares whether it uses surrogate ordering or full per-user credentials.
+**Owner decision (2026-07-19): full per-user credentials, NOT surrogate ordering.** Each loan officer
+enrolls with their own Xactus `LoginAccountIdentifier` + password, and **each user sets up their own
+login** in the portal. (The research surfaced Xactus's "surrogate operator" pattern —
+`generic:specific`, one system password — which would avoid storing individual passwords; the owner
+**declined** it, so we store each user's credential, encrypted, per §2.3.) The provider adapter still
+declares its auth style so a future provider *could* use surrogate ordering, but Xactus here = full
+per-user credentials.
 
 ### 2.2 Data model (proposed — build later)
 
@@ -300,31 +367,53 @@ of duties).
 
 ---
 
-## 8. Underwriting fatal + re-registration on mismatch (owner requirement)
+## 8. Underwriting stop + re-registration on mismatch (owner requirement)
 
-Define the fatal precisely: **`verified_fico` ≠ `fico_used_for_pricing`** (or it crosses a pricing/
-eligibility band). On import or re-verify, compute the delta; if nonzero:
+**On EVERY import: set the verified FICO and freeze it (§7) — always.** Then compare to
+`fico_used_for_pricing`:
 
-1. Raise a **fatal underwriting condition** `FICO_MISMATCH` that blocks any capability-gated sign-off
-   and clearance-to-close (same hard-stop semantics as a fatal finding).
-2. **Reopen pricing** exactly like the existing economics-change reopener (`db/071`/`db/072`
-   `trg_reopen_on_budget_change` → reopens `product_pricing`): invalidate the current term sheet, set
-   the file to "re-register / re-price required," rerun the pricing engine against `verified_fico`.
-3. Force a **new registration** so priced-on = verified again; only then re-snapshot
-   `fico_used_for_pricing` and clear the fatal.
+### 8.1 Bracket-based trigger (owner decision, 2026-07-19)
 
-Model it as a **state machine**, so "priced-on ≠ verified" is **unrepresentable-as-approved**. A
-**newer** report later is a controlled **re-lock** (a dedicated `import_verified_fico(report_id)`
-routine the trigger recognizes via a session variable), which writes the new value + lineage, audits
-old→new, and re-fires this mismatch flow if it moved.
+The re-registration trigger is **bracket-based, not any-difference**. "Same bracket" = the frozen
+pricing engine produces the **same rate and eligibility result** with the verified score as it did
+with the estimate the loan was priced on (see §0.1.1 for the actual bands: rate `≥740 / 700–739 /
+<700`, plus the eligibility floors). Implementation:
+
+- Recompute the frozen engine (`src/lib/pricing.js`) with `verified_fico`, compare its pricing/
+  eligibility result to the priced-on result.
+- **Same bracket** (e.g. owner's example: estimate 718 → verified 700, both in `700–739`): **update +
+  freeze only. No re-registration, no fatal.** Nothing about the price changed, so don't make anyone
+  re-do it.
+- **Crossed a bracket** (price or eligibility outcome differs):
+  1. Set + freeze the new FICO (always), then
+  2. Raise a **fatal condition** `FICO_MISMATCH` that blocks sign-off / clearance-to-close, and
+  3. **Reopen the pricing/registration condition** exactly like the existing economics-change
+     reopener (`db/071`/`db/072` `trg_reopen_on_budget_change` → reopens `product_pricing`), setting
+     the file to "re-register required."
+  4. A **human re-registers** the loan on the new FICO (the system does **not** auto-re-register —
+     owner directive). Only after a human re-registers does `fico_used_for_pricing` re-snapshot and
+     the fatal clear.
+
+Model it as a **state machine**, so "priced-on bracket ≠ verified bracket, not yet re-registered" is
+**unrepresentable-as-approved**. A **newer** report later is a controlled **re-lock** (a dedicated
+`import_verified_fico(report_id)` routine the freeze trigger recognizes), which writes the new value +
+lineage, audits old→new, and re-runs this bracket check.
+
+> **Frozen-engine safety:** this reuses the engine's existing bands as the source of truth for
+> "bracket" — it changes **no** frozen pricing numbers (per CLAUDE.md the engine is frozen). If the
+> owner instead wants *new* fixed FICO brackets (e.g. a 720 line, per their 720/719 example), that is
+> a pricing-guideline change requiring explicit owner sign-off — see §0.1.1 / Open Item.
 
 ---
 
 ## 9. Compliance guardrails specific to business-purpose (RTL) credit
 
 - **Permissible purpose exists only for the personally-liable individual** (principal / guarantor /
-  co-signer) — **not** the entity, and not a non-obligated party. Gate every pull behind a recorded
-  permissible-purpose basis tied to that individual, and get written authorization before pulling.
+  co-signer) — **not** the entity, and not a non-obligated party. Record a permissible-purpose basis
+  (the originating application/loan) on every order. **Authorization is taken verbally** (owner
+  directive, 2026-07-19) — do **not** add a signed-authorization capture step to the workflow.
+  _(Compliance note, not a blocker: documented/written authorization is the industry best practice and
+  the strongest audit defense; flagging it so the owner/compliance can revisit later if desired.)_
 - **Adverse action is two separate duties**: FCRA §615 (owed to the borrower; a *mere* guarantor
   generally is not owed one) **and** ECOA/Reg B business-credit track (keyed to the $1MM revenue
   threshold). Build an adverse-action workflow that fires on decline/counteroffer and pulls score +
@@ -361,26 +450,26 @@ extraction order, freeze-bypass hunt, Node/HTTP traps, incident lessons, and the
 
 ---
 
-## 11. Open items to confirm before build
+## 11. Open items
 
-1. **Xactus soft-pull capabilities** — ✅ **RESOLVED by the field-schema research.** The
-   Pre-Qualification (`SoftCheck`) response returns the **full tri-merge** scores (Beacon 5.0 /
-   Experian-FairIsaac / FICO Classic 04) **as structured XML** plus the embedded PDF — structurally
-   identical to a hard `Merge`. Request it with `CreditReportType="Other"` +
-   `CreditReportTypeOtherDescription="SoftCheck"`. (Still worth a one-line confirm with Xactus that
-   `Reissue` behaves the same on the soft product.)
-2. **Credential model**: does our Xactus agreement allow the **surrogate-operator** pattern
-   (`generic:specific`, one system password) — or must each officer be enrolled as a separate
-   operator with their own password? (Security + build effort hinge on this.) **Confirm with
-   Integrations@xactus.com.**
-3. **Auth transport**: Xactus API reference says `basicAuth`; the Communications page says
-   credentials go as request params (`LoginAccountIdentifier`/`LoginAccountPassword`). Confirm which
-   our endpoint expects.
-4. **Production-only testing**: how to run the synthetic test personas against production safely
-   (no real billing, no permissible-purpose issue), plus IP allow-listing steps and any certification
-   checklist. (Being researched; also a question for Xactus.)
-5. **Permissible-purpose + adverse-action** workflow scope for RTL — confirm the business rules with
-   the owner/compliance before wiring §9.
+**Resolved (2026-07-19, see §0.1):** soft-pull returns full tri-merge + PDF ✅ · credentials =
+per-user, no surrogate ✅ · products = soft-pull default + hard-pull selectable ✅ · default action =
+Reissue ✅ · testing = test environment with test personas ✅ · retention = never delete + 120-day
+reopen ✅ · borrower read-only view ✅ · adverse action built in-system ✅ · permission taken verbally
+(no capture step) ✅.
+
+**Still open — one design question + a few test-time confirmations:**
+1. **⚠️ Bracket definition (needs the owner):** confirm the re-registration trigger uses *"the frozen
+   engine's actual price/eligibility result changed"* (recommended, no frozen-number change) vs.
+   specific new fixed FICO brackets you'll define (a pricing-guideline change needing your sign-off).
+   Your 720/719 example doesn't match the current bands — see §0.1.1 / §8.1.
+2. **Auth transport (recommendation made; confirm at test time):** we'll use **HTTP Basic** (header)
+   if the endpoint accepts it — safer than URL-param creds (which leak into logs). Verify against the
+   test endpoint; fall back to URL-params with strict no-logging if Basic isn't accepted.
+3. **Reissue on the soft product:** owner says yes; confirm once against the live test endpoint.
+4. **Egress IP + go-live:** at test/go-live time, fetch the Render service's outbound IP (via a
+   **rotated** Render key) and send it to Xactus for allow-listing; Xactus reviews our test traffic →
+   grants go-live.
 
 ---
 
