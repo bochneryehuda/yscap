@@ -1,4 +1,4 @@
--- 153 - Underwriting FICO-match finding on a credit report (owner-directed 2026-07-19)
+-- 155 - Underwriting FICO-match finding on a credit report (owner-directed 2026-07-19)
 --
 -- When an imported credit report's VERIFIED representative FICO lands in a
 -- DIFFERENT standard bracket than the FICO the file was built/priced on, that is a

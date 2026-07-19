@@ -1,5 +1,5 @@
 -- ============================================================================
--- 126 - Credit report reissue + FICO verification (owner-directed 2026-07-19)
+-- 145 - Credit report reissue + FICO verification (owner-directed 2026-07-19)
 --
 -- Storage for the Xactus (Xactus360) credit integration + the FICO hard-freeze.
 -- Idempotent (IF NOT EXISTS / CREATE OR REPLACE / ON CONFLICT). No build wiring
