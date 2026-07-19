@@ -318,4 +318,25 @@ module.exports = {
     clientId: process.env.XACTUS_CLIENT_ID,
     endpoint: process.env.XACTUS_ENDPOINT,   // your assigned API base URL
   },
+
+  // --- document underwriting: OCR reader + AI analyzer (add keys to activate) ---
+  // Google Document AI — the "reads even scanned/blurry documents" OCR engine
+  // (src/lib/ai/docai.js). The service-account key is pasted into Render as the raw
+  // JSON (GOOGLE_DOCAI_CREDENTIALS) or, easier, base64 of it (…_B64) so newlines in
+  // the PEM survive the dashboard. Auth uses built-in crypto (src/lib/ai/google-auth.js),
+  // no googleapis SDK. Everything stays dormant until a processor id is set.
+  docai: {
+    credentialsJson: process.env.GOOGLE_DOCAI_CREDENTIALS,
+    credentialsB64:  process.env.GOOGLE_DOCAI_CREDENTIALS_B64,
+    projectId:       process.env.GOOGLE_DOCAI_PROJECT_ID,
+    location:        (process.env.GOOGLE_DOCAI_LOCATION || 'us').trim().toLowerCase(), // 'us' | 'eu'
+    processorId:     process.env.GOOGLE_DOCAI_PROCESSOR_ID,
+  },
+  // Anthropic (Claude) — the AI document analyzer / underwriting brain
+  // (src/lib/ai/claude.js). Raw HTTPS via fetch (no @anthropic-ai/sdk). The model
+  // defaults to Opus 4.8; override per cost/latency with ANTHROPIC_MODEL.
+  anthropic: {
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    model:  (process.env.ANTHROPIC_MODEL || 'claude-opus-4-8').trim(),
+  },
 };

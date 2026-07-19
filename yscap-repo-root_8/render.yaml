@@ -74,6 +74,20 @@ services:
         sync: false
       - key: RESEND_INBOUND_API_KEY
         sync: false
+      # Document underwriting: OCR reader (Google Document AI) + AI analyzer (Claude).
+      # All secrets are dashboard-only (sync:false) — never committed. The system stays
+      # dormant until a processor id + API key are set. Paste the Google service-account
+      # key as raw JSON (GOOGLE_DOCAI_CREDENTIALS) or base64 (…_B64, avoids newline issues).
+      - key: GOOGLE_DOCAI_CREDENTIALS_B64
+        sync: false
+      - key: GOOGLE_DOCAI_PROJECT_ID
+        sync: false
+      - key: GOOGLE_DOCAI_LOCATION
+        value: us
+      - key: GOOGLE_DOCAI_PROCESSOR_ID
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
       # Fill these in the dashboard when you wire the rest:
       # NOTIFY_ADMINS, MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, CLICKUP_API_TOKEN
       # SharePoint one-way sync (Pipeline Drive mirror — docs/SHAREPOINT-POLICY.md):
