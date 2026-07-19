@@ -421,7 +421,13 @@ function CompRow({ c }) {
     <>
       <tr style={{ borderTop: '1px solid var(--line-soft,#EFEADD)', background: c.is_subject ? 'var(--paper,#F6F3EC)' : undefined, cursor: adj.length ? 'pointer' : 'default' }} onClick={() => adj.length && setOpen((v) => !v)}>
         <td style={td}>{c.is_subject ? 'Subj' : c.seq}</td>
-        <td style={td}>{or(c.address)}{c.city ? `, ${c.city} ${c.state || ''}` : ''}{adj.length ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
+        <td style={td}>{or(c.address)}{c.city ? `, ${c.city} ${c.state || ''}` : ''}
+          {c.sale_status && c.sale_status !== 'closed' && (
+            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', border: '1px solid var(--gold,#AE8746)', borderRadius: 4, padding: '0 4px' }}>
+              {c.sale_status === 'pending' ? 'Pending' : 'Active'}
+            </span>
+          )}
+          {adj.length ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
         <td style={td}>{or(c.proximity)}</td>
         <td style={{ ...td, textAlign: 'right' }}>{c.gla ? Number(c.gla).toLocaleString('en-US') : '—'}</td>
         <td style={{ ...td, textAlign: 'center' }}>{cq}</td>
@@ -471,7 +477,10 @@ function CompHead() {
 // whether the value sits inside the range. This is computed WITHIN one grid, so an As-Is value is
 // never checked against ARV comps and vice-versa (the correctness the two-grid split delivers).
 function gridSupport(rows, value) {
-  const adj = rows.map((c) => Number(c.adjusted_price)).filter((n) => Number.isFinite(n) && n > 0);
+  // Bracket against CLOSED sales only — an active/pending listing's adjusted price is off an asking
+  // price, not a settled sale, so it never sets the range (matches the backend review checks).
+  const closedRows = rows.filter((c) => c.sale_status == null || c.sale_status === 'closed');
+  const adj = closedRows.map((c) => Number(c.adjusted_price)).filter((n) => Number.isFinite(n) && n > 0);
   if (!adj.length) return null;
   const s = [...adj].sort((a, b) => a - b);
   const median = s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;

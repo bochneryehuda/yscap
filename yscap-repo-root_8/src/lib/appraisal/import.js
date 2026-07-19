@@ -121,11 +121,11 @@ async function importAppraisalTx(db, {
         `INSERT INTO appraisal_comparables
            (appraisal_id, seq, is_subject, address, city, state, zip, proximity, sale_price, adjusted_price,
             gla, sale_date, condition_uad, quality_uad, days_on_market, price_per_gla,
-            net_adjustment, net_adj_pct, gross_adj_pct, adjustments, comp_set)
-         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+            net_adjustment, net_adj_pct, gross_adj_pct, adjustments, comp_set, sale_status)
+         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
         [appraisalId, c.seq, c.address, c.city, c.state, c.zip, c.proximity, c.salePrice, c.adjustedPrice,
          c.gla, c.saleDate, c.conditionUad, c.qualityUad, c.dom == null ? null : String(c.dom), c.pricePerGla,
-         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || []), c.comp_set || 'unknown']);
+         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || []), c.comp_set || 'unknown', c.saleStatus || 'closed']);
     }
   }
 

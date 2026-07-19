@@ -201,6 +201,17 @@ function compGrid(c) {
   return out;
 }
 
+// A comp's sale status from its data-source text. Returns 'active' / 'pending' when the source
+// EXPLICITLY marks a listing (MLS ACTIVE, pending, under contract, expired, for sale) — else
+// 'closed' (a settled sale, the default the appraiser lists). Never guessed: only an explicit
+// listing marker demotes a comp out of the closed pool.
+function saleStatus(c) {
+  const t = ((clean(X.attr(c, 'DataSourceDescription')) || '') + ' ' + (clean(X.attr(c, 'DataSourceVerificationDescription')) || '')).toLowerCase();
+  if (/\b(active|for\s*sale|listing|expired|withdrawn|cancell?ed)\b/.test(t)) return 'active';
+  if (/\b(pending|under\s*contract|u\/c|contingent)\b/.test(t)) return 'pending';
+  return 'closed';
+}
+
 function comparables(root) {
   const all = X.findAll(root, 'COMPARABLE_SALE');
   const subject0 = all.find((c) => X.attr(c, 'PropertySequenceIdentifier') === '0') || null;
@@ -219,6 +230,12 @@ function comparables(root) {
       state: upState(X.attr(loc, 'PropertyState')),
       zip: zip(X.attr(loc, 'PropertyPostalCode')),
       proximity: clean(X.attr(loc, 'ProximityToSubjectDescription')),
+      // A comp's PropertySalesAmount holds the LIST/asking price on an active or pending listing —
+      // NOT a closed sale. The review checks + scoring must not count a listing as a settled comp
+      // (it inflates the "closed comps" pool and pollutes the implied-value median with an asking
+      // price). saleStatus is 'active'/'pending' ONLY when the data source explicitly says so;
+      // everything else is a closed sale (the appraiser marks listings — never guessed).
+      saleStatus: saleStatus(c),
       salePrice: money(X.attr(c, 'PropertySalesAmount')),
       adjustedPrice: money(X.attr(c, 'AdjustedSalesPriceAmount')),
       netAdjustment: toNum(X.attr(c, 'SalePriceTotalAdjustmentAmount')),

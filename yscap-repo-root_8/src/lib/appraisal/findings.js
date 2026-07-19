@@ -268,7 +268,10 @@ function computeFindings(appraisal, file, opts = {}) {
   //   research — they inform the underwriter, they never block clear-to-close and never
   //   change the file). Each fires ONLY when the data it needs was actually read. ----
   const comps = A.comparables || [];
-  const closed = comps.filter((c) => num(c.salePrice) != null);
+  // The CLOSED pool excludes active/pending listings — their "sale price" is an asking price, not
+  // a settled sale, so they must not count toward pool adequacy or set the value bracket.
+  const isClosed = (c) => c.saleStatus == null || c.saleStatus === 'closed';
+  const closed = comps.filter((c) => num(c.salePrice) != null && isClosed(c));
 
   // 14. Comp pool adequacy — a thin closed-sale pool weakens the value opinion.
   if (comps.length > 0 && closed.length < o.minClosedComps) {
@@ -325,8 +328,8 @@ function computeFindings(appraisal, file, opts = {}) {
           actions: ['acknowledge', 'dismiss', 'request_revision'] }));
         return;                                                 // out of range → don't ALSO flag "above the median"
       }
-      // within range but materially above what THIS grid's comps imply (median adjusted price)
-      const implied = compImpliedValue({ comps: (A.comparables || []).filter((c) => c.comp_set === set), subjectGla: A.subject.gla });
+      // within range but materially above what THIS grid's CLOSED comps imply (median adjusted)
+      const implied = compImpliedValue({ comps: (A.comparables || []).filter((c) => c.comp_set === set && isClosed(c)), subjectGla: A.subject.gla });
       if (implied && value > implied.median * (1 + o.valueVsCompsPct / 100)) {
         const overPct = Math.round(((value - implied.median) / implied.median) * 100);
         out.push(finding({ code: 'value_vs_comps', severity: 'warning', field: 'value', grid: label,
