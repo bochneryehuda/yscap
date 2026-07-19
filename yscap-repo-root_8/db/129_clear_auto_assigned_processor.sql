@@ -15,10 +15,15 @@
 -- This migration cleans up the damage the root already did on EXISTING files: it
 -- clears processor_id where it points at Lisa Katz UNLESS an admin genuinely picked
 -- her through the /assign endpoint (which leaves an 'assign_processor' audit row).
--- Deliberate picks are preserved; every automatic/mirrored assignment is cleared and
--- audited. The db/103 trigger (trg_sync_primary_assignee) fires on the processor_id
--- change and retires her primary application_assignees row in lock-step, so her file
--- ACCESS is revoked too — not just the label.
+-- Note on scope: a processor picked at CREATE time (the staff New-File dropdown)
+-- emits only a 'create_application' audit, which is audit-INDISTINGUISHABLE from the
+-- old "creator becomes processor" auto-assign — so a create-time Lisa is cleared too.
+-- That is intended: Lisa is the DRAW coordinator, never a legitimate file processor,
+-- so a deliberate create-time pick of her is not expected to exist, and any clear is
+-- audited (below) + reversible (an admin re-picks via /assign). The db/103 trigger
+-- (trg_sync_primary_assignee) fires on the processor_id change and retires her primary
+-- application_assignees row in lock-step, so her file ACCESS is revoked too — not just
+-- the label.
 --
 -- Idempotent: a second run finds nothing to clear (processor_id is already NULL) and
 -- writes no further audit rows. Deterministic; scoped to Lisa only.
