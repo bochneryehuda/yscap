@@ -343,3 +343,83 @@ Read path already validated live. Then: dry-run push asserting exact bodies (bud
 matches, partner+coordinator resolve, explosion names correct); reconcile match report over the real
 35; unit tests (transforms, explosion, crosswalk bind, reverse reconcile, money math, every guard);
 one guarded live smoke on a single file (write → re-GET → confirm persisted); two-audit-agent gate.
+
+---
+
+## 11. Error-handling & manual-review machine (industry-hardened)
+
+Grounded in a failure-mode study of dual-write/financial-sync and construction-draw integrations
+(Built, Rabbet, Land Gorilla; Stripe idempotency; Modern Treasury/Shopify money; Confluent/Formance
+reconciliation; entity-resolution best practice). This integration is a **dual-write across a money
+boundary with a fan-out transform and a reconciliation read-back** — the highest-risk shape — so the
+machine below is mandatory. Most of it already exists in the repo and is reused.
+
+### 11.1 Architecture (reuse what the ClickUp/SharePoint sync already proves)
+- **Outbox, not two live writes.** No request path writes our DB *and* Sitewire together. The
+  business change enqueues an outbox job (`sync_queue`, `target='sitewire'`); a relay drains it with
+  retries. Converts two-system atomicity into one ACID write + a retryable async push.
+- **Idempotency keys + natural-key uniqueness.** Every write carries a *deterministic* key from
+  `(application_id, sitewire_budget_id, sow_line_key, section_token, op)` — the SAME key on every
+  retry of the same logical op — plus the crosswalk's unique constraints as a second line of defense,
+  so a timed-out-then-retried create can never duplicate a job item.
+- **Append-only journal.** `sitewire_write_log` records every push/pull: idempotency key, request,
+  response, state delta, origin, sequence (SSN/PII never applicable here, but masked if ever). Money
+  is corrected only by new offsetting ledger entries, never by editing a row.
+- **Park-for-human is a first-class state.** `sync_review_queue` rows (with resolution actions) are
+  fed by every guard below. Nothing ambiguous is auto-resolved; nothing is silently dropped.
+- **Webhooks + polling backstop.** No Sitewire webhooks exist → we **poll on a durable watermark**
+  (`sync_runtime_state`) AND run a scheduled **reconciliation job** that compares counts/keys/money
+  totals against Sitewire's authoritative read and backfills gaps / parks mismatches.
+
+### 11.2 System-of-record per field (so split-brain can't persist)
+- **Sitewire authoritative:** draw `status`, `draw_events`, inspections/media, `requested_cents`,
+  and (for legacy budgets) the job-item list.
+- **PILOT authoritative:** the **managed** budget/job-items (we own the explosion), the money ledger
+  (fee, net release, dates, fulfillment), and the SOW roll-up.
+- Reconciliation always has a defined winner per field; a disagreement on a PILOT-owned field where
+  Sitewire changed → review (someone edited our managed budget in Sitewire).
+
+### 11.3 Invariants enforced at WRITE time (reject, never clamp)
+1. `Σ(unit job items for a cell) == cell total` (residual absorption puts leftover cents on unit 1).
+2. `Σ(all job items) == requiredRehabBudget()` (frozen budget) — pre- and post-PATCH.
+3. `cumulative_drawn(line) ≤ budgeted(line)` and `Σ(lines) ≤ loan` — over-funding blocked.
+4. `net_release == approved − fee` (retainage = 0 for now; the identity is explicit so adding
+   retainage later is one term).
+5. Money is **integer cents end-to-end**, parsed at the boundary; one rounding mode; never a float in
+   a ledger field; equality never on floats.
+6. **Monotonic sequence** per draw/job item (apply an inbound event only if newer; buffer/park older)
+   and **optimistic version** on managed-budget writes (write-if-unchanged) — no lost updates.
+7. **Echo suppression:** every managed job item stores `last_response_hash`; a pulled value equal to
+   what we last wrote is our own echo → ignored, never re-pushed (no ping-pong).
+
+### 11.4 Additional guards (industry failure → our guard)
+| # | Failure (source class) | Guard |
+|---|---|---|
+| G-DUP | retry after a timed-out create duplicates a job item | idempotency key + crosswalk unique key → the retry updates, never re-creates |
+| G-ECHO | our push read back as an external change | origin tag + `last_response_hash` fingerprint → suppress no-op |
+| G-ORDER | out-of-order draw events overwrite newer state | monotonic sequence per draw; park older-than-seen |
+| G-LOST | concurrent re-explode vs manual edit clobber | optimistic version on managed-budget writes |
+| G-OVERFUND | cumulative draws exceed line/loan budget | hard invariant `drawn ≤ budgeted`; park the offending request |
+| G-INSPECT | release marked without a verified inspection | inspection is the funding gate; no release state without Sitewire inspection record |
+| G-MONEYINV | fee/net computed on wrong base or double-subtracted | write-time `net = approved − fee` invariant; components stored separately |
+| G-CENTS | float money / split loses a penny | integer cents + largest-remainder residual absorption; `Σ==whole` asserted |
+| G-RAW | 2xx that silently coerced/truncated a value | **read-after-write**: re-GET and assert money/mapping fields match what we sent |
+| G-422 | business-rule 422 retried or swallowed | classify: 5xx/429/408 retry (idempotent only); **422/400 → park**, never retry-loop |
+| G-SCHEMA | Sitewire changes a field/type/precision, still 200 | validate every inbound payload against an explicit schema at the boundary; park on drift, never default-to-null |
+| G-FUZZY | matching a legacy hand-entered line by messy name | deterministic-first (loan number, job-item id); fuzzy only confidence-banded — high→auto, mid→human confirm, low→reject; persist confirmed mappings |
+| G-CHURN | a confirmed match flips after an upstream rename | a changed match on a confirmed pair is an exception to **park**, not an auto-update |
+| G-VERSION | draw computed against a stale/superseded budget | stamp each draw with the budget version; a change order re-explodes and re-asserts before the next draw; refuse draws on a superseded version |
+| G-DEGRADE | Sitewire slow/erroring → worker pileup | circuit breaker per endpoint + hard timeouts + backoff-with-jitter + retry budget → dead-letter + review |
+
+(These compose with the 22 field/crosswalk guards in §7.)
+
+### 11.5 Data-model additions for the machine
+- `sync_queue` reused as the **outbox** (widen `target`); `sitewire_write_log` = **journal**;
+  `sync_review_queue` = **park queue**; `sync_runtime_state` = **watermark**; `sync_locks` =
+  cross-process serialization.
+- `sitewire_property_links.budget_version` (bumped on every managed re-explode) +
+  `sitewire_draws.budget_version_at_draw` (stamp) → G-VERSION.
+- `sitewire_draws.last_sequence` (monotonic) → G-ORDER; `sitewire_job_item_links.last_response_hash`
+  → G-ECHO; idempotency key persisted on the outbox job + journal → G-DUP.
+- inbound dedupe by `(sitewire_draw_id, updated_at/sequence)` so at-least-once delivery never
+  double-applies.
