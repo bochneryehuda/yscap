@@ -1,0 +1,137 @@
+'use strict';
+/**
+ * Appraisal-desk shared flow — the ONE place that turns an appraisal XML string into a stored
+ * appraisal + PILOT findings + the two internal conditions + the advisory OCR note. Both the
+ * staff appraisal route (POST /api/appraisal/:id/import) AND the appraisal-documents condition
+ * (an XML dropped on its "Appraisal data file (XML)" slot auto-imports) call this, so the import
+ * behaves identically no matter where the file comes from.
+ *
+ * Never overwrites the loan file (the blank-only shield lives in importAppraisal); the advisory
+ * OCR only ever writes the verify-As-Is condition note. Materializing the two conditions uses the
+ * canonical template_id insert (mirrors src/lib/vesting.js) — the templates are auto_apply='manual'
+ * so they only attach here, on demand.
+ */
+const db = require('../../db');
+const storage = require('../storage');
+const { importAppraisal } = require('./import');
+const { ocrAsIsCandidate, buildOcrNote } = require('./ocr');
+const { extractPhotos } = require('./photos');
+const X = require('./xml');
+
+// Today as a 'YYYY-MM-DD' string from the DB (NY) — never new Date() in a date path.
+async function todayNY() {
+  try { return (await db.query(`SELECT to_char(now() AT TIME ZONE 'America/New_York','YYYY-MM-DD') d`)).rows[0].d; }
+  catch (_) { return null; }
+}
+
+// Materialize an internal appraisal condition from its (auto_apply='manual') template. Idempotent
+// — dedups on (application_id, template_id), exactly like src/lib/vesting.js ensureLlcCondition.
+async function ensureAppraisalCondition(appId, code) {
+  await db.query(
+    `INSERT INTO checklist_items
+       (template_id, scope, label, borrower_label, audience, item_kind, role_scope,
+        phase, hint, borrower_hint, is_gate, is_milestone, sort_order, tool_key,
+        clickup_field_id, tpr_exclude, created_by_kind, is_required, application_id)
+     SELECT t.id, t.scope, t.label, t.borrower_label, t.audience, t.item_kind,
+            COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
+            COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false),
+            COALESCE(t.sort_order,455), t.tool_key, t.clickup_field_id,
+            COALESCE(t.tpr_exclude,false), 'system', COALESCE(t.is_required,true), $1
+       FROM checklist_templates t
+      WHERE t.code=$2 AND t.is_active=true
+        AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.application_id=$1 AND ci.template_id=t.id)`,
+    [appId, code]);
+}
+
+// Fire-and-forget advisory OCR: read a candidate As-Is off the PDF and attach it to the
+// verify-As-Is condition as an [auto]-guarded note. Never writes the loan file, never throws.
+function fireOcrAdvisory(appId, pdfB64, importedBy) {
+  if (!pdfB64) return;
+  ocrAsIsCandidate({ pdfBase64: pdfB64 })
+    .then(async (adv) => {
+      await db.query(
+        `UPDATE checklist_items ci
+            SET notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%' THEN $2 ELSE ci.notes END
+           FROM checklist_templates t
+          WHERE ci.template_id = t.id AND t.code = 'appraisal_as_is_verify' AND ci.application_id = $1`,
+        [appId, buildOcrNote(adv)]);
+      if (importedBy) {
+        try {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('staff',$1,'appraisal_ocr_advisory','application',$2,$3)`,
+            [importedBy, appId, JSON.stringify({ attempted: !!adv.attempted, candidate: adv.candidate != null ? adv.candidate : null, confidence: adv.confidence || null })]);
+        } catch (_) { /* audit best-effort */ }
+      }
+    })
+    .catch((e) => console.error('[appraisal] OCR advisory failed (non-fatal):', e && e.message));
+}
+
+// Extract the subject + comp photos from the PDF, store each as a borrower-visible image
+// document, and record it on appraisal_photos. Supersedes any earlier appraisal's extracted
+// photos so a re-import doesn't pile up stale images. Returns the number stored. Awaitable so it
+// can be tested; the caller (firePhotoExtraction) runs it fire-and-forget after the import.
+async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
+  if (!appraisalId || !pdfB64) return 0;
+  const res = await extractPhotos(pdfB64);
+  if (!res.attempted || !res.photos.length) return 0;
+  const app = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
+  const borrowerId = app ? app.borrower_id : null;
+  // Retire images from any earlier appraisal on this file (keep only the current one's set).
+  try {
+    await db.query(
+      `UPDATE documents SET is_current=false
+        WHERE doc_kind='appraisal_photo' AND application_id=$1
+          AND id IN (SELECT document_id FROM appraisal_photos ap JOIN appraisals a ON a.id=ap.appraisal_id
+                      WHERE a.application_id=$1 AND a.id<>$2)`, [appId, appraisalId]);
+  } catch (_) { /* best-effort */ }
+  let stored = 0;
+  for (const ph of res.photos) {
+    try {
+      const s = await storage.save(ph.png, { filename: `appraisal-photo-${ph.seq + 1}.png` });
+      const doc = await db.query(
+        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility)
+         VALUES ($1,$2,$3,'image/png',$4,$5,$6,'staff',$7,'appraisal_photo','borrower') RETURNING id`,
+        [appId, borrowerId, `appraisal-photo-${ph.seq + 1}.png`, ph.png.length, s.provider, s.ref, importedBy || null]);
+      await db.query(
+        `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height) VALUES ($1,$2,$3,$4,$5)`,
+        [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height]);
+      stored++;
+    } catch (_) { /* per-photo best-effort */ }
+  }
+  return stored;
+}
+
+// Fire-and-forget wrapper: runs AFTER the import returns so it never slows the officer down.
+function firePhotoExtraction(appraisalId, appId, pdfB64, importedBy) {
+  if (!appraisalId || !pdfB64) return;
+  extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy)
+    .catch((e) => console.error('[appraisal] photo extraction failed (non-fatal):', e && e.message));
+}
+
+/**
+ * Run the full desk import from an XML string. Returns importAppraisal's result
+ * ({ ok, appraisalId, summary, needsAsIsCondition, warnings, ... } or { ok:false, error }).
+ * @param {{appId:string, xml:string, importedBy?:string, xmlDocumentId?:string,
+ *          pdfDocumentId?:string, pdfBase64?:string, today?:string}} args
+ */
+async function runAppraisalImport(args) {
+  const { appId, xml, importedBy, xmlDocumentId, pdfDocumentId, pdfBase64 } = args;
+  const out = await importAppraisal(db, {
+    applicationId: appId, xml, importedBy: importedBy || null,
+    sourceXmlDocumentId: xmlDocumentId || null, pdfDocumentId: pdfDocumentId || null,
+    today: args.today || (await todayNY()),
+  });
+  if (!out.ok) return out;
+  await ensureAppraisalCondition(appId, 'appraisal_review_cleared');
+  let embedded = null; try { embedded = X.embeddedPdfBase64(xml); } catch (_) { embedded = null; }
+  const pdfB64 = pdfBase64 || embedded;
+  if (out.needsAsIsCondition) {
+    await ensureAppraisalCondition(appId, 'appraisal_as_is_verify');
+    fireOcrAdvisory(appId, pdfB64, importedBy);
+  }
+  firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy);
+  return out;
+}
+
+module.exports = { ensureAppraisalCondition, runAppraisalImport, extractAndStorePhotos, todayNY };

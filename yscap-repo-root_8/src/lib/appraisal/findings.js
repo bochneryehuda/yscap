@@ -44,6 +44,23 @@ function fileAddress(file) {
   if (typeof pa === 'string') { try { return JSON.parse(pa); } catch { return { line: pa }; } }
   return pa;
 }
+// The file's best full street line. The portal stores the street under DIFFERENT keys in
+// different shapes: `line1` (the normalized shape from src/lib/address.js + intake), `oneLine`
+// (the display string the app renders), or `street`/`line`/`address` in older/other shapes.
+// Read them ALL (mirroring app-v2 addrLine), then compose with city/state/zip — otherwise a
+// file whose street lives in `line1`/`oneLine` collapses to just "City, ST" and fires a false
+// address-mismatch fatal.
+function fileAddrLine(file) {
+  const fa = fileAddress(file);
+  if (!fa) return null;
+  if (typeof fa === 'string') return fa;
+  const street = fa.line1 || fa.street || fa.line || fa.address || fa.address1 || '';
+  let line = fa.oneLine || '';
+  if (!line || (street && !normAddr(line).includes(normAddr(street)))) {
+    line = [street, fa.city, fa.state, fa.zip].filter(Boolean).join(', ');
+  }
+  return line || null;
+}
 // Map the file's property_type text to a class key. Mirrors src/lib/mismo/enums.js
 // (unitsHint/toMismoAttachment) so the appraisal + loan-interchange modules agree on
 // the portal's property-type vocabulary. Returns null when unknown (never guesses).
@@ -71,10 +88,15 @@ function computeFindings(appraisal, file, opts = {}) {
   const v = A.values || {};
 
   // ---- 1. Identity: address ----
-  const fa = fileAddress(file);
-  const faLine = fa && (fa.line || fa.street || [fa.address, fa.city, fa.state].filter(Boolean).join(', '));
-  if (A.subject.address && faLine && normAddr(A.subject.address).split(' ')[0] &&
-      !normAddr(faLine).includes(normAddr(A.subject.address).split(' ').slice(0, 2).join(' '))) {
+  // Compare on the appraisal's house-number + first street word (e.g. "76 thompson"). Only
+  // fire when the appraisal actually carries a street number, and only when the file's full
+  // line (all address-key shapes) does not contain that key — so a differently-keyed but
+  // matching file address never triggers a false "wrong property" fatal.
+  const faLine = fileAddrLine(file);
+  const subjStreet = normAddr(A.subject.address);
+  const subjKey = subjStreet.split(' ').slice(0, 2).join(' ');
+  if (subjStreet && /\d/.test(subjStreet) && faLine && subjKey &&
+      !normAddr(faLine).includes(subjKey)) {
     out.push(finding({ code: 'address_mismatch', severity: 'fatal', field: 'address',
       appraisalValue: [A.subject.address, A.subject.city, A.subject.state].filter(Boolean).join(', '),
       fileValue: faLine,
