@@ -273,6 +273,9 @@ module.exports = {
                       .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     httpTimeoutMs:  parseInt(process.env.DOCUSIGN_HTTP_TIMEOUT_MS || '30000', 10),
     tokenCacheSec:  parseInt(process.env.DOCUSIGN_TOKEN_CACHE_SEC || '3300', 10), // 55 min (< 1h token life)
+    // DB-backed send circuit breaker: more than this many envelopes sent in a
+    // rolling 10 min opens the breaker (a runaway loop mailing borrowers stops hard).
+    maxSends10min:  parseInt(process.env.DOCUSIGN_MAX_SENDS_10MIN || '100', 10),
   },
   // Plaid (bank / asset verification):
   plaid: {
