@@ -35,9 +35,12 @@ const NEEDS_IDENTIFIER = new Set(['Reissue', 'Upgrade', 'Unmerge']);
 
 function badRequest(msg) { const e = new Error(msg); e.status = 400; return e; }
 
-/** Escape a value for use inside an XML attribute (double-quoted). */
+/** Escape a value for use inside an XML attribute (double-quoted). Also strips
+ * XML-invalid control chars (a raw NUL etc. would make Xactus reject the XML). */
 function esc(v) {
   return String(v == null ? '' : v)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -45,9 +48,12 @@ function esc(v) {
     .replace(/'/g, '&apos;');
 }
 
-/** SSN → 9 digits (the request carries the raw 9 digits). */
+/** SSN → 9 digits (the request carries the raw 9 digits). A value with any char
+ * other than digits and common separators is a typo → reject (don't "fix" it). */
 function ssnDigits(v) {
-  const d = String(v == null ? '' : v).replace(/[^\d]/g, '');
+  const s = String(v == null ? '' : v);
+  if (/[^\d\-.\s()]/.test(s)) return null;
+  const d = s.replace(/[^\d]/g, '');
   return d.length === 9 ? d : null;
 }
 

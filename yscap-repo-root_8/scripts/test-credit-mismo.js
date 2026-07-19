@@ -163,5 +163,20 @@ throws('resp HTML rejected', () => P.parseCreditResponse('<html><body>error 500<
 throws('resp truncated rejected', () => P.parseCreditResponse('<?xml version="1.0"?><RESPONSE_GROUP><RESPONSE>'));
 throws('resp empty rejected', () => P.parseCreditResponse('   '));
 
+// entity decoding on extracted names/errors (audit nit 2) — keeps the parser's
+// XXE backstop but reads "A&B" / "O'Neil" correctly for the mixed-file check
+const entXml = successXml
+  .replace('_FirstName="NICKIE" _MiddleName="C" _LastName="GREEN"', '_FirstName="O&apos;Neil" _LastName="A&amp;B &lt;Co&gt;"');
+const ent = P.parseCreditResponse(entXml);
+eq('entity-decoded lastName', ent.borrowers[0].lastName, 'A&B <Co>');
+eq('entity-decoded firstName', ent.borrowers[0].firstName, "O'Neil");
+const entErr = P.parseCreditResponse(errXml.replace('Incorrect password supplied', 'Smith &amp; Co &lt;fail&gt;'));
+ok('entity-decoded error text', entErr.errors.some((e) => (e.texts || []).includes('Smith & Co <fail>')));
+
+// SSN with a stray letter is rejected (audit nit 3), not silently "fixed"
+throws('req ssn with letter throws', () => R.buildCreditRequest({
+  requestingPartyName: 'A', submittingPartyName: 'B', lenderCaseIdentifier: 'L', requestId: 'r',
+  product: 'prequal', action: 'Submit', borrowers: [borrower({ ssn: '12a-45-6789' })] }));
+
 console.log(`\ncredit-mismo: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

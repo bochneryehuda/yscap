@@ -39,9 +39,20 @@ const PARSER_OPTS = {
 
 function badResponse(msg, code) { const e = new Error(msg); e.status = 502; if (code) e.creditCode = code; return e; }
 
-const A = (node, name) => (node && node['@' + name] != null ? String(node['@' + name]) : null);
+// We keep processEntities:false (XXE/entity-expansion backstop), so the parser
+// leaves the 5 predefined XML entities literal in extracted strings. Decode ONLY
+// those 5 on the strings we surface (names, error text) so a name like "A&B" or
+// "O'Neil" reads correctly (a still-escaped name would fail a mixed-file
+// name-match). Decode &amp; LAST so "&amp;lt;" → "&lt;", not "<".
+function unescapeXml(s) {
+  if (s == null) return s;
+  return String(s)
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+const A = (node, name) => (node && node['@' + name] != null ? unescapeXml(String(node['@' + name])) : null);
 const arr = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);
-const first = (x) => (Array.isArray(x) ? x[0] : x);
 
 /** Parse a MISMO 2.3.1 credit response. Throws (fail closed) on anything that
  * isn't a clean, complete credit XML. Returns a structured result:
@@ -81,7 +92,7 @@ function parseCreditResponse(xml) {
     for (const em of arr(creditResponse.CREDIT_ERROR_MESSAGE)) {
       errors.push({
         layer: 'credit', code: A(em, '_Code'), sourceType: A(em, '_SourceType'),
-        texts: arr(em._Text).map((t) => (t && t.__cdata != null ? String(t.__cdata) : String(t))).filter(Boolean),
+        texts: arr(em._Text).map((t) => unescapeXml(t && t.__cdata != null ? String(t.__cdata) : String(t))).filter(Boolean),
       });
     }
   }
