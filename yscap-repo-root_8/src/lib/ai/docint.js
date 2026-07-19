@@ -60,6 +60,10 @@ async function pollResult(operationUrl, deadline) {
     } finally {
       clearTimeout(timer);
     }
+    // Honor throttling / transient server errors — keep polling until the deadline
+    // rather than misreading a 429 body as "still running" and spinning to timeout.
+    if (r.status === 429 || r.status >= 500) continue;
+    if (!r.ok) return { ok: false, reason: `the reader errored while reading (HTTP ${r.status})` };
     const j = await r.json().catch(() => ({}));
     const status = (j.status || '').toLowerCase();
     if (status === 'succeeded') return { ok: true, result: j.analyzeResult || {} };
@@ -112,7 +116,7 @@ async function read({ buffer, base64 } = {}) {
   if (r.status !== 202) {
     const j = await r.json().catch(() => ({}));
     const msg = (j.error && j.error.message) || `HTTP ${r.status}`;
-    return { ok: false, reason: `the reader rejected this document (${msg})` };
+    return { ok: false, reason: `the reader rejected this document (${msg})`, retriable: r.status === 429 || r.status >= 500 };
   }
   const operationUrl = r.headers.get('operation-location');
   if (!operationUrl) return { ok: false, reason: 'the reader did not return a result location' };

@@ -338,5 +338,8 @@ module.exports = {
     key:        process.env.AZURE_OPENAI_KEY,
     deployment: (process.env.AZURE_OPENAI_DEPLOYMENT || '').trim(),
     apiVersion: (process.env.AZURE_OPENAI_API_VERSION || '2025-04-01-preview').trim(),
+    // GPT-5 reasoning depth for extraction — 'minimal'|'low'|'medium'|'high'. Low keeps
+    // hidden reasoning from consuming the output budget; raise only if accuracy needs it.
+    reasoningEffort: (process.env.AZURE_OPENAI_REASONING_EFFORT || 'low').trim(),
   },
 };

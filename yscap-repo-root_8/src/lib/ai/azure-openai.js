@@ -31,7 +31,10 @@
 const cfg = require('../../config');
 
 const DEFAULT_API_VERSION = '2025-04-01-preview';
-const DEFAULT_MAX_TOKENS = 8000;
+// GPT-5 spends hidden reasoning tokens out of this same budget, so keep it generous
+// and default reasoning effort LOW for extraction (we want reading, not deliberation).
+const DEFAULT_MAX_TOKENS = 16000;
+const DEFAULT_REASONING = 'low';
 
 /** True when endpoint + key + deployment are configured (surfaced on /api/health). */
 function available() {
@@ -61,8 +64,13 @@ async function complete({ system, userContent, maxTokens, responseFormat, timeou
   messages.push({ role: 'user', content: userContent });
 
   // GPT-5 uses max_completion_tokens (not max_tokens) and only the default
-  // temperature — so we send neither temperature nor max_tokens.
-  const body = { messages, max_completion_tokens: maxTokens || DEFAULT_MAX_TOKENS };
+  // temperature — so we send neither temperature nor max_tokens. reasoning_effort
+  // keeps hidden reasoning from eating the output budget on extraction.
+  const body = {
+    messages,
+    max_completion_tokens: maxTokens || DEFAULT_MAX_TOKENS,
+    reasoning_effort: (cfg.azureOpenai && cfg.azureOpenai.reasoningEffort) || DEFAULT_REASONING,
+  };
   if (responseFormat) body.response_format = responseFormat;
 
   const ac = new AbortController();
@@ -88,16 +96,27 @@ async function complete({ system, userContent, maxTokens, responseFormat, timeou
 
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
+    // A PROMPT-side content filter returns HTTP 400 with a content_filter code — route
+    // it to human review, not a retry (distinct from a transient error).
+    const code = (j.error && (j.error.code || (j.error.innererror && j.error.innererror.code))) || '';
+    if (/content_filter|ResponsibleAIPolicy/i.test(String(code))) {
+      return { ok: false, reason: 'this document was blocked by a content filter — needs manual review', blocked: true };
+    }
     const msg = (j.error && j.error.message) || `HTTP ${r.status}`;
-    return { ok: false, reason: `the analyzer reported an error (${msg})` };
+    return { ok: false, reason: `the analyzer reported an error (${msg})`, retriable: r.status === 429 || r.status >= 500 };
   }
   const choice = (j.choices || [])[0] || {};
   const msg = choice.message || {};
   // Structured outputs can return a refusal instead of content; Azure content filters
   // surface as finish_reason 'content_filter'. Treat both as a clean "declined".
-  if (msg.refusal) return { ok: false, reason: `the analyzer declined: ${msg.refusal}` };
+  if (msg.refusal) return { ok: false, reason: `the analyzer declined: ${msg.refusal}`, blocked: true };
   if (choice.finish_reason === 'content_filter') {
-    return { ok: false, reason: 'the analyzer was blocked by a content filter on this document' };
+    return { ok: false, reason: 'the analyzer was blocked by a content filter on this document', blocked: true };
+  }
+  // Hit the token ceiling before finishing — under strict JSON this yields invalid/partial
+  // output. Surface as retriable "truncated" so extract() can retry with a bigger budget.
+  if (choice.finish_reason === 'length') {
+    return { ok: false, reason: 'the analyzer ran out of room before finishing (truncated)', truncated: true };
   }
   const text = typeof msg.content === 'string' ? msg.content.trim() : '';
   if (!text) return { ok: false, reason: 'the analyzer returned an empty result' };
@@ -116,8 +135,10 @@ function buildUserContent(a = {}) {
     text += `\n\n---\nText read from this document by the OCR reader (may be imperfect):\n"""\n${String(a.ocrText).slice(0, 120000)}\n"""`;
   }
   parts.push({ type: 'text', text });
-  if (a.imageBase64) {
-    parts.push({ type: 'image_url', image_url: { url: `data:${a.imageMime || 'image/png'};base64,${a.imageBase64}` } });
+  // Only attach a REAL image — Azure chat rejects application/pdf as image_url. A PDF
+  // scan (common for IDs) rides on the OCR text instead of a broken image part.
+  if (a.imageBase64 && /^image\//i.test(a.imageMime || '')) {
+    parts.push({ type: 'image_url', image_url: { url: `data:${a.imageMime};base64,${a.imageBase64}` } });
   }
   return parts;
 }
@@ -131,12 +152,12 @@ function buildUserContent(a = {}) {
 async function extract({ system, instructions, schema, ocrText, imageBase64, imageMime, maxTokens } = {}) {
   if (!schema) return { ok: false, reason: 'no extraction shape (schema) was provided' };
   const userContent = buildUserContent({ instructions, ocrText, imageBase64, imageMime });
-  const res = await complete({
-    system,
-    userContent,
-    maxTokens,
-    responseFormat: { type: 'json_schema', json_schema: { name: 'extraction', schema, strict: true } },
-  });
+  const responseFormat = { type: 'json_schema', json_schema: { name: 'extraction', schema, strict: true } };
+  let res = await complete({ system, userContent, maxTokens, responseFormat });
+  // One retry with a bigger budget if the model was truncated mid-JSON.
+  if (!res.ok && res.truncated) {
+    res = await complete({ system, userContent, maxTokens: (maxTokens || DEFAULT_MAX_TOKENS) * 2, responseFormat });
+  }
   if (!res.ok) return res;
   let data;
   try { data = JSON.parse(res.text); }
