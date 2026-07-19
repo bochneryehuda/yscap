@@ -200,6 +200,9 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
           <Row k="Credit report" v={money2(cc.creditFee)} />
           <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
+          {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
+            <Row key={i} k={f.name} v={money2(f.amount)} />
+          ))}
           <Row k="Appraisal (est., POC)" v={money2(cc.appraisalPoc)} />
           <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
           <Row k="Estimated cash to close" v={<strong>{money2(q.cashToClose)}</strong>} />

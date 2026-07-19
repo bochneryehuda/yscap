@@ -264,7 +264,12 @@ function normalize(program, input, ev, ladder) {
   const appraisalFee = numberOverride(input, 'appraisalFee', cd.appraisalFee != null ? cd.appraisalFee : FEES.appraisal);
   const origination = totalLoan > 0 ? round2(totalLoan * origPct) : 0;
   const assignmentExcess = num(s.assignmentExcessOOP) || num(ev.assignment && ev.assignment.excessOOP);
-  const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal);
+  // Admin-managed extra closing fees (e.g. the NY settlement-agent fee) that apply
+  // to this file's state — a real closing cost, so it's part of what's due at
+  // close AND the liquidity to show (owner-directed 2026-07-17).
+  const extraFeeList = pricingSettings.extraFeesForState(cd.extraFees, state);
+  const extraFeesTotal = extraFeeList.reduce((a, f) => a + (num(f.amount) || 0), 0);
+  const closingDueAtClose = round2(origination + lenderFee + creditFee + titleTotal + extraFeesTotal);
   const cashToClose = round2(num(s.downPayment) + assignmentExcess + closingDueAtClose);
   let reserveRequirement = 0;
   let reserveBasis = '';
@@ -327,6 +332,7 @@ function normalize(program, input, ev, ladder) {
       lenderFee,
       creditFee,
       titleAndSettlement: titleTotal,
+      extraFees: extraFeeList.map((f) => ({ name: f.name, amount: round2(num(f.amount)) })),
       dueAtClosing: closingDueAtClose,
       appraisalPoc: appraisalFee,
       totalIncludingPoc: round2(closingDueAtClose + appraisalFee),

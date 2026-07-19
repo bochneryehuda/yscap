@@ -26,7 +26,7 @@
   // /api/pricing-defaults so a company fee/markup change reaches every new term
   // sheet on the marketing generator AND the portal studio. The admin studio
   // fields still override per session; a per-file registration still snapshots.
-  var CO = { markupStd: 0.5, markupGold: 0.5, origStd: 1.25, origGold: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null };
+  var CO = { markupStd: 0.5, markupGold: 0.5, origStd: 1.25, origGold: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [] };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -248,7 +248,7 @@
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
-    var closing = origFee + lenderFee + creditFee + titleCost;      // fees admin-overridable; appraisal is POC (excluded)
+    var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();      // + company extra fees (NY settlement etc.); appraisal is POC (excluded)
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = (s.downPayment || 0) + excessOOP + closing;   // reserve is never brought to the table
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
@@ -267,7 +267,7 @@
       initialPayment: initialPayment, fullPayment: fullPayment, monthlyInterest: monthlyInterest,
       totalCost: displayCost, downPayment: s.downPayment || 0, excessOOP: excessOOP,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
-      closing: closing, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
+      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
       binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
       exitShortfall: R.exitShortfall || 0, cityReview: R.cityReview || null,
@@ -306,7 +306,7 @@
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
-    var closing = origFee + lenderFee + creditFee + titleCost;
+    var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = (s.downPayment || 0) + excessOOP + closing;
     var goldReservePct = R.liquidityPct || 0.05;
@@ -326,7 +326,7 @@
       totalCost: basisPrice + num("construction") + financedIRr,
       downPayment: s.downPayment || 0, excessOOP: excessOOP,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
-      closing: closing, cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
+      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
       liquidity: cashToClose + goldReserve, liquidityPct: goldReservePct,
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
       binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
@@ -560,6 +560,15 @@
   function adminOrigPct(prog) { return adminNum(prog === "gold" ? "tsOrigGold" : "tsOrigStd", prog === "gold" ? CO.origGold : CO.origStd) / 100; }  // fraction
   function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
   function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
+  // Company "extra fees" (e.g. the NY settlement-agent fee) that apply to this
+  // deal's state (empty state = all files). A real closing cost, so it flows into
+  // cash-to-close AND the liquidity to show (owner-directed 2026-07-17).
+  function extraFeeList() {
+    var st = (val("propState") || "").trim().toUpperCase();
+    return (CO.extraFees || []).filter(function (f) { return f && f.name && Number(f.amount) > 0 && (!f.state || String(f.state).toUpperCase() === st); })
+      .map(function (f) { return { name: String(f.name), amount: Number(f.amount) }; });
+  }
+  function extraFeesTotal() { return extraFeeList().reduce(function (a, f) { return a + f.amount; }, 0); }
   function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
   function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(String(e.value).replace(/,/g, "")) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
@@ -659,6 +668,9 @@
     YS.put("rCredit", sized ? YS.fmtUSD2(d.creditFee) : EM);
     YS.put("rAppr", sized ? (YS.fmtUSD2(d.apprFee) + " POC") : EM);
     YS.put("rTitle", (sized && d.titleCost > 0) ? YS.fmtUSD2(d.titleCost) : EM);
+    (function () { var xf = (sized && d.extraFees) ? d.extraFees : [], w = el("rExtraWrap");
+      if (w) { if (xf.length) { w.style.display = ""; var t = xf.reduce(function (a2, f) { return a2 + f.amount; }, 0);
+        YS.put("rExtraLbl", xf.length === 1 ? xf[0].name : "Additional fees"); YS.put("rExtra", YS.fmtUSD2(t)); } else { w.style.display = "none"; } } })();
     YS.put("rCash", sized ? YS.fmtUSD2(d.cashToClose) : EM);
     YS.put("rLiquidity", sized ? YS.fmtUSD2(d.liquidity) : EM);
     YS.put("rTier", d.tierLabel || EM);
@@ -1121,6 +1133,7 @@
       yR = rowIn(xR, colW, "Credit report (avg)", sized ? money2(d.creditFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
+      if (sized && d.extraFees) d.extraFees.forEach(function (f) { yR = rowIn(xR, colW, f.name, money2(f.amount), yR); });
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
       if (d.excessOOP > 0) yR = rowIn(xR, colW, "Assignment over 15% (out of pocket)", money(d.excessOOP), yR);
       yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
@@ -1703,6 +1716,7 @@
             if (d.creditFee != null) CO.credit = Number(d.creditFee);
             if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
             CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
+            CO.extraFees = Array.isArray(d.extraFees) ? d.extraFees : [];
           }
         }).catch(function(){}).then(function(){ seedAdminDefaults(); recompute(); });
       } catch (e) { recompute(); }

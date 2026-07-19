@@ -46,14 +46,18 @@ export default function StaffCompanyPricing() {
   const isAdmin = can('manage_pricing');
   const [data, setData] = useState(null);       // { current, systemDefaults, history }
   const [form, setForm] = useState(toForm(null));
+  const [fees, setFees] = useState([]);         // extra fees: [{ name, amount, state }]
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);         // { ok, text }
 
   const flash = (ok, text) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 7000); };
 
+  const feesFrom = (o) => (Array.isArray(o && o.extraFees) ? o.extraFees : [])
+    .map((f) => ({ name: String(f.name || ''), amount: String(f.amount == null ? '' : f.amount), state: String(f.state || '') }));
+
   const load = () => api.adminPricingGet()
-    .then((d) => { setData(d); setForm(toForm(d.current)); })
+    .then((d) => { setData(d); setForm(toForm(d.current)); setFees(feesFrom(d.current)); })
     .catch((e) => flash(false, e.message || 'could not load pricing settings'));
   useEffect(() => { if (isAdmin) load(); /* eslint-disable-next-line */ }, [isAdmin]);
 
@@ -62,12 +66,22 @@ export default function StaffCompanyPricing() {
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: String(v).replace(/[^0-9.]/g, '') }));
   const cur = data.current || {};
-  const dirty = KEYS.some((k) => String(cur[k] == null ? '' : cur[k]) !== String(form[k] == null ? '' : form[k]));
+  // Fee-list editing (name / amount / state). state '' = every file; a 2-letter
+  // code = that state only. The seeded NY settlement fee is just the first row.
+  const setFee = (i, k, v) => setFees((fs) => fs.map((f, j) => j === i ? {
+    ...f, [k]: k === 'amount' ? String(v).replace(/[^0-9.]/g, '') : k === 'state' ? String(v).toUpperCase().replace(/[^A-Z]/g, '').slice(0, 2) : v,
+  } : f));
+  const addFee = () => setFees((fs) => [...fs, { name: '', amount: '', state: '' }]);
+  const removeFee = (i) => setFees((fs) => fs.filter((_, j) => j !== i));
+  const cleanFees = (arr) => arr.map((f) => ({ name: (f.name || '').trim(), amount: Number(f.amount), state: (f.state || '').toUpperCase() }))
+    .filter((f) => f.name && isFinite(f.amount) && f.amount > 0);
+  const feesDirty = JSON.stringify(cleanFees(fees)) !== JSON.stringify(cleanFees(feesFrom(cur)));
+  const dirty = feesDirty || KEYS.some((k) => String(cur[k] == null ? '' : cur[k]) !== String(form[k] == null ? '' : form[k]));
 
   async function save() {
     setBusy(true);
     try {
-      const body = { note: note.trim() || undefined };
+      const body = { note: note.trim() || undefined, extraFees: cleanFees(fees) };
       for (const k of KEYS) body[k] = form[k] === '' ? null : Number(form[k]);
       await api.adminPricingPut(body);
       setNote('');
@@ -79,6 +93,7 @@ export default function StaffCompanyPricing() {
 
   const loadDefaults = () => {
     setForm(toForm(data.systemDefaults));
+    setFees(feesFrom(data.systemDefaults));
     flash(true, 'Loaded the original system defaults into the form — review them, then Save to apply.');
   };
 
@@ -121,7 +136,35 @@ export default function StaffCompanyPricing() {
           <Field form={form} set={set} k="titleFee" label="Title fee ($)" hint="Blank = auto-estimate per state" />
         </div>
 
-        <div className="field" style={{ marginTop: 6 }}>
+        <h3 style={{ margin: '18px 0 0' }}>Additional fees</h3>
+        <p className="muted small" style={{ margin: '2px 0 8px' }}>
+          Extra closing fees added to cash-to-close and the liquidity to show — on the
+          term sheet, Products &amp; Pricing, and the public tools. Leave <em>State</em> blank
+          to apply to every file, or enter a 2-letter code (e.g. <strong>NY</strong>) to apply
+          it only in that state. (The New York settlement-agent fee is seeded here — edit or
+          remove it like any other.)
+        </p>
+        {fees.map((f, i) => (
+          <div className="row" key={i} style={{ gap: 8, marginBottom: 8, alignItems: 'flex-end' }}>
+            <div className="field" style={{ flex: 2 }}>
+              <label>Fee name</label>
+              <input className="input" value={f.name} onChange={(e) => setFee(i, 'name', e.target.value)} placeholder="e.g. Settlement agent fee" />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label>Amount ($)</label>
+              <input className="input" inputMode="decimal" value={f.amount} onChange={(e) => setFee(i, 'amount', e.target.value)} placeholder="0" />
+            </div>
+            <div className="field" style={{ width: 96 }}>
+              <label>State</label>
+              <input className="input" value={f.state} onChange={(e) => setFee(i, 'state', e.target.value)} placeholder="all" maxLength={2} />
+            </div>
+            <button className="btn link" type="button" onClick={() => removeFee(i)} title="Remove this fee" style={{ marginBottom: 6 }}>Remove</button>
+          </div>
+        ))}
+        {!fees.length && <p className="muted small" style={{ margin: '0 0 8px' }}>No extra fees. Add one below.</p>}
+        <button className="btn" type="button" onClick={addFee}>+ Add a fee</button>
+
+        <div className="field" style={{ marginTop: 14 }}>
           <label>Note for the history log (optional)</label>
           <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Q3 rate-sheet update — UW fee to $2,395" />
         </div>

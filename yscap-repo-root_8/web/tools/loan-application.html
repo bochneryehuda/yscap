@@ -1280,12 +1280,21 @@
     h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
     return 4294967296 * (2097151 & h2) + (h1 >>> 0);
   }
+  // Company pricing defaults, live from /api/pricing-defaults so a fee/markup
+  // change in the Admin Center reaches this public estimate too (audit #9), plus
+  // the admin-managed extra fees (NY settlement, etc.) — owner-directed 2026-07-17.
+  var CO = { origStd: 1.25, lender: 2195, credit: 150, markupStd: 0.5, extraFees: [] };
+  function laExtraFeeList() {
+    var st = (val("pState") || "").trim().toUpperCase();
+    return (CO.extraFees || []).filter(function (f) { return f && f.name && Number(f.amount) > 0 && (!f.state || String(f.state).toUpperCase() === st); });
+  }
+  function laExtraFeesTotal() { return laExtraFeeList().reduce(function (a, f) { return a + Number(f.amount); }, 0); }
   function adminNum(id, dflt) { var e = el(id); if (!e) return dflt; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : dflt; }
-  function adminOrigPct() { return adminNum("laOrigStd", 1.25) / 100; }           // fraction; default 1.25%
-  function adminFeeUW() { return adminNum("laFeeUW", 2195); }
-  function adminFeeCredit() { return adminNum("laFeeCredit", 150); }
+  function adminOrigPct() { return adminNum("laOrigStd", CO.origStd) / 100; }           // fraction; default 1.25%
+  function adminFeeUW() { return adminNum("laFeeUW", CO.lender); }
+  function adminFeeCredit() { return adminNum("laFeeCredit", CO.credit); }
   function adminTitle() { var e = el("laFeeTitle"); if (!e) return null; var v = parseFloat(e.value); return (isFinite(v) && v >= 0) ? v : null; }  // null = use estimate
-  function syncAdminMarkup() { try { if (typeof YSP !== "undefined" && YSP.setMarkup) YSP.setMarkup(adminNum("laYspStd", 0.5) / 100); } catch (e) {} }
+  function syncAdminMarkup() { try { if (typeof YSP !== "undefined" && YSP.setMarkup) YSP.setMarkup(adminNum("laYspStd", CO.markupStd) / 100); } catch (e) {} }
   function wireAdmin() {
     var trig = el("laAdminTrigger"), lock = el("laAdminLock"), panel = el("laAdminPanel"),
         pw = el("laAdminPw"), go = el("laAdminGo"), err = el("laAdminErr"), hide = el("laAdminHide");
@@ -1362,7 +1371,7 @@
     var titleEst = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(val("pState"), totalLoan, isRefi() ? "Refinance" : "Purchase") : { total: 0 };
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (titleEst.total || 0);
-    var cashToClose = (s.downPayment || 0) + excessOOP + origFee + adminFeeUW() + adminFeeCredit() + titleCost;   // fees admin-overridable; reserve never brought to table; appraisal is POC
+    var cashToClose = (s.downPayment || 0) + excessOOP + origFee + adminFeeUW() + adminFeeCredit() + titleCost + laExtraFeesTotal();   // fees admin-overridable; reserve never brought to table; appraisal is POC
     var financedIR = snFinancedIR;
     var totalCostDisp = totalCost + financedIR;
 
@@ -1840,6 +1849,15 @@
 
   /* ===================== WIRING ===================== */
   function wire() {
+    (function () { try { fetch("/api/pricing-defaults").then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (d && typeof d === "object") {
+        if (d.origStdPct != null) CO.origStd = Number(d.origStdPct);
+        if (d.lenderFee != null) CO.lender = Number(d.lenderFee);
+        if (d.creditFee != null) CO.credit = Number(d.creditFee);
+        if (d.markupStdPct != null) CO.markupStd = Number(d.markupStdPct);
+        CO.extraFees = Array.isArray(d.extraFees) ? d.extraFees : [];
+      }
+    }).catch(function () {}).then(function () { try { recompute(); } catch (e) {} }); } catch (e) {} })();
     try { YS.applyState(YS.readState()); } catch (e) {}
     setBCount(bCount());
 
