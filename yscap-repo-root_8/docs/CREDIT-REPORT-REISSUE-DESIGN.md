@@ -478,5 +478,67 @@ read-only view ✅ · adverse action built in-system ✅ · permission taken ver
 
 ---
 
-_Nothing here is built. This design goes on the parked PR for review; the owner has directed heavy
-auditing + testing before any implementation, and **no merge yet.**_
+## 12. As-built (Phases 1a–1e, implemented 2026-07-19)
+
+Built on branch `claude/credit-report-reissue-research-iwwpfk` (PR #319). Each phase was
+independently unit/integration-tested; the DB layer is proven against real Postgres 16.
+**Still not merged** — heavy audit + live-endpoint testing pending, per owner.
+
+**1a — scoring engine** (`src/lib/credit/scoring.js`): per-borrower middle (median-of-3 /
+lower-of-2 / the-1 / null), loan representative = highest borrower middle, 10 standard brackets
+(incl. 760-779 / 780+), fail-closed model gate. 67 tests.
+
+**1b — MISMO 2.3.1** (`mismo2-request.js` / `mismo2-response.js`): soft `Other`+`SoftCheck`
+default, hard `Merge`, Reissue default; response parser hardened (DOCTYPE/ENTITY/HTML/truncation
+rejected, both error layers, per-bureau scores, embedded PDF). 48 tests.
+
+**1c — DB + FICO freeze** (`db/131`): provider registry, per-user encrypted credentials,
+credit_reports/credit_scores, borrowers verified-FICO lineage + BEFORE INSERT/UPDATE freeze
+belt (only the sanctioned reverify GUC may change a locked score) + audit. Freeze proven on PG.
+
+**1d — per-user credentials** (`credit/providers.js`, `credit/credentials.js`,
+`integrations/xactus.js`, `routes/staff-credit.js`, crypto `encryptSecret`/`decryptSecret`,
+`pull_credit` capability): each officer's own write-only Xactus login; real MISMO-over-HTTPS
+adapter (Basic auth, hard timeout, **never auto-retries a billable POST**, auth/http/network/
+timeout/empty classification, circuit breaker). Staff settings screen + nav. 47 tests.
+
+**1e — order/import + wiring** (`credit/import.js`, `db/132–135`,
+`credit/reopen-sweep.js`, `credit/adverse-action.js`, staff panel + borrower card):
+- Order journaled before the POST with an idempotency key (one intent bills at most once);
+  import parses → scores → stores report/scores/PDF → freezes each borrower's verified FICO
+  under the reverify GUC → captures `fico_used_for_pricing`.
+- Frozen bureau / no score / vendor error → manual-review queue (stored, not frozen, never deleted).
+- Internal credit condition wired (received on import, issue on review); 120-day reopen sweep.
+- ClickUp FICO locked in AND out; verified score pushed out on import.
+- Borrower read-only view (own PDF + every bureau score). 29 import + 26 reopen assertions.
+
+### 12.1 Reconciliation with main's `db/126` (audit #28) — **important**
+While this branch was parked, `main` shipped `db/126` §C: `trg_reopen_pricing_on_fico_change`,
+which reopened Products & Pricing + the signed term sheet on **any** FICO change (raw value
+compare). That is broader than the owner's rule (reopen only on a **bracket** change) and it
+compared an **individual** borrower's score, not the loan representative. `db/132` supersedes the
+function body (keeping main's trigger wiring):
+- adds `fico_bracket(numeric)` — the SQL twin of `scoring.js` BRACKETS — and a throw-safe
+  `fico_bracket_of_inputs(jsonb)`;
+- compares `fico_bracket(representative)` where representative = `NULLIF(GREATEST(primary.fico,
+  co.fico),0)` (the exact pricing expression) against the bracket the registration was priced on.
+
+Result: a same-bracket drift (718→700) is a no-op; a co-borrower dropping below an unchanged,
+higher representative is a no-op; only the **representative crossing a bracket** reopens — for a
+human to re-register. This also fixes main's per-borrower over-firing on the manual-edit path.
+Proven by `scripts/test-fico-bracket-reopen.sql` (single-borrower + co-borrower cases).
+
+### 12.2 Deferred / needs owner or compliance input
+- **Adverse-action** is a data-model + structured-draft scaffold only — every draft is flagged
+  "for compliance review, not for delivery"; final notice content/timing/rendering + send is a
+  compliance decision, not built autonomously.
+- **V1 (`/app`) UI** not rebuilt — the credit UI is V2 (PILOT, the default) only; V1 is legacy.
+- **Verify-on-save** is off by default (`XACTUS_VERIFY_ON_SAVE`) — a no-charge probe path must be
+  confirmed with Xactus before enabling, so saving a login never accidentally bills.
+- **Condition auto-advance** is intentionally conservative (evidence "received", never auto
+  sign-off) — confirm the desired automation level with the owner.
+
+---
+
+_Design + Phases 1a–1e are built and pushed to the parked PR for review; the owner has directed
+heavy auditing + live-endpoint testing before any implementation is trusted, and **no merge yet.**_
