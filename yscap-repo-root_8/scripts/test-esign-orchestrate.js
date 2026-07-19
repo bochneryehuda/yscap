@@ -96,8 +96,10 @@ function fakeStorage() {
     const b = (await pool.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Pat','Borrower','borrower@example.com') RETURNING id`)).rows[0].id;
     const cb = (await pool.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Chris','Co','co@example.com') RETURNING id`)).rows[0].id;
     const app = (await pool.query(
-      `INSERT INTO applications (ys_loan_number,borrower_id,co_borrower_id,property_address)
-       VALUES ('YS-1001',$1,$2,'{"oneLine":"1 Main St, Town, NY"}') RETURNING id`, [b, cb])).rows[0].id;
+      `INSERT INTO applications (ys_loan_number,borrower_id,co_borrower_id,property_address,loan_amount,submitted_at)
+       VALUES ('YS-1001',$1,$2,
+               '{"line1":"1 Main St","city":"Town","state":"NY","zip":"10001","oneLine":"1 Main St, Town, NY"}',
+               487500, '2026-06-01T00:00:00Z') RETURNING id`, [b, cb])).rows[0].id;
 
     // Conditions: appraisal back (t0), review (t0), product AFTER appraisal (t1),
     // plus the target conditions the signed docs clear.
@@ -164,6 +166,37 @@ function fakeStorage() {
     eq(Object.keys(adminSigner.tabsByDoc).length, 1, 'admin signs exactly one document');
     ok(adminSigner.tabsByDoc['1'].sign.includes('/ts_admin_sig/'), 'admin counter-signs the term sheet only');
     ok(borrowerSigner.clientUserId && borrowerSigner.embeddedRecipientStartURL === 'SIGN_AT_DOCUSIGN', 'borrower is hybrid embedded+email');
+
+    // ---- the disclosure is GENERATED on our server (docx), filled + anchored --
+    const { unzip } = require(R + '/src/lib/zip');
+    const bpdDoc = def.documents.find((d) => d.name === 'Business-Purpose Disclosure');
+    eq(bpdDoc.fileExtension, 'docx', 'disclosure is uploaded as .docx (DocuSign converts to PDF free)');
+    const bpdXml = unzip(Buffer.from(bpdDoc.base64, 'base64'))
+      .find((e) => e.name === 'word/document.xml').data.toString('utf8');
+    ok(bpdXml.includes('487,500.00'), 'disclosure filled with the loan amount');
+    ok(bpdXml.includes('YS-1001'), 'disclosure filled with the loan number');
+    ok(bpdXml.includes('1 Main St') && bpdXml.includes('10001'), 'disclosure filled with the subject property');
+    ok(bpdXml.includes('Borrower') && bpdXml.includes('/bpd_b1_sig/') && bpdXml.includes('/bpd_b1_dt/'), 'disclosure carries the borrower sign+date anchors');
+    ok(bpdXml.includes('/bpd_b2_sig/'), 'disclosure carries the co-borrower anchor');
+    ok(!/«[^»]+»/.test(bpdXml), 'no unfilled «merge fields» left in the disclosure');
+    ok(!/descr="(Borrower|Coborrower)Signature"/.test(bpdXml), 'leftover yellow "Sign Here" tag images removed');
+
+    // ---- the Heter Iska is ALSO generated on our server, nusach byte-preserved --
+    const iskaRes = await orchestrate.sendPackage(app, 'heter_iska', { id: null }, { db: pool, docusign, storage });
+    ok(iskaRes.ok, 'Heter Iska package sent');
+    const iskaDef = docusign._calls.created;
+    eq(iskaDef.documents.length, 1, 'Iska envelope carries one document');
+    const iskaDoc = iskaDef.documents[0];
+    eq(iskaDoc.fileExtension, 'docx', 'Iska uploaded as .docx');
+    const iskaXml = unzip(Buffer.from(iskaDoc.base64, 'base64'))
+      .find((e) => e.name === 'word/document.xml').data.toString('utf8');
+    ok(iskaXml.includes('487,500.00'), 'Iska filled with the loan amount');
+    ok(iskaXml.includes('בעזה') || iskaXml.includes('נאום'), 'Iska Hebrew nusach preserved');
+    ok(iskaXml.includes('/iska_b1_sig/') && iskaXml.includes('/iska_b1_dt/'), 'Iska carries the borrower sign+date anchors');
+    ok(iskaXml.includes('/iska_b2_sig/'), 'Iska carries the co-borrower anchor');
+    ok(!/«[^»]+»/.test(iskaXml), 'no unfilled «merge fields» left in the Iska');
+    const iskaSigner = iskaDef.signers.find((s) => s.recipientId === '1');
+    ok(iskaSigner.tabsByDoc['1'].sign.includes('/iska_b1_sig/'), 'Iska borrower anchor wired to the tab');
 
     // ---- send-once idempotency: a second send returns the same in-flight row --
     const res2 = await orchestrate.sendPackage(app, 'term_sheet_package', { id: null }, { db: pool, docusign, storage });

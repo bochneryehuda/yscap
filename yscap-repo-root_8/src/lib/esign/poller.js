@@ -16,13 +16,44 @@
  */
 const dbDefault = require('../../db');
 const docusign = require('../integrations/docusign');
+const storageDefault = require('../storage');
 const webhook = require('./webhook');
 const send = require('./send');
+const orchestrate = require('./orchestrate');
+const gate = require('./gate');
+const onDeadLetter = require('./dead-letter');
 
 const POLL_SEC = parseInt(process.env.DOCUSIGN_POLL_SEC || '60', 10);
 const STALE_MIN = parseInt(process.env.DOCUSIGN_RECONCILE_STALE_MIN || '30', 10);
 
 let timer = null;
+
+/**
+ * The durable send-retry backstop. drainDue needs the SAME envelope-assembly
+ * callback the synchronous send uses (orchestrate.buildDefinition) — without it
+ * every retry throws "requires a buildDefinition" and silently does nothing. We
+ * ALSO re-check the send-gate here: if the file's gate reopened (e.g. the deal
+ * economics changed) between claim and retry, we must NOT mail the stale envelope
+ * — fail permanent so it dead-letters (visible to a human) and a re-registered
+ * deal sends a fresh one.
+ */
+async function retrySend(opts = {}) {
+  const db = opts.db || dbDefault;
+  const storage = opts.storage || storageDefault;
+  const ds = opts.docusign || docusign;
+  return send.drainDue({
+    db, docusign: ds, onDeadLetter,
+    buildDefinition: async (row) => {
+      const g = await gate.esignSendGate(row.application_id, { db });
+      if (!g.ready) {
+        const e = new Error(`Send cancelled — file no longer ready to send: ${g.outstanding.map((o) => o.label).join('; ')}`);
+        e.retryable = false;   // permanent → dead-letter (a changed deal re-sends fresh)
+        throw e;
+      }
+      return orchestrate.buildDefinition(row, { db, storage });
+    },
+  });
+}
 
 /** Re-fetch truth for in-flight envelopes gone quiet — recovers missed webhooks. */
 async function reconcileStale(opts = {}) {
@@ -44,7 +75,7 @@ async function reconcileStale(opts = {}) {
 
 async function tick() {
   try { await webhook.drainInbox({}); } catch (e) { console.warn('[esign-poll] inbox drain failed:', e.message); }
-  try { await send.drainDue({}); } catch (e) { console.warn('[esign-poll] send drain failed:', e.message); }
+  try { await retrySend({}); } catch (e) { console.warn('[esign-poll] send retry failed:', e.message); }
   try { await reconcileStale({}); } catch (e) { console.warn('[esign-poll] reconcile failed:', e.message); }
 }
 
@@ -65,4 +96,4 @@ function start() {
 
 function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
-module.exports = { start, stop, tick, reconcileStale };
+module.exports = { start, stop, tick, reconcileStale, retrySend };

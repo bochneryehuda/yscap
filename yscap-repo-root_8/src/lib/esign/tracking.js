@@ -73,8 +73,16 @@ async function dashboard(db, scope = { where: '', params: [] }) {
   });
   const counts = { total: envelopes.length };
   for (const e of envelopes) counts[e.phase] = (counts[e.phase] || 0) + 1;
-  // things that need a human's attention now
-  counts.needsAttention = envelopes.filter((e) => ['declined', 'error'].includes(e.phase) || e.deadLetteredAt).length;
+  // Things that need a human's attention now. An error/declined row counts ONLY
+  // while it's still the LATEST envelope for its (file, purpose): a Retry/Re-issue
+  // creates a newer envelope, which supersedes the old failure so it stops
+  // counting (otherwise resolved dead-letters inflate the badge forever). Rows are
+  // ordered created_at DESC, so the first one seen per key is the latest.
+  const latestByKey = new Map();
+  for (const e of envelopes) { const k = `${e.applicationId}:${e.purpose}`; if (!latestByKey.has(k)) latestByKey.set(k, e.id); }
+  counts.needsAttention = envelopes.filter((e) =>
+    (['declined', 'error'].includes(e.phase) || e.deadLetteredAt)
+    && latestByKey.get(`${e.applicationId}:${e.purpose}`) === e.id).length;
   counts.awaitingCountersign = envelopes.filter((e) => e.phase === 'awaiting_countersign').length;
   return { envelopes, counts };
 }

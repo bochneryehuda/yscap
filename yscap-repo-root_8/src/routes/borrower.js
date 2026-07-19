@@ -3144,6 +3144,7 @@ router.get('/applications/:id/esign', async (req, res) => {
       return {
         envelopeRowId: e.envelope_row_id, purpose: e.purpose, status: e.status,
         countersignRequired: e.countersign_required, canSignNow, yourStatus,
+        hasCoBorrower: recips.some((r) => r.role === 'co_borrower'),
         waitingOnCoBorrower: !!(mine && mine.signed && coPending),
         waitingOnLender: !!(mine && mine.signed && !coPending && adminPending),
         coBorrowerName: coPending ? coPending.firstName : null,

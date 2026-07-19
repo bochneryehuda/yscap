@@ -30,6 +30,9 @@ const docusignDefault = require('../integrations/docusign');
 const storageDefault = require('../storage');
 const sendEngine = require('./send');
 const gate = require('./gate');
+const docgen = require('./docgen');
+const onDeadLetter = require('./dead-letter');
+const { parseAddress } = require('../address');
 const cfg = require('../../config');
 
 // ---- package definitions ----------------------------------------------------
@@ -43,10 +46,12 @@ const PACKAGES = {
     subject: (loan) => `Your loan documents are ready to sign${loan ? ` — Loan #${loan}` : ''}`,
     blurb: 'Please review and sign your term sheet, application, and business-purpose disclosure.',
     // doc_kind (unsigned source) -> anchor prefix + signed doc_kind + condition it clears.
+    // `generate:true` docs are BUILT on our server from a stored Word template
+    // (docgen.js) at send time — no paid DocuSign DocGen add-on, no pre-stored PDF.
     docs: [
       { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet' },
       { kind: 'application_export', prefix: 'app', signedKind: 'application_signed',    condition: 'rtl_cond_signed_app', name: 'Loan Application' },
-      { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_disclosures', name: 'Business-Purpose Disclosure' },
+      { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_disclosures', name: 'Business-Purpose Disclosure', generate: true },
     ],
   },
   heter_iska: {
@@ -55,7 +60,7 @@ const PACKAGES = {
     subject: (loan) => `Heter Iska ready to sign${loan ? ` — Loan #${loan}` : ''}`,
     blurb: 'Please review and sign the Heter Iska.',
     docs: [
-      { kind: 'heter_iska', prefix: 'iska', signedKind: 'heter_iska_signed', condition: 'rtl_cond_iska', name: 'Heter Iska' },
+      { kind: 'heter_iska', prefix: 'iska', signedKind: 'heter_iska_signed', condition: 'rtl_cond_iska', name: 'Heter Iska', generate: true },
     ],
   },
 };
@@ -89,6 +94,70 @@ async function resolveConditionItem(db, applicationId, code) {
       WHERE ci.application_id = $1 AND t.code = $2
       ORDER BY ci.created_at DESC LIMIT 1`, [applicationId, code]);
   return r.rows.length ? r.rows[0].id : null;
+}
+
+/**
+ * Load the field values docgen.js needs to fill the business-purpose disclosure
+ * and Heter Iska from the loan file: loan number, application date, loan amount,
+ * subject-property parts (flattened out of the property_address jsonb), and the
+ * borrower (+ co-borrower) names. Everything comes straight from the file record —
+ * no free-typing, so the generated documents always agree with the file.
+ */
+async function loadDocGenData(db, applicationId) {
+  const r = await db.query(
+    `SELECT a.ys_loan_number,
+            COALESCE(a.submitted_at, a.created_at)              AS application_date,
+            a.loan_amount, a.purchase_price,
+            a.property_address->>'line1'  AS addr_line1,
+            a.property_address->>'street' AS addr_street,
+            a.property_address->>'unit'   AS addr_unit,
+            a.property_address->>'city'   AS addr_city,
+            a.property_address->>'state'  AS addr_state,
+            a.property_address->>'zip'    AS addr_zip,
+            a.property_address->>'oneLine'           AS addr_oneline,
+            a.property_address->>'formatted_address' AS addr_formatted,
+            b.first_name AS b_first, b.last_name AS b_last,
+            cb.first_name AS cb_first, cb.last_name AS cb_last,
+            a.co_borrower_id
+       FROM applications a
+       JOIN borrowers b  ON b.id  = a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+      WHERE a.id = $1 AND a.deleted_at IS NULL`, [applicationId]);
+  if (!r.rows.length) { const e = new Error('Application not found for document generation'); e.retryable = false; throw e; }
+  const a = r.rows[0];
+
+  // Subject property — the disclosure needs street/city/state/zip SEPARATELY. Many
+  // files (ClickUp-synced especially) store only a `oneLine`/`formatted_address`
+  // string and no structured keys, which would render the whole property block
+  // blank on a legal disclosure. Prefer the structured keys; when they're missing,
+  // parse the one-line form into parts so the property is never blank.
+  let street = [a.addr_line1 || a.addr_street, a.addr_unit].filter(Boolean).join(' ').trim();
+  let city = a.addr_city || '', state = a.addr_state || '', zip = a.addr_zip || '';
+  // Fill ANY missing part from the one-line form (structured values always win).
+  // Covers a fully-unstructured file (ClickUp oneLine-only) AND a partially
+  // structured one (e.g. city present but no street line) — the disclosure's
+  // property block must never be blank in a field we can derive.
+  const oneLine = a.addr_oneline || a.addr_formatted || '';
+  if (oneLine && (!street || !city || !state || !zip)) {
+    const p = parseAddress(oneLine);
+    if (!street) street = [p.line1, p.unit].filter(Boolean).join(' ').trim() || oneLine;
+    if (!city) city = p.city || '';
+    if (!state) state = p.state || '';
+    if (!zip) zip = p.zip || '';
+  }
+  return {
+    loanNumber: a.ys_loan_number || '',
+    applicationDate: a.application_date,
+    executionDate: new Date(),                          // "as of the date below" — prepared today
+    loanAmount: a.loan_amount != null ? a.loan_amount : a.purchase_price,
+    propStreet: street,
+    propCity: city,
+    propState: state,
+    propZip: zip,
+    bFirst: a.b_first || '', bLast: a.b_last || '',
+    hasCoBorrower: !!a.co_borrower_id,
+    cbFirst: a.cb_first || '', cbLast: a.cb_last || '',
+  };
 }
 
 /** The latest current, non-rejected stored PDF for a doc_kind on this application. */
@@ -240,14 +309,28 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   const documents = [];
   const documentIdByKind = {};
   const missing = [];
+  let docGenData = null;   // loaded lazily, once, only if a generated doc is present
   for (let i = 0; i < spec.docs.length; i++) {
     const d = spec.docs[i];
+    const documentId = i + 1;
+
+    if (d.generate) {
+      // Built on our server from the stored Word template + this file's data.
+      // DocuSign converts the .docx → PDF for free, so we upload it as .docx.
+      if (!docGenData) docGenData = await loadDocGenData(db, row.application_id);
+      let buf;
+      try { buf = docgen.generate(d.kind, docGenData); }
+      catch (e) { const err = new Error(`Could not generate ${d.kind}: ${e.message}`); err.retryable = (e.retryable !== false); throw err; }
+      documentIdByKind[d.kind] = documentId;
+      documents.push({ base64: Buffer.from(buf).toString('base64'), name: d.name, documentId, fileExtension: 'docx' });
+      continue;
+    }
+
     const doc = await latestDocument(db, row.application_id, d.kind);
     if (!doc) { missing.push(d.kind); continue; }
     let buf;
     try { buf = await storage.read(doc.storage_ref); }
     catch (e) { const err = new Error(`Could not read ${d.kind} bytes: ${e.message}`); err.retryable = true; throw err; }
-    const documentId = i + 1;
     documentIdByKind[d.kind] = documentId;
     documents.push({ base64: Buffer.from(buf).toString('base64'), name: d.name, documentId, fileExtension: 'pdf' });
   }
@@ -326,6 +409,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   const result = await send.sendClaimedEnvelope(row.id, {
     db, docusign,
     buildDefinition: (r) => buildDefinition(r, { db, storage }),
+    onDeadLetter,   // a failed send notifies the file's team (in-app + email)
   });
   return { ok: !!(result && (result.sent || result.skipped)), envelopeRowId: row.id, result };
 }
@@ -333,4 +417,5 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 module.exports = {
   PACKAGES, packageSpec, buildDefinition, sendPackage,
   createOrClaimEnvelope, buildRoster, tabsFor, resolveConditionItem, latestDocument, loadApplication,
+  loadDocGenData,
 };
