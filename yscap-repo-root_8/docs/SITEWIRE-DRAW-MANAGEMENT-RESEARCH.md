@@ -230,36 +230,41 @@ the birth event: it fires the first push (property → borrower → exploded bud
 coordinator), and only then does PILOT begin mirroring draws for that file. Before that click a
 funded file has NO Sitewire footprint from us. (Re-clicks stay one-shot; re-pushes are idempotent.)
 
-## 4.7 Managed vs legacy budgets (grounded in the real 35)
+## 4.7 HARD RULE — PILOT only ever manages what PILOT pushed (owner-directed 2026-07-19)
 
-Live data proves the existing 35 Sitewire budgets are **hand-entered and wildly inconsistent** —
-`Unit 1 - Demo` (prefix) vs `Demo … unit 1` (suffix) vs no unit at all; media counts set on some
-lines and not others; a `Contingency`/`Other (Contingencies)` line on some; Unit 1 fully itemized
-while Units 2–3 carry 4 lines; some budgets **empty** (0 items). We therefore split budgets into two
-regimes and **never guess** across them:
+**We read, track, and include in draw management ONLY properties whose property + Scope of Work +
+construction budget were pushed to Sitewire BY US.** If PILOT did not create it, PILOT does not touch
+it — not read it, not mirror it, not reconcile it. Rationale (the owner's): only a budget WE built
+from the SOW can be reliably linked back to your Scope of Work; a hand-entered one cannot, and
+guessing a link is forbidden. This **removes the entire legacy-adoption problem** — the existing 35
+hand-entered budgets stay hand-managed in Sitewire exactly as today, invisible to PILOT.
 
-- **PILOT-managed** — a budget WE created by pushing our exploded SOW. Clean deterministic names, a
-  full `sitewire_job_item_links` crosswalk, and full roll-up of draw requests back to our SOW cells.
-  This is the path for every file born via the trigger above.
-- **Legacy / unmanaged** — a budget already hand-entered in Sitewire (the current 35). We **adopt the
-  property link by loan number** and **mirror its draws read-only at the Sitewire-line level** (show
-  "Unit 1 - Demo & Trash: $X drawn of $Y"), but we do **NOT** reverse-map its messy lines to our SOW
-  cells (that would require guessing) and we do **NOT** overwrite it. A staff-only "migrate to
-  PILOT-managed" action can later replace a legacy budget with our clean exploded version — allowed
-  only when it reconciles and is safe (guarded by G-DELREF / G-MIDFLIGHT). Until then it stays
-  read-only mirror. This is what "only reasonable stuff gets there" means for the back-catalog.
+How "ours" is known (never guessed): at push time we record the Sitewire `property_id` +
+`budget_id` we created into `sitewire_property_links` with `matched_by='created'`. The reconcile pulls
+draws **only** for those recorded property ids — it never lists-and-adopts the account. A property we
+did not create has no link row, so it is structurally outside draw management.
+
+**Loan-number collision guard (G-DUPEPROP):** when a Request-a-draw fires and a Sitewire property with
+our `loan_number` already exists (e.g. one of the 35 pre-existing), we do **NOT** create a duplicate
+and do **NOT** adopt it — we **park it for review** ("this loan is already in Sitewire, hand-entered;
+PILOT can't auto-manage it"). The owner decides; PILOT never guesses a link onto foreign data.
+
+Consequence: every budget PILOT manages is **clean and deterministic** (we chose every name, we
+captured every id), so the crosswalk, the tie-out, and the reverse roll-up are always reliable — see
+the correctness argument in §11.6.
 
 ## 5. End-to-end workflow
 
-1. **Adopt existing (read-only):** match the 35 Sitewire properties to loans by `loan_number`; build
-   links marked **legacy**; produce a **match report**; ambiguous → review. Zero writes.
+1. **No adoption.** PILOT does **not** scan or adopt the existing Sitewire account. It manages only
+   what it pushes (§4.7). The pre-existing 35 stay hand-managed in Sitewire, outside PILOT.
 2. **Birth on Request-a-draw (funded files only):** when a `funded` file's "Request a draw" is
    clicked and its SOW reconciles, push property → assign borrower → push budget/job-items (exploded,
-   **PILOT-managed**) → apply inspection rules + fees + coordinator. All guarded. Nothing before this.
+   **PILOT-managed**) → apply inspection rules + fees + coordinator, and record the created
+   `property_id`/`budget_id` link. All guarded (incl. G-DUPEPROP). Nothing before this click.
 3. **Borrower draws in Sitewire:** Sitewire invites the borrower; they submit + upload photos; the
    inspector (or Sitewire inspector) reviews. PILOT shows live status + reminders.
-4. **Reconcile back (poll):** mirror draws/requests/status/events; roll up to our SOW lines
-   (PILOT-managed) or show at Sitewire-line level (legacy).
+4. **Reconcile back (poll):** for **our** properties only, mirror draws/requests/status/events and
+   roll up to our SOW lines via the crosswalk.
 5. **Draw desk (staff):** review requested vs approved per line/unit with inspection photos; set
    `approved_cents` + comments; approve/amend/reopen; set quick-notify label.
 6. **Money ledger:** record fee, net release (= approved − fee), release date, fulfillment.
@@ -424,6 +429,39 @@ machine below is mandatory. Most of it already exists in the repo and is reused.
 - inbound dedupe by `(sitewire_draw_id, updated_at/sequence)` so at-least-once delivery never
   double-applies.
 
+### 11.6 Correctness argument — why the budget link + reverse tracking is provably right
+
+The owner's question: *how do I know the linking is actually correct?* The design makes it correct
+by construction, not by hope, via a chain where every step is verified or parked:
+
+1. **Closed world (§4.7).** PILOT manages only budgets it created. We assigned every line's name and
+   captured every Sitewire id at creation → there is never a foreign/hand-entered line to guess about.
+2. **Exact tie-out before push.** The exploded set (unit lines + contingency + GC) must sum to the
+   frozen `requiredRehabBudget()` **to the cent** or the push is refused (invariant §11.3.2). Cents
+   are integers; splitting a cell uses largest-remainder residual absorption so `Σ units == cell`
+   exactly (§11.3.1). No total can drift.
+3. **Id capture is unambiguous.** Deterministic unique names → bind each created line to its Sitewire
+   id by exact name match on the PATCH response; any missing/duplicate name parks (G-BIND). After
+   binding, identity is the id forever (a Sitewire-side rename can't detach it).
+4. **Read-after-write.** We re-GET the budget and assert each line's `budgeted_cents` and the budget
+   total equal what we sent; mismatch parks (G-RAW/G-RECON). "Returned 200 but didn't save" cannot
+   pass silently.
+5. **Every unit line points home.** The crosswalk row ties `(sitewire_job_item_id) → (sow_line_key,
+   section_token, unit_index)`. Your one SOW line that became N unit lines is joined back through
+   `sow_line_key` — so all N always roll up to the single line, even though you keep one line.
+6. **Draws always resolve.** Because we created every line, every incoming `request.job_item.id` is in
+   the crosswalk. The one exception — a human adds a line directly in Sitewire — has no crosswalk row
+   and parks (G-UNKNOWN); it is never guessed into a cell.
+7. **Roll-up is bounded and checked.** Per-unit `approved_cents` sum onto the SOW line; the invariant
+   `cumulative_drawn(line) ≤ budgeted(line)` blocks over-draw (G-OVERFUND); our totals are cross-
+   checked against Sitewire's own read-only `total_approved_cents`/`available_cents` and any
+   divergence parks (G-RECON).
+8. **Nothing silent.** Every branch above either succeeds verified or parks in the review queue with a
+   concrete action — never a silent apply, never a silent drop.
+
+Testable as invariants (the test suite asserts each): `Σ units == cell`; `Σ lines == rehab_budget`;
+round-trip `explode → bind → reverse-map == identity`; `drawn ≤ budgeted`; `net == approved − fee`.
+
 ---
 
 ## 12. Real-data findings (traced live — draws, borrower flow, site checks, rules)
@@ -472,10 +510,11 @@ machine below is mandatory. Most of it already exists in the repo and is reused.
   ≠ the partner default is **flagged (G-FEE / review)**, never overwritten. `require_capital_partner_
   approval` is **false on all 35** → default false.
 
-### 12.6 Legacy-migration feasibility (the decisive finding)
-- Of 35 budgets: **24 have approved draws (LOCKED** — Sitewire 422s any rename/delete of a drawn
-  line), **9 have draft-only draws, 2 have no draws.** So **legacy budgets are read-only-mirror by
-  default**, essentially permanently for the 24. A "migrate to managed" action is offered **only** for
-  a no-draw budget and is heavily guarded (G-DELREF/G-MIDFLIGHT). **Conclusion:** invest in solid
-  legacy read-only mirroring + Sitewire-line-level reconciliation; treat migration as a rare, guarded
-  edge case — do NOT build a bulk migration path.
+### 12.6 Legacy budgets — OUT OF SCOPE under the only-ours rule (§4.7)
+- The data that once argued for read-only legacy mirroring (24/35 have approved draws and are LOCKED
+  from re-explode) now simply confirms the owner's hard rule: **PILOT does not touch the 35.** They
+  stay hand-managed in Sitewire. No adoption, no mirroring, no migration path is built. The only
+  interaction is the **G-DUPEPROP** collision guard (§4.7): if a Request-a-draw fires on a loan that
+  already exists in Sitewire, PILOT parks it for the owner rather than duplicating or adopting.
+- This deletes an entire class of risk (fuzzy-matching hand-entered lines, reverse-mapping messy
+  budgets) from the build. Every property PILOT manages is one it created.
