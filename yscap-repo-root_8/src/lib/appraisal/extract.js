@@ -30,16 +30,30 @@ function clean(v) {
   if (s === '' || s === '--' || /^(n\/?a|unknown|none|see addendum)$/i.test(s)) return null;
   return s;
 }
+function validYmd(y, mo, d) {
+  const M = +mo, D = +d, Y = +y;
+  return Y >= 1900 && Y <= CUR_YEAR + 1 && M >= 1 && M <= 12 && D >= 1 && D <= 31;
+}
 function normDate(v) {
   const s = clean(v);
   if (!s) return null;
   let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);            // ISO
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  if (m) return validYmd(m[1], m[2], m[3]) ? `${m[1]}-${m[2]}-${m[3]}` : null;
   m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);          // MM/DD/YYYY
-  if (m) return `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+  if (m) return validYmd(m[3], m[1], m[2]) ? `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}` : null;
   return null;
 }
 const UAD_C = /^C[1-6]$/, UAD_Q = /^Q[1-6]$/;
+// UAD bathrooms are `full.half` (2.1 = 2 full + 1 half), NOT a decimal 2.5. Parse both forms.
+function parseBaths(raw) {
+  const s = clean(raw);
+  if (!s) return { text: null, full: null, half: null };
+  const m = /^(\d+)\.(\d)/.exec(s);
+  if (m) return { text: s, full: +m[1], half: +m[2] };   // UAD full.half or decimal .0
+  const n = /^(\d+)$/.exec(s);
+  if (n) return { text: s, full: +n[1], half: 0 };
+  return { text: s, full: null, half: null };
+}
 
 // ---- narrative sweep (for As-Is / hypothetical language) --------------------
 const NARR_ATTR = /(comment|description|text|addendum|summary|reconcil|analysis)/i;
@@ -57,7 +71,8 @@ function narrativeTexts(root) {
   })(root);
   return out;
 }
-const MONEY_RE = '\\$?\\s*(\\d{1,3}(?:,\\d{3})+|\\d{4,7})(?:\\.\\d{2})?';
+// Bound the comma-less run so a longer digit string is rejected, not truncated (audit #4).
+const MONEY_RE = '\\$?\\s*(\\d{1,3}(?:,\\d{3})+|\\d{4,8}(?!\\d))(?:\\.\\d{2})?';
 const ASIS_RE = new RegExp('as[\\s\\-]*is\\b(?:\\s*(?:value|market\\s*value|opinion|amount))?[^$\\d]{0,30}' + MONEY_RE, 'i');
 const ARV_RE = new RegExp('(?:as[\\s\\-]*repaired|after[\\s\\-]*repair|as[\\s\\-]*complete[d]?|subject[\\s\\-]*to[\\s\\-]*completion)\\b(?:\\s*value)?[^$\\d]{0,30}' + MONEY_RE, 'i');
 const HYPO_RE = /hypothetical condition.{0,80}(?:repair|budget|complet|renovat)|(?:repair|budget|renovat).{0,40}(?:have been |been )?complet/i;
@@ -84,7 +99,9 @@ function valuation(root) {
   const hasHypo = texts.some((t) => HYPO_RE.test(t));
 
   let basis, basisNote;
-  if (cond === 'SubjectToRepairs' || cond === 'SubjectToCompletion') { basis = 'ARV'; basisNote = `condition=${cond}`; }
+  // All three GSE "subject-to" conditions make the appraised value a conditional/as-completed
+  // figure (not plain as-is). SubjectToInspection is a real spec enum — include it (audit/spec fix).
+  if (cond === 'SubjectToRepairs' || cond === 'SubjectToCompletion' || cond === 'SubjectToInspection') { basis = 'ARV'; basisNote = `condition=${cond}`; }
   else if (cond === 'AsIs' && hasHypo) { basis = 'ARV'; basisNote = 'condition=AsIs but hypothetical-completion language → ARV'; }
   else if (cond === 'AsIs') { basis = 'ASIS'; basisNote = 'condition=AsIs'; }
   else { basis = hasHypo ? 'ARV' : 'ASIS'; basisNote = 'inferred'; }
@@ -188,6 +205,7 @@ function extract(xml) {
   const val = valuation(root);
   const { comps, subject0 } = comparables(root);
   const cq = subjectCQ(subject0);
+  const bathsParsed = parseBaths(X.attr(st, 'TotalBathroomCount'));
 
   const subject = {
     address: clean(X.attr(prop, '_StreetAddress')),
@@ -204,7 +222,7 @@ function extract(xml) {
     yearBuilt: year(X.attr(st, 'PropertyStructureBuiltYear')),
     gla: money(X.attr(st, 'GrossLivingAreaSquareFeetCount')),
     beds: toNum(X.attr(st, 'TotalBedroomCount')),
-    baths: clean(X.attr(st, 'TotalBathroomCount')),   // UAD full.half string — kept as-is
+    baths: bathsParsed.text, bathsFull: bathsParsed.full, bathsHalf: bathsParsed.half,
     rooms: toNum(X.attr(st, 'TotalRoomCount')),
     stories: clean(X.attr(st, 'StoriesCount')),
     design: clean(X.attr(st, '_DesignDescription')),
@@ -221,11 +239,14 @@ function extract(xml) {
 
   // parties
   const ap = X.find(root, 'APPRAISER');
-  const lic = X.find(root, 'APPRAISER_LICENSE');
+  const lic = ap ? X.find(ap, 'APPRAISER_LICENSE') : X.find(root, 'APPRAISER_LICENSE');
+  // Scope contact points to the appraiser node — a doc-wide search would grab the
+  // AMC / lender / supervisor's phone or email (audit #2). Take the first of each type.
   let phone = null, email = null;
-  for (const cp of X.findAll(root, 'CONTACT_POINT')) {
-    if (X.attr(cp, '_Type') === 'Phone' && X.attr(cp, '_Value')) phone = X.attr(cp, '_Value');
-    if (X.attr(cp, '_Type') === 'Email' && X.attr(cp, '_Value')) email = X.attr(cp, '_Value');
+  for (const cp of (ap ? X.findAll(ap, 'CONTACT_POINT') : [])) {
+    const t = X.attr(cp, '_Type'), v = X.attr(cp, '_Value');
+    if (t === 'Phone' && v && !phone) phone = v;
+    if (t === 'Email' && v && !email) email = v;
   }
   const bn = X.find(root, 'BORROWER_NAME');
   let borrower = clean(X.attr(bn, 'GSEBorrowerName')) || clean(X.attr(X.find(root, 'BORROWER'), '_UnparsedName'));
@@ -253,12 +274,16 @@ function extract(xml) {
   // 1073 condo card
   let condo = null;
   if (formType === 'FNM1073') {
-    const pr = X.find(root, 'PROJECT'); const unit = X.find(root, '_UNIT'); const fee = X.find(root, '_PER_UNIT_FEE');
+    const pr = X.find(root, 'PROJECT'); const unit = X.find(root, '_UNIT');
+    // HOA: use toNum (0 is a valid "no fee" — never drop it as money() would), but prefer a
+    // populated fee row if the first _PER_UNIT_FEE is a 0 placeholder (spec fix).
+    const fees = X.findAll(root, '_PER_UNIT_FEE').map((f) => ({ amt: toNum(X.attr(f, '_Amount')), per: clean(X.attr(f, '_PeriodType')) }));
+    const feePick = fees.find((f) => f.amt != null && f.amt > 0) || fees.find((f) => f.amt != null) || {};
     condo = {
       projectName: clean(X.attr(pr, '_Name')), projectType: clean(X.attr(pr, '_DesignType')),
       elevatorCount: toNum(X.attr(pr, 'ElevatorCount')),
       unitIdentifier: clean(X.attr(unit, 'UnitIdentifier')), floor: clean(X.attr(unit, 'FloorIdentifier')),
-      hoaFeeAmount: money(X.attr(fee, '_Amount')), hoaFeePeriod: clean(X.attr(fee, '_PeriodType')),
+      hoaFeeAmount: feePick.amt != null ? feePick.amt : null, hoaFeePeriod: feePick.per || null,
     };
   }
 
@@ -275,6 +300,12 @@ function extract(xml) {
   if (cq.cqNonUad) warnings.push({ code: 'nonuad_cq', msg: 'condition/quality present but not a UAD code — flagged for verify' });
   if (val.asIs != null && val.arv != null && val.asIs > val.arv) warnings.push({ code: 'asis_gt_arv', msg: 'As-Is exceeds ARV — sanity check' });
   if (formType === 'FNM1025' && subject.units != null && ![2, 3, 4].includes(subject.units)) warnings.push({ code: 'unit_count', msg: `1025 with ${subject.units} units` });
+  // C6 (substantial damage) / Q6 (substandard) are UCDP-fatal — surface, don't just store the code.
+  if (subject.conditionUad === 'C6') warnings.push({ code: 'condition_c6', msg: 'condition C6 — substantial damage affecting safety/soundness (UCDP fatal)' });
+  if (subject.qualityUad === 'Q6') warnings.push({ code: 'quality_q6', msg: 'quality Q6 — basic/substandard construction (UCDP fatal)' });
+  // Version guard: these paths are MISMO 2.6 / UAD 2.6. A UAD 3.6 / MISMO 3.x file must fail loudly, not extract nulls.
+  const ver = X.attr(X.find(root, 'VALUATION_RESPONSE'), 'MISMOVersionID');
+  if (ver && !/^2\./.test(String(ver))) warnings.push({ code: 'mismo_version', msg: `unexpected MISMO version ${ver} — parser targets 2.6; verify before trusting` });
 
   return {
     ok: true, formType,

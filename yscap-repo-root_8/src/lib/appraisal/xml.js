@@ -18,7 +18,7 @@ const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
 function unescapeXml(s) {
   if (s == null) return s;
   if (s.indexOf('&') === -1) return s;
-  return s.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (m, code) => {
+  return s.replace(/&(#[xX]?[0-9a-fA-F]+|[a-zA-Z]+);/g, (m, code) => {
     if (code[0] === '#') {
       const cp = code[1] === 'x' || code[1] === 'X'
         ? parseInt(code.slice(2), 16)
@@ -141,7 +141,8 @@ function attrAny(node, names) {
  */
 function embeddedPdfBase64(xml) {
   // Find an EMBEDDED_FILE whose attributes say PDF, then the next DOCUMENT payload.
-  const re = /<EMBEDDED_FILE\b([^>]*)>\s*<DOCUMENT>([\s\S]*?)<\/DOCUMENT>/g;
+  // Allow metadata (e.g. <FILE_NAME/>) to sit between the open tag and <DOCUMENT>.
+  const re = /<EMBEDDED_FILE\b([^>]*)>[\s\S]*?<DOCUMENT>([\s\S]*?)<\/DOCUMENT>/g;
   let m;
   while ((m = re.exec(xml)) !== null) {
     const a = m[1] || '';
