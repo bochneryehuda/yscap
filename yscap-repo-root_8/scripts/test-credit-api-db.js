@@ -126,6 +126,23 @@ const importTransport = async () => ({ status: 200, headers: { get: () => 'text/
   const rqOff = await call('GET', '/credit/review-queue', OFF);
   ok('scoped off-file officer review-queue 200', rqOff.status === 200);
   ok('scoped off-file officer does NOT see the off-file finding', Array.isArray(rqOff.j.queue) && !rqOff.j.queue.some((x) => x.id === repF));
+  // MINOR-3: a review superseded by a LATER clean import drops off the queue.
+  const supBor = (await db.query(`INSERT INTO borrowers (first_name,last_name,email,fico) VALUES ('Sup','Ersede',$1,700) RETURNING id`, [`apidb.sup.${sfx}@t.test`])).rows[0].id;
+  const supApp = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id) VALUES ($1,$2) RETURNING id`, [supBor, admin])).rows[0].id;
+  await db.query(`INSERT INTO credit_reports (application_id,provider_id,status,review_reason,created_at) VALUES ($1,$2,'review','A bureau is frozen', now() - interval '2 minutes')`, [supApp, prov]);
+  let rqSup = await call('GET', '/credit/review-queue', A);
+  ok('an un-superseded review appears in the queue', rqSup.j.queue.some((x) => x.application_id === supApp && x.kind === 'review'));
+  await db.query(`INSERT INTO credit_reports (application_id,provider_id,status,created_at,completed_at) VALUES ($1,$2,'imported', now(), now())`, [supApp, prov]);
+  rqSup = await call('GET', '/credit/review-queue', A);
+  ok('a review superseded by a later clean import drops off', !rqSup.j.queue.some((x) => x.application_id === supApp && x.kind === 'review'));
+  // MINOR-2: a soft-deleted file's finding never surfaces (deleted_at unconditional).
+  await db.query(`UPDATE applications SET deleted_at=now() WHERE id=$1`, [appId]);
+  const rqDel = await call('GET', '/credit/review-queue', A);
+  ok('soft-deleted file excluded from the queue', !rqDel.j.queue.some((x) => x.id === repF));
+  await db.query(`UPDATE applications SET deleted_at=NULL WHERE id=$1`, [appId]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id=$1`, [supApp]);
+  await db.query(`DELETE FROM applications WHERE id=$1`, [supApp]);
+  await db.query(`DELETE FROM borrowers WHERE id=$1`, [supBor]);
   ok('GET /credit/health 200', (await call('GET', '/credit/health', A)).status === 200);
   ok('POST /credit/order 400 (missing appId)', (await call('POST', '/credit/order', A, {})).status === 400);
   ok('POST /credit/order 403 (off-file LO)', (await call('POST', '/credit/order', OFF, { applicationId: appId, action: 'Reissue', creditReportIdentifier: 'X' })).status === 403);
