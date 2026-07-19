@@ -166,7 +166,7 @@ async function seedBorrower(email, first) {
     idempotencyKey: `k-${suffix}-2`, nowMs: 3000, transport: transportOf(responseXml({ withCo: true, coNoScore: true })),
   });
   eq('review status', rev.status, 'review');
-  ok('review reason mentions no score', /no usable score|excluded|no-recent/i.test(rev.reviewReason || ''));
+  ok('review reason mentions no score / manual UW', /no score|insufficient|manual underwriting|excluded/i.test(rev.reviewReason || ''));
   ok('review did NOT freeze', rev.froze === false);
   const b2After = (await db.query(`SELECT fico_locked, verified_fico FROM borrowers WHERE id=$1`, [b2])).rows[0];
   ok('review left borrower unlocked', b2After.fico_locked === false);

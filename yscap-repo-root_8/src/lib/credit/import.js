@@ -31,6 +31,7 @@ const xactus = require('../integrations/xactus');
 const { buildCreditRequest } = require('./mismo2-request');
 const { parseCreditResponse, decodeReportPdf } = require('./mismo2-response');
 const scoring = require('./scoring');
+const outcomes = require('./outcomes');
 const storage = require('../storage');
 
 // Xactus source type → { key for repositories flags, verified_fico_source label }.
@@ -133,24 +134,17 @@ function scoreParsed(parsed) {
 //               vendor per-bureau error / an excluded score)
 //   'imported'— fully usable; freeze the verified FICOs
 function assessReport(parsed, scored) {
+  // Whole request failed (no usable response) — map the vendor code to a friendly
+  // reason via the outcome catalog.
   if (!parsed.ok && !(parsed.borrowers && parsed.borrowers.length)) {
     const first = parsed.errors && parsed.errors[0];
-    return { decision: 'error', reason: first ? (first.description || (first.texts && first.texts[0]) || first.code || 'credit request failed') : 'credit request failed' };
+    const d = first ? outcomes.describeError(first) : null;
+    return { decision: 'error', reason: (d && d.message) || (first && (first.description || first.code)) || 'credit request failed' };
   }
-  const reasons = [];
-  if (parsed.errors && parsed.errors.length) {
-    for (const e of parsed.errors) {
-      const t = e.description || (e.texts && e.texts.join('; ')) || e.code;
-      if (t) reasons.push(String(t));
-    }
-  }
-  for (const pb of scored.perBorrower) {
-    if (pb.middle.noScore) reasons.push(`${pb.identity.firstName || pb.reportBorrowerId}: no usable score returned`);
-    for (const c of pb.middle.classified) {
-      if (c.reason === 'excluded') reasons.push(`${pb.identity.firstName || pb.reportBorrowerId}: ${c.bureau || 'a bureau'} excluded (${c.exclusionReason || 'frozen/blocked'})`);
-    }
-  }
-  if (reasons.length) return { decision: 'review', reason: [...new Set(reasons)].join(' | ').slice(0, 1000) };
+  // Otherwise summarize per-bureau conditions + vendor errors into one actionable
+  // reason. Any block/review-severity outcome routes to manual review.
+  const s = outcomes.summarizeOutcome(parsed, scored);
+  if (s.reason) return { decision: 'review', reason: s.reason, severity: s.severity, owners: s.owners };
   return { decision: 'imported', reason: null };
 }
 
@@ -222,6 +216,9 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
       } catch (_) { await client.query('ROLLBACK TO SAVEPOINT pdf_doc'); pdfDocumentId = null; }
     }
 
+    // Per-bureau (partial-merge) status for the "N of 3 bureaus" view.
+    const bureauStatus = outcomes.bureauStatus(parsed, scored);
+
     // Update the journal row into its final state.
     await client.query(
       `UPDATE credit_reports
@@ -229,7 +226,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
               first_issued_date = NULLIF($7,'')::date, last_updated_date = NULLIF($8,'')::date,
               xml_encrypted=$9, pdf_document_id=$10,
               representative_score=$11, representative_bracket=$12,
-              status=$13, review_reason=$14, error_detail=$15::jsonb, completed_at=now()
+              status=$13, review_reason=$14, error_detail=$15::jsonb, bureau_status=$16::jsonb, completed_at=now()
         WHERE id=$1`,
       [reportRowId, parsed.reportIdentifier || null, parsed.reportType || null, parsed.otherDescription || null,
        orderMeta.requestType || null, orderMeta.action || null,
@@ -237,7 +234,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
        rawXml ? crypto.encryptSecret(rawXml) : null, pdfDocumentId,
        scored.rep.score, scored.rep.bracket,
        assessment.decision === 'imported' ? 'imported' : assessment.decision,
-       assessment.reason, JSON.stringify(parsed.errors || [])]);
+       assessment.reason, JSON.stringify(parsed.errors || []), JSON.stringify(bureauStatus)]);
 
     // Per-bureau score rows (every score node, usable or not — full audit).
     await client.query(`DELETE FROM credit_scores WHERE credit_report_id=$1`, [reportRowId]);

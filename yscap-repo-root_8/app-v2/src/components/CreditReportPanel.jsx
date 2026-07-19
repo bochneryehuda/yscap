@@ -54,6 +54,17 @@ function ReportRow({ r }) {
           <span className="muted small">({r.representative_bracket})</span>
         </div>
       )}
+      {r.bureau_status && r.bureau_status.perBureau && (
+        <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span className="muted small">{r.bureau_status.scoredCount}/{r.bureau_status.requested} bureaus:</span>
+          {Object.entries(r.bureau_status.perBureau).map(([b, st]) => (
+            <span key={b} className="tchip" title={st}
+              style={{ borderColor: st === 'scored' ? 'var(--teal)' : st === 'excluded' || st === 'no_score' ? 'var(--danger)' : 'var(--muted)' }}>
+              {b[0].toUpperCase() + b.slice(1)}: {st === 'scored' ? '✓' : st === 'returned' ? '·' : st.replace('_', ' ')}
+            </span>
+          ))}
+        </div>
+      )}
       {r.status === 'review' && r.review_reason && (
         <div className="notice err" style={{ marginTop: 6 }}>Manual review: {r.review_reason}</div>
       )}
