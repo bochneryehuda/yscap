@@ -540,5 +540,55 @@ Proven by `scripts/test-fico-bracket-reopen.sql` (single-borrower + co-borrower 
 
 ---
 
-_Design + Phases 1a–1e are built and pushed to the parked PR for review; the owner has directed
-heavy auditing + live-endpoint testing before any implementation is trusted, and **no merge yet.**_
+## 13. Research-driven improvements (2026-07-19, "look at other platforms")
+
+Owner asked to look outward at how leading platforms do this better. Three parallel research
+streams (LOS/credit-integration UX; billable-API resilience — read the actual code; error-taxonomy
++ business-purpose compliance) produced a prioritized backlog. **Built** this session:
+
+**Score reason-codes** — the MISMO `CREDIT_SCORE/_FACTOR` codes (documented in the field map but
+unextracted) are now parsed per bureau, stored (`db/136`), and auto-seed the adverse-action
+principal reasons (Reg B comment 9(b)(2)-4 permits the model's reason codes as the AA reasons).
+
+**Resilience (fixed two real bugs the code-review found):**
+- A timeout is now an **`in_doubt`** state (the vendor may have billed), not `error` — it goes to
+  the review queue for reconciliation instead of inviting a blind double-bill.
+- The **idempotency key no longer poisons** a failed order: replay only a completed outcome; a
+  fresh UUID per click makes a deliberate retry a new intent; an in-flight window + a spend/volume
+  circuit breaker (per-user + global 10-min cap) guard against double-clicks and runaway spend; a
+  stale-`ordering` sweep recovers crash-orphaned rows.
+
+**Error handling + interfaces:** a normalized outcome catalog (`outcomes.js`) maps Xactus `E0xx`
+codes and bureau conditions (frozen / no-hit / no-score / deceased / fraud / OFAC / mixed-file) to
+friendly, actionable staff messages with severity + owner; partial-merge is first-class (per-bureau
+status, "N of 3" chips, `db/137`).
+
+**Compliance correctness:** an **applicant-vs-guarantor** flag (`db/138`) — a guarantor is generally
+**not** owed an AA notice on a business-purpose loan, so the scaffold flags it rather than
+over-sending.
+
+**Observability:** an append-only `credit_order_events` black-box log (`db/139`, immutability
+trigger) with per-phase latency/outcome, plus a `GET /credit/health` summary.
+
+### 13.1 Backlog captured for owner/compliance decision (not yet built)
+From the research, deliberately deferred (either legal decisions or larger capabilities):
+- **Tradeline/liability + derogatory-event + public-record parsing** — the substrate for automated
+  knockouts, mortgage-lates, and undisclosed-debt/loan-stacking flags. High value; large.
+- **"What changed since last pull" diff** on a reissue (score delta, new tradelines/inquiries/derogs).
+- **Supplement / rapid-rescore** workflow for a guarantor near a bracket edge.
+- **Fraud/deceased/OFAC hard-stop lanes** wired to dedicated review queues (detection exists in the
+  outcome catalog; the routing lanes + sign-off are the build).
+- **Reconciliation probe** for `in_doubt` orders — needs Xactus to expose a no-charge status/echo
+  endpoint (confirm at integration; the `verifyCredential` scaffold anticipates the path).
+- **Business-credit AA timing/short-form engine** (>$1MM vs ≤$1MM, at-application disclosure, 12-mo
+  Reg B retention) and the correct **FTC** enforcement-agency block — all **legal decisions** the
+  shop's counsel must own; build the mechanism, not the rule content.
+- **Written-authorization capture** — explicitly **out of scope** per owner (permission is taken
+  verbally).
+- **RBP-notice applicability** — generally not required for business-purpose; a counsel sign-off flag.
+
+---
+
+_Design + Phases 1a–1e + the research-driven improvements are built and pushed to the parked PR;
+the owner has directed heavy auditing + live-endpoint testing before any implementation is trusted,
+and **no merge yet.**_
