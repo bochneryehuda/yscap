@@ -73,8 +73,10 @@
   .fb-dot{width:8px;height:8px;border-radius:50%;background:var(--crit);animation:pulse 2s infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
   @media (prefers-reduced-motion:reduce){.fb-dot{animation:none}}
-  /* Staff-only content is hidden in borrower view */
+  /* Staff-only content is hidden in borrower view; borrower-only shows only in borrower view */
   body.view-borrower .staff-only{display:none !important}
+  .borrower-only{display:none}
+  body.view-borrower .borrower-only{display:block}
 
   /* Findings / underwriting */
   .blocked-banner{display:flex;align-items:center;gap:12px;background:var(--crit-bg);border:1px solid color-mix(in srgb,var(--crit) 30%,var(--line));
@@ -273,7 +275,7 @@
       <span class="chip">Subject-to-Repairs</span>
     </div>
     <span class="spacer"></span>
-    <span class="findings-badge staff-only" title="2 open fatal findings block clear-to-close" onclick="document.getElementById('sec-findings').scrollIntoView({behavior:'smooth'})">
+    <span class="findings-badge" title="2 open fatal findings block clear-to-close" onclick="document.getElementById('sec-findings').scrollIntoView({behavior:'smooth'})">
       <span class="fb-dot"></span>2 findings
     </span>
     <div class="viewtoggle" role="tablist" aria-label="Viewing as">
@@ -323,8 +325,8 @@
     </div>
   </section>
 
-  <!-- PILOT FINDINGS (staff only) -->
-  <section id="sec-findings" class="staff-only">
+  <!-- PILOT FINDINGS — borrower can SEE (read-only); action buttons are team-only -->
+  <section id="sec-findings">
     <div class="sec-head">
       <div><div class="lbl">Underwriting</div><h2>PILOT findings</h2></div>
       <span class="chip" style="color:var(--crit);border-color:color-mix(in srgb,var(--crit) 30%,var(--line))">2 fatal</span>
@@ -334,7 +336,8 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
       Clear-to-close is blocked. The internal condition <b style="margin:0 4px">“Appraisal review cleared”</b> stays open until every fatal is resolved.
     </div>
-    <p style="color:var(--muted);font-size:13.5px;margin:-6px 0 16px">Every field that differs between the appraisal and this file is raised here. Nothing is overwritten automatically — the underwriter decides each one.</p>
+    <p class="staff-only" style="color:var(--muted);font-size:13.5px;margin:-6px 0 16px">Every field that differs between the appraisal and this file is raised here. Nothing is overwritten automatically — the underwriter decides each one.</p>
+    <p class="borrower-only" style="color:var(--muted);font-size:13.5px;margin:-6px 0 16px">Your lending team is reviewing these items against your file. No action is needed from you.</p>
     <div class="findings-list">
 
       <div class="finding fatal">
@@ -345,7 +348,7 @@
           <div class="delta"><div class="h">Difference</div><div class="v">+1 unit</div></div>
         </div>
         <div class="howto"><b>How to clear:</b> confirm the real unit count. If the appraisal is right, replacing re-prices the loan (a 3-unit changes the program &amp; sizing). If the file is right, the appraisal may be the wrong property.</div>
-        <div class="actions">
+        <div class="actions staff-only">
           <button class="act primary">Replace with appraisal (3) <span class="rp">re-prices loan</span></button>
           <button class="act">Keep file value (2)</button>
           <button class="act">Enter custom…</button>
@@ -362,7 +365,7 @@
           <div class="delta"><div class="h">Difference</div><div class="v">+$15,000</div></div>
         </div>
         <div class="howto"><b>How to clear:</b> the appraisal came in $15k higher (+2.7%). Replacing writes $575,000 to the file and re-prices (higher ARV may allow more loan). <b>What-if:</b> loan re-sizes to ~$402k, LTARV 70%.</div>
-        <div class="actions">
+        <div class="actions staff-only">
           <button class="act primary">Replace with $575,000 <span class="rp">re-prices loan</span></button>
           <button class="act">Keep file ($560,000)</button>
           <button class="act">Enter custom…</button>
@@ -373,7 +376,7 @@
       <div class="finding warn">
         <div class="finding-head"><span class="sev warn">Warning</span><span class="t">Comparable #3 has a large adjustment</span><span class="resolved-tag" style="background:var(--amber-bg);color:var(--amber)">acknowledge</span></div>
         <div class="howto" style="margin-top:12px"><b>Net adjustment 16%</b> exceeds the 15% guideline — the appraiser reached for this comp. Not a blocker; acknowledge or note it.</div>
-        <div class="actions">
+        <div class="actions staff-only">
           <button class="act primary">Acknowledge</button>
           <button class="act">Dismiss with reason…</button>
         </div>
