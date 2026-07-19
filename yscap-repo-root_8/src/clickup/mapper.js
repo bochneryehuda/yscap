@@ -429,12 +429,22 @@ for (const f of FIELD_MAP) { if (f.dir !== 'pull' && f.col) COL_TO_CU[f.col] = f
 function resolveOnly(onlyKeys) {
   const cuIds = new Set();
   const checklistFieldIds = new Set();   // `checklist:<fieldId>` keys — kept SEPARATE
-  let status = false;
+  let status = false;          // push the borrower-facing status MIRROR field (portal-owned, always safe)
+  let internalStatus = false;  // push the ClickUp-owned TASK status (updateTask) — ONLY a deliberate internal-status change
   for (const raw of onlyKeys || []) {
     const k = String(raw);
     switch (k) {
-      case 'status': case 'internal_status':
+      // WO-16 (F-M1): a borrower-facing status change ('status', from PATCH
+      // /applications/:id) pushes ONLY the portal-owned mirror field — it must
+      // NEVER re-assert the (pull-only) internal_status mirror onto the
+      // ClickUp-owned task status, or a stale mirror reverts ClickUp's live
+      // status. Only a DELIBERATE internal-status change ('internal_status',
+      // from POST /internal-status, which freshly writes internal_status) may
+      // move the task status.
+      case 'status':
         status = true; cuIds.add(F.SYNC.borrowerPortalStatus); break;
+      case 'internal_status':
+        status = true; internalStatus = true; cuIds.add(F.SYNC.borrowerPortalStatus); break;
       case 'officer': case 'loan_officer_id':
         cuIds.add(F.SHARED.loanOfficer); break;
       case 'processor': case 'processor_id':
@@ -468,7 +478,7 @@ function resolveOnly(onlyKeys) {
         } else if (COL_TO_CU[k]) cuIds.add(COL_TO_CU[k]);
     }
   }
-  return { cuIds, status, checklistFieldIds };
+  return { cuIds, status, internalStatus, checklistFieldIds };
 }
 
 // ---- write guardrails (2026-07-15 DOB incident) — pure, unit-testable -------

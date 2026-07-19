@@ -1925,7 +1925,7 @@ router.post('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
      VALUES ('application',$1,$2,$3,$4,'document',$5,$6,'staff',$7) RETURNING id`,
-    [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, b.dueDate || null, req.actor.id]);
+    [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, require('../lib/fields').normalizeTypedDate(b.dueDate), req.actor.id]);  // WO-6 (F-M11): year-0026-proof due date
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
   // Only tell the borrower when the item is actually borrower-facing, and show
   // them the BORROWER-facing wording (never the internal label). (S2-02)
@@ -2019,7 +2019,7 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
      scrubText(String(b.borrowerHint || '').trim().slice(0, 2000)) || null,
      audience, CONDITION_TYPES[type].itemKind, toolKey || null, fieldKey,
      type === 'esign' ? (String(b.esignDoc || '').trim().slice(0, 300) || null) : null,
-     category, b.isRequired !== false, b.dueDate || null,
+     category, b.isRequired !== false, require('../lib/fields').normalizeTypedDate(b.dueDate),  // WO-6 (F-M11): year-0026-proof due date
      String(b.notes || '').trim().slice(0, 2000) || null, req.actor.id]);
   await audit(req, 'add_condition_custom', 'application', req.params.id, { label, type, audience });
   if (audience !== 'staff') {
@@ -3621,6 +3621,8 @@ router.patch('/llcs/:id', async (req, res) => {
   if (b.llcName !== undefined && !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName cannot be empty' });
   const sets = [], vals = []; let i = 1;
   const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  // WO-6 (F-M11): normalize a mid-typed formation date so year-0026 can't persist.
+  if (b.formationDate !== undefined) b.formationDate = require('../lib/fields').normalizeTypedDate(b.formationDate);
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   if (b.ownershipPct !== undefined && b.ownershipPct !== '' && b.ownershipPct != null) {
@@ -4311,7 +4313,7 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     await db.query(
       `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, internalStatus, external]);
-    enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // push ONLY the status (task status + borrower_portal_status mirror)
+    enqueueClickupPush(req.params.id, ['internal_status']).catch(() => {}); // WO-16 (F-M1): a DELIBERATE internal-status change pushes the ClickUp task status + the mirror
     // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.
     await db.query(
       `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
@@ -6013,16 +6015,26 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
       if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return res.status(422).json({ error: 'no valid proposed value to apply' });
       if (row.field_key === 'date_of_birth') {
         if (!row.borrower_id) return res.status(422).json({ error: 'no borrower on this review' });
+        // WO-6 (F-M12): the shape-only regex above lets year-0026 AND a child's
+        // DOB through — this legacy path wrote them unvalidated. Route through the
+        // same adult-plausibility guard every other DOB write uses; reject the
+        // implausible so it's fixed at the source, never blind-written.
+        const dob = require('../lib/fields').sanitizeDob(v);
+        if (!dob) return res.status(422).json({ error: 'not a valid adult date of birth — fix it at the source, then re-sync' });
         const before = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [row.borrower_id])).rows[0];
-        await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [row.borrower_id, v]);
+        await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [row.borrower_id, dob]);
         await audit(req, 'sync_review_apply', 'borrower', row.borrower_id,
-          { reviewId: row.id, field: 'date_of_birth', from: before && before.date_of_birth, to: v, reason: row.reason });
+          { reviewId: row.id, field: 'date_of_birth', from: before && before.date_of_birth, to: dob, reason: row.reason });
       } else if (REVIEW_APP_COLS.has(row.field_key)) {
         if (!row.application_id) return res.status(422).json({ error: 'no application on this review' });
+        // WO-6 (F-M12): year-window the date (0026 → 2026, garbage → reject) —
+        // the shape regex above let a mid-typed year through to a ::date write.
+        const d = require('../lib/fields').normalizeTypedDate(v);
+        if (!d) return res.status(422).json({ error: 'not a valid date — fix it at the source, then re-sync' });
         const before = (await db.query(`SELECT ${row.field_key} FROM applications WHERE id=$1`, [row.application_id])).rows[0];
-        await db.query(`UPDATE applications SET ${row.field_key}=$2::date, updated_at=now() WHERE id=$1`, [row.application_id, v]);
+        await db.query(`UPDATE applications SET ${row.field_key}=$2::date, updated_at=now() WHERE id=$1`, [row.application_id, d]);
         await audit(req, 'sync_review_apply', 'application', row.application_id,
-          { reviewId: row.id, field: row.field_key, from: before && before[row.field_key], to: v, reason: row.reason });
+          { reviewId: row.id, field: row.field_key, from: before && before[row.field_key], to: d, reason: row.reason });
       } else {
         return res.status(422).json({ error: `unsupported field ${row.field_key}` });
       }
