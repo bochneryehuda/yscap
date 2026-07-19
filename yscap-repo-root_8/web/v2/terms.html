@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<script src="theme.js?v=n6"></script>
+<script>
+(function () {
+  try {
+    var de = document.documentElement;
+    de.setAttribute("data-theme", "light");   // white-first — matches the portal (belt-and-suspenders vs a stale theme.js)
+    var q = new URLSearchParams(location.search);
+    if (q.get("embed") === "1") de.setAttribute("data-embed", "1");
+  } catch (e) {}
+})();
+</script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terms of Use | YS Capital Group</title>
+<meta name="description" content="Terms of Use for the YS Capital Group website and the PILOT borrower portal, including electronic-signature consent.">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/images/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="assets/images/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/images/favicon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Hanken+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=pilot4">
+<style>
+/* ============================================================
+   v2/terms.html — legal reskin (design only)
+   Mirrors v2/privacy.html · self-contained, scoped to .ysl
+   Content is a template; presentation layer matches the site.
+   ============================================================ */
+.ysl{
+  --paper:#F4F0E7; --paper-2:#EDE6D7; --card:#FBF9F3;
+  --ink:#141B22; --ink-1:#1D2830; --ink-soft:#4B585C;
+  --gold:#AE8746; --gold-soft:#C9A86A; --teal:#2F7F86;
+  --line:rgba(20,27,34,.16); --line-soft:rgba(20,27,34,.08);
+  --serif:'Fraunces',Georgia,'Times New Roman',serif;
+  --sans:'Hanken Grotesk',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --r:4px; --ease:cubic-bezier(.22,.61,.36,1);
+  color:var(--ink); font-family:var(--sans);
+}
+.ysl *{box-sizing:border-box;}
+.ysl-wrap{max-width:1240px;margin:0 auto;padding:0 40px;}
+@media(max-width:980px){.ysl-wrap{padding:0 24px;}}
+
+/* ---- hero ---- */
+.ysl-hero{padding:9.5rem 0 2.4rem;}
+.ysl-eyebrow{font-size:12px;letter-spacing:.22em;text-transform:uppercase;font-weight:600;color:var(--gold);margin:0 0 1rem;}
+.ysl-hero h1{font-family:var(--serif);font-weight:500;letter-spacing:-.01em;line-height:1.04;font-size:clamp(38px,5vw,64px);margin:.1em 0 .5em;color:var(--ink);}
+.ysl-eff{display:inline-flex;align-items:center;gap:9px;font-size:12.5px;font-weight:600;letter-spacing:.02em;background:var(--card);border:1px solid var(--line);border-radius:100px;padding:7px 15px;color:var(--ink-soft);}
+.ysl-eff .dot{width:6px;height:6px;border-radius:50%;background:var(--teal);}
+
+/* ---- two-column layout: section index + document ---- */
+.ysl-grid{display:grid;grid-template-columns:236px 1fr;gap:64px;align-items:start;padding-top:8px;padding-bottom:96px;}
+@media(max-width:860px){.ysl-grid{grid-template-columns:1fr;gap:0;padding-bottom:64px;}}
+
+/* ---- sticky section index ---- */
+.ysl-toc{position:sticky;top:104px;}
+.ysl-toc .lab{font-size:12px;letter-spacing:.18em;text-transform:uppercase;font-weight:700;color:var(--ink-soft);margin:0 0 16px;}
+.ysl-toc ol{list-style:none;margin:0;padding:0;counter-reset:t;}
+.ysl-toc li{counter-increment:t;}
+.ysl-toc a{display:flex;gap:12px;align-items:baseline;padding:11px 0 11px 16px;border-left:2px solid var(--line);color:var(--ink-soft);font-size:14px;font-weight:600;line-height:1.35;transition:color .15s,border-color .15s;}
+.ysl-toc a::before{content:counter(t,decimal-leading-zero);font-family:var(--serif);font-size:12.5px;color:var(--gold);font-variant-numeric:tabular-nums;flex:none;}
+.ysl-toc a:hover{color:var(--gold);border-left-color:var(--gold);}
+@media(max-width:860px){
+  .ysl-toc{position:sticky;top:60px;z-index:30;background:var(--paper);margin:0 -24px;padding:12px 24px;border-bottom:1px solid var(--line-soft);}
+  .ysl-toc .lab{display:none;}
+  .ysl-toc ol{display:flex;gap:8px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+  .ysl-toc ol::-webkit-scrollbar{display:none;}
+  .ysl-toc a{white-space:nowrap;border-left:0;border:1px solid var(--line);border-radius:100px;padding:0 15px;min-height:44px;align-items:center;}
+}
+
+/* ---- document body ---- */
+.ysl-doc{min-width:0;}
+.ysl-clause{max-width:70ch;scroll-margin-top:112px;padding:26px 0;border-top:1px solid var(--line-soft);counter-increment:c;position:relative;}
+.ysl-clause:first-child{border-top:0;padding-top:6px;}
+.ysl-clause p{color:var(--ink-1);line-height:1.72;font-size:17px;}
+.ysl-clause p + p{margin-top:14px;}
+.ysl-clause p strong{color:var(--ink);font-weight:700;letter-spacing:-.005em;}
+.ysl-clause a{
+  color:var(--ink);font-weight:600;text-decoration:none;
+  background-image:linear-gradient(var(--teal),var(--teal)),linear-gradient(var(--gold),var(--gold));
+  background-size:0% 1px,100% 1px;background-position:0 100%,0 100%;background-repeat:no-repeat;
+  transition:background-size .35s var(--ease),color .2s var(--ease);
+}
+.ysl-clause a:hover{color:var(--teal);background-size:100% 1px,100% 1px;}
+
+.ysl-foot-note{max-width:70ch;font-size:13px;color:var(--ink-soft);line-height:1.6;margin-top:30px;padding-top:22px;border-top:1px solid var(--line-soft);}
+
+/* ---- polish: one-way reveals (resting state is fully visible → never blank) ---- */
+@media(prefers-reduced-motion:no-preference){
+  @keyframes ysl-rise{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+  .ysl-anim{animation:ysl-rise .55s var(--ease) both;}
+  .ysl-hero .ysl-anim{animation-delay:.04s;}
+  .ysl-hero h1.ysl-anim{animation-delay:.10s;}
+  .ysl-hero .ysl-eff.ysl-anim{animation-delay:.16s;}
+  .ysl-doc .ysl-clause{animation:ysl-rise .55s var(--ease) both;}
+  .ysl-doc .ysl-clause:nth-child(1){animation-delay:.06s;}
+  .ysl-doc .ysl-clause:nth-child(2){animation-delay:.12s;}
+  .ysl-doc .ysl-clause:nth-child(3){animation-delay:.18s;}
+  .ysl-doc .ysl-clause:nth-child(4){animation-delay:.22s;}
+  .ysl-doc .ysl-clause:nth-child(5){animation-delay:.26s;}
+  .ysl-doc .ysl-clause:nth-child(n+6){animation-delay:.30s;}
+}
+@media(prefers-reduced-motion:reduce){
+  .ysl-clause a{transition:color .2s;}
+}
+</style>
+</head>
+<body>
+<header class="nav scrolled" id="nav">
+    <div class="nav-inner">
+        <a href="index.html" class="nav-brand">
+            <img src="assets/images/ys-logo-t.png" alt="YS Capital Group">
+        </a>
+        <nav class="nav-links" aria-label="Primary">
+            <a href="index.html#programs">Programs</a>
+            <a href="index.html#contact">Contact</a>
+            <a href="suite.html" class="nav-suite">Investor Suite</a>
+        </nav>
+        <div class="nav-actions">
+            <a class="pilot-login" href="/portal/"><span class="plm" aria-hidden="true"></span>Client Login</a>
+            <a class="btn btn-ghost" href="index.html">Back to Site</a>
+        </div>
+    </div>
+</header>
+<main id="top" class="ysl">
+    <section class="ysl-hero">
+        <div class="ysl-wrap">
+            <p class="eyebrow ysl-eyebrow ysl-anim">Compliance</p>
+            <h1 class="ysl-anim">Terms of Use</h1>
+            <span class="ysl-eff ysl-anim"><span class="dot"></span>Effective date: July 19, 2026</span>
+        </div>
+    </section>
+
+    <div class="ysl-wrap ysl-grid">
+        <nav class="ysl-toc" aria-label="On this page">
+            <p class="lab">On this page</p>
+            <ol>
+                <li><a href="#t-accept">Acceptance of these terms</a></li>
+                <li><a href="#t-eligible">Eligibility</a></li>
+                <li><a href="#t-portal">Website &amp; borrower portal</a></li>
+                <li><a href="#t-esign">Electronic communications &amp; e-signature</a></li>
+                <li><a href="#t-ip">Intellectual property</a></li>
+                <li><a href="#t-thirdparty">Third-party services</a></li>
+                <li><a href="#t-noncommit">No loan commitment</a></li>
+                <li><a href="#t-asis">Disclaimers</a></li>
+                <li><a href="#t-liability">Limitation of liability</a></li>
+                <li><a href="#t-indemnify">Indemnification</a></li>
+                <li><a href="#t-law">Governing law</a></li>
+                <li><a href="#t-changes">Changes to these terms</a></li>
+                <li><a href="#t-contact">Contact us</a></li>
+            </ol>
+        </nav>
+
+        <div class="ysl-doc">
+            <section class="ysl-clause" id="t-accept">
+                <p><strong>Acceptance of these terms.</strong> These Terms of Use govern your access to and use of the YS Capital Group website and the PILOT by YS Capital borrower portal (together, the "Services"). By accessing or using the Services, you agree to these Terms. If you do not agree, do not use the Services.</p>
+            </section>
+            <section class="ysl-clause" id="t-eligible">
+                <p><strong>Eligibility.</strong> You must be at least 18 years old and able to enter into a binding agreement. If you use the Services on behalf of a company or other entity, you represent that you are authorized to bind that entity. Our loan programs are intended for <strong>business-purpose</strong> real-estate financing, not for personal, family, or household purposes.</p>
+            </section>
+            <section class="ysl-clause" id="t-portal">
+                <p><strong>Website &amp; borrower portal.</strong> You agree to use the Services only for lawful purposes and to provide accurate information. You are responsible for keeping your account credentials confidential and for all activity under your account. You may not attempt to access another user's file, disrupt the Services, scrape or copy content, or use the Services in any unauthorized way. We may suspend or terminate access if these Terms are violated.</p>
+            </section>
+            <section class="ysl-clause" id="t-esign">
+                <p><strong>Electronic communications &amp; e-signature consent.</strong> You consent to receive communications, disclosures, and documents from us electronically, and you agree that electronic signatures — including those captured through our e-signature provider, DocuSign — are legally binding to the same extent as a handwritten signature under the federal ESIGN Act and applicable state law (UETA). Before signing, our e-signature provider presents an Electronic Record and Signature Disclosure, which is the operative disclosure for that signing. You may request a paper copy of any document you sign electronically by contacting us. The specific terms of any loan are governed by the executed loan documents, not by this website.</p>
+            </section>
+            <section class="ysl-clause" id="t-ip">
+                <p><strong>Intellectual property.</strong> The Services, including the YS Capital Group and PILOT names, logos, text, graphics, and software, are owned by or licensed to YS Capital Group and are protected by law. You receive a limited, revocable, non-transferable license to use the Services for their intended purpose. You may not reproduce, distribute, or create derivative works without our written permission.</p>
+            </section>
+            <section class="ysl-clause" id="t-thirdparty">
+                <p><strong>Third-party services.</strong> The Services rely on and may link to third-party providers, including DocuSign for electronic signatures. Your use of those services is governed by their own terms and privacy practices, and we are not responsible for third-party sites or services.</p>
+            </section>
+            <section class="ysl-clause" id="t-noncommit">
+                <p><strong>No loan commitment; loan documents control.</strong> Using the Services, submitting information, or receiving a term sheet or quote is <strong>not</strong> an application, an offer, or a commitment to lend, and does not create a lending relationship. Any financing is subject to underwriting, approval, and the execution of definitive loan documents. <strong>All terms of any loan are governed exclusively by the executed loan documents, which control over anything on this website or in the portal.</strong></p>
+            </section>
+            <section class="ysl-clause" id="t-asis">
+                <p><strong>Disclaimers.</strong> The Services are provided "as is" and "as available," without warranties of any kind, whether express or implied, including any warranty of merchantability, fitness for a particular purpose, availability, accuracy, or non-infringement. We do not warrant that the Services will be uninterrupted, timely, secure, or error-free.</p>
+            </section>
+            <section class="ysl-clause" id="t-liability">
+                <p><strong>Limitation of liability.</strong> To the fullest extent permitted by law, YS Capital Group and its affiliates will not be liable for any indirect, incidental, special, consequential, or punitive damages, or for any loss of profits or data, arising out of or relating to your use of the Services. Nothing in these Terms limits liability that cannot be limited under applicable law.</p>
+            </section>
+            <section class="ysl-clause" id="t-indemnify">
+                <p><strong>Indemnification.</strong> You agree to indemnify and hold harmless YS Capital Group and its affiliates from any claims, losses, or expenses arising out of your misuse of the Services or your violation of these Terms or applicable law.</p>
+            </section>
+            <section class="ysl-clause" id="t-law">
+                <p><strong>Governing law.</strong> These Terms are governed by the laws of the State of New York, without regard to its conflict-of-laws rules, and any dispute relating to the Services will be brought in the state or federal courts located in New York. This governing-law and venue selection applies to use of the website and portal; the loan documents may specify their own governing law, which controls for the loan itself.</p>
+            </section>
+            <section class="ysl-clause" id="t-changes">
+                <p><strong>Changes to these terms.</strong> We may update these Terms from time to time by posting a revised version on this page with a new effective date. Your continued use of the Services after a change means you accept the updated Terms.</p>
+            </section>
+            <section class="ysl-clause" id="t-contact">
+                <p><strong>Contact us.</strong> YS Capital Group, <a class="nmls-link" href="https://www.nmlsconsumeraccess.org/EntityDetails.aspx/COMPANY/2609746" target="_blank" rel="noopener">NMLS ID 2609746</a>, 5 New Montrose Ave, Bsmt, Brooklyn, NY 11211. Email <a href="mailto:sales@yscapgroup.com">sales@yscapgroup.com</a>. Phone <a href="tel:7188312168">718-831-2168</a>.</p>
+                <p class="ysl-foot-note">This page describes the terms for using our website and borrower portal and is provided for general information. It is not legal advice and is not part of any loan agreement. For questions, contact us at the address above.</p>
+            </section>
+        </div>
+    </div>
+</main>
+<footer class="footer">
+    <div class="disclosures">
+        <p class="legal-links" style="margin:0 0 8px;font-size:13px"><a href="privacy.html">Privacy Policy</a> · <a href="disclosures.html">Disclosures</a> · <a href="sms-terms.html">SMS Terms</a> · <a href="index.html">Home</a></p>
+        <p class="copyright">© 2026 YS Capital Group. All rights reserved.</p>
+    </div>
+</footer>
+<script src="script.js"></script>
+<script src="float-actions.js"></script>
+</body>
+</html>

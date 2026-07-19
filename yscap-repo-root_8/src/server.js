@@ -34,6 +34,9 @@ app.use('/api/inbound/chat', require('./routes/inbound-chat'));
 // Mounted BEFORE the JSON parser for the same raw-body reason as the chat/ClickUp
 // webhooks. Separate URL from /api/inbound/chat (which is unchanged).
 app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
+// DocuSign Connect webhook — RAW body for the base64 HMAC verification, mounted
+// BEFORE the JSON parser for the same reason as the ClickUp/inbound webhooks.
+app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
@@ -161,6 +164,10 @@ app.use('/api/address', require('./routes/address')); // address autocomplete/ve
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)
 app.use('/api/intake', require('./routes/intake'));
+// Public e-signature bounce endpoint (/api/esign/return) — where a signer lands
+// after signing; resolves the real destination from our DB and 302s into the
+// portal. The Connect webhook (/api/esign/webhook) is mounted above, pre-JSON.
+app.use('/api/esign', require('./routes/esign-public'));
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
 app.use('/api/public/draw-findings', require('./routes/draw-findings-public'));
@@ -424,6 +431,10 @@ if (require.main === module) {
     // Self-gated by SHAREPOINT_BACKUP_ENABLED + MS_* creds; inert otherwise.
     // First run performs the full-history backfill (oldest-first).
     try { require('./lib/sharepoint-backup').start(); } catch (e) { console.warn('sharepoint sync not started:', e.message); }
+    // DocuSign e-sign heartbeat: drains the Connect event inbox + send queue and
+    // reconciles any in-flight envelope that went quiet (missed-webhook recovery).
+    // Self-gated — inert until the DocuSign credentials are configured.
+    try { require('./lib/esign/poller').start(); } catch (e) { console.warn('esign poller not started:', e.message); }
     // Sitewire draw-management sync — drains the outbound queue + reconcile poll.
     // Self-gated by SITEWIRE_ENABLED (+ SITEWIRE_OUTBOUND_ENABLED for writes); inert
     // otherwise. Manages ONLY properties PILOT created (only-ours rule).

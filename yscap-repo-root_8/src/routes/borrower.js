@@ -3087,6 +3087,93 @@ router.delete('/pricing/scenarios/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// ---------------- e-signature: the borrower's "Sign now" surface -------------
+// A SANITIZED view of the borrower's own signing packages + an endpoint to mint
+// their embedded (in-portal) signing URL. Never exposes the admin counter-
+// signer's email/IP, and never says "binding" before the counter-signature (the
+// UI copy handles that). The borrower may only ever mint THEIR OWN recipient
+// view — matched on esign_recipients.borrower_id.
+const esignDocusign = require('../lib/integrations/docusign');
+
+// Confirm the file is the borrower's, and return its id (or null).
+async function ownFileId(req, appId) {
+  const r = await db.query(
+    `SELECT id FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${OWN_FILE_SQL('a', '$2')} LIMIT 1`,
+    [appId, me(req)]);
+  return r.rows.length ? r.rows[0].id : null;
+}
+
+// Borrower-facing package status (sanitized). One row per in-flight/recent envelope.
+router.get('/applications/:id/esign', async (req, res) => {
+  try {
+    if (!(await ownFileId(req, req.params.id))) return res.status(404).json({ error: 'not found' });
+    const rows = (await db.query(
+      `SELECT e.id AS envelope_row_id, e.purpose, e.status, e.countersign_required,
+              e.envelope_id IS NOT NULL AS sent,
+              (SELECT json_agg(json_build_object(
+                  'role', r.role, 'firstName', split_part(r.name,' ',1),
+                  'signed', (r.signed_at IS NOT NULL OR r.status IN ('completed','signed')),
+                  'declined', (r.declined_at IS NOT NULL OR r.status='declined'),
+                  'routingOrder', r.routing_order,
+                  'mine', (r.borrower_id = $2)) ORDER BY r.routing_order, r.role)
+                FROM esign_recipients r WHERE r.envelope_row_id = e.id) AS recipients
+         FROM esign_envelopes e
+        WHERE e.application_id = $1 AND e.purpose IS NOT NULL
+        ORDER BY e.created_at DESC`, [req.params.id, me(req)])).rows;
+    const packages = rows.map((e) => {
+      const recips = e.recipients || [];
+      const mine = recips.find((r) => r.mine);
+      const open = ['sent', 'delivered'].includes(e.status);
+      const canSignNow = !!(mine && open && !mine.signed && !mine.declined);
+      let yourStatus = 'none';
+      if (mine) {
+        if (mine.declined) yourStatus = 'declined';
+        else if (e.status === 'completed') yourStatus = 'completed';
+        else if (e.status === 'voided') yourStatus = 'voided';
+        else if (mine.signed) yourStatus = 'you_signed_waiting';
+        else if (open) yourStatus = 'sign_now';
+      }
+      // The other party we're waiting on, sanitized (never the admin's identity).
+      const coPending = recips.find((r) => r.role === 'co_borrower' && !r.signed && !r.declined);
+      const adminPending = e.countersign_required && recips.some((r) => r.role === 'admin' && !r.signed && !r.declined);
+      return {
+        envelopeRowId: e.envelope_row_id, purpose: e.purpose, status: e.status,
+        countersignRequired: e.countersign_required, canSignNow, yourStatus,
+        waitingOnCoBorrower: !!(mine && mine.signed && coPending),
+        waitingOnLender: !!(mine && mine.signed && !coPending && adminPending),
+        coBorrowerName: coPending ? coPending.firstName : null,
+      };
+    });
+    res.json({ packages });
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
+// Mint the borrower's own embedded signing URL (single-use, ~5 min).
+router.post('/applications/:id/esign/sign-view', async (req, res) => {
+  try {
+    if (!(await ownFileId(req, req.params.id))) return res.status(404).json({ error: 'not found' });
+    const rowId = String((req.body && req.body.envelopeRowId) || '');
+    const rec = (await db.query(
+      `SELECT r.recipient_id_ds, r.name, r.email, r.client_user_id, e.envelope_id, e.status
+         FROM esign_recipients r JOIN esign_envelopes e ON e.id = r.envelope_row_id
+        WHERE e.id = $1 AND e.application_id = $2 AND r.borrower_id = $3
+        LIMIT 1`, [rowId, req.params.id, me(req)])).rows[0];
+    if (!rec) return res.status(404).json({ error: 'no signing task for you on this package' });
+    if (!rec.envelope_id) return res.status(409).json({ error: 'this package has not been sent yet' });
+    if (!['sent', 'delivered'].includes(rec.status)) return res.status(409).json({ error: 'this package is no longer open for signing' });
+    const returnUrl = `${cfg.appUrl}/api/esign/return?app=${encodeURIComponent(req.params.id)}&env=${encodeURIComponent(rec.envelope_id)}&dest=borrower`;
+    const url = await esignDocusign.createRecipientView(rec.envelope_id, {
+      returnUrl, email: rec.email, userName: rec.name,
+      clientUserId: rec.client_user_id, recipientId: rec.recipient_id_ds,
+    });
+    await audit(req, 'esign_sign_view', 'application', req.params.id);
+    res.json({ url });
+  } catch (e) {
+    const status = e && e.retryable === false ? 400 : 500;
+    res.status(status).json({ error: e.message || 'server error' });
+  }
+});
+
 router.generateChecklist = generateChecklist;
 router.generateLlcChecklist = generateLlcChecklist;
 module.exports = router;
