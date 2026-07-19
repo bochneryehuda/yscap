@@ -423,3 +423,59 @@ machine below is mandatory. Most of it already exists in the repo and is reused.
   → G-ECHO; idempotency key persisted on the outbox job + journal → G-DUP.
 - inbound dedupe by `(sitewire_draw_id, updated_at/sequence)` so at-least-once delivery never
   double-applies.
+
+---
+
+## 12. Real-data findings (traced live — draws, borrower flow, site checks, rules)
+
+### 12.1 Draw lifecycle (traced on real approved draws)
+- Sequence: `created`/`submit` (borrower_owner or **borrower_delegate**) → `inspector_assigned` +
+  `inspector_approve` (**sitewire_inspector**, often same day for virtual) → `lender_approve`
+  (**lender_owner**, typically next day). **The `lender_approve` event's date is the release date.**
+- **The lender routinely approves LESS than requested** (real: $25k→$21k, $36k→$28k). Requested-vs-
+  approved trimming is a core desk function; per-request `approved_cents` sums exactly to the draw's
+  `total_approved_cents`.
+- **The fee never appears in the draw or requests** — property-level `processing_fee_cents` only.
+  Confirms net-to-borrower = `approved − fee` is computed in **our** ledger; the release date comes
+  from `lender_approve`, and the fulfillment/"wire" signal from the quick-notify label (§12.4).
+- **`draw_events` come back OUT OF ORDER** in the API — we MUST sort by `occurred_at` (never trust
+  array order) to derive `submitted_at = min(created/submit)` and `approved_at = lender_approve`.
+  (Guard G-ORDER already covers this.)
+
+### 12.2 Borrower flow (confirmed)
+- `borrower.status` across the 35: **unassigned 17 · assigned 17 · invited 1**. Flow is
+  **unassigned → invited → assigned**: we `PATCH /properties/{id}/borrower` with the email, Sitewire
+  sends the invite, the borrower accepts (→ assigned). We never submit or upload for them.
+- A Sitewire **borrower** is an org (18 exist; named by deal/address) with a contact
+  (`contact_email`/name/phone). A **delegate** can submit draws on the borrower's behalf.
+- PILOT's job on the borrower side: assign by email, then **track status + remind + hand off** to
+  Sitewire's app. No submission/upload in PILOT (API can't).
+
+### 12.3 Site checks (Deliverable Updates) — not in use
+- **Zero** deliverable updates across the whole account. Not a Phase-1 build target; we mirror them
+  read-only **only if** they ever appear. Removes a whole surface from the initial scope.
+
+### 12.4 Quick-notify pipeline labels (real)
+- Four live labels: **"Awaiting internal approval", "Sent to the wire department", "Sent to
+  servicer", "Wire initiated"**. We read them, set `quick_notify_status_id` on a draw, and CRUD the
+  label set. **"Wire initiated" / "Sent to the wire department"** correlate to our ledger's release/
+  fulfillment state — the desk can surface both together.
+
+### 12.5 Inspection rules by capital partner (derived from real config) → the rules engine defaults
+| Capital partner | inspection_method | require_sitewire_inspector | fee | notes |
+|---|---|---|---|---|
+| **Fidelis** | mobile (virtual) | yes | **$299** | dominant (27); exceptions seen: 2 traditional $499, 2 mobile $399 |
+| **Blue Lake** | traditional (on-site) | yes | **$250** | |
+| **CorrFirst** | mobile (virtual) | yes | **$299** | |
+- These become the **per-partner defaults** in `sitewire_inspection_rules` (owner-editable). Because
+  real files show exceptions, staff may override per file, and any existing property whose live config
+  ≠ the partner default is **flagged (G-FEE / review)**, never overwritten. `require_capital_partner_
+  approval` is **false on all 35** → default false.
+
+### 12.6 Legacy-migration feasibility (the decisive finding)
+- Of 35 budgets: **24 have approved draws (LOCKED** — Sitewire 422s any rename/delete of a drawn
+  line), **9 have draft-only draws, 2 have no draws.** So **legacy budgets are read-only-mirror by
+  default**, essentially permanently for the 24. A "migrate to managed" action is offered **only** for
+  a no-draw budget and is heavily guarded (G-DELREF/G-MIDFLIGHT). **Conclusion:** invest in solid
+  legacy read-only mirroring + Sitewire-line-level reconciliation; treat migration as a rare, guarded
+  edge case — do NOT build a bulk migration path.
