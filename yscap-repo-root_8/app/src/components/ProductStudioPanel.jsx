@@ -16,6 +16,11 @@ import TermSheetStudio, {
    and re-registering any number of times is the intended workflow. */
 
 const money = (n) => (n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'));
+// Exact-cents formatter for fee / cash-to-close / reserve / liquidity rows so the
+// V1 read-back matches V2 and the term sheet to the penny (owner-directed
+// 2026-07-16; audit 2026-07-19). Loan amount / advance / holdback stay on money()
+// (whole-dollar floored — the frozen loan-rounding rule is untouched).
+const money2 = (n) => (n == null || n === '' ? '—' : '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const pct = (f, d = 2) => (f == null || f === '' ? '—' : (Number(f) * 100).toFixed(d) + '%');
 const when = (t) => (t ? new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
 
@@ -108,7 +113,6 @@ export function overridesFromSnapshot(snap, mode) {
       asIsValue: f.asIs,
       arv: f.arv,
       rehabBudget: f.construction,
-      markupStdPct: f.tsYspStd, markupGoldPct: f.tsYspGold,
       origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
       titleFee: f.tsFeeTitle,
@@ -124,6 +128,14 @@ export function overridesFromSnapshot(snap, mode) {
     heavyRehab: f.rehabScope === 'heavy',
     sqftAddition: !!f.sqft,
     manualPricing: !!f.tsManualOn,
+    // Markup: an EXPLICITLY blanked field sends '' — the server drops the sticky
+    // per-file markup and re-prices at the company default. These MUST sit outside
+    // compact() (which discards ''); inside it a cleared markup box sent nothing,
+    // so the old sticky markup silently re-applied and the file registered at a
+    // rate DIFFERENT from the rate the studio showed and printed (audit 2026-07-19,
+    // FATAL; mirrors the V2 fix). An untouched/absent field still sends nothing.
+    ...(f.tsYspStd === '' ? { markupStdPct: '' } : f.tsYspStd != null ? { markupStdPct: f.tsYspStd } : {}),
+    ...(f.tsYspGold === '' ? { markupGoldPct: '' } : f.tsYspGold != null ? { markupGoldPct: f.tsYspGold } : {}),
   };
 }
 
@@ -179,18 +191,18 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
         </div>
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
-          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money(q.origination)} />
-          <Row k="UW / processing / legal" v={money(cc.lenderFee)} />
-          <Row k="Credit report" v={money(cc.creditFee)} />
-          <Row k="Title / escrow (est.)" v={money(cc.titleAndSettlement)} />
+          <Row k={`Origination (${q.origPct != null ? (q.origPct * 100).toFixed(3).replace(/\.?0+$/, '') + '%' : '—'})`} v={money2(q.origination)} />
+          <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
+          <Row k="Credit report" v={money2(cc.creditFee)} />
+          <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
           {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
-            <Row key={i} k={f.name} v={money(f.amount)} />
+            <Row key={i} k={f.name} v={money2(f.amount)} />
           ))}
-          <Row k="Appraisal (est., POC)" v={money(cc.appraisalPoc)} />
-          <Row k="Closing costs due at closing" v={money(cc.dueAtClosing)} />
-          <Row k="Estimated cash to close" v={<strong>{money(q.cashToClose)}</strong>} />
-          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money(q.reserveRequirement)} />
-          <Row k="Liquidity to verify" v={<strong>{money(q.liquidity ?? q.liquidityRequired)}</strong>} />
+          <Row k="Appraisal (est., POC)" v={money2(cc.appraisalPoc)} />
+          <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
+          <Row k="Estimated cash to close" v={<strong>{money2(q.cashToClose)}</strong>} />
+          <Row k={`Reserve to show${q.reserveBasis ? ` (${q.reserveBasis})` : ''}`} v={money2(q.reserveRequirement)} />
+          <Row k="Liquidity to verify" v={<strong>{money2(q.liquidity ?? q.liquidityRequired)}</strong>} />
           <p className="muted small" style={{ margin: '10px 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Scenario as registered</p>
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           <Row k="Purchase price" v={money(inp.purchasePrice)} />

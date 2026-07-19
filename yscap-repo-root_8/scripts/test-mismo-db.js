@@ -90,6 +90,7 @@ async function main() {
   assert.strictEqual(na.is_assignment, true, 'new file assignment flag');
   assert.strictEqual(Number(na.assignment_fee), 20000, 'new file assignment fee');
   assert.strictEqual(na.source, 'mismo_import', 'new file source tag');
+  assert.strictEqual(na.status, 'file_intake', 'imported file starts in DATA INTAKE status (not active)');
   assert(na.co_borrower_id, 'new file has a co-borrower');
   assert(na.llc_id, 'new file has a vesting entity');
   console.log('  ✓ createFromParsed created a fully-populated new application (incl. experience, PPP, sqft, property type)');

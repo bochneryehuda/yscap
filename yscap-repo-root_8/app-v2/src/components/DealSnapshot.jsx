@@ -34,6 +34,10 @@ export default function DealSnapshot({ app, gating }) {
   const acqLtv = quote?.sizing?.acqLtvPct ? pct(quote.sizing.acqLtvPct) : null;
   const product = app.registered_product_label || (quote && [quote.programLabel, quote.productLabel].filter(Boolean).join(' · '));
   const priced = app.loan_amount != null && Number(app.loan_amount) > 0;
+  // The registered loan amount + leverage ratios are "as last registered" once any
+  // deal number moves before a re-price (audit 2026-07-19). Flag them so they don't
+  // read as live figures next to the freshly-edited economics right beside them.
+  const stale = !!app.pricing_stale && priced;
   const g = gating && gating.clear_to_close;
   const openCount = g ? ((g.conditions ? g.conditions.length : 0) + (g.gates ? g.gates.length : 0)) : 0;
 
@@ -55,6 +59,7 @@ export default function DealSnapshot({ app, gating }) {
         <div className="snap-stat">
           <span className="snap-stat-k">Loan amount</span>
           <span className="snap-stat-v">{priced ? money(app.loan_amount) : 'Not yet priced'}</span>
+          {stale && <span className="snap-stat-sub" style={{ color: 'var(--warning)' }}>as last registered</span>}
         </div>
         <div className="snap-stat">
           <span className="snap-stat-k">Note rate</span>
@@ -99,7 +104,8 @@ export default function DealSnapshot({ app, gating }) {
         </div>
 
         <div className="snap-cluster">
-          <div className="snap-cluster-h">Leverage</div>
+          <div className="snap-cluster-h">Leverage{stale && <span style={{ color: 'var(--warning)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}> · as last registered</span>}</div>
+          {stale && <div style={{ fontSize: '.8em', color: 'var(--warning)', margin: '2px 0 6px', lineHeight: 1.3 }}>A pricing detail changed since this product was registered — the loan amount and these ratios are as last registered. Re-price the product to update them.</div>}
           {row('LTC', ltc || '—')}
           {row('Initial LTV', acqLtv || '—')}
           {row('Loan-to-ARV', arvLtv || '—')}
