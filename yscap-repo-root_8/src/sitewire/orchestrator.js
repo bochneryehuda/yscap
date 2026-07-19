@@ -161,17 +161,19 @@ async function pushFile(appId, opts = {}) {
 
   const propertyFields = {
     loan_number: a.ys_loan_number,
-    capital_partner_id: cp.id,
+    capital_partner_id: Number(cp.id),                 // pg bigint -> number (Sitewire expects an integer)
     inspection_method: inspectionMethod,
     require_sitewire_inspector: !!(rule && rule.require_sitewire_inspector),
     require_capital_partner_approval: !!(rule && rule.require_capital_partner_approval),
     allow_reallocation: !!(rule && rule.allow_reallocation),
-    processing_fee_cents: feeCents,
-    default_draw_coordinator_id: coordinatorId,
+    processing_fee_cents: Number(feeCents),
+    default_draw_coordinator_id: coordinatorId != null ? Number(coordinatorId) : null,
     draw_checklist_template_id: cfg.sitewireDefaultChecklistTemplateId,
-    total_units: a.units || null,
     address: addr,
   };
+  // never send a null field (guardNoUnsafeWrite rejects clearing values) — omit instead
+  if (propertyFields.default_draw_coordinator_id == null) delete propertyFields.default_draw_coordinator_id;
+  if (a.units) propertyFields.total_units = Number(a.units);
   if (devType) propertyFields.development_type = devType;
   if (consType) propertyFields.construction_type = consType;
   if (a.entity_name || a.llc_name) propertyFields.borrower_entity_name = a.entity_name || a.llc_name;

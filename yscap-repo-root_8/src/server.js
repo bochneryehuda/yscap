@@ -163,6 +163,9 @@ app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest c
 app.use('/api/intake', require('./routes/intake'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/staff', require('./routes/staff'));
+// Sitewire construction-draw desk + admin. The router applies requireAuth +
+// requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
+app.use('/api/sitewire', require('./routes/sitewire'));
 // The Condition Center studio is gated by the manage_conditions capability (not
 // admin-only), so an underwriter or software-setup persona granted it can author
 // the library. Mounted before /api/admin so it isn't shadowed by requireRole.
@@ -414,6 +417,10 @@ if (require.main === module) {
     // Self-gated by SHAREPOINT_BACKUP_ENABLED + MS_* creds; inert otherwise.
     // First run performs the full-history backfill (oldest-first).
     try { require('./lib/sharepoint-backup').start(); } catch (e) { console.warn('sharepoint sync not started:', e.message); }
+    // Sitewire draw-management sync — drains the outbound queue + reconcile poll.
+    // Self-gated by SITEWIRE_ENABLED (+ SITEWIRE_OUTBOUND_ENABLED for writes); inert
+    // otherwise. Manages ONLY properties PILOT created (only-ours rule).
+    try { require('./sync/sitewire-sync').start(); } catch (e) { console.warn('sitewire sync not started:', e.message); }
   });
 }
 module.exports = app;

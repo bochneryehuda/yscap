@@ -15,6 +15,11 @@ ALTER TABLE sync_queue ADD  CONSTRAINT sync_queue_target_check
 -- ---- staff <-> Sitewire lender-user map (email-matched) for the draw-coordinator persona ----
 ALTER TABLE staff_users ADD COLUMN IF NOT EXISTS sitewire_user_id bigint;
 
+-- Add the Draw-Coordinator persona to the staff role set (like Loan Coordinator).
+ALTER TABLE staff_users DROP CONSTRAINT IF EXISTS staff_users_role_check;
+ALTER TABLE staff_users ADD  CONSTRAINT staff_users_role_check
+  CHECK (role IN ('super_admin','admin','underwriter','loan_officer','loan_coordinator','draw_coordinator','processor','software_setup'));
+
 -- ---- property link: the PILOT file <-> the Sitewire property/budget WE created ----
 CREATE TABLE IF NOT EXISTS sitewire_property_links (
   id                     bigserial PRIMARY KEY,
