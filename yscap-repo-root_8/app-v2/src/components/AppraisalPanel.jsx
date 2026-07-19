@@ -32,7 +32,7 @@ function btn(primary, danger) {
     fontSize: 12.5, fontWeight: 600, borderRadius: 8, padding: '7px 13px', cursor: 'pointer',
     border: '1px solid ' + (primary ? 'var(--teal,#2F7F86)' : danger ? 'color-mix(in srgb,var(--crit,#B4483C) 35%,var(--line,#E7E1D3))' : 'var(--line,#E7E1D3)'),
     background: primary ? 'var(--teal,#2F7F86)' : 'transparent',
-    color: primary ? '#fff' : danger ? 'var(--crit,#B4483C)' : 'var(--ink,#141B22)',
+    color: primary ? '#fff' : danger ? 'var(--crit,#B4483C)' : 'var(--text,#141B22)',
   };
 }
 
@@ -335,7 +335,7 @@ function Approaches({ a }) {
       {tiles.map(([k, sub, v], i) => (
         <div key={i} className="appr-avoid" style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 14px' }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--muted,#4B585C)' }}>{k}<span style={{ fontWeight: 400 }}> · {sub}</span></div>
-          <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 20, fontWeight: 600, marginTop: 3, color: i === 0 ? 'var(--teal-deep,#256168)' : 'var(--ink,#141B22)' }}>{money(v)}</div>
+          <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 20, fontWeight: 600, marginTop: 3, color: i === 0 ? 'var(--teal-deep,#256168)' : 'var(--text,#141B22)' }}>{money(v)}</div>
         </div>
       ))}
     </div>
@@ -510,7 +510,7 @@ function CompMap({ comps }) {
         {['N', 'E', 'S', 'W'].map((d) => { const [x, y] = xy(maxMi, d); return <text key={d} x={x} y={y} fontSize="10" fontWeight="700" fill={muted} textAnchor="middle" dominantBaseline="middle">{d}</text>; })}
         {/* subject */}
         <circle cx={cx} cy={cy} r={6} fill="var(--gold,#AE8746)" />
-        <text x={cx} y={cy - 10} fontSize="10.5" fontWeight="700" fill="var(--ink,#141B22)" textAnchor="middle">Subject</text>
+        <text x={cx} y={cy - 10} fontSize="10.5" fontWeight="700" fill="var(--text,#141B22)" textAnchor="middle">Subject</text>
         {/* comps */}
         {pts.map(({ c, p }) => {
           const [x, y] = xy(p.miles, p.dir);
@@ -704,6 +704,17 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
     finally { setImporting(false); }
   };
 
+  const [pulling, setPulling] = useState(false);
+  const pullPhotos = async () => {
+    setPulling(true); setErr('');
+    try {
+      const r = await api.appraisalRefreshPhotos(appId);
+      await load();
+      if (!r || !r.stored) setErr('No photos could be pulled — the appraisal PDF may not be on file yet. Upload the PDF to the appraisal condition, then try again.');
+    } catch (e3) { setErr(e3.message || 'Could not pull photos'); }
+    finally { setPulling(false); }
+  };
+
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the appraisal…</p>;
 
   const a = data && data.appraisal;
@@ -757,7 +768,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
               </div>
               <ValueStory a={a} />
               {a.appraised_value != null && (
-                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 8 }}>Appraised value on the report: <b style={{ color: 'var(--ink,#141B22)' }}>{money(a.appraised_value)}</b></div>
+                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 8 }}>Appraised value on the report: <b style={{ color: 'var(--text,#141B22)' }}>{money(a.appraised_value)}</b></div>
               )}
             </div>
           </div>
@@ -803,7 +814,20 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
           )}
 
           {/* ===== PHOTO GALLERY ===== */}
-          <PhotoGallery photos={photos} readOnly={readOnly} />
+          {photos.length > 0 ? (
+            <PhotoGallery photos={photos} readOnly={readOnly} />
+          ) : (
+            <div className="appr-avoid appr-noprint" style={{ background: 'var(--paper,#F6F3EC)', border: '1px dashed var(--line,#E7E1D3)', borderRadius: 14, padding: 18, marginTop: 6, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 15, fontWeight: 600 }}>Photographs</div>
+                <div style={{ fontSize: 13, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+                  {readOnly ? 'The property photos will appear here once the appraisal PDF has been processed.'
+                    : 'No photos yet — they’re pulled from the appraisal PDF. If the PDF is on file, pull them now; otherwise upload the PDF to the appraisal condition.'}
+                </div>
+              </div>
+              {!readOnly && <button onClick={pullPhotos} disabled={pulling} style={{ ...OPEN_BTN, marginLeft: 0 }}>{pulling ? 'Pulling photos…' : '⤓ Pull photos from the PDF'}</button>}
+            </div>
+          )}
 
           {/* ===== PROPERTY DETAILS — the dossier cards ===== */}
           <SecHead eyebrow="The subject" title="Property details" />

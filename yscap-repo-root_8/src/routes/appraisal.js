@@ -154,6 +154,20 @@ router.post('/:appId/import', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- POST /:appId/photos/refresh -------------------------------------------
+// Re-pull the property photos for the current appraisal from its stored PDF (embedded in the XML
+// or the uploaded PDF slot), on demand. For files imported before the photo feature, or where the
+// PDF arrived after the XML. Best-effort; returns how many photos were stored.
+router.post('/:appId/photos/refresh', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const stored = await require('../lib/appraisal/desk').repullAppraisalPhotos(app.id);
+    try { await audit(req.actor.id, 'appraisal_photos_refresh', app.id, { stored }); } catch (_) { /* audit best-effort */ }
+    res.json({ ok: true, stored });
+  } catch (e) { next(e); }
+});
+
 // ---- POST /findings/:fid/resolve -------------------------------------------
 // Fields a "replace"/"custom" may write to the loan file (each trips the reprice trigger).
 const REPRICE_COLS = { arv: 'numeric', as_is_value: 'numeric', purchase_price: 'numeric', units: 'int', property_type: 'text' };
