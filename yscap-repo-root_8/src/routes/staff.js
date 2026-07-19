@@ -2581,33 +2581,45 @@ async function signOffGate(itemId, actor) {
   // reconcile the finding, before signing off. Backstopped by the DB trigger in
   // db/168 so no path can bypass it.
   if (isCredit) {
-    const cr = (await db.query(
-      `SELECT underwriting_finding, underwriting_finding_reconciled_at
-         FROM credit_reports
-        WHERE application_id=$1
-          -- Only IMPORTED reports carry a decision/finding. A later failed /
-          -- in_doubt / review / ordering re-pull writes a NEWER row with a NULL
-          -- finding; without this filter that row would become "the latest report"
-          -- and MASK an earlier imported report's unreconciled fatal finding,
-          -- letting the loan clear on a FICO the bureau never confirmed. Matches
-          -- reopen-sweep.js, which scopes "latest report" the same way.
-          AND status = 'imported'
-        -- id DESC is a deterministic tiebreaker so this app-layer gate and the
-        -- db/168 trigger backstop always resolve the SAME latest report even on a
-        -- same-timestamp tie -- otherwise the two layers could disagree (one allows,
-        -- the other raises).
-        ORDER BY created_at DESC, id DESC LIMIT 1`, [item.application_id])).rows[0];
     // Generalized (E2): block on ANY unreconciled FATAL finding — a FICO mismatch
     // OR a fraud / OFAC / deceased / SSN / address-discrepancy bureau alert. Reads
     // both the new findings[] wrapper and the pre-E2 single-finding shape via the
     // shared engine helper, so the app layer and the db/170 trigger always agree.
+    //
+    // TWO reference reports (findings live on 'imported' AND 'review' rows since
+    // E2 surfaces bureau alerts even on a review/frozen pull):
+    //   (a) the latest IMPORTED-OR-REVIEW report — catches a fatal alert on a
+    //       review pull (the E2 fail-open BLOCKER: a review row was skipped);
+    //   (b) the latest IMPORTED report — so a NULL-finding review re-pull can't
+    //       MASK an earlier imported fatal finding (a clean IMPORTED re-pull, by
+    //       contrast, is a real re-verification and DOES supersede/clear).
+    // A failed / in_doubt / ordering re-pull (NULL finding, not a real result) is
+    // excluded from both and can never mask a finding. id DESC is a deterministic
+    // tiebreaker so this gate and the db/170 trigger resolve the SAME rows.
     const underwriting = require('../lib/credit/underwriting');
-    const fatal = cr ? underwriting.activeFatalFindings(cr.underwriting_finding, cr.underwriting_finding_reconciled_at) : [];
-    if (fatal.length) {
-      const lead = fatal.length === 1
+    const latestResult = (await db.query(
+      `SELECT underwriting_finding, underwriting_finding_reconciled_at
+         FROM credit_reports
+        WHERE application_id=$1 AND status IN ('imported','review')
+        ORDER BY created_at DESC, id DESC LIMIT 1`, [item.application_id])).rows[0];
+    const latestImported = (await db.query(
+      `SELECT underwriting_finding, underwriting_finding_reconciled_at
+         FROM credit_reports
+        WHERE application_id=$1 AND status = 'imported'
+        ORDER BY created_at DESC, id DESC LIMIT 1`, [item.application_id])).rows[0];
+    const fatal = [
+      ...(latestResult ? underwriting.activeFatalFindings(latestResult.underwriting_finding, latestResult.underwriting_finding_reconciled_at) : []),
+      ...(latestImported ? underwriting.activeFatalFindings(latestImported.underwriting_finding, latestImported.underwriting_finding_reconciled_at) : []),
+    ];
+    // De-dupe: when the two reference reports are the SAME imported row, both
+    // queries return its findings — collapse by type+message for the message.
+    const seen = new Set();
+    const uniq = fatal.filter((f) => { const k = `${f.type}|${f.message}`; if (seen.has(k)) return false; seen.add(k); return true; });
+    if (uniq.length) {
+      const lead = uniq.length === 1
         ? 'This credit report has a FATAL Underwriting finding'
-        : `This credit report has ${fatal.length} FATAL Underwriting findings`;
-      return `${lead}: ${fatal.map((x) => x.message).join(' • ')} Correct the file and re-pull the report, or have an underwriter reconcile the finding(s), before signing off this credit condition.`;
+        : `This credit report has ${uniq.length} FATAL Underwriting findings`;
+      return `${lead}: ${uniq.map((x) => x.message).join(' • ')} Correct the file and re-pull the report, or have an underwriter reconcile the finding(s), before signing off this credit condition.`;
     }
     return null;
   }

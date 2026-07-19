@@ -136,11 +136,24 @@ const ok = (name, cond) => { console.log(`${cond ? 'PASS' : 'FAIL'} - ${name}`);
   r = await fetch(`${base}/credit/reconcile-finding`, { method: 'POST', headers: H(token), body: JSON.stringify({ creditReportId: rep2, findingType: 'no_such_type', note: 'x' }) });
   ok('reconciling an unknown finding type → 422', r.status === 422);
 
+  // 9. FAIL-OPEN REGRESSION (db/171): a fatal alert on a REVIEW-status report must
+  //    block sign-off through the APP layer too (not only the DB trigger).
+  const appId3 = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id) VALUES ($1,$2) RETURNING id`, [bor, onFile])).rows[0].id;
+  const reviewWrap = { severity: 'fatal', types: ['deceased'], message: 'deceased',
+    findings: [{ type: 'deceased', code: 'deceased', severity: 'fatal', reconciled: false, reconcilableBy: 'compliance', message: 'Deceased flag on file' }] };
+  await db.query(`INSERT INTO credit_reports (application_id,provider_id,status,underwriting_finding,completed_at) VALUES ($1,$2,'review',$3::jsonb,now())`, [appId3, prov, JSON.stringify(reviewWrap)]);
+  const item3 = (await db.query(`INSERT INTO checklist_items (scope,label,application_id,template_id,status,audience,is_required) VALUES ('application','Credit report',$1,$2,'received','staff',true) RETURNING id`, [appId3, tmpl])).rows[0].id;
+  await db.query(`INSERT INTO documents (checklist_item_id,application_id,filename,is_current) VALUES ($1,$2,'r.pdf',true)`, [item3, appId3]).catch(() => {});
+  r = await fetch(`${base}/checklist/${item3}`, { method: 'PATCH', headers: H(token), body: JSON.stringify({ signedOff: true }) });
+  ok('app gate 422s on a fatal alert on a REVIEW report (no fail-open)', r.status === 422);
+  const it3 = (await db.query(`SELECT status, signed_off_at FROM checklist_items WHERE id=$1`, [item3])).rows[0];
+  ok('review-report finding kept the condition unsigned', it3.status !== 'satisfied' && !it3.signed_off_at);
+
   // cleanup
-  await db.query(`DELETE FROM documents WHERE application_id=$1`, [appId]).catch(() => {});
-  await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1::uuid[])`, [[appId, appId2]]);
-  await db.query(`DELETE FROM credit_reports WHERE application_id = ANY($1::uuid[])`, [[appId, appId2]]);
-  await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, appId2]]);
+  await db.query(`DELETE FROM documents WHERE application_id = ANY($1::uuid[])`, [[appId, appId3]]).catch(() => {});
+  await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1::uuid[])`, [[appId, appId2, appId3]]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id = ANY($1::uuid[])`, [[appId, appId2, appId3]]);
+  await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[appId, appId2, appId3]]);
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bor]);
   await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[onFile, offFile, proc]]);
 

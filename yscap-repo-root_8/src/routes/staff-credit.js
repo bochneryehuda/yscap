@@ -153,6 +153,69 @@ router.get('/credit/reports', requirePull, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---- FULL report detail (E3): every "block" for the detail interface --------
+// The report + per-bureau scores + tradelines / inquiries / public records /
+// collections / bureau-reported identity / alerts + the findings, for ONE report.
+// Gated (pull_credit + canSeeApp) and AUDITED on open. SECURITY: account numbers
+// are returned MASKED only (last-4) — the encrypted column and the raw audit blobs
+// are NEVER selected, so no full PAN or reported SSN ever reaches the wire.
+router.get('/credit/reports/:id/detail', requirePull, async (req, res) => {
+  const reportId = req.params.id;
+  try {
+    const report = (await db.query(
+      `SELECT id, application_id, credit_report_identifier, report_type, other_description, request_type, action_type,
+              first_issued_date, last_updated_date, representative_score, representative_bracket,
+              status, review_reason, bureau_status, underwriting_finding, error_detail, mismo_version,
+              underwriting_finding_reconciled_at, underwriting_finding_reconciled_by, underwriting_finding_reconcile_note,
+              pdf_document_id, created_at, completed_at
+         FROM credit_reports WHERE id=$1`, [reportId])).rows[0];
+    if (!report) return res.status(404).json({ error: 'report not found' });
+    if (!(await canSeeApp(req, report.application_id))) return res.status(403).json({ error: 'forbidden' });
+
+    const scores = (await db.query(
+      `SELECT credit_report_id, report_borrower_id, borrower_id, bureau, model, value, usable, reason, exclusion_reason, factors, score_date
+         FROM credit_scores WHERE credit_report_id=$1 ORDER BY report_borrower_id, bureau`, [reportId])).rows;
+    const tradelines = (await db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, creditor_name, creditor_address, account_type,
+              account_ownership_type, account_status_type, account_identifier_masked,
+              unpaid_balance, credit_limit, high_credit, monthly_payment, past_due_amount, charge_off_amount,
+              date_opened, date_reported, date_closed, last_activity_date, months_reviewed_count,
+              current_rating_code, current_rating_type, late_30_count, late_60_count, late_90_count,
+              payment_pattern, derogatory_indicator, is_collection, is_authorized_user
+         FROM credit_tradelines WHERE credit_report_id=$1
+        ORDER BY is_collection DESC, derogatory_indicator DESC NULLS LAST, creditor_name`, [reportId])).rows;
+    const inquiries = (await db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, inquiry_date, inquiring_party_name, business_type, loan_type
+         FROM credit_inquiries WHERE credit_report_id=$1 ORDER BY inquiry_date DESC NULLS LAST`, [reportId])).rows;
+    const publicRecords = (await db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, record_type, filed_date, reported_date,
+              disposition_type, disposition_date, amount, court_name, docket_identifier, plaintiff_name, derogatory_indicator
+         FROM credit_public_records WHERE credit_report_id=$1 ORDER BY filed_date DESC NULLS LAST`, [reportId])).rows;
+    const collections = (await db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, collection_agency_name, original_creditor_name, amount, status, date_reported
+         FROM credit_collections WHERE credit_report_id=$1 ORDER BY date_reported DESC NULLS LAST`, [reportId])).rows;
+    const identities = (await db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, reported_name, aliases, dob, ssn_masked,
+              current_address, former_addresses, employers, infile_date, alert_messages
+         FROM credit_report_identities WHERE credit_report_id=$1`, [reportId])).rows;
+    const alerts = (await db.query(
+      `SELECT id, borrower_id, report_borrower_id, bureau, category, raw_type, message_text
+         FROM credit_alerts WHERE credit_report_id=$1 ORDER BY category`, [reportId])).rows;
+
+    // Names for the per-borrower tabs (from the file's borrowers, not the report).
+    const bIds = [...new Set([...scores, ...tradelines, ...identities, ...alerts].map((x) => x.borrower_id).filter(Boolean))];
+    const borrowerNames = {};
+    if (bIds.length) {
+      for (const b of (await db.query(`SELECT id, first_name, last_name FROM borrowers WHERE id = ANY($1)`, [bIds])).rows) {
+        borrowerNames[b.id] = `${b.first_name || ''} ${b.last_name || ''}`.trim();
+      }
+    }
+
+    await audit(req, 'credit_report_detail_view', { creditReportId: reportId, applicationId: report.application_id });
+    res.json({ report, scores, tradelines, inquiries, publicRecords, collections, identities, alerts, borrowerNames });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // The manual-review queue: reports needing a human — a frozen bureau / no score /
 // vendor error ('review'), PLUS 'in_doubt' orders (timed out; the vendor may have
 // billed) that need reconciliation before a re-order. Company-wide for staff who
@@ -300,7 +363,11 @@ router.patch('/credit/adverse-action/:id', requirePull, async (req, res) => {
 // OFAC / deceased findings are COMPLIANCE-ONLY: a loan officer or processor may
 // NOT clear them — only an admin (compliance/BSA-AML) after a documented review.
 const underwritingEngine = require('../lib/credit/underwriting');
-const isComplianceReconcilable = (f) => f && f.reconcilableBy === 'compliance';
+const { COMPLIANCE_ONLY } = require('../lib/credit/alerts');
+// A finding is compliance-only (admin-clear ONLY) if it SAYS so OR its category is
+// authoritatively compliance-only (OFAC / deceased) — belt-and-suspenders so a
+// stored finding missing/with a wrong reconcilableBy can't be cleared by an officer.
+const isComplianceReconcilable = (f) => !!f && (f.reconcilableBy === 'compliance' || COMPLIANCE_ONLY.has(f.type) || COMPLIANCE_ONLY.has(f.code));
 router.post('/credit/reconcile-finding', requirePull, async (req, res) => {
   const b = req.body || {};
   const reportId = b.creditReportId;

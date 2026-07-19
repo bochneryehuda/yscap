@@ -99,6 +99,7 @@ function alertFindings(alerts) {
   const out = [];
   const seen = new Set();
   for (const a of (Array.isArray(alerts) ? alerts : [])) {
+    if (!a) continue;   // skip a null/undefined alert element (don't mint a spurious 'other')
     const category = a && a.category ? a.category : 'other';
     const key = `${category}|${a && a.borrowerId != null ? a.borrowerId : ''}`;
     if (seen.has(key)) continue;

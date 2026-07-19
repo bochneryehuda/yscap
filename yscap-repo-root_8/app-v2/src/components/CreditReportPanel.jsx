@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import CreditReportDetail from './CreditReportDetail.jsx';
 
 /* Per-file staff credit section: pull / reissue a credit report and view the
    imported reports (representative FICO + bracket, per-bureau scores, the PDF,
@@ -185,7 +186,11 @@ function BureauLine({ s }) {
 }
 
 function ReportRow({ r, mayReconcile, onChanged }) {
+  const [detailOpen, setDetailOpen] = useState(false);
   const badge = STATUS_BADGE[r.status] || { text: r.status, cls: '' };
+  // The full-report detail (tradelines/alerts/identity) exists only once a report
+  // has been imported or routed to review — not while it is still ordering.
+  const hasDetail = r.status === 'imported' || r.status === 'review';
   // group scores by report borrower id (joint → one block each)
   const byBorrower = new Map();
   for (const s of (r.scores || [])) {
@@ -237,11 +242,17 @@ function ReportRow({ r, mayReconcile, onChanged }) {
         </div>
       ))}
 
-      {r.pdf_document_id && (
-        <div style={{ marginTop: 8 }}>
-          <a className="btn ghost" href={api.creditReportPdfUrl(r.id)} target="_blank" rel="noopener noreferrer">Open full report PDF</a>
+      {(hasDetail || r.pdf_document_id) && (
+        <div className="row" style={{ marginTop: 8, gap: 6, flexWrap: 'wrap' }}>
+          {hasDetail && (
+            <button className="btn ghost" onClick={() => setDetailOpen(true)}>View full report</button>
+          )}
+          {r.pdf_document_id && (
+            <a className="btn ghost" href={api.creditReportPdfUrl(r.id)} target="_blank" rel="noopener noreferrer">Open full report PDF</a>
+          )}
         </div>
       )}
+      {detailOpen && <CreditReportDetail reportId={r.id} onClose={() => setDetailOpen(false)} />}
     </div>
   );
 }

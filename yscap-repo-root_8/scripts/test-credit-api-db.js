@@ -77,6 +77,19 @@ const importTransport = async () => ({ status: 200, headers: { get: () => 'text/
   ok('GET /credit/reports 400 (missing appId)', (await call('GET', '/credit/reports', A)).status === 400);
   ok('GET /credit/reports 403 (off-file LO)', (await call('GET', `/credit/reports?applicationId=${appId}`, OFF)).status === 403);
   ok('GET /credit/reports non-uuid fails closed', (await call('GET', '/credit/reports?applicationId=not-a-uuid', A)).status >= 400);
+
+  // ---- E3: FULL report detail endpoint (blocks) ----
+  await db.query(`INSERT INTO credit_tradelines (credit_report_id, borrower_id, report_borrower_id, bureau, creditor_name, account_identifier_masked, account_identifier_encrypted, unpaid_balance, is_collection, is_authorized_user, raw) VALUES ($1,$2,'B1','Equifax','CHASE CARD','••••1234',$3,1500,false,false,'{"x":1}'::jsonb)`, [rep, bor, C.encryptSecret('4111111111111234')]);
+  await db.query(`INSERT INTO credit_alerts (credit_report_id, borrower_id, report_borrower_id, bureau, category, raw_type, message_text) VALUES ($1,$2,'B1','Equifax','fraud_alert','FACTAFraudVictimInitial','Fraud alert on file')`, [rep, bor]);
+  const det = await call('GET', `/credit/reports/${rep}/detail`, A);
+  ok('GET reports/:id/detail 200 (own file)', det.status === 200);
+  ok('detail returns tradelines + alerts', Array.isArray(det.j.tradelines) && det.j.tradelines.length >= 1 && Array.isArray(det.j.alerts) && det.j.alerts.length >= 1);
+  ok('detail account number is MASKED (last-4)', det.j.tradelines[0].account_identifier_masked === '••••1234');
+  ok('detail NEVER exposes the encrypted account column', det.j.tradelines.every((t) => !('account_identifier_encrypted' in t)));
+  ok('detail NEVER exposes the raw audit blob', det.j.tradelines.every((t) => !('raw' in t)));
+  ok('detail 403 (off-file LO — no IDOR)', (await call('GET', `/credit/reports/${rep}/detail`, OFF)).status === 403);
+  ok('detail 404 (unknown report)', (await call('GET', '/credit/reports/00000000-0000-0000-0000-000000000000/detail', A)).status === 404);
+  ok('detail 403 (no pull_credit)', (await call('GET', `/credit/reports/${rep}/detail`, NP)).status === 403);
   ok('GET /credit/review-queue 200', (await call('GET', '/credit/review-queue', A)).status === 200);
   ok('GET /credit/health 200', (await call('GET', '/credit/health', A)).status === 200);
   ok('POST /credit/order 400 (missing appId)', (await call('POST', '/credit/order', A, {})).status === 400);

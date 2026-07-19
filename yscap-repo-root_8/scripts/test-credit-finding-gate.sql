@@ -147,6 +147,48 @@ BEGIN
   UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
   RAISE NOTICE 'PASS T10: a warning-only findings[] wrapper never blocks';
 
+  -- ==== db/171: a FATAL ALERT on a REVIEW report must also block ============
+  -- (E2 fail-open fix: alerts land on review rows too, but the old gate only read
+  -- 'imported' rows.)
+  DELETE FROM checklist_items WHERE application_id=aid;
+  DELETE FROM credit_reports WHERE application_id=aid;
+  -- T11: the ONLY report is a REVIEW (frozen bureau) carrying a fatal OFAC alert.
+  INSERT INTO credit_reports (application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES (aid, 1, 'review',
+      '{"severity":"fatal","types":["ofac"],"message":"ofac",
+        "findings":[{"type":"ofac","severity":"fatal","reconciled":false,"reconcilableBy":"compliance"}]}'::jsonb,
+      timestamptz '2022-01-01 00:00:00+00')
+    RETURNING id INTO crid;
+  INSERT INTO checklist_items (scope,label,application_id,template_id,status)
+    VALUES ('application','Credit report',aid,tmpl,'received');
+  blocked := false;
+  BEGIN UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  EXCEPTION WHEN check_violation THEN blocked := true; END;
+  IF NOT blocked THEN RAISE EXCEPTION 'FAIL T11: a fatal alert on a REVIEW report did NOT block (fail-open)'; END IF;
+  RAISE NOTICE 'PASS T11: a fatal alert on a review-status report blocks completion';
+
+  -- T12: an imported fatal fico finding, then a LATER review re-pull with NO
+  -- finding, must STILL block (the null-finding review must not MASK the imported
+  -- fatal). id 'a3' > the review row, but the imported row still governs.
+  UPDATE credit_reports SET underwriting_finding =
+    '{"severity":"fatal","types":["fico_mismatch"],"message":"m",
+      "findings":[{"type":"fico_mismatch","severity":"fatal","reconciled":false}]}'::jsonb,
+      status='imported', created_at = timestamptz '2022-02-01 00:00:00+00'
+    WHERE id=crid;
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-0000000000c1', aid, 1, 'review', NULL, timestamptz '2022-03-01 00:00:00+00');
+  blocked := false;
+  BEGIN UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  EXCEPTION WHEN check_violation THEN blocked := true; END;
+  IF NOT blocked THEN RAISE EXCEPTION 'FAIL T12: a null-finding review re-pull MASKED an earlier imported fatal finding'; END IF;
+  RAISE NOTICE 'PASS T12: a null-finding review re-pull does not mask an earlier imported fatal finding';
+
+  -- T13: a CLEAN imported re-pull (real re-verification) DOES clear it.
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-0000000000c2', aid, 1, 'imported', NULL, timestamptz '2022-04-01 00:00:00+00');
+  UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  RAISE NOTICE 'PASS T13: a clean imported re-pull supersedes and clears the gate';
+
   DELETE FROM checklist_items WHERE application_id=aid;
   DELETE FROM credit_reports WHERE application_id=aid;
   DELETE FROM applications WHERE id=aid;

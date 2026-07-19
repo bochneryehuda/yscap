@@ -468,6 +468,7 @@ export const api = {
   // Order/reissue (billable — pull_credit) + report views.
   creditOrder:         (b) => req('POST', '/api/staff/credit/order', b),
   creditReports:       (appId) => req('GET', `/api/staff/credit/reports?applicationId=${encodeURIComponent(appId)}`),
+  creditReportDetail:  (reportId) => req('GET', `/api/staff/credit/reports/${encodeURIComponent(reportId)}/detail`),
   creditReviewQueue:   () => req('GET', '/api/staff/credit/review-queue'),
   // Reconcile (or undo) a fatal FICO-mismatch finding — clears the sign-off gate.
   creditReconcileFinding: (b) => req('POST', '/api/staff/credit/reconcile-finding', b),
