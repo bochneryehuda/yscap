@@ -18,21 +18,26 @@ let started = false;
 let lastDirectorySync = 0;
 
 /**
- * Backfill stranded births (audit E-GATE-BIRTH-WHILE-OFF): a borrower who clicked "Request a
- * draw" while SITEWIRE_ENABLED was off consumed the one-time claim, but the enqueue no-op'd, so
- * the file has no Sitewire footprint and nothing ever re-fires. On worker start (Sitewire now
- * on) we enqueue every funded + draw-requested file that has no link row yet, so turning the
- * switch on catches up the backlog instead of silently stranding those files.
+ * Backfill stranded births (audit E-GATE-BIRTH-WHILE-OFF): a file whose draw process was started
+ * while SITEWIRE_ENABLED was off has no Sitewire footprint, and the enqueue no-op'd, so nothing
+ * ever re-fires. Two birth paths can be stranded this way:
+ *   · the borrower clicked "Request a draw" (applications.draw_setup_requested_at), and
+ *   · the DRAW COORDINATOR pressed "Start the draw process" (sitewire_property_links.draw_setup_started_at) —
+ *     the coordinator now comes FIRST, so this is the primary path and must be caught too.
+ * On worker start (Sitewire now on) we enqueue every funded file started either way that has no
+ * pushed property yet, so flipping the switch catches up the backlog instead of stranding it.
  */
 async function backfillStrandedBirthsOnce() {
   try {
     const rows = (await db.query(
       `SELECT a.id FROM applications a
-        WHERE a.status='funded' AND a.draw_setup_requested_at IS NOT NULL AND a.deleted_at IS NULL
+        WHERE a.status='funded' AND a.deleted_at IS NULL
+          AND (a.draw_setup_requested_at IS NOT NULL
+               OR EXISTS (SELECT 1 FROM sitewire_property_links s WHERE s.application_id=a.id AND s.draw_setup_started_at IS NOT NULL))
           AND NOT EXISTS (SELECT 1 FROM sitewire_property_links l WHERE l.application_id=a.id AND l.sitewire_property_id IS NOT NULL)
         LIMIT 500`)).rows;
     for (const r of rows) await enqueueSitewirePush(r.id, 'push_file').catch(() => {});
-    if (rows.length) console.log(`[sitewire] backfilled ${rows.length} funded+draw-requested file(s) with no Sitewire footprint`);
+    if (rows.length) console.log(`[sitewire] backfilled ${rows.length} funded file(s) started but with no Sitewire footprint`);
   } catch (e) { console.warn('[sitewire] birth backfill skipped:', e.message); }
 }
 

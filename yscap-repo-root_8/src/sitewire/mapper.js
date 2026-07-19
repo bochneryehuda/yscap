@@ -36,6 +36,28 @@ const CATS = {
 
 const SENTINEL = { CONTINGENCY: '__contingency__', GC: '__gc__' };
 
+// Human-readable category labels (used to disambiguate a name that repeats across categories).
+const CAT_LABELS = {
+  soft: 'Soft Costs', genconds: 'General Conditions', demo: 'Demolition', site: 'Site Work',
+  siteutil: 'Site & Utilities', foundation: 'Foundation', shell: 'Shell', exterior: 'Exterior',
+  interior: 'Interior', flooring: 'Flooring', mep: 'MEP', kitchen: 'Kitchen', baths: 'Baths',
+  appliances: 'Appliances', basement: 'Basement', special: 'Special', final: 'Final', other: 'Other',
+};
+// Taxonomy base names that appear in MORE THAN ONE category (e.g. "Tile" in flooring AND baths).
+// These are ALWAYS qualified with their category so two default lines can never explode to the same
+// Sitewire name — the "disambiguate" half of G-NAME (bind-by-name must be unambiguous). Static.
+const DUP_TAX_NAMES = (() => {
+  const count = {};
+  for (const cid of Object.keys(CATS)) for (const nm of CATS[cid]) count[nm] = (count[nm] || 0) + 1;
+  return new Set(Object.keys(count).filter((k) => count[k] > 1));
+})();
+// The category label for a cell's sow_line_key ("cid:idx" -> "Kitchen"); null for custom/sentinel/media.
+function catLabelOf(sowLineKey) {
+  const k = String(sowLineKey || '');
+  if (k.indexOf('x:') === 0 || k.indexOf('__') === 0) return null;
+  return CAT_LABELS[k.split(':')[0]] || null;
+}
+
 function unitCount(state) {
   if (!state) return 1;
   if (state.propType === 'single') return 1;
@@ -54,14 +76,41 @@ function lineName(state, key) {
   }
   const [cid, i] = key.split(':');
   const arr = CATS[cid];
-  return (arr && arr[+i] != null) ? arr[+i] : key;
+  const base = (arr && arr[+i] != null) ? arr[+i] : key;
+  // A name that lives in more than one category (e.g. "Tile" in flooring AND baths) is ALWAYS
+  // qualified with its category, so the default taxonomy can never produce two identical Sitewire
+  // job-item names — which would make bind-by-name ambiguous and strand/duplicate lines (G-NAME).
+  if (DUP_TAX_NAMES.has(base) && CAT_LABELS[cid]) return `${base} (${CAT_LABELS[cid]})`;
+  return base;
+}
+
+// Guarantee EVERY job-item name in the pushed set is unique (bind-by-name can never be ambiguous).
+// Cross-category taxonomy dups are already handled by lineName; this catches residual collisions from
+// user LABEL OVERRIDES or two CUSTOM lines sharing a label. Deterministic + stable: media anchors and
+// already-unique names keep their exact name; a collider is qualified by its category, then by a stable
+// counter if still colliding. Mutates + returns the items array.
+function uniquifyNames(items) {
+  const counts = {};
+  for (const it of items) counts[it.name] = (counts[it.name] || 0) + 1;
+  const used = new Set();
+  // reserve canonical names first: anything already unique, plus media anchors (structural, never renamed)
+  for (const it of items) if (counts[it.name] === 1 || it.is_media_item) used.add(it.name);
+  for (const it of items) {
+    if (counts[it.name] === 1 || it.is_media_item) continue;
+    const q = catLabelOf(it.sow_line_key);
+    const base = q ? `${it.name} (${q})` : it.name;
+    let name = base, k = 2;
+    while (used.has(name)) name = `${base} #${k++}`;
+    it.name = name; used.add(name);
+  }
+  return items;
 }
 
 // The atomic budget cells of a saved SOW (mirrors lineTotal/lineSectionVal). Each cell:
 //   { sow_line_key, section_token, unit_index, name, budgeted_cents }
 // Contingency + GC are appended as their own project cells (so the Sitewire total ties
-// to rehab_budget). Off lines and zero cells are still emitted for line items (so a $0
-// line still has a Sitewire counterpart) — callers may drop zero cells if desired.
+// to rehab_budget). Lines toggled OFF are skipped; an ON line with a $0 cell is still
+// emitted (so a $0 line still has a Sitewire counterpart) — callers may drop zero cells.
 function sowCells(state) {
   const cells = [];
   if (!state || typeof state !== 'object') return cells;
@@ -143,6 +192,7 @@ function explodeSow(state, opts = {}) {
   if (cont > 0) items.push({ sow_line_key: SENTINEL.CONTINGENCY, section_token: 'project', unit_index: null, name: 'Contingency', budgeted_cents: cont, is_media_item: false, mandatory: false, required_image_count: 0, required_video_count: 0 });
   if (gc > 0) items.push({ sow_line_key: SENTINEL.GC, section_token: 'project', unit_index: null, name: 'GC Fee', budgeted_cents: gc, is_media_item: false, mandatory: false, required_image_count: 0, required_video_count: 0 });
   for (const a of mediaAnchors(state, opts.media || {})) items.push(a);
+  uniquifyNames(items); // G-NAME: guarantee every Sitewire job-item name is unique (bindable)
   const total = sub + cont + gc;
   return { items, subtotal_cents: sub, contingency_cents: cont, gc_cents: gc, total_cents: total };
 }
@@ -252,7 +302,8 @@ function reconcileToBudget(ex, budgetCents, tolCents = 100) {
 }
 
 module.exports = {
-  CATS, SENTINEL, unitCount, isMulti, lineName, sowCells,
+  CATS, SENTINEL, CAT_LABELS, DUP_TAX_NAMES, catLabelOf, uniquifyNames,
+  unitCount, isMulti, lineName, sowCells,
   subtotalCents, contingencyCents, gcCents, mediaAnchors,
   explodeSow, reconcileToBudget, diffBudget, reverseReconcile,
 };

@@ -136,6 +136,109 @@ router.post('/files/:id/push', requirePermission('platform_setup'), async (req, 
   catch (e) { res.status(e.status === 422 ? 422 : 502).json({ error: e.message }); }
 });
 
+// ---- GET /files/:id/draw-setup — what the coordinator sees before starting the draw process ----
+// Everything that WILL be pushed + the resolved inspection method/fee + whether the prerequisites
+// are met + any errors already parked for manual review. Read-only.
+router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const a = await orchestrator.loadFile(appId);
+    if (!a) return res.status(404).json({ error: 'file not found' });
+    const link = await orchestrator.getLink(appId);
+    const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
+    const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
+    const rule = cp.id ? await orchestrator.resolveRule(cp.id, program) : null;
+    const insp = orchestrator.resolveInspection(link, rule);
+    const budgetDollars = await rehab.requiredRehabBudget(appId).catch(() => null);
+    const addr = T.addressForSitewire(a.property_address);
+    const addressReady = !!(addr && addr.street && addr.city && addr.state && addr.zip);
+    const openReviews = Number((await db.query(`SELECT count(*)::int c FROM sync_review_queue WHERE application_id=$1 AND field_key='sitewire' AND status='open'`, [appId])).rows[0].c) || 0;
+    const prereqs = {
+      funded: a.status === 'funded',
+      loan_number: !!a.ys_loan_number,
+      budget: budgetDollars != null && Number(budgetDollars) > 0,
+      scope_of_work: !!(a.sow_payload && a.sow_payload.state),
+      address: addressReady,
+      capital_partner: !!cp.id,
+    };
+    const cpName = cp.id ? (await db.query(`SELECT name FROM sitewire_capital_partners WHERE sitewire_id=$1`, [cp.id])).rows[0] : null;
+    res.json({
+      started: !!(link && link.sitewire_property_id),
+      state: link ? link.state : null,
+      started_at: link ? link.draw_setup_started_at : null,
+      program,
+      capital_partner: { id: cp.id != null ? Number(cp.id) : null, name: (cpName && cpName.name) || null, candidate: cp.candidate != null ? Number(cp.candidate) : null, candidate_name: cp.candidateName || null, ambiguous: !!cp.ambiguous },
+      inspection: {
+        method: insp.method, fee_kind: insp.feeKind, fee_cents: Number(insp.feeCents),
+        allow_virtual: insp.allowVirtual, allow_physical: insp.allowPhysical,
+        can_switch: insp.allowVirtual && insp.allowPhysical,
+        default_method: (rule && rule.inspection_method) || 'mobile',
+        chosen_override: link ? link.inspection_method : null,
+        fee_virtual_cents: rule ? Number(rule.fee_cents_virtual) : null,
+        fee_physical_cents: rule && rule.fee_cents_physical != null ? Number(rule.fee_cents_physical) : null,
+      },
+      requires: { sitewire_inspector: !!(rule && rule.require_sitewire_inspector), capital_partner_approval: !!(rule && rule.require_capital_partner_approval) },
+      prereqs,
+      open_reviews: openReviews,
+      can_start: Object.values(prereqs).every(Boolean),
+      switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- POST /files/:id/start-draw — the draw coordinator STARTS the draw lifecycle ----
+// Picks/confirms the inspection method (within what the rule allows), records who started it, and
+// pushes the property + budget + Scope of Work + fees to Sitewire (read-after-write + park-on-error
+// via the guarded orchestrator). This is the button that begins everything after funding.
+router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const a = await orchestrator.loadFile(appId);
+    if (!a) return res.status(404).json({ error: 'file not found' });
+    if (a.status !== 'funded') return res.status(409).json({ error: 'the draw process starts once the loan is funded' });
+    // validate a coordinator-chosen method against what the file's rule allows (never guess)
+    const body = req.body || {};
+    let chosen = null;
+    if (body.inspection_method != null) {
+      chosen = body.inspection_method === 'traditional' ? 'traditional' : body.inspection_method === 'mobile' ? 'mobile' : null;
+      if (!chosen) return res.status(400).json({ error: 'inspection_method must be mobile (virtual) or traditional (physical)' });
+      const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
+      const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
+      const rule = cp.id ? await orchestrator.resolveRule(cp.id, program) : null;
+      if (rule) {
+        if (chosen === 'mobile' && rule.allow_virtual === false) return res.status(422).json({ error: 'virtual inspection is not allowed for this program/partner' });
+        if (chosen === 'traditional' && rule.allow_physical === false) return res.status(422).json({ error: 'on-site inspection is not allowed for this program/partner' });
+      }
+    }
+    // ensure a link row exists to carry the coordinator's choice + who/when started
+    await db.query(
+      `INSERT INTO sitewire_property_links (application_id, matched_by, state, inspection_method, draw_setup_started_at, draw_setup_started_by)
+       VALUES ($1,'created','pending',$2,now(),$3)
+       ON CONFLICT (application_id) DO UPDATE SET inspection_method=COALESCE($2, sitewire_property_links.inspection_method),
+         draw_setup_started_at=COALESCE(sitewire_property_links.draw_setup_started_at, now()), draw_setup_started_by=COALESCE(sitewire_property_links.draw_setup_started_by, $3), updated_at=now()`,
+      [appId, chosen, req.actor.id]);
+    // push everything now (guarded). When Sitewire is off, the link row above (draw_setup_started_at)
+    // is the durable birth record — the worker's stranded-birth backfill enqueues the push the moment
+    // the switch is turned on, so nothing is lost while staged off.
+    if (!cfg.sitewireEnabled) {
+      return res.json({ ok: true, started: true, pushed: false, note: 'Draw setup recorded. Sitewire is currently off — it will push automatically when turned on.' });
+    }
+    // Push now for immediate read-after-write feedback. A guard failure comes back as
+    // { parked } (handled by the coordinator's review list). A TRANSIENT throw (network /
+    // circuit) must not be lost — enqueue a durable retry (the worker drains it) so the
+    // coordinator's Start is as reliable as the borrower's request-a-draw path (audit L1).
+    try {
+      const result = await orchestrator.pushFile(appId, {});
+      return res.json({ ok: true, started: true, result });
+    } catch (e) {
+      await enqueueSitewirePush(appId, 'push_file').catch(() => {});
+      return res.status(202).json({ ok: true, started: true, queued: true, note: 'Draw setup saved. Sitewire is briefly unavailable — the push will retry automatically.' });
+    }
+  } catch (e) { res.status(e.status === 422 ? 422 : 500).json({ error: e.message }); }
+});
+
 // ---- POST /api/sitewire/requests/:reqId/approve — set approved_cents on a draw line ----
 router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async (req, res) => {
   if (!cfg.sitewireEnabled || !cfg.sitewireOutboundEnabled) return res.status(503).json({ error: 'Sitewire writes are turned off' });
@@ -324,13 +427,27 @@ router.get('/rules', requirePermission('platform_setup'), async (req, res) => {
 router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   const b = req.body || {};
   const method = b.inspection_method === 'traditional' ? 'traditional' : 'mobile';
+  // allow_virtual / allow_physical say which methods this program MAY use (both = coordinator can switch).
+  // Default each to true when absent. Never let a rule forbid its own default method — that would leave a
+  // program with no legal inspection method and block the push; force-allow the chosen default.
+  let allowVirtual = b.allow_virtual !== false;
+  let allowPhysical = b.allow_physical !== false;
+  if (method === 'mobile') allowVirtual = true; else allowPhysical = true;
+  // Fees are integer cents. Virtual falls back to $299 when blank/garbage. Physical is nullable
+  // (a null physical fee falls back to the virtual fee at push time) — a non-numeric value must
+  // become null, never NaN (which Postgres would reject as a 500). An explicit 0 is honored.
+  const vFee = Number(b.fee_cents_virtual);
+  const feeVirtual = Number.isFinite(vFee) && vFee > 0 ? Math.round(vFee) : 29900;
+  const pRaw = b.fee_cents_physical;
+  const pFee = Number(pRaw);
+  const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) ? null : Math.round(pFee);
   try {
     const row = (await db.query(
-      `INSERT INTO sitewire_inspection_rules (capital_partner_id, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (COALESCE(capital_partner_id,-1), COALESCE(program,'')) DO UPDATE SET inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, updated_at=now()
+      `INSERT INTO sitewire_inspection_rules (capital_partner_id, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (COALESCE(capital_partner_id,-1), COALESCE(program,'')) DO UPDATE SET inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, updated_at=now()
        RETURNING *`,
-      [b.capital_partner_id || null, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, Math.round(Number(b.fee_cents_virtual) || 29900), b.fee_cents_physical != null ? Math.round(Number(b.fee_cents_physical)) : null])).rows[0];
+      [b.capital_partner_id || null, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical])).rows[0];
     res.json({ ok: true, rule: row });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -435,7 +552,10 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // project) — the panel shows only when enabled or already in use.
     const lienWaiversEnabled = await lienGateEnabled(appId);
     res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, waivers,
-      lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null });
+      lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null,
+      // so the desk can show a proactive read-only banner + disable write buttons when writes are off
+      // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
+      switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -619,6 +739,56 @@ router.post('/files/:id/lien-waivers-setting', requirePermission('platform_setup
   await db.query(`UPDATE sitewire_property_links SET require_lien_waivers=$2, updated_at=now() WHERE application_id=$1`, [appId, v]);
   await orchestrator.journal({ appId, entity: 'settings', field: 'require_lien_waivers', newValue: v, source: 'review_resolve', changed: true }).catch(() => {});
   res.json({ ok: true, require_lien_waivers: v });
+});
+
+// ---- GET /project?loan=<ys_loan_number> — look up a funded file to enable advanced features on ----
+// Powers the admin "turn on retainage / lien waivers for a specific project" form. Returns the file
+// plus its CURRENT per-project overrides (null = inherits the global default / off).
+router.get('/project', requirePermission('platform_setup'), async (req, res) => {
+  const loan = String(req.query.loan || '').trim();
+  if (!loan) return res.status(400).json({ error: 'enter a loan number' });
+  const a = (await db.query(
+    `SELECT a.id, a.ys_loan_number, a.property_address->>'oneLine' AS address, a.status,
+            l.retainage_pct, l.require_lien_waivers
+       FROM applications a LEFT JOIN sitewire_property_links l ON l.application_id=a.id
+      WHERE upper(a.ys_loan_number)=upper($1) AND a.deleted_at IS NULL LIMIT 1`, [loan])).rows[0];
+  // 404 (not 403) when the actor can't see the file, so a scoped setup user can't use this to probe
+  // whether a loan number exists on someone else's file — same response as a genuinely-missing loan.
+  if (!a || !(await canSeeFile(req, a.id))) return res.status(404).json({ error: `no file found for loan number "${loan}"` });
+  res.json({ application_id: a.id, ys_loan_number: a.ys_loan_number, address: a.address, status: a.status,
+    retainage_pct: a.retainage_pct != null ? Number(a.retainage_pct) : null, require_lien_waivers: a.require_lien_waivers });
+});
+
+// ---- POST /files/:id/advanced-settings — enable/adjust the OPT-IN features for ONE project ----
+// Retainage % and the lien-waiver gate are off by default and not in the standard workflow; this is
+// how an admin turns them on for a specific file. Upserts the link row so it works even before the
+// file is pushed to Sitewire. platform_setup + journaled (a coordinator can't quietly change these).
+router.post('/files/:id/advanced-settings', requirePermission('platform_setup'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  // retainage_pct: a number 0..100, or null to inherit the global default
+  let ret; // undefined = don't touch
+  if ('retainage_pct' in b) {
+    if (b.retainage_pct === null || b.retainage_pct === '') ret = null;
+    else { const n = Number(b.retainage_pct); if (!Number.isFinite(n) || n < 0 || n > 100) return res.status(400).json({ error: 'retainage % must be a number between 0 and 100 (or blank to inherit)' }); ret = n; }
+  }
+  // require_lien_waivers: true/false/null(inherit)
+  let lw;
+  if ('require_lien_waivers' in b) lw = b.require_lien_waivers === null ? null : b.require_lien_waivers === true ? true : b.require_lien_waivers === false ? false : undefined;
+  if (ret === undefined && lw === undefined) return res.status(400).json({ error: 'nothing to change' });
+  // upsert the link row so this works before the file is pushed (matched_by/state satisfy the CHECKs)
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, matched_by, state, retainage_pct, require_lien_waivers)
+     VALUES ($1,'created','pending',$2,$3)
+     ON CONFLICT (application_id) DO UPDATE SET
+       retainage_pct = ${ret === undefined ? 'sitewire_property_links.retainage_pct' : '$2'},
+       require_lien_waivers = ${lw === undefined ? 'sitewire_property_links.require_lien_waivers' : '$3'},
+       updated_at=now()`,
+    [appId, ret === undefined ? null : ret, lw === undefined ? null : lw]);
+  if (ret !== undefined) await orchestrator.journal({ appId, entity: 'settings', field: 'retainage_pct', newValue: ret, source: 'review_resolve', changed: true }).catch(() => {});
+  if (lw !== undefined) await orchestrator.journal({ appId, entity: 'settings', field: 'require_lien_waivers', newValue: lw, source: 'review_resolve', changed: true }).catch(() => {});
+  res.json({ ok: true, retainage_pct: ret, require_lien_waivers: lw });
 });
 
 // ---- POST /files/:id/coordinator — set the per-file draw-coordinator (admin override) ----

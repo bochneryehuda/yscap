@@ -19,6 +19,7 @@ import DocPreview from '../components/DocPreview.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
 import BorrowerDraws from '../components/BorrowerDraws.jsx';
+import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
@@ -541,6 +542,10 @@ export default function Application() {
   const [dlBusy, setDlBusy] = useState(null);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
+  // Appraisal report presence — reported up by the (read-only) AppraisalPanel so the
+  // section only appears in the nav once an appraisal has actually been received.
+  const [apprPresent, setApprPresent] = useState(false);
+  const onApprSummary = useCallback((s) => setApprPresent(!!s), []);
   const fileRef = useRef(null);
   const studioRef = useRef(null);               // the Products & Pricing sheet
   const [target, setTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId, photoId}
@@ -727,6 +732,7 @@ export default function Application() {
     { id: 'sec-overview', label: 'Loan overview' },
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
+    { id: 'sec-appraisal', label: 'Appraisal report', badge: apprPresent ? '✓' : '' },
     ...(app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
     { id: 'sec-conditions', label: 'Conditions to close', badge: nOpen || '' },
     { id: 'sec-contacts', label: 'Contacts' },
@@ -872,6 +878,11 @@ export default function Application() {
         badge={app.registered_program ? 'Registered ✓' : 'Not registered yet'}>
       <div id="product-studio"><ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="borrower"
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} /></div>
+      </Section>
+
+      <Section id="sec-appraisal" title="Appraisal report"
+        info="Your property's appraisal at a glance — the valuation, the comparable sales, and the appraiser. Anything your loan team is still reviewing is shown here for your visibility; your team handles those items.">
+        <AppraisalPanel appId={id} readOnly onSummary={onApprSummary} />
       </Section>
 
       {app.status === 'funded' && (

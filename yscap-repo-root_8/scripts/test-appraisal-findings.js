@@ -44,3 +44,25 @@ const codes = findings.map((f) => f.code);
 const expect = ['units_mismatch', 'arv_mismatch'];
 const missing = expect.filter((c) => !codes.includes(c));
 console.log(`\n${missing.length ? 'MISSING expected findings: ' + missing.join(', ') : 'OK — expected mismatches (units, ARV) all raised.'}`);
+
+// ---- HARD regression: address-mismatch must read every property_address shape ----
+// The portal stores the street under `line1` (normalized) or `oneLine` (display), NOT always
+// `line`. A matching file address in any of these shapes must NOT fire a false fatal.
+let addrFail = 0;
+const addrAssert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) addrFail++; };
+const hasAddr = (f) => computeFindings(A, f, { today: '2026-07-19' }).some((x) => x.code === 'address_mismatch');
+const subjStreet = A.subject.address;               // e.g. "148 Plymouth St"
+const base = { units: A.subject.units, arv: A.values.arv, as_is_value: A.values.asIs };
+if (subjStreet) {
+  console.log('\n--- address-mismatch regression ---');
+  addrAssert(!hasAddr({ ...base, property_address: { line1: subjStreet, city: A.subject.city, state: A.subject.state } }),
+    'no false fatal when the street lives in property_address.line1');
+  addrAssert(!hasAddr({ ...base, property_address: { oneLine: `${subjStreet}, ${A.subject.city}, ${A.subject.state}` } }),
+    'no false fatal when the address is a property_address.oneLine string');
+  addrAssert(!hasAddr({ ...base, property_address: { street: subjStreet, city: A.subject.city, state: A.subject.state } }),
+    'no false fatal when the street lives in property_address.street');
+  addrAssert(hasAddr({ ...base, property_address: { line1: '9999 Nowhere Blvd', city: A.subject.city, state: A.subject.state } }),
+    'a genuinely different street STILL fires the fatal (true positive preserved)');
+}
+if (addrFail) { console.log(`\n${addrFail} ADDRESS REGRESSION FAILURE(S)`); process.exit(1); }
+console.log('\nALL address-mismatch regression assertions passed');
