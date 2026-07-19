@@ -1,5 +1,5 @@
 -- ============================================================================
--- 132 — Bracket-aware FICO reopen (owner-directed 2026-07-19)
+-- 158 — Bracket-aware FICO reopen (owner-directed 2026-07-19)
 --
 -- Reconciles the credit-report feature with main's db/126 §C. db/126 added
 -- trg_reopen_pricing_on_fico_change, which reopens Products & Pricing + the

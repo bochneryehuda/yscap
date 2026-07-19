@@ -1,5 +1,5 @@
 -- ============================================================================
--- 138 — Adverse-action party role (owner-directed 2026-07-19, compliance research)
+-- 164 — Adverse-action party role (owner-directed 2026-07-19, compliance research)
 --
 -- The single most important AA gate for a business-purpose lender: under
 -- ECOA/Reg B §1002.2(e) and FCRA §603(k), a GUARANTOR is not an "applicant," so

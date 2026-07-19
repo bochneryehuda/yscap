@@ -1,5 +1,5 @@
 -- ============================================================================
--- 137 — Per-bureau status on a credit report (owner-directed 2026-07-19)
+-- 163 — Per-bureau status on a credit report (owner-directed 2026-07-19)
 --
 -- Partial-merge is the norm (one bureau frozen / down / no-hit while the others
 -- return). Store the per-bureau outcome + the "N of 3 scored" count so staff see

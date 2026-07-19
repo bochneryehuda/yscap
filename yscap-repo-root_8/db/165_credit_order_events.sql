@@ -1,5 +1,5 @@
 -- ============================================================================
--- 139 — Append-only credit order event log (owner-directed 2026-07-19)
+-- 165 — Append-only credit order event log (owner-directed 2026-07-19)
 --
 -- credit_reports is one row PER INTENT, overwritten in place — you can't
 -- reconstruct the timeline of a billable call from it. This is the black-box

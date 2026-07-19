@@ -1,5 +1,5 @@
 -- ============================================================================
--- 140 — Record the MISMO version each credit report used (2026-07-19)
+-- 166 — Record the MISMO version each credit report used (2026-07-19)
 --
 -- The portal now speaks BOTH MISMO 2.3.1 and 3.4 (owner-directed: 3.4 is the
 -- newest). Store which version produced each report so a report is always

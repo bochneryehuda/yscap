@@ -1,5 +1,5 @@
 -- ============================================================================
--- 134 — Allow 'credit_report' as a document source_type (owner-directed 2026-07-19)
+-- 160 — Allow 'credit_report' as a document source_type (owner-directed 2026-07-19)
 --
 -- The imported Xactus PDF is stored in `documents` (viewing only; the XML is the
 -- data). It needs its own source_type so it is queryable and never mixed into

@@ -1,5 +1,5 @@
 -- ============================================================================
--- 133 — Credit order journal + idempotency (owner-directed 2026-07-19)
+-- 159 — Credit order journal + idempotency (owner-directed 2026-07-19)
 --
 -- The order/reissue POST is BILLABLE and not idempotent at Xactus, so the portal
 -- journals every order in credit_reports BEFORE the POST and reconciles it after.
