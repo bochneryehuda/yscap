@@ -475,6 +475,70 @@ const PRINT_CSS = `
 }
 `;
 
+// Compass bearing → degrees clockwise from North.
+const DIRS = { N: 0, NNE: 22.5, NE: 45, ENE: 67.5, E: 90, ESE: 112.5, SE: 135, SSE: 157.5, S: 180, SSW: 202.5, SW: 225, WSW: 247.5, W: 270, WNW: 292.5, NW: 315, NNW: 337.5 };
+// Parse a MISMO proximity string ("0.35 miles SW") → { miles, dir }. Returns null if it can't be
+// read as an explicit mile distance (never guessed — a "2 blocks" description maps to nothing).
+function parseProximity(s) {
+  const t = String(s || '').toUpperCase();
+  const m = /(\d+(?:\.\d+)?)\s*(?:MI\b|MILE)/.exec(t);
+  if (!m) return null;
+  const miles = Number(m[1]);
+  const dm = /(NNE|ENE|ESE|SSE|SSW|WSW|WNW|NNW|NE|SE|SW|NW|N|E|S|W)\s*$/.exec(t.replace(/MILES?/g, '').trim());
+  return { miles: Number.isFinite(miles) ? miles : null, dir: dm ? dm[1] : null };
+}
+
+// Comp location map — the subject at centre, each comparable plotted by its distance (radius) and
+// compass direction from the appraisal's proximity field. Pure SVG, no tiles, no network, no deps.
+function CompMap({ comps }) {
+  const pts = (comps || []).filter((c) => !c.is_subject)
+    .map((c) => ({ c, p: parseProximity(c.proximity) }))
+    .filter((x) => x.p && x.p.miles != null && x.p.dir && DIRS[x.p.dir] != null);
+  if (pts.length < 2) return null;                       // not enough mappable comps to be useful
+  const maxMi = Math.max(0.5, ...pts.map((x) => x.p.miles));
+  const SIZE = 280, cx = SIZE / 2, cy = SIZE / 2, R = SIZE / 2 - 26;
+  const rFor = (mi) => (mi / maxMi) * R;
+  const xy = (mi, dir) => { const rad = (DIRS[dir] * Math.PI) / 180; const r = rFor(mi); return [cx + r * Math.sin(rad), cy - r * Math.cos(rad)]; };
+  const rings = [maxMi / 2, maxMi];
+  const line = 'var(--line,#E7E1D3)', muted = 'var(--muted,#4B585C)';
+  const unmapped = (comps || []).filter((c) => !c.is_subject).length - pts.length;
+  return (
+    <div className="appr-avoid" style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 16, display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'center' }}>
+      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} style={{ flex: 'none', maxWidth: '100%' }} role="img" aria-label="Map of comparable sales relative to the subject">
+        {rings.map((mi, i) => <circle key={i} cx={cx} cy={cy} r={rFor(mi)} fill="none" stroke={line} strokeDasharray="3 3" />)}
+        {rings.map((mi, i) => <text key={`l${i}`} x={cx + 3} y={cy - rFor(mi) + 12} fontSize="9.5" fill={muted}>{mi.toFixed(mi < 1 ? 2 : 1)} mi</text>)}
+        {['N', 'E', 'S', 'W'].map((d) => { const [x, y] = xy(maxMi, d); return <text key={d} x={x} y={y} fontSize="10" fontWeight="700" fill={muted} textAnchor="middle" dominantBaseline="middle">{d}</text>; })}
+        {/* subject */}
+        <circle cx={cx} cy={cy} r={6} fill="var(--gold,#AE8746)" />
+        <text x={cx} y={cy - 10} fontSize="10.5" fontWeight="700" fill="var(--ink,#141B22)" textAnchor="middle">Subject</text>
+        {/* comps */}
+        {pts.map(({ c, p }) => {
+          const [x, y] = xy(p.miles, p.dir);
+          return (
+            <g key={c.id}>
+              <line x1={cx} y1={cy} x2={x} y2={y} stroke={line} />
+              <circle cx={x} cy={y} r={5} fill="var(--teal,#2F7F86)" />
+              <text x={x} y={y - 8} fontSize="10" fontWeight="700" fill="var(--teal-deep,#256168)" textAnchor="middle">{c.seq}</text>
+            </g>
+          );
+        })}
+      </svg>
+      <div style={{ minWidth: 160, flex: 1 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', marginBottom: 8 }}>Comp locations</div>
+        <div style={{ display: 'grid', gap: 5, fontSize: 12.5 }}>
+          {pts.map(({ c, p }) => (
+            <div key={c.id} style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span style={{ flex: 'none', width: 18, height: 18, borderRadius: '50%', background: 'var(--teal,#2F7F86)', color: '#fff', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{c.seq}</span>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{or(c.address)} <span style={{ color: muted }}>· {p.miles} mi {p.dir}</span></span>
+            </div>
+          ))}
+        </div>
+        {unmapped > 0 && <div style={{ fontSize: 11.5, color: muted, marginTop: 8 }}>{unmapped} comp{unmapped === 1 ? '' : 's'} had no mappable distance/direction.</div>}
+      </div>
+    </div>
+  );
+}
+
 // PILOT collateral read — a 1–5 roll-up + (staff) the ARV-defensibility cross-check. Honest and
 // explainable: every factor that moved the score is listed on demand; nothing is fabricated. All
 // advisory — it never changes the file or blocks a deal.
@@ -792,6 +856,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
             <>
               <SecHead eyebrow="Evidence" title="Comparable sales"
                 extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{comps.filter((c) => !c.is_subject).length} comps · tap a row for the adjustment breakdown</span>} />
+              <div style={{ marginBottom: 14 }}><CompMap comps={comps} /></div>
               <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 780 }}>
                   <thead>
