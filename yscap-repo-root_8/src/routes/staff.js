@@ -2515,6 +2515,7 @@ async function signOffGate(itemId, actor) {
   const isTitle = code === 'rtl_cond_title';
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
+  const isCredit = code === 'rtl_cond_credit' || code === 'rtl_p3_credit' || code === 'rtl_p3_credit2';
 
   // EMERGENCY doc-gate (owner-directed): a DOCUMENT-upload condition can never be
   // signed off with ZERO documents on it — the sign-off would attest to a file
@@ -2572,6 +2573,29 @@ async function signOffGate(itemId, actor) {
         return 'This is a Gold Standard file — the criminal report is required. Upload it before signing off.';
       return null;
     }
+  }
+
+  // Credit FICO-match gate (owner-directed): a credit condition can never be
+  // completed while the file's MOST RECENT credit report carries an UNRECONCILED
+  // fatal FICO-mismatch finding — the verified representative score lands in a
+  // different pricing bracket than the claimed score the loan was structured on.
+  // A human must correct the file and re-pull (a fresh, matching report clears
+  // the finding, since we read the latest report) or have an underwriter
+  // reconcile the finding, before signing off. Backstopped by the DB trigger in
+  // db/156 so no path can bypass it.
+  if (isCredit) {
+    const cr = (await db.query(
+      `SELECT underwriting_finding, underwriting_finding_reconciled_at
+         FROM credit_reports
+        WHERE application_id=$1
+        ORDER BY created_at DESC LIMIT 1`, [item.application_id])).rows[0];
+    const f = cr && cr.underwriting_finding;
+    if (f && typeof f === 'object' && f.severity === 'fatal' && !cr.underwriting_finding_reconciled_at) {
+      const ve = f.verified != null ? f.verified : '—';
+      const cl = f.claimed != null ? f.claimed : '—';
+      return `The credit report does not match the file — the verified FICO (${ve}, ${f.verifiedBracket || 'bracket —'}) is in a different pricing bracket than the score the loan was structured on (${cl}, ${f.claimedBracket || 'bracket —'}). This is a FATAL Underwriting finding: correct the file and re-pull the report so the scores match, or have an underwriter reconcile the finding, before signing off this credit condition.`;
+    }
+    return null;
   }
 
   if (!isProduct && !isBudget && !isExp) return null;

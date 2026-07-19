@@ -16,25 +16,76 @@ const STATUS_BADGE = {
 };
 
 /* FATAL underwriting finding: the verified FICO landed in a different pricing
-   bracket than the FICO the file was built on. Blocks the credit condition. */
-function FindingBanner({ finding }) {
+   bracket than the FICO the file was built on. HARD-blocks completing the credit
+   condition (server-enforced) until the file is corrected + re-pulled OR an
+   underwriter reconciles the finding (a documented exception). */
+function FindingBanner({ finding, report, mayReconcile, onReconciled }) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
   if (!finding) return null;
+  const reconciled = report && report.underwriting_finding_reconciled_at;
+  // Prefer the per-borrower breakdown; when it's absent, fall back to the
+  // representative-level claimed→verified so the banner ALWAYS names concrete
+  // numbers instead of only the prose message.
+  const rows = Array.isArray(finding.perBorrower) && finding.perBorrower.length > 0
+    ? finding.perBorrower
+    : ((finding.claimed != null || finding.verified != null)
+        ? [{ name: 'Representative', claimed: finding.claimed, claimedBracket: finding.claimedBracket, verified: finding.verified, verifiedBracket: finding.verifiedBracket }]
+        : []);
+
+  async function reconcile(undo) {
+    setErr(''); setBusy(true);
+    try {
+      await api.creditReconcileFinding({ creditReportId: report.id, note: undo ? undefined : note.trim(), undo });
+      setOpen(false); setNote('');
+      if (onReconciled) await onReconciled();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
   return (
     <div className="notice err" style={{ marginTop: 8, borderLeft: '4px solid var(--danger)' }} role="alert">
       <strong>⚠ Fatal underwriting finding — the FICO does not match the file.</strong>
-      <div style={{ marginTop: 4 }}>{finding.message}</div>
-      {Array.isArray(finding.perBorrower) && finding.perBorrower.length > 0 && (
+      {finding.message && <div style={{ marginTop: 4 }}>{finding.message}</div>}
+      {rows.length > 0 && (
         <ul style={{ margin: '6px 0 0 18px' }}>
-          {finding.perBorrower.map((b, i) => (
+          {rows.map((b, i) => (
             <li key={i}>
-              {b.name}: file <strong>{b.claimed}</strong> ({b.claimedBracket}) → verified <strong>{b.verified}</strong> ({b.verifiedBracket})
+              {b.name}: file <strong>{b.claimed != null ? b.claimed : '—'}</strong> ({b.claimedBracket || 'bracket —'}) → verified <strong>{b.verified != null ? b.verified : '—'}</strong> ({b.verifiedBracket || 'bracket —'})
             </li>
           ))}
         </ul>
       )}
-      <div className="muted small" style={{ marginTop: 4 }}>
-        Re-register the product on the verified score, then sign off the credit condition.
-      </div>
+      {reconciled ? (
+        <div className="notice ok" style={{ marginTop: 6 }}>
+          Reconciled{report.underwriting_finding_reconcile_note ? ` — ${report.underwriting_finding_reconcile_note}` : ''}. The credit condition can now be signed off.
+          {mayReconcile && (
+            <button className="btn ghost small" style={{ marginLeft: 8 }} disabled={busy} onClick={() => reconcile(true)}>Undo</button>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="muted small" style={{ marginTop: 4 }}>
+            Re-register the product on the verified score and re-pull, or reconcile this finding (a documented exception) — either one clears the credit condition for sign-off.
+          </div>
+          {mayReconcile && !open && (
+            <button className="btn ghost small" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>Reconcile finding…</button>
+          )}
+          {mayReconcile && open && (
+            <div style={{ marginTop: 6 }}>
+              <input className="input" value={note} onChange={e => setNote(e.target.value)}
+                placeholder="Reason (required) — e.g. score confirmed with underwriting" />
+              <div className="row" style={{ marginTop: 6, gap: 6 }}>
+                <button className="btn primary small" disabled={busy || !note.trim()} onClick={() => reconcile(false)}>{busy ? 'Saving…' : 'Confirm reconcile'}</button>
+                <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
+              </div>
+            </div>
+          )}
+          {err && <div className="notice err small" style={{ marginTop: 6 }}>{err}</div>}
+        </>
+      )}
     </div>
   );
 }
@@ -62,7 +113,7 @@ function BureauLine({ s }) {
   );
 }
 
-function ReportRow({ r }) {
+function ReportRow({ r, mayReconcile, onChanged }) {
   const badge = STATUS_BADGE[r.status] || { text: r.status, cls: '' };
   // group scores by report borrower id (joint → one block each)
   const byBorrower = new Map();
@@ -84,7 +135,7 @@ function ReportRow({ r }) {
         <span className={`notice ${badge.cls}`} style={{ padding: '2px 8px', fontSize: 12 }}>{badge.text}</span>
       </div>
 
-      <FindingBanner finding={r.underwriting_finding} />
+      <FindingBanner finding={r.underwriting_finding} report={r} mayReconcile={mayReconcile} onReconciled={onChanged} />
 
       {r.representative_score != null && (
         <div style={{ marginTop: 6 }}>
@@ -127,6 +178,7 @@ function ReportRow({ r }) {
 export default function CreditReportPanel({ appId }) {
   const { can } = useAuth();
   const mayPull = can('pull_credit');
+  const mayReconcile = can('sign_off_conditions');
   const [reports, setReports] = useState(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -216,7 +268,7 @@ export default function CreditReportPanel({ appId }) {
 
       {reports === null && !err && <p className="muted" style={{ marginTop: 8 }}>Loading reports…</p>}
       {reports && reports.length === 0 && <p className="muted" style={{ marginTop: 8 }}>No credit reports pulled yet.</p>}
-      {reports && reports.map(r => <ReportRow key={r.id} r={r} />)}
+      {reports && reports.map(r => <ReportRow key={r.id} r={r} mayReconcile={mayReconcile} onChanged={load} />)}
     </div>
   );
 }

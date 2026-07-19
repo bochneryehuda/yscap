@@ -137,6 +137,7 @@ router.get('/credit/reports', requirePull, async (req, res) => {
       `SELECT id, credit_report_identifier, report_type, other_description, request_type, action_type,
               first_issued_date, last_updated_date, representative_score, representative_bracket,
               status, review_reason, bureau_status, underwriting_finding, error_detail, mismo_version,
+              underwriting_finding_reconciled_at, underwriting_finding_reconciled_by, underwriting_finding_reconcile_note,
               pdf_document_id, created_at, completed_at
          FROM credit_reports WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
     const ids = reports.map((r) => r.id);
@@ -271,6 +272,57 @@ router.patch('/credit/adverse-action/:id', requirePull, async (req, res) => {
     await db.query(`UPDATE adverse_action_letters SET status=$2, reviewed_by=$3, reviewed_at=now() WHERE id=$1`, [req.params.id, status, req.actor.id]);
     await audit(req, 'credit_adverse_action_status', { letterId: Number(req.params.id), status });
     res.json({ ok: true, status });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// ---- reconcile a fatal FICO-mismatch finding (documented exception) ---------
+// A fatal FICO-mismatch finding (the verified representative score lands in a
+// different pricing bracket than the claimed score the loan was structured on)
+// HARD-blocks completing the credit condition (signOffGate + the db/156 trigger).
+// The normal resolution is to correct the file and re-pull — a fresh, matching
+// report clears the finding on its own. This route is the deliberate escape
+// hatch: an underwriter/processor attests the discrepancy is understood and
+// accepted, which clears the gate WITHOUT changing the verified score. A short
+// note is required (it lands in the audit trail), and it can be undone.
+router.post('/credit/reconcile-finding', requirePull, async (req, res) => {
+  const b = req.body || {};
+  const reportId = b.creditReportId;
+  if (!reportId) return res.status(400).json({ error: 'creditReportId is required' });
+  // Reconciling a fatal underwriting finding is an underwriting decision — a
+  // higher bar than merely pulling credit. Require the sign-off capability (the
+  // same processors/underwriters/admins who complete conditions).
+  if (!can(req.actor, 'sign_off_conditions')) {
+    return res.status(403).json({ error: 'Only a processor or underwriter can reconcile a credit finding.' });
+  }
+  try {
+    const r = (await db.query(
+      `SELECT application_id, underwriting_finding FROM credit_reports WHERE id=$1`, [reportId])).rows[0];
+    if (!r) return res.status(404).json({ error: 'report not found' });
+    if (!(await canSeeApp(req, r.application_id))) return res.status(403).json({ error: 'forbidden' });
+
+    if (b.undo === true) {
+      await db.query(
+        `UPDATE credit_reports
+            SET underwriting_finding_reconciled_at=NULL, underwriting_finding_reconciled_by=NULL,
+                underwriting_finding_reconcile_note=NULL
+          WHERE id=$1`, [reportId]);
+      await audit(req, 'credit_finding_reconcile_undo', { creditReportId: reportId, applicationId: r.application_id });
+      return res.json({ ok: true, reconciled: false });
+    }
+
+    const f = r.underwriting_finding;
+    if (!f || typeof f !== 'object' || f.severity !== 'fatal') {
+      return res.status(422).json({ error: 'this report has no unresolved fatal finding to reconcile' });
+    }
+    const note = String(b.note || '').trim();
+    if (!note) return res.status(400).json({ error: 'a short note explaining the reconciliation is required' });
+    await db.query(
+      `UPDATE credit_reports
+          SET underwriting_finding_reconciled_at=now(), underwriting_finding_reconciled_by=$2,
+              underwriting_finding_reconcile_note=$3
+        WHERE id=$1`, [reportId, req.actor.id, note]);
+    await audit(req, 'credit_finding_reconcile', { creditReportId: reportId, applicationId: r.application_id, note });
+    res.json({ ok: true, reconciled: true });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 

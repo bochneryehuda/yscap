@@ -469,6 +469,8 @@ export const api = {
   creditOrder:         (b) => req('POST', '/api/staff/credit/order', b),
   creditReports:       (appId) => req('GET', `/api/staff/credit/reports?applicationId=${encodeURIComponent(appId)}`),
   creditReviewQueue:   () => req('GET', '/api/staff/credit/review-queue'),
+  // Reconcile (or undo) a fatal FICO-mismatch finding — clears the sign-off gate.
+  creditReconcileFinding: (b) => req('POST', '/api/staff/credit/reconcile-finding', b),
   creditReportPdfUrl:  (reportId) => `/api/staff/credit/reports/${reportId}/pdf`,
   // Borrower read-only view.
   borrowerCredit:      () => req('GET', '/api/borrower/credit'),
