@@ -351,6 +351,7 @@ export default function StaffLayout({ children }) {
         {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Construction draws — requested vs approved, per-draw status, and releases"><NavIcon name="pipeline" />Draws</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
+        {canPullCredit && <NavLink className="sb-link" to="/internal/credit-review" title="Credit reports that need an underwriter — frozen bureaus, no-score files, and files blocked by a fatal finding"><NavIcon name="conditions" />Credit review</NavLink>}
         {canPullCredit && <NavLink className="sb-link" to="/internal/settings/credit" title="Your credit-provider login (Xactus) for pulling & reissuing reports"><NavIcon name="conditions" />Credit login</NavLink>}
         {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><NavIcon name="archived" />Archived</NavLink>}
 

@@ -242,24 +242,63 @@ router.get('/credit/reports/:id/detail', requirePull, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// The manual-review queue: reports needing a human — a frozen bureau / no score /
-// vendor error ('review'), PLUS 'in_doubt' orders (timed out; the vendor may have
-// billed) that need reconciliation before a re-order. Company-wide for staff who
-// pull credit; scoped officers see only their own files.
+// The manual-review queue: everything that needs an underwriter's eyes —
+//   (a) a frozen bureau / no score / vendor error ('review') + a timed-out order
+//       ('in_doubt', may have billed) that needs reconciling before a re-order;
+//   (b) an IMPORTED report that pulled fine but is BLOCKED by an unreconciled
+//       FATAL finding (a FICO mismatch OR a fraud / OFAC / deceased / SSN /
+//       address bureau alert). E2 leaves those at status='imported', so without
+//       this they'd never show in the queue. Uses the SAME "latest imported has
+//       an active fatal" signal the sign-off gate blocks on.
+// Company-wide for staff who pull credit; scoped officers see only their files.
 router.get('/credit/review-queue', requirePull, async (req, res) => {
   try {
     const scoped = !can(req.actor, 'see_all_files');
-    const rows = (await db.query(
+    const underwriting = require('../lib/credit/underwriting');
+    const scopeSql = scoped ? `AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')}` : '';
+    const params = scoped ? [req.actor.id] : [];
+
+    // (a) status-based review items.
+    const reviewRows = (await db.query(
       `SELECT cr.id, cr.application_id, cr.representative_score, cr.review_reason, cr.status, cr.created_at,
               b.first_name, b.last_name
          FROM credit_reports cr
          LEFT JOIN applications a ON a.id = cr.application_id
          LEFT JOIN borrowers b ON b.id = a.borrower_id
-        WHERE cr.status IN ('review','in_doubt')
-          ${scoped ? `AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')}` : ''}
-        ORDER BY cr.created_at DESC LIMIT 200`,
-      scoped ? [req.actor.id] : [])).rows;
-    res.json({ queue: rows });
+        WHERE cr.status IN ('review','in_doubt') ${scopeSql}
+        ORDER BY cr.created_at DESC LIMIT 200`, params)).rows
+      .map((r) => ({ ...r, kind: r.status, reason: r.review_reason }));
+
+    // (b) the LATEST imported report per file, kept only when it carries an active
+    // fatal finding (matches the gate: a later clean import supersedes/clears it).
+    const findingRows = (await db.query(
+      `SELECT * FROM (
+         SELECT DISTINCT ON (cr.application_id)
+                cr.id, cr.application_id, cr.representative_score, cr.status, cr.created_at,
+                cr.underwriting_finding, cr.underwriting_finding_reconciled_at, b.first_name, b.last_name
+           FROM credit_reports cr
+           LEFT JOIN applications a ON a.id = cr.application_id
+           LEFT JOIN borrowers b ON b.id = a.borrower_id
+          WHERE cr.status = 'imported' ${scopeSql}
+          ORDER BY cr.application_id, cr.created_at DESC, cr.id DESC
+       ) latest
+       ORDER BY latest.created_at DESC LIMIT 200`, params)).rows
+      .map((r) => {
+        const fatal = underwriting.activeFatalFindings(r.underwriting_finding, r.underwriting_finding_reconciled_at);
+        return fatal.length ? {
+          id: r.id, application_id: r.application_id, representative_score: r.representative_score,
+          status: r.status, created_at: r.created_at, first_name: r.first_name, last_name: r.last_name,
+          kind: 'finding', reason: fatal.map((f) => f.message).join(' • '),
+        } : null;
+      })
+      .filter(Boolean);
+
+    // Merge, newest first (a file can legitimately appear for both a stuck re-pull
+    // and an earlier blocking finding — different rows, different reasons).
+    const queue = [...reviewRows, ...findingRows]
+      .sort((x, y) => new Date(y.created_at) - new Date(x.created_at))
+      .slice(0, 300);
+    res.json({ queue });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

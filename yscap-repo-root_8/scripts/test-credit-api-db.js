@@ -114,7 +114,14 @@ const importTransport = async () => ({ status: 200, headers: { get: () => 'text/
   ok('detail 403 (off-file LO — no IDOR)', (await call('GET', `/credit/reports/${rep}/detail`, OFF)).status === 403);
   ok('detail 404 (unknown report)', (await call('GET', '/credit/reports/00000000-0000-0000-0000-000000000000/detail', A)).status === 404);
   ok('detail 403 (no pull_credit)', (await call('GET', `/credit/reports/${rep}/detail`, NP)).status === 403);
-  ok('GET /credit/review-queue 200', (await call('GET', '/credit/review-queue', A)).status === 200);
+  const rq = await call('GET', '/credit/review-queue', A);
+  ok('GET /credit/review-queue 200', rq.status === 200);
+  // repF is an imported report carrying a fatal fico_mismatch finding — it must
+  // surface in the queue tagged 'finding' (E2 leaves it at status='imported', so
+  // the old status-only queue missed it).
+  ok('review-queue surfaces the fatal-finding imported report as kind=finding',
+     Array.isArray(rq.j.queue) && rq.j.queue.some((x) => x.id === repF && x.kind === 'finding'));
+  ok('review-queue finding row carries a reason', !!(rq.j.queue.find((x) => x.id === repF) || {}).reason);
   ok('GET /credit/health 200', (await call('GET', '/credit/health', A)).status === 200);
   ok('POST /credit/order 400 (missing appId)', (await call('POST', '/credit/order', A, {})).status === 400);
   ok('POST /credit/order 403 (off-file LO)', (await call('POST', '/credit/order', OFF, { applicationId: appId, action: 'Reissue', creditReportIdentifier: 'X' })).status === 403);
