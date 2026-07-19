@@ -63,7 +63,7 @@ function Recipient({ r }) {
 }
 
 function EnvelopeCard({ e }) {
-  const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted' };
+  const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
   const who = [e.firstName, e.lastName].filter(Boolean).join(' ');
   const recips = (e.recipients || []).slice().sort(
     (a, b) => Number(a.routingOrder) - Number(b.routingOrder) || String(a.role).localeCompare(String(b.role)));

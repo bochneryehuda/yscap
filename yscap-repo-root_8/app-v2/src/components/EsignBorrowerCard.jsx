@@ -11,7 +11,7 @@ import { PURPOSE } from '../lib/esign.js';
 // A sanitized 3-step tracker. The Heter Iska omits the lender counter-sign step.
 function Tracker({ pkg }) {
   const steps = [{ key: 'you', label: 'You' }];
-  steps.push({ key: 'co', label: 'Co-borrower' });   // shown generically; harmless if absent
+  if (pkg.hasCoBorrower) steps.push({ key: 'co', label: 'Co-borrower' });   // only when there is one
   if (pkg.countersignRequired) steps.push({ key: 'lender', label: 'Lender counter-signs' });
   steps.push({ key: 'done', label: 'Done' });
   // Which step is active?
@@ -33,10 +33,11 @@ export default function EsignBorrowerCard({ appId }) {
   const [packages, setPackages] = useState(null);
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const load = useCallback(async () => {
-    try { const r = await api.get(`/api/borrower/applications/${appId}/esign`); setPackages(r.packages || []); }
-    catch { setPackages([]); }
+    try { const r = await api.get(`/api/borrower/applications/${appId}/esign`); setPackages(r.packages || []); setLoadFailed(false); }
+    catch { setPackages([]); setLoadFailed(true); }   // distinguish a fetch error from genuinely empty
   }, [appId]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
@@ -57,7 +58,16 @@ export default function EsignBorrowerCard({ appId }) {
   if (!packages) return null;
   // Only surface packages that have something for the borrower to see/do.
   const shown = packages.filter((p) => ['sign_now', 'you_signed_waiting', 'completed'].includes(p.yourStatus));
-  if (!shown.length) return null;
+  if (!shown.length) {
+    // Genuinely nothing to show → render nothing. But if the fetch FAILED, don't
+    // silently vanish — a borrower told to sign would see an empty screen.
+    if (!loadFailed) return null;
+    return (
+      <div className="panel esign-b" style={{ marginBottom: 16 }}>
+        <p className="muted small" style={{ margin: 0 }}>We couldn’t load your documents just now. Please refresh — or use the signing link in your email.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="panel esign-b" style={{ marginBottom: 16 }}>

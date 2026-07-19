@@ -6,7 +6,7 @@
  * The portal is multi-provider by design (Xactus seeded + default), so nothing
  * here hard-codes "xactus": callers ask for the default provider or a provider
  * by key and get its row + capabilities. The row lives in `credit_providers`
- * (db/145); this module is the read/normalize layer over it plus a tiny cache
+ * (db/157); this module is the read/normalize layer over it plus a tiny cache
  * so the hot order path doesn't re-query on every pull.
  *
  * Capabilities (jsonb) advertise what the provider's adapter supports —

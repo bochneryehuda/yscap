@@ -278,7 +278,7 @@ router.patch('/credit/adverse-action/:id', requirePull, async (req, res) => {
 // ---- reconcile a fatal FICO-mismatch finding (documented exception) ---------
 // A fatal FICO-mismatch finding (the verified representative score lands in a
 // different pricing bracket than the claimed score the loan was structured on)
-// HARD-blocks completing the credit condition (signOffGate + the db/156 trigger).
+// HARD-blocks completing the credit condition (signOffGate + the db/168 trigger).
 // The normal resolution is to correct the file and re-pull — a fresh, matching
 // report clears the finding on its own. This route is the deliberate escape
 // hatch: an underwriter/processor attests the discrepancy is understood and

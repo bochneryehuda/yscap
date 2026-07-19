@@ -291,10 +291,10 @@ function EsignCondition({ it }) {
       issue={it.status === 'issue'}
       title={it.label}
       subtitle={(it.esign_doc ? `Document: ${it.esign_doc}. ` : '') + (done
-        ? 'Signed — the executed copy is on your file.'
-        : (it.hint || 'You\'ll review and e-sign this document right here — electronic signing is being finalized. Your loan team will let you know the moment it\'s ready.'))}
+        ? 'Signed — the executed copy is on your file automatically.'
+        : (it.hint || 'Sign this in the “Sign your documents” box at the top of this section — or use the DocuSign email we sent you. Your signed copy is filed automatically, nothing to upload.'))}
       status={done ? 'Signed' : 'Awaiting signature'}
-      action={<button className="btn ghost small" disabled title="Electronic signing is being finalized — this button will open the signing ceremony">Review & sign — coming soon</button>}
+      action={done ? null : <span className="muted small">Sign in the box above ↑</span>}
     />
   );
 }

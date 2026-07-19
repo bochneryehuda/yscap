@@ -492,7 +492,7 @@ lower-of-2 / the-1 / null), loan representative = highest borrower middle, 10 st
 default, hard `Merge`, Reissue default; response parser hardened (DOCTYPE/ENTITY/HTML/truncation
 rejected, both error layers, per-bureau scores, embedded PDF). 48 tests.
 
-**1c — DB + FICO freeze** (`db/145`): provider registry, per-user encrypted credentials,
+**1c — DB + FICO freeze** (`db/157`): provider registry, per-user encrypted credentials,
 credit_reports/credit_scores, borrowers verified-FICO lineage + BEFORE INSERT/UPDATE freeze
 belt (only the sanctioned reverify GUC may change a locked score) + audit. Freeze proven on PG.
 
@@ -502,7 +502,7 @@ belt (only the sanctioned reverify GUC may change a locked score) + audit. Freez
 adapter (Basic auth, hard timeout, **never auto-retries a billable POST**, auth/http/network/
 timeout/empty classification, circuit breaker). Staff settings screen + nav. 47 tests.
 
-**1e — order/import + wiring** (`credit/import.js`, `db/146–149`,
+**1e — order/import + wiring** (`credit/import.js`, `db/158–161`,
 `credit/reopen-sweep.js`, `credit/adverse-action.js`, staff panel + borrower card):
 - Order journaled before the POST with an idempotency key (one intent bills at most once);
   import parses → scores → stores report/scores/PDF → freezes each borrower's verified FICO
@@ -516,7 +516,7 @@ timeout/empty classification, circuit breaker). Staff settings screen + nav. 47 
 While this branch was parked, `main` shipped `db/126` §C: `trg_reopen_pricing_on_fico_change`,
 which reopened Products & Pricing + the signed term sheet on **any** FICO change (raw value
 compare). That is broader than the owner's rule (reopen only on a **bracket** change) and it
-compared an **individual** borrower's score, not the loan representative. `db/146` supersedes the
+compared an **individual** borrower's score, not the loan representative. `db/158` supersedes the
 function body (keeping main's trigger wiring):
 - adds `fico_bracket(numeric)` — the SQL twin of `scoring.js` BRACKETS — and a throw-safe
   `fico_bracket_of_inputs(jsonb)`;
@@ -567,7 +567,7 @@ streams (LOS/credit-integration UX; billable-API resilience — read the actual 
 + business-purpose compliance) produced a prioritized backlog. **Built** this session:
 
 **Score reason-codes** — the MISMO `CREDIT_SCORE/_FACTOR` codes (documented in the field map but
-unextracted) are now parsed per bureau, stored (`db/150`), and auto-seed the adverse-action
+unextracted) are now parsed per bureau, stored (`db/162`), and auto-seed the adverse-action
 principal reasons (Reg B comment 9(b)(2)-4 permits the model's reason codes as the AA reasons).
 
 **Resilience (fixed two real bugs the code-review found):**
@@ -581,13 +581,13 @@ principal reasons (Reg B comment 9(b)(2)-4 permits the model's reason codes as t
 **Error handling + interfaces:** a normalized outcome catalog (`outcomes.js`) maps Xactus `E0xx`
 codes and bureau conditions (frozen / no-hit / no-score / deceased / fraud / OFAC / mixed-file) to
 friendly, actionable staff messages with severity + owner; partial-merge is first-class (per-bureau
-status, "N of 3" chips, `db/151`).
+status, "N of 3" chips, `db/163`).
 
-**Compliance correctness:** an **applicant-vs-guarantor** flag (`db/152`) — a guarantor is generally
+**Compliance correctness:** an **applicant-vs-guarantor** flag (`db/164`) — a guarantor is generally
 **not** owed an AA notice on a business-purpose loan, so the scaffold flags it rather than
 over-sending.
 
-**Observability:** an append-only `credit_order_events` black-box log (`db/153`, immutability
+**Observability:** an append-only `credit_order_events` black-box log (`db/165`, immutability
 trigger) with per-phase latency/outcome, plus a `GET /credit/health` summary.
 
 **Deep bug-hunt fixes (2026-07-19, autonomous audit pass):**
@@ -649,7 +649,7 @@ designation, validating the scoring engine against the vendor.
 **MISMO 3.4** (`/uaweb/mismo3`, the newest — owner-directed): built as a swappable version
 (`mismo3-request` / `mismo3-response`, `versionKit()` routing) feeding the same engine. Verified
 live: AUTO REPOS → mid 588, froze, PDF stored. `config.xactus.mismoVersion` + `endpoint3` pick the
-default; the order route takes a per-order override. `db/154` records the version per report.
+default; the order route takes a per-order override. `db/166` records the version per report.
 
 ### 14.1 Real-world findings from the live test
 - **Frozen bureau was a real bug** — Xactus returns a freeze as

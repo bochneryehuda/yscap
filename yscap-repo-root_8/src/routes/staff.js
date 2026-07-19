@@ -2582,7 +2582,7 @@ async function signOffGate(itemId, actor) {
   // A human must correct the file and re-pull (a fresh, matching report clears
   // the finding, since we read the latest report) or have an underwriter
   // reconcile the finding, before signing off. Backstopped by the DB trigger in
-  // db/156 so no path can bypass it.
+  // db/168 so no path can bypass it.
   if (isCredit) {
     const cr = (await db.query(
       `SELECT underwriting_finding, underwriting_finding_reconciled_at
@@ -6509,7 +6509,15 @@ router.post('/applications/:id/esign/send', async (req, res) => {
   try {
     const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib });
     await audit(req, 'esign_send', 'application', req.params.id, purpose);
-    res.json({ ok: true, envelopeRowId: out.envelopeRowId, result: out.result });
+    // Return the REAL outcome — a dead-lettered send (missing document, recipient
+    // not on the pre-go-live allow-list, validation error) must NOT report success
+    // (that showed a false "Sent for signature." toast). ok mirrors sendPackage's
+    // ok (sent OR already-in-flight); on a dead-letter we surface the reason.
+    const r = out.result || {};
+    res.json({
+      ok: out.ok, envelopeRowId: out.envelopeRowId, result: r,
+      dead: !!r.dead, error: r.dead ? (r.error || 'The document could not be sent.') : undefined,
+    });
   } catch (e) {
     res.status(esignErrStatus(e)).json({ error: e.message, outstanding: e.outstanding });
   }

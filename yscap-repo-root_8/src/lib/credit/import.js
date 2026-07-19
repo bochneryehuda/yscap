@@ -8,7 +8,7 @@
  * staffer's own credential, parse the response, score it, store the report +
  * per-bureau scores + the PDF, and — when every borrower has a usable score —
  * freeze each borrower's verified FICO. Bracket-reset of a cleared registration
- * happens automatically in the DB trigger (db/146) when the frozen score lands
+ * happens automatically in the DB trigger (db/158) when the frozen score lands
  * in a different bracket than the loan was priced on.
  *
  * Hard rules honored here:

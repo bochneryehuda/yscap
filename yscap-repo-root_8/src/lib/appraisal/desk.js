@@ -12,8 +12,10 @@
  * so they only attach here, on demand.
  */
 const db = require('../../db');
+const storage = require('../storage');
 const { importAppraisal } = require('./import');
 const { ocrAsIsCandidate, buildOcrNote } = require('./ocr');
+const { extractPhotos } = require('./photos');
 const X = require('./xml');
 
 // Today as a 'YYYY-MM-DD' string from the DB (NY) — never new Date() in a date path.
@@ -65,6 +67,48 @@ function fireOcrAdvisory(appId, pdfB64, importedBy) {
     .catch((e) => console.error('[appraisal] OCR advisory failed (non-fatal):', e && e.message));
 }
 
+// Extract the subject + comp photos from the PDF, store each as a borrower-visible image
+// document, and record it on appraisal_photos. Supersedes any earlier appraisal's extracted
+// photos so a re-import doesn't pile up stale images. Returns the number stored. Awaitable so it
+// can be tested; the caller (firePhotoExtraction) runs it fire-and-forget after the import.
+async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
+  if (!appraisalId || !pdfB64) return 0;
+  const res = await extractPhotos(pdfB64);
+  if (!res.attempted || !res.photos.length) return 0;
+  const app = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
+  const borrowerId = app ? app.borrower_id : null;
+  // Retire images from any earlier appraisal on this file (keep only the current one's set).
+  try {
+    await db.query(
+      `UPDATE documents SET is_current=false
+        WHERE doc_kind='appraisal_photo' AND application_id=$1
+          AND id IN (SELECT document_id FROM appraisal_photos ap JOIN appraisals a ON a.id=ap.appraisal_id
+                      WHERE a.application_id=$1 AND a.id<>$2)`, [appId, appraisalId]);
+  } catch (_) { /* best-effort */ }
+  let stored = 0;
+  for (const ph of res.photos) {
+    try {
+      const s = await storage.save(ph.png, { filename: `appraisal-photo-${ph.seq + 1}.png` });
+      const doc = await db.query(
+        `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,visibility)
+         VALUES ($1,$2,$3,'image/png',$4,$5,$6,'staff',$7,'appraisal_photo','borrower') RETURNING id`,
+        [appId, borrowerId, `appraisal-photo-${ph.seq + 1}.png`, ph.png.length, s.provider, s.ref, importedBy || null]);
+      await db.query(
+        `INSERT INTO appraisal_photos (appraisal_id, document_id, sequence, width, height) VALUES ($1,$2,$3,$4,$5)`,
+        [appraisalId, doc.rows[0].id, ph.seq, ph.width, ph.height]);
+      stored++;
+    } catch (_) { /* per-photo best-effort */ }
+  }
+  return stored;
+}
+
+// Fire-and-forget wrapper: runs AFTER the import returns so it never slows the officer down.
+function firePhotoExtraction(appraisalId, appId, pdfB64, importedBy) {
+  if (!appraisalId || !pdfB64) return;
+  extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy)
+    .catch((e) => console.error('[appraisal] photo extraction failed (non-fatal):', e && e.message));
+}
+
 /**
  * Run the full desk import from an XML string. Returns importAppraisal's result
  * ({ ok, appraisalId, summary, needsAsIsCondition, warnings, ... } or { ok:false, error }).
@@ -80,12 +124,14 @@ async function runAppraisalImport(args) {
   });
   if (!out.ok) return out;
   await ensureAppraisalCondition(appId, 'appraisal_review_cleared');
+  let embedded = null; try { embedded = X.embeddedPdfBase64(xml); } catch (_) { embedded = null; }
+  const pdfB64 = pdfBase64 || embedded;
   if (out.needsAsIsCondition) {
     await ensureAppraisalCondition(appId, 'appraisal_as_is_verify');
-    let embedded = null; try { embedded = X.embeddedPdfBase64(xml); } catch (_) { embedded = null; }
-    fireOcrAdvisory(appId, pdfBase64 || embedded, importedBy);
+    fireOcrAdvisory(appId, pdfB64, importedBy);
   }
+  firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy);
   return out;
 }
 
-module.exports = { ensureAppraisalCondition, runAppraisalImport, todayNY };
+module.exports = { ensureAppraisalCondition, runAppraisalImport, extractAndStorePhotos, todayNY };

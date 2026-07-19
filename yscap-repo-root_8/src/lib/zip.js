@@ -60,4 +60,41 @@ function zip(files, when = new Date()) {
   return Buffer.concat([...local, cd, eocd]);
 }
 
-module.exports = { zip, crc32 };
+/**
+ * Minimal, dependency-free ZIP reader — the inverse of zip(). Parses the central
+ * directory (reliable sizes/offsets) and inflates each entry (STORE method 0 =
+ * as-is; DEFLATE method 8 = zlib.inflateRawSync). Returns [{ name, data:Buffer }]
+ * in central-directory order. Used to fill .docx templates (a .docx is a ZIP).
+ */
+const zlib = require('zlib');
+function unzip(buf) {
+  if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf);
+  // Locate the End Of Central Directory record (scan back past any trailing comment).
+  let eocd = buf.length - 22;
+  while (eocd >= 0 && buf.readUInt32LE(eocd) !== 0x06054b50) eocd--;
+  if (eocd < 0) throw new Error('unzip: not a ZIP (no EOCD)');
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const out = [];
+  for (let n = 0; n < count; n++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('unzip: bad central directory entry');
+    const method = buf.readUInt16LE(p + 10);
+    const compSize = buf.readUInt32LE(p + 20);
+    const nameLen = buf.readUInt16LE(p + 28);
+    const extraLen = buf.readUInt16LE(p + 30);
+    const commentLen = buf.readUInt16LE(p + 32);
+    const lho = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nameLen);
+    if (buf.readUInt32LE(lho) !== 0x04034b50) throw new Error('unzip: bad local header');
+    const lNameLen = buf.readUInt16LE(lho + 26);
+    const lExtraLen = buf.readUInt16LE(lho + 28);
+    const start = lho + 30 + lNameLen + lExtraLen;
+    const comp = buf.subarray(start, start + compSize);
+    const data = method === 0 ? Buffer.from(comp) : zlib.inflateRawSync(comp);
+    out.push({ name, data });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+module.exports = { zip, unzip, crc32 };

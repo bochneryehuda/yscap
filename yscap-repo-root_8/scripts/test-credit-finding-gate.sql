@@ -1,4 +1,4 @@
--- Integration test for db/156: the fatal FICO-mismatch finding is a HARD gate on
+-- Integration test for db/168: the fatal FICO-mismatch finding is a HARD gate on
 -- completing a credit condition, backstopped at the database level.
 -- Requires the migrations applied. NOT in `npm test` (DB-free). Run:
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/test-credit-finding-gate.sql
