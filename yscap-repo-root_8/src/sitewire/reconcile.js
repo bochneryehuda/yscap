@@ -1,0 +1,133 @@
+'use strict';
+/**
+ * Sitewire reconcile (pull) — polls Sitewire for OUR properties only (only-ours rule)
+ * and mirrors draws / requests / events into PILOT, plus keeps the capital-partner
+ * directory and the staff<->Sitewire-user map fresh. Read-only against Sitewire.
+ *
+ * draw_events come back UNSORTED, so submitted_at/approved_at are derived by sorting
+ * on occurred_at (never array order). Inbound is scoped to properties we created — a
+ * property with no link row is structurally invisible.
+ */
+const db = require('../db');
+const cfg = require('../config');
+const client = require('./client');
+const T = require('./transforms');
+
+// ---- capital-partner directory cache (+ which are on our lender) ----
+async function syncCapitalPartners() {
+  const list = await client.listCapitalPartners();
+  const onOurLender = new Set();
+  try { const lender = await client.getLender(cfg.sitewireLenderId); (lender.capital_partners || []).forEach((c) => onOurLender.add(c.id)); } catch (_) {}
+  for (const c of (list || [])) {
+    await db.query(
+      `INSERT INTO sitewire_capital_partners (sitewire_id, name, on_our_lender, synced_at)
+       VALUES ($1,$2,$3,now())
+       ON CONFLICT (sitewire_id) DO UPDATE SET name=EXCLUDED.name, on_our_lender=EXCLUDED.on_our_lender, synced_at=now()`,
+      [c.id, String(c.name || '').trim(), onOurLender.has(c.id)]);
+  }
+  return { count: (list || []).length };
+}
+
+// ---- match staff_users.email to the lender's Sitewire users -> sitewire_user_id ----
+async function syncStaffUsers() {
+  let lender;
+  try { lender = await client.getLender(cfg.sitewireLenderId); } catch (_) { return { matched: 0 }; }
+  let matched = 0;
+  for (const u of (lender.users || [])) {
+    if (!u.email) continue;
+    const r = await db.query(`UPDATE staff_users SET sitewire_user_id=$1, updated_at=now() WHERE lower(email)=lower($2) AND (sitewire_user_id IS NULL OR sitewire_user_id<>$1)`, [u.id, u.email]);
+    matched += r.rowCount;
+  }
+  return { matched };
+}
+
+function deriveTimes(events) {
+  const ev = (events || []).slice().sort((a, b) => String(a.occurred_at || '').localeCompare(String(b.occurred_at || '')));
+  let submitted = null, approved = null;
+  for (const e of ev) {
+    if (!submitted && (e.event === 'created' || e.event === 'submit' || e.event === 'delegate_submit')) submitted = e.occurred_at;
+    if (e.event === 'lender_approve') approved = e.occurred_at;
+  }
+  return { submitted: submitted && T.isoDay(submitted), approved: approved && T.isoDay(approved) };
+}
+
+// ---- reconcile ONE file's draws (scoped to a property WE created) ----
+async function reconcileOne(appId) {
+  const link = (await db.query(`SELECT sitewire_property_id, budget_version FROM sitewire_property_links WHERE application_id=$1 AND sitewire_property_id IS NOT NULL`, [appId])).rows[0];
+  if (!link) return { skipped: 'not linked' };
+  let prop;
+  try { prop = await client.getProperty(link.sitewire_property_id); } catch (e) { return { error: e.message }; }
+  const draws = (prop.budget && prop.budget.draws) || [];
+  let n = 0;
+  for (const d of draws) {
+    // full detail for requests + events
+    let full;
+    try { full = await client.getDraw(d.id); } catch (_) { full = d; }
+    const times = deriveTimes(full.draw_events);
+    await db.query(
+      `INSERT INTO sitewire_draws (application_id, sitewire_draw_id, sitewire_property_id, number, name, status, historical, total_requested_cents, total_approved_cents, coordinator_id, quick_notify_status_id, pdf_src, submitted_at, approved_at, budget_version_at_draw, events, sitewire_updated_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
+       ON CONFLICT (sitewire_draw_id) DO UPDATE SET status=EXCLUDED.status, total_requested_cents=EXCLUDED.total_requested_cents, total_approved_cents=EXCLUDED.total_approved_cents, coordinator_id=EXCLUDED.coordinator_id, quick_notify_status_id=EXCLUDED.quick_notify_status_id, pdf_src=EXCLUDED.pdf_src, submitted_at=EXCLUDED.submitted_at, approved_at=EXCLUDED.approved_at, events=EXCLUDED.events, sitewire_updated_at=EXCLUDED.sitewire_updated_at, updated_at=now()`,
+      [appId, d.id, link.sitewire_property_id, d.number, d.name, d.status, !!d.historical,
+       d.total_requested_cents || 0, d.total_approved_cents || 0, full.coordinator_id || d.coordinator_id || null,
+       full.quick_notify_status_id || d.quick_notify_status_id || null, full.pdf_src || null,
+       times.submitted || null, times.approved || null, link.budget_version || null,
+       full.draw_events ? JSON.stringify(full.draw_events) : null, d.updated_at || null]);
+    // mirror requests
+    for (const r of (full.requests || [])) {
+      await db.query(
+        `INSERT INTO sitewire_draw_requests (sitewire_draw_id, sitewire_request_id, sitewire_job_item_id, job_item_name, requested_cents, approved_cents, lender_comments, inspector_comments, inspection_count, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+         ON CONFLICT (sitewire_request_id) DO UPDATE SET requested_cents=EXCLUDED.requested_cents, approved_cents=EXCLUDED.approved_cents, lender_comments=EXCLUDED.lender_comments, inspector_comments=EXCLUDED.inspector_comments, updated_at=now()`,
+        [d.id, r.id, (r.job_item && r.job_item.id) || null, (r.job_item && r.job_item.name) || null,
+         r.requested_cents || 0, r.approved_cents == null ? null : r.approved_cents, r.lender_comments || null, r.inspector_comments || null,
+         Array.isArray(r.inspections) ? r.inspections.length : 0]);
+    }
+    n++;
+  }
+  await db.query(`UPDATE sitewire_property_links SET last_reconciled_at=now() WHERE application_id=$1`, [appId]);
+  return { draws: n };
+}
+
+// ---- reconcile ALL linked files (the poll pass) ----
+async function reconcileAll() {
+  const rows = (await db.query(`SELECT application_id FROM sitewire_property_links WHERE sitewire_property_id IS NOT NULL AND matched_by='created'`)).rows;
+  let total = 0;
+  for (const r of rows) { try { const res = await reconcileOne(r.application_id); total += res.draws || 0; } catch (_) {} }
+  return { files: rows.length, draws: total };
+}
+
+/**
+ * Fetch the full per-line findings of a draw (for delivery to the borrower). Pulls each
+ * request's detail so every inspection photo/note + approved/not-approved is included.
+ * Returns { lines:[{request_id,job_item_id,name,requested_cents,approved_cents,not_approved_cents,
+ *   inspector_comments,lender_comments,photo_count,video_count,media:[…]}], totals }.
+ */
+async function fetchDrawFindings(sitewireDrawId) {
+  const draw = await client.getDraw(sitewireDrawId);
+  const lines = [];
+  let treq = 0, tappr = 0;
+  for (const r of (draw.requests || [])) {
+    let detail = r;
+    try { detail = await client.getRequest(r.id); } catch (_) {}
+    const ins = detail.inspections || [];
+    const media = ins.map((i) => ({
+      src: (i.media && i.media.src) || null, thumbnail: (i.media && i.media.thumbnail) || null,
+      type: (i.media && i.media.media_type) || null, lat: i.latitude, lng: i.longitude, captured_at: i.captured_at, note: i.note,
+    })).filter((m) => m.src);
+    const req = r.requested_cents || 0; const appr = r.approved_cents == null ? 0 : r.approved_cents;
+    treq += req; tappr += appr;
+    lines.push({
+      request_id: r.id, job_item_id: (r.job_item && r.job_item.id) || (detail.job_item && detail.job_item.id) || null,
+      name: (r.job_item && r.job_item.name) || (detail.job_item && detail.job_item.name) || null,
+      requested_cents: req, approved_cents: appr, not_approved_cents: Math.max(0, req - appr),
+      inspector_comments: detail.inspector_comments || r.inspector_comments || null,
+      lender_comments: detail.lender_comments || r.lender_comments || null,
+      photo_count: media.filter((m) => m.type === 'image').length, video_count: media.filter((m) => m.type === 'video').length,
+      media,
+    });
+  }
+  return { draw_id: sitewireDrawId, status: draw.status, pdf_src: draw.pdf_src || null, lines, totals: { requested_cents: treq, approved_cents: tappr, not_approved_cents: Math.max(0, treq - tappr) } };
+}
+
+module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes };
