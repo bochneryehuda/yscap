@@ -195,6 +195,7 @@ async function pushFile(appId, opts = {}) {
   // absorb ≤$1 percentage-rounding drift into contingency/GC so a validly signed-off SOW
   // isn't wrongly parked (audit S4); a real mismatch beyond tolerance still blocks below.
   const ex = M.reconcileToBudget(M.explodeSow(a.sow_payload.state, {}), budgetCents);
+  M.uniquifyNames(ex.items); // re-dedupe: reconcileToBudget may append a 'Contingency' line after the first pass
   if (ex.total_cents !== budgetCents) {
     await park({ appId, reason: `sitewire_budget_mismatch: exploded SOW total ${T.usd(ex.total_cents)} != frozen budget ${T.usd(budgetCents)}`, current: budgetCents, proposed: ex.total_cents });
     return { parked: 'budget_mismatch' };
@@ -364,21 +365,36 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
   }
   if (updated && updated.__dryrun) return { dryrun: true, wouldSend: job_items.length };
 
-  // capture ids: bind each desired cell to the response item with the SAME unique name (G-BIND)
+  // capture ids (G-BIND). A NEW line binds to the response item with its unique name. A line that
+  // was ALREADY bound (update/unchanged) keeps its KNOWN id — we must NOT re-find it by name, because
+  // a rename suppressed on a drawn line (M2) makes Sitewire echo the OLD name, which the desired-name
+  // lookup would miss (false "bind_missing" + stale crosswalk cents). For those we refresh cents by id
+  // and store the name Sitewire actually holds (old name when the rename was suppressed, else the new).
   const respByName = new Map();
   for (const ji of (updated.job_items || [])) {
     if (!respByName.has(ji.name)) respByName.set(ji.name, ji);
     else respByName.set(ji.name, null); // duplicate name -> ambiguous
   }
+  const linkByKey = new Map();
+  for (const l of links) linkByKey.set(`${l.sow_line_key} ${l.section_token}`, l);
   for (const c of ex.items) {
-    const ji = respByName.get(c.name);
-    if (ji === undefined) { await park({ appId, reason: `sitewire_bind_missing: created line "${c.name}" not found in response — cannot bind id`, dedupe: c.name }); continue; }
-    if (ji === null) { await park({ appId, reason: `sitewire_bind_ambiguous: line name "${c.name}" appears twice — cannot bind id`, dedupe: c.name }); continue; }
+    const existing = linkByKey.get(`${c.sow_line_key} ${c.section_token}`);
+    let jiId, storedName;
+    if (existing && existing.sitewire_job_item_id != null) {
+      jiId = existing.sitewire_job_item_id;
+      const renameSuppressed = drawn.has(Number(jiId)) && (existing.name || '') !== (c.name || '');
+      storedName = renameSuppressed ? existing.name : c.name; // match what Sitewire actually holds
+    } else {
+      const ji = respByName.get(c.name);
+      if (ji === undefined) { await park({ appId, reason: `sitewire_bind_missing: created line "${c.name}" not found in response — cannot bind id`, dedupe: c.name }); continue; }
+      if (ji === null) { await park({ appId, reason: `sitewire_bind_ambiguous: line name "${c.name}" appears twice — cannot bind id`, dedupe: c.name }); continue; }
+      jiId = ji.id; storedName = c.name;
+    }
     await db.query(
       `INSERT INTO sitewire_job_item_links (application_id, sitewire_budget_id, sow_line_key, section_token, unit_index, sitewire_job_item_id, name, budgeted_cents, is_media_item, state, last_response_hash, last_pushed_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'live',$10,now(),now())
        ON CONFLICT (application_id, sow_line_key, section_token) DO UPDATE SET sitewire_job_item_id=EXCLUDED.sitewire_job_item_id, name=EXCLUDED.name, budgeted_cents=EXCLUDED.budgeted_cents, is_media_item=EXCLUDED.is_media_item, state='live', last_response_hash=EXCLUDED.last_response_hash, last_pushed_at=now(), updated_at=now()`,
-      [appId, budgetId, c.sow_line_key, c.section_token, c.unit_index, ji.id, c.name, c.budgeted_cents, !!c.is_media_item, T.stableHash({ n: ji.name, b: ji.budgeted_cents })]);
+      [appId, budgetId, c.sow_line_key, c.section_token, c.unit_index, jiId, storedName, c.budgeted_cents, !!c.is_media_item, T.stableHash({ n: storedName, b: c.budgeted_cents })]);
   }
   // process deletes in the crosswalk
   for (const d of diff.deletes) await db.query(`UPDATE sitewire_job_item_links SET state='deleted', updated_at=now() WHERE id=$1`, [d.id]);
