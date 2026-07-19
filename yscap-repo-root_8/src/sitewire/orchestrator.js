@@ -141,6 +141,22 @@ async function getLink(appId) {
   return (await db.query(`SELECT * FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0] || null;
 }
 
+// Resolve the inspection method for a file: the coordinator's per-file choice (link.inspection_method)
+// if set, else the rule's DEFAULT (auto virtual/physical). The choice is validated against what the
+// rule ALLOWS — a stored method the rule no longer allows falls back to an allowed one (never a
+// method the capital partner forbids). Returns { method, feeKind, feeCents, allowVirtual, allowPhysical }.
+function resolveInspection(link, rule) {
+  const dflt = (rule && rule.inspection_method) || 'mobile';
+  const allowVirtual = !rule || rule.allow_virtual !== false;
+  const allowPhysical = !rule || rule.allow_physical !== false;
+  let method = (link && link.inspection_method) || dflt;
+  if (method === 'mobile' && !allowVirtual) method = allowPhysical ? 'traditional' : dflt;
+  if (method === 'traditional' && !allowPhysical) method = allowVirtual ? 'mobile' : dflt;
+  const feeKind = T.feeKindFor(method);
+  const feeCents = rule ? (feeKind === 'physical' ? (rule.fee_cents_physical != null ? rule.fee_cents_physical : rule.fee_cents_virtual) : rule.fee_cents_virtual) : 29900;
+  return { method, feeKind, feeCents, allowVirtual, allowPhysical };
+}
+
 /**
  * Birth push for a funded file. Returns { ok, skipped?, parked?, propertyId?, budgetId? }.
  * force=true bypasses the master switch (used by an admin manual push, still guarded).
@@ -163,11 +179,23 @@ async function pushFile(appId, opts = {}) {
   const budgetCents = Math.round(Number(budgetDollars) * 100);
   if (!a.sow_payload || !a.sow_payload.state) { await park({ appId, reason: 'sitewire_no_sow: no Scope of Work saved to explode into a budget' }); return { parked: 'no_sow' }; }
 
+  // G-UNITS: the property's unit count (from the file) must match the Scope of Work's unit count.
+  // We send total_units from the file but explode the budget from the SOW — if they disagree, Sitewire
+  // would show a unit total that doesn't match its per-unit budget lines. Never guess which is right — park.
+  if (a.units != null && Number(a.units) > 0) {
+    const sowUnits = M.unitCount(a.sow_payload.state);
+    if (Number(a.units) !== sowUnits) {
+      await park({ appId, reason: `sitewire_units_mismatch: the file says ${Number(a.units)} unit(s) but the Scope of Work is built for ${sowUnits} — reconcile them before pushing (Sitewire's unit count must match its budget lines)`, current: String(a.units), proposed: String(sowUnits) });
+      return { parked: 'units_mismatch' };
+    }
+  }
+
   // explode + G-RECON (must tie to the frozen budget to the cent BEFORE any write)
   const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
   // absorb ≤$1 percentage-rounding drift into contingency/GC so a validly signed-off SOW
   // isn't wrongly parked (audit S4); a real mismatch beyond tolerance still blocks below.
   const ex = M.reconcileToBudget(M.explodeSow(a.sow_payload.state, {}), budgetCents);
+  M.uniquifyNames(ex.items); // re-dedupe: reconcileToBudget may append a 'Contingency' line after the first pass
   if (ex.total_cents !== budgetCents) {
     await park({ appId, reason: `sitewire_budget_mismatch: exploded SOW total ${T.usd(ex.total_cents)} != frozen budget ${T.usd(budgetCents)}`, current: budgetCents, proposed: ex.total_cents });
     return { parked: 'budget_mismatch' };
@@ -181,9 +209,11 @@ async function pushFile(appId, opts = {}) {
     return { parked: 'capital_partner' };
   }
   const rule = await resolveRule(cp.id, program);
-  const inspectionMethod = (rule && rule.inspection_method) || 'mobile';
-  const feeKind = T.feeKindFor(inspectionMethod);
-  const feeCents = rule ? (feeKind === 'physical' ? (rule.fee_cents_physical != null ? rule.fee_cents_physical : rule.fee_cents_virtual) : rule.fee_cents_virtual) : 29900;
+  // method = coordinator's per-file choice ?? rule default, validated against what the rule allows
+  const existingLink = await getLink(appId);
+  const insp = resolveInspection(existingLink, rule);
+  const inspectionMethod = insp.method;
+  const feeCents = insp.feeCents;
   const coordinatorId = await resolveCoordinatorId();
 
   // address (G-ADDR handled by catching Sitewire's 422 below)
@@ -212,9 +242,14 @@ async function pushFile(appId, opts = {}) {
   if (a.units) propertyFields.total_units = Number(a.units);
   if (devType) propertyFields.development_type = devType;
   if (consType) propertyFields.construction_type = consType;
+  // G-ENUM: a property/construction type we couldn't map is LEFT BLANK (never guessed) — but raise
+  // an advisory review so someone sets it in Sitewire, rather than it silently going unset. Non-blocking
+  // (the push still proceeds — these are optional Sitewire fields); deduped so it can't spam the queue.
+  if (a.property_type && !devType) await park({ appId, reason: `sitewire_type_unmapped: property type "${a.property_type}" didn't map to a Sitewire development_type — left blank, set it in Sitewire if needed`, dedupe: 'devtype' });
+  if ((a.loan_type || a.rehab_type) && !consType) await park({ appId, reason: `sitewire_type_unmapped: loan/rehab type "${a.loan_type || ''}/${a.rehab_type || ''}" didn't map to a Sitewire construction_type — left blank, set it in Sitewire if needed`, dedupe: 'construction' });
   if (a.llc_name) propertyFields.borrower_entity_name = a.llc_name;
 
-  let link = await getLink(appId);
+  let link = existingLink;
 
   // G-DUPEPROP: if not linked and a Sitewire property already carries our loan number, park (never adopt/duplicate)
   if (!link || !link.sitewire_property_id) {
@@ -292,6 +327,15 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
     [appId, budgetId])).rows;
   const diff = M.diffBudget(ex.items, links);
 
+  // Sitewire LOCKS a line's name once a draw references it — renaming it 422s the WHOLE budget
+  // PATCH, which would block unrelated cents changes batched in the same push (audit M2). So a line
+  // that already has a draw request is re-budgeted but NEVER renamed (the cents change still goes;
+  // only the cosmetic rename is skipped). Look up the drawn job-item ids once.
+  const drawn = new Set((await db.query(
+    `SELECT DISTINCT r.sitewire_job_item_id FROM sitewire_draw_requests r
+       JOIN sitewire_draws d ON d.sitewire_draw_id = r.sitewire_draw_id
+      WHERE d.application_id=$1 AND r.sitewire_job_item_id IS NOT NULL`, [appId])).rows.map((x) => Number(x.sitewire_job_item_id)));
+
   // build the PATCH job_items array (creates: no id; updates: id+fields; deletes: id+_destroy)
   const job_items = [];
   for (const c of diff.creates) {
@@ -303,7 +347,8 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
   }
   for (const u of diff.updates) {
     const ji = { id: u.sitewire_job_item_id, budgeted_cents: u.budgeted_cents };
-    if ((u.prev_name || '') !== (u.name || '')) ji.name = u.name; // rename only if changed (locked after a draw)
+    // rename only if changed AND the line isn't locked by an existing draw (else Sitewire 422s the batch)
+    if ((u.prev_name || '') !== (u.name || '') && !drawn.has(Number(u.sitewire_job_item_id))) ji.name = u.name;
     job_items.push(ji);
   }
   for (const d of diff.deletes) job_items.push({ id: d.sitewire_job_item_id, _destroy: true });
@@ -320,21 +365,36 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
   }
   if (updated && updated.__dryrun) return { dryrun: true, wouldSend: job_items.length };
 
-  // capture ids: bind each desired cell to the response item with the SAME unique name (G-BIND)
+  // capture ids (G-BIND). A NEW line binds to the response item with its unique name. A line that
+  // was ALREADY bound (update/unchanged) keeps its KNOWN id — we must NOT re-find it by name, because
+  // a rename suppressed on a drawn line (M2) makes Sitewire echo the OLD name, which the desired-name
+  // lookup would miss (false "bind_missing" + stale crosswalk cents). For those we refresh cents by id
+  // and store the name Sitewire actually holds (old name when the rename was suppressed, else the new).
   const respByName = new Map();
   for (const ji of (updated.job_items || [])) {
     if (!respByName.has(ji.name)) respByName.set(ji.name, ji);
     else respByName.set(ji.name, null); // duplicate name -> ambiguous
   }
+  const linkByKey = new Map();
+  for (const l of links) linkByKey.set(`${l.sow_line_key} ${l.section_token}`, l);
   for (const c of ex.items) {
-    const ji = respByName.get(c.name);
-    if (ji === undefined) { await park({ appId, reason: `sitewire_bind_missing: created line "${c.name}" not found in response — cannot bind id`, dedupe: c.name }); continue; }
-    if (ji === null) { await park({ appId, reason: `sitewire_bind_ambiguous: line name "${c.name}" appears twice — cannot bind id`, dedupe: c.name }); continue; }
+    const existing = linkByKey.get(`${c.sow_line_key} ${c.section_token}`);
+    let jiId, storedName;
+    if (existing && existing.sitewire_job_item_id != null) {
+      jiId = existing.sitewire_job_item_id;
+      const renameSuppressed = drawn.has(Number(jiId)) && (existing.name || '') !== (c.name || '');
+      storedName = renameSuppressed ? existing.name : c.name; // match what Sitewire actually holds
+    } else {
+      const ji = respByName.get(c.name);
+      if (ji === undefined) { await park({ appId, reason: `sitewire_bind_missing: created line "${c.name}" not found in response — cannot bind id`, dedupe: c.name }); continue; }
+      if (ji === null) { await park({ appId, reason: `sitewire_bind_ambiguous: line name "${c.name}" appears twice — cannot bind id`, dedupe: c.name }); continue; }
+      jiId = ji.id; storedName = c.name;
+    }
     await db.query(
       `INSERT INTO sitewire_job_item_links (application_id, sitewire_budget_id, sow_line_key, section_token, unit_index, sitewire_job_item_id, name, budgeted_cents, is_media_item, state, last_response_hash, last_pushed_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'live',$10,now(),now())
        ON CONFLICT (application_id, sow_line_key, section_token) DO UPDATE SET sitewire_job_item_id=EXCLUDED.sitewire_job_item_id, name=EXCLUDED.name, budgeted_cents=EXCLUDED.budgeted_cents, is_media_item=EXCLUDED.is_media_item, state='live', last_response_hash=EXCLUDED.last_response_hash, last_pushed_at=now(), updated_at=now()`,
-      [appId, budgetId, c.sow_line_key, c.section_token, c.unit_index, ji.id, c.name, c.budgeted_cents, !!c.is_media_item, T.stableHash({ n: ji.name, b: ji.budgeted_cents })]);
+      [appId, budgetId, c.sow_line_key, c.section_token, c.unit_index, jiId, storedName, c.budgeted_cents, !!c.is_media_item, T.stableHash({ n: storedName, b: c.budgeted_cents })]);
   }
   // process deletes in the crosswalk
   for (const d of diff.deletes) await db.query(`UPDATE sitewire_job_item_links SET state='deleted', updated_at=now() WHERE id=$1`, [d.id]);
@@ -356,4 +416,4 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
   return { ok: true, created: diff.creates.length, updated: diff.updates.length, deleted: diff.deletes.length };
 }
 
-module.exports = { pushFile, pushBudget, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, loadFile };
+module.exports = { pushFile, pushBudget, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, loadFile };

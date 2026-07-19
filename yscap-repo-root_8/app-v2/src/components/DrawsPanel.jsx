@@ -62,10 +62,7 @@ export default function DrawsPanel({ appId }) {
   return (
     <div>
       {notLinked ? (
-        <div className="panel" style={{ marginTop: 12 }}>
-          <b>This file isn't in Sitewire yet.</b>
-          <div className="muted" style={{ marginTop: 4 }}>The construction-draw setup is created when the borrower requests their first draw on a funded file. Until then there's nothing to manage here.</div>
-        </div>
+        <StartDrawCard appId={appId} onStarted={load} />
       ) : (
         <>
           {msg && <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
@@ -103,6 +100,139 @@ export default function DrawsPanel({ appId }) {
           <ActivityTrail appId={appId} />
         </>
       )}
+    </div>
+  );
+}
+
+/* The Draw Coordinator's first step after funding: review everything that will be sent to
+   Sitewire, confirm the inspection method (switching it if the program allows), and press
+   ONE button that pushes the property + construction budget + Scope of Work + fees over and
+   reads them back. Nothing is guessed — a missing prerequisite disables the button, and any
+   error while pushing lands in the review queue instead of being silently applied. */
+function CheckRow({ ok, label }) {
+  return (
+    <div className="row" style={{ gap: 8, alignItems: 'center', padding: '3px 0' }}>
+      <span style={{ color: ok ? 'var(--teal,#2f7f86)' : 'var(--bad,#b04a3f)', fontWeight: 700, width: 16 }}>{ok ? '✓' : '•'}</span>
+      <span className={ok ? '' : 'muted'}>{label}</span>
+    </div>
+  );
+}
+
+function StartDrawCard({ appId, onStarted }) {
+  const [s, setS] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [method, setMethod] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.get(`/api/sitewire/files/${appId}/draw-setup`)
+      .then((d) => { setS(d); setErr(''); setMethod(''); })
+      .catch((e) => setErr(e?.data?.error || e.message || 'Could not load draw setup'))
+      .finally(() => setLoading(false));
+  }, [appId]);
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div className="panel" style={{ marginTop: 12 }}>Loading draw setup…</div>;
+  if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
+  if (!s) return null;
+
+  const insp = s.inspection || {};
+  const cp = s.capital_partner || {};
+  const p = s.prereqs || {};
+  // the method actually in effect (the coordinator's live switch, else the resolved default)
+  const effMethod = method || insp.method;
+  const effKind = effMethod === 'traditional' ? 'physical' : 'virtual';
+  // per-kind fee if the rule sets it, else the other kind, else the resolved default
+  // (insp.fee_cents — what the server WILL actually charge when no rule exists). Never blank
+  // out the fee when a real amount ($299 default) will be applied.
+  const perKind = effKind === 'physical'
+    ? (insp.fee_physical_cents != null ? insp.fee_physical_cents : insp.fee_virtual_cents)
+    : insp.fee_virtual_cents;
+  const effFee = perKind != null ? perKind : insp.fee_cents;
+  const alreadyStarted = !!s.started_at; // coordinator pressed Start earlier; awaiting the switch/push
+
+  async function start() {
+    setBusy(true); setMsg('');
+    try {
+      const body = method && method !== insp.method ? { inspection_method: method } : {};
+      const r = await api.post(`/api/sitewire/files/${appId}/start-draw`, body);
+      setMsg(r && r.note ? r.note : 'Draw process started — everything was sent to Sitewire.');
+      load();
+      if (onStarted) setTimeout(onStarted, 400);
+    } catch (e) { setMsg(e?.data?.error || e.message || 'That didn\'t work.'); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="panel" style={{ marginTop: 12 }}>
+      <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+        <div>
+          <h3 style={{ margin: 0 }}>Start the draw process</h3>
+          <div className="muted small" style={{ marginTop: 3 }}>This sends the property, construction budget, Scope of Work and fees to Sitewire, then reads them back to confirm. Do this once, after the loan is funded.</div>
+        </div>
+        {!s.switches?.enabled && <span className="pill" style={{ background: 'var(--paper,#f6f3ec)' }}>Sitewire is off — this will be queued</span>}
+        {s.switches?.enabled && s.switches?.dryrun && <span className="pill" style={{ background: 'var(--paper,#f6f3ec)' }}>Dry-run (nothing sent yet)</span>}
+        {s.switches?.enabled && !s.switches?.dryrun && !s.switches?.outbound && <span className="pill" style={{ background: 'var(--paper,#f6f3ec)' }}>Read-only mode</span>}
+      </div>
+
+      {alreadyStarted && (
+        <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--paper,#f6f3ec)', color: 'var(--teal,#256168)' }}>
+          ✓ Draw setup was started on {fmtDay(s.started_at)}{insp.chosen_override ? ` (${insp.chosen_override === 'traditional' ? 'on-site' : 'virtual'} inspection)` : ''}.
+          {s.switches?.enabled ? ' You can re-send it below if needed.' : ' It will push to Sitewire automatically the moment Sitewire is turned on — nothing more to do.'}
+        </div>
+      )}
+
+      <div className="grid cols-2" style={{ gap: 16, marginTop: 12 }}>
+        <div>
+          <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Before we can start</div>
+          <CheckRow ok={p.funded} label="Loan is funded" />
+          <CheckRow ok={p.loan_number} label="YS loan number set" />
+          <CheckRow ok={p.capital_partner} label={cp.name ? `Capital partner: ${cp.name}` : 'Capital partner matched'} />
+          <CheckRow ok={p.budget} label="Construction budget frozen" />
+          <CheckRow ok={p.scope_of_work} label="Scope of Work saved" />
+          <CheckRow ok={p.address} label="Property address complete" />
+          {!p.capital_partner && cp.ambiguous && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 4 }}>The capital-partner name matches more than one — fix the lender label on the file.</div>}
+          {!p.capital_partner && cp.candidate_name && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 4 }}>Closest match is “{cp.candidate_name}”, but it isn't exact — it needs confirming before we can push.</div>}
+        </div>
+        <div>
+          <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Inspection & fee</div>
+          {insp.can_switch ? (
+            <label className="small">Inspection method
+              <select className="input" value={effMethod} onChange={(e) => setMethod(e.target.value)}>
+                <option value="mobile">Virtual (mobile){insp.default_method === 'mobile' ? ' — default' : ''}</option>
+                <option value="traditional">On-site (traditional){insp.default_method === 'traditional' ? ' — default' : ''}</option>
+              </select>
+            </label>
+          ) : (
+            <div>{effMethod === 'traditional' ? 'On-site (traditional)' : 'Virtual (mobile)'}<span className="muted small"> — set by the program, can't switch</span></div>
+          )}
+          <div style={{ marginTop: 8 }}>Draw fee: <b>{effFee != null ? usd(effFee) : '—'}</b> <span className="muted small">per draw ({effKind})</span></div>
+          <div className="muted small" style={{ marginTop: 8 }}>
+            {s.requires?.sitewire_inspector ? 'A Sitewire inspector must sign off each draw.' : 'No Sitewire inspector required.'}<br />
+            {s.requires?.capital_partner_approval ? 'Approved draws route to the capital partner.' : 'No capital-partner approval step.'}
+          </div>
+        </div>
+      </div>
+
+      {s.open_reviews > 0 && (
+        <div className="small" style={{ marginTop: 10, color: 'var(--bad,#b04a3f)' }}>
+          {s.open_reviews} item{s.open_reviews === 1 ? '' : 's'} on this file need review before it will go through cleanly. <a href="#/internal/sync-reviews">Open the review list</a>.
+        </div>
+      )}
+
+      <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center' }}>
+        {/* When started while Sitewire is off, there's nothing more to press — the worker pushes on switch-on. */}
+        {!(alreadyStarted && !s.switches?.enabled) && (
+          <button className="btn primary" disabled={busy || !s.can_start} onClick={start}>
+            {busy ? 'Starting…' : alreadyStarted ? 'Re-send to Sitewire' : s.switches?.enabled ? 'Start the draw process' : 'Start (queue for Sitewire)'}
+          </button>
+        )}
+        {!s.can_start && <span className="muted small">Finish the checklist above first.</span>}
+        {msg && <span className="small" style={{ color: 'var(--teal,#2f7f86)' }}>{msg}</span>}
+      </div>
     </div>
   );
 }
