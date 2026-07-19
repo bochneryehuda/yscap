@@ -23,7 +23,10 @@ function unescapeXml(s) {
       const cp = code[1] === 'x' || code[1] === 'X'
         ? parseInt(code.slice(2), 16)
         : parseInt(code.slice(1), 10);
-      return Number.isFinite(cp) ? String.fromCodePoint(cp) : m;
+      // String.fromCodePoint THROWS a RangeError on a code point above U+10FFFF (or negative) —
+      // a corrupt/hostile entity like &#x999999; would otherwise crash the whole parse (and the
+      // import). Only decode a real Unicode scalar; leave anything else as the literal text.
+      return Number.isInteger(cp) && cp >= 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : m;
     }
     return Object.prototype.hasOwnProperty.call(ENTITIES, code) ? ENTITIES[code] : m;
   });

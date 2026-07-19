@@ -18,7 +18,32 @@
 const { extract } = require('./extract');
 const { computeFindings, summarize } = require('./findings');
 
-async function importAppraisal(db, {
+// Public entry — runs the whole import ATOMICALLY. A single import touches many tables
+// (supersede prior appraisal + its findings, insert the new appraisal + comps + units + photos +
+// findings, fill the file). If any step threw mid-way we'd leave the file with the prior appraisal
+// SUPERSEDED but no replacement row and half its comps/findings — a corrupt half-import. So when
+// handed the pool (has getClient), grab ONE dedicated connection and wrap it in a transaction;
+// a caller that passes its own tx client keeps ownership and we just run inline on it.
+async function importAppraisal(db, args) {
+  if (!args || !args.applicationId) throw new Error('applicationId required');
+  if (db && typeof db.getClient === 'function') {
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+      const out = await importAppraisalTx(client, args);
+      await client.query('COMMIT');
+      return out;
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (_) { /* connection already broken */ }
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+  return importAppraisalTx(db, args);
+}
+
+async function importAppraisalTx(db, {
   applicationId, xml, importedBy = null,
   sourceXmlDocumentId = null, pdfDocumentId = null,
   file = null, today = null, thresholds = {},

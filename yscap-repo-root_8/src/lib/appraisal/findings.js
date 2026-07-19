@@ -51,6 +51,19 @@ function withinTol(a, b, pct, abs) {
 }
 // normalize an address string for comparison (drop punctuation/case/whitespace, expand nothing fancy)
 function normAddr(s) { return String(s || '').toLowerCase().replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim(); }
+// Whole-token containment: does `hayTokens` contain `needleTokens` as a CONTIGUOUS run? A plain
+// String.includes() substring test conflates "76 thompson" with "176 thompson" (a real
+// wrong-property mismatch that would be silently swallowed) and also false-matches a street word
+// buried inside a longer word. Compare whole tokens instead.
+function containsTokenSeq(hayTokens, needleTokens) {
+  if (!needleTokens.length || needleTokens.length > hayTokens.length) return false;
+  for (let i = 0; i + needleTokens.length <= hayTokens.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needleTokens.length; j++) { if (hayTokens[i + j] !== needleTokens[j]) { ok = false; break; } }
+    if (ok) return true;
+  }
+  return false;
+}
 function fileAddress(file) {
   const pa = file && file.property_address;
   if (!pa) return null;
@@ -107,9 +120,9 @@ function computeFindings(appraisal, file, opts = {}) {
   // matching file address never triggers a false "wrong property" fatal.
   const faLine = fileAddrLine(file);
   const subjStreet = normAddr(A.subject.address);
-  const subjKey = subjStreet.split(' ').slice(0, 2).join(' ');
-  if (subjStreet && /\d/.test(subjStreet) && faLine && subjKey &&
-      !normAddr(faLine).includes(subjKey)) {
+  const subjTokens = subjStreet.split(' ').filter(Boolean).slice(0, 2); // house-number + first street word
+  if (subjStreet && /\d/.test(subjStreet) && faLine && subjTokens.length &&
+      !containsTokenSeq(normAddr(faLine).split(' ').filter(Boolean), subjTokens)) {
     out.push(finding({ code: 'address_mismatch', severity: 'fatal', field: 'address',
       appraisalValue: [A.subject.address, A.subject.city, A.subject.state].filter(Boolean).join(', '),
       fileValue: faLine,

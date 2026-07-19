@@ -826,17 +826,26 @@ router.get('/applications/:id/appraisal', async (req, res) => {
         WHERE ap.appraisal_id=$1 AND d.is_current AND ap.document_id IS NOT NULL
         ORDER BY ap.sequence`, [appr.id]),
   ]);
-  const open = findings.rows.map((f) => ({ ...f, title: scrubText(f.title) }));
+  // Underwriting-scrutiny findings are STAFF-ONLY — they reveal how hard the lender is
+  // scrutinizing the deal (inflated-ARV signal, value not carried by the comps, over-paying vs
+  // as-is). A borrower must never see the lender's internal skepticism, so these codes are
+  // dropped from the borrower set entirely (they stay open + visible on the staff desk).
+  const SCRUTINY_CODES = new Set(['arv_defensibility', 'value_vs_comps', 'value_not_bracketed', 'asis_below_price']);
+  const open = findings.rows
+    .filter((f) => !SCRUTINY_CODES.has(f.code))
+    .map((f) => ({ ...f, title: scrubText(f.title) }));
   // Borrower-safe appraisal object: drop staff-only bookkeeping (who imported it, the
-  // source document ids) and defensively scrub the free-text lender/AMC/client fields so a
-  // capital-partner name can never reach a borrower even if one landed in the appraisal.
+  // source document ids) AND the free-text lender/AMC/client fields OUTRIGHT — a capital-partner
+  // name can never reach a borrower. Scrubbing a free-text field only strips the names we know;
+  // dropping the columns removes the whole class (the borrower UI never reads lender/AMC).
   const safeAppr = (() => {
     if (!appr) return null;
     // Also drop the `fields` jsonb catch-all: it carries appraiser.lender/appraiser.amc
-    // UN-scrubbed (buildFieldsJson), which would defeat the column scrub below. The borrower
+    // UN-scrubbed (buildFieldsJson), which would defeat the column drop below. The borrower
     // UI never reads it, so dropping it entirely is the safe, clean fix.
-    const { imported_by, source_xml_document_id, pdf_document_id, fields, ...rest } = appr; // eslint-disable-line no-unused-vars
-    return { ...rest, lender_name: scrubText(rest.lender_name), amc_name: scrubText(rest.amc_name) };
+    const { imported_by, source_xml_document_id, pdf_document_id, fields,
+      lender_name, amc_name, ...rest } = appr; // eslint-disable-line no-unused-vars
+    return rest;
   })();
   const bSummary = {
     fatal: open.filter((f) => f.severity === 'fatal').length,
