@@ -104,6 +104,18 @@ const TODAY = '2026-07-19';
   assert(!has(computeFindings(old, baseFile(), { today: TODAY }), 'subject_recent_resale'), 'a 7-year-old prior sale does NOT fire subject_recent_resale');
 }
 
+// 7b) Independent value cross-check — a value materially above the comp median but still WITHIN
+//    the bracket fires value_vs_comps (and NOT value_not_bracketed).
+{
+  const A = baseAppraisal({
+    values: { arv: null, arvConfidence: 'missing', asIs: 340000, asIsConfidence: 'definite', appraisedValue: 340000, valueSalesApproach: 340000, contractPrice: 340000, effectiveDate: '2026-06-01', conditionOfAppraisal: 'AsIs' },
+    comparables: [comp({ seq: '1', adjustedPrice: 280000 }), comp({ seq: '2', adjustedPrice: 300000 }), comp({ seq: '3', adjustedPrice: 360000 })],
+  });
+  const out = computeFindings(A, baseFile({ as_is_value: 340000, purchase_price: 340000 }), { today: TODAY });
+  assert(has(out, 'value_vs_comps'), 'value 13% above the comp median (within range) fires value_vs_comps');
+  assert(!has(out, 'value_not_bracketed'), 'and value_not_bracketed does NOT double-fire (value is within the bracket)');
+}
+
 // 8) Helper unit tests.
 {
   assert(_internals.monthsBetween('2025-01-01', '2026-03-01') === 14, 'monthsBetween counts 14 months');

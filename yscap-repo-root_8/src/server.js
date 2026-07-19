@@ -404,6 +404,13 @@ if (require.main === module) {
         require('./lib/experience').backfillCoBorrowerExperience()
           .then((n) => n && console.log('[boot] co-borrower experience backfill:', n))
           .catch((e) => console.error('[boot] experience backfill failed:', e.message));
+        // Previous-files fix: appraisals imported before the photo feature (or before a PDF was
+        // available) have empty galleries. Re-extract photos from each current appraisal's
+        // recoverable PDF (embedded XML or the uploaded PDF slot). Bounded per boot, self-draining,
+        // idempotent, fire-and-forget.
+        require('./lib/appraisal/desk').backfillAppraisalPhotosOnce()
+          .then((r) => r && r.filled && console.log('[boot] appraisal photo backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal photo backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }

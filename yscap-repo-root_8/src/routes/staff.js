@@ -2519,6 +2519,7 @@ async function signOffGate(itemId, actor) {
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
   const isCredit = code === 'rtl_cond_credit' || code === 'rtl_p3_credit' || code === 'rtl_p3_credit2';
+  const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
 
   // EMERGENCY doc-gate (owner-directed): a DOCUMENT-upload condition can never be
   // signed off with ZERO documents on it — the sign-off would attest to a file
@@ -2616,6 +2617,18 @@ async function signOffGate(itemId, actor) {
         : `This credit report has ${uniq.length} FATAL Underwriting findings`;
       return `${lead}: ${uniq.map((x) => x.message).join(' • ')} Correct the file and re-pull the report, or have an underwriter reconcile the finding(s), before signing off this credit condition.`;
     }
+    return null;
+  }
+
+  // Appraisal review cleared — the clear-to-close gate. It cannot be signed off while ANY fatal
+  // PILOT appraisal finding is still open (wrong property, value below purchase, expired license,
+  // C6/Q6, stale date, …). This is the safety guarantee the whole findings engine exists for.
+  if (isAppraisalReview) {
+    const n = (await db.query(
+      `SELECT count(*)::int AS n FROM appraisal_findings
+        WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
+    if (n > 0)
+      return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
     return null;
   }
 
