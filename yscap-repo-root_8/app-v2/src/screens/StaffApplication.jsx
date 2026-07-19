@@ -6,6 +6,7 @@ import { fileToBase64 } from '../lib/files.js';
 import { fmtDay, dayInputValue } from '../lib/dates.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
 import { useAuth } from '../lib/auth.jsx';
+import { ESIGN_RETURN_MSG } from '../lib/esign.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import ChatThread from '../components/ChatThread.jsx';
 import { NewChatModal } from './StaffChat.jsx';
@@ -2089,7 +2090,17 @@ const IconBell = () => (
 export default function StaffApplication() {
   const { id } = useParams();
   const nav = useNavigate();
-  const { search } = useLocation();
+  const { search, pathname } = useLocation();
+  // A counter-signer bouncing back from DocuSign's embedded view lands on
+  // …?esign=<state>. Show a confirmation, then strip the param.
+  const esignReturn = new URLSearchParams(search || '').get('esign');
+  const [esignMsg] = useState(() => ESIGN_RETURN_MSG[esignReturn] || null);
+  useEffect(() => {
+    if (!esignReturn) return;   // strip whenever the param is present, even if unmapped
+    const sp = new URLSearchParams(search);
+    sp.delete('esign');
+    nav({ pathname, search: sp.toString() ? `?${sp.toString()}` : '' }, { replace: true });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const { role, can } = useAuth();
   const isAdmin = role === 'admin' || role === 'super_admin';
   const completer = canComplete(role);   // may CLEAR (sign off) a condition; others only mark it reviewed
@@ -2495,6 +2506,7 @@ export default function StaffApplication() {
         <span className={`pill ${app.status}`} style={{ flex: 'none' }}>{APP_STATUS_LABEL[app.status] || app.status}</span>
       </div>
 
+      {esignMsg && <div className={`notice ${esignMsg.tone}`} role="status">{esignMsg.text}</div>}
       {msg && <div className="notice ok">{msg}</div>}
       {err && app && <div role="alert" className="notice err">{err}</div>}
 
