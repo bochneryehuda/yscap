@@ -85,21 +85,49 @@ async function circuitCheck(n = 1) {
   }
 }
 
+// Normalize a partner/note-buyer name to the link-table key form: lowercased, non-alphanumerics
+// stripped (no spaces) — the SAME convention as sitewire_partner_links.label_norm and the /rules
+// dropdown, so a link written from the UI is found by the resolver.
+const linkNorm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+// Common corporate suffixes/fillers — stripped only when SUGGESTING a fuzzy match (never when
+// binding), so "Fidelis" can suggest "Fidelis Investments LLC" and "Blue Lake" → "Blue Lake Capital".
+const CP_STOPWORDS = new Set(['llc', 'inc', 'incorporated', 'corp', 'corporation', 'co', 'company',
+  'capital', 'investments', 'investment', 'partners', 'partner', 'group', 'holdings', 'holding',
+  'lending', 'loans', 'loan', 'financial', 'finance', 'fund', 'funding', 'ventures', 'realty',
+  'real', 'estate', 'properties', 'property', 'llp', 'lp', 'the', 'of', 'and']);
+const coreKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  .split(' ').filter((t) => t && !CP_STOPWORDS.has(t)).join('');
+
 // ---- resolve the capital-partner id from our free-text lender label (G-CP) ----
+// Order: a human-CONFIRMED link (durable, owner-approved) → an exact directory match → a fuzzy
+// CANDIDATE (never auto-bound — owner's #1 never-guess rule). A confirmed link is the smart-link
+// chokepoint: "Fidelis" binds to "Fidelis Investments LLC" only because a human confirmed it.
 async function resolveCapitalPartnerId(lenderLabel) {
   const label = String(lenderLabel || '').trim();
   if (!label) return { id: null, ambiguous: false };
+  const key = linkNorm(label);
+
+  // 1) confirmed link wins. sitewire_id NULL = an explicit "no Sitewire partner" (handled externally).
+  const link = key ? (await db.query(`SELECT sitewire_id FROM sitewire_partner_links WHERE label_norm=$1`, [key])).rows[0] : null;
+  if (link) {
+    if (link.sitewire_id != null) return { id: Number(link.sitewire_id), ambiguous: false, linked: true };
+    return { id: null, ambiguous: false, linked: true, noPartner: true };
+  }
+
   const rows = (await db.query(`SELECT sitewire_id, name FROM sitewire_capital_partners`)).rows;
-  const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const L = norm(label);
-  const exact = rows.filter((r) => norm(r.name) === L);
-  if (exact.length === 1) return { id: exact[0].sitewire_id, ambiguous: false };
-  // A fuzzy substring match is NOT auto-bound (that would be a guess — owner's #1 rule). A
-  // single close match is surfaced as a CANDIDATE so the push parks it for one-click human
-  // confirmation instead of silently binding "Capital" → "RCN Capital".
-  const contains = rows.filter((r) => { const n = norm(r.name); return n.includes(L) || L.includes(n); });
-  if (contains.length === 1) return { id: null, ambiguous: false, candidate: contains[0].sitewire_id, candidateName: contains[0].name };
-  return { id: null, ambiguous: contains.length > 1 };
+  // 2) exact directory match (normalized) auto-binds.
+  const exact = rows.filter((r) => linkNorm(r.name) === key);
+  if (exact.length === 1) return { id: Number(exact[0].sitewire_id), ambiguous: false };
+
+  // 3) fuzzy is NOT auto-bound (that would be a guess). Surface the single best CANDIDATE so the UI
+  // can suggest it and the admin one-click confirms it into a durable link. Try a suffix-tolerant
+  // core-token match first ("Fidelis" ~ "Fidelis Investments LLC"), then a plain substring.
+  const ck = coreKey(label);
+  const coreMatch = ck ? rows.filter((r) => coreKey(r.name) === ck) : [];
+  if (coreMatch.length === 1) return { id: null, ambiguous: false, candidate: Number(coreMatch[0].sitewire_id), candidateName: coreMatch[0].name };
+  const contains = rows.filter((r) => { const n = linkNorm(r.name); return n && key && (n.includes(key) || key.includes(n)); });
+  if (contains.length === 1) return { id: null, ambiguous: false, candidate: Number(contains[0].sitewire_id), candidateName: contains[0].name };
+  return { id: null, ambiguous: (coreMatch.length > 1 || contains.length > 1) };
 }
 
 // ---- resolve the inspection + fee rule ----
@@ -160,8 +188,13 @@ function resolveInspection(link, rule) {
   if (method === 'mobile' && !allowVirtual) method = allowPhysical ? 'traditional' : dflt;
   if (method === 'traditional' && !allowPhysical) method = allowVirtual ? 'mobile' : dflt;
   const feeKind = T.feeKindFor(method);
-  const feeCents = rule ? (feeKind === 'physical' ? (rule.fee_cents_physical != null ? rule.fee_cents_physical : rule.fee_cents_virtual) : rule.fee_cents_virtual) : 29900;
-  return { method, feeKind, feeCents, allowVirtual, allowPhysical };
+  const ruleFee = rule ? (feeKind === 'physical' ? (rule.fee_cents_physical != null ? rule.fee_cents_physical : rule.fee_cents_virtual) : rule.fee_cents_virtual) : 29900;
+  // The coordinator's per-file fee override (Start-draw screen) wins over the rule fee when set.
+  // NULL / negative / non-finite falls back to the rule fee — a bad value can never zero the fee.
+  const override = link && link.fee_cents_override != null ? Number(link.fee_cents_override) : null;
+  const overridden = override != null && Number.isFinite(override) && override >= 0;
+  const feeCents = overridden ? override : ruleFee;
+  return { method, feeKind, feeCents, ruleFeeCents: Number(ruleFee), overridden, allowVirtual, allowPhysical };
 }
 
 /**

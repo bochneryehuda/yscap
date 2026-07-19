@@ -11,16 +11,42 @@ import { InfoTip } from '../components/FileSections.jsx';
 const dollars = (c) => (Number(c || 0) / 100).toFixed(0);
 const toCents = (v) => Math.round(Number(String(v).replace(/[^0-9.]/g, '')) * 100);
 
+/* Small inline icon set (feather-style, stroke = currentColor) — matches StaffDraws. */
+function Icon({ name }) {
+  const p = {
+    sliders: <><path d="M4 6h10" /><path d="M18 6h2" /><circle cx="16" cy="6" r="2" /><path d="M4 12h4" /><path d="M12 12h8" /><circle cx="10" cy="12" r="2" /><path d="M4 18h10" /><path d="M18 18h2" /><circle cx="16" cy="18" r="2" /></>,
+    shield: <><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" /><path d="M9 12l2 2 4-4" /></>,
+    plus: <><circle cx="12" cy="12" r="9" /><path d="M12 8v8" /><path d="M8 12h8" /></>,
+    link: <><path d="M9 15l6-6" /><path d="M11 6l1-1a4 4 0 015.6 5.6l-1.6 1.6" /><path d="M13 18l-1 1A4 4 0 016.4 13.4L8 11.8" /></>,
+    list: <><path d="M8 6h12" /><path d="M8 12h12" /><path d="M8 18h12" /><path d="M4 6h.01" /><path d="M4 12h.01" /><path d="M4 18h.01" /></>,
+  }[name] || null;
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
+}
+
+function CardHead({ icon, tone, title, right }) {
+  return (
+    <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+      <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+        <span className={'dd-card-ic' + (tone ? ' ' + tone : '')}><Icon name={icon} /></span>
+        <h3>{title}</h3>
+      </div>
+      {right || null}
+    </div>
+  );
+}
+
 function SettingField({ label, k, settings, onSave, info }) {
   const [v, setV] = useState('');
+  const [saved, setSaved] = useState(false);
   useEffect(() => { const cur = settings[k]; if (cur != null) setV(String(cur)); }, [settings, k]);
   return (
-    <label className="small">{label}{info ? <InfoTip tip={info} /> : null}
+    <div className="dd-field">
+      <span className="dd-field-l">{label}{info ? <InfoTip tip={info} /> : null}</span>
       <div className="row" style={{ gap: 6 }}>
-        <input className="input" style={{ width: 80 }} value={v} onChange={(e) => setV(e.target.value)} />
-        <button className="btn btn-sm ghost" onClick={() => { const n = Number(v); if (Number.isFinite(n) && n >= 0) onSave(k, n); }}>Save</button>
+        <input className="input" style={{ maxWidth: 90 }} value={v} onChange={(e) => { setV(e.target.value); setSaved(false); }} />
+        <button className="btn btn-sm ghost" onClick={() => { const n = Number(v); if (Number.isFinite(n) && n >= 0) { onSave(k, n); setSaved(true); } }}>{saved ? 'Saved ✓' : 'Save'}</button>
       </div>
-    </label>
+    </div>
   );
 }
 
@@ -42,6 +68,7 @@ const HELP = {
   retainage: 'Money you hold back from each approved draw and release at the very end, so the last piece isn\'t paid until the work is fully finished. Example: set to 10% — a $10,000 approved draw pays the borrower $9,000 now and keeps $1,000 until the project is done and signed off. Leave it at 0 for no hold-back (most files).',
   lien: 'Blocks a draw from being released until every required lien waiver is received or waived. Off unless this project uses lien waivers.',
   advanced: 'These aren\'t part of the standard draw workflow, so they stay hidden on the draw desk. Turn them on here — globally, or for one specific project — and they\'ll appear on that file\'s desk.',
+  link: 'Match a note buyer to its record in Sitewire\'s capital-partner directory even when the names are spelled differently (e.g. “Fidelis” → “Fidelis Investments LLC”). Once linked, a rule for that note buyer pushes to the right Sitewire partner automatically. Nothing is guessed — you confirm each match.',
 };
 
 export default function StaffDrawRules() {
@@ -99,100 +126,190 @@ export default function StaffDrawRules() {
 
   return (
     <div className="wrap">
-      <h1 style={{ marginBottom: 2 }}>Inspection & fee rules</h1>
-      <div className="muted">How each capital partner's files are inspected and what we charge per draw. Everything still records in Sitewire.</div>
-
-      <div className="panel" style={{ marginTop: 16 }}>
-        <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+      <div className="dd-wrap">
+        <div className="dd-head">
           <div>
-            <h3 style={{ margin: 0 }}>Connection & settings</h3>
-            {status && <div className="muted small" style={{ marginTop: 2 }}>{status.enabled ? 'Connected' : 'Turned off'}{status.enabled ? (status.outbound ? ' · writing on' : ' · read-only') : ''}{status.dryrun ? ' · dry-run' : ''} · {status.linked_files} files · {status.mirrored_draws} draws · {status.open_reviews} need review</div>}
+            <h1 className="dd-title">Inspection &amp; fee rules</h1>
+            <div className="dd-sub">How each capital partner's files are inspected and what we charge per draw. Everything still records in Sitewire.</div>
           </div>
-          <button className="btn btn-sm ghost" disabled={syncing} onClick={syncDirectory}>{syncing ? 'Syncing…' : 'Sync capital-partner directory'}</button>
+          {status && (
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <span className={'dd-chip ' + (status.enabled ? 'on' : 'off')}><span className="dot" />{status.enabled ? 'Connected' : 'Turned off'}</span>
+              {status.enabled && <span className={'dd-chip ' + (status.outbound ? 'on' : 'warn')}><span className="dot" />{status.outbound ? 'Writing on' : 'Read-only'}</span>}
+              {status.dryrun && <span className="dd-chip warn"><span className="dot" />Dry-run</span>}
+            </div>
+          )}
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginTop: 10 }}>
-          <SettingField label="Wire turnaround (hours)" k="wire_turnaround_hours" settings={settings} onSave={saveSetting} info={HELP.wire_turnaround} />
-          <SettingField label="Reallocation variance %" k="variance_pct" settings={settings} onSave={saveSetting} info={HELP.variance} />
-          <SettingField label="Stale after (days)" k="stale_days" settings={settings} onSave={saveSetting} info={HELP.stale} />
-          <SettingField label="No-draw alert (days)" k="no_draw_days" settings={settings} onSave={saveSetting} info={HELP.no_draw} />
+
+        {/* Connection & settings */}
+        <div className="dd-card">
+          <CardHead icon="sliders" title="Connection &amp; settings"
+            right={<button className="btn btn-sm ghost" disabled={syncing} onClick={syncDirectory}>{syncing ? 'Syncing…' : 'Sync capital-partner directory'}</button>} />
+          {status && <div className="dd-sub" style={{ marginTop: -2 }}>{status.enabled ? 'Connected' : 'Turned off'}{status.enabled ? (status.outbound ? ' · writing on' : ' · read-only') : ''}{status.dryrun ? ' · dry-run' : ''} · {status.linked_files} files · {status.mirrored_draws} draws · {status.open_reviews} need review</div>}
+          <div className="dd-fieldgrid">
+            <SettingField label="Wire turnaround (hours)" k="wire_turnaround_hours" settings={settings} onSave={saveSetting} info={HELP.wire_turnaround} />
+            <SettingField label="Reallocation variance %" k="variance_pct" settings={settings} onSave={saveSetting} info={HELP.variance} />
+            <SettingField label="Stale after (days)" k="stale_days" settings={settings} onSave={saveSetting} info={HELP.stale} />
+            <SettingField label="No-draw alert (days)" k="no_draw_days" settings={settings} onSave={saveSetting} info={HELP.no_draw} />
+          </div>
+        </div>
+
+        <AdvancedFeatures settings={settings} saveSetting={saveSetting} />
+
+        {/* Sitewire partner linking (smart-link) */}
+        <PartnerLinks partners={partners} onChanged={load} />
+
+        {/* Add / update a rule */}
+        <div className="dd-card">
+          <CardHead icon="plus" title="Add / update a rule" />
+          <div className="grid cols-3" style={{ gap: 12, marginTop: 6 }}>
+            <label className="small">Capital partner (note buyer)<InfoTip tip={HELP.partner} />
+              <select className="input" value={draft.partner_label} onChange={(e) => { const v = e.target.value; setDraft({ ...draft, partner_label: v, handled_externally: v ? draft.handled_externally : false }); }}>
+                <option value="">Global default (all partners)</option>
+                {partners.map((p) => <option key={p.label} value={p.label}>{p.label}{!p.in_directory && !p.linked_sitewire_id ? ' (not in Sitewire)' : ''}</option>)}
+                {draft.partner_label && !partners.some((p) => p.label === draft.partner_label) && <option value={draft.partner_label}>{draft.partner_label}</option>}
+              </select>
+            </label>
+            <label className="small">Program (optional)<InfoTip tip={HELP.program} />
+              <input className="input" placeholder="e.g. gold" value={draft.program} onChange={(e) => setDraft({ ...draft, program: e.target.value })} />
+            </label>
+            <label className="small">Set up automatically as<InfoTip tip={HELP.auto_method} />
+              <select className="input" value={draft.inspection_method} onChange={(e) => setDraft({ ...draft, inspection_method: e.target.value })} disabled={draft.handled_externally}>
+                <option value="mobile">Virtual (mobile)</option>
+                <option value="traditional">On-site (traditional)</option>
+              </select>
+            </label>
+            <label className="small row" style={{ gridColumn: '1 / -1', gap: 8, alignItems: 'center', padding: '10px 12px', borderRadius: 8, background: draft.handled_externally ? 'var(--gold-soft)' : 'var(--ink-2)', border: '1px solid var(--line)', opacity: draft.partner_label ? 1 : 0.55 }}>
+              <input type="checkbox" checked={draft.handled_externally} disabled={!draft.partner_label} onChange={(e) => setDraft({ ...draft, handled_externally: e.target.checked })} />
+              <span><b>Handled externally</b> — this capital partner runs its own draws; never push these files to Sitewire<InfoTip tip={HELP.handled} />
+                {!draft.partner_label && <span className="muted"> Pick a specific capital partner above to use this.</span>}
+                {draft.handled_externally && !!draft.partner_label && <span className="muted"> The inspection &amp; fee settings below are ignored for this partner.</span>}
+              </span>
+            </label>
+            <label className="small">Virtual fee $<InfoTip tip={HELP.fee} /><input className="input" value={draft.fee_cents_virtual} onChange={(e) => setDraft({ ...draft, fee_cents_virtual: e.target.value })} disabled={draft.handled_externally} /></label>
+            <label className="small">On-site fee $<input className="input" value={draft.fee_cents_physical} onChange={(e) => setDraft({ ...draft, fee_cents_physical: e.target.value })} disabled={draft.handled_externally} /></label>
+            <div />
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_virtual} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, allow_virtual: e.target.checked })} /> Virtual allowed<InfoTip tip={HELP.allowed} /></label>
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_physical} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, allow_physical: e.target.checked })} /> On-site allowed</label>
+            <div className="small muted" style={{ alignSelf: 'center' }}>Allow both to let the coordinator switch method per file.</div>
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_sitewire_inspector} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, require_sitewire_inspector: e.target.checked })} /> Require Sitewire inspector<InfoTip tip={HELP.inspector} /></label>
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_capital_partner_approval} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, require_capital_partner_approval: e.target.checked })} /> Require capital-partner approval<InfoTip tip={HELP.cp_approval} /></label>
+            <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_reallocation} disabled={draft.handled_externally} onChange={(e) => setDraft({ ...draft, allow_reallocation: e.target.checked })} /> Allow reallocations<InfoTip tip={HELP.realloc} /></label>
+          </div>
+          <div className="row" style={{ gap: 8, marginTop: 14 }}>
+            <button className="btn btn-sm primary" onClick={save}>Save rule</button>
+            {msg && <span className="small" style={{ color: 'var(--success)', alignSelf: 'center', fontWeight: 600 }}>{msg}</span>}
+            {err && <span className="small" style={{ color: 'var(--danger)', alignSelf: 'center', fontWeight: 600 }}>{err}</span>}
+          </div>
+        </div>
+
+        {/* Rules table */}
+        <div className="dd-tablecard" style={{ overflowX: 'auto' }}>
+          <table className="dd-table" style={{ minWidth: 760 }}>
+            <thead><tr><th>Capital partner</th><th>Program</th><th>Auto method</th><th>Allowed</th><th>Inspector</th><th>CP approval</th><th>Reallocations</th><th className="num">Virtual</th><th className="num">On-site</th><th></th></tr></thead>
+            <tbody>
+              {rules.length === 0 && <tr><td colSpan={10} className="muted" style={{ textAlign: 'center', padding: '22px' }}>No rules yet — the global default applies to every file.</td></tr>}
+              {rules.map((r) => {
+                const av = r.allow_virtual !== false, ap = r.allow_physical !== false;
+                const allowed = av && ap ? 'Both (can switch)' : av ? 'Virtual only' : ap ? 'On-site only' : '—';
+                const ext = !!r.handled_externally;
+                return (
+                <tr key={r.id}>
+                  <td style={{ fontWeight: 600 }}>{r.partner_label || r.capital_partner_name || (r.capital_partner_id ? '#' + r.capital_partner_id : 'Global default')}
+                    {ext && <span className="pill sw-insp" style={{ marginLeft: 6 }}>Handled externally</span>}
+                  </td>
+                  <td className="muted">{r.program || '—'}</td>
+                  {ext ? (
+                    <td colSpan={7} className="muted small">Runs in the partner's own system — not pushed to Sitewire.</td>
+                  ) : (<>
+                    <td>{r.inspection_method === 'mobile' ? 'Virtual' : 'On-site'}</td>
+                    <td className="small">{allowed}</td>
+                    <td>{r.require_sitewire_inspector ? 'Yes' : 'No'}</td>
+                    <td>{r.require_capital_partner_approval ? 'Yes' : 'No'}</td>
+                    <td>{r.allow_reallocation ? 'Yes' : 'No'}</td>
+                    <td className="num">${dollars(r.fee_cents_virtual)}</td>
+                    <td className="num">{r.fee_cents_physical == null ? '—' : '$' + dollars(r.fee_cents_physical)}</td>
+                  </>)}
+                  <td><button className="btn btn-sm ghost" onClick={() => edit(r)}>Edit</button></td>
+                </tr>
+              ); })}
+            </tbody>
+          </table>
         </div>
       </div>
+    </div>
+  );
+}
 
-      <AdvancedFeatures settings={settings} saveSetting={saveSetting} />
+/* Smart-link: match our free-text note-buyer labels to Sitewire's capital-partner directory,
+   tolerant of spelling differences ("Fidelis" → "Fidelis Investments LLC"). Nothing is guessed —
+   an admin confirms each link. The backend resolveCapitalPartnerId consults these confirmed links
+   first, so a rule for a note buyer pushes to the right Sitewire partner. */
+function PartnerLinks({ partners, onChanged }) {
+  const [dir, setDir] = useState([]);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const [note, setNote] = useState('');
 
-      <div className="panel" style={{ marginTop: 16 }}>
-        <h3 style={{ marginTop: 0 }}>Add / update a rule</h3>
-        <div className="grid cols-3" style={{ gap: 10 }}>
-          <label className="small">Capital partner (note buyer)<InfoTip tip={HELP.partner} />
-            <select className="input" value={draft.partner_label} onChange={(e) => { const v = e.target.value; setDraft({ ...draft, partner_label: v, handled_externally: v ? draft.handled_externally : false }); }}>
-              <option value="">Global default (all partners)</option>
-              {partners.map((p) => <option key={p.label} value={p.label}>{p.label}{!p.in_directory ? ' (not in Sitewire)' : ''}</option>)}
-              {draft.partner_label && !partners.some((p) => p.label === draft.partner_label) && <option value={draft.partner_label}>{draft.partner_label}</option>}
-            </select>
-          </label>
-          <label className="small">Program (optional)<InfoTip tip={HELP.program} />
-            <input className="input" placeholder="e.g. gold" value={draft.program} onChange={(e) => setDraft({ ...draft, program: e.target.value })} />
-          </label>
-          <label className="small">Set up automatically as<InfoTip tip={HELP.auto_method} />
-            <select className="input" value={draft.inspection_method} onChange={(e) => setDraft({ ...draft, inspection_method: e.target.value })} disabled={draft.handled_externally}>
-              <option value="mobile">Virtual (mobile)</option>
-              <option value="traditional">On-site (traditional)</option>
-            </select>
-          </label>
-          <label className="small row" style={{ gridColumn: '1 / -1', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 6, background: draft.handled_externally ? 'var(--paper,#f6f3ec)' : 'transparent', border: '1px solid var(--line,#e6e0d4)', opacity: draft.partner_label ? 1 : 0.55 }}>
-            <input type="checkbox" checked={draft.handled_externally} disabled={!draft.partner_label} onChange={(e) => setDraft({ ...draft, handled_externally: e.target.checked })} />
-            <span><b>Handled externally</b> — this capital partner runs its own draws; never push these files to Sitewire<InfoTip tip={HELP.handled} />
-              {!draft.partner_label && <span className="muted"> Pick a specific capital partner above to use this.</span>}
-              {draft.handled_externally && !!draft.partner_label && <span className="muted"> The inspection &amp; fee settings below are ignored for this partner.</span>}
-            </span>
-          </label>
-          <label className="small">Virtual fee $<InfoTip tip={HELP.fee} /><input className="input" value={draft.fee_cents_virtual} onChange={(e) => setDraft({ ...draft, fee_cents_virtual: e.target.value })} disabled={draft.handled_externally} /></label>
-          <label className="small">On-site fee $<input className="input" value={draft.fee_cents_physical} onChange={(e) => setDraft({ ...draft, fee_cents_physical: e.target.value })} /></label>
-          <div />
-          <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_virtual} onChange={(e) => setDraft({ ...draft, allow_virtual: e.target.checked })} /> Virtual allowed<InfoTip tip={HELP.allowed} /></label>
-          <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_physical} onChange={(e) => setDraft({ ...draft, allow_physical: e.target.checked })} /> On-site allowed</label>
-          <div className="small muted" style={{ alignSelf: 'center' }}>Allow both to let the coordinator switch method per file.</div>
-          <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_sitewire_inspector} onChange={(e) => setDraft({ ...draft, require_sitewire_inspector: e.target.checked })} /> Require Sitewire inspector<InfoTip tip={HELP.inspector} /></label>
-          <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.require_capital_partner_approval} onChange={(e) => setDraft({ ...draft, require_capital_partner_approval: e.target.checked })} /> Require capital-partner approval<InfoTip tip={HELP.cp_approval} /></label>
-          <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_reallocation} onChange={(e) => setDraft({ ...draft, allow_reallocation: e.target.checked })} /> Allow reallocations<InfoTip tip={HELP.realloc} /></label>
-        </div>
-        <div className="row" style={{ gap: 8, marginTop: 10 }}>
-          <button className="btn btn-sm primary" onClick={save}>Save rule</button>
-          {msg && <span className="small" style={{ color: 'var(--teal,#2f7f86)', alignSelf: 'center' }}>{msg}</span>}
-          {err && <span className="small" style={{ color: 'var(--bad,#b04a3f)', alignSelf: 'center' }}>{err}</span>}
-        </div>
+  useEffect(() => {
+    api.get('/api/sitewire/capital-partners').then((d) => setDir(d.partners || [])).catch(() => {});
+  }, [partners]);
+
+  async function setLink(label, sitewireId) {
+    setBusy(label); setErr(''); setNote('');
+    try {
+      await api.post('/api/sitewire/partner-links', { label, sitewire_id: sitewireId === '' ? null : Number(sitewireId) });
+      setNote(`Linked ${label}.`); onChanged && onChanged();
+    } catch (e) { setErr(e?.data?.error || e.message || 'Could not link.'); } finally { setBusy(''); }
+  }
+
+  // note buyers we actually use (from the rules endpoint's partners union), minus the global default
+  const buyers = (partners || []).filter((p) => p.label);
+  if (buyers.length === 0) return null;
+
+  return (
+    <div className="dd-card">
+      <CardHead icon="link" title="Match note buyers to Sitewire" />
+      <div className="dd-sub" style={{ marginTop: -2, marginBottom: 4 }}>
+        Point each note buyer at its record in Sitewire's directory — even when the name is spelled a little differently. Files for a linked note buyer push to the right Sitewire partner automatically.<InfoTip tip={HELP.link} />
       </div>
-
-      <div className="panel" style={{ marginTop: 14, overflowX: 'auto', padding: 0 }}>
-        <table className="table" style={{ width: '100%', minWidth: 720 }}>
-          <thead><tr><th>Capital partner</th><th>Program</th><th>Auto method</th><th>Allowed</th><th>Inspector</th><th>CP approval</th><th>Reallocations</th><th style={{ textAlign: 'right' }}>Virtual</th><th style={{ textAlign: 'right' }}>On-site</th><th></th></tr></thead>
+      <div className="dd-tablecard" style={{ overflowX: 'auto', boxShadow: 'none', border: 'none' }}>
+        <table className="dd-table" style={{ minWidth: 560 }}>
+          <thead><tr><th>Note buyer (our name)</th><th>Sitewire capital partner</th><th>Status</th></tr></thead>
           <tbody>
-            {rules.map((r) => {
-              const av = r.allow_virtual !== false, ap = r.allow_physical !== false;
-              const allowed = av && ap ? 'Both (can switch)' : av ? 'Virtual only' : ap ? 'On-site only' : '—';
-              const ext = !!r.handled_externally;
+            {buyers.map((p) => {
+              // What the dropdown shows selected: an explicit human link wins (including an explicit
+              // "no partner" = blank); otherwise fall back to an exact directory match if there is one.
+              const cur = p.has_link ? (p.linked_sitewire_id != null ? String(p.linked_sitewire_id) : '')
+                : (p.directory_id != null ? String(p.directory_id) : '');
               return (
-              <tr key={r.id}>
-                <td>{r.partner_label || r.capital_partner_name || (r.capital_partner_id ? '#' + r.capital_partner_id : 'Global default')}
-                  {ext && <span className="pill sw-insp" style={{ marginLeft: 6 }}>Handled externally</span>}
-                </td>
-                <td className="muted">{r.program || '—'}</td>
-                {ext ? (
-                  <td colSpan={7} className="muted small">Runs in the partner's own system — not pushed to Sitewire.</td>
-                ) : (<>
-                  <td>{r.inspection_method === 'mobile' ? 'Virtual' : 'On-site'}</td>
-                  <td className="small">{allowed}</td>
-                  <td>{r.require_sitewire_inspector ? 'Yes' : 'No'}</td>
-                  <td>{r.require_capital_partner_approval ? 'Yes' : 'No'}</td>
-                  <td>{r.allow_reallocation ? 'Yes' : 'No'}</td>
-                  <td style={{ textAlign: 'right' }}>${dollars(r.fee_cents_virtual)}</td>
-                  <td style={{ textAlign: 'right' }}>{r.fee_cents_physical == null ? '—' : '$' + dollars(r.fee_cents_physical)}</td>
-                </>)}
-                <td><button className="btn btn-sm ghost" onClick={() => edit(r)}>Edit</button></td>
-              </tr>
-            ); })}
+                <tr key={p.label}>
+                  <td style={{ fontWeight: 600 }}>{p.label}</td>
+                  <td>
+                    <select className="input" style={{ maxWidth: 320 }} disabled={busy === p.label} value={cur}
+                      onChange={(e) => setLink(p.label, e.target.value)}>
+                      <option value="">— not in Sitewire (handled externally) —</option>
+                      {dir.map((d) => <option key={d.sitewire_id} value={d.sitewire_id}>{d.name}{d.on_our_lender ? '' : ' (directory)'}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    {p.has_link
+                      ? (p.linked_sitewire_id != null ? <span className="pill sw-approved">Linked ✓</span> : <span className="pill sw-insp">No Sitewire partner</span>)
+                      : p.in_directory
+                        ? <span className="pill sw-approved">Exact match</span>
+                        : p.suggested_sitewire_id != null
+                          ? <span className="pill sw-pending" title={p.suggested_name || ''}>Suggested: {p.suggested_name}</span>
+                          : <span className="pill sw-insp">Not linked</span>}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
+      </div>
+      <div className="row" style={{ gap: 8, marginTop: 8 }}>
+        {note && <span className="small" style={{ color: 'var(--success)', fontWeight: 600 }}>{note}</span>}
+        {err && <span className="small" style={{ color: 'var(--danger)', fontWeight: 600 }}>{err}</span>}
       </div>
     </div>
   );
@@ -242,14 +359,14 @@ function AdvancedFeatures({ settings, saveSetting }) {
 
   const lienOn = settings.require_lien_waivers === true || settings.require_lien_waivers === 'true';
   return (
-    <div className="panel" style={{ marginTop: 16 }}>
-      <h3 style={{ marginTop: 0 }}>Advanced features<InfoTip tip={HELP.advanced} /></h3>
-      <div className="muted small" style={{ marginTop: -4, marginBottom: 10 }}>
+    <div className="dd-card">
+      <CardHead icon="shield" title="Advanced features" right={<InfoTip tip={HELP.advanced} />} />
+      <div className="dd-sub" style={{ marginTop: -2, marginBottom: 12 }}>
         Retainage and lien waivers aren't part of the standard draw workflow, so they stay hidden on the draw desk. Turn them on globally, or just for one project — and they'll appear on that file's desk.
       </div>
 
-      <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>Global default</div>
-      <div className="row" style={{ gap: 20, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+      <div className="small" style={{ fontWeight: 700, marginBottom: 8, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', fontSize: 11 }}>Global default</div>
+      <div className="row" style={{ gap: 22, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <SettingField label="Retainage held %" k="retainage_pct" settings={settings} onSave={saveSetting} info={HELP.retainage} />
         <label className="small row" style={{ gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={lienOn} onChange={(e) => saveSetting('require_lien_waivers', e.target.checked)} />
@@ -257,7 +374,7 @@ function AdvancedFeatures({ settings, saveSetting }) {
         </label>
       </div>
 
-      <div className="small" style={{ fontWeight: 600, margin: '16px 0 6px' }}>Turn on for one project</div>
+      <div className="small" style={{ fontWeight: 700, margin: '20px 0 8px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '.05em', fontSize: 11 }}>Turn on for one project</div>
       <div className="row" style={{ gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <label className="small">Loan number
           <input className="input" style={{ width: 180 }} placeholder="e.g. YSCAP258134628" value={loan}
@@ -266,9 +383,9 @@ function AdvancedFeatures({ settings, saveSetting }) {
         <button className="btn btn-sm ghost" disabled={busy} onClick={lookup}>Look up</button>
       </div>
       {proj && (
-        <div className="panel" style={{ marginTop: 10, background: 'var(--paper,#f6f3ec)' }}>
+        <div style={{ marginTop: 12, padding: '14px 16px', borderRadius: 10, background: 'var(--ink-2)', border: '1px solid var(--line)' }}>
           <div className="small"><b>{proj.ys_loan_number}</b>{proj.address ? ` · ${proj.address}` : ''} <span className="muted">· {proj.status}</span></div>
-          <div className="row" style={{ gap: 20, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 8 }}>
+          <div className="row" style={{ gap: 22, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 10 }}>
             <label className="small">Retainage %<InfoTip tip={HELP.retainage} />
               <input className="input" style={{ width: 80 }} placeholder="0" value={pRet} onChange={(e) => setPRet(e.target.value)} />
             </label>
@@ -278,11 +395,11 @@ function AdvancedFeatures({ settings, saveSetting }) {
             </label>
             <button className="btn btn-sm primary" disabled={busy} onClick={saveProject}>Save for this project</button>
           </div>
-          <div className="muted small" style={{ marginTop: 6 }}>Leave retainage blank to inherit the global default. These appear on this file's draw desk once set.</div>
+          <div className="muted small" style={{ marginTop: 8 }}>Leave retainage blank to inherit the global default. These appear on this file's draw desk once set.</div>
         </div>
       )}
-      {note && <div className="small" style={{ color: 'var(--teal,#2f7f86)', marginTop: 8 }}>{note}</div>}
-      {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 8 }}>{err}</div>}
+      {note && <div className="small" style={{ color: 'var(--success)', marginTop: 10, fontWeight: 600 }}>{note}</div>}
+      {err && <div className="small" style={{ color: 'var(--danger)', marginTop: 10, fontWeight: 600 }}>{err}</div>}
     </div>
   );
 }
