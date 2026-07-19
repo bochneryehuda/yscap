@@ -26,6 +26,7 @@ const { can, assigneeExistsSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const { runAppraisalImport } = require('../lib/appraisal/desk');
+const { collateralScore, arvDefensibility } = require('../lib/appraisal/scoring');
 const X = require('../lib/appraisal/xml');
 
 // Upload cap: aligned to the per-file limit the JSON body-parser actually allows,
@@ -76,15 +77,22 @@ router.get('/:appId', async (req, res, next) => {
           ORDER BY ap.sequence`, [appr.id]),
     ]);
     const open = findings.rows;
-    res.json({
-      appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows,
-      summary: {
-        fatal: open.filter((f) => f.severity === 'fatal').length,
-        warning: open.filter((f) => f.severity === 'warning').length,
-        info: open.filter((f) => f.severity === 'info').length,
-        blocksCtc: open.some((f) => f.severity === 'fatal' && f.blocks_ctc),
-      },
-    });
+    const summary = {
+      fatal: open.filter((f) => f.severity === 'fatal').length,
+      warning: open.filter((f) => f.severity === 'warning').length,
+      info: open.filter((f) => f.severity === 'info').length,
+      blocksCtc: open.some((f) => f.severity === 'fatal' && f.blocks_ctc),
+    };
+    // Advisory PILOT reads, recomputed live (never stored/stale): the collateral score and the
+    // ARV-defensibility cross-check against the file's rehab budget.
+    const rehab = (await db.query(`SELECT rehab_budget FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
+    // Match findings.js isReno (which excludes condo 1073) so the card and the finding agree.
+    const isReno = appr.form_type !== 'FNM1073' && (appr.arv_value != null || /subject|hypothetical|as.?repair|as.?complet/i.test(String(appr.condition_of_appraisal || '')));
+    const score = {
+      collateral: collateralScore({ a: appr, comps: comps.rows, summary }),
+      arv: arvDefensibility({ arv: appr.arv_value, asIs: appr.as_is_value, rehab: rehab.rehab_budget, isReno }),
+    };
+    res.json({ appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows, summary, score });
   } catch (e) { next(e); }
 });
 

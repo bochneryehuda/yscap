@@ -17,6 +17,8 @@
  * {source, field, appraisalValue|sourceValue, fileValue} shape.
  */
 
+const { arvDefensibility } = require('./scoring');
+
 const DEFAULTS = {
   valueTolerancePct: 2,        // ARV/As-Is: treat within this % (and $) as a match
   valueToleranceAbs: 5000,
@@ -346,6 +348,22 @@ function computeFindings(appraisal, file, opts = {}) {
         fileValue: cur != null ? money(cur) : null,
         title: `Subject was sold within ${o.flipSeasoningMonths} months before the appraisal${markup != null ? ` (${markup >= 0 ? '+' : ''}${markup}% since)` : ''}`,
         howTo: `The subject last transferred ${ps.priorDate}${prior != null ? ` for ${money(prior)}` : ''}${markup != null && markup >= o.flipMarkupPct ? ` — a ${markup}% jump warrants a close look at what supports the increase` : '. Confirm the prior sale and any value change is supported'}.`,
+        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+    }
+  }
+
+  // ---- 21. ARV defensibility — is the after-repair uplift backed by the rehab budget? ----
+  // Only on a renovation/subject-to deal, and only when BOTH ARV and As-Is are known. Advisory:
+  // flags a thin (uplift ≫ budget), no-uplift, or no-budget case. Never blocks CTC.
+  const isReno = A.formType !== 'FNM1073' && (v.arv != null || /SubjectTo/i.test(String(v.conditionOfAppraisal || '')));
+  if (isReno && v.arv != null && v.asIs != null) {
+    const rehab = o.rehab != null ? o.rehab : (file && file.rehab_budget);
+    const def = arvDefensibility({ arv: v.arv, asIs: v.asIs, rehab, isReno: true });
+    if (def && (def.band === 'thin' || def.band === 'no_uplift' || def.band === 'no_budget')) {
+      out.push(finding({ code: 'arv_defensibility', severity: 'warning', field: 'arv',
+        appraisalValue: def.uplift != null ? `+${money(def.uplift)} uplift` : null,
+        fileValue: def.rehab != null ? `${money(def.rehab)} rehab` : null,
+        title: def.title, howTo: def.detail,
         actions: ['acknowledge', 'dismiss', 'request_revision'] }));
     }
   }
