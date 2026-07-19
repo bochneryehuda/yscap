@@ -65,6 +65,7 @@ router.get('/files/:id', requirePermission('manage_draws'), async (req, res) => 
 
 // ---- GET /api/sitewire/files/:id/findings/:drawId — pull full findings (photos + notes) ----
 router.get('/files/:id/findings/:drawId', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
   // the draw MUST be one PILOT mirrored for THIS file (only-ours + IDOR guard) — never
@@ -94,6 +95,7 @@ router.post('/files/:id/push', requirePermission('platform_setup'), async (req, 
 router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async (req, res) => {
   if (!cfg.sitewireEnabled || !cfg.sitewireOutboundEnabled) return res.status(503).json({ error: 'Sitewire writes are turned off' });
   const reqId = req.params.reqId;
+  if (!/^\d+$/.test(reqId)) return res.status(404).json({ error: 'request not found' });
   const approvedCents = Math.round(Number(req.body.approved_cents));
   const lenderComments = req.body.lender_comments || undefined;
   if (!Number.isFinite(approvedCents) || approvedCents < 0) return res.status(400).json({ error: 'approved_cents must be a non-negative whole number of cents' });
@@ -129,6 +131,7 @@ router.post('/requests/:reqId/approve', requirePermission('manage_draws'), async
 router.post('/draws/:drawId/:action', requirePermission('manage_draws'), async (req, res) => {
   if (!cfg.sitewireEnabled || !cfg.sitewireOutboundEnabled) return res.status(503).json({ error: 'Sitewire writes are turned off' });
   const { drawId, action } = req.params;
+  if (!/^\d+$/.test(drawId)) return res.status(404).json({ error: 'draw not found' });
   if (!client.DRAW_TRANSITIONS.has(action)) return res.status(400).json({ error: 'action must be approve, amend, or reopen' });
   const own = (await db.query(`SELECT application_id FROM sitewire_draws WHERE sitewire_draw_id=$1`, [drawId])).rows[0];
   if (!own || !(await canSeeFile(req, own.application_id))) return res.status(403).json({ error: 'forbidden' });

@@ -41,10 +41,18 @@ async function park({ appId, reason, fieldKey = 'sitewire', current = null, prop
       `SELECT id FROM sync_review_queue WHERE application_id=$1 AND field_key=$2 AND reason LIKE $3 AND status='open' LIMIT 1`,
       [appId, fieldKey, reason.split(':')[0] + '%']);
     if (existing.rowCount > 0) return existing.rows[0].id;
+    // The shared open-review unique index is (COALESCE(task_id,''), field_key, direction,
+    // COALESCE(proposed_value,'')) — it does NOT include application_id. Most Sitewire parks
+    // carry a null proposed_value, so without a discriminator they'd all collide on
+    // ('', 'sitewire', 'outbound', '') and every park after the first would be silently
+    // swallowed by the catch below (violating "nothing is silent"). Stamp a per-(file,
+    // reason-class) key into task_id (no FK; unused by sitewire rows) so distinct files /
+    // reasons never collide, while the SELECT-dedup above still catches a true repeat.
+    const taskKey = `sitewire:${appId}:${String(reason).split(':')[0]}`;
     const r = await db.query(
-      `INSERT INTO sync_review_queue (application_id, direction, field_key, current_value, proposed_value, reason, status)
-       VALUES ($1,'outbound',$2,$3,$4,$5,'open') RETURNING id`,
-      [appId, fieldKey, current == null ? null : String(current), proposed == null ? null : String(proposed), reason]);
+      `INSERT INTO sync_review_queue (application_id, task_id, direction, field_key, current_value, proposed_value, reason, status)
+       VALUES ($1,$2,'outbound',$3,$4,$5,$6,'open') RETURNING id`,
+      [appId, taskKey, fieldKey, current == null ? null : String(current), proposed == null ? null : String(proposed), reason]);
     const rid = r.rows[0].id;
     // notify the file's loan officer (CLAUDE.md sync-review contract) — best-effort
     try { await require('../lib/sync-review').notifyLoanOfficer(rid); } catch (_) {}
