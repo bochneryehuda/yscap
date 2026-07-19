@@ -161,8 +161,15 @@ app.use('/api/address', require('./routes/address')); // address autocomplete/ve
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)
 app.use('/api/intake', require('./routes/intake'));
+// Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
+// borrower — the reply_token is the capability; no login needed to release their own money).
+app.use('/api/public/draw-findings', require('./routes/draw-findings-public'));
 app.use('/api/borrower', require('./routes/borrower'));
+app.use('/api/borrower', require('./routes/borrower-draws')); // borrower draw status + findings accept/dispute + change requests
 app.use('/api/staff', require('./routes/staff'));
+// Sitewire construction-draw desk + admin. The router applies requireAuth +
+// requireStaff + per-route capability gates (manage_draws / platform_setup) itself.
+app.use('/api/sitewire', require('./routes/sitewire'));
 // The Condition Center studio is gated by the manage_conditions capability (not
 // admin-only), so an underwriter or software-setup persona granted it can author
 // the library. Mounted before /api/admin so it isn't shadowed by requireRole.
@@ -414,6 +421,10 @@ if (require.main === module) {
     // Self-gated by SHAREPOINT_BACKUP_ENABLED + MS_* creds; inert otherwise.
     // First run performs the full-history backfill (oldest-first).
     try { require('./lib/sharepoint-backup').start(); } catch (e) { console.warn('sharepoint sync not started:', e.message); }
+    // Sitewire draw-management sync — drains the outbound queue + reconcile poll.
+    // Self-gated by SITEWIRE_ENABLED (+ SITEWIRE_OUTBOUND_ENABLED for writes); inert
+    // otherwise. Manages ONLY properties PILOT created (only-ours rule).
+    try { require('./sync/sitewire-sync').start(); } catch (e) { console.warn('sitewire sync not started:', e.message); }
   });
 }
 module.exports = app;

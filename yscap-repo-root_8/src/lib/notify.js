@@ -101,6 +101,9 @@ const CATEGORY_OF = {
   product_registered: 'pricing', term_sheet: 'pricing', pricing_update: 'pricing',
   reminder: 'reminders',
   draw: 'draws', draw_request: 'draws',
+  // Sitewire draw-management events (findings delivery, accept/dispute, SOW reallocations)
+  draw_findings: 'draws', draw_accepted: 'draws', draw_disputed: 'draws',
+  sow_reallocation: 'draws', sow_change_request: 'draws',
 };
 // These always reach the borrower in-app even if the category is muted — they
 // require action and can't be silently dropped (email can still be turned off).
@@ -125,6 +128,9 @@ const BORROWER_MAJOR_EMAIL = new Set([
   'doc_rejected', 'doc_requested', 'condition_added',
   'llc_unverified', 'track_record_unverified',
   'message', 'draw', 'draw_request', 'security', 'account',
+  // The borrower must review inspection findings and accept/dispute within the wire SLA —
+  // this is a borrower action item, so it emails them (not just in-app).
+  'draw_findings',
 ]);
 
 /** Notify a borrower, respecting their per-category preferences. */
