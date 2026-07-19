@@ -32,6 +32,8 @@
  */
 const crypto = require('crypto');
 const cfg = require('../../config').docusign;
+// Our own app origin (for the L-C returnUrl allow-list). Read once at load.
+const _appOrigin = (() => { try { return new URL(require('../../config').appUrl).origin; } catch (_) { return null; } })();
 
 // ---- error helper: classify for the send queue's retry taxonomy -------------
 function dsError(message, { code, status, retryable, dsErrorCode } = {}) {
@@ -60,53 +62,76 @@ function isDemoHost() {
 async function httpJson(url, opts) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), cfg.httpTimeoutMs);
-  let r;
   try {
-    r = await fetch(url, { ...opts, signal: ctrl.signal });
+    // L-B: the timeout stays armed through the BODY read too (a stalled body
+    // response would otherwise hang past httpTimeoutMs).
+    const r = await fetch(url, { ...opts, signal: ctrl.signal });
+    const text = await r.text();                     // H-3: body first, always
+    if (!r.ok) {
+      let parsed = null;
+      try { parsed = text ? JSON.parse(text) : null; } catch (_) { /* non-JSON error body */ }
+      const dsCode = parsed && (parsed.errorCode || parsed.error);
+      const msg = (parsed && (parsed.message || parsed.error_description || parsed.error)) || text.slice(0, 300) || `HTTP ${r.status}`;
+      // 429 + 5xx → outage (patient) retry; 4xx validation → permanent. A 401 is
+      // handled by authedJson (re-mint once) BEFORE this classification is trusted.
+      const retryable = r.status === 429 || r.status >= 500;
+      throw dsError(`DocuSign ${r.status}: ${msg}`, { code: 'DOCUSIGN_HTTP', status: r.status, retryable, dsErrorCode: dsCode });
+    }
+    if (!text) return {};
+    try { return JSON.parse(text); }
+    catch (_) { throw dsError('DocuSign returned a non-JSON success body', { code: 'DOCUSIGN_BAD_RESPONSE', retryable: false }); }
   } catch (e) {
-    clearTimeout(timer);
+    if (e && typeof e.code === 'string' && e.code.startsWith('DOCUSIGN_')) throw e;   // already classified
     const aborted = e && e.name === 'AbortError';
     throw dsError(aborted ? `DocuSign request timed out after ${cfg.httpTimeoutMs}ms` : `DocuSign network error: ${e.message}`,
       { code: aborted ? 'DOCUSIGN_TIMEOUT' : 'DOCUSIGN_NETWORK', retryable: true });
+  } finally {
+    clearTimeout(timer);
   }
-  clearTimeout(timer);
-  const text = await r.text();                       // H-3: body first, always
-  if (!r.ok) {
-    let parsed = null;
-    try { parsed = text ? JSON.parse(text) : null; } catch (_) { /* non-JSON error body */ }
-    const dsCode = parsed && (parsed.errorCode || parsed.error);
-    const msg = (parsed && (parsed.message || parsed.error_description || parsed.error)) || text.slice(0, 300) || `HTTP ${r.status}`;
-    // 429 + 5xx + network → outage (patient) retry; 4xx validation → permanent.
-    const retryable = r.status === 429 || r.status >= 500;
-    throw dsError(`DocuSign ${r.status}: ${msg}`, { code: 'DOCUSIGN_HTTP', status: r.status, retryable, dsErrorCode: dsCode });
-  }
-  if (!text) return {};
-  try { return JSON.parse(text); }
-  catch (_) { throw dsError('DocuSign returned a non-JSON success body', { code: 'DOCUSIGN_BAD_RESPONSE', retryable: false }); }
 }
 
 // ---- fetch binary (signed PDF / certificate) --------------------------------
 async function httpBinary(url, opts) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), cfg.httpTimeoutMs);
-  let r;
   try {
-    r = await fetch(url, { ...opts, signal: ctrl.signal });
+    const r = await fetch(url, { ...opts, signal: ctrl.signal });   // L-B: timeout covers the download body too
+    if (!r.ok) {
+      const text = await r.text().catch(() => '');
+      const retryable = r.status === 429 || r.status >= 500;
+      throw dsError(`DocuSign download ${r.status}: ${text.slice(0, 200)}`, { code: 'DOCUSIGN_HTTP', status: r.status, retryable });
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (!buf.length) throw dsError('DocuSign returned an empty document', { code: 'DOCUSIGN_EMPTY_DOC', retryable: true });
+    return buf;
   } catch (e) {
-    clearTimeout(timer);
+    if (e && typeof e.code === 'string' && e.code.startsWith('DOCUSIGN_')) throw e;
     const aborted = e && e.name === 'AbortError';
     throw dsError(aborted ? 'DocuSign download timed out' : `DocuSign network error: ${e.message}`,
       { code: aborted ? 'DOCUSIGN_TIMEOUT' : 'DOCUSIGN_NETWORK', retryable: true });
+  } finally {
+    clearTimeout(timer);
   }
-  clearTimeout(timer);
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    const retryable = r.status === 429 || r.status >= 500;
-    throw dsError(`DocuSign download ${r.status}: ${text.slice(0, 200)}`, { code: 'DOCUSIGN_HTTP', status: r.status, retryable });
+}
+
+// M-A: run a token-bearing request; on a transient 401 (stale/raced token),
+// re-mint ONCE and retry. A persistent 401 (real consent/key problem) then
+// surfaces normally (non-retryable → dead-letter → a human fixes consent).
+async function authedJson(build) {
+  const t = await accessToken();
+  try { return await build(t); }
+  catch (e) {
+    if (e && e.status === 401) { invalidateToken(); return build(await accessToken()); }
+    throw e;
   }
-  const buf = Buffer.from(await r.arrayBuffer());
-  if (!buf.length) throw dsError('DocuSign returned an empty document', { code: 'DOCUSIGN_EMPTY_DOC', retryable: true });
-  return buf;
+}
+async function authedBinary(build) {
+  const t = await accessToken();
+  try { return await build(t); }
+  catch (e) {
+    if (e && e.status === 401) { invalidateToken(); return build(await accessToken()); }
+    throw e;
+  }
 }
 
 // ---- access-token cache (M-6) -----------------------------------------------
@@ -246,7 +271,10 @@ function buildEnvelopeDefinition({ documents, signers, subject, status = 'sent',
           email: s.email,
           name: s.name,
           recipientId: String(s.recipientId),
-          routingOrder: String(s.routingOrder || s.recipientId || 1),
+          // L-A: default PARALLEL routing (all order 1) so a co-borrower can sign
+          // in any order and an embedded view never hits RECIPIENT_NOT_IN_SEQUENCE.
+          // Pass an explicit routingOrder to force sequential signing.
+          routingOrder: String(s.routingOrder || 1),
           tabs: { signHereTabs, dateSignedTabs },
         };
         if (s.clientUserId) signer.clientUserId = String(s.clientUserId);   // embedded (in-portal) signer
@@ -273,12 +301,14 @@ function eventNotification(webhookUrl, { includeCertificate = true } = {}) {
     requireAcknowledgment: 'true',
     includeDocuments: 'false',
     includeCertificateOfCompletion: String(includeCertificate),
+    // L-E: DocuSign documents these capitalized; Connect treats them
+    // case-insensitively, but we normalize to the documented casing.
     envelopeEvents: [
-      { envelopeEventStatusCode: 'sent' },
-      { envelopeEventStatusCode: 'delivered' },
-      { envelopeEventStatusCode: 'completed' },
-      { envelopeEventStatusCode: 'declined' },
-      { envelopeEventStatusCode: 'voided' },
+      { envelopeEventStatusCode: 'Sent' },
+      { envelopeEventStatusCode: 'Delivered' },
+      { envelopeEventStatusCode: 'Completed' },
+      { envelopeEventStatusCode: 'Declined' },
+      { envelopeEventStatusCode: 'Voided' },
     ],
     recipientEvents: [
       { recipientEventStatusCode: 'Completed' },
@@ -292,35 +322,40 @@ function eventNotification(webhookUrl, { includeCertificate = true } = {}) {
 /** Create an envelope. Pass idempotencyKey to make retries/reclaims replay-safe (M-7). */
 async function createEnvelope(envelopeDefinition, { idempotencyKey: idem } = {}) {
   ensure();
-  const token = await accessToken();
   const base = await apiBase();
-  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-  if (idem) headers['X-DocuSign-Idempotency-Key'] = idem;
-  const j = await httpJson(acctUrl(base, '/envelopes'), { method: 'POST', headers, body: JSON.stringify(envelopeDefinition) });
+  const j = await authedJson((token) => {
+    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    if (idem) headers['X-DocuSign-Idempotency-Key'] = idem;
+    return httpJson(acctUrl(base, '/envelopes'), { method: 'POST', headers, body: JSON.stringify(envelopeDefinition) });
+  });
+  if (!j.envelopeId) throw dsError('createEnvelope: DocuSign returned no envelopeId', { code: 'DOCUSIGN_BAD_RESPONSE', retryable: true });
+  // L-D: a create that requested status 'sent' must NOT come back 'created' (a
+  // silent draft — no email, no error). Surface it as retryable so we don't
+  // record a "sent" that never mailed the borrower.
+  if ((envelopeDefinition.status === 'sent') && j.status && String(j.status).toLowerCase() === 'created') {
+    throw dsError('createEnvelope: envelope stuck in "created" (draft) — not sent', { code: 'DOCUSIGN_NOT_SENT', status: 502, retryable: true });
+  }
   return { envelopeId: j.envelopeId, status: j.status, statusDateTime: j.statusDateTime, uri: j.uri };
 }
 
 async function getEnvelope(envelopeId) {
   ensure();
-  const token = await accessToken();
   const base = await apiBase();
-  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}`), { headers: { Authorization: `Bearer ${token}` } });
+  return authedJson((token) => httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}`), { headers: { Authorization: `Bearer ${token}` } }));
 }
 
 async function listRecipients(envelopeId) {
   ensure();
-  const token = await accessToken();
   const base = await apiBase();
-  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/recipients`), { headers: { Authorization: `Bearer ${token}` } });
+  return authedJson((token) => httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/recipients`), { headers: { Authorization: `Bearer ${token}` } }));
 }
 
 /** Download one document's signed PDF. documentId: a numeric id, 'combined', or 'certificate'. Returns a Buffer. */
 async function getDocument(envelopeId, documentId) {
   ensure();
-  const token = await accessToken();
   const base = await apiBase();
-  return httpBinary(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/documents/${encodeURIComponent(documentId)}`),
-    { headers: { Authorization: `Bearer ${token}`, Accept: 'application/pdf' } });
+  return authedBinary((token) => httpBinary(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/documents/${encodeURIComponent(documentId)}`),
+    { headers: { Authorization: `Bearer ${token}`, Accept: 'application/pdf' } }));
 }
 
 /** The Certificate of Completion (the AATL-sealed audit trail) as a PDF Buffer. */
@@ -329,34 +364,35 @@ async function getCertificate(envelopeId) { return getDocument(envelopeId, 'cert
 /** The envelope's audit-event trail (who/what/when). */
 async function listAuditEvents(envelopeId) {
   ensure();
-  const token = await accessToken();
   const base = await apiBase();
-  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/audit_events`), { headers: { Authorization: `Bearer ${token}` } });
+  return authedJson((token) => httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/audit_events`), { headers: { Authorization: `Bearer ${token}` } }));
 }
 
 /** Void a still-open envelope (reason is required by DocuSign). */
 async function voidEnvelope(envelopeId, reason) {
   ensure();
-  const token = await accessToken();
   const base = await apiBase();
-  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}`), {
+  return authedJson((token) => httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}`), {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ status: 'voided', voidedReason: reason || 'Voided by PILOT' }),
-  });
+  }));
 }
 
-/** Re-notify existing recipients of the SAME envelope (never creates a new one). */
+/**
+ * Re-notify the SAME envelope's outstanding recipients (never creates a new one).
+ * H-A: resend_envelope=true on the ENVELOPE-update endpoint (PUT /envelopes/{id})
+ * re-sends to all outstanding recipients. (The /recipients endpoint with an empty
+ * body resends to nobody — a silent no-op — so it is NOT used here.)
+ */
 async function resendEnvelope(envelopeId) {
   ensure();
-  const token = await accessToken();
   const base = await apiBase();
-  // PUT recipients with resend_envelope=true re-sends the notification email.
-  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/recipients?resend_envelope=true`), {
+  return authedJson((token) => httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}?resend_envelope=true`), {
     method: 'PUT',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ signers: [] }),
-  });
+    body: JSON.stringify({}),
+  }));
 }
 
 /**
@@ -368,14 +404,20 @@ async function resendEnvelope(envelopeId) {
 async function createRecipientView(envelopeId, { returnUrl, email, userName, clientUserId, recipientId }) {
   ensure();
   if (!returnUrl || !/^https?:\/\//i.test(returnUrl)) throw dsError('createRecipientView: absolute returnUrl required', { code: 'DOCUSIGN_ARG', retryable: false });
+  // L-C: pin returnUrl to our own app origin (defense-in-depth against an
+  // open redirect through DocuSign's post-sign bounce).
+  if (_appOrigin) {
+    let ok = false;
+    try { ok = new URL(returnUrl).origin === _appOrigin; } catch (_) { ok = false; }
+    if (!ok) throw dsError(`createRecipientView: returnUrl must be on ${_appOrigin}`, { code: 'DOCUSIGN_ARG', retryable: false });
+  }
   if (!clientUserId) throw dsError('createRecipientView: clientUserId required (embedded signer)', { code: 'DOCUSIGN_ARG', retryable: false });
-  const token = await accessToken();
   const base = await apiBase();
-  const j = await httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/views/recipient`), {
+  const j = await authedJson((token) => httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/views/recipient`), {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ returnUrl, authenticationMethod: 'none', email, userName, clientUserId: String(clientUserId), recipientId: String(recipientId) }),
-  });
+  }));
   return j.url;
 }
 

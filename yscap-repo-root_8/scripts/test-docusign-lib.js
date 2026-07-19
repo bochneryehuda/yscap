@@ -8,6 +8,13 @@
  * validation, and fail-closed multi-key base64 Connect HMAC verification.
  */
 process.env.DOCUSIGN_CONNECT_HMAC_SECRET = 'testkey1,testkey2';   // multi-key rotation
+// Dummy creds so configured() passes (lets the returnUrl-pin path run without a
+// real account); a fixed APP_URL so the origin allow-list is deterministic.
+process.env.DOCUSIGN_INTEGRATION_KEY = process.env.DOCUSIGN_INTEGRATION_KEY || 'test-ik';
+process.env.DOCUSIGN_USER_ID = process.env.DOCUSIGN_USER_ID || 'test-user';
+process.env.DOCUSIGN_ACCOUNT_ID = process.env.DOCUSIGN_ACCOUNT_ID || 'test-acct';
+process.env.DOCUSIGN_PRIVATE_KEY = process.env.DOCUSIGN_PRIVATE_KEY || 'test-key';
+process.env.APP_URL = process.env.APP_URL || 'https://www.yscapgroup.com';
 const crypto = require('crypto');
 const d = require('../src/lib/integrations/docusign');
 
@@ -70,5 +77,22 @@ const req = { headers: { 'x-docusign-signature-1': 'sigA', 'x-docusign-signature
 const sigs = d.connectSignatureHeaders(req);
 ok(sigs.length === 2 && sigs[0] === 'sigA' && sigs[1] === 'sigB', 'extracts all X-DocuSign-Signature-N headers');
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+// 6. L-A: signers default to PARALLEL routing (order 1) when no routingOrder given
+const parDef = d.buildEnvelopeDefinition({
+  documents: [{ base64: 'AAAA', documentId: 1 }],
+  signers: [
+    { recipientId: 1, name: 'A', email: 'a@b.co', tabsByDoc: { 1: { sign: ['/a/'] } } },
+    { recipientId: 2, name: 'B', email: 'b@b.co', tabsByDoc: { 1: { sign: ['/b/'] } } },
+  ],
+});
+ok(parDef.recipients.signers.every((s) => s.routingOrder === '1'), 'L-A: co-signers default to parallel routing (order 1)');
+
+// 7. L-C: createRecipientView rejects a returnUrl NOT on the app origin (before any network)
+(async () => {
+  let blocked = false;
+  try { await d.createRecipientView('env-x', { returnUrl: 'https://evil.example.com/steal', clientUserId: 'c1', recipientId: 1, email: 'a@b.co', userName: 'A' }); }
+  catch (e) { blocked = /returnUrl must be on|DOCUSIGN_ARG/.test(e.message) || e.code === 'DOCUSIGN_ARG'; }
+  ok(blocked, 'L-C: off-origin returnUrl rejected (open-redirect defense)');
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();

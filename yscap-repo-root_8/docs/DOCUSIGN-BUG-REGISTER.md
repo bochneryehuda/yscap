@@ -87,3 +87,24 @@ so a future change can't quietly regress one.
 4. **The send circuit breaker must be DB-backed** (multiple Render instances each hold an independent
    in-process counter), checked in the same transaction as the layer-1 claim (hardening §2).
 5. **Full SSN on the application PDF** is an explicit owner directive — not a leak to "fix." It stays.
+
+---
+
+## E. Build-phase audit rounds — findings FIXED as the code was written
+
+The stub defects in §B were resolved by the Phase-2 rewrite (`src/lib/integrations/docusign.js`) — H-3,
+M-5..M-10, L-2 are all implemented. A dedicated adversarial audit of the Phase-1+2 code then surfaced a
+further punch-list (all in not-yet-live code; **all now FIXED + re-tested**):
+
+| ID | Severity | Location | Defect | Fix |
+|----|----------|----------|--------|-----|
+| H-A | High | `docusign.js` `resendEnvelope` | `PUT /envelopes/{id}/recipients?resend_envelope=true` with an empty `{signers:[]}` body re-notifies **nobody** — the "Resend" button would silently do nothing. | Use `PUT /envelopes/{id}?resend_envelope=true` (the envelope-update endpoint) with `{}` — re-notifies all outstanding recipients. |
+| M-A | Med | `docusign.js` HTTP layer | A **401** (stale/raced token) was classified permanent → a send that would succeed on re-mint got dead-lettered. | `authedJson`/`authedBinary` wrappers: on a 401, `invalidateToken()` + re-mint **once**; a persistent 401 still surfaces for a human (real consent/key problem). |
+| L-A | Low | `buildEnvelopeDefinition` | `routingOrder` defaulted to `recipientId` → co-signers went **sequential**; an embedded view for signer 2 before signer 1 finishes throws `RECIPIENT_NOT_IN_SEQUENCE`. | Default **parallel** routing (all order `1`); pass an explicit `routingOrder` to force sequential. |
+| L-B | Low | `httpJson`/`httpBinary` | The timeout was cleared right after headers, so a stalled **body** read could hang past `httpTimeoutMs` (esp. binary PDF/cert downloads). | Keep the timeout armed through the body read (`clearTimeout` in `finally`); AbortError during the read maps to `DOCUSIGN_TIMEOUT`. |
+| L-C | Low | `createRecipientView` | `returnUrl` was only checked for `https?://` — a future caller could introduce an open redirect through DocuSign's post-sign bounce. | Pin `returnUrl` to our own **app origin** (`cfg.appUrl`) as defense-in-depth. |
+| L-D | Low | `createEnvelope` | A create that requested `status:'sent'` but came back `created` (a silent draft — no email, no error) was recorded as sent. | Assert: a `sent`-requested envelope returning `created` throws `DOCUSIGN_NOT_SENT` (retryable) instead of a false "sent." |
+| L-E | Low | `eventNotification` | Envelope-event status codes were lowercase, recipient-event codes capitalized (Connect is case-insensitive, so not a confirmed bug). | Normalized both to DocuSign's documented capitalization. |
+
+_Verified: `scripts/test-docusign-lib.js` (23 pure-logic assertions incl. L-A parallel routing + L-C
+origin pin) and `scripts/test-esign-send.js` (21 DB-backed send-once assertions) — all pass._
