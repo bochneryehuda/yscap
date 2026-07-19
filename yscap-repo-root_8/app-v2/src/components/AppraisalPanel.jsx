@@ -242,6 +242,15 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // Close the full-screen report on Esc — bound to the window so it fires the moment the
+  // overlay opens, without needing the dialog to hold focus first.
+  useEffect(() => {
+    if (!expanded) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setExpanded(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded]);
+
   const onFile = async (e) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
@@ -457,7 +466,6 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
       <div
         role="dialog" aria-modal="true"
         onClick={(e) => { if (e.target === e.currentTarget) setExpanded(false); }}
-        onKeyDown={(e) => { if (e.key === 'Escape') setExpanded(false); }}
         style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(20,27,34,.55)', display: 'flex', flexDirection: 'column', padding: 'clamp(8px,2vh,28px) clamp(8px,2vw,28px)', overflowY: 'auto' }}>
         <div style={{ maxWidth: 1080, width: '100%', margin: '0 auto', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 16, boxShadow: '0 24px 70px rgba(0,0,0,.4)' }}>
           <div style={{ position: 'sticky', top: 0, zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 18px', borderBottom: '1px solid var(--line,#E7E1D3)', background: 'var(--card,#fff)', borderRadius: '16px 16px 0 0' }}>
