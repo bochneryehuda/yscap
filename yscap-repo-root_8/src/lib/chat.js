@@ -30,9 +30,20 @@ const { can } = require('./permissions');
 const { scrubText } = require('./borrower-safe');
 const { fileReplyTo } = require('./file-address');   // #68 per-file shared reply-to
 
-const CHAT_EMAIL_DELAY_MIN = 10;      // email fallback only if still unread after this
+const CHAT_EMAIL_DELAY_MIN = 5;       // online recipient: wait this long, email only if STILL unread
 const URGENT_RENOTIFY_MIN = 2;        // Teams-style urgent re-ping cadence
 const URGENT_MAX_ATTEMPTS = 10;       // ... for at most 20 minutes
+
+// #146 (owner-directed 2026-07-19) — EVERY new chat message emails the other
+// members (borrower + team): immediately if they're offline, or after a short
+// still-unread window if they're online — never the old 10-minute "only if you
+// missed it" digest that testing always cancelled. The reply-above-this-line
+// delimiter lets a reply-by-email post ONLY the freshly typed text back into the
+// thread. CHAT_REPLY_MARKER_PHRASE is the exact token both sides key on — the
+// outbound copy embeds it and inbound-chat.js imports it for the cut, so the two
+// genuinely can't drift apart.
+const CHAT_REPLY_MARKER_PHRASE = 'Reply above this line';
+const CHAT_REPLY_MARKER = `— — — — —  ${CHAT_REPLY_MARKER_PHRASE} and it posts straight into the chat  — — — — —`;
 
 /* ---------------------------------------------------------------- ensure */
 
@@ -236,6 +247,9 @@ async function emailExternalParticipants(conv, message, senderName) {
       note: canReply
         ? 'You were added to this conversation by the YS Capital team. Reply to this email and your message goes straight into the chat, or open it online above.'
         : 'You were added to this conversation by the YS Capital team. Open the chat online above to reply.',
+      // Only worth printing the reply-above-this-line delimiter when replies route
+      // back (an inbound domain is configured); otherwise it's noise.
+      replyMarker: canReply ? CHAT_REPLY_MARKER : '',
     }, 'staff');
     email.sendMail({ to: [ep.email], subject: msg.subject, text: msg.text, html: msg.html,
       replyTo: replyToFor(ep.reply_key) }).catch(() => {});
@@ -584,17 +598,129 @@ async function postMessage({ conv, actor, body, attachment = null, entityRefs = 
   return { message, seq };
 }
 
+/** Load a message's single attachment as an email-ready payload (bytes ≤ 3 MB —
+    the provider ceiling; a larger file makes the whole send fail, so we only NAME
+    it then). Returns { attachments:[{filename,contentType,content}], name, tooBig }.
+    Best-effort: any read error degrades to naming the file, never throws. */
+async function chatAttachmentBytes(message) {
+  const ATT_CAP = 3 * 1024 * 1024;
+  if (!message || !message.attachment_document_id) return { attachments: [], name: null, tooBig: false };
+  const d = await db.query(
+    `SELECT filename, content_type, storage_ref, size_bytes FROM documents WHERE id=$1`,
+    [message.attachment_document_id]).catch(() => ({ rows: [] }));
+  const doc = d.rows[0];
+  const name = (doc && doc.filename) || message.attachment_name || 'attachment';
+  if (!doc || !doc.storage_ref) return { attachments: [], name: message.attachment_document_id ? name : null, tooBig: false };
+  if (Number(doc.size_bytes) > ATT_CAP) return { attachments: [], name, tooBig: true };
+  try {
+    const buf = await storage.read(doc.storage_ref);
+    if (buf && buf.length && buf.length <= ATT_CAP) {
+      return { attachments: [{ filename: name, contentType: doc.content_type || 'application/octet-stream', content: buf.toString('base64') }], name, tooBig: false };
+    }
+  } catch (_) { /* unreadable — fall back to naming it */ }
+  return { attachments: [], name, tooBig: true };
+}
+
+/** Email ONE member about ONE new chat message, immediately (#146). Resolves the
+    recipient's address + opt-outs (mirrors the deferred path's rules: a staffer's
+    notifications switch + active flag; a borrower's "messages" email preference),
+    then sends the branded chat email — subject naming the chat + property, the
+    message text, the actual attachment, the recipient's reply-into-chat address,
+    and the reply-above-this-line delimiter. Borrower-facing copy is scrubbed of any
+    capital-partner name (frozen rule). Best-effort: the caller swallows errors. */
+async function sendChatEmailToMember({ conv, member, message, ctx, senderName, att, link, isBorrower }) {
+  let to = [];
+  if (isBorrower) {
+    const pref = await db.query(
+      `SELECT email FROM notification_prefs WHERE borrower_id=$1 AND category='messages'`, [member.member_id]);
+    if (pref.rows[0] && pref.rows[0].email === false) return;   // borrower silenced this email category
+    const b = await db.query(`SELECT email FROM borrowers WHERE id=$1`, [member.member_id]);
+    to = b.rows[0] && b.rows[0].email ? [b.rows[0].email] : [];
+  } else {
+    const s = await db.query(
+      `SELECT email, notifications_enabled FROM staff_users WHERE id=$1 AND is_active=true`, [member.member_id]);
+    if (!s.rows[0] || s.rows[0].notifications_enabled === false) return;   // manager turned notifications off
+    to = s.rows[0].email ? [s.rows[0].email] : [];
+  }
+  if (!to.length) return;
+
+  const clean = (t) => (isBorrower ? scrubText(String(t || '')) : String(t || ''));
+  const who = clean(senderName || 'Your loan team');
+  const convName = clean(conv.name || 'your loan file');
+  // Address / loan number are the file's OWN clean data — never run them through
+  // the partner-name scrubber (it could mangle a legit street like "Churchill Ave";
+  // notify.js protects these same meta values from scrubbing for the same reason).
+  const addr = ctx ? String(ctx.addr || '') : '';
+  const loanNo = ctx ? ctx.loanNo : '';
+
+  // Subject SAYS it's a new chat message, WHICH chat it's on, and WHICH property /
+  // file it belongs to (owner-directed).
+  let subject = `New chat message in “${convName}”`;
+  if (addr) subject += ` — ${addr}`;
+  if (loanNo) subject += ` (${loanNo})`;
+
+  // Body: exactly what the chat was, plus any attachment.
+  const lines = [];
+  const text = String(message.body || '').trim();
+  if (text) lines.push(`${who}: “${clean(text)}”`);
+  if (att && att.name) {
+    lines.push(att.attachments && att.attachments.length
+      ? `${who} shared a file (attached): ${clean(att.name)}`
+      : `${who} shared a file — open it in the portal: ${clean(att.name)}`);
+  } else if (!text && message.attachment_kind) {
+    lines.push(message.attachment_kind === 'voice'
+      ? `${who} sent a voice message — listen in the portal`
+      : `${who} shared an attachment — open it in the portal`);
+  }
+  if (!lines.length) lines.push(`${who} sent a message.`);
+
+  // Borrower-facing attachment names are scrubbed too (a staff-named file like
+  // "BlueLake_terms.pdf" must not surface a partner name via the filename / chip);
+  // the shared bytes are cloned per-recipient so staff still see the real name.
+  const attachments = ((att && att.attachments) || []).map((a) => ({ ...a, filename: clean(a.filename) }));
+  const msg = notify.buildEmail({
+    title: subject,
+    body: `${who} sent a new message${addr ? ` on ${addr}` : ''}${loanNo ? ` · ${loanNo}` : ''}:`,
+    lines,
+    link, ctaLabel: 'Open the conversation',
+    meta: ctx ? ctx.meta : [],
+    attachments,
+    replyMarker: CHAT_REPLY_MARKER,
+  }, isBorrower ? 'borrower' : 'staff');
+
+  // The recipient's own per-member chat+ reply key routes their email reply
+  // straight back INTO this conversation as themselves (#144); fall back to the
+  // file+ inbox reply-to only when no inbound domain is configured (#68).
+  const chatReplyTo = await memberReplyToFor(conv.id, member.member_kind, member.member_id);
+  await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments,
+    replyTo: chatReplyTo || fileReplyTo(conv.application_id) });
+  // Record this message's seq in the member's EMAILED SET so the deferred backstop
+  // (queued alongside every immediate send) sees it already handled and stays silent,
+  // and a later digest never repeats it. A set — not a high-water — because offline
+  // and online messages can be emailed out of seq order; a high-water would drop the
+  // earlier, un-emailed one.
+  await db.query(
+    `UPDATE conversation_members
+        SET emailed_seqs = (SELECT COALESCE(array_agg(DISTINCT x), '{}') FROM unnest(array_append(emailed_seqs, $4::bigint)) x)
+      WHERE conversation_id=$1 AND member_kind=$2 AND member_id=$3`,
+    [conv.id, member.member_kind, member.member_id, Number(message.seq) || 0]).catch(() => {});
+}
+
 async function queueMessageNotifications({ conv, actor, message, members }) {
   const ctx = await notify.fileContext(conv.application_id);
   const senderName = message.sender_name || (actor.kind === 'staff' ? 'Your loan team' : 'A borrower');
   const now = new Date();
+  // Load the message's attachment ONCE (same bytes for every recipient) so each
+  // notification email carries the actual file, not just a "open the portal" line.
+  const att = await chatAttachmentBytes(message).catch(() => ({ attachments: [], name: null, tooBig: false }));
   for (const m of members) {
     if (m.member_kind === actor.kind && m.member_id === actor.id) continue;
     if (m.muted_until && new Date(m.muted_until) > now) continue;
     const isBorrower = m.member_kind === 'borrower';
-    const link = isBorrower ? `/app/${conv.application_id}` : `/internal/chat?c=${conv.id}`;
-    // In-app bell row, written directly (NOT via notify.*) so no immediate
-    // email fires — the deferred job owns the email decision.
+    // Deep-link straight into the conversation (borrower: their file with the chat
+    // auto-opened; staff: the chat hub focused on this thread).
+    const link = isBorrower ? `/app/${conv.application_id}?chat=${conv.id}` : `/internal/chat?c=${conv.id}`;
+    // In-app bell row (instant, in addition to the email below).
     try {
       if (isBorrower) {
         // Respect the borrower's "messages" in-app preference (significance
@@ -618,7 +744,27 @@ async function queueMessageNotifications({ conv, actor, message, members }) {
       }
     } catch (_) { /* bell row is best-effort */ }
 
-    // Deferred email fallback.
+    // #146 — chat notification email (owner-directed 2026-07-19). The root bug:
+    // the email used to be DEFERRED 10 minutes and sent only if still unread, so
+    // opening the other side to check (which marks it read) or not waiting cancelled
+    // it and NO notification ever arrived. New rule (owner-directed): if the
+    // recipient is NOT online in the portal, email them RIGHT AWAY; if they ARE
+    // online (they can see it live), wait for the still-unread window and email only
+    // if it's STILL unread. Either way the email carries the message text, the actual
+    // attachment, a subject naming the chat + property, the recipient's own reply-
+    // into-chat address, and the reply-above-this-line delimiter.
+    //
+    // A deferred backstop job is ALWAYS queued. For an offline recipient it also
+    // fires immediately; the immediate send advances the member's last_emailed_seq,
+    // so the backstop finds nothing to do and completes silently — UNLESS the
+    // immediate send failed (watermark not advanced), in which case the sweeper
+    // retries it. For an online recipient only the deferred job runs. This closes
+    // the "transient failure silently drops the only notification" gap.
+    const online = events.isOnline(m.member_kind, m.member_id);
+    if (!online) {
+      sendChatEmailToMember({ conv, member: m, message, ctx, senderName, att, link, isBorrower })
+        .catch((e) => console.error('[chat] immediate notification email failed:', e && e.message));
+    }
     await db.query(
       `INSERT INTO chat_notification_jobs (job_kind, conversation_id, message_id, message_seq, recipient_kind, recipient_id, run_after)
        VALUES ('chat_email',$1,$2,$3,$4,$5, now() + ($6 || ' minutes')::interval)`,
@@ -665,7 +811,12 @@ async function markRead(conv, actor, seq) {
     `UPDATE conversation_members
         SET last_read_seq=GREATEST(last_read_seq, $4),
             last_delivered_seq=GREATEST(last_delivered_seq, $4),
-            last_read_at=now()
+            last_read_at=now(),
+            -- Prune the emailed set to seqs still past the (new) read watermark, so
+            -- it never grows without bound. Uses the pre-UPDATE last_read_seq on the
+            -- right-hand side (Postgres SET semantics), matching GREATEST above.
+            emailed_seqs = COALESCE((SELECT array_agg(x) FROM unnest(emailed_seqs) x
+                                      WHERE x > GREATEST(last_read_seq, $4)), '{}')
       WHERE conversation_id=$1 AND member_kind=$2 AND member_id=$3 AND removed_at IS NULL
       RETURNING last_read_seq`, [conv.id, actor.kind, actor.id, seq]);
   if (!r.rows[0]) return null;
@@ -736,6 +887,9 @@ async function runNotificationJobs() {
         await db.query(`UPDATE chat_notification_jobs SET done_at=now() WHERE id=$1`, [j.id]);
         continue;
       }
+      // chat_email whose message was already emailed (immediate offline send)
+      // completes with nothing to send — fireChatEmail's digest excludes the
+      // emailed set, so n=0 and the job is marked done there.
       if (j.job_kind === 'chat_email') await fireChatEmail(j);
       else await fireUrgentRenotify(j);
     } catch (e) {
@@ -756,16 +910,30 @@ async function fireChatEmail(j) {
     await db.query(`UPDATE chat_notification_jobs SET done_at=now() WHERE id=$1`, [j.id]);
     return;
   }
-  // How much is still unread (for the digest line)?
+  // How much is still unread (for the digest line)? The digest is everything past
+  // the READ watermark, MINUS any seq already in the emailed set — so a message the
+  // immediate offline path already sent is never repeated, while an earlier message
+  // that was NOT emailed (out-of-order, or a failed immediate send) is still covered.
   const cm = await db.query(
-    `SELECT last_read_seq FROM conversation_members
+    `SELECT last_read_seq, emailed_seqs FROM conversation_members
       WHERE conversation_id=$1 AND member_kind=$2 AND member_id=$3`, [j.conversation_id, j.recipient_kind, j.recipient_id]);
   const watermark = cm.rows[0] ? Number(cm.rows[0].last_read_seq) : -1;
+  const emailedSeqs = (cm.rows[0] && cm.rows[0].emailed_seqs) || [];
   const pending = await db.query(
     `SELECT count(*)::int AS n, max(seq) AS max_seq FROM messages
       WHERE conversation_id=$1 AND seq > $2 AND kind='text' AND deleted_at IS NULL
-        AND NOT (sender_kind=$3 AND sender_id=$4)`,
-    [j.conversation_id, watermark, j.recipient_kind, j.recipient_id]);
+        AND NOT (sender_kind=$3 AND sender_id=$4)
+        AND NOT (seq = ANY($5::bigint[]))`,
+    [j.conversation_id, watermark, j.recipient_kind, j.recipient_id, emailedSeqs]);
+  // SNAPSHOT UPPER BOUND. This digest only accounts for messages that existed at
+  // this point (max_seq when there's anything unread; else the seq that triggered
+  // this sweep). A message posted AFTER, while we spend time reading attachments +
+  // calling the provider, must NOT be swept up by the post-send append or the
+  // job-completion below — for an online recipient it got no immediate send, so its
+  // OWN deferred job is the only thing that will email it. Bounding both writes by
+  // boundSeq leaves that job open. (Without this bound a mid-send arrival is marked
+  // emailed-and-done and silently dropped — the exact class this change prevents.)
+  const boundSeq = Number(pending.rows[0].max_seq) || Number(j.message_seq) || 0;
   // The actual unread messages (body + any attachment), newest last, so the
   // email can WRITE OUT the conversation (owner-directed 2026-07-14) instead of a
   // bare "you have messages" — capped so a long thread can't bloat the email.
@@ -780,8 +948,9 @@ async function fireChatEmail(j) {
        LEFT JOIN documents d    ON d.id=m.attachment_document_id
       WHERE m.conversation_id=$1 AND m.seq > $2 AND m.kind='text' AND m.deleted_at IS NULL
         AND NOT (m.sender_kind=$3 AND m.sender_id=$4)
+        AND NOT (m.seq = ANY($5::bigint[]))
       ORDER BY m.seq ASC LIMIT 12`,
-    [j.conversation_id, watermark, j.recipient_kind, j.recipient_id]).catch(() => ({ rows: [] }));
+    [j.conversation_id, watermark, j.recipient_kind, j.recipient_id, emailedSeqs]).catch(() => ({ rows: [] }));
   const n = pending.rows[0].n;
   if (n > 0) {
     const ctx = await notify.fileContext(conv.application_id);
@@ -795,7 +964,11 @@ async function fireChatEmail(j) {
       const b = await db.query(`SELECT email FROM borrowers WHERE id=$1`, [j.recipient_id]);
       to = b.rows[0] && b.rows[0].email ? [b.rows[0].email] : [];
     } else {
-      const s = await db.query(`SELECT email FROM staff_users WHERE id=$1 AND is_active=true`, [j.recipient_id]);
+      // Honor the manager's per-member notifications switch (S1-01) — the same gate
+      // notifyStaff + the immediate path apply; previously this deferred/online path
+      // skipped it, so a staffer who turned notifications off still got chat emails.
+      const s = await db.query(`SELECT email, notifications_enabled FROM staff_users WHERE id=$1 AND is_active=true`, [j.recipient_id]);
+      allowEmail = !!s.rows[0] && s.rows[0].notifications_enabled !== false;
       to = s.rows[0] && s.rows[0].email ? [s.rows[0].email] : [];
     }
     if (allowEmail && to.length) {
@@ -837,7 +1010,9 @@ async function fireChatEmail(j) {
             try {
               const buf = await storage.read(m.att_ref);
               if (buf && buf.length && attBytes + buf.length <= ATT_TOTAL_CAP) {
-                attachments.push({ filename: name, contentType: m.att_ct || 'application/octet-stream', content: buf.toString('base64') });
+                // Scrub the attachment filename for a borrower recipient too (a
+                // staff-named "BlueLake_terms.pdf" must not surface a partner name).
+                attachments.push({ filename: clean(name), contentType: m.att_ct || 'application/octet-stream', content: buf.toString('base64') });
                 attBytes += buf.length;
                 attached = true;
               }
@@ -852,14 +1027,21 @@ async function fireChatEmail(j) {
       // Only "…and N more" for messages we didn't FETCH (past the LIMIT 12) — an
       // empty-body row that rendered no line was still fetched, so it isn't "more".
       if (n > unreadMsgs.rows.length) lines.push(`…and ${n - unreadMsgs.rows.length} more.`);
+      // Subject SAYS it's a new chat message, WHICH chat, and WHICH property/file —
+      // same shape as the immediate path (address/loan# are the file's own clean
+      // data, so they are never scrubbed; only the chat name is).
+      const convName = isBorrower ? scrubText(conv.name) : conv.name;
+      let subject = n === 1 ? `New chat message in “${convName}”` : `${n} new chat messages in “${convName}”`;
+      if (ctx) { subject += ` — ${ctx.addr}`; if (ctx.loanNo) subject += ` (${ctx.loanNo})`; }
       const msg = notify.buildEmail({
-        title: n === 1 ? 'New message from your loan team' : `${n} new messages`,
-        body: `${n === 1 ? 'You have a new message' : `You have ${n} new messages`} in “${isBorrower ? scrubText(conv.name) : conv.name}”` +
+        title: subject,
+        body: `${n === 1 ? 'You have a new message' : `You have ${n} new messages`} in “${convName}”` +
               (ctx ? ` on ${ctx.loanNo} (${ctx.addr})` : '') + ':',
         lines,
         link, ctaLabel: 'Open the conversation',
         meta: ctx ? ctx.meta : [],
         attachments,
+        replyMarker: CHAT_REPLY_MARKER,
       }, isBorrower ? 'borrower' : 'staff');
       // #144 — the recipient's own per-member chat+ reply key routes their email
       // reply straight back INTO this conversation as themselves (they see it in
@@ -867,16 +1049,40 @@ async function fireChatEmail(j) {
       // assignees). Only when no inbound domain is configured do we fall back to
       // the file+ inbox reply-to, which fans a reply out to the assigned team (#68).
       const chatReplyTo = await memberReplyToFor(conv.id, j.recipient_kind, j.recipient_id);
+      // Let a send FAILURE propagate so runNotificationJobs reschedules this job
+      // (retry) rather than the old swallow-and-mark-done, which silently dropped a
+      // digest on any transient provider/DB error.
       await email.sendMail({ to, subject: msg.subject, text: msg.text, html: msg.html, attachments,
-        replyTo: chatReplyTo || fileReplyTo(conv.application_id) }).catch(() => {});
+        replyTo: chatReplyTo || fileReplyTo(conv.application_id) });
+      // Sent: add every seq this digest covered to the EMAILED set so it's never
+      // repeated (by a later digest triggered by a newer message, or the immediate
+      // path). Recomputes the exact covered set (unread, past the read watermark,
+      // not already emailed) rather than a range, so it stays correct out-of-order.
+      await db.query(
+        `UPDATE conversation_members SET emailed_seqs = (
+            SELECT COALESCE(array_agg(DISTINCT x), '{}') FROM unnest(
+              emailed_seqs || COALESCE((
+                SELECT array_agg(m.seq) FROM messages m
+                 WHERE m.conversation_id=$1 AND m.seq > $4 AND m.seq <= $5 AND m.kind='text' AND m.deleted_at IS NULL
+                   AND NOT (m.sender_kind=$2 AND m.sender_id=$3)
+                   AND NOT (m.seq = ANY(emailed_seqs))), '{}'::bigint[])
+            ) x
+            WHERE x > $4 /* self-prune: drop seqs already past the read watermark */)
+          WHERE conversation_id=$1 AND member_kind=$2 AND member_id=$3`,
+        [j.conversation_id, j.recipient_kind, j.recipient_id, watermark, boundSeq]).catch(() => {});
     }
   }
-  // One digest covers every pending email job for this recipient+conversation.
+  // Reached only when nothing needed sending (already read / opted out / no address)
+  // OR the send succeeded — complete every pending chat_email job for this
+  // recipient+conversation UP TO the snapshot bound. A job for a message that
+  // arrived mid-send (message_seq > boundSeq) stays open so it emails on its own
+  // turn. A thrown send never gets here, so its job stays open and the sweeper
+  // retries it.
   await db.query(
     `UPDATE chat_notification_jobs SET done_at=now()
       WHERE conversation_id=$1 AND recipient_kind=$2 AND recipient_id=$3
-        AND job_kind='chat_email' AND done_at IS NULL`,
-    [j.conversation_id, j.recipient_kind, j.recipient_id]);
+        AND job_kind='chat_email' AND done_at IS NULL AND message_seq <= $4`,
+    [j.conversation_id, j.recipient_kind, j.recipient_id, boundSeq]);
 }
 
 async function fireUrgentRenotify(j) {
@@ -918,4 +1124,5 @@ module.exports = {
   fetchMessages, postMessage, postSystemMessage,
   markRead, markUnread, markDelivered, recountUnread, totalUnread, pushUnreadUpdate,
   runNotificationJobs, startSweeper, SEES_ALL_ROLES,
+  CHAT_REPLY_MARKER, CHAT_REPLY_MARKER_PHRASE,
 };
