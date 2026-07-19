@@ -45,12 +45,19 @@ const MARKER_RE = new RegExp(chat.CHAT_REPLY_MARKER_PHRASE.replace(/[.*+?^${}()|
 function topReply(text) {
   const s = String(text || '').replace(/\r\n/g, '\n');
   const patterns = [
-    MARKER_RE,                         // our delimiter (#146) — imported from chat.js
-    /\n\s*On .+ wrote:/,               // Gmail / Apple Mail attribution
-    /\n\s*-{2,}\s*\n/,                 // "--" signature separator
-    /\n>{1,}/,                          // quoted block
-    /\n\s*From:\s.+/i,                 // Outlook "From:" header block
-    /\n\s*_{5,}\s*\n/,                 // Outlook horizontal rule
+    MARKER_RE,                              // our delimiter (#146) — imported from chat.js
+    // Gmail / Apple Mail attribution — "On <date>, <name> <email> wrote:". Gmail
+    // WRAPS this across lines when it's long (the "…<email>" ends one line and
+    // "wrote:" starts the next), so `.` on a single line missed it and leaked the
+    // date + address into the chat. `[\s\S]{0,400}?` spans the wrap (bounded,
+    // non-greedy) so the whole attribution is cut regardless of wrapping.
+    /\n\s*On\s[\s\S]{0,400}?\bwrote:/i,
+    /\n\s*-{2,}\s*\n/,                       // "--" signature separator
+    /\n>{1,}/,                                // quoted block
+    /\n\s*From:\s.+/i,                       // Outlook "From:" header block
+    /\n\s*_{5,}\s*\n?/,                       // Outlook horizontal rule
+    /\n\s*Sent from my /i,                    // iOS / Android mobile signature
+    /\n\s*Get Outlook for /i,                 // Outlook mobile signature
   ];
   let cut = -1;
   for (const p of patterns) {

@@ -2861,6 +2861,7 @@ export default function StaffApplication() {
       </div>
       {app.status === 'funded' && <PostClosing appId={id} />}
       <TprExport appId={id} />
+      <MismoExport appId={id} />
       </Section>
 
       <Section id="sec-track" title="Track record"
@@ -3096,6 +3097,33 @@ function TprExport({ appId }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/* MISMO 3.4 export — hand this loan file to any other system in the mortgage
+   industry's shared file format. Downloads a MISMO v3.4 XML document. */
+function MismoExport({ appId }) {
+  const [busy, setBusy] = useState(false);
+  async function download() {
+    setBusy(true);
+    try { const { blob, filename } = await api.staffExportMismo(appId); saveBlob(blob, filename || 'MISMO_3.4.xml'); }
+    catch (e) { alert(e.message || 'Export failed'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3>MISMO 3.4 export</h3>
+        <div className="spacer" />
+        <button className="btn primary" onClick={download} disabled={busy}>
+          {busy ? 'Building…' : 'Export MISMO 3.4 (XML)'}
+        </button>
+      </div>
+      <p className="muted small">
+        The mortgage industry's standard file format. Downloads this loan file as a MISMO v3.4 XML document —
+        borrower, property, loan terms and the vesting entity — so it can be handed to any other system that reads MISMO.
+      </p>
     </div>
   );
 }

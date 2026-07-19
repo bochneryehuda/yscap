@@ -2160,6 +2160,81 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+// ============================ MISMO 3.4 import / export ======================
+// MISMO is the mortgage industry's shared file format. Export turns one of our
+// loan files into a MISMO v3.4 XML document any other system can read; import
+// reads such a file back into a new portal loan file. The heavy lifting lives in
+// src/lib/mismo/ (a dependency-free XML engine + field crosswalk).
+
+// EXPORT — download this loan file as a MISMO 3.4 XML document. Under the
+// /applications/:id path scope, so only assigned staff / see-all can pull it.
+// The file carries PII (incl. SSN, a core MISMO field), so the download is
+// audited exactly like the TPR export.
+router.get('/applications/:id/export/mismo', async (req, res) => {
+  try {
+    const mismo = require('../lib/mismo');
+    const xml = await mismo.exportApplicationXml(req.params.id);
+    if (!xml) return res.status(404).json({ error: 'application not found' });
+    const row = (await db.query(
+      'SELECT a.ys_loan_number, b.last_name FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1',
+      [req.params.id])).rows[0] || {};
+    const filename = mismo.exportFilename(row.ys_loan_number, row.last_name);
+    await audit(req, 'export_mismo', 'application', req.params.id, { bytes: Buffer.byteLength(xml) });
+    res.set('Content-Type', 'application/xml; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(xml);
+  } catch (e) {
+    console.error('[mismo] export failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
+// A tiny masker so a PREVIEW never surfaces a full SSN — staff see only the
+// last four, exactly as everywhere else PII is shown before it's stored.
+function maskMismoPreview(parsed) {
+  const clone = JSON.parse(JSON.stringify(parsed || {}));
+  for (const key of ['borrower', 'coBorrower']) {
+    const p = clone[key];
+    if (p && p.ssn) p.ssn = '•••-••-' + String(p.ssn).slice(-4);
+  }
+  return clone;
+}
+
+// IMPORT — PREVIEW. Parse an uploaded MISMO file and return exactly what would be
+// imported. This NEVER writes to the database, so staff always see the contents
+// before a single row is created (the repo's "never silently apply" posture).
+router.post('/mismo/preview', async (req, res) => {
+  const xml = req.body && req.body.xml;
+  if (!xml || typeof xml !== 'string') return res.status(400).json({ error: 'no MISMO XML provided' });
+  try {
+    const parsed = require('../lib/mismo').previewImport(xml);
+    res.json({ ok: true, preview: maskMismoPreview(parsed), warnings: parsed.warnings || [] });
+  } catch (e) {
+    res.status(422).json({ error: e.userMessage || 'this file could not be read as a MISMO 3.4 file' });
+  }
+});
+
+// IMPORT — CREATE. Re-parse the SAME XML server-side (never trust a client-edited
+// object — the SSN and every field are re-read from the file here) and create a
+// new loan file from it. The importing loan officer is assigned to it; anyone
+// else leaves it in Lead Capture.
+router.post('/mismo/create', async (req, res) => {
+  const xml = req.body && req.body.xml;
+  if (!xml || typeof xml !== 'string') return res.status(400).json({ error: 'no MISMO XML provided' });
+  try {
+    const mismo = require('../lib/mismo');
+    const parsed = mismo.previewImport(xml);
+    if (!parsed.borrower) return res.status(422).json({ error: 'this file has no borrower, so a loan file can’t be created from it' });
+    const officerId = req.actor.role === 'loan_officer' ? req.actor.id : null;
+    const { borrowerId, applicationId } = await mismo.createFromParsed(parsed, { officerId });
+    await audit(req, 'import_mismo', 'application', applicationId, { borrowerId, warnings: (parsed.warnings || []).length });
+    res.status(201).json({ ok: true, applicationId, borrowerId, warnings: parsed.warnings || [] });
+  } catch (e) {
+    console.error('[mismo] import create failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: e.userMessage || 'could not create a file from this MISMO import' });
+  }
+});
+
 // Full file activity feed (staff sees everything, including internal).
 router.get('/applications/:id/activity', async (req, res) => {
   try { res.json(await require('../lib/activity').fileActivity(req.params.id, false)); }
