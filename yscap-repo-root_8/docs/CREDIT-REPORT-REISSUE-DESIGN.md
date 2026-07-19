@@ -339,9 +339,10 @@ old→new, and re-fires this mismatch flow if it moved.
 
 ---
 
-## 10. Risk register (condensed — full catalog from the failure-mode sweep)
+## 10. Risk register (condensed — **full catalog + hardening checklists in `CREDIT-REPORT-INTEGRATION-BUGS.md`**)
 
-Top-priority, most-likely-silent bugs first:
+Top-priority, most-likely-silent bugs first (the full bug-hunt doc has the parser config, score-
+extraction order, freeze-bypass hunt, Node/HTTP traps, incident lessons, and the regression fixtures):
 
 | # | Risk | Mitigation |
 |---|---|---|
