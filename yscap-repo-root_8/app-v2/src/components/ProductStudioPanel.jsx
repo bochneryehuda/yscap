@@ -123,6 +123,11 @@ export function overridesFromSnapshot(snap, mode) {
       ovrLTCPct: f.tsManualOn ? f.tsMLtc : null,
       ovrRatePct: f.tsManualOn ? f.tsMRate : null,
       ovrIrMonths: f.tsManualOn ? f.tsMIr : null,
+      // Admin assignment exception: the approved effective purchase price. Must
+      // ride the register/quote payload or the server re-prices at the auto 15%
+      // cap and registers a different loan than the admin saw (audit #3, was
+      // present only in the V1 copy). Engine clamps it to [seller, real total].
+      ovrEffPrice: f.isAssign ? f.tsEffPrice : null,
     }),
     cashOut: /cash/i.test(f.dealPurpose || ''),
     isAssignment: !!f.isAssign,
@@ -182,7 +187,12 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
           {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
           {s.binding && <Row k="Binding limit" v={s.binding} />}
-          {caps && <Row k="Program max — LTC / ARV / as-is" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)} / ${pct(caps.maxAcqLtv, 1)}`} />}
+          {caps && ((q.kind === 'bridge' || caps.maxLtc >= 1 || caps.maxArvLtv >= 1)
+            // Bridge (and any no-cap product) has no LTC/ARV ceiling — the engine
+            // uses a 100% sentinel. Don't display "100.0%" as if it were a real cap;
+            // show only the as-is advance cap that actually governs (audit #12).
+            ? <Row k="Program max — as-is" v={pct(caps.maxAcqLtv, 1)} />
+            : <Row k="Program max — LTC / ARV / as-is" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)} / ${pct(caps.maxAcqLtv, 1)}`} />)}
         </div>
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
@@ -190,6 +200,9 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
           <Row k="Credit report" v={money2(cc.creditFee)} />
           <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
+          {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
+            <Row key={i} k={f.name} v={money2(f.amount)} />
+          ))}
           <Row k="Appraisal (est., POC)" v={money2(cc.appraisalPoc)} />
           <Row k="Closing costs due at closing" v={money2(cc.dueAtClosing)} />
           <Row k="Estimated cash to close" v={<strong>{money2(q.cashToClose)}</strong>} />
@@ -199,7 +212,8 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Strategy / purpose" v={`${inp.strategy || '—'} · ${inp.loanType || '—'}${inp.cashOut ? ' (cash-out)' : ''}`} />
           <Row k="Purchase price" v={money(inp.purchasePrice)} />
           {inp.isAssignment && <Row k="Seller price / assignment fee" v={`${money(inp.sellerPrice)} / ${money(Math.max(0, (inp.purchasePrice || 0) - (inp.sellerPrice || 0)))}`} />}
-          {inp.isAssignment && q.assignment && q.assignment.overLimit && <Row k="Effective purchase price (fee capped at 15%)" v={money(q.assignment.recognizedPrice)} />}
+          {inp.isAssignment && q.assignment && (q.assignment.overLimit || q.assignment.overridden) &&
+            <Row k={`Effective purchase price ${q.assignment.overridden ? '(admin exception)' : q.assignment.dollarCap ? '(fee capped at the program limit)' : '(fee capped at 15%)'}`} v={money(q.assignment.recognizedPrice)} />}
           <Row k="As-is value / ARV" v={`${money(inp.asIsValue)}${inp.asIsDefaulted ? ' (= purchase, defaulted)' : ''} / ${money(inp.arv)}`} />
           <Row k="Rehab budget" v={money(inp.rehabBudget)} />
           <Row k="FICO / experience" v={`${inp.fico || '—'} · ${inp.expFlips || 0} flips / ${inp.expHolds || 0} holds / ${inp.expGround || 0} ground-up`} />
@@ -500,18 +514,25 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
   // Borrowers can price/choose but never change the file's deal economics
   // from here — those change through the loan team. Staff edit everything.
   const lockedIds = useMemo(() => {
-    const ids = isStaff ? [] : [
-      'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
-      'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
-    ];
-    // #148: the server strips experience overrides from every non-admin STAFF
-    // register (the claim of record prices the deal), so a non-admin staffer
-    // editing these fields would see a tier the register won't honor — the
-    // exact "studio showed the max-experience loan, the file registered
-    // smaller" class. Lock them; the claim is edited on the (audited)
-    // application form. Borrowers keep the fields editable — their what-if
-    // quoting honors exp (#103) and their register path handles the strip.
-    if (isStaff && !staffAdmin) ids.push('expFlips', 'expBrrrr', 'expGround');
+    const ids = isStaff
+      // Staff: purchase price & as-is value are deliberately NOT written back on
+      // register (they stay owned by the application form), so a studio edit to
+      // them would size a loan the file never persists and the studio would snap
+      // back on reopen — the "studio showed one price, the file kept another"
+      // class (audit #24). Lock them; everything else staff may tune persists.
+      ? ['price', 'asIs']
+      : [
+        'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
+        'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
+      ];
+    // Experience prices off the CLAIM of record on register (frozen #85 rule): the
+    // server strips a studio experience override on EVERY non-admin register
+    // (borrower AND staff), so editing it in the studio would show a tier the
+    // register won't honor — the "studio showed the bigger loan, the file
+    // registered smaller" class (audit #44 borrower, #148 staff). Lock for
+    // everyone but an unlocked admin; the claim is edited on the audited
+    // application form.
+    if (!staffAdmin) ids.push('expFlips', 'expBrrrr', 'expGround');
     return ids;
   }, [isStaff, staffAdmin]);
 

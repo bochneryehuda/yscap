@@ -581,7 +581,11 @@ function borrowerPricingOverrides(raw) {
   const clamp = (v, lo, hi) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
   const targetLTC = Number(raw && raw.targetLTC);
   if (isFinite(targetLTC) && targetLTC > 0) out.targetLTC = targetLTC;
-  if (raw && raw.irMonths != null && raw.irMonths !== '') { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
+  // An explicit blank clears the reserve: pass '' through so buildInputs resolves
+  // it to 0 (its blank-clears contract). Dropping the blank left the prior reserve
+  // sticking, so a borrower couldn't zero it on re-register (final audit 2026-07-17).
+  if (raw && raw.irMonths === '') { out.irMonths = ''; }
+  else if (raw && raw.irMonths != null) { const v = clamp(raw.irMonths, 0, 24); if (v != null) out.irMonths = Math.round(v); }
   // Interest reserve may instead be an exact dollar amount (the engine caps it at
   // the loan term). 0 is allowed and clears any prior amount → months path.
   if (raw && raw.irAmount != null && raw.irAmount !== '') { const v = clamp(raw.irAmount, 0, 100000000); if (v != null) out.irAmount = Math.round(v); }
@@ -672,7 +676,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
-    if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
+    // Gold renovation finances NO interest reserve — zero BOTH request forms (see the
+    // matching note in staff.js; audit findings #14/#34/#40/#49, 2026-07-17).
+    if (program === 'gold' && quote.kind === 'reno') { inputs.irMonths = 0; inputs.irAmount = 0; }
     if (quote.status === 'INELIGIBLE') return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote: stripQuoteInternal(quote) }, 'ineligible', { program });
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
     if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote: stripQuoteInternal(quote) }, 'no_loan_sized', { program });
@@ -717,11 +723,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         liquidity: (quote.liquidity ?? quote.liquidityRequired) != null ? (quote.liquidity ?? quote.liquidityRequired) : undefined,
         previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined });
 
-    // Registering the product satisfies the "Products & pricing" condition.
+    // (Re-)registering resets the "Products & pricing" condition to received and
+    // CLEARS any prior sign-off — a borrower re-register can change term/program/
+    // structure that no trigger-watched column reflects (e.g. same loan amount,
+    // only rate moved), so staff must re-verify the new structure. Unconditional,
+    // mirroring the db/096 trigger's reopen semantics (audit #26/#58).
     try {
       await db.query(
-        `UPDATE checklist_items SET status='received', updated_at=now()
-          WHERE application_id=$1 AND tool_key='product_pricing' AND status <> 'satisfied'`, [appId]);
+        `UPDATE checklist_items
+            SET status='received', signed_off_at=NULL, signed_off_by=NULL,
+                reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+          WHERE application_id=$1 AND tool_key='product_pricing'`, [appId]);
     } catch (_) { /* condition may not exist on older files */ }
 
     try {
@@ -1141,6 +1153,10 @@ router.patch('/llcs/:id', async (req, res) => {
   }
   const sets = [], vals = []; let i = 1;
   const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  // WO-6 (F-M11): a mid-typed formation date ('0026-07-15') must not persist as
+  // year 26 — normalize it (2-digit year → 2026, garbage → null) like every
+  // other typed date field, so the year-0026 class can't corrupt LLC ages.
+  if (b.formationDate !== undefined) b.formationDate = require('../lib/fields').normalizeTypedDate(b.formationDate);
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
   if (b.llcName !== undefined && !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName cannot be empty' });
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });

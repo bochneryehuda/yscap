@@ -216,46 +216,53 @@ function stateKeyFor(row, scopeKey) {
 // COALESCE walks document → checklist item → llc so condition- and entity-
 // attached documents route to the right file/borrower. Oldest first so the
 // backfill replays supersede history in order.
+// The enrichment (SELECT list + joins) shared by pendingBatch AND the
+// force-attempt path, so a document loaded by id carries the EXACT same fields
+// the mirror needs — no drift between "what the batch sees" and "what a forced
+// attempt sees".
+const ENRICH_SELECT = `
+    SELECT d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider,
+           d.slot_label, d.doc_kind, d.source_type, d.is_current, d.size_bytes,
+           d.sharepoint_backup_ref, d.sharepoint_parent_id, d.sharepoint_version,
+           d.sharepoint_integrity, d.sharepoint_item_size,
+           d.checklist_item_id, d.llc_id, d.created_at,
+           COALESCE(d.track_record_id, ci.track_record_id)                     AS track_record_id,
+           COALESCE(d.application_id, ci.application_id)                        AS app_id,
+           COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
+           ci.label                                                            AS item_label,
+           ct.code                                                             AS template_code,
+           l.id                                                                AS llc_resolved_id,
+           l.llc_name,
+           COALESCE(tr.property_address->>'oneLine',
+                    tr.property_address->>'street', tr.property_address->>'line1') AS tr_address,
+           a.ys_loan_number,
+           COALESCE(a.property_address->>'oneLine',
+                    NULLIF(TRIM(CONCAT_WS(', ',
+                      COALESCE(a.property_address->>'street', a.property_address->>'line1'),
+                      a.property_address->>'city', a.property_address->>'state')), '')) AS address_one_line,
+           COALESCE(su.full_name, a.loan_officer_name, recent.officer_name)    AS officer_name,
+           b.first_name  AS borrower_first,
+           b.last_name   AS borrower_last
+      FROM documents d
+      LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+      LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+      LEFT JOIN track_records tr   ON tr.id = COALESCE(d.track_record_id, ci.track_record_id)
+      LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
+      LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
+      LEFT JOIN staff_users su     ON su.id = a.loan_officer_id
+      LEFT JOIN borrowers b        ON b.id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id)
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(su2.full_name, a2.loan_officer_name) AS officer_name
+          FROM applications a2
+          LEFT JOIN staff_users su2 ON su2.id = a2.loan_officer_id
+         WHERE COALESCE(d.application_id, ci.application_id) IS NULL
+           AND a2.borrower_id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id)
+         ORDER BY a2.created_at DESC LIMIT 1
+      ) recent ON true`;
+
 async function pendingBatch(limit) {
   const { rows } = await db.query(
-    `SELECT d.id, d.filename, d.content_type, d.storage_ref, d.storage_provider,
-            d.slot_label, d.doc_kind, d.source_type, d.is_current, d.size_bytes,
-            d.sharepoint_backup_ref, d.sharepoint_parent_id, d.sharepoint_version,
-            d.sharepoint_integrity, d.sharepoint_item_size,
-            d.checklist_item_id, d.llc_id, d.created_at,
-            COALESCE(d.track_record_id, ci.track_record_id)                     AS track_record_id,
-            COALESCE(d.application_id, ci.application_id)                        AS app_id,
-            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
-            ci.label                                                            AS item_label,
-            ct.code                                                             AS template_code,
-            l.id                                                                AS llc_resolved_id,
-            l.llc_name,
-            COALESCE(tr.property_address->>'oneLine',
-                     tr.property_address->>'street', tr.property_address->>'line1') AS tr_address,
-            a.ys_loan_number,
-            COALESCE(a.property_address->>'oneLine',
-                     NULLIF(TRIM(CONCAT_WS(', ',
-                       COALESCE(a.property_address->>'street', a.property_address->>'line1'),
-                       a.property_address->>'city', a.property_address->>'state')), '')) AS address_one_line,
-            COALESCE(su.full_name, a.loan_officer_name, recent.officer_name)    AS officer_name,
-            b.first_name  AS borrower_first,
-            b.last_name   AS borrower_last
-       FROM documents d
-       LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
-       LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
-       LEFT JOIN track_records tr   ON tr.id = COALESCE(d.track_record_id, ci.track_record_id)
-       LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
-       LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
-       LEFT JOIN staff_users su     ON su.id = a.loan_officer_id
-       LEFT JOIN borrowers b        ON b.id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id)
-       LEFT JOIN LATERAL (
-         SELECT COALESCE(su2.full_name, a2.loan_officer_name) AS officer_name
-           FROM applications a2
-           LEFT JOIN staff_users su2 ON su2.id = a2.loan_officer_id
-          WHERE COALESCE(d.application_id, ci.application_id) IS NULL
-            AND a2.borrower_id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id)
-          ORDER BY a2.created_at DESC LIMIT 1
-       ) recent ON true
+    `${ENRICH_SELECT}
       WHERE d.sharepoint_backed_up_at IS NULL
         AND d.storage_ref IS NOT NULL
         AND COALESCE(d.storage_provider, 'local') = 'local'
@@ -268,8 +275,11 @@ async function pendingBatch(limit) {
         AND d.created_at < now() - (CASE WHEN ${REGEN_KIND_SQL}
               THEN make_interval(secs => $3) ELSE interval '3 seconds' END)
         -- A superseded regen-kind snapshot never uploads (runOnce marks these
-        -- skipped; this predicate is the belt to that suspender).
-        AND NOT (${REGEN_KIND_SQL} AND d.is_current = false)
+        -- skipped; this predicate is the belt to that suspender). NULL-safe:
+        -- COALESCE(is_current,true) so a NULL is_current is treated as CURRENT
+        -- (selected + attempted) rather than silently excluded here AND from
+        -- the settle pass — the gap that stranded a doc "not yet attempted".
+        AND NOT (${REGEN_KIND_SQL} AND COALESCE(d.is_current, true) = false)
       -- attempts ASC first: fresh uploads are never starved behind a head-of-
       -- queue clump of repeatedly-failing rows; created_at ASC within a tier
       -- keeps the backfill's version replay chronological.
@@ -278,6 +288,15 @@ async function pendingBatch(limit) {
     [limit, MAX_ATTEMPTS, snapshotSettleSec()],
   );
   return rows;
+}
+
+// Load ONE document's fully-enriched row by id, with NO selection filters —
+// used by the force-attempt path so a document that pendingBatch skipped for
+// ANY reason can still be mirrored (or produce a real, classifiable error
+// instead of sitting "not yet attempted" forever).
+async function enrichedRowById(id) {
+  const { rows } = await db.query(`${ENRICH_SELECT} WHERE d.id = $1`, [id]);
+  return rows[0] || null;
 }
 
 // Superseded-before-mirror regen snapshots are settled WITHOUT uploading: the
@@ -292,7 +311,7 @@ async function settleSupersededSnapshots() {
         sharepoint_skipped_reason = 'superseded before mirror — a newer copy of this autosaved snapshot mirrors instead',
         sharepoint_backup_error = NULL
       WHERE d.sharepoint_backed_up_at IS NULL
-        AND d.is_current = false
+        AND COALESCE(d.is_current, true) = false
         AND ${REGEN_KIND_SQL}
         AND d.storage_ref IS NOT NULL
       RETURNING d.id`);
@@ -805,42 +824,91 @@ async function mirrorRowInner(row, scopeKey) {
   return { webUrl: up.item.webUrl, path: `${target.fullPath}/${category}${version ? `/Version ${version}` : ''}` };
 }
 
+// ROOT of "why does a document get stuck?" (owner-directed 2026-07-17): the
+// mirror used to retry EVERY failure blindly 8× and re-arm daily — treating a
+// PERMANENT failure (one retrying can never fix) exactly like a network blip.
+// So a doomed upload churned invisibly for days. The fix is to UNDERSTAND the
+// error and route it:
+//   • permanent — a human must act; retrying is pointless. Surface it FAST
+//     (after 2 attempts, to rule out a one-off), with the specific cause, and
+//     PARK it so the daily reset stops re-driving a doomed upload.
+//   • throttle  — Graph is rate-limiting; back off and keep retrying (the
+//     escalation ceiling cards it only if it persists for many hours).
+//   • transient — a network/5xx blip; retry, escalate past the ceiling.
+const TRANSIENT_ERROR = /(^|[^0-9])(500|502|503|504)([^0-9]|$)|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|fetch failed|aborted|socket hang up/i;
+const THROTTLE_ERROR = /(^|[^0-9])429([^0-9]|$)|retry-after|throttl/i;
+// Permanent: retrying the SAME upload will never succeed — a human (or a config
+// change) must intervene. Each maps to a concrete, plain-language cause.
+const PERMANENT_PATTERNS = [
+  { re: /no application or borrower to file under/i, cause: 'this document is not linked to any borrower or loan file, so there is nowhere to file it. Link it to a file/borrower in PILOT (or remove it).' },
+  { re: /ENOENT|no such file|invalid storage ref|storage.*not configured/i, cause: 'the document’s own saved copy could not be read from PILOT storage (its file is missing). This usually means it was saved to a non-persistent disk. Re-upload the document.' },
+  { re: /not configured \(MS_|AADSTS|invalid_client|unauthorized_client|certificate|client assertion|token via/i, cause: 'SharePoint authentication is failing (an expired or misconfigured certificate/secret). Rotate/renew the Microsoft credential — nothing will mirror until it is fixed.' },
+  { re: /Access denied|accessDenied|403|Forbidden|Sites\.|permission/i, cause: 'SharePoint denied access (a permissions problem on the target site/folder). An admin must grant the app write access to this location.' },
+  { re: /name conflict persisted after uniquification/i, cause: 'the upload keeps colliding with an existing item and could not be uniquified. A human should check the target folder in SharePoint.' },
+  { re: /invalidRequest|malformed|Invalid path|path.*too long|400/i, cause: 'SharePoint rejected the request as invalid (often a folder path or name problem). Review the folder match for this file.' },
+];
+function classifyMirrorError(message) {
+  const m = String(message || '');
+  const perm = PERMANENT_PATTERNS.find((p) => p.re.test(m) && !THROTTLE_ERROR.test(m) && !TRANSIENT_ERROR.test(m));
+  if (perm) return { class: 'permanent', cause: perm.cause };
+  if (THROTTLE_ERROR.test(m)) return { class: 'throttle', cause: 'SharePoint is rate-limiting the sync (throttling). The mirror backs off and keeps retrying automatically.' };
+  if (TRANSIENT_ERROR.test(m)) return { class: 'transient', cause: 'a temporary network or SharePoint error. The mirror retries automatically.' };
+  return { class: 'transient', cause: 'an unclassified error; treated as temporary and retried.' };
+}
+
+async function cardMirrorFailure(row, error, kind, extra = {}) {
+  await require('./sync-review').queueReview({
+    applicationId: row.app_id || null, borrowerId: row.borrower_id || null,
+    taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
+    reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
+    clickupValue: null,
+    portalValue: `${row.filename || 'document'} — ${extra.cause || row.item_label || row.slot_label || row.doc_kind || 'file'}`.slice(0, 300),
+    rawValue: JSON.stringify({ docId: row.id, attempts: extra.attempts, errorClass: kind,
+      error: String(error).slice(0, 300) }).slice(0, 500) });
+}
+
+// Attempts before a PERMANENT-classed error is surfaced (small — one retry to
+// rule out a fluke, then card + park so it stops churning).
+const PERMANENT_CARD_AT = 2;
+
 async function recordFailure(row, err) {
+  const lastError = String((err && err.message) || err);
+  const verdict = classifyMirrorError(lastError);
   const r = await db.query(
     `UPDATE documents SET sharepoint_backup_error=$2,
         sharepoint_backup_attempts = sharepoint_backup_attempts + 1,
         sharepoint_backup_attempted_at = now()
       WHERE id=$1 RETURNING sharepoint_backup_attempts`,
-    [row.id, String((err && err.message) || err).slice(0, 500)]);
-  // EXHAUSTED → MANUAL REVIEW (owner-directed 2026-07-15 night: "enhance the
-  // SharePoint error handling — when it should be sent to manual review").
-  // Transient failures retry silently through the attempt budget + the daily
-  // fresh chance; a document that BURNS the whole budget is stuck on
-  // something real (permissions, a bad path, an unreadable local file) and a
-  // human must see it. One row per document (synthetic spdoc:<id> key),
-  // dismiss sticks, auto-closed by the success path when a later retry lands.
-  // NO FAKE CARDS (owner-directed 2026-07-16): an exhaustion whose final error
-  // is TRANSIENT INFRASTRUCTURE noise (Graph throttling, a network blip, a
-  // service outage) is NOT a human-actionable problem — the boot/daily resets
-  // keep retrying it and the admin health screen counts it. Only errors a
-  // human can actually act on reach the review queue.
-  const TRANSIENT_ERROR = /(^|[^0-9])(429|503|504)([^0-9]|$)|retry-after|throttl|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|fetch failed|aborted|socket hang up/i;
+    [row.id, lastError.slice(0, 500)]);
   try {
     const attempts = r.rows[0] ? Number(r.rows[0].sharepoint_backup_attempts) : 0;
-    const lastError = String((err && err.message) || err);
-    if (attempts >= MAX_ATTEMPTS && TRANSIENT_ERROR.test(lastError)) {
-      console.warn(`[sp-sync] doc ${row.id} exhausted on a TRANSIENT error — no review card (resets keep retrying): ${lastError.slice(0, 120)}`);
+
+    // PERMANENT → surface FAST (retrying can't help) and PARK the doc so the
+    // boot/daily reset stops re-driving a doomed upload. Its review card's
+    // Retry re-arms it once the human fixes the cause.
+    if (verdict.class === 'permanent' && attempts >= PERMANENT_CARD_AT) {
+      await cardMirrorFailure(row, lastError, 'permanent', { attempts, cause: verdict.cause });
+      // Park at the attempt ceiling with a marker so the resets skip it (they
+      // only re-arm docs whose error is NOT a parked permanent one).
+      await db.query(
+        `UPDATE documents SET sharepoint_backup_attempts = $2,
+            sharepoint_backup_error = $3
+          WHERE id = $1`,
+        [row.id, MAX_ATTEMPTS, `[permanent] ${verdict.cause} · ${lastError}`.slice(0, 500)]);
+      console.warn(`[sp-sync] doc ${row.id} PERMANENT failure parked for review: ${verdict.cause}`);
+      return;
+    }
+
+    // TRANSIENT/THROTTLE exhaustion: no fake card for brief blips — the resets
+    // keep retrying and the escalation ceiling (escalateStuckDocs) cards it if
+    // it persists for hours. (This is the correct behavior for genuinely
+    // temporary errors; permanent ones are handled above.)
+    if (attempts >= MAX_ATTEMPTS && (verdict.class === 'throttle' || verdict.class === 'transient')) {
+      console.warn(`[sp-sync] doc ${row.id} exhausted on a ${verdict.class} error — retrying via resets; escalates if it persists: ${lastError.slice(0, 120)}`);
       return;
     }
     if (attempts >= MAX_ATTEMPTS) {
-      await require('./sync-review').queueReview({
-        applicationId: row.app_id || null, borrowerId: row.borrower_id || null,
-        taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
-        reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
-        clickupValue: null,
-        portalValue: `${row.filename || 'document'} — ${row.item_label || row.slot_label || row.doc_kind || 'file'}`.slice(0, 160),
-        rawValue: JSON.stringify({ docId: row.id, attempts,
-          error: String((err && err.message) || err).slice(0, 300) }).slice(0, 500) });
+      await cardMirrorFailure(row, lastError, verdict.class, { attempts, cause: verdict.cause });
     }
   } catch (_) { /* visibility is best-effort — never breaks the mirror */ }
 }
@@ -1184,10 +1252,14 @@ async function drain() {
   try {
     // Documents that exhausted their attempts get one fresh chance per day —
     // a persistent outage (or a bug fixed by a deploy) must not orphan them.
+    // EXCEPT a PARKED PERMANENT failure: retrying it can't help, so re-arming
+    // it would just churn a doomed upload forever (the root of "stuck"). Its
+    // review card's Retry (which clears the error) is the only re-arm path.
     await db.query(
       `UPDATE documents SET sharepoint_backup_attempts = 0
         WHERE sharepoint_backed_up_at IS NULL AND sharepoint_backup_attempts >= $1
-          AND sharepoint_backup_attempted_at < now() - interval '1 day'`,
+          AND sharepoint_backup_attempted_at < now() - interval '1 day'
+          AND COALESCE(sharepoint_backup_error, '') NOT LIKE '[permanent]%'`,
       [MAX_ATTEMPTS]).catch(() => {});
     for (let i = 0; i < MAX_DRAIN_LOOPS; i++) {
       const res = await runOnce({});
@@ -1345,32 +1417,180 @@ async function reconciliation() {
   };
 }
 
+// The ACTUAL stuck documents behind a backlog — WITH identity and the real
+// reason, so an alert/report is interpretable and actionable (owner-reported
+// 2026-07-17: "I got an SLO email but nothing in review and I don't understand
+// it"). A document that has been un-mirrored past the SLO threshold, oldest
+// first, each with a plain-language diagnosis of WHY it isn't progressing.
+async function stuckDocuments(limit = 25) {
+  const hrs = Number(process.env.SHAREPOINT_BACKLOG_SLO_HOURS || 6);
+  const { rows } = await db.query(
+    `SELECT d.id, d.filename, d.doc_kind, d.is_current,
+            d.sharepoint_backup_attempts AS attempts,
+            d.sharepoint_backup_error    AS last_error,
+            d.sharepoint_skipped_reason  AS skipped_reason,
+            round(EXTRACT(EPOCH FROM (now() - d.created_at)) / 3600.0, 1) AS age_hours,
+            COALESCE(d.application_id, ci.application_id)                        AS app_id,
+            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
+            TRIM(CONCAT_WS(' ', b.first_name, b.last_name))                     AS borrower_name,
+            ${REGEN_KIND_SQL} AS is_regen
+       FROM documents d
+       LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+       LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
+       LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
+       LEFT JOIN borrowers b        ON b.id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id)
+      WHERE d.sharepoint_backed_up_at IS NULL
+        AND d.storage_ref IS NOT NULL
+        AND COALESCE(d.storage_provider,'local') = 'local'
+        AND d.created_at < now() - make_interval(hours => $1)
+      ORDER BY d.created_at ASC
+      LIMIT $2`,
+    [hrs, limit]);
+  return rows.map((r) => {
+    const noScope = !r.app_id && !r.borrower_id;
+    let why;
+    if (r.is_regen && r.is_current === false) why = 'a superseded auto-saved copy that should have auto-settled (self-healing now)';
+    else if (noScope) why = 'no borrower or loan file to file it under — a human must link or remove it';
+    else if (Number(r.attempts) >= MAX_ATTEMPTS) why = `failed every automatic retry — last error: ${r.last_error || 'unknown'}`;
+    else why = `keeps failing to upload — last error: ${r.last_error || '(not yet attempted)'}`;
+    return { ...r, phantom: r.is_regen && r.is_current === false, noScope, why };
+  });
+}
+
+// Escalate genuinely-stuck documents so they STOP being invisible (the
+// 2026-07-17 blind spot): a doc past the escalation threshold either
+//   (a) self-heals if it's a phantom (superseded snapshot that slipped the
+//       settle pass) — settle it, no human needed; or
+//   (b) gets a REVIEW CARD regardless of error class — a "transient" error that
+//       has persisted this long is NOT transient, it's stuck, and a human must
+//       see it (this is what #300's transient-suppression was missing).
+function stuckEscalateHours() {
+  const slo = Number(process.env.SHAREPOINT_BACKLOG_SLO_HOURS || 6);
+  const v = Number(process.env.SHAREPOINT_STUCK_ESCALATE_HOURS || 0);
+  return v > 0 ? v : Math.max(12, slo * 2);
+}
+// Force ONE document through the mirror, bypassing pendingBatch selection, with
+// a hard timeout so a hanging upload (a poison-pill file) can't strand the doc
+// "not yet attempted" forever — it either mirrors or produces a REAL,
+// classifiable error that recordFailure turns into an actionable card.
+const FORCE_ATTEMPT_TIMEOUT_MS = 90000;
+async function forceAttemptDoc(id) {
+  const row = await enrichedRowById(id);
+  if (!row) return { gone: true };
+  if (row.sharepoint_backed_up_at) return { alreadyDone: true };
+  try {
+    await Promise.race([
+      mirrorRow(row),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('force-attempt timed out after 90s (possible poison-pill file)')), FORCE_ATTEMPT_TIMEOUT_MS)),
+    ]);
+    return { mirrored: true };
+  } catch (e) {
+    // Give the real error a home: recordFailure classifies it (permanent →
+    // fast card; throttle/transient → retry) so it stops being "not attempted".
+    try { await recordFailure(row, e); } catch (_) {}
+    return { failed: true, error: e.message };
+  }
+}
+
+async function escalateStuckDocs() {
+  const escalateHrs = stuckEscalateHours();
+  const docs = (await stuckDocuments(50)).filter((d) => Number(d.age_hours) >= escalateHrs);
+  let settled = 0, carded = 0, forced = 0, forceMirrored = 0;
+  for (const d of docs) {
+    if (d.phantom) {
+      // Self-heal: settle the superseded snapshot exactly like the settle pass.
+      await db.query(
+        `UPDATE documents SET sharepoint_backed_up_at = now(),
+            sharepoint_skipped_reason = 'superseded before mirror — a newer copy of this snapshot mirrors instead (stuck-heal)',
+            sharepoint_backup_error = NULL
+          WHERE id = $1 AND sharepoint_backed_up_at IS NULL`, [d.id]);
+      settled++;
+      try {
+        await require('./sync-review').closeStaleReviews({
+          taskId: `spdoc:${d.id}`, fieldKey: 'sharepoint_doc', note: 'auto-closed — superseded snapshot settled' });
+      } catch (_) { /* best-effort */ }
+      continue;
+    }
+    // NEVER-ATTEMPTED but stuck (attempts 0 and no error) means pendingBatch
+    // skipped it for some reason (the "not yet attempted" bug). FORCE an
+    // attempt so it either mirrors now or yields a real error — don't just
+    // card a doc that was never actually tried.
+    const neverTried = Number(d.attempts || 0) === 0 && !d.last_error;
+    let realError = d.last_error;
+    if (neverTried) {
+      forced++;
+      const res = await forceAttemptDoc(d.id).catch((e) => ({ failed: true, error: e.message }));
+      if (res.mirrored) { forceMirrored++; continue; }   // uploaded — card (if any) closed by the success path
+      // The force-attempt produced a REAL error (or the doc vanished); use it
+      // so the card no longer says "not yet attempted".
+      realError = res.error || realError;
+    }
+    // Anything else stuck this long is human-actionable — ensure a card exists
+    // with the REAL error (re-read fresh in case recordFailure already classified
+    // it). queueReview dedups per doc, so this is idempotent across sweeps.
+    try {
+      const fresh = await enrichedRowById(d.id);
+      if (!fresh || fresh.sharepoint_backed_up_at) continue;   // gone, or force-attempt mirrored it
+      const rawErr = fresh.sharepoint_backup_error || realError || d.why;
+      // Show the FRIENDLY cause on the card when the error is classifiable
+      // (e.g. "the document's own saved copy could not be read…" instead of a
+      // raw ENOENT), falling back to the raw error otherwise.
+      const verdict = classifyMirrorError(rawErr);
+      const shown = verdict.class === 'permanent' ? verdict.cause : String(rawErr);
+      await require('./sync-review').queueReview({
+        applicationId: d.app_id || null, borrowerId: d.borrower_id || null,
+        taskId: `spdoc:${d.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
+        reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
+        clickupValue: null,
+        portalValue: `${d.filename || 'document'} — stuck ${d.age_hours}h: ${shown}`.slice(0, 300),
+        rawValue: JSON.stringify({ docId: d.id, attempts: d.attempts, stuckHours: d.age_hours,
+          errorClass: verdict.class, error: String(rawErr).slice(0, 280), escalated: true }).slice(0, 500) });
+      carded++;
+    } catch (_) { /* visibility best-effort */ }
+  }
+  if (settled || carded || forced) console.log(`[sp-sync] stuck-escalation: settled ${settled} phantom(s), force-attempted ${forced} (${forceMirrored} mirrored), carded ${carded}`);
+  return { settled, carded, forced, forceMirrored, considered: docs.length };
+}
+
 // R4 — the SLO watchdog: on each interval sweep, if the oldest un-mirrored doc
-// is past the threshold (or anything is exhausted), notify admins ONCE per
-// breach episode (dedup via a simple in-process latch that re-arms when the
-// backlog recovers). Silent degradation becomes a signal.
+// is past the threshold (or anything is exhausted), ESCALATE the stuck docs
+// (settle phantoms, card the rest) and notify admins ONCE per breach episode
+// WITH the offending documents named (dedup via a simple in-process latch that
+// re-arms when the backlog recovers). Silent degradation becomes a signal you
+// can actually act on.
 let _sloBreaching = false;
 async function checkBacklogSlo() {
   if (!enabled()) return;
   try {
     const recon = await reconciliation();
     const breaching = recon.slo.breached || recon.slo.exhausted > 0;
-    if (breaching && !_sloBreaching) {
-      _sloBreaching = true;
-      const notify = require('./notify');
-      await notify.notifyAdmins({
-        type: 'sharepoint_backlog_slo',
-        title: 'SharePoint sync backlog needs attention',
-        body: `The mirror is behind SLO: ${recon.exhausted} document(s) exhausted their retries` +
-              (recon.oldest_pending_hours != null ? `, oldest un-mirrored is ${recon.oldest_pending_hours}h old (threshold ${recon.slo.thresholdHours}h).` : '.') +
-              ' Open the SharePoint Control screen to review and retry.',
-        meta: [
-          { label: 'Exhausted', value: String(recon.exhausted) },
-          { label: 'Pending', value: String(recon.pending) },
-          { label: 'Oldest pending', value: recon.oldest_pending_hours != null ? `${recon.oldest_pending_hours}h` : '—' },
-        ],
-        link: '/internal/sync-reviews', ctaLabel: 'Open Sync review',
-      }).catch(() => {});
+    if (breaching) {
+      // Make the stuck docs visible + actionable BEFORE alerting, so the email
+      // and the review queue agree.
+      const esc = await escalateStuckDocs().catch(() => ({ settled: 0, carded: 0 }));
+      // Re-read after self-healing phantoms so the alert reflects reality.
+      const stuck = (await stuckDocuments(8)).filter((d) => !d.phantom);
+      if (!_sloBreaching && (stuck.length > 0 || recon.exhausted > 0)) {
+        _sloBreaching = true;
+        const named = stuck.slice(0, 6).map((d) =>
+          ({ label: (d.borrower_name || 'document') + (d.filename ? ` — ${d.filename}` : ''),
+             value: `${d.age_hours}h · ${d.why}` }));
+        const notify = require('./notify');
+        await notify.notifyAdmins({
+          type: 'sharepoint_backlog_slo',
+          title: 'SharePoint sync — document(s) need attention',
+          body: `${stuck.length} document(s) have not mirrored to SharePoint within the ${recon.slo.thresholdHours}h target` +
+                (esc.carded ? ` (${esc.carded} now in Sync review with the exact reason)` : '') +
+                (esc.settled ? `; ${esc.settled} superseded copy(ies) auto-resolved` : '') +
+                '. Each is listed below with why — open Sync review to see the error and Retry. Nothing is lost; every document is safe in PILOT.',
+          meta: [
+            { label: 'Stuck documents', value: String(stuck.length) },
+            { label: 'Oldest', value: recon.oldest_pending_hours != null ? `${recon.oldest_pending_hours}h` : '—' },
+            ...named,
+          ],
+          link: '/internal/sync-reviews', ctaLabel: 'Open Sync review',
+        }).catch(() => {});
+      }
     } else if (!breaching && _sloBreaching) {
       _sloBreaching = false;   // recovered — re-arm for the next episode
     }
@@ -1382,6 +1602,7 @@ async function checkBacklogSlo() {
 module.exports = {
   start, stop, kick, runOnce, drain, enabled, health, categoryFor, mirrorRow,
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
-  reconciliation, checkBacklogSlo,
+  reconciliation, checkBacklogSlo, stuckDocuments, escalateStuckDocs,
+  classifyMirrorError,
   MAX_ATTEMPTS, VERIFY_RECHECK_DAYS,
 };

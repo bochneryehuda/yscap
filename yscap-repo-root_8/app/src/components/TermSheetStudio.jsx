@@ -103,7 +103,10 @@ export function buildStudioState(x) {
   const c = {
     isAssign,
     addrTBD: !x.address,
-    sqft: /square|addition/i.test(String(x.rehabType || '')),
+    // Mirror the server's buildInputs sq-ft detection (keyword OR an actual
+    // footprint increase) so a register can't lift the 87.5% sq-ft LTC cap the
+    // server's own quote applies (audit #22).
+    sqft: /square|sf|addition|ground/i.test(String(x.rehabType || '')) || (Number(x.sqftPost) || 0) > (Number(x.sqftPre) || 0),
   };
   return { v, c };
 }

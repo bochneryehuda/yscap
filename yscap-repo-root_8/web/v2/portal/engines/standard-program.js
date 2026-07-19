@@ -582,8 +582,11 @@
       add("MANUAL", "Assignment fee of " + usd(assignment.fee) + " exceeds the 15% program limit (" + usd(assignment.maxFee) +
         ", 15% of the " + usd(assignment.sellerPrice) + " original contract price). " + usd(assignment.financeableFee) + " is financeable; " +
         usd(assignment.excessOOP) + " must be brought out of pocket at closing. A higher limit may be requested as an exception.");
-      if (sizing) sizing.assignmentExcessOOP = assignment.excessOOP;
     }
+    // Any assignment excess — over the 15% cap OR under an admin exception that still
+    // leaves a remainder — is brought to the table. Set it on EVERY branch so cash-to-
+    // close never understates it (mirrors gold-standard.js's unconditional assignment).
+    if (sizing) sizing.assignmentExcessOOP = assignment ? assignment.excessOOP : 0;
 
     if (!reasons.length) reasons.push({ level: "ELIGIBLE", msg: "Meets the Standard Program guidelines." });
 

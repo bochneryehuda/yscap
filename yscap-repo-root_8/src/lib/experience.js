@@ -131,9 +131,20 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
     if (reg.rows[0]) {
       const pin = reg.rows[0].inputs || {};
       const pricedWith = { flips: int(pin.expFlips), holds: int(pin.expHolds), ground: int(pin.expGround) };
-      const dropped = pricedWith.flips > int(counts.flips)
-        || pricedWith.holds > int(counts.holds)
-        || pricedWith.ground > int(counts.ground);
+      // The fatality is a NEGATIVE experience-of-record change — never a fresh
+      // registration. Loans size on the CLAIMED experience (frozen rule), so at
+      // registration pricedWith == the claim while VERIFIED is often still 0; the
+      // old check (pricedWith > all-rows count) flagged every such registration
+      // "experience dropped" at birth and silently disarmed the guard (audit
+      // #10/#29). Judge against VERIFIED experience, with the current claim as a
+      // floor: only when the registration priced on MORE than the file now claims
+      // AND more than is verified has the experience of record actually dropped.
+      const claim = required;   // requestedFromApp(app) — the claimed-of-record floor
+      const verified = await countBorrowersExperience(ids, client, { verifiedOnly: true });
+      const dropped =
+           (pricedWith.flips  > int(claim.flips)  && pricedWith.flips  > int(verified.flips))
+        || (pricedWith.holds  > int(claim.holds)  && pricedWith.holds  > int(verified.holds))
+        || (pricedWith.ground > int(claim.ground) && pricedWith.ground > int(verified.ground));
       if (dropped) {
         await client.query(
           `UPDATE product_registrations SET stale=true,

@@ -125,6 +125,17 @@ ok('delete webhook allowed', () => client.guardNoTaskDeletion('DELETE', '/webhoo
   eq('scope: portal_stamp -> file id', stamp.cuIds.has(F.SYNC.portalFileId), true);
   eq('scope: portal_stamp -> file link', stamp.cuIds.has(F.SYNC.portalFileLink), true);
   eq('scope: portal_stamp maps nothing else', stamp.cuIds.size, 2);
+  // WO-16 (F-M1): a borrower-facing 'status' change pushes ONLY the portal-owned
+  // MIRROR field — it must NOT flag the ClickUp-owned task status (internalStatus
+  // false), or a stale mirror reverts ClickUp's live status.
+  const bf = mapper.resolveOnly(['status']);
+  eq('scope: status -> mirror field', bf.cuIds.has(F.SYNC.borrowerPortalStatus), true);
+  eq('scope: status does NOT push the task status', bf.internalStatus, false);
+  eq('scope: status sets the mirror flag', bf.status, true);
+  // A DELIBERATE internal-status change pushes BOTH the mirror and the task status.
+  const is = mapper.resolveOnly(['internal_status']);
+  eq('scope: internal_status -> mirror field', is.cuIds.has(F.SYNC.borrowerPortalStatus), true);
+  eq('scope: internal_status DOES push the task status', is.internalStatus, true);
 }
 
 // ---- 6. the PII shield covers the borrower identity set ---------------------

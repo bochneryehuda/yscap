@@ -1585,7 +1585,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
-    if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
+    // Gold renovation finances NO interest reserve — zero BOTH request forms so a
+    // leftover amount can't silently finance a reserve if the file later moves to the
+    // Standard program, and the registered scenario never carries a phantom request
+    // (audit findings #14/#34/#40/#49, 2026-07-17).
+    if (program === 'gold' && quote.kind === 'reno') { inputs.irMonths = 0; inputs.irAmount = 0; }
     if (quote.status === 'INELIGIBLE' && !overrides.forcePrice) {
       return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote }, 'ineligible', { program });
     }
@@ -1925,7 +1929,7 @@ router.post('/applications/:id/checklist', async (req, res) => {
   const r = await db.query(
     `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,due_date,created_by_kind,created_by_id)
      VALUES ('application',$1,$2,$3,$4,'document',$5,$6,'staff',$7) RETURNING id`,
-    [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, b.dueDate || null, req.actor.id]);
+    [req.params.id, b.label, borrowerLabel, audience, b.isRequired !== false, require('../lib/fields').normalizeTypedDate(b.dueDate), req.actor.id]);  // WO-6 (F-M11): year-0026-proof due date
   const app = await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [req.params.id]);
   // Only tell the borrower when the item is actually borrower-facing, and show
   // them the BORROWER-facing wording (never the internal label). (S2-02)
@@ -2019,7 +2023,7 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
      scrubText(String(b.borrowerHint || '').trim().slice(0, 2000)) || null,
      audience, CONDITION_TYPES[type].itemKind, toolKey || null, fieldKey,
      type === 'esign' ? (String(b.esignDoc || '').trim().slice(0, 300) || null) : null,
-     category, b.isRequired !== false, b.dueDate || null,
+     category, b.isRequired !== false, require('../lib/fields').normalizeTypedDate(b.dueDate),  // WO-6 (F-M11): year-0026-proof due date
      String(b.notes || '').trim().slice(0, 2000) || null, req.actor.id]);
   await audit(req, 'add_condition_custom', 'application', req.params.id, { label, type, audience });
   if (audience !== 'staff') {
@@ -3621,6 +3625,8 @@ router.patch('/llcs/:id', async (req, res) => {
   if (b.llcName !== undefined && !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName cannot be empty' });
   const sets = [], vals = []; let i = 1;
   const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
+  // WO-6 (F-M11): normalize a mid-typed formation date so year-0026 can't persist.
+  if (b.formationDate !== undefined) b.formationDate = require('../lib/fields').normalizeTypedDate(b.formationDate);
   for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
   if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
   if (b.ownershipPct !== undefined && b.ownershipPct !== '' && b.ownershipPct != null) {
@@ -4311,7 +4317,7 @@ router.post('/applications/:id/internal-status', async (req, res) => {
     await db.query(
       `UPDATE applications SET internal_status=$2, status=$3, status_changed_at=now(), updated_at=now() WHERE id=$1`,
       [req.params.id, internalStatus, external]);
-    enqueueClickupPush(req.params.id, ['status']).catch(() => {}); // push ONLY the status (task status + borrower_portal_status mirror)
+    enqueueClickupPush(req.params.id, ['internal_status']).catch(() => {}); // WO-16 (F-M1): a DELIBERATE internal-status change pushes the ClickUp task status + the mirror
     // Record the (borrower-facing) transition on the file's timeline, like PATCH /:id.
     await db.query(
       `INSERT INTO application_status_history (application_id, from_status, to_status, changed_by, forced)
@@ -4978,12 +4984,34 @@ router.post('/leads/:id/convert', async (req, res) => {
     const exConflict = await emailAdoptionConflict(email, firstName, lastName);
     if (exConflict) return emailAdoptionError(res, exConflict, email);
 
+    // Carry the economics the applicant actually entered on the public loan
+    // application (payload = collectState() → { v:{by input id}, c:{checkboxes} }),
+    // so the created file's Term Sheet Studio opens PREFILLED instead of empty and
+    // staff never re-key from memory (and never miss the assignment flag, which
+    // would mis-price on the fee-inclusive total). loan_amount is intentionally
+    // excluded — it's set by the pricing engine on registration (audit #23).
+    // collectState() (web/*/suite.js) buckets inputs by kind: text/select in .v,
+    // checkboxes in .c, RADIOS in .rad. Read each field from the right bucket under
+    // its REAL loan-application id (verified against the tool): the rehab budget is
+    // `rehab` (not "construction"), and loan purpose is the `purpose` radio.
+    const pl = (lead.tool === 'loan_application' && lead.payload) ? lead.payload : {};
+    const pv = (pl && pl.v) || {}, pc = (pl && pl.c) || {}, pr = (pl && pl.rad) || {};
+    const numv = (x) => { const n = Number(String(x == null ? '' : x).replace(/,/g, '')); return isFinite(n) && n > 0 ? n : null; };
+    const econIsAssign = !!pc.isAssign;
+    const econPrice = numv(pv.price);
+    const econSeller = econIsAssign ? numv(pv.origPrice) : null;
+    const econFee = (econIsAssign && econPrice && econSeller) ? Math.max(0, econPrice - econSeller) : null;
+    const econReserveOn = !!pc.finReserve;
+    const econFico = (() => { const n = Number(pv.fico); return isFinite(n) && n >= 300 && n <= 850 ? Math.round(n) : null; })();
+    const econLoanType = /refi/i.test(String(pr.purpose || '')) ? 'Refinance' : 'Purchase';
+
     const br = await db.query(
-      `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (email) DO UPDATE SET cell_phone=COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone), updated_at=now()
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (email) DO UPDATE SET cell_phone=COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
+                                         fico=COALESCE(borrowers.fico, EXCLUDED.fico), updated_at=now()
        RETURNING id`,
-      [firstName, lastName || '', email, lead.phone || null]);
+      [firstName, lastName || '', email, lead.phone || null, econFico]);
     const borrowerId = br.rows[0].id;
 
     // Owner: the lead's officer, else the acting officer, else unassigned.
@@ -4996,11 +5024,24 @@ router.post('/leads/:id/convert', async (req, res) => {
     // product registration, exactly like a normal new staff file. The lead's
     // estimate stays on the lead; it must not seed the priced pipeline amount.
     const ins = await db.query(
-      `INSERT INTO applications (borrower_id,property_address,property_type,program,loan_officer_id,loan_officer_name,source,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,'staff','new',now())
+      `INSERT INTO applications
+         (borrower_id,property_address,property_type,program,loan_officer_id,loan_officer_name,source,status,submitted_at,
+          loan_type,purchase_price,as_is_value,arv,rehab_budget,term,
+          requested_ir_months,requested_ir_amount,is_assignment,underlying_contract_price,assignment_fee,
+          requested_exp_flips,requested_exp_holds,requested_exp_ground)
+       VALUES ($1,$2,$3,$4,$5,$6,'staff','new',now(),
+          $7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
        RETURNING id, ys_loan_number`,
-      [borrowerId, JSON.stringify(addr), b.propertyType || lead.property_type || null,
-        b.program || lead.program || null, officerId, officerName]);
+      [borrowerId, JSON.stringify(addr),
+        b.propertyType || pv.propType || lead.property_type || null,
+        b.program || pv.dealType || lead.program || null, officerId, officerName,
+        econLoanType,
+        econPrice, numv(pv.asIs), numv(pv.arv), numv(pv.rehab),
+        pv.termMonths ? String(parseInt(pv.termMonths, 10) || '') || null : null,
+        (econReserveOn ? (parseInt(pv.resMonths, 10) || null) : null),
+        (econReserveOn ? numv(pv.resAmount) : null),
+        econIsAssign, econSeller, econFee,
+        (parseInt(pv.expFlips, 10) || null), (parseInt(pv.expBrrrr, 10) || null), (parseInt(pv.expGround, 10) || null)]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'lead_convert' }); }
@@ -6013,16 +6054,26 @@ router.post('/sync-reviews/:id/approve', async (req, res) => {
       if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return res.status(422).json({ error: 'no valid proposed value to apply' });
       if (row.field_key === 'date_of_birth') {
         if (!row.borrower_id) return res.status(422).json({ error: 'no borrower on this review' });
+        // WO-6 (F-M12): the shape-only regex above lets year-0026 AND a child's
+        // DOB through — this legacy path wrote them unvalidated. Route through the
+        // same adult-plausibility guard every other DOB write uses; reject the
+        // implausible so it's fixed at the source, never blind-written.
+        const dob = require('../lib/fields').sanitizeDob(v);
+        if (!dob) return res.status(422).json({ error: 'not a valid adult date of birth — fix it at the source, then re-sync' });
         const before = (await db.query(`SELECT date_of_birth FROM borrowers WHERE id=$1`, [row.borrower_id])).rows[0];
-        await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [row.borrower_id, v]);
+        await db.query(`UPDATE borrowers SET date_of_birth=$2::date, updated_at=now() WHERE id=$1`, [row.borrower_id, dob]);
         await audit(req, 'sync_review_apply', 'borrower', row.borrower_id,
-          { reviewId: row.id, field: 'date_of_birth', from: before && before.date_of_birth, to: v, reason: row.reason });
+          { reviewId: row.id, field: 'date_of_birth', from: before && before.date_of_birth, to: dob, reason: row.reason });
       } else if (REVIEW_APP_COLS.has(row.field_key)) {
         if (!row.application_id) return res.status(422).json({ error: 'no application on this review' });
+        // WO-6 (F-M12): year-window the date (0026 → 2026, garbage → reject) —
+        // the shape regex above let a mid-typed year through to a ::date write.
+        const d = require('../lib/fields').normalizeTypedDate(v);
+        if (!d) return res.status(422).json({ error: 'not a valid date — fix it at the source, then re-sync' });
         const before = (await db.query(`SELECT ${row.field_key} FROM applications WHERE id=$1`, [row.application_id])).rows[0];
-        await db.query(`UPDATE applications SET ${row.field_key}=$2::date, updated_at=now() WHERE id=$1`, [row.application_id, v]);
+        await db.query(`UPDATE applications SET ${row.field_key}=$2::date, updated_at=now() WHERE id=$1`, [row.application_id, d]);
         await audit(req, 'sync_review_apply', 'application', row.application_id,
-          { reviewId: row.id, field: row.field_key, from: before && before[row.field_key], to: v, reason: row.reason });
+          { reviewId: row.id, field: row.field_key, from: before && before[row.field_key], to: d, reason: row.reason });
       } else {
         return res.status(422).json({ error: `unsupported field ${row.field_key}` });
       }

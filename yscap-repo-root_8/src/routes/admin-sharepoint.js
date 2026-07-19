@@ -53,8 +53,24 @@ router.get('/health', async (req, res) => {
 router.get('/reconciliation', async (req, res) => {
   try {
     const recon = await backup.reconciliation();
-    await audit(req, 'sharepoint_reconciliation_viewed', { healthy: recon.healthy });
-    res.json({ ok: true, ...recon });
+    // Name the actual stuck documents (identity + real reason) so the report is
+    // interpretable — the SLO alert points here.
+    const stuck = await backup.stuckDocuments(50).catch(() => []);
+    await audit(req, 'sharepoint_reconciliation_viewed', { healthy: recon.healthy, stuck: stuck.length });
+    res.json({ ok: true, ...recon, stuck });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Force the stuck-document escalation now (settle phantoms, card the rest) —
+// the same pass the SLO watchdog runs, on demand from the admin screen.
+router.post('/escalate-stuck', async (req, res) => {
+  try {
+    if (!backup.enabled()) return res.status(409).json({ error: 'SharePoint sync is not enabled on this server' });
+    const result = await backup.escalateStuckDocs();
+    await audit(req, 'sharepoint_escalate_stuck', result);
+    res.json({ ok: true, ...result });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
