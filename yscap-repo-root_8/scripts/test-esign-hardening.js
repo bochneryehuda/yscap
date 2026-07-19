@@ -30,6 +30,7 @@ const full = { loanNumber: 'YS-1', loanAmount: 500000, bFirst: 'Pat', bLast: 'B'
   const throws = (data, re, m) => { assert.throws(() => orchestrate.validateGenerated(TS, data),
     (e) => re.test(e.message) && e.retryable === false, m); n++; };
   throws({ ...full, loanAmount: null }, /loan amount/, 'missing amount throws');
+  throws({ ...full, loanAmount: 0 }, /loan amount/, 'a $0 amount throws (never $0.00 on a legal doc)');
   throws({ ...full, loanNumber: '' }, /loan number/, 'missing loan number throws');
   throws({ ...full, propStreet: '', propCity: '', propState: '', propZip: '' }, /property/, 'blank property throws');
   throws({ ...full, bFirst: '', bLast: '' }, /borrower name/, 'nameless borrower throws');

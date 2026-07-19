@@ -176,7 +176,7 @@ function validateGenerated(spec, data) {
   if (!genKinds.length) return;
   const missing = [];
   // Both generated docs (disclosure + Heter Iska) print the loan amount + borrower name.
-  if (data.loanAmount == null || !isFinite(Number(data.loanAmount))) missing.push('loan amount');
+  if (data.loanAmount == null || !isFinite(Number(data.loanAmount)) || Number(data.loanAmount) <= 0) missing.push('loan amount');
   if (!`${data.bFirst || ''} ${data.bLast || ''}`.trim()) missing.push('borrower name');
   if (data.hasCoBorrower && !`${data.cbFirst || ''} ${data.cbLast || ''}`.trim()) missing.push('co-borrower name');
   // The disclosure additionally prints the loan number + the subject property.

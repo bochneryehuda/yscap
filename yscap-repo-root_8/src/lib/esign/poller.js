@@ -25,6 +25,11 @@ const onDeadLetter = require('./dead-letter');
 
 const POLL_SEC = parseInt(process.env.DOCUSIGN_POLL_SEC || '60', 10);
 const STALE_MIN = parseInt(process.env.DOCUSIGN_RECONCILE_STALE_MIN || '30', 10);
+// A freshly-sent, not-yet-finished envelope is ACTIVELY being signed — reconcile it
+// EVERY tick (not just after STALE_MIN of quiet) so a signature is reflected within
+// one poll cycle even if the real-time Connect webhook isn't delivering/verifying.
+// After this window it falls back to the STALE_MIN missed-webhook belt.
+const ACTIVE_MIN = parseInt(process.env.DOCUSIGN_ACTIVE_RECONCILE_MIN || '180', 10);
 
 let timer = null;
 
@@ -62,9 +67,11 @@ async function reconcileStale(opts = {}) {
     `SELECT * FROM esign_envelopes
       WHERE envelope_id IS NOT NULL
         AND status IN ('sent','delivered')
-        AND (last_event_at IS NULL OR last_event_at < now() - ($1 || ' minutes')::interval)
+        AND (sent_at > now() - ($2 || ' minutes')::interval    -- fresh: reconcile every tick
+             OR last_event_at IS NULL
+             OR last_event_at < now() - ($1 || ' minutes')::interval)
       ORDER BY COALESCE(last_event_at, sent_at) NULLS FIRST
-      LIMIT 25`, [String(STALE_MIN)])).rows;
+      LIMIT 25`, [String(STALE_MIN), String(ACTIVE_MIN)])).rows;
   const out = [];
   for (const row of rows) {
     try { out.push({ id: row.id, status: await webhook.reconcileEnvelope(db, docusign, opts.storage || require('../storage'), row) }); }

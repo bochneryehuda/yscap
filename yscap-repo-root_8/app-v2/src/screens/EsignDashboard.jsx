@@ -63,7 +63,16 @@ function Recipient({ r }) {
   );
 }
 
-function EnvelopeCard({ e }) {
+function EnvelopeCard({ e, onReload }) {
+  const [busy, setBusy] = useState(false);
+  const [actErr, setActErr] = useState('');
+  const canResend = !!e.envelopeId && !['completed', 'declined', 'voided'].includes(e.phase);
+  async function resend() {
+    setBusy(true); setActErr('');
+    try { await api.post(`/api/staff/esign/${e.id}/resend`); if (onReload) onReload(); }
+    catch (err) { setActErr(err.message || 'Could not resend the email.'); }
+    finally { setBusy(false); }
+  }
   const ph = PHASE[e.phase] || { label: e.phase, cls: 'muted', dot: '#4B585C' };
   const who = [e.firstName, e.lastName].filter(Boolean).join(' ');
   const recips = (e.recipients || []).slice().sort(
@@ -86,7 +95,9 @@ function EnvelopeCard({ e }) {
           <span className="esign-dot" style={{ background: ph.dot }} aria-hidden="true" />{ph.label}
         </span>
         {e.applicationId ? <Link className="btn ghost btn-sm" to={`/internal/app/${e.applicationId}`}>Open file</Link> : null}
+        {canResend ? <button className="btn ghost btn-sm" disabled={busy} onClick={resend} title="Resend the DocuSign email to the current signer">{busy ? 'Resending…' : 'Resend email'}</button> : null}
       </div>
+      {actErr ? <div role="alert" className="notice err" style={{ margin: '8px 0 0' }}>{actErr}</div> : null}
 
       {e.waitingOn ? (
         <div className={`esign-waiting ${e.phase === 'awaiting_countersign' ? 'is-admin' : ''}`}>
@@ -239,7 +250,7 @@ export default function EsignDashboard() {
             : 'Nothing in this view right now.'}
         </p></div>
       ) : (
-        shown.map((e) => <EnvelopeCard key={e.id} e={e} />)
+        shown.map((e) => <EnvelopeCard key={e.id} e={e} onReload={() => load(true)} />)
       )}
     </div>
   );
