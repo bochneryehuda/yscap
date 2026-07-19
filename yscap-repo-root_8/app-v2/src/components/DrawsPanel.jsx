@@ -51,6 +51,14 @@ export default function DrawsPanel({ appId }) {
   for (const f of findings) findingByDraw[f.sitewire_draw_id] = f;
 
   const notLinked = !link || !link.sitewire_property_id;
+  // A draw approval / release / findings write 503s unless BOTH the master switch and the write
+  // gate are on. Surface that up front (read-only banner + disabled write buttons) so the coordinator
+  // isn't clicking into repeated "writes are turned off" errors while the integration is staged off.
+  const sw = data.switches || {};
+  const writesOff = !!data.switches && !(sw.enabled && sw.outbound);
+  // Delivering findings needs Sitewire READS (it re-reads the draw), so it's gated by the MASTER
+  // switch, not the write gate — it still works in the reads-on/writes-off state, but not when off.
+  const readsOff = !!data.switches && !sw.enabled;
 
   async function act(key, fn) {
     setBusy(key); setMsg('');
@@ -67,8 +75,18 @@ export default function DrawsPanel({ appId }) {
         <>
           {msg && <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
 
-          {/* ---- rollup summary tiles ---- */}
-          <div className="grid cols-4" style={{ marginTop: 12, gap: 12 }}>
+          {/* ---- read-only notice when Sitewire writes are off (the default staged state) ---- */}
+          {writesOff && (
+            <div className="panel" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)', borderLeft: '3px solid var(--gold,#ae8746)' }}>
+              <b>Sitewire is turned off.</b>
+              <div className="muted small" style={{ marginTop: 3 }}>
+                Approving a draw syncs to Sitewire, so <b>Approve / Amend / Reopen</b>, setting approved amounts{readsOff ? ' and delivering findings' : ''} are paused until it's switched on{sw.enabled && !sw.outbound ? ' (reads are on; writing is still off)' : ''}. The money ledger, releases and records are kept in PILOT and still work.
+              </div>
+            </div>
+          )}
+
+          {/* ---- rollup summary tiles (responsive: wrap instead of squishing in the narrow file column) ---- */}
+          <div style={{ marginTop: 12, gap: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
             <Tile label="Construction budget" value={usd(rollup.project.budget)} />
             <Tile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${rollup.project.pct_complete}% complete`} />
             <Tile label="Remaining" value={usd(rollup.project.remaining)} accent />
@@ -83,7 +101,7 @@ export default function DrawsPanel({ appId }) {
           {draws.length === 0 && <div className="muted">No draws yet on this file.</div>}
           {draws.map((d) => (
             <DrawCard key={d.sitewire_draw_id} appId={appId} draw={d} requests={reqsByDraw[d.sitewire_draw_id] || []}
-              finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} />
+              finding={findingByDraw[d.sitewire_draw_id]} busy={busy} act={act} reload={load} writesOff={writesOff} readsOff={readsOff} />
           ))}
 
           {/* ---- money ledger ---- */}
@@ -91,7 +109,7 @@ export default function DrawsPanel({ appId }) {
 
           {/* ---- lien waivers — OFF by default; opt in per project ---- */}
           <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
-            canSetup={can('platform_setup')} waivers={waivers} draws={draws} busy={busy} act={act} onChanged={load} />
+            canSetup={can('platform_setup')} waivers={waivers} draws={draws} onChanged={load} />
 
           {/* ---- Scope-of-Work reallocations ---- */}
           <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
@@ -311,7 +329,9 @@ function RollupTable({ rollup }) {
   );
 }
 
-function DrawCard({ appId, draw, requests, finding, busy, act, reload }) {
+function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff, readsOff }) {
+  const offTip = writesOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
+  const readTip = readsOff ? 'Sitewire is turned off — available once it\'s switched on' : undefined;
   const isOpen = draw.status !== 'approved';
   const flags = Array.isArray(draw.risk_flags) ? draw.risk_flags : [];
   const risk = RISK[draw.risk_level] || null;
@@ -359,8 +379,8 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload }) {
                   {isOpen && (
                     <td>
                       <div className="row" style={{ gap: 6 }}>
-                        <input className="input" style={{ width: 100 }} placeholder="$" value={edits[r.sitewire_request_id] ?? ''} onChange={(e) => setEdits((s) => ({ ...s, [r.sitewire_request_id]: e.target.value }))} />
-                        <button className="btn btn-sm ghost" disabled={busy === 'appr:' + r.sitewire_request_id} onClick={() => setApproved(r)}>Save</button>
+                        <input className="input" style={{ width: 100 }} placeholder="$" disabled={writesOff} value={edits[r.sitewire_request_id] ?? ''} onChange={(e) => setEdits((s) => ({ ...s, [r.sitewire_request_id]: e.target.value }))} />
+                        <button className="btn btn-sm ghost" title={offTip} disabled={writesOff || busy === 'appr:' + r.sitewire_request_id} onClick={() => setApproved(r)}>Save</button>
                       </div>
                     </td>
                   )}
@@ -373,12 +393,12 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload }) {
 
       <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
         {isOpen && ['approve', 'amend', 'reopen'].map((a) => (
-          <button key={a} className={'btn btn-sm ' + (a === 'approve' ? 'primary' : 'ghost')} disabled={busy === a + draw.sitewire_draw_id}
+          <button key={a} className={'btn btn-sm ' + (a === 'approve' ? 'primary' : 'ghost')} title={offTip} disabled={writesOff || busy === a + draw.sitewire_draw_id}
             onClick={() => act(a + draw.sitewire_draw_id, async () => { await api.post(`/api/sitewire/draws/${draw.sitewire_draw_id}/${a}`, {}); return { msg: `Draw ${a}d.` }; })}>
             {a[0].toUpperCase() + a.slice(1)}
           </button>
         ))}
-        <button className="btn btn-sm ghost" disabled={busy === 'deliver' + draw.sitewire_draw_id}
+        <button className="btn btn-sm ghost" title={readTip} disabled={readsOff || busy === 'deliver' + draw.sitewire_draw_id}
           onClick={() => act('deliver' + draw.sitewire_draw_id, async () => { const r = await api.post(`/api/sitewire/files/${appId}/findings/${draw.sitewire_draw_id}/deliver`, {}); return { msg: `Findings delivered to the borrower (${r.lines} items).` }; })}>
           {finding ? 'Re-send findings' : 'Deliver findings to borrower'}
         </button>
@@ -415,10 +435,17 @@ function FindingStatus({ appId, finding, reload }) {
 }
 
 function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: parentBusy }) {
+  // map the Sitewire draw id -> the friendly draw number so the ledger reads "Draw #1", not "#8001"
+  const numByDraw = {};
+  for (const d of draws) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
   const [f, setF] = useState({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const pct = retainage ? Number(retainage.pct) || 0 : 0;
+  // Retainage is an OPT-IN feature (turned on per project in Draw settings); most projects don't hold
+  // any. Show the retainage column/summary/preview ONLY when this project actually uses it — otherwise
+  // it stays out of the ledger entirely.
+  const showRetainage = !!(retainage && (pct > 0 || retainage.held_cents > 0 || retainage.holding_cents > 0));
   const approvedC = Math.round(Number(f.approved || 0) * 100);
   const feeC = Math.round(Number(f.fee || 0) * 100);
   const retC = Math.round(approvedC * pct / 100);
@@ -441,7 +468,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
         <button className="btn btn-sm ghost" onClick={() => api.sitewireExportGl(appId).catch(() => {})}>GL export</button>
       </div>
       <div className="muted small" style={{ margin: '4px 0 8px' }}>Our fee comes off the approved amount{pct > 0 ? `, ${pct}% is held as retainage,` : ''} and the borrower nets the rest.</div>
-      {retainage && (retainage.held_cents > 0 || pct > 0) && (
+      {showRetainage && (
         <div className="row" style={{ gap: 12, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <span className="small">Retainage held: <b>{usd2(retainage.holding_cents)}</b>{retainage.released_cents > 0 ? <span className="muted"> · released {usd2(retainage.released_cents)}</span> : null}</span>
           {retainage.holding_cents > 0 && (
@@ -453,14 +480,14 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
       {ledger.length > 0 && (
         <div style={{ overflowX: 'auto' }}>
           <table className="table" style={{ width: '100%', minWidth: 620 }}>
-            <thead><tr><th>Draw</th><th style={{ textAlign: 'right' }}>Approved</th><th style={{ textAlign: 'right' }}>Fee</th><th style={{ textAlign: 'right' }}>Retainage</th><th style={{ textAlign: 'right' }}>Net release</th><th>Date</th><th>Status</th></tr></thead>
+            <thead><tr><th>Draw</th><th style={{ textAlign: 'right' }}>Approved</th><th style={{ textAlign: 'right' }}>Fee</th>{showRetainage && <th style={{ textAlign: 'right' }}>Retainage</th>}<th style={{ textAlign: 'right' }}>Net release</th><th>Date</th><th>Status</th></tr></thead>
             <tbody>
               {ledger.map((d) => (
                 <tr key={d.id}>
-                  <td>{d.kind === 'retainage_release' ? 'Retainage' : (d.sitewire_draw_id ? '#' + d.sitewire_draw_id : '—')}</td>
+                  <td>{d.kind === 'retainage_release' ? 'Retainage' : (d.sitewire_draw_id ? 'Draw #' + (numByDraw[String(d.sitewire_draw_id)] ?? d.sitewire_draw_id) : '—')}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.approved_cents)}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.fee_cents)}</td>
-                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.retainage_held_cents)}</td>
+                  {showRetainage && <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.retainage_held_cents)}</td>}
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.net_release_cents)}</td>
                   <td className="muted">{fmtDay(d.release_date)}</td>
                   <td><span className="pill sw-approved">{d.funded_status}</span></td>
@@ -491,30 +518,16 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
   );
 }
 
-function LienWaivers({ appId, enabled, fileOverride, canSetup, waivers, draws, busy, act, onChanged }) {
-  // Hidden entirely unless turned on for this project (or globally), or already in use — most
-  // projects don't use lien waivers, so this stays out of the workflow until it's opted in.
-  // Turning the compliance gate on/off is a setup-level action.
-  if (!enabled && waivers.length === 0) {
-    return (
-      <div className="muted small" style={{ marginTop: 14 }}>
-        Lien waivers are off for this project.{canSetup ? ' ' : ' A setup admin can enable them.'}
-        {canSetup && (
-          <button className="btn btn-sm ghost" disabled={busy === 'lwon'}
-            onClick={() => act('lwon', async () => { await api.post(`/api/sitewire/files/${appId}/lien-waivers-setting`, { enabled: true }); return { msg: 'Lien-waiver workflow turned on for this project.' }; })}>
-            Enable for this project
-          </button>
-        )}
-      </div>
-    );
-  }
+function LienWaivers({ appId, enabled, fileOverride, canSetup, waivers, draws, onChanged }) {
+  // Lien waivers are an OPT-IN feature most projects don't use — they're turned on per project from
+  // the admin Draw settings, not here. So the desk shows this section ONLY when the project already
+  // has them enabled (or waivers exist); otherwise it stays completely hidden (out of the workflow).
+  if (!enabled && waivers.length === 0) return null;
   return (
     <div>
       {fileOverride === true && canSetup && (
         <div className="muted small" style={{ marginTop: 14, marginBottom: -6 }}>
-          Lien waivers are on for this project.{' '}
-          <button className="btn btn-sm ghost" disabled={busy === 'lwoff'}
-            onClick={() => act('lwoff', async () => { await api.post(`/api/sitewire/files/${appId}/lien-waivers-setting`, { enabled: false }); return { msg: 'Lien-waiver workflow turned off for this project.' }; })}>Turn off</button>
+          Lien waivers are on for this project — manage this in <a href="#/internal/draw-rules">Draw settings</a>.
         </div>
       )}
       <WaiversPanel appId={appId} waivers={waivers} draws={draws} onChanged={onChanged} />
