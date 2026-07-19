@@ -360,13 +360,17 @@ function computeFindings(appraisal, file, opts = {}) {
     if (mo != null && mo >= 0 && mo <= o.flipSeasoningMonths) {
       const cur = subjVal != null ? subjVal : num(v.asIs);
       const prior = num(ps.priorAmount);
+      // A nominal transfer ($1 quitclaim / intra-family) is NOT an arm's-length price — computing
+      // a markup off it yields an absurd % (e.g. "+63,999,900%"). Only show a markup when the prior
+      // price is a real sale (≥ $1,000); a nominal prior is flagged as a transfer without a %.
+      const armsLength = prior != null && prior >= 1000;
       let markup = null;
-      if (cur != null && prior != null && prior > 0) markup = Math.round(((cur - prior) / prior) * 100);
+      if (cur != null && armsLength) markup = Math.round(((cur - prior) / prior) * 100);
       out.push(finding({ code: 'subject_recent_resale', severity: 'warning', field: 'value',
         appraisalValue: [ps.priorAmount != null ? money(ps.priorAmount) : null, ps.priorDate].filter(Boolean).join(' on '),
         fileValue: cur != null ? money(cur) : null,
-        title: `Subject was sold within ${o.flipSeasoningMonths} months before the appraisal${markup != null ? ` (${markup >= 0 ? '+' : ''}${markup}% since)` : ''}`,
-        howTo: `The subject last transferred ${ps.priorDate}${prior != null ? ` for ${money(prior)}` : ''}${markup != null && markup >= o.flipMarkupPct ? ` — a ${markup}% jump warrants a close look at what supports the increase` : '. Confirm the prior sale and any value change is supported'}.`,
+        title: `Subject was ${armsLength ? 'sold' : 'transferred'} within ${o.flipSeasoningMonths} months before the appraisal${markup != null ? ` (${markup >= 0 ? '+' : ''}${markup}% since)` : ''}`,
+        howTo: `The subject last transferred ${ps.priorDate}${prior != null ? ` for ${money(prior)}` : ''}${!armsLength && prior != null ? ' — a nominal amount, likely a non-arm’s-length transfer; confirm the true prior price' : markup != null && markup >= o.flipMarkupPct ? ` — a ${markup}% jump warrants a close look at what supports the increase` : '. Confirm the prior sale and any value change is supported'}.`,
         actions: ['acknowledge', 'dismiss', 'request_revision'] }));
     }
   }

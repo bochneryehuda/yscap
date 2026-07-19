@@ -2521,6 +2521,7 @@ async function signOffGate(itemId, actor) {
   const isTitle = code === 'rtl_cond_title';
   const isFraud = code === 'rtl_cond_fraud';
   const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
+  const isAppraisalReview = code === 'appraisal_review_cleared'; // CTC gate: no open fatal finding
 
   // EMERGENCY doc-gate (owner-directed): a DOCUMENT-upload condition can never be
   // signed off with ZERO documents on it — the sign-off would attest to a file
@@ -2578,6 +2579,18 @@ async function signOffGate(itemId, actor) {
         return 'This is a Gold Standard file — the criminal report is required. Upload it before signing off.';
       return null;
     }
+  }
+
+  // Appraisal review cleared — the clear-to-close gate. It cannot be signed off while ANY fatal
+  // PILOT appraisal finding is still open (wrong property, value below purchase, expired license,
+  // C6/Q6, stale date, …). This is the safety guarantee the whole findings engine exists for.
+  if (isAppraisalReview) {
+    const n = (await db.query(
+      `SELECT count(*)::int AS n FROM appraisal_findings
+        WHERE application_id=$1 AND status='open' AND severity='fatal' AND blocks_ctc=true`, [item.application_id])).rows[0].n;
+    if (n > 0)
+      return `Resolve the ${n} open fatal appraisal finding${n === 1 ? '' : 's'} first — the appraisal review cannot be cleared while a fatal PILOT finding is open. Open the appraisal to replace, keep, or grant an exception on each.`;
+    return null;
   }
 
   if (!isProduct && !isBudget && !isExp) return null;

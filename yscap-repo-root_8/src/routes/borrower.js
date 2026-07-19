@@ -827,7 +827,10 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   // capital-partner name can never reach a borrower even if one landed in the appraisal.
   const safeAppr = (() => {
     if (!appr) return null;
-    const { imported_by, source_xml_document_id, pdf_document_id, ...rest } = appr; // eslint-disable-line no-unused-vars
+    // Also drop the `fields` jsonb catch-all: it carries appraiser.lender/appraiser.amc
+    // UN-scrubbed (buildFieldsJson), which would defeat the column scrub below. The borrower
+    // UI never reads it, so dropping it entirely is the safe, clean fix.
+    const { imported_by, source_xml_document_id, pdf_document_id, fields, ...rest } = appr; // eslint-disable-line no-unused-vars
     return { ...rest, lender_name: scrubText(rest.lender_name), amc_name: scrubText(rest.amc_name) };
   })();
   const bSummary = {

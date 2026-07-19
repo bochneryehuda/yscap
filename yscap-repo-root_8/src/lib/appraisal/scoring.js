@@ -55,9 +55,11 @@ function collateralScore({ a, comps = [], summary = {} } = {}) {
     add(`Quality ${a.quality_uad}`, eff, q <= 3 ? 'Above-average construction quality.' : q === 4 ? 'Average quality.' : 'Low construction quality.');
     pts += eff;
   }
-  // Valuation confidence — did we read the operative value for certain?
-  if (a.as_is_confidence === 'definite') { add('Valuation read cleanly', 0.5, 'The As-Is value was read directly from the appraisal data.'); pts += 0.5; }
-  else if (a.as_is_confidence) { add('As-Is from narrative', -0.5, 'The As-Is value came from report text and needs officer confirmation.'); pts -= 0.5; }
+  // Valuation confidence — was the operative value read at all? (A narrative-read As-Is is stored
+  // as 'definite' too — it's a real value from the report, not an estimate — so we credit
+  // "present" rather than overclaiming "read cleanly", and only penalise a value we could NOT read.)
+  if (a.as_is_confidence === 'definite') { add('As-Is value present', 0.5, 'The appraisal carries an As-Is value.'); pts += 0.5; }
+  else if (a.as_is_confidence === 'missing') { add('As-Is not read', -0.5, 'The As-Is value could not be read from the appraisal — an officer must confirm it.'); pts -= 0.5; }
 
   // Comp support.
   const closed = (comps || []).filter((x) => num(x.sale_price) != null);
