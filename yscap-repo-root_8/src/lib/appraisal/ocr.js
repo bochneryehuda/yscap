@@ -33,16 +33,33 @@ const MAX_OCR_PDF_BYTES = 1024 * 1024;
 function findAsIs(text) {
   const s = String(text || '').replace(/ /g, ' ');
   const lines = s.split(/[\n\r]+/);
-  const money = /\$?\s*([1-9]\d{2}(?:[,\s]\d{3})+|\d{5,8})(?:\.\d{2})?/; // ~$10k–$99,999,999
+  // A dollar amount MUST carry a currency signal — a `$` OR thousands grouping (how appraisal
+  // dollars are virtually always written, e.g. "$430,000" / "430,000"). A bare run of digits
+  // is NOT treated as money, so a zip (90210), APN (12345678), phone or reference number on an
+  // "as is" line can never be misread as a value.
+  const money = /\$\s?\d{1,3}(?:,\d{3})+(?:\.\d{2})?|\$\s?\d{4,8}(?:\.\d{2})?|\d{1,3}(?:,\d{3})+(?:\.\d{2})?/g;
   const hits = [];
   for (const raw of lines) {
     const ln = raw.trim();
-    if (!/as[\s-]*is/i.test(ln)) continue;
-    if (/as[\s-]*repaired|as[\s-]*complete|subject[\s-]*to|after[\s-]*repair|upon\s+completion/i.test(ln)) continue;
-    const m = ln.match(money);
-    if (!m) continue;
-    const n = Number(String(m[1]).replace(/[,\s]/g, ''));
-    if (n >= 10000 && n < 100000000) hits.push({ amount: n, snippet: ln.slice(0, 180) });
+    const tok = ln.match(/as[\s-]*is/i);
+    if (!tok) continue;
+    const asIdx = tok.index, tokEnd = asIdx + tok[0].length;
+    // Drop lines that clearly speak to the AS-REPAIRED / prospective / hypothetical value so we
+    // never surface the ARV.
+    if (/as[\s-]*repaired|as[\s-]*complete|subject[\s-]*to|after[\s-]*repair|upon\s+completion|hypothetical|prospective/i.test(ln)) continue;
+    // When several amounts share the line, prefer the one that FOLLOWS the "as is" token — the
+    // near-universal phrasing is "as is value is $X". An amount that sits BEFORE the token (an
+    // ARV printed to its left, e.g. "the renovated figure is $575,000; the as is value is
+    // $430,000") is heavily penalised, so $430,000 wins — never the ARV.
+    let best = null, bestDist = Infinity;
+    for (const m of ln.matchAll(money)) {
+      const n = Number(String(m[0]).replace(/[$,\s]/g, ''));
+      if (!(n >= 10000 && n < 100000000)) continue;
+      const mi = m.index, mEnd = mi + m[0].length;
+      const dist = mi >= tokEnd ? (mi - tokEnd) : (asIdx - mEnd) + 1000;
+      if (dist < bestDist) { bestDist = dist; best = { amount: n, snippet: ln.slice(0, 180) }; }
+    }
+    if (best) hits.push(best);
   }
   return hits;
 }
@@ -61,7 +78,7 @@ async function ocrAsIsCandidate({ pdfBase64, byteLength } = {}) {
 
   const key = cfg.ocrSpaceApiKey || 'helloworld';
   const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 25000);
+  const timer = setTimeout(() => ac.abort(), 10000);
   let r;
   try {
     const form = new URLSearchParams();
@@ -107,7 +124,9 @@ async function ocrAsIsCandidate({ pdfBase64, byteLength } = {}) {
  * the value is NOT applied to the file. Plain language (this note is read by staff, not devs).
  */
 function buildOcrNote(adv) {
-  const stamp = 'PILOT tried to read the As-Is value from the appraisal PDF with OCR.';
+  // The `[auto]` prefix marks this as system-written so a re-import never clobbers a note an
+  // officer typed by hand (the note-write guards on notes IS NULL OR notes LIKE '[auto]%').
+  const stamp = '[auto] PILOT tried to read the As-Is value from the appraisal PDF with OCR.';
   if (!adv || (!adv.attempted && !adv.reason)) return `${stamp} It could not be run. Please enter the As-Is value from the report — it is never filled in automatically.`;
   if (adv.candidate != null) {
     const amt = '$' + Number(adv.candidate).toLocaleString('en-US');

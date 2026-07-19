@@ -130,7 +130,9 @@ router.post('/:appId/import', async (req, res, next) => {
     // means the appraisal has no source document on file — worth surfacing).
     let xmlDocId = null, pdfDocId = null;
     // PDF base64 kept at function scope so the advisory OCR step (below) can read it.
-    const pdfB64 = b.pdfBase64 || X.embeddedPdfBase64(xml);
+    // embeddedPdfBase64 is pure regex, but guard it so nothing in this path can throw.
+    let pdfB64 = null;
+    try { pdfB64 = b.pdfBase64 || X.embeddedPdfBase64(xml); } catch (_) { pdfB64 = null; }
     try {
       const xbuf = Buffer.from(xml, 'utf8');
       const s = await storage.save(xbuf, { filename: b.filename || 'appraisal.xml' });
@@ -158,26 +160,31 @@ router.post('/:appId/import', async (req, res, next) => {
 
     // Materialize the review gate; open the verify-As-Is task only when needed.
     await ensureCondition(app.id, 'appraisal_review_cleared');
-    if (out.needsAsIsCondition) {
-      await ensureCondition(app.id, 'appraisal_as_is_verify');
-      // Advisory only: try to READ a candidate As-Is off the PDF and attach it to the
-      // verify task as a note. NEVER written to the loan file — the officer confirms by
-      // hand. Fully best-effort so it can never break the import; audited either way.
-      try {
-        const adv = await ocrAsIsCandidate({ pdfBase64: pdfB64 });
-        await db.query(
-          `UPDATE checklist_items ci SET notes = $2
-             FROM checklist_templates t
-            WHERE ci.template_id = t.id AND t.code = 'appraisal_as_is_verify' AND ci.application_id = $1`,
-          [app.id, buildOcrNote(adv)]);
-        await audit(req.actor.id, 'appraisal_ocr_advisory', app.id,
-          { attempted: !!adv.attempted, candidate: adv.candidate != null ? adv.candidate : null, confidence: adv.confidence || null });
-      } catch (e) { console.error('[appraisal] OCR advisory failed (non-fatal):', e && e.message); }
-    }
+    if (out.needsAsIsCondition) await ensureCondition(app.id, 'appraisal_as_is_verify');
     await audit(req.actor.id, 'appraisal_import', app.id,
       { appraisalId: out.appraisalId, findings: out.summary, warnings: (out.warnings || []).map((w) => w.code) });
 
     res.json({ ok: true, appraisalId: out.appraisalId, summary: out.summary, needsAsIsCondition: out.needsAsIsCondition, warnings: out.warnings });
+
+    // Advisory OCR runs AFTER the response (fire-and-forget) so a slow OCR call never delays
+    // the import. It only ever attaches a note to the verify-As-Is condition — NEVER writes
+    // the loan file — and the note-write is guarded so it can never clobber an officer's own
+    // typed note ([auto]-prefixed system notes only). Best-effort + audited.
+    if (out.needsAsIsCondition && pdfB64) {
+      const actorId = req.actor.id;
+      ocrAsIsCandidate({ pdfBase64: pdfB64 })
+        .then(async (adv) => {
+          await db.query(
+            `UPDATE checklist_items ci
+                SET notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%' THEN $2 ELSE ci.notes END
+               FROM checklist_templates t
+              WHERE ci.template_id = t.id AND t.code = 'appraisal_as_is_verify' AND ci.application_id = $1`,
+            [app.id, buildOcrNote(adv)]);
+          await audit(actorId, 'appraisal_ocr_advisory', app.id,
+            { attempted: !!adv.attempted, candidate: adv.candidate != null ? adv.candidate : null, confidence: adv.confidence || null });
+        })
+        .catch((e) => console.error('[appraisal] OCR advisory failed (non-fatal):', e && e.message));
+    }
   } catch (e) { next(e); }
 });
 

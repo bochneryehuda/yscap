@@ -59,15 +59,26 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
     const { buildOcrNote } = require('../src/lib/appraisal/ocr');
     await pool.query(ENSURE, [appId, 'appraisal_as_is_verify']);
     const advNote = buildOcrNote({ attempted: true, candidate: 431000, confidence: 'single-match', snippet: "'as is' value $431,000" });
-    await pool.query(
-      `UPDATE checklist_items ci SET notes=$2 FROM checklist_templates t
-        WHERE ci.template_id=t.id AND t.code='appraisal_as_is_verify' AND ci.application_id=$1`,
-      [appId, advNote]);
-    const noteRow = (await pool.query(
+    // The [auto]-guarded UPDATE (route uses the same CASE WHEN): only writes a null/[auto] note.
+    const ADV_SQL = `UPDATE checklist_items ci
+        SET notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%' THEN $2 ELSE ci.notes END
+        FROM checklist_templates t
+       WHERE ci.template_id=t.id AND t.code='appraisal_as_is_verify' AND ci.application_id=$1`;
+    const readNote = async () => (await pool.query(
       `SELECT ci.notes FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
         WHERE ci.application_id=$1 AND t.code='appraisal_as_is_verify'`, [appId])).rows[0];
+    await pool.query(ADV_SQL, [appId, advNote]);
+    let noteRow = await readNote();
     assert(noteRow && /OCR/.test(noteRow.notes) && /431,000/.test(noteRow.notes), 'OCR advisory note written onto the verify-As-Is condition');
     assert(noteRow && /NOT been applied|never filled/i.test(noteRow.notes), 'advisory note states the value was not applied to the file');
+    assert(noteRow && /^\[auto\]/.test(noteRow.notes), 'advisory note is [auto]-prefixed');
+    // A human types their own note; a re-import must NOT clobber it.
+    await pool.query(
+      `UPDATE checklist_items ci SET notes='Officer: confirmed As-Is $428,000 from page 3.'
+         FROM checklist_templates t WHERE ci.template_id=t.id AND t.code='appraisal_as_is_verify' AND ci.application_id=$1`, [appId]);
+    await pool.query(ADV_SQL, [appId, buildOcrNote({ attempted: true, candidate: 999999, confidence: 'single-match' })]);
+    noteRow = await readNote();
+    assert(noteRow && /Officer: confirmed/.test(noteRow.notes) && !/999,999/.test(noteRow.notes), 'a human-typed note is preserved on re-import (not clobbered)');
 
     // --- resolve the arv_mismatch with "replace" (route's /findings/:fid/resolve) ---
     const fnd = (await pool.query(`SELECT * FROM appraisal_findings WHERE application_id=$1 AND code='arv_mismatch' AND status='open'`, [appId])).rows[0];

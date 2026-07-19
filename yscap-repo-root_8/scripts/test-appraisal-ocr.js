@@ -40,6 +40,21 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
   assert(hits.length === 0, 'a date on an as-is line is not read as a dollar amount');
 }
 
+// 4b) A bare run of digits (zip / APN / phone / reference) on an as-is line is NOT money.
+{
+  assert(findAsIs('Property at 90210 inspected as-is').length === 0, 'a zip (90210) on an as-is line is not read as money');
+  assert(findAsIs('As-is condition. APN 12345678 recorded.').length === 0, 'an APN (12345678) is not read as money');
+  assert(findAsIs('Call 8005551234 re: the as is opinion').length === 0, 'a phone number is not read as money');
+  assert(findAsIs('inspected as-is; see report #45012').length === 0, 'a reference number is not read as money');
+}
+
+// 4c) When the ARV and As-Is share ONE line and the ARV word is not in the drop-list, pick
+// the amount nearest the "as is" token (never the ARV).
+{
+  const hits = findAsIs('The renovated figure is $575,000; the as is value is $430,000.');
+  assert(hits.length === 1 && hits[0].amount === 430000, 'nearest-to-"as is" wins over the ARV on a shared line');
+}
+
 // 5) Note builder: candidate present → says tried + suggestion + not applied.
 {
   const note = buildOcrNote({ attempted: true, candidate: 430000, confidence: 'single-match', snippet: "'as is' market value is $430,000" });
