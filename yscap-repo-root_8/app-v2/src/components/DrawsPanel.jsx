@@ -40,7 +40,7 @@ export default function DrawsPanel({ appId }) {
   if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!data) return null;
 
-  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [] } = data;
+  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [], lien_waivers_enabled = false } = data;
   // Render draw cards from rollup.draws — it carries the money (requested/approved/net_release),
   // the funded flag, and the merged risk flags + pdf_src. The top-level `draws` array has no
   // money fields, so using it would render $0.00 everywhere.
@@ -92,8 +92,9 @@ export default function DrawsPanel({ appId }) {
           {/* ---- money ledger ---- */}
           <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} onSaved={load} act={act} busy={busy} />
 
-          {/* ---- lien waivers ---- */}
-          <WaiversPanel appId={appId} waivers={waivers} draws={draws} onChanged={load} />
+          {/* ---- lien waivers — OFF by default; opt in per project ---- */}
+          <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
+            waivers={waivers} draws={draws} busy={busy} act={act} onChanged={load} />
 
           {/* ---- Scope-of-Work reallocations ---- */}
           <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
@@ -356,6 +357,34 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
         <button className="btn btn-sm primary" disabled={busy || net < 0} onClick={save}>Record release</button>
       </div>
       {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
+function LienWaivers({ appId, enabled, fileOverride, waivers, draws, busy, act, onChanged }) {
+  // Hidden entirely unless turned on for this project (or globally), or already in use — most
+  // projects don't use lien waivers, so this stays out of the workflow until a coordinator opts in.
+  if (!enabled && waivers.length === 0) {
+    return (
+      <div className="muted small" style={{ marginTop: 14 }}>
+        Lien waivers are off for this project.{' '}
+        <button className="btn btn-sm ghost" disabled={busy === 'lwon'}
+          onClick={() => act('lwon', async () => { await api.post(`/api/sitewire/files/${appId}/lien-waivers-setting`, { enabled: true }); return { msg: 'Lien-waiver workflow turned on for this project.' }; })}>
+          Enable for this project
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div>
+      {fileOverride === true && (
+        <div className="muted small" style={{ marginTop: 14, marginBottom: -6 }}>
+          Lien waivers are on for this project.{' '}
+          <button className="btn btn-sm ghost" disabled={busy === 'lwoff'}
+            onClick={() => act('lwoff', async () => { await api.post(`/api/sitewire/files/${appId}/lien-waivers-setting`, { enabled: false }); return { msg: 'Lien-waiver workflow turned off for this project.' }; })}>Turn off</button>
+        </div>
+      )}
+      <WaiversPanel appId={appId} waivers={waivers} draws={draws} onChanged={onChanged} />
     </div>
   );
 }

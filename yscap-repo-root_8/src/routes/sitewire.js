@@ -34,8 +34,17 @@ async function retainagePctFor(appId) {
     return Number(s && s.value) || 0;
   } catch (_) { return 0; }
 }
-async function lienGateEnabled() {
-  try { const s = (await db.query(`SELECT value FROM sitewire_settings WHERE key='require_lien_waivers'`)).rows[0]; return s && (s.value === true || s.value === 'true'); } catch (_) { return false; }
+// Lien waivers are OFF by default. A specific PROJECT can turn them on (per-file override on the
+// link), else the global `require_lien_waivers` setting applies — most projects don't use them.
+async function lienGateEnabled(appId) {
+  try {
+    if (appId) {
+      const link = (await db.query(`SELECT require_lien_waivers FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0];
+      if (link && link.require_lien_waivers != null) return !!link.require_lien_waivers;
+    }
+    const s = (await db.query(`SELECT value FROM sitewire_settings WHERE key='require_lien_waivers'`)).rows[0];
+    return !!(s && (s.value === true || s.value === 'true'));
+  } catch (_) { return false; }
 }
 
 router.use(requireAuth, requireStaff);
@@ -204,7 +213,7 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
     const split = computeRelease({ approvedCents: approved, feeCents: fee, retainagePct: pct });
     if (!split.ok) return res.status(422).json({ error: split.violation });
     // lien-waiver gate: block a RELEASE while a required waiver is outstanding (never guessed)
-    if (fundedStatus === 'released' && sitewire_draw_id && await lienGateEnabled()) {
+    if (fundedStatus === 'released' && sitewire_draw_id && await lienGateEnabled(application_id)) {
       const waivers = (await db.query(`SELECT status, tier, party_name, kind FROM draw_lien_waivers WHERE sitewire_draw_id=$1`, [sitewire_draw_id])).rows;
       const gate = waiverGate(waivers, { enabled: true });
       if (!gate.ok) return res.status(409).json({ error: `Lien waivers still outstanding: ${gate.missing.join('; ')}. Mark them received or waived before releasing.`, missing: gate.missing });
@@ -401,7 +410,11 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     const rlsd = Number((await db.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
     const waivers = (await db.query(`SELECT id, sitewire_draw_id, kind, scope, tier, party_name, amount_cents, status, received_at FROM draw_lien_waivers WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
     const retainage = { pct: await retainagePctFor(appId), held_cents: held, released_cents: rlsd, holding_cents: Math.max(0, held - rlsd) };
-    res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, waivers });
+    // lien waivers are OFF by default and only surface once turned on (globally OR for this
+    // project) — the panel shows only when enabled or already in use.
+    const lienWaiversEnabled = await lienGateEnabled(appId);
+    res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, waivers,
+      lien_waivers_enabled: lienWaiversEnabled, lien_waivers_file_override: link ? link.require_lien_waivers : null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -559,7 +572,7 @@ router.get('/files/:id/activity', requirePermission('manage_draws'), async (req,
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ---- GET /files/:id/activity/export — audit trail as an Excel-openable CSV ----
+// ---- GET /files/:id/activity/export — audit trail as an Excel workbook ----
 router.get('/files/:id/activity/export', requirePermission('manage_draws'), async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
@@ -571,6 +584,17 @@ router.get('/files/:id/activity/export', requirePermission('manage_draws'), asyn
     res.setHeader('Content-Disposition', `attachment; filename="draw-activity-${req.params.id}.xlsx"`);
     res.send(buf);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- POST /files/:id/lien-waivers-setting — turn the lien-waiver workflow on/off for THIS project ----
+router.post('/files/:id/lien-waivers-setting', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  // true = on for this project, false = off for this project, null = inherit the global setting
+  const v = req.body.enabled === null ? null : req.body.enabled === true ? true : req.body.enabled === false ? false : undefined;
+  if (v === undefined) return res.status(400).json({ error: 'enabled must be true, false, or null (inherit global)' });
+  await db.query(`UPDATE sitewire_property_links SET require_lien_waivers=$2, updated_at=now() WHERE application_id=$1`, [appId, v]);
+  res.json({ ok: true, require_lien_waivers: v });
 });
 
 // ---- POST /files/:id/coordinator — set the per-file draw-coordinator (admin override) ----
@@ -779,7 +803,7 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ---- GET /change-requests/:crId/export — Version 1 vs Version 2 as an Excel-openable CSV ----
+// ---- GET /change-requests/:crId/export — Version 1 vs Version 2 as an Excel workbook ----
 router.get('/change-requests/:crId/export', requirePermission('manage_draws'), async (req, res) => {
   if (!isUuid(req.params.crId)) return res.status(404).json({ error: 'not found' });
   const cr = (await db.query(`SELECT cr.*, d.deltas FROM change_requests cr JOIN sow_change_request_details d ON d.change_request_id=cr.id WHERE cr.id=$1 AND cr.field='sow_reallocation'`, [req.params.crId])).rows[0];

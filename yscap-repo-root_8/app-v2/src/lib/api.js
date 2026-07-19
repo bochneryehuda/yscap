@@ -351,9 +351,9 @@ export const api = {
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
   staffPatchPostClosing: (pid, b) => req('PATCH', `/api/staff/post-closing/${pid}`, b),
-  // Sitewire draw desk: authenticated CSV export of a SOW reallocation (Version 1 vs 2).
+  // Sitewire draw desk: authenticated Excel export of a SOW reallocation (Version 1 vs 2).
   sitewireExportReallocation: async (crId) => { const { blob, filename } = await download(`/api/sitewire/change-requests/${crId}/export`); saveBlob(blob, filename); },
-  // Sitewire draw desk: authenticated CSV export of a file's draw audit trail.
+  // Sitewire draw desk: authenticated Excel export of a file's draw audit trail.
   sitewireExportActivity: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/activity/export`); saveBlob(blob, filename); },
   // Sitewire draw desk: authenticated GL/accounting Excel export of the release ledger.
   sitewireExportGl: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/gl-export`); saveBlob(blob, filename); },
