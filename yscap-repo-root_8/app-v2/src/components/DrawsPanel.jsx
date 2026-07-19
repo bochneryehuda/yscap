@@ -10,6 +10,15 @@ import { useAuth } from '../lib/auth.jsx';
 
 const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const usd2 = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Parse a money text field to integer cents, or NULL when it isn't a real number. Blank ("") or
+// non-numeric ("abc", "$") → null, so a mis-click / empty box can never be coerced to a $0 money
+// write (Number('') === 0 is the trap this closes). A real 0 must be typed as "0".
+const centsOrNull = (v) => {
+  const s = String(v ?? '').trim();
+  if (s === '' || !/[0-9]/.test(s)) return null;
+  const n = Math.round(Number(s.replace(/[^0-9.]/g, '')) * 100);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+};
 const fmtDay = (v) => (v ? String(v).slice(0, 10) : '—');
 const STATUS = {
   drafting: 'Drafting', pending_borrower: 'With borrower', inspecting: 'Inspecting',
@@ -199,9 +208,9 @@ function StartDrawCard({ appId, onStarted }) {
   // A BLANK fee box means "use the rule default" — never $0. Only a typed number is sent as an
   // override; blank leaves the stored fee untouched (so clearing the box can't silently push a $0 fee).
   const feeBlank = String(feeInput).trim() === '';
-  const feeCents = feeBlank ? null : Math.round(Number(String(feeInput).replace(/[^0-9.]/g, '')) * 100);
-  const feeValid = feeBlank || (Number.isFinite(feeCents) && feeCents >= 0 && feeCents <= 10000000);
-  const isCustomFee = !feeBlank && feeValid && feeCents !== Number(defaultFeeForMethod(effMethod));
+  const feeCents = centsOrNull(feeInput); // null = blank OR non-numeric garbage (never coerced to 0)
+  const feeValid = feeBlank || (feeCents != null && feeCents <= 10000000);
+  const isCustomFee = !feeBlank && feeCents != null && feeCents !== Number(defaultFeeForMethod(effMethod));
   const alreadyStarted = !!s.started_at; // coordinator pressed Start earlier; awaiting the switch/push
 
   async function start() {
@@ -396,11 +405,14 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
   const [edits, setEdits] = useState({}); // reqId -> approved dollars string
 
   async function setApproved(r) {
-    const dollars = edits[r.sitewire_request_id];
-    const cents = Math.round(Number(String(dollars).replace(/[^0-9.]/g, '')) * 100);
-    if (!Number.isFinite(cents) || cents < 0) return;
+    // reject a blank / non-numeric box — never let a mis-clicked empty Save push $0 approved to
+    // Sitewire (that would destroy the lender-approved amount for the line). A real 0 must be typed.
+    const cents = centsOrNull(edits[r.sitewire_request_id]);
+    if (cents == null) return;
     await act('appr:' + r.sitewire_request_id, async () => {
       await api.post(`/api/sitewire/requests/${r.sitewire_request_id}/approve`, { approved_cents: cents });
+      // clear the input on success so it doesn't keep showing a stale typed value
+      setEdits((s) => { const n = { ...s }; delete n[r.sitewire_request_id]; return n; });
       return { msg: 'Approved amount saved.' };
     });
   }
@@ -504,11 +516,12 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
   // any. Show the retainage column/summary/preview ONLY when this project actually uses it — otherwise
   // it stays out of the ledger entirely.
   const showRetainage = !!(retainage && (pct > 0 || retainage.held_cents > 0 || retainage.holding_cents > 0));
-  const approvedC = Math.round(Number(f.approved || 0) * 100);
-  const feeC = Math.round(Number(f.fee || 0) * 100);
-  const retC = Math.round(approvedC * pct / 100);
-  const net = approvedC - feeC - retC;
+  const approvedC = centsOrNull(f.approved); // null when the Approved box is blank/garbage
+  const feeC = centsOrNull(f.fee) || 0;       // a $0 fee is legitimate
+  const retC = Math.round((approvedC || 0) * pct / 100);
+  const net = (approvedC || 0) - feeC - retC;
   async function save() {
+    if (approvedC == null || approvedC <= 0) { setErr('Enter the approved amount.'); return; }
     setBusy(true); setErr('');
     try {
       await api.post('/api/sitewire/disbursements', {
@@ -569,7 +582,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
         </label>
         <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
         <div className="small" style={{ alignSelf: 'center' }}>{pct > 0 ? <>Retainage: <b>{usd2(retC)}</b> · </> : null}Net: <b>{usd2(net)}</b></div>
-        <button className="btn btn-sm primary" disabled={busy || net < 0} onClick={save}>Record release</button>
+        <button className="btn btn-sm primary" disabled={busy || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
       </div>
       {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
     </div>

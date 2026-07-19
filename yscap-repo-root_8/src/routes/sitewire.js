@@ -605,7 +605,7 @@ router.post('/sync-directory', requirePermission('platform_setup'), async (req, 
 });
 
 // ---- settings (wire turnaround hours, variance) ----
-router.get('/settings', requirePermission('manage_draws'), async (req, res) => {
+router.get('/settings', requirePermission(['manage_draws', 'platform_setup']), async (req, res) => {
   const rows = (await db.query(`SELECT key, value FROM sitewire_settings`)).rows;
   res.json({ settings: Object.fromEntries(rows.map((r) => [r.key, r.value])) });
 });
@@ -649,7 +649,7 @@ router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (re
 });
 
 // ---- health/status (setup screen) ----
-router.get('/status', requirePermission('manage_draws'), async (req, res) => {
+router.get('/status', requirePermission(['manage_draws', 'platform_setup']), async (req, res) => {
   try {
     const linked = (await db.query(`SELECT count(*)::int c FROM sitewire_property_links WHERE sitewire_property_id IS NOT NULL`)).rows[0].c;
     const draws = (await db.query(`SELECT count(*)::int c FROM sitewire_draws`)).rows[0].c;
