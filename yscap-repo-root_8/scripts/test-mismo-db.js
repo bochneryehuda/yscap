@@ -40,9 +40,11 @@ async function main() {
   const app = (await db.query(
     `INSERT INTO applications (borrower_id,co_borrower_id,llc_id,ys_loan_number,investor_loan_number,program,loan_type,
                               occupancy,property_address,property_type,units,purchase_price,as_is_value,arv,rehab_budget,
-                              rehab_type,loan_amount,ltv,dscr_ratio,rate_pct,term,ppp,requested_exp_flips,sqft_pre,sqft_post)
+                              rehab_type,loan_amount,ltv,dscr_ratio,rate_pct,term,ppp,requested_exp_flips,sqft_pre,sqft_post,
+                              rental_income,property_taxes,title_company,expected_closing,is_assignment,underlying_contract_price,assignment_fee)
      VALUES ($1,$2,$3,$4,$5,'Fix & Flip','Refinance — Cash-Out','Investment',$6,'Multi 2-4',3,
-             420000,400000,560000,85000,'Heavy',375000,0.75,1.15,10.75,'12 months','3-2-1',5,1800,2400) RETURNING id`,
+             420000,400000,560000,85000,'Heavy',375000,0.75,1.15,10.75,'12 months','3-2-1',5,1800,2400,
+             3800,6000,'ABC Title','2026-08-15',true,400000,20000) RETURNING id`,
     [borrower.id, co.id, llc.id, loanNo, invNo,
      JSON.stringify({ line1: '392 Columbia Ave', city: 'Brooklyn', state: 'NY', zip: '11223' })])).rows[0];
 
@@ -81,6 +83,12 @@ async function main() {
   assert.strictEqual(na.requested_exp_flips, 5, 'new file experience (drives sizing) preserved');
   assert.strictEqual(na.sqft_pre, 1800, 'new file sqft pre');
   assert.strictEqual(na.sqft_post, 2400, 'new file sqft post');
+  assert.strictEqual(Number(na.rental_income), 3800, 'new file rental income (from MISMO PROPERTY_DETAIL)');
+  assert.strictEqual(Number(na.property_taxes), 6000, 'new file property taxes (from extension)');
+  assert.strictEqual(na.title_company, 'ABC Title', 'new file title company (from extension)');
+  assert.strictEqual(String(na.expected_closing).slice(0, 10), '2026-08-15', 'new file estimated closing date');
+  assert.strictEqual(na.is_assignment, true, 'new file assignment flag');
+  assert.strictEqual(Number(na.assignment_fee), 20000, 'new file assignment fee');
   assert.strictEqual(na.source, 'mismo_import', 'new file source tag');
   assert(na.co_borrower_id, 'new file has a co-borrower');
   assert(na.llc_id, 'new file has a vesting entity');

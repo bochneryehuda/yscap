@@ -89,12 +89,28 @@ async function loadFile(appId) {
     lender: a.lender,
     channel: a.channel,
     property: a.property_address,
+    // Standard MISMO fields with a clean home in the schema:
+    lienPriority: 'FirstLien',                       // subject loan is always first lien
+    borrowerCount: 1 + (a.co_borrower_id ? 1 : 0),
+    applicationReceivedDate: a.submitted_at,
+    estimatedClosingDate: a.expected_closing,
+    rentalIncome: a.rental_income,                   // monthly gross (DSCR)
+    isConstruction: /ground/i.test(a.program || '') || /ground/i.test(a.loan_type || ''),
+    isRenovation: Number(a.rehab_budget) > 0,
     borrower: mapBorrowerRow(borrower),
     coBorrower: mapBorrowerRow(coBorrower),
     llc: llc ? { name: llc.llc_name, ein: llc.ein, formationState: llc.formation_state } : null,
     extras: {
       sqftPre: a.sqft_pre, sqftPost: a.sqft_post,
       expFlips: a.requested_exp_flips, expHolds: a.requested_exp_holds, expGround: a.requested_exp_ground,
+      // RTL / business-purpose values with no exact MISMO home -> lender extension.
+      isAssignment: a.is_assignment, underlyingContractPrice: a.underlying_contract_price, assignmentFee: a.assignment_fee,
+      interestReserveMonths: a.requested_ir_months, interestReserveAmount: a.requested_ir_amount,
+      appraisedRentalValue: a.appraised_rental_value, cdaValue: a.cda_value,
+      propertyTaxes: a.property_taxes, propertyInsurance: a.property_insurance, propertyHoa: a.property_hoa,
+      firstLien: a.first_lien, secondLien: a.second_lien,
+      titleCompany: a.title_company, insuranceCompany: a.insurance_company, appraiserName: a.appraiser_name,
+      actualClosingDate: a.actual_closing,
     },
     generatedAt: new Date().toISOString(),
   };
@@ -221,6 +237,15 @@ async function createFromParsed(parsed, opts = {}) {
     }
 
     const addr = property.address || null;
+    // Assignment fields flow through the ONE shared invariant helper (#96) so
+    // is_assignment / underlying / fee / purchase_price stay self-consistent,
+    // exactly like every other create path.
+    const asg = fields.assignmentFields({
+      isAssignment: !!extras.isAssignment,
+      underlyingContractPrice: extras.underlyingContractPrice,
+      assignmentFee: extras.assignmentFee,
+      purchasePrice: property.purchasePrice,
+    });
     const a = await client.query(
       `INSERT INTO applications
          (borrower_id, co_borrower_id, llc_id, loan_officer_id,
@@ -228,15 +253,20 @@ async function createFromParsed(parsed, opts = {}) {
           purchase_price, as_is_value, arv, rehab_budget, rehab_type,
           loan_amount, ltv, dscr_ratio, rate_pct, term, ppp,
           requested_exp_flips, requested_exp_holds, requested_exp_ground, sqft_pre, sqft_post,
+          rental_income, appraised_rental_value, cda_value, property_taxes, property_insurance, property_hoa,
+          first_lien, second_lien, title_company, insurance_company, appraiser_name,
+          is_assignment, underlying_contract_price, assignment_fee, requested_ir_months, requested_ir_amount,
+          expected_closing, actual_closing,
           investor_loan_number, lender, channel, source, raw_intake, status, submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
-               $22,$23,$24,$25,$26,$27,$28,$29,'mismo_import',$30,'new',now())
+               $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,
+               $43,$44,$45,$46,$47,'mismo_import',$48,'new',now())
        RETURNING id`,
       [borrowerId, coBorrowerId, llcId, opts.officerId || null,
        extras.program || null, fields.sanitizeLoanType(loan.loanType), loan.occupancy || property.occupancy || null,
        addr ? JSON.stringify(addr) : null, property.propertyType || extras.propertyType || null,
        property.units != null ? int(property.units) : null,
-       property.purchasePrice != null ? num(property.purchasePrice) : null,
+       asg.purchasePrice,
        property.asIsValue != null ? num(property.asIsValue) : null,
        extras.arv != null ? num(extras.arv) : null,
        extras.rehabBudget != null ? num(extras.rehabBudget) : null, extras.rehabType || null,
@@ -248,6 +278,16 @@ async function createFromParsed(parsed, opts = {}) {
        int(extras.expFlips) || 0, int(extras.expHolds) || 0, int(extras.expGround) || 0,
        extras.sqftPre != null ? int(extras.sqftPre) : null,
        extras.sqftPost != null ? int(extras.sqftPost) : null,
+       // rental / carrying costs / providers (from PROPERTY_DETAIL + extension)
+       property.rentalIncome != null ? num(property.rentalIncome) : (extras.rentalIncome != null ? num(extras.rentalIncome) : null),
+       num(extras.appraisedRentalValue), num(extras.cdaValue),
+       num(extras.propertyTaxes), num(extras.propertyInsurance), num(extras.propertyHoa),
+       num(extras.firstLien), num(extras.secondLien),
+       extras.titleCompany || null, extras.insuranceCompany || null, extras.appraiserName || null,
+       asg.isAssignment, asg.underlying, asg.assignFee,
+       extras.interestReserveMonths != null ? int(extras.interestReserveMonths) : null,
+       num(extras.interestReserveAmount),
+       fields.sanitizeDateOnly(loan.estimatedClosingDate), fields.sanitizeDateOnly(extras.actualClosingDate),
        loan.investorLoanNumber || null, extras.lender || null, extras.channel || null,
        JSON.stringify({ source: 'mismo_import', imported_at: new Date().toISOString(), warnings: parsed.warnings || [] })]);
     const applicationId = a.rows[0].id;

@@ -196,6 +196,7 @@ function parseMismoXml(xml) {
     occupancy: propDetail ? E.fromMismoOccupancy(X.textAt(propDetail, 'PropertyUsageType')) : null,
     asIsValue,
     purchasePrice: numOrNull((X.firstDeep(subject, 'SalesContractAmount') || {}).text),
+    rentalIncome: propDetail ? numOrNull(X.textAt(propDetail, 'RentalEstimatedGrossMonthlyRentAmount')) : null,
   };
 
   // --- loan ---
@@ -224,6 +225,7 @@ function parseMismoXml(xml) {
     loanType: E.fromMismoLoanPurpose(purpose, cashOut),
     term: months != null ? `${months} months` : null,
     occupancy: property.occupancy,
+    estimatedClosingDate: (X.firstDeep(loanEl, 'LoanEstimatedClosingDate') || {}).text || null,
   };
 
   // --- parties (role-based; non-borrower individuals + the lender are skipped) ---
@@ -260,6 +262,23 @@ function parseMismoXml(xml) {
     expFlips: numOrNull(ext.RequestedExperienceFlips),
     expHolds: numOrNull(ext.RequestedExperienceHolds),
     expGround: numOrNull(ext.RequestedExperienceGroundUp),
+    // RTL / carrying-cost / provider extras preserved verbatim in the extension.
+    isAssignment: ext.IsAssignment === 'true' ? true : (ext.IsAssignment === 'false' ? false : null),
+    underlyingContractPrice: numOrNull(ext.UnderlyingContractPrice),
+    assignmentFee: numOrNull(ext.AssignmentFee),
+    interestReserveMonths: numOrNull(ext.InterestReserveMonths),
+    interestReserveAmount: numOrNull(ext.InterestReserveAmount),
+    appraisedRentalValue: numOrNull(ext.AppraisedRentalValue),
+    cdaValue: numOrNull(ext.CDAValue),
+    propertyTaxes: numOrNull(ext.PropertyTaxesAnnual),
+    propertyInsurance: numOrNull(ext.PropertyInsuranceAnnual),
+    propertyHoa: numOrNull(ext.PropertyHOA),
+    firstLien: numOrNull(ext.FirstLienAmount),
+    secondLien: numOrNull(ext.SecondLienAmount),
+    titleCompany: ext.TitleCompany || null,
+    insuranceCompany: ext.InsuranceCompany || null,
+    appraiserName: ext.AppraiserName || null,
+    actualClosingDate: ext.ActualClosingDate || null,
   };
   // Prefer the exact original marital status the extension preserved (MISMO's
   // Unmarried bucket loses Single/Divorced/Widowed) so the round-trip is lossless.

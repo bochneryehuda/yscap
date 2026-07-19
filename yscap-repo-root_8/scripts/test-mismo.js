@@ -37,6 +37,8 @@ const file = {
   units: 3,
   lender: 'YS Capital',
   channel: 'Wholesale',
+  lienPriority: 'FirstLien', borrowerCount: 2, applicationReceivedDate: '2026-06-01',
+  estimatedClosingDate: '2026-08-15', rentalIncome: 3800, isConstruction: false, isRenovation: true,
   property: { line1: '392 Columbia Ave', line2: 'Unit 2', city: 'Brooklyn', state: 'NY', zip: '11223' },
   borrower: {
     firstName: 'Yuda', middleName: 'A', lastName: "O'Brien", suffix: 'Jr',
@@ -50,7 +52,16 @@ const file = {
     citizenship: 'Permanent Resident', maritalStatus: 'Divorced',
   },
   llc: { name: 'Columbia Ave Holdings LLC', ein: '98-7654321', formationState: 'NY' },
-  extras: { sqftPre: 1800, sqftPost: 2400, expFlips: 5, expHolds: 2, expGround: 0 },
+  extras: {
+    sqftPre: 1800, sqftPost: 2400, expFlips: 5, expHolds: 2, expGround: 0,
+    isAssignment: true, underlyingContractPrice: 400000, assignmentFee: 20000,
+    interestReserveMonths: 6, interestReserveAmount: 12000,
+    appraisedRentalValue: 4000, cdaValue: 390000,
+    propertyTaxes: 6000, propertyInsurance: 2400, propertyHoa: 0,
+    firstLien: 0, secondLien: 0,
+    titleCompany: 'ABC Title', insuranceCompany: 'XYZ Ins', appraiserName: 'Jane Appraiser',
+    actualClosingDate: '2026-08-20',
+  },
   generatedAt: '2026-07-19T12:00:00.000Z',
 };
 
@@ -121,6 +132,31 @@ assert.strictEqual(parsed.extras.program, 'Fix & Flip', 'program from extension'
 assert.strictEqual(parsed.extras.expFlips, 5, 'experience flips from extension');
 assert.strictEqual(parsed.extras.fico, 742, 'fico from extension');
 ok('RTL extras round-trip via lender extension');
+
+// Expanded field coverage: standard MISMO fields + expanded extension.
+assert.strictEqual(parsed.property.rentalIncome, 3800, 'rental income (PROPERTY_DETAIL)');
+assert.strictEqual(parsed.loan.estimatedClosingDate, '2026-08-15', 'estimated closing date (CLOSING_INFORMATION)');
+assert.strictEqual(parsed.extras.isAssignment, true, 'assignment flag from extension');
+assert.strictEqual(parsed.extras.underlyingContractPrice, 400000, 'underlying contract price');
+assert.strictEqual(parsed.extras.assignmentFee, 20000, 'assignment fee');
+assert.strictEqual(parsed.extras.interestReserveMonths, 6, 'interest reserve months');
+assert.strictEqual(parsed.extras.interestReserveAmount, 12000, 'interest reserve amount');
+assert.strictEqual(parsed.extras.propertyTaxes, 6000, 'property taxes (annual)');
+assert.strictEqual(parsed.extras.propertyInsurance, 2400, 'property insurance (annual)');
+assert.strictEqual(parsed.extras.appraisedRentalValue, 4000, 'appraised rental value');
+assert.strictEqual(parsed.extras.cdaValue, 390000, 'CDA value');
+assert.strictEqual(parsed.extras.titleCompany, 'ABC Title', 'title company');
+assert.strictEqual(parsed.extras.insuranceCompany, 'XYZ Ins', 'insurance company');
+assert.strictEqual(parsed.extras.appraiserName, 'Jane Appraiser', 'appraiser name');
+assert.strictEqual(parsed.extras.actualClosingDate, '2026-08-20', 'actual closing date');
+ok('expanded standard + extension fields round-trip');
+
+// LienPriorityType is a real MISMO data point (not extension) — confirm it's emitted.
+assert(xml.includes('<LienPriorityType>FirstLien</LienPriorityType>'), 'LienPriorityType emitted');
+assert(xml.includes('<BorrowerCount>2</BorrowerCount>'), 'BorrowerCount emitted');
+assert(xml.includes('<RenovationLoanIndicator>true</RenovationLoanIndicator>'), 'RenovationLoanIndicator emitted');
+assert(xml.includes('<RentalEstimatedGrossMonthlyRentAmount>3800</RentalEstimatedGrossMonthlyRentAmount>'), 'rental income emitted as MISMO field');
+ok('new standard MISMO data points are emitted in their proper containers');
 
 // ---------------------------------------------------- 2) minimal / empty file
 const tiny = buildMismoXml({ borrower: { firstName: 'A', lastName: 'B' }, property: {}, generatedAt: '2026-01-01T00:00:00Z' });

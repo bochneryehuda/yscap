@@ -260,10 +260,12 @@ function subjectProperty(f, label) {
     ]));
   }
   const detailKids = [
+    leaf('AttachmentType', E.toMismoAttachment(f.propertyType)),
     leaf('FinancedUnitCount', f.units != null && f.units !== '' ? Math.round(Number(f.units)) : E.unitsHint(f.propertyType)),
+    leaf('InvestmentRentalIncomePresentIndicator', num(f.rentalIncome) > 0 ? 'true' : null),
     leaf('PropertyEstimatedValueAmount', num(f.asIsValue)),
     leaf('PropertyUsageType', E.toMismoOccupancy(f.occupancy)),
-    leaf('AttachmentType', E.toMismoAttachment(f.propertyType)),
+    leaf('RentalEstimatedGrossMonthlyRentAmount', num(f.rentalIncome)),
   ].filter(Boolean);
   return el('COLLATERAL', { SequenceNumber: 1, 'xlink:label': label }, [
     el('SUBJECT_PROPERTY', {}, [
@@ -291,6 +293,15 @@ function loan(f, label) {
         leaf('LoanAmortizationPeriodType', 'Month'),
       ]),
     ]) : null,
+    f.estimatedClosingDate ? el('CLOSING_INFORMATION', {}, [
+      el('CLOSING_INFORMATION_DETAIL', {}, [leaf('LoanEstimatedClosingDate', dateStr(f.estimatedClosingDate))]),
+    ]) : null,
+    el('LOAN_DETAIL', {}, [
+      leaf('ApplicationReceivedDate', dateStr(f.applicationReceivedDate)),
+      leaf('BorrowerCount', f.borrowerCount),
+      leaf('ConstructionLoanIndicator', f.isConstruction != null ? String(!!f.isConstruction) : null),
+      leaf('RenovationLoanIndicator', f.isRenovation != null ? String(!!f.isRenovation) : null),
+    ]),
     months != null ? el('MATURITY', {}, [
       el('MATURITY_RULE', {}, [
         leaf('LoanMaturityPeriodCount', months),
@@ -309,6 +320,7 @@ function loan(f, label) {
     ]) : null,
     el('TERMS_OF_LOAN', {}, [
       leaf('BaseLoanAmount', num(f.loanAmount)),
+      leaf('LienPriorityType', f.lienPriority),
       leaf('LoanPurposeType', purpose),
       leaf('MortgageType', E.DEFAULT_MORTGAGE_TYPE),
       leaf('NoteAmount', num(f.loanAmount)),
@@ -344,6 +356,27 @@ function lenderExtension(f) {
     ['CoBorrowerMaritalStatus', f.coBorrower && f.coBorrower.maritalStatus],
     ['Lender', f.lender],
     ['Channel', f.channel],
+    // Assignment / wholesale purchase (RTL-specific).
+    ['IsAssignment', x.isAssignment ? 'true' : null],
+    ['UnderlyingContractPrice', num(x.underlyingContractPrice)],
+    ['AssignmentFee', num(x.assignmentFee)],
+    // Financed interest reserve (RTL bridge/construction).
+    ['InterestReserveMonths', x.interestReserveMonths],
+    ['InterestReserveAmount', num(x.interestReserveAmount)],
+    // Valuation / rental extras.
+    ['AppraisedRentalValue', num(x.appraisedRentalValue)],
+    ['CDAValue', num(x.cdaValue)],
+    // Carrying costs (annual, as our system stores them) + existing liens.
+    ['PropertyTaxesAnnual', num(x.propertyTaxes)],
+    ['PropertyInsuranceAnnual', num(x.propertyInsurance)],
+    ['PropertyHOA', num(x.propertyHoa)],
+    ['FirstLienAmount', num(x.firstLien)],
+    ['SecondLienAmount', num(x.secondLien)],
+    // Service providers on the file.
+    ['TitleCompany', x.titleCompany],
+    ['InsuranceCompany', x.insuranceCompany],
+    ['AppraiserName', x.appraiserName],
+    ['ActualClosingDate', x.actualClosingDate ? dateStr(x.actualClosingDate) : null],
   ].filter(([, v]) => v != null && v !== '');
   if (!fields.length) return null;
   return el('EXTENSION', {}, [
