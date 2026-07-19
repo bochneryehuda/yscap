@@ -189,6 +189,28 @@ BEGIN
   UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
   RAISE NOTICE 'PASS T13: a clean imported re-pull supersedes and clears the gate';
 
+  -- ==== db/172: a REVIEW fatal must not be masked by a newer NULL REVIEW =====
+  DELETE FROM credit_reports WHERE application_id=aid;
+  UPDATE checklist_items SET status='received', signed_off_at=NULL WHERE application_id=aid AND template_id=tmpl;
+  -- R1 review with a fatal OFAC (compliance-only), then a NEWER empty review.
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-0000000000d1', aid, 1, 'review',
+      '{"severity":"fatal","types":["ofac"],"findings":[{"type":"ofac","severity":"fatal","reconciled":false,"reconcilableBy":"compliance"}]}'::jsonb,
+      timestamptz '2022-05-01 00:00:00+00');
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-0000000000d2', aid, 1, 'review', NULL, timestamptz '2022-06-01 00:00:00+00');
+  blocked := false;
+  BEGIN UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  EXCEPTION WHEN check_violation THEN blocked := true; END;
+  IF NOT blocked THEN RAISE EXCEPTION 'FAIL T14: a newer empty review MASKED an earlier review OFAC finding'; END IF;
+  RAISE NOTICE 'PASS T14: a newer empty review cannot mask an earlier review fatal (OFAC)';
+
+  -- T15: a later CLEAN IMPORTED re-pull DOES supersede that review OFAC.
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-0000000000d3', aid, 1, 'imported', NULL, timestamptz '2022-07-01 00:00:00+00');
+  UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  RAISE NOTICE 'PASS T15: a clean imported re-pull supersedes an earlier review fatal';
+
   DELETE FROM checklist_items WHERE application_id=aid;
   DELETE FROM credit_reports WHERE application_id=aid;
   DELETE FROM applications WHERE id=aid;

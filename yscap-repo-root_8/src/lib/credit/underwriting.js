@@ -216,6 +216,37 @@ function blocksSignOff(stored, reconciledAt) {
 }
 
 /**
+ * The active fatal findings that currently GATE sign-off, considering a file's
+ * WHOLE report history. A fatal finding (on an imported OR a review report) blocks
+ * UNLESS it has been superseded by a LATER CLEAN IMPORTED report — a real
+ * re-verification. A review re-pull, or a failed/in_doubt/ordering one, is NOT a
+ * re-verification: it cannot clear an earlier fatal (that was the fail-open class —
+ * a null-finding review masking an earlier fatal, whether imported or review).
+ *
+ * @param {Array<{status, createdAt, id, finding, reconciledAt}>} reports
+ * @returns {Array<finding>} the fatal findings still in force (may repeat across reports)
+ */
+function gatingFatalFindings(reports) {
+  const rs = (Array.isArray(reports) ? reports : []).filter((r) => r && (r.status === 'imported' || r.status === 'review'));
+  const ord = (r) => [new Date(r.createdAt || 0).getTime() || 0, String(r.id || '')];
+  const supersededByCleanImport = (rf) => {
+    const [tf, idf] = ord(rf);
+    return rs.some((ri) => {
+      if (ri.status !== 'imported') return false;
+      const [ti, idi] = ord(ri);
+      const newer = ti > tf || (ti === tf && idi > idf);
+      return newer && activeFatalFindings(ri.finding, ri.reconciledAt).length === 0;
+    });
+  };
+  const out = [];
+  for (const rf of rs) {
+    const fatal = activeFatalFindings(rf.finding, rf.reconciledAt);
+    if (fatal.length && !supersededByCleanImport(rf)) out.push(...fatal);
+  }
+  return out;
+}
+
+/**
  * Recompute the mirrored top-level severity/message from findings[]. Used after a
  * per-finding reconcile so the back-compat top-level fields (and the app-layer
  * gate that reads them) stay in agreement with the array.
@@ -278,6 +309,7 @@ module.exports = {
   normalizeFindings,
   activeFatalFindings,
   blocksSignOff,
+  gatingFatalFindings,
   recomputeWrapper,
   maxSeverity,
 };

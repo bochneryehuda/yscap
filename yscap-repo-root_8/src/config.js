@@ -341,6 +341,12 @@ module.exports = {
     // Off by default so saving a credential never accidentally bills; flip on
     // once the endpoint is live.
     verifyOnSave:        process.env.XACTUS_VERIFY_ON_SAVE === '1',
+    // NO-CHARGE auth-probe path (relative to `endpoint`) for verify-on-save AND
+    // the officer "Test my login" button. Unset → the probe is skipped and the
+    // credential is saved unverified (no charge, no crash). Set this to the
+    // vendor's lightweight auth endpoint once known.
+    verifyPath:          (process.env.XACTUS_VERIFY_PATH || '').trim() || null,
+    verifyMethod:        (process.env.XACTUS_VERIFY_METHOD || 'GET').trim().toUpperCase(),
     // Spend/volume circuit breaker — cap BILLABLE pulls in a rolling 10-min window
     // so a runaway loop / double-submit / compromised login can't rack up charges.
     maxPulls10minUser:   parseInt(process.env.CREDIT_MAX_PULLS_10MIN_USER || '15', 10),

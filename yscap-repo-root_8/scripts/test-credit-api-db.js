@@ -90,7 +90,9 @@ const importTransport = async () => ({ status: 200, headers: { get: () => 'text/
   ok('verifyForUser with no saved login throws', noCredThrew);
   // HTTP endpoint gating.
   ok('POST /credit/credentials/test 403 (no pull_credit)', (await call('POST', '/credit/credentials/test', NP, { providerId: prov })).status === 403);
-  ok('POST /credit/credentials/test 200 (own login)', (await call('POST', '/credit/credentials/test', A, { providerId: prov })).status === 200);
+  const testResp = await call('POST', '/credit/credentials/test', A, { providerId: prov });
+  ok('POST /credit/credentials/test 200 (own login)', testResp.status === 200);
+  ok('test response carries a status, never the password', typeof testResp.j.status === 'string' && !JSON.stringify(testResp.j).toLowerCase().includes('"p"') && !/password/i.test(JSON.stringify(testResp.j)));
   // restore the admin credential to 'ok' so downstream order tests aren't affected by the invalid mark.
   await credentials.setForUser(admin, { providerKey: 'xactus', operatorIdentifier: 'LO', secret: 'p', verify: false });
   ok('GET /credit/reports 200 (own file)', (await call('GET', `/credit/reports?applicationId=${appId}`, A)).status === 200);

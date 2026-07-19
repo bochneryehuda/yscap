@@ -2592,31 +2592,20 @@ async function signOffGate(itemId, actor) {
     // both the new findings[] wrapper and the pre-E2 single-finding shape via the
     // shared engine helper, so the app layer and the db/170 trigger always agree.
     //
-    // TWO reference reports (findings live on 'imported' AND 'review' rows since
-    // E2 surfaces bureau alerts even on a review/frozen pull):
-    //   (a) the latest IMPORTED-OR-REVIEW report — catches a fatal alert on a
-    //       review pull (the E2 fail-open BLOCKER: a review row was skipped);
-    //   (b) the latest IMPORTED report — so a NULL-finding review re-pull can't
-    //       MASK an earlier imported fatal finding (a clean IMPORTED re-pull, by
-    //       contrast, is a real re-verification and DOES supersede/clear).
-    // A failed / in_doubt / ordering re-pull (NULL finding, not a real result) is
-    // excluded from both and can never mask a finding. id DESC is a deterministic
-    // tiebreaker so this gate and the db/170 trigger resolve the SAME rows.
+    // A fatal finding (on an IMPORTED or a REVIEW report — E2 surfaces bureau
+    // alerts even on a frozen/review pull) blocks UNLESS it was superseded by a
+    // later CLEAN IMPORTED report (a real re-verification). A review re-pull, or a
+    // failed / in_doubt / ordering one, is NOT a re-verification and can never mask
+    // an earlier fatal. The db/172 trigger applies the SAME rule over the same rows.
     const underwriting = require('../lib/credit/underwriting');
-    const latestResult = (await db.query(
-      `SELECT underwriting_finding, underwriting_finding_reconciled_at
+    const reportRows = (await db.query(
+      `SELECT id, created_at, status, underwriting_finding, underwriting_finding_reconciled_at
          FROM credit_reports
-        WHERE application_id=$1 AND status IN ('imported','review')
-        ORDER BY created_at DESC, id DESC LIMIT 1`, [item.application_id])).rows[0];
-    const latestImported = (await db.query(
-      `SELECT underwriting_finding, underwriting_finding_reconciled_at
-         FROM credit_reports
-        WHERE application_id=$1 AND status = 'imported'
-        ORDER BY created_at DESC, id DESC LIMIT 1`, [item.application_id])).rows[0];
-    const fatal = [
-      ...(latestResult ? underwriting.activeFatalFindings(latestResult.underwriting_finding, latestResult.underwriting_finding_reconciled_at) : []),
-      ...(latestImported ? underwriting.activeFatalFindings(latestImported.underwriting_finding, latestImported.underwriting_finding_reconciled_at) : []),
-    ];
+        WHERE application_id=$1 AND status IN ('imported','review')`, [item.application_id])).rows;
+    const fatal = underwriting.gatingFatalFindings(reportRows.map((r) => ({
+      status: r.status, createdAt: r.created_at, id: r.id,
+      finding: r.underwriting_finding, reconciledAt: r.underwriting_finding_reconciled_at,
+    })));
     // De-dupe: when the two reference reports are the SAME imported row, both
     // queries return its findings — collapse by type+message for the message.
     const seen = new Set();

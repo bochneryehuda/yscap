@@ -107,5 +107,26 @@ eq('legacy normalizes to one finding', U.normalizeFindings(legacy).length, 1);
 // a clean report → wrapFindings null (stores NULL, as before)
 eq('no findings → null wrapper', U.wrapFindings([]), null);
 
+// ---- gatingFatalFindings: history-aware supersession -----------------------
+const fatalW = { severity: 'fatal', findings: [{ type: 'ofac', severity: 'fatal', reconciled: false }] };
+const fine = null; // clean
+const R = (status, t, id, finding) => ({ status, createdAt: `2026-07-${String(t).padStart(2, '0')}T00:00:00Z`, id, finding, reconciledAt: null });
+// imported fatal, no re-pull → blocks
+ok('imported fatal blocks', U.gatingFatalFindings([R('imported', 1, 'a', fatalW)]).length === 1);
+// imported fatal, newer CLEAN imported → clears (real re-verification)
+ok('clean imported re-pull clears', U.gatingFatalFindings([R('imported', 1, 'a', fatalW), R('imported', 2, 'b', fine)]).length === 0);
+// imported fatal, newer NULL review → still blocks (review can't supersede)
+ok('null review cannot mask imported fatal', U.gatingFatalFindings([R('imported', 1, 'a', fatalW), R('review', 2, 'b', fine)]).length === 1);
+// review fatal (OFAC), newer NULL review → STILL blocks (the hardening fix)
+ok('null review cannot mask an earlier review fatal', U.gatingFatalFindings([R('review', 1, 'a', fatalW), R('review', 2, 'b', fine)]).length === 1);
+// review fatal, newer CLEAN imported → clears
+ok('clean imported clears an earlier review fatal', U.gatingFatalFindings([R('review', 1, 'a', fatalW), R('imported', 2, 'b', fine)]).length === 0);
+// a failed/in_doubt re-pull is ignored entirely (not imported/review)
+ok('in_doubt re-pull ignored', U.gatingFatalFindings([R('imported', 1, 'a', fatalW), R('in_doubt', 2, 'b', fine)]).length === 1);
+// warning-only review never blocks
+ok('warning-only review never blocks', U.gatingFatalFindings([R('review', 1, 'a', { severity: 'warning', findings: [{ type: 'high_risk_score', severity: 'warning', reconciled: false }] })]).length === 0);
+// same-timestamp tiebreak by id: a later id clean imported supersedes an earlier id fatal
+ok('same-timestamp id tiebreak supersedes', U.gatingFatalFindings([R('imported', 5, 'a', fatalW), R('imported', 5, 'b', fine)]).length === 0);
+
 console.log(`\ncredit-underwriting: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

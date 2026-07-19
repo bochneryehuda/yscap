@@ -163,7 +163,15 @@ async function verifyForUser(userId, providerId, opts = {}) {
     : await providers.getByKey(opts.providerKey || 'xactus');
   if (!provider) throw badRequest('unknown credit provider');
   if (provider.key !== 'xactus') throw badRequest(`${provider.displayName} cannot be tested yet`);
-  const cred = await getUsable(userId, provider.id);
+  // A decrypt failure (rotated key / tampered ciphertext) is a foreseeable
+  // "your saved login can't be read" state — surface it as a friendly 400 asking
+  // the officer to re-enter, not a raw 500. (getUsable throws on a bad tag.)
+  let cred;
+  try {
+    cred = await getUsable(userId, provider.id);
+  } catch (_) {
+    throw badRequest('your saved login could not be read — please re-enter it');
+  }
   if (!cred) throw badRequest('no login saved to test — save your login first');
   let v;
   try {
@@ -179,7 +187,12 @@ async function verifyForUser(userId, providerId, opts = {}) {
   await markStatus(userId, provider.id, status);
   const row = (await db.query(
     `SELECT last_verified_at FROM user_credit_credentials WHERE user_id=$1 AND provider_id=$2`, [userId, provider.id])).rows[0];
-  return { ok: status === 'ok', status, message: (v && v.message) || 'Tested.', lastVerifiedAt: row ? row.last_verified_at : null, providerId: provider.id };
+  // A test-tuned message: when the vendor gives no ok/invalid (no probe endpoint
+  // configured, or unreachable), say so plainly rather than "verified on first use".
+  const message = status === 'ok' ? 'Login verified with the provider.'
+    : status === 'invalid' ? 'The provider rejected this login — re-enter it.'
+    : 'Could not verify the login right now — it will be checked automatically on your next pull.';
+  return { ok: status === 'ok', status, message, lastVerifiedAt: row ? row.last_verified_at : null, providerId: provider.id };
 }
 
 module.exports = { listForUser, setForUser, removeForUser, getUsable, markStatus, verifyForUser, cleanIdentifier };
