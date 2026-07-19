@@ -84,7 +84,7 @@ export default function StaffDraws() {
       </div>
 
       {stats.length > 0 && (
-        <div style={{ marginTop: 14, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+        <div className="draw-stat-grid" style={{ marginTop: 14 }}>
           {stats.map((s) => <Stat key={s.label} {...s} />)}
         </div>
       )}
