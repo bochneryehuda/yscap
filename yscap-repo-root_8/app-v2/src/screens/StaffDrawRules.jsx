@@ -8,7 +8,8 @@ import { InfoTip } from '../components/FileSections.jsx';
    capital-partner approval is required, whether reallocations are allowed, and the fee
    schedule. A blank capital partner is the global default. Gated by platform_setup. */
 
-const dollars = (c) => (Number(c || 0) / 100).toFixed(0);
+// preserve cents on display + edit round-trip (a $299.50 fee must not silently become $300 on re-save)
+const dollars = (c) => (Number(c || 0) / 100).toLocaleString('en-US', { maximumFractionDigits: 2 });
 const toCents = (v) => Math.round(Number(String(v).replace(/[^0-9.]/g, '')) * 100);
 
 /* Small inline icon set (feather-style, stroke = currentColor) — matches StaffDraws. */
@@ -44,7 +45,7 @@ function SettingField({ label, k, settings, onSave, info }) {
       <span className="dd-field-l">{label}{info ? <InfoTip tip={info} /> : null}</span>
       <div className="row" style={{ gap: 6 }}>
         <input className="input" style={{ maxWidth: 90 }} value={v} onChange={(e) => { setV(e.target.value); setSaved(false); }} />
-        <button className="btn btn-sm ghost" onClick={() => { const n = Number(v); if (Number.isFinite(n) && n >= 0) { onSave(k, n); setSaved(true); } }}>{saved ? 'Saved ✓' : 'Save'}</button>
+        <button className="btn btn-sm ghost" onClick={() => { const s = String(v).trim(); if (s === '' || !/[0-9]/.test(s)) return; const n = Number(s); if (Number.isFinite(n) && n >= 0) { onSave(k, n); setSaved(true); } }}>{saved ? 'Saved ✓' : 'Save'}</button>
       </div>
     </div>
   );
@@ -112,7 +113,9 @@ export default function StaffDrawRules() {
         inspection_method: draft.inspection_method, allow_virtual: draft.allow_virtual, allow_physical: draft.allow_physical,
         require_sitewire_inspector: draft.require_sitewire_inspector,
         require_capital_partner_approval: draft.require_capital_partner_approval, allow_reallocation: draft.allow_reallocation,
-        fee_cents_virtual: toCents(draft.fee_cents_virtual), fee_cents_physical: draft.fee_cents_physical === '' ? null : toCents(draft.fee_cents_physical),
+        // a BLANK virtual fee means "use the default" — send nothing so the backend's $299 fallback fires
+        // (a typed 0 is still sent and honored as a free inspection). Physical is nullable = inherit.
+        fee_cents_virtual: String(draft.fee_cents_virtual).trim() === '' ? undefined : toCents(draft.fee_cents_virtual), fee_cents_physical: draft.fee_cents_physical === '' ? null : toCents(draft.fee_cents_physical),
       });
       setMsg('Rule saved.'); setDraft(blankDraft()); load();
     } catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); }

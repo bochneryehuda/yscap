@@ -154,7 +154,11 @@ async function loadDocGenData(db, applicationId) {
     loanNumber: a.ys_loan_number || '',
     applicationDate: a.application_date,
     executionDate: new Date(),                          // "as of the date below" — prepared today
-    loanAmount: a.loan_amount != null ? a.loan_amount : a.purchase_price,
+    // The LOAN amount only — never fall back to purchase_price (a different figure):
+    // the disclosure certifies "applied for a loan in the amount of $X" and the Iska
+    // states the principal, so a missing loan amount must BLOCK the send
+    // (validateGenerated), not silently print the acquisition price on a legal doc.
+    loanAmount: a.loan_amount,
     propStreet: street,
     propCity: city,
     propState: state,
@@ -383,11 +387,17 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   const recips = (await db.query(
     `SELECT role, routing_order, recipient_id_ds, name, email, client_user_id, is_countersigner
        FROM esign_recipients WHERE envelope_row_id = $1 ORDER BY routing_order, role`, [row.id])).rows;
-  // Re-resolve the borrower / co-borrower identity from the CURRENT file record: the
-  // roster snapshot was taken at row-creation, and a corrected email/name since then
-  // must reach the ACTUAL send (with test mode off there is no allow-list backstop to
-  // catch a stale off-file address). The admin counter-signer keeps its config value.
+  // Re-resolve the borrower / co-borrower identity from the CURRENT file record (a
+  // corrected email/name since row-creation must reach the ACTUAL send — with test
+  // mode off there is no allow-list backstop for a stale off-file address), and PRUNE
+  // a co-borrower who was REMOVED from the deal since seeding (else the removed person
+  // would still be emailed a binding envelope and block completion). Admin keeps config.
+  const roster = [];
   for (const r of recips) {
+    if (r.role === 'co_borrower' && !app.co_borrower_id) {
+      await db.query(`DELETE FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds=$2`, [row.id, r.recipient_id_ds]);
+      continue;   // removed co-borrower → drop from the send AND the roster
+    }
     let email, name;
     if (r.role === 'borrower') { email = app.b_email; name = `${app.b_first || ''} ${app.b_last || ''}`.trim(); }
     else if (r.role === 'co_borrower') { email = app.cb_email; name = `${app.cb_first || ''} ${app.cb_last || ''}`.trim(); }
@@ -396,8 +406,9 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
       await db.query(`UPDATE esign_recipients SET email=$2, name=$3, updated_at=now() WHERE envelope_row_id=$1 AND recipient_id_ds=$4`,
         [row.id, r.email, r.name, r.recipient_id_ds]);
     }
+    roster.push(r);
   }
-  const signers = recips.map((r) => ({
+  const signers = roster.map((r) => ({
     recipientId: r.recipient_id_ds,
     name: r.name,
     email: r.email,
@@ -406,11 +417,20 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN',       // hybrid: ALSO send the DocuSign email
     tabsByDoc: tabsFor(r.role, spec, documentIdByKind),
   }));
-  // A roster that seeded to zero recipients (a concurrent claim landing between the
-  // envelope INSERT and the recipient seeding) must NOT proceed to a non-retryable
-  // "at least one signer" dead-letter — treat it as transient so the real send
-  // re-drives once seeding has committed.
-  if (!signers.length) { const e = new Error('Recipient roster not ready yet — will retry.'); e.retryable = true; throw e; }
+  // The roster must be COMPLETE before sending. A concurrent claim (or the poller)
+  // landing between the envelope INSERT and the recipient-seeding loop could read a
+  // PARTIAL roster and otherwise send an incomplete envelope — e.g. a term sheet
+  // WITHOUT the lender's routing-order-2 counter-signer, or missing the co-borrower.
+  // Require borrower + co-borrower(iff the file has one) + admin(iff the package
+  // counter-signs); otherwise treat as transient so the real send re-drives once
+  // seeding has committed (a persistently-incomplete roster then dead-letters visibly).
+  const have = new Set(roster.map((r) => r.role));
+  const need = ['borrower',
+    ...(app.co_borrower_id ? ['co_borrower'] : []),
+    ...(spec.countersignRequired ? ['admin'] : [])];
+  if (!need.every((role) => have.has(role))) {
+    const e = new Error('Recipient roster not fully seeded yet — will retry.'); e.retryable = true; throw e;
+  }
 
   const webhookUrl = `${cfg.appUrl}/api/esign/webhook`;
   return {

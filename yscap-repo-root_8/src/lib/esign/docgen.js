@@ -38,7 +38,7 @@ function escapeXml(s) {
 
 /** An invisible (white, 1pt) run carrying a DocuSign anchor string. */
 function invisibleRun(text) {
-  return `<w:r><w:rPr><w:color w:val="FFFFFF"/><w:sz w:val="2"/><w:szCs w:val="2"/></w:rPr>`
+  return `<w:r><w:rPr><w:color w:val="FFFFFF"/><w:sz w:val="8"/><w:szCs w:val="8"/></w:rPr>`
        + `<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r>`;
 }
 
@@ -184,7 +184,7 @@ function fmtDate(d) {
   // it as UTC midnight and shifts the day back one in any west-of-UTC timezone
   // (the repo's hard date-only rule / the DOB-date incident). Format its parts directly.
   if (typeof d === 'string') {
-    const m = d.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    const m = d.match(/^(\d{4})-(\d{2})-(\d{2})$/);   // date-ONLY; an ISO instant string falls through to the ET path (no day-shift)
     if (m) return `${m[2]}/${m[3]}/${m[1]}`;
   }
   // A timestamp INSTANT (a timestamptz from pg → a JS Date, or new Date() for the

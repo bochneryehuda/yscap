@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
+import PortfolioInsights from '../components/PortfolioInsights.jsx';
 
 /* Sitewire draw desk — the lender's construction-draw dashboard. Mirrors every draw
    PILOT tracks (requested vs approved per draw, status, dates) with a link into the
@@ -102,6 +103,9 @@ export default function StaffDraws() {
             {status && <KPI label="Draws tracked" value={status.mirrored_draws} icon="layers" />}
           </div>
         )}
+
+        {/* Portfolio insights — exposure + pacing by project, from real portfolio data */}
+        {portfolio && <PortfolioInsights portfolio={portfolio} />}
 
         {/* Attention needed */}
         {alertFiles.length > 0 && (

@@ -124,10 +124,16 @@ async function audit(req, action, entity_type, entity_id, detail) {
   // action into a failed request. Wrap any scalar so a logging write can never do that.
   let d = detail;
   if (d != null && typeof d !== 'object') d = { note: String(d) };
-  await db.query(
-    `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
-     VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
-    [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
+  // Best-effort: a logging write must NEVER fail an otherwise-completed action
+  // (esp. after an irreversible DocuSign send/resend/void). Swallow + warn.
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
+       VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
+      [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
+  } catch (e) {
+    console.warn(`[audit] failed to log ${action}: ${db.describeError ? db.describeError(e) : e.message}`);
+  }
 }
 // officers/processors only see their files; admins/super-admins/underwriters see all.
 // PLUS: a staffer may be granted access to specific loan officers' files (their
@@ -6527,6 +6533,10 @@ async function loadEsignEnvelope(req, rowId) {
   const r = await db.query(`SELECT * FROM esign_envelopes WHERE id = $1`, [rowId]);
   const row = r.rows[0];
   if (!row) return { status: 404, error: 'not found' };
+  if (row.is_test) {   // test envelopes are admin-created (app-less) — only an admin may resend/void one
+    if (!isAdmin(req)) return { status: 403, error: 'admins only for test envelopes' };
+    return { row };
+  }
   if (!seesAll(req)) {
     const vis = await db.query(
       `SELECT 1 FROM applications a WHERE a.id = $1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`,

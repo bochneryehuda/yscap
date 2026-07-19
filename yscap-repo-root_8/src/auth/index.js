@@ -109,10 +109,13 @@ function requireRole(...roles) {
   };
 }
 // Capability gate — checks req.actor.perms (resolved in authenticate).
+// cap may be a single capability string OR an array of capabilities — an array passes if the actor
+// holds ANY of them (e.g. a reader that both a manage_draws desk user and a platform_setup admin need).
 function requirePermission(cap) {
+  const caps = Array.isArray(cap) ? cap : [cap];
   return (req, res, next) => {
     if (!req.actor || req.actor.kind !== 'staff') return res.status(403).json({ error: 'forbidden' });
-    if (perms.can(req.actor, cap)) return next();
+    if (caps.some((c) => perms.can(req.actor, c))) return next();
     return res.status(403).json({ error: 'forbidden' });
   };
 }
