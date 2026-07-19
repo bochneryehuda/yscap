@@ -36,6 +36,24 @@ async function audit(req, action, detail) {
 const requirePull = (req, res, next) =>
   can(req.actor, 'pull_credit') ? next() : res.status(403).json({ error: 'You do not have permission to pull credit.' });
 
+// Per-file access, mirroring staff.js VISIBLE_OFFICERS_SQL: a see_all_files
+// staffer reaches any file; everyone else only files they own / process / are an
+// assistant on / are a visible officer for. Keeps a scoped officer from ordering
+// or reading credit on another officer's file.
+const VISIBLE_OFFICERS_SQL = (alias, p) =>
+  `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
+  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
+  ` OR EXISTS (SELECT 1 FROM application_assignees aa` +
+  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL))`;
+async function canSeeApp(req, appId) {
+  if (!appId) return false;
+  if (can(req.actor, 'see_all_files')) return true;
+  const r = await db.query(
+    `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')}`,
+    [appId, req.actor.id]).catch(() => ({ rows: [] }));
+  return !!r.rows[0];
+}
+
 // ---- providers -------------------------------------------------------------
 router.get('/credit/providers', async (req, res) => {
   try {
@@ -81,6 +99,7 @@ router.delete('/credit/credentials/:pid', async (req, res) => {
 router.post('/credit/order', requirePull, async (req, res) => {
   const b = req.body || {};
   if (!b.applicationId) return res.status(400).json({ error: 'applicationId is required' });
+  if (!(await canSeeApp(req, b.applicationId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const out = await creditImport.orderAndImport({
       applicationId: b.applicationId,
@@ -106,6 +125,7 @@ router.post('/credit/order', requirePull, async (req, res) => {
 router.get('/credit/reports', requirePull, async (req, res) => {
   const appId = req.query.applicationId;
   if (!appId) return res.status(400).json({ error: 'applicationId is required' });
+  if (!(await canSeeApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
   try {
     const reports = (await db.query(
       `SELECT id, credit_report_identifier, report_type, other_description, request_type, action_type,
@@ -129,13 +149,19 @@ router.get('/credit/reports', requirePull, async (req, res) => {
 // vendor error). Company-wide for staff who pull credit.
 router.get('/credit/review-queue', requirePull, async (req, res) => {
   try {
+    // Scoped officers see only review items on files they can see; see_all_files
+    // staff (the usual back-office reviewers) see the whole queue.
+    const scoped = !can(req.actor, 'see_all_files');
     const rows = (await db.query(
       `SELECT cr.id, cr.application_id, cr.representative_score, cr.review_reason, cr.status, cr.created_at,
               b.first_name, b.last_name
          FROM credit_reports cr
          LEFT JOIN applications a ON a.id = cr.application_id
          LEFT JOIN borrowers b ON b.id = a.borrower_id
-        WHERE cr.status = 'review' ORDER BY cr.created_at DESC LIMIT 200`)).rows;
+        WHERE cr.status = 'review'
+          ${scoped ? `AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')}` : ''}
+        ORDER BY cr.created_at DESC LIMIT 200`,
+      scoped ? [req.actor.id] : [])).rows;
     res.json({ queue: rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -144,8 +170,9 @@ router.get('/credit/review-queue', requirePull, async (req, res) => {
 router.get('/credit/reports/:id/pdf', requirePull, async (req, res) => {
   try {
     const r = await db.query(
-      `SELECT d.* FROM credit_reports cr JOIN documents d ON d.id = cr.pdf_document_id WHERE cr.id=$1`, [req.params.id]);
+      `SELECT d.*, cr.application_id FROM credit_reports cr JOIN documents d ON d.id = cr.pdf_document_id WHERE cr.id=$1`, [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'no PDF for this report' });
+    if (!(await canSeeApp(req, r.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
     await audit(req, 'credit_report_pdf_view', { reportId: req.params.id });
     return serveDocument(res, r.rows[0], { inline: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
