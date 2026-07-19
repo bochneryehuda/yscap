@@ -126,16 +126,29 @@ function parseCreditResponse(xml) {
   };
 
   // ---- scores (element-centric) ----
-  const scoreNodes = findAll(message, 'CREDIT_SCORE_DETAIL').map((d) => ({
-    bureau: findFirstText(d, 'CreditRepositorySourceType'),
-    model: findFirstText(d, 'CreditScoreModelNameType'),
-    value: findFirstText(d, 'CreditScoreValue'),
-    exclusionReason: findFirstText(d, 'CreditScoreExclusionReasonType'),
-    date: findFirstText(d, 'CreditScoreDate') || result.firstIssuedDate,
-    factors: findAll(d, 'CREDIT_SCORE_FACTOR').map((f) => ({
-      code: findFirstText(f, 'CreditScoreFactorCode'), text: findFirstText(f, 'CreditScoreFactorText'),
-    })).filter((f) => f.code || f.text),
-  })).filter((s) => s.bureau || s.value);
+  // Parse each CREDIT_SCORE *with its xlink:label*, so a JOINT tri-merge (all six
+  // scores in ONE shared CREDIT_SCORES block) can be split back to the right
+  // borrower via the RELATIONSHIP links below. Fall back to bare CREDIT_SCORE_DETAIL
+  // only if a response somehow omits the CREDIT_SCORE wrappers.
+  const parseScoreNode = (node, isDetail) => {
+    const d = isDetail ? node : (findAll(node, 'CREDIT_SCORE_DETAIL')[0] || node);
+    return {
+      bureau: findFirstText(d, 'CreditRepositorySourceType'),
+      model: findFirstText(d, 'CreditScoreModelNameType'),
+      value: findFirstText(d, 'CreditScoreValue'),
+      exclusionReason: findFirstText(d, 'CreditScoreExclusionReasonType'),
+      date: findFirstText(d, 'CreditScoreDate') || result.firstIssuedDate,
+      factors: findAll(d, 'CREDIT_SCORE_FACTOR').map((f) => ({
+        code: findFirstText(f, 'CreditScoreFactorCode'), text: findFirstText(f, 'CreditScoreFactorText'),
+      })).filter((f) => f.code || f.text),
+      label: isDetail ? null : attr(node, 'xlink:label'),
+    };
+  };
+  const scoreParents = findAll(message, 'CREDIT_SCORE');
+  const scoreNodes = (scoreParents.length
+    ? scoreParents.map((cs) => parseScoreNode(cs, false))
+    : findAll(message, 'CREDIT_SCORE_DETAIL').map((d) => parseScoreNode(d, true))
+  ).filter((s) => s.bureau || s.value);
 
   // ---- borrowers (identity) ----
   // Borrower parties carry PartyRoleType=Borrower with a NAME + TAXPAYER_IDENTIFIER.
@@ -143,6 +156,20 @@ function parseCreditResponse(xml) {
     const roles = findAll(p, 'ROLE_DETAIL');
     return roles.some((r) => (findFirstText(r, 'PartyRoleType') || '') === 'Borrower') || findAll(p, 'BORROWER').length;
   });
+  // The xlink:label(s) on a party's Borrower ROLE — the key the score RELATIONSHIPs
+  // point *from* to tie each CREDIT_SCORE to THIS borrower. Only the request-echo
+  // party carries these, so they uniquely identify each real borrower.
+  const roleLabelsOf = (party) => {
+    const out = [];
+    for (const role of findAll(party, 'ROLE')) {
+      const rt = findFirstText(role, 'PartyRoleType');
+      if ((rt && rt === 'Borrower') || findAll(role, 'BORROWER').length) {
+        const l = attr(role, 'xlink:label'); if (l) out.push(l);
+      }
+    }
+    return out;
+  };
+  const seqOf = (party) => { const n = parseInt(attr(party, 'SequenceNumber'), 10); return Number.isFinite(n) ? n : 9999; };
   // The deep PARTY scan picks up nested/echoed borrower parties (per-bureau
   // BORROWER blocks, the request echo, the response borrower) — all the SAME
   // person repeated, and often WITHOUT an SSN. Collapse by NAME primarily (so a
@@ -150,6 +177,16 @@ function parseCreditResponse(xml) {
   // genuinely different same-name people apart. A single borrower → one entry; a
   // real joint (distinct names, or same name + distinct SSNs) → two.
   const seen = new Map();
+  const noteParty = (entry, p) => {
+    if (!entry.roleLabels) entry.roleLabels = new Set();
+    const labels = roleLabelsOf(p);
+    for (const l of labels) entry.roleLabels.add(l);
+    const s = seqOf(p);
+    // Order borrowers by the request-echo party's SequenceNumber (the party that
+    // carries the role label) so the primary borrower resolves to B1.
+    if (labels.length && (entry.roleSeq == null || s < entry.roleSeq)) entry.roleSeq = s;
+    if (entry.anySeq == null || s < entry.anySeq) entry.anySeq = s;
+  };
   for (const p of borrowerParties) {
     const nm = findAll(p, 'NAME')[0];
     const first = nm ? findFirstText(nm, 'FirstName') : null;
@@ -171,38 +208,72 @@ function parseCreditResponse(xml) {
       if (!entry.firstName && first) entry.firstName = first;
       if (!entry.lastName && last) entry.lastName = last;
     }
+    noteParty(entry, p);
   }
-  const identities = [...seen.values()];
+  // Order by request position (role-echo SequenceNumber) so the primary is B1.
+  const identities = [...seen.values()].sort((a, b) =>
+    (a.roleSeq ?? a.anySeq ?? 9999) - (b.roleSeq ?? b.anySeq ?? 9999));
   identities.forEach((b, i) => { b.borrowerId = i === 0 ? 'B1' : `C${i}`; });
-  if (!identities.length) identities.push({ borrowerId: 'B1', firstName: findFirstText(message, 'FirstName'), lastName: findFirstText(message, 'LastName'), ssn: null, scores: [] });
+  if (!identities.length) identities.push({ borrowerId: 'B1', firstName: findFirstText(message, 'FirstName'), lastName: findFirstText(message, 'LastName'), ssn: null, scores: [], roleLabels: new Set() });
 
-  // Score→borrower mapping. Single borrower → all scores. Multiple → group by the
-  // borrower whose CREDIT_RESPONSE subtree the scores live in; if the scores are
-  // flat (one shared block), they cannot be safely split, so leave them on the
-  // primary and flag (import routes an ambiguous multi-borrower 3.4 to review).
+  // Score→borrower mapping. Single borrower → all scores. Multiple → split via the
+  // MISMO RELATIONSHIP links (each CREDIT_SCORE's xlink:label is the `to` of a
+  // relationship whose `from` is the owning borrower ROLE's xlink:label). This is
+  // the only reliable split for a joint tri-merge, where all six scores share ONE
+  // CREDIT_SCORES block. Fallbacks: per-borrower CREDIT_RESPONSE subtree (older
+  // shapes), else leave on the primary and flag for review (never guess).
   if (identities.length === 1) {
     identities[0].scores = scoreNodes;
   } else {
-    let grouped = false;
-    for (const cr of findAll(message, 'CREDIT_RESPONSE')) {
-      const crScores = findAll(cr, 'CREDIT_SCORE_DETAIL').map((d) => ({
-        bureau: findFirstText(d, 'CreditRepositorySourceType'), model: findFirstText(d, 'CreditScoreModelNameType'),
-        value: findFirstText(d, 'CreditScoreValue'), exclusionReason: findFirstText(d, 'CreditScoreExclusionReasonType'),
-        date: findFirstText(d, 'CreditScoreDate') || result.firstIssuedDate, factors: [],
-      })).filter((s) => s.bureau || s.value);
-      if (!crScores.length) continue;
-      // Associate this CREDIT_RESPONSE's scores to the borrower whose SSN/name it carries.
-      const crSsn = findFirstText(cr, 'TaxpayerIdentifierValue');
-      const crFirst = findFirstText(cr, 'FirstName');
-      const match = identities.find((b) => (crSsn && b.ssn && b.ssn === crSsn) || (crFirst && b.firstName && b.firstName.toUpperCase() === crFirst.toUpperCase()));
-      if (match) { match.scores.push(...crScores); grouped = true; }
+    const fromsByScore = new Map();   // score xlink:label -> Set(from-labels)
+    for (const rel of findAll(message, 'RELATIONSHIP')) {
+      const from = attr(rel, 'xlink:from'), to = attr(rel, 'xlink:to');
+      if (!from || !to) continue;
+      if (!fromsByScore.has(to)) fromsByScore.set(to, new Set());
+      fromsByScore.get(to).add(from);
     }
-    if (!grouped) { identities[0].scores = scoreNodes; result.multiBorrowerUnsplit = true; }
+    const idByRoleLabel = new Map();
+    for (const id of identities) for (const l of (id.roleLabels || [])) idByRoleLabel.set(l, id);
+    let assigned = 0;
+    if (idByRoleLabel.size) {
+      for (const s of scoreNodes) {
+        if (!s.label) continue;
+        const froms = fromsByScore.get(s.label); if (!froms) continue;
+        let hit = null;
+        for (const f of froms) if (idByRoleLabel.has(f)) { hit = idByRoleLabel.get(f); break; }
+        if (hit) { hit.scores.push(s); assigned++; }
+      }
+    }
+    // Trust the relationship split only when EVERY score found a home.
+    let grouped = assigned > 0 && assigned === scoreNodes.length;
+    if (!grouped) {
+      for (const id of identities) id.scores = [];
+      for (const cr of findAll(message, 'CREDIT_RESPONSE')) {
+        const crScores = (findAll(cr, 'CREDIT_SCORE').length
+          ? findAll(cr, 'CREDIT_SCORE').map((cs) => parseScoreNode(cs, false))
+          : findAll(cr, 'CREDIT_SCORE_DETAIL').map((d) => parseScoreNode(d, true))
+        ).filter((s) => s.bureau || s.value);
+        if (!crScores.length) continue;
+        const crSsn = (findFirstText(cr, 'TaxpayerIdentifierValue') || '').replace(/\D/g, '');
+        const crFirst = findFirstText(cr, 'FirstName');
+        const match = identities.find((b) => (crSsn && b.ssn && b.ssn === crSsn) || (crFirst && b.firstName && b.firstName.toUpperCase() === crFirst.toUpperCase()));
+        if (match) match.scores.push(...crScores);
+      }
+      // Only trust the subtree split if it genuinely separated ≥2 borrowers.
+      grouped = identities.filter((b) => b.scores.length).length >= 2;
+      if (!grouped) {
+        for (const id of identities) id.scores = [];
+        identities[0].scores = scoreNodes;
+        result.multiBorrowerUnsplit = true;
+      }
+    }
   }
   // Drop any lingering phantom: an identity with NO scores AND no SSN is an
   // echo, not a real borrower (a genuine no-score borrower still has an SSN).
   const real = identities.filter((b) => b.scores.length > 0 || b.ssn);
-  result.borrowers = real.length ? real : identities;
+  const finalBorrowers = real.length ? real : identities;
+  for (const b of finalBorrowers) { delete b.roleLabels; delete b.roleSeq; delete b.anySeq; }
+  result.borrowers = finalBorrowers;
 
   // ---- PDF (embedded base64) ----
   const vf = findAll(message, 'VIEW_FILE')[0] || findAll(message, 'DOCUMENT')[0];

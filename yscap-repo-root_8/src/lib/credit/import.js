@@ -158,6 +158,13 @@ function assessReport(parsed, scored) {
     const d = first ? outcomes.describeError(first) : null;
     return { decision: 'error', reason: (d && d.message) || (first && (first.description || first.code)) || 'credit request failed' };
   }
+  // A joint response whose scores could NOT be safely split per borrower (no
+  // RELATIONSHIP links AND one shared score block) must never be auto-imported —
+  // we can't tell whose scores are whose, so a human has to look.
+  if (parsed.multiBorrowerUnsplit) {
+    return { decision: 'review', severity: 'review', owners: ['staff'],
+      reason: 'This joint report’s scores could not be matched to each borrower automatically — please open the report and confirm each borrower’s scores before signing off.' };
+  }
   // Otherwise summarize per-bureau conditions + vendor errors into one actionable
   // reason. Any block/review-severity outcome routes to manual review.
   const s = outcomes.summarizeOutcome(parsed, scored);
@@ -254,10 +261,19 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
        assessment.decision === 'imported' ? 'imported' : assessment.decision,
        assessment.reason, JSON.stringify(parsed.errors || []), JSON.stringify(bureauStatus), orderMeta.mismoVersion || null]);
 
+    // Resolve a parsed borrower to its DB row: SSN first (order-proof), then the
+    // report label (B1/C1). Guarantees a JOINT file attaches each borrower's scores
+    // to the correct borrowers row even if the vendor echoes them out of order.
+    const dbIdFor = (pb) => {
+      const ssn = String((pb.identity && pb.identity.ssn) || '').replace(/\D/g, '');
+      return (ssn.length === 9 && (orderMeta.borrowerDbIdBySsn || {})[ssn])
+        || orderMeta.borrowerDbIdByReportId[pb.reportBorrowerId] || null;
+    };
+
     // Per-bureau score rows (every score node, usable or not — full audit).
     await client.query(`DELETE FROM credit_scores WHERE credit_report_id=$1`, [reportRowId]);
     for (const pb of scored.perBorrower) {
-      const dbBorrowerId = orderMeta.borrowerDbIdByReportId[pb.reportBorrowerId] || null;
+      const dbBorrowerId = dbIdFor(pb);
       for (const c of pb.middle.classified) {
         await client.query(
           `INSERT INTO credit_scores (credit_report_id, borrower_id, report_borrower_id, bureau, model, value, raw_value, exclusion_reason, usable, reason, factors)
@@ -275,7 +291,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
     if (assessment.decision === 'imported') {
       await client.query(`SET LOCAL app.credit_reverify = 'on'`);
       for (const pb of scored.perBorrower) {
-        const dbBorrowerId = orderMeta.borrowerDbIdByReportId[pb.reportBorrowerId];
+        const dbBorrowerId = dbIdFor(pb);
         if (!dbBorrowerId || pb.middle.middle == null) continue;
         await client.query(
           `UPDATE borrowers
@@ -495,13 +511,22 @@ async function orderAndImport(opts = {}) {
   const scored = scoreParsed(parsed);
   const assessment = assessReport(parsed, scored);
 
+  // Two ways to bind a parsed borrower's scores back to the right DB borrower row:
+  // by SSN (ground truth — order-proof) and by the report borrower label (B1/C1)
+  // as a fallback. SSN-first guarantees a JOINT file never cross-attaches one
+  // borrower's scores to the other, regardless of the order the vendor echoes them.
   const borrowerDbIdByReportId = {};
-  for (const b of requestBorrowers) borrowerDbIdByReportId[b.borrowerId] = b._dbId;
+  const borrowerDbIdBySsn = {};
+  for (const b of requestBorrowers) {
+    borrowerDbIdByReportId[b.borrowerId] = b._dbId;
+    const s = String(b.ssn || '').replace(/\D/g, '');
+    if (s.length === 9) borrowerDbIdBySsn[s] = b._dbId;
+  }
 
   const persisted = await persistImport({
     reportRowId, applicationId, actorId, providerId: provider.id,
     parsed, scored, assessment, rawXml: resp.body,
-    orderMeta: { reportIdentifier: parsed.reportIdentifier, requestType, action, borrowerDbIdByReportId, decodePdf: kit.decodePdf, mismoVersion: kit.version },
+    orderMeta: { reportIdentifier: parsed.reportIdentifier, requestType, action, borrowerDbIdByReportId, borrowerDbIdBySsn, decodePdf: kit.decodePdf, mismoVersion: kit.version },
   });
   logEvent({ ...evBase, phase: 'persist', outcome: assessment.decision });
 

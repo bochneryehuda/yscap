@@ -92,6 +92,60 @@ eq('3.4 collapsed borrower keeps its 3 scores', ec.borrowers[0].scores.length, 3
 const frzResp = okResp.replace('<CREDIT_SCORES>', '<CREDIT_FILE><CreditRepositorySourceType>Experian</CreditRepositorySourceType><CreditFileResultStatusType>NoFileReturnedCreditFreeze</CreditFileResultStatusType></CREDIT_FILE><CREDIT_SCORES>');
 ok('3.4 frozen file surfaced', P.parseCreditResponse(frzResp).errors.some((e) => /freeze/i.test((e.texts || []).join(' ') + (e.code || ''))));
 
+// ===== JOINT tri-merge: all six scores share ONE CREDIT_SCORES block and are
+// tied to each borrower ONLY by RELATIONSHIP xlink links (verified live 2026-07-19,
+// John Freddie + Mary Freddie). The co-borrower's PARTY is placed FIRST in document
+// order (as the real response echoes it) to prove seq-ordering — not discovery
+// order — resolves the primary (John=B1). Each borrower must get HIS/HER own three
+// scores, never the other's. =====
+const jointResp = `<?xml version="1.0"?>
+<MESSAGE MISMOReferenceModelIdentifier="3.4" xmlns="http://www.mismo.org/residential/2009/schemas" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <DEAL_SETS><DEAL_SET><DEALS><DEAL>
+    <PARTIES>
+      <PARTY SequenceNumber="2"><INDIVIDUAL><NAME><FirstName>MARY</FirstName><LastName>FREDDIE</LastName></NAME></INDIVIDUAL>
+        <ROLES><ROLE xlink:label="Borrower02"><ROLE_DETAIL><PartyRoleType>Borrower</PartyRoleType></ROLE_DETAIL></ROLE></ROLES>
+        <TAXPAYER_IDENTIFIERS><TAXPAYER_IDENTIFIER><TaxpayerIdentifierValue>990200002</TaxpayerIdentifierValue></TAXPAYER_IDENTIFIER></TAXPAYER_IDENTIFIERS></PARTY>
+      <PARTY SequenceNumber="1"><INDIVIDUAL><NAME><FirstName>JOHN</FirstName><LastName>FREDDIE</LastName></NAME></INDIVIDUAL>
+        <ROLES><ROLE xlink:label="Borrower01"><ROLE_DETAIL><PartyRoleType>Borrower</PartyRoleType></ROLE_DETAIL></ROLE></ROLES>
+        <TAXPAYER_IDENTIFIERS><TAXPAYER_IDENTIFIER><TaxpayerIdentifierValue>990100001</TaxpayerIdentifierValue></TAXPAYER_IDENTIFIER></TAXPAYER_IDENTIFIERS></PARTY>
+    </PARTIES>
+    <SERVICES><SERVICE><CREDIT><CREDIT_RESPONSE>
+      <CREDIT_RESPONSE_DETAIL><CreditReportIdentifier>2598320</CreditReportIdentifier><CreditReportFirstIssuedDate>2026-07-19</CreditReportFirstIssuedDate></CREDIT_RESPONSE_DETAIL>
+      <CREDIT_REPOSITORY_INCLUDED><CreditRepositoryIncludedEquifaxIndicator>true</CreditRepositoryIncludedEquifaxIndicator><CreditRepositoryIncludedExperianIndicator>true</CreditRepositoryIncludedExperianIndicator><CreditRepositoryIncludedTransUnionIndicator>true</CreditRepositoryIncludedTransUnionIndicator></CREDIT_REPOSITORY_INCLUDED>
+      <CREDIT_SCORES>${scoreEl('1', 'Equifax', 'EquifaxBeacon5.0', '760')}${scoreEl('2', 'Equifax', 'EquifaxBeacon5.0', '783')}${scoreEl('3', 'Experian', 'ExperianFairIsaac', '785')}${scoreEl('4', 'Experian', 'ExperianFairIsaac', '771')}${scoreEl('5', 'TransUnion', 'FICORiskScoreClassic04', '779')}${scoreEl('6', 'TransUnion', 'FICORiskScoreClassic04', '768')}</CREDIT_SCORES>
+      <RELATIONSHIPS>
+        <RELATIONSHIP xlink:from="CR2598320" xlink:to="S1"/>
+        <RELATIONSHIP xlink:from="Borrower01" xlink:to="S1"/>
+        <RELATIONSHIP xlink:from="Borrower02" xlink:to="S2"/>
+        <RELATIONSHIP xlink:from="Borrower01" xlink:to="S3"/>
+        <RELATIONSHIP xlink:from="Borrower02" xlink:to="S4"/>
+        <RELATIONSHIP xlink:from="Borrower01" xlink:to="S5"/>
+        <RELATIONSHIP xlink:from="Borrower02" xlink:to="S6"/>
+      </RELATIONSHIPS>
+    </CREDIT_RESPONSE></CREDIT></SERVICE></SERVICES>
+  </DEAL></DEALS></DEAL_SET></DEAL_SETS>
+</MESSAGE>`;
+const jr = P.parseCreditResponse(jointResp);
+eq('3.4 joint parses two borrowers', jr.borrowers.length, 2);
+eq('3.4 joint primary resolves to John=B1 (seq, not doc order)', [jr.borrowers[0].firstName, jr.borrowers[0].borrowerId], ['JOHN', 'B1']);
+eq('3.4 joint co resolves to Mary=C1', [jr.borrowers[1].firstName, jr.borrowers[1].borrowerId], ['MARY', 'C1']);
+eq('3.4 joint John keeps his SSN', jr.borrowers[0].ssn, '990100001');
+eq('3.4 joint Mary keeps her SSN', jr.borrowers[1].ssn, '990200002');
+eq('3.4 joint John gets exactly 3 scores', jr.borrowers[0].scores.length, 3);
+eq('3.4 joint Mary gets exactly 3 scores', jr.borrowers[1].scores.length, 3);
+ok('3.4 joint John scores are HIS only', jr.borrowers[0].scores.every((s) => ['760', '785', '779'].includes(s.value)));
+ok('3.4 joint Mary scores are HERS only', jr.borrowers[1].scores.every((s) => ['783', '771', '768'].includes(s.value)));
+eq('3.4 joint John middle 779', S.borrowerMiddle(jr.borrowers[0].scores).middle, 779);
+eq('3.4 joint Mary middle 771', S.borrowerMiddle(jr.borrowers[1].scores).middle, 771);
+ok('3.4 joint not flagged unsplit', !jr.multiBorrowerUnsplit);
+
+// If the RELATIONSHIP links are ABSENT and all scores sit in one shared block, the
+// parser must NOT silently mis-assign — it flags the file so import routes it to a
+// human (never guesses which borrower owns which score).
+const jointNoRel = jointResp.replace(/<RELATIONSHIPS>[\s\S]*<\/RELATIONSHIPS>/, '');
+const jnr = P.parseCreditResponse(jointNoRel);
+ok('3.4 joint w/o links is flagged unsplit (review, not guessed)', jnr.multiBorrowerUnsplit === true);
+
 // hardening
 throws('3.4 DOCTYPE rejected', () => P.parseCreditResponse('<?xml version="1.0"?><!DOCTYPE x><MESSAGE></MESSAGE>'));
 throws('3.4 truncated rejected', () => P.parseCreditResponse('<?xml version="1.0"?><MESSAGE><DEAL_SETS>'));
