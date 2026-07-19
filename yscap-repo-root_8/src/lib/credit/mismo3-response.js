@@ -20,6 +20,7 @@
  */
 const { XMLParser } = require('fast-xml-parser');
 const { decodeUploadBase64 } = require('../upload-bytes');
+const { categorizeAlert } = require('./alerts');
 
 const PARSER_OPTS = {
   ignoreAttributes: false, attributeNamePrefix: '@',
@@ -111,6 +112,7 @@ function parseCreditResponse(xml) {
     otherDescription: findFirstText(message, 'CreditReportTypeOtherDescription'),
     repositoriesReturned: null,
     borrowers: [],
+    alerts: [],
     pdf: null,
     mismoVersion: '3.4',
   };
@@ -291,8 +293,114 @@ function parseCreditResponse(xml) {
   // echo, not a real borrower (a genuine no-score borrower still has an SSN).
   const real = identities.filter((b) => b.scores.length > 0 || b.ssn);
   const finalBorrowers = real.length ? real : identities;
-  for (const b of finalBorrowers) { delete b.roleLabels; delete b.roleSeq; delete b.anySeq; }
+  for (const b of finalBorrowers) {
+    delete b.roleLabels; delete b.roleSeq; delete b.anySeq;
+    b.tradelines = []; b.inquiries = []; b.publicRecords = []; b.collections = []; b.reportedIdentity = {};
+  }
   result.borrowers = finalBorrowers;
+
+  // ---- Full-report "blocks" (E1) ----
+  // Bureau is always correct (CreditRepositorySourceType on each element). Per-
+  // borrower attribution: a single borrower gets everything; a joint report attaches
+  // tradelines/inquiries/records to the primary and flags it (precise joint split
+  // via RELATIONSHIP is a later refinement). Identity is read per-PARTY so it is
+  // always correctly per-borrower. Values stay strings (cast at the DB boundary).
+  const primary = finalBorrowers[0] || null;
+  const bureauOf3 = (node) => findFirstText(node, 'CreditRepositorySourceType');
+  const moneyOf = (node, key) => findFirstText(node, key);
+  if (primary) {
+    for (const L of findAll(creditResponse || message, 'CREDIT_LIABILITY')) {
+      const det = findAll(L, 'CREDIT_LIABILITY_DETAIL')[0] || L;
+      const creditor = findAll(L, 'CREDIT_LIABILITY_CREDITOR')[0] || findAll(L, 'CREDITOR')[0];
+      const rating = findAll(L, 'CREDIT_LIABILITY_CURRENT_RATING')[0];
+      const late = findAll(L, 'CREDIT_LIABILITY_LATE_COUNT')[0];
+      const pat = findAll(L, 'CREDIT_LIABILITY_PAYMENT_PATTERN')[0];
+      const ownership = findFirstText(det, 'CreditLiabilityAccountOwnershipType');
+      const acctType = findFirstText(det, 'CreditLiabilityAccountType');
+      const isColl = /collection/i.test(acctType || '');
+      const row = {
+        bureau: bureauOf3(L), creditFileId: null,
+        creditorName: creditor ? findFirstText(creditor, 'FullName') || findFirstText(creditor, 'Name') : null,
+        creditorAddress: null,
+        accountType: acctType, accountOwnershipType: ownership,
+        accountStatusType: findFirstText(det, 'CreditLiabilityAccountStatusType'),
+        accountIdentifier: findFirstText(det, 'CreditLiabilityAccountIdentifier'),
+        unpaidBalance: moneyOf(det, 'CreditLiabilityUnpaidBalanceAmount'),
+        creditLimit: moneyOf(det, 'CreditLiabilityCreditLimitAmount'),
+        highCredit: moneyOf(det, 'CreditLiabilityHighBalanceAmount'),
+        monthlyPayment: moneyOf(det, 'CreditLiabilityMonthlyPaymentAmount'),
+        pastDueAmount: moneyOf(det, 'CreditLiabilityPastDueAmount'),
+        chargeOffAmount: moneyOf(det, 'CreditLiabilityChargeOffAmount'),
+        dateOpened: findFirstText(det, 'CreditLiabilityAccountOpenedDate'),
+        dateReported: findFirstText(det, 'CreditLiabilityAccountReportedDate'),
+        dateClosed: findFirstText(det, 'CreditLiabilityAccountClosedDate'),
+        lastActivityDate: findFirstText(det, 'CreditLiabilityLastActivityDate'),
+        monthsReviewedCount: findFirstText(det, 'CreditLiabilityMonthsReviewedCount'),
+        currentRatingCode: rating ? findFirstText(rating, 'CreditLiabilityCurrentRatingCode') : null,
+        currentRatingType: rating ? findFirstText(rating, 'CreditLiabilityCurrentRatingType') : null,
+        late30Count: late ? findFirstText(late, 'CreditLiabilityLateCount30Day') || findFirstText(late, 'Count30Day') : null,
+        late60Count: late ? findFirstText(late, 'CreditLiabilityLateCount60Day') || findFirstText(late, 'Count60Day') : null,
+        late90Count: late ? findFirstText(late, 'CreditLiabilityLateCount90Day') || findFirstText(late, 'Count90Day') : null,
+        paymentPattern: pat ? findFirstText(pat, 'CreditLiabilityPaymentPatternDataText') || findFirstText(pat, 'Data') : null,
+        derogatoryIndicator: /^(true|y)/i.test(findFirstText(det, 'CreditLiabilityDerogatoryDataIndicator') || ''),
+        isCollection: isColl,
+        isAuthorizedUser: /authorized/i.test(ownership || ''),
+      };
+      primary.tradelines.push(row);
+      if (isColl) primary.collections.push({ bureau: row.bureau, collectionAgencyName: row.creditorName, originalCreditorName: null, amount: row.unpaidBalance, status: row.accountStatusType, dateReported: row.dateReported });
+    }
+    for (const q of findAll(creditResponse || message, 'CREDIT_INQUIRY')) {
+      const det = findAll(q, 'CREDIT_INQUIRY_DETAIL')[0] || q;
+      primary.inquiries.push({
+        bureau: bureauOf3(q), inquiryDate: findFirstText(det, 'CreditInquiryDate') || findFirstText(q, 'CreditInquiryDate'),
+        inquiringPartyName: findFirstText(q, 'FullName') || findFirstText(q, 'Name'),
+        businessType: findFirstText(q, 'CreditBusinessType'), loanType: findFirstText(q, 'CreditLoanType'),
+      });
+    }
+    for (const pr of findAll(creditResponse || message, 'CREDIT_PUBLIC_RECORD')) {
+      const det = findAll(pr, 'CREDIT_PUBLIC_RECORD_DETAIL')[0] || pr;
+      primary.publicRecords.push({
+        bureau: bureauOf3(pr), recordType: findFirstText(det, 'CreditPublicRecordType'),
+        filedDate: findFirstText(det, 'CreditPublicRecordFiledDate'), reportedDate: findFirstText(det, 'CreditPublicRecordReportedDate'),
+        dispositionType: findFirstText(det, 'CreditPublicRecordDispositionType'), dispositionDate: findFirstText(det, 'CreditPublicRecordDispositionDate'),
+        amount: findFirstText(det, 'CreditPublicRecordLegalObligationAmount'), courtName: findFirstText(det, 'CreditPublicRecordCourtName'),
+        docketIdentifier: findFirstText(det, 'CreditPublicRecordDocketIdentifier'), plaintiffName: findFirstText(det, 'CreditPublicRecordPlaintiffName'),
+        derogatoryIndicator: true,
+      });
+    }
+    if (finalBorrowers.length > 1 && (primary.tradelines.length || primary.inquiries.length)) result.multiBorrowerBlocksUnsplit = true;
+  }
+
+  // Reported identity per borrower (from each borrower PARTY's BORROWER node).
+  for (const b of finalBorrowers) {
+    const party = borrowerParties.find((p) => {
+      const nm = findAll(p, 'NAME')[0];
+      return nm && (findFirstText(nm, 'FirstName') || '').toUpperCase() === (b.firstName || '').toUpperCase()
+        && (findFirstText(nm, 'LastName') || '').toUpperCase() === (b.lastName || '').toUpperCase();
+    });
+    if (!party) continue;
+    const addrStr3 = (a) => [findFirstText(a, 'AddressLineText') || findFirstText(a, 'StreetAddress'), findFirstText(a, 'CityName'), findFirstText(a, 'StateCode'), findFirstText(a, 'PostalCode')].filter(Boolean).join(', ');
+    const residences = findAll(party, 'RESIDENCE');
+    b.reportedIdentity = {
+      reportedName: [b.firstName, b.middleName, b.lastName].filter(Boolean).join(' '),
+      dob: findFirstText(party, 'BirthDate'),
+      ssn: (findFirstText(party, 'TaxpayerIdentifierValue') || '').replace(/\D/g, '') || null,
+      aliases: findAll(party, 'ALIAS').map((a) => { const nm = findAll(a, 'NAME')[0]; return nm ? [findFirstText(nm, 'FirstName'), findFirstText(nm, 'LastName')].filter(Boolean).join(' ') : null; }).filter(Boolean),
+      currentAddress: residences.length ? addrStr3(findAll(residences[0], 'ADDRESS')[0] || residences[0]) : null,
+      formerAddresses: residences.slice(1).map((r) => addrStr3(findAll(r, 'ADDRESS')[0] || r)).filter(Boolean),
+      employers: findAll(party, 'EMPLOYER').map((e) => findFirstText(e, 'FullName') || findFirstText(e, 'LegalEntityName') || findFirstText(e, 'Name')).filter(Boolean),
+    };
+  }
+
+  // Report-level ALERTS (3.4 CREDIT_RESPONSE_ALERT_MESSAGE + CREDIT_FILE alerts).
+  const alerts3 = [];
+  for (const al of findAll(message, 'CREDIT_RESPONSE_ALERT_MESSAGE')) {
+    const rawType = findFirstText(al, 'CreditResponseAlertMessageCategoryType');
+    const text = findFirstText(al, 'CreditResponseAlertMessageText');
+    if (!rawType && !text) continue;
+    alerts3.push({ category: categorizeAlert(rawType, text), rawType, text: text || null, bureau: bureauOf3(al), borrowerId: null });
+  }
+  result.alerts = alerts3;
 
   // ---- PDF (embedded base64) ----
   const vf = findAll(message, 'VIEW_FILE')[0] || findAll(message, 'DOCUMENT')[0];

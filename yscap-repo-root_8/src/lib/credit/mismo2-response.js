@@ -19,11 +19,17 @@
 
 const { XMLParser } = require('fast-xml-parser');
 const { decodeUploadBase64 } = require('../upload-bytes');
+const { categorizeAlert } = require('./alerts');
 
 // Repeatable nodes → always arrays (so one bureau / one error doesn't collapse
 // to an object and get mis-read or dropped).
 const ARRAY_NODES = new Set([
   'CREDIT_SCORE', 'CREDIT_ERROR_MESSAGE', 'BORROWER', 'CREDIT_FILE', 'KEY', '_Text', '_FACTOR',
+  // Full-report "blocks" (E1) — repeatable, so force arrays or a one-item block
+  // collapses to an object and is silently mis-read (the 2.3.1 array-of-one bug).
+  'CREDIT_LIABILITY', 'CREDIT_INQUIRY', 'CREDIT_PUBLIC_RECORD', 'CREDIT_COLLECTION',
+  'ALERT_MESSAGE', '_ALERT_MESSAGE', '_RESIDENCE', '_ALIAS', 'CREDIT_COMMENT',
+  '_PERIODIC_LATE_COUNT', 'EMPLOYER', '_EMPLOYER',
 ]);
 
 const PARSER_OPTS = {
@@ -131,6 +137,7 @@ function parseCreditResponse(xml) {
     otherDescription: A(creditResponse, 'CreditReportTypeOtherDescription'),
     repositoriesReturned: null,
     borrowers: [],
+    alerts: [],
     pdf: null,
   };
 
@@ -175,6 +182,123 @@ function parseCreditResponse(xml) {
         .filter((f) => f.code || f.text),
     });
   }
+  // ---- Full-report "blocks" (E1): tradelines, inquiries, public records,
+  // collections, reported identity, and alerts. Values stay STRINGS here (no
+  // numeric coercion — cast at the DB boundary). Each borrower gets its own arrays.
+  for (const b of byId.values()) {
+    b.tradelines = b.tradelines || [];
+    b.inquiries = b.inquiries || [];
+    b.publicRecords = b.publicRecords || [];
+    b.collections = b.collections || [];
+    b.reportedIdentity = b.reportedIdentity || {};
+  }
+  const bfor = (id) => byId.get(id || 'B1') || byId.get('B1') || [...byId.values()][0] || null;
+  const bureauOf = (node) => A(node, 'CreditRepositorySourceType')
+    || (node && node.CREDIT_REPOSITORY ? A(arr(node.CREDIT_REPOSITORY)[0], '_SourceType') : null);
+  const childName = (node, key) => (node && node[key] ? A(node[key], '_Name') : null);
+  const childAddr = (node, key) => {
+    const c = node && node[key]; if (!c) return null;
+    return [A(c, '_StreetAddress') || A(c, '_Street'), A(c, '_City'), A(c, '_State'), A(c, '_PostalCode')].filter(Boolean).join(', ') || null;
+  };
+
+  // Tradelines (CREDIT_LIABILITY) — one row per account per bureau.
+  for (const L of arr(creditResponse.CREDIT_LIABILITY)) {
+    const b = bfor(A(L, 'BorrowerID')); if (!b) continue;
+    const rating = L._CURRENT_RATING || L['_CURRENT_RATING'];
+    const late = L._LATE_COUNT || L['_LATE_COUNT'];
+    const acct = A(L, '_AccountIdentifier');
+    const businessType = A(L, 'CreditBusinessType') || A(L, '_CreditBusinessType');
+    const isColl = /collection/i.test(A(L, '_AccountType') || '') || /collection/i.test(businessType || '');
+    const row = {
+      bureau: bureauOf(L), creditFileId: A(L, 'CreditFileID'),
+      creditorName: childName(L, '_CREDITOR'), creditorAddress: childAddr(L, '_CREDITOR'),
+      accountType: A(L, '_AccountType'), accountOwnershipType: A(L, '_AccountOwnershipType'),
+      accountStatusType: A(L, '_AccountStatusType'), accountIdentifier: acct,
+      unpaidBalance: A(L, '_UnpaidBalanceAmount'), creditLimit: A(L, '_CreditLimitAmount'),
+      highCredit: A(L, '_HighCreditAmount'), monthlyPayment: A(L, '_MonthlyPaymentAmount'),
+      pastDueAmount: A(L, '_PastDueAmount'), chargeOffAmount: A(L, '_ChargeOffAmount'),
+      dateOpened: A(L, '_AccountOpenedDate'), dateReported: A(L, '_AccountReportedDate'),
+      dateClosed: A(L, '_AccountClosedDate'), lastActivityDate: A(L, '_LastActivityDate'),
+      monthsReviewedCount: A(L, '_MonthsReviewedCount'),
+      currentRatingCode: rating ? A(rating, '_Code') : null, currentRatingType: rating ? A(rating, '_Type') : null,
+      late30Count: late ? A(late, '_30Days') || A(late, '_Count30Day') : null,
+      late60Count: late ? A(late, '_60Days') || A(late, '_Count60Day') : null,
+      late90Count: late ? A(late, '_90Days') || A(late, '_Count90Day') : null,
+      paymentPattern: L._PAYMENT_PATTERN ? A(L._PAYMENT_PATTERN, '_Data') : null,
+      derogatoryIndicator: /^y/i.test(A(L, '_DerogatoryDataIndicator') || ''),
+      isCollection: isColl,
+      isAuthorizedUser: /authorized/i.test(A(L, '_AccountOwnershipType') || ''),
+    };
+    b.tradelines.push(row);
+    // A collection tradeline is ALSO surfaced as a collection block (2.3.1 has no
+    // separate element) so the detail view's Collections section is populated.
+    if (isColl) b.collections.push({
+      bureau: row.bureau, collectionAgencyName: row.creditorName, originalCreditorName: null,
+      amount: row.unpaidBalance, status: row.accountStatusType, dateReported: row.dateReported,
+    });
+  }
+
+  // Inquiries (CREDIT_INQUIRY)
+  for (const q of arr(creditResponse.CREDIT_INQUIRY)) {
+    const b = bfor(A(q, 'BorrowerID')); if (!b) continue;
+    b.inquiries.push({
+      bureau: bureauOf(q), inquiryDate: A(q, '_Date'), inquiringPartyName: A(q, '_Name'),
+      businessType: A(q, 'CreditBusinessType') || A(q, '_CreditBusinessType'),
+      loanType: A(q, 'CreditLoanType') || A(q, '_CreditLoanType'),
+    });
+  }
+
+  // Public records (2.3.1 has no rich element — surface any present CREDIT_PUBLIC_RECORD;
+  // rich detail only fills on 3.4). Collections handled above via tradelines.
+  for (const pr of arr(creditResponse.CREDIT_PUBLIC_RECORD)) {
+    const b = bfor(A(pr, 'BorrowerID')); if (!b) continue;
+    b.publicRecords.push({
+      bureau: bureauOf(pr), recordType: A(pr, '_Type') || A(pr, 'CreditPublicRecordType'),
+      filedDate: A(pr, '_FiledDate'), reportedDate: A(pr, '_ReportedDate'),
+      dispositionType: A(pr, '_DispositionType'), dispositionDate: A(pr, '_DispositionDate'),
+      amount: A(pr, '_Amount') || A(pr, '_LegalObligationAmount'), courtName: A(pr, '_CourtName'),
+      docketIdentifier: A(pr, '_DocketIdentifier'), plaintiffName: A(pr, '_PlaintiffName'),
+      derogatoryIndicator: true,
+    });
+  }
+
+  // Reported identity per borrower (from the BORROWER node): DOB, addresses,
+  // aliases, employer — for the reported-vs-file mismatch checks.
+  for (const bn of borrowerNodes) {
+    const b = bfor(A(bn, 'BorrowerID')); if (!b) continue;
+    const residences = arr(bn._RESIDENCE);
+    const addrStr = (r) => [A(r, '_StreetAddress') || A(r, '_Street'), A(r, '_City'), A(r, '_State'), A(r, '_PostalCode')].filter(Boolean).join(', ');
+    b.reportedIdentity = {
+      reportedName: A(bn, '_UnparsedName') || [A(bn, '_FirstName'), A(bn, '_MiddleName'), A(bn, '_LastName')].filter(Boolean).join(' '),
+      dob: A(bn, '_BirthDate'),
+      ssn: A(bn, '_SSN'),
+      aliases: arr(bn._ALIAS).map((a) => A(a, '_UnparsedName') || [A(a, '_FirstName'), A(a, '_LastName')].filter(Boolean).join(' ')).filter(Boolean),
+      currentAddress: residences.length ? addrStr(residences[0]) : null,
+      formerAddresses: residences.slice(1).map(addrStr).filter(Boolean),
+      employers: [A(bn, '_UnparsedEmployment')].filter(Boolean),
+    };
+  }
+
+  // Report-level ALERTS (fraud / freeze / active-duty / deceased / OFAC / address /
+  // SSN / high-risk). 2.3.1 carries them as ALERT_MESSAGE at the response level and
+  // _ALERT_MESSAGE nested under CREDIT_FILE (per bureau).
+  const alerts = [];
+  const pushAlert = (node, bureau, borrowerId) => {
+    const rawType = A(node, '_Type') || A(node, '_Code');
+    const text = arr(node._Text || node.MessageText || node['@MessageText'])
+      .map((t) => (t && t.__cdata != null ? String(t.__cdata) : (t == null ? '' : String(t)))).join(' ').trim()
+      || A(node, 'MessageText') || A(node, '_Text');
+    if (!rawType && !text) return;
+    alerts.push({ category: categorizeAlert(rawType, text), rawType, text: text ? unescapeXml(text) : null, bureau, borrowerId });
+  };
+  for (const al of arr(creditResponse.ALERT_MESSAGE)) pushAlert(al, null, A(al, 'BorrowerID'));
+  for (const cf of arr(creditResponse.CREDIT_FILE)) {
+    const bureau = A(cf, 'CreditRepositorySourceType');
+    for (const al of arr(cf._ALERT_MESSAGE)) pushAlert(al, bureau, A(cf, 'BorrowerID'));
+    for (const al of arr(cf.ALERT_MESSAGE)) pushAlert(al, bureau, A(cf, 'BorrowerID'));
+  }
+  result.alerts = alerts;
+
   result.borrowers = [...byId.values()];
 
   // embedded PDF (base64) — EMBEDDED_FILE/DOCUMENT CDATA. Data is NOT read from here.
