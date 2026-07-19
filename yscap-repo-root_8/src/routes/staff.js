@@ -6315,6 +6315,112 @@ router.get('/applications/:id/esign', async (req, res) => {
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
 });
 
+// ---------------- e-signature management actions ----------------------------
+// Send / resend / void / mint the admin counter-sign view. Every action is
+// gated (DOCUSIGN_SEND_ENABLED off => sending refused) and audited. The
+// send-engine's test-mode allow-list is the final backstop before any real
+// borrower is mailed.
+const esignOrchestrate = require('../lib/esign/orchestrate');
+const esignWebhook = require('../lib/esign/webhook');
+const docusignLib = require('../lib/integrations/docusign');
+
+// Map a thrown orchestration error to an HTTP status + safe message.
+function esignErrStatus(e) {
+  if (e && e.code === 'DOCUSIGN_SEND_DISABLED') return 409;
+  if (e && e.code === 'DOCUSIGN_GATE_NOT_READY') return 409;
+  if (e && e.retryable === false) return 400;
+  return 500;
+}
+
+// Load an envelope row and confirm the actor may see its file (the /esign/:rowId
+// routes are NOT under the /applications/:id scope guard, so we check here).
+async function loadEsignEnvelope(req, rowId) {
+  const r = await db.query(`SELECT * FROM esign_envelopes WHERE id = $1`, [rowId]);
+  const row = r.rows[0];
+  if (!row) return { status: 404, error: 'not found' };
+  if (!seesAll(req)) {
+    const vis = await db.query(
+      `SELECT 1 FROM applications a WHERE a.id = $1 AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`,
+      [row.application_id, req.actor.id]);
+    if (!vis.rows.length) return { status: 403, error: 'forbidden' };
+  }
+  return { row };
+}
+
+// Send a package for a file. Rides the /applications/:id scope guard.
+router.post('/applications/:id/esign/send', async (req, res) => {
+  const purpose = String((req.body && req.body.purpose) || '');
+  if (!esignOrchestrate.PACKAGES[purpose]) return res.status(400).json({ error: 'unknown package' });
+  try {
+    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib });
+    await audit(req, 'esign_send', 'application', req.params.id, purpose);
+    res.json({ ok: true, envelopeRowId: out.envelopeRowId, result: out.result });
+  } catch (e) {
+    res.status(esignErrStatus(e)).json({ error: e.message, outstanding: e.outstanding });
+  }
+});
+
+// Resend (nudge) the current pending recipient(s).
+router.post('/esign/:rowId/resend', async (req, res) => {
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    await docusignLib.resendEnvelope(row.envelope_id);
+    await audit(req, 'esign_resend', 'application', row.application_id, row.purpose);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Void a still-open envelope (reason required by DocuSign).
+router.post('/esign/:rowId/void', async (req, res) => {
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'a void reason is required' });
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    if (['completed', 'declined', 'voided'].includes(row.status)) return res.status(409).json({ error: `envelope already ${row.status}` });
+    await docusignLib.voidEnvelope(row.envelope_id, reason);
+    await db.query(
+      `UPDATE esign_envelopes SET status='voided', voided_at=now(), void_reason=$2, updated_at=now() WHERE id=$1`,
+      [row.id, reason]);
+    await audit(req, 'esign_void', 'application', row.application_id, `${row.purpose}: ${reason}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mint an embedded signing URL for the ADMIN counter-signer to sign from the
+// cockpit ("Sign now"). Admin-only; DocuSign errors if it isn't the admin's turn.
+router.post('/esign/:rowId/countersign-view', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'only an admin can counter-sign' });
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    const rec = (await db.query(
+      `SELECT recipient_id_ds, name, email, client_user_id FROM esign_recipients
+        WHERE envelope_row_id=$1 AND role='admin' LIMIT 1`, [row.id])).rows[0];
+    if (!rec) return res.status(409).json({ error: 'this envelope has no counter-signer' });
+    const returnUrl = `${cfg.appUrl}/api/esign/return?app=${encodeURIComponent(row.application_id)}&env=${encodeURIComponent(row.envelope_id)}&dest=staff`;
+    const url = await docusignLib.createRecipientView(row.envelope_id, {
+      returnUrl, email: rec.email, userName: rec.name,
+      clientUserId: rec.client_user_id, recipientId: rec.recipient_id_ds,
+    });
+    await audit(req, 'esign_countersign_view', 'application', row.application_id, row.purpose);
+    res.json({ url });
+  } catch (e) { res.status(esignErrStatus(e)).json({ error: e.message }); }
+});
+
+// Admin: manually drain the inbound event inbox + the send queue (ops button).
+router.post('/esign/drain', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  try {
+    const inbox = await esignWebhook.drainInbox({ db, docusign: docusignLib });
+    res.json({ ok: true, inbox });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---------------- chat v3: conversations, receipts, presence ----------------
 // Mounted last so the /applications/:id scope guard above still covers the
 // application-scoped chat routes (create chat / export).

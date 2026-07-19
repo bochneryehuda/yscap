@@ -421,6 +421,10 @@ if (require.main === module) {
     // Self-gated by SHAREPOINT_BACKUP_ENABLED + MS_* creds; inert otherwise.
     // First run performs the full-history backfill (oldest-first).
     try { require('./lib/sharepoint-backup').start(); } catch (e) { console.warn('sharepoint sync not started:', e.message); }
+    // DocuSign e-sign heartbeat: drains the Connect event inbox + send queue and
+    // reconciles any in-flight envelope that went quiet (missed-webhook recovery).
+    // Self-gated — inert until the DocuSign credentials are configured.
+    try { require('./lib/esign/poller').start(); } catch (e) { console.warn('esign poller not started:', e.message); }
   });
 }
 module.exports = app;
