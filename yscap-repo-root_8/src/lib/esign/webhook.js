@@ -114,6 +114,15 @@ async function applyRecipients(db, envelopeRowId, envelope) {
 // ---- on completion: download + store signed docs, clear conditions ----------
 async function handleCompletion(db, docusign, storage, envelopeRow) {
   const envelopeId = envelopeRow.envelope_id;
+  // App-less TEST envelope: there is no loan file to store signed documents against
+  // and no condition to clear — just mark its docs settled so the cockpit shows it
+  // complete. Never touches real-file storage / SharePoint / the Certificate table.
+  if (!envelopeRow.application_id) {
+    await db.query(
+      `UPDATE esign_envelope_docs SET cleared_at = COALESCE(cleared_at, now()) WHERE envelope_row_id = $1`,
+      [envelopeRow.id]);
+    return;
+  }
   const docs = (await db.query(
     `SELECT id, document_id, doc_kind, checklist_item_id, completed_document_id
        FROM esign_envelope_docs WHERE envelope_row_id = $1 ORDER BY document_id`, [envelopeRow.id])).rows;
