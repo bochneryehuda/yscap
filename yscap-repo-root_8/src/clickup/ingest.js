@@ -293,7 +293,10 @@ async function healBorrowerFields(borrowerId, b, taskId) {
           cell_phone      = COALESCE(cell_phone, $4),
           date_of_birth   = COALESCE(date_of_birth, $5::date),
           citizenship     = COALESCE(citizenship, $6),
-          fico            = COALESCE(fico, $7::int),
+          -- FICO freeze (owner: verified score is locked in ClickUp in/out too).
+          -- When fico_locked, NEVER take a value from ClickUp — keep the frozen
+          -- score. Otherwise fill-only as before (never overwrites a real value).
+          fico            = CASE WHEN fico_locked THEN fico ELSE COALESCE(fico, $7::int) END,
           current_address = COALESCE(current_address, $8::jsonb),
           marital_status  = COALESCE(marital_status, $9),
           employment_type = COALESCE(employment_type, $10),

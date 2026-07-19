@@ -2447,6 +2447,59 @@ router.get('/chat/inbox', async (req, res) => {
   res.json(r.rows.map((row) => scrubFields(row, ['last_body'])));
 });
 
+// ---------------- credit report (read-only borrower view) ----------------
+// Owner: staff pull/reissue; once imported the borrower sees THEIR OWN credit
+// report — the PDF and every bureau score. Scoped to files the borrower is on;
+// only fully-imported reports (never an in-flight/error/review one); the borrower
+// sees only their own per-bureau scores (never the co-borrower's), no SSN, no raw
+// XML. The PDF is served inline through the ownership check below.
+router.get('/credit', async (req, res) => {
+  const bid = me(req);
+  try {
+    const reports = (await db.query(
+      `SELECT DISTINCT cr.id, cr.first_issued_date, cr.representative_bracket, cr.pdf_document_id, cr.created_at
+         FROM credit_reports cr
+         JOIN applications a ON a.id = cr.application_id
+        WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND cr.status='imported'
+        ORDER BY cr.created_at DESC`, [bid])).rows;
+    const ids = reports.map((r) => r.id);
+    let scoreRows = [];
+    if (ids.length) {
+      scoreRows = (await db.query(
+        `SELECT credit_report_id, bureau, value, usable FROM credit_scores
+          WHERE credit_report_id = ANY($1) AND borrower_id=$2 AND usable ORDER BY bureau`, [ids, bid])).rows;
+    }
+    const scoresByReport = new Map();
+    for (const s of scoreRows) {
+      if (!scoresByReport.has(s.credit_report_id)) scoresByReport.set(s.credit_report_id, []);
+      scoresByReport.get(s.credit_report_id).push({ bureau: s.bureau, score: s.value });
+    }
+    const b = (await db.query(`SELECT verified_fico FROM borrowers WHERE id=$1`, [bid])).rows[0] || {};
+    res.json({
+      verifiedFico: b.verified_fico || null,
+      reports: reports.map((r) => ({
+        id: r.id,
+        pulledOn: r.first_issued_date,
+        scores: scoresByReport.get(r.id) || [],
+        hasPdf: !!r.pdf_document_id,
+      })),
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+router.get('/credit/:id/pdf', async (req, res) => {
+  const bid = me(req);
+  try {
+    const r = await db.query(
+      `SELECT d.* FROM credit_reports cr
+         JOIN documents d ON d.id = cr.pdf_document_id
+         JOIN applications a ON a.id = cr.application_id
+        WHERE cr.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND cr.status='imported'`,
+      [req.params.id, bid]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    return serveDocument(res, r.rows[0], { inline: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 // ---------------- chat v3: conversations, receipts, presence ----------------
 router.use(require('./borrower-chat'));
 

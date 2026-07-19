@@ -369,6 +369,12 @@ async function orderAndImport(opts = {}) {
     orderMeta: { reportIdentifier: parsed.reportIdentifier, requestType, action, borrowerDbIdByReportId },
   });
 
+  // Push the verified FICO out to ClickUp (owner: locked in ClickUp in/out). A
+  // no-op when ClickUp sync is disabled; best-effort — never fails the import.
+  if (persisted.froze) {
+    try { await require('../../clickup/enqueue').enqueueClickupPush(applicationId, ['fico']); } catch (_) { /* sync reconciles anyway */ }
+  }
+
   return {
     reportId: reportRowId,
     status: assessment.decision === 'imported' ? 'imported' : assessment.decision,
