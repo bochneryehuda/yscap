@@ -186,6 +186,34 @@ async function relinkPreview({ appId, taskInput }) {
 }
 
 /**
+ * Immediately surface a just-orphaned file in the SYNC REVIEW queue with fix
+ * options (relink / create card / archive / keep). Without this, an admin who
+ * unlinks a file sees its status flip to 'manual_review' but the review row is
+ * only created by the BOOT sweep (flagDeadUnlinkedFilesOnce) — so the file
+ * "went to manual review" (the status) yet never appeared on the review SCREEN
+ * until the next restart (owner-reported 2026-07-19). This makes it appear now.
+ * Same reason/key/shape as the boot sweep, so the two never double up (the
+ * queue dedups on the synthetic app:<id> key + field_key). Best-effort — a
+ * review-row hiccup must never fail the unlink/move itself.
+ */
+async function queueOrphanReview(appId) {
+  try {
+    const review = require('./../lib/sync-review');
+    const SFR = require('./../lib/sync-file-review');
+    const row = (await db.query(
+      `SELECT borrower_id, property_address->>'oneLine' AS one_line
+         FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
+    if (!row) return;
+    await review.queueReview({
+      applicationId: appId, borrowerId: row.borrower_id || null,
+      taskId: SFR.syntheticTaskKey(appId),
+      direction: 'outbound', fieldKey: 'file_link', reason: 'file_dead_unlinked',
+      suppressIfRejected: true, clickupValue: null, portalValue: row.one_line || null,
+      rawValue: JSON.stringify({ applicationId: appId, syncState: 'manual_review', source: 'admin_unlink' }) });
+  } catch (e) { console.warn('[relink] queueOrphanReview failed', appId, e && e.message); }
+}
+
+/**
  * Unlink a file from its ClickUp card. Pure portal-side detach: nulls
  * clickup_pipeline_task_id, parks the file in 'manual_review' (so it (a) stays
  * OUT of the auto "recover unlinked file" sweep, which would otherwise mint a
@@ -215,6 +243,8 @@ async function unlinkFileFromTask({ appId, actorId, note }) {
       [previousTaskId, appId]).catch(() => {});
   }
   await audit('clickup_manual_unlink', appId, actorId, { previousTaskId, note: note || null });
+  // Surface it on the review SCREEN right away (not just at next boot).
+  await queueOrphanReview(appId);
   return { previousTaskId };
 }
 
@@ -290,6 +320,9 @@ async function relinkFileToTask({ appId, taskInput, actorId, confirmMove }) {
   // Audit BOTH sides of the move.
   if (holder) {
     await audit('clickup_manual_unlink', holder.id, actorId, { previousTaskId: taskId, movedTo: appId, reason: 'admin_relink_move' });
+    // The file the card was moved OFF is now orphaned — surface it on the review
+    // screen right away so the admin can archive/relink it (not just at boot).
+    await queueOrphanReview(holder.id);
   }
   await audit('clickup_manual_relink', appId, actorId, { taskId, cardName, movedFrom: holder ? holder.id : null, confirmed: !!confirmMove });
 
