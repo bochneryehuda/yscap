@@ -203,10 +203,12 @@ async function apiBase() {
               || (j.accounts || []).find((a) => a.is_default);
     if (acct && acct.base_uri) { _apiBase = `${acct.base_uri.replace(/\/+$/, '')}/restapi`; return _apiBase; }
   } catch (e) {
-    console.warn(`[docusign] base_uri discovery failed, using configured baseUri: ${e.message}`);
+    console.warn(`[docusign] base_uri discovery failed, using configured baseUri (will retry discovery next call): ${e.message}`);
   }
-  _apiBase = cfg.baseUri.replace(/\/+$/, '');
-  return _apiBase;
+  // Only a CONFIRMED discovery is cached. On a transient failure (or no matching
+  // account) return the configured base WITHOUT caching, so a one-time blip can't
+  // pin the fallback (e.g. a demo base on a prod account) for the whole process.
+  return cfg.baseUri.replace(/\/+$/, '');
 }
 
 function acctUrl(base, path) { return `${base}/v2.1/accounts/${encodeURIComponent(cfg.accountId)}${path}`; }
@@ -346,10 +348,12 @@ async function createEnvelope(envelopeDefinition, { idempotencyKey: idem } = {})
   });
   if (!j.envelopeId) throw dsError('createEnvelope: DocuSign returned no envelopeId', { code: 'DOCUSIGN_BAD_RESPONSE', retryable: true });
   // L-D: a create that requested status 'sent' must NOT come back 'created' (a
-  // silent draft — no email, no error). Surface it as retryable so we don't
-  // record a "sent" that never mailed the borrower.
+  // silent draft — no email, no error). Fail PERMANENT: replaying the same
+  // idempotency key just returns the cached 'created' for the ~24h key TTL, so
+  // retrying is futile (~6.7h of dead retries). Dead-letter it immediately so a
+  // human intervenes — still never records a false "sent".
   if ((envelopeDefinition.status === 'sent') && j.status && String(j.status).toLowerCase() === 'created') {
-    throw dsError('createEnvelope: envelope stuck in "created" (draft) — not sent', { code: 'DOCUSIGN_NOT_SENT', status: 502, retryable: true });
+    throw dsError('createEnvelope: envelope stuck in "created" (draft) — not sent', { code: 'DOCUSIGN_NOT_SENT', retryable: false });
   }
   return { envelopeId: j.envelopeId, status: j.status, statusDateTime: j.statusDateTime, uri: j.uri };
 }

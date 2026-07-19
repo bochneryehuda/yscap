@@ -50,7 +50,7 @@ eq(dg.fmtMoney(0), '0.00', 'money: a real 0 → 0.00');
 // Date-only string must NOT shift a day in any timezone (repo hard rule).
 process.env.TZ = 'America/New_York';
 eq(dg.fmtDate('2026-06-01'), '06/01/2026', 'date-only string: no day-shift in NY');
-eq(dg.fmtDate('2026-06-01T00:00:00Z'), '06/01/2026', 'ISO datetime string → date');
+eq(dg.fmtDate('2026-06-01T00:00:00Z'), '05/31/2026', 'ISO datetime STRING renders its ET day (2026-06-01T00:00Z = 8pm ET May 31), not the literal UTC date-part');
 eq(dg.fmtDate(new Date('2026-06-01T12:00:00Z')), '06/01/2026', 'Date object midday UTC → same ET calendar day');
 // Regression: an evening-ET instant (22:00 ET May 31 = 02:00 UTC Jun 1) must render
 // the ET calendar day (05/31), NOT the UTC day (06/01) — the legal-doc day-shift bug.
@@ -137,9 +137,11 @@ function stubDb(appRow) {
   d = await orch.loadDocGenData(stubDb({ ...base, addr_formatted: '890 Oak Ave, Toms River, NJ 08753' }), 'x');
   eq(d.propCity, 'Toms River', 'loader: formatted_address → city'); eq(d.propZip, '08753', 'loader: formatted_address → zip');
 
-  // loan_amount null → purchase_price fallback
+  // loan_amount null → NO purchase_price fallback (a different figure): loanAmount
+  // stays null so validateGenerated BLOCKS the send rather than printing the
+  // acquisition price as the loan amount on a legal document.
   d = await orch.loadDocGenData(stubDb({ ...base, loan_amount: null, purchase_price: '500000.00', addr_oneline: '1 A St, B, NJ 07001' }), 'x');
-  eq(String(d.loanAmount), '500000.00', 'loader: loan_amount null → purchase_price fallback');
+  eq(d.loanAmount == null ? 'null' : String(d.loanAmount), 'null', 'loader: loan_amount null → loanAmount null (never falls back to purchase_price)');
 
   // PARTIAL structured address (city present, no street/state/zip) → fill the gaps
   // from oneLine, keep the structured city.

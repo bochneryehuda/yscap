@@ -26,10 +26,13 @@ async function esignSendGate(applicationId, { db = dbDefault } = {}) {
     `SELECT t.code, ci.status, ci.signed_off_at
        FROM checklist_items ci
        JOIN checklist_templates t ON t.id = ci.template_id
-      WHERE ci.application_id = $1 AND t.code = ANY($2)`,
+      WHERE ci.application_id = $1 AND t.code = ANY($2)
+      ORDER BY ci.created_at DESC`,
     [applicationId, [APPRAISAL_BACK, APPRAISAL_REVIEW, PRODUCT_PRICING]]);
+  // Newest row per code (a stale duplicate must never let the gate read an old
+  // 'satisfied' when the current one reopened) — matches resolveConditionItem.
   const by = {};
-  for (const row of r.rows) by[row.code] = row;
+  for (const row of r.rows) if (!(row.code in by)) by[row.code] = row;
 
   const outstanding = [];
   const appr = by[APPRAISAL_BACK];

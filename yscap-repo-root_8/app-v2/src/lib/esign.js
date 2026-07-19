@@ -71,7 +71,7 @@ export const recipientState = (r) =>
   : (r.signedAt || r.status === 'completed' || r.status === 'signed') ? 'done'
   : 'pending';
 
-const TERMINAL = ['completed', 'declined', 'voided', 'draft', 'error'];
+export const TERMINAL = ['completed', 'declined', 'voided', 'draft', 'error'];
 
 /** Hours since the envelope last made progress (an SLA/aging clock for in-flight
  * envelopes). Best-in-class ops signal: a package sitting unsigned is deal risk.

@@ -138,11 +138,17 @@ async function sendTestEnvelope({ actorId, db = dbDefault, docusign = docusignDe
   if (!s || !s.email) { const e = new Error('Your staff account has no email address to send the test to.'); e.retryable = false; throw e; }
   const name = (s.full_name || 'Test Signer').trim() || 'Test Signer';
 
-  const packages = [];
+  // Send each package independently and report PARTIAL success — if package 1 sends
+  // (a real test email + tracked row) and package 2 fails, don't discard the success.
+  const packages = [], failed = [];
   for (const pkg of TEST_PACKAGES) {
-    packages.push(await sendOnePackage({ db, docusign, actorId, name, email: s.email, pkg }));
+    try { packages.push(await sendOnePackage({ db, docusign, actorId, name, email: s.email, pkg })); }
+    catch (e) { failed.push({ label: pkg.label, error: ((e && e.message) || String(e)).slice(0, 300) }); }
   }
-  return { to: s.email, packages, envelopeId: packages[0] && packages[0].envelopeId };
+  if (!packages.length) {   // nothing sent → surface the failure to the caller
+    const e = new Error(failed[0] ? failed[0].error : 'The test could not be sent.'); e.retryable = false; throw e;
+  }
+  return { to: s.email, packages, failed, envelopeId: packages[0] && packages[0].envelopeId };
 }
 
 module.exports = { sendTestEnvelope, sampleData, TEST_PACKAGES };

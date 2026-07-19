@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
-  PHASE, PURPOSE, ROLE, timeAgo, absTime as abs, recipientSteps,
+  PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime as abs, recipientSteps,
   agingHours, agingLevel, agingLabel,
 } from '../lib/esign.js';
 
@@ -66,7 +66,7 @@ function Recipient({ r }) {
 function EnvelopeCard({ e, onReload }) {
   const [busy, setBusy] = useState(false);
   const [actErr, setActErr] = useState('');
-  const canResend = !!e.envelopeId && !['completed', 'declined', 'voided'].includes(e.phase);
+  const canResend = !!e.envelopeId && !TERMINAL.includes(e.phase);   // one shared terminal vocabulary across all e-sign surfaces
   const canVoid = canResend;   // same window: sent but not yet finished
   async function resend() {
     setBusy(true); setActErr('');
