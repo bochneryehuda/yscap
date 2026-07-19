@@ -17,7 +17,7 @@
  * {source, field, appraisalValue|sourceValue, fileValue} shape.
  */
 
-const { arvDefensibility } = require('./scoring');
+const { arvDefensibility, compImpliedValue } = require('./scoring');
 
 const DEFAULTS = {
   valueTolerancePct: 2,        // ARV/As-Is: treat within this % (and $) as a match
@@ -33,6 +33,7 @@ const DEFAULTS = {
   compRecencyMaxMonths: 12,    // a comp settled more than this before the effective date is stale
   compDistanceMaxMiles: 2,     // a comp farther than this from the subject is a distance concern (market-dependent)
   glaBracketTolerancePct: 10,  // subject GLA should sit within (±this%) the comp GLA range
+  valueVsCompsPct: 10,         // a value this% above the comp median (but still in range) is flagged
   flipSeasoningMonths: 12,     // a subject resold within this window before the appraisal flags for seasoning
   today: null,                 // 'YYYY-MM-DD' — injected (no new Date() in date paths)
 };
@@ -290,6 +291,22 @@ function computeFindings(appraisal, file, opts = {}) {
         appraisalValue: money(subjVal), fileValue: `${money(lo)}–${money(hi)}`,
         title: `Opinion of value is ${above ? 'above' : 'below'} the adjusted comparable range`,
         howTo: `The value ${money(subjVal)} sits ${above ? 'above the highest' : 'below the lowest'} adjusted comp (${money(lo)}–${money(hi)}). A value the comps don't bracket is worth a second look — confirm the adjustments support it.`,
+        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+    }
+  }
+
+  // 16b. Independent value cross-check — even WITHIN the comp range, a value well above what the
+  //   comps imply (their median adjusted price) is worth a second look. Fires only when the
+  //   value is inside the bracket (so it never double-flags with value_not_bracketed above) and
+  //   materially above the comp median. Advisory.
+  if (subjVal != null) {
+    const implied = compImpliedValue({ comps: A.comparables, subjectGla: A.subject.gla });
+    if (implied && subjVal <= implied.high && subjVal > implied.median * (1 + o.valueVsCompsPct / 100)) {
+      const overPct = Math.round(((subjVal - implied.median) / implied.median) * 100);
+      out.push(finding({ code: 'value_vs_comps', severity: 'warning', field: 'value',
+        appraisalValue: money(subjVal), fileValue: `comps imply ${money(implied.median)}`,
+        title: `Opinion of value is ${overPct}% above what the comps imply`,
+        howTo: `The reconciled value ${money(subjVal)} is ${overPct}% above the median adjusted comp (${money(implied.median)}${implied.perGlaValue ? `; $/sqft implies ${money(implied.perGlaValue)}` : ''}). It's still within the comp range, but sits at the top — confirm the adjustments carry it.`,
         actions: ['acknowledge', 'dismiss', 'request_revision'] }));
     }
   }

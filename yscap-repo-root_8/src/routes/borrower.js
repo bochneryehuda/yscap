@@ -838,7 +838,11 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   };
   // Borrowers see the collateral read (a neutral quality summary of THEIR property) but NOT the
   // ARV-defensibility cross-check — that's an underwriting-scrutiny signal, staff-only.
-  const score = { collateral: apprScore.collateralScore({ a: safeAppr, comps: comps.rows, summary: bSummary }), arv: null };
+  const score = {
+    collateral: apprScore.collateralScore({ a: safeAppr, comps: comps.rows, summary: bSummary }),
+    arv: null,
+    impliedValue: apprScore.compImpliedValue({ comps: comps.rows, subjectGla: safeAppr.gla }),
+  };
   res.json({
     appraisal: safeAppr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows,
     summary: bSummary, score,

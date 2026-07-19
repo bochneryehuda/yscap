@@ -120,4 +120,30 @@ function arvDefensibility({ arv, asIs, rehab, isReno = true } = {}) {
     detail: `The ${money(uplift)} uplift is ${ratio.toFixed(1)}× the ${money(R)} renovation budget — a value-add much bigger than the spend is the classic inflated-ARV signal. Scrutinize the after-repair comps.` };
 }
 
-module.exports = { collateralScore, arvDefensibility, _internals: { cCode, qCode } };
+function median(arr) {
+  const a = arr.filter((n) => n != null).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+/**
+ * Independent value cross-check — what the COMPS themselves imply, computed independently of the
+ * appraiser's reconciliation. Two lenses: the median adjusted sale price, and the median comp
+ * $/GLA applied to the subject's size. Never guessed: needs ≥3 comps with an adjusted price, and
+ * returns null otherwise. Accepts either the STORED comp rows (adjusted_price/price_per_gla/gla)
+ * or the parsed shape (adjustedPrice/pricePerGla/gla).
+ * @returns {null|{median:number, low:number, high:number, perGlaValue:number|null, medianPerGla:number|null, n:number}}
+ */
+function compImpliedValue({ comps, subjectGla } = {}) {
+  const real = (comps || []).filter((c) => !(c.is_subject));
+  const adj = real.map((c) => num(c.adjusted_price != null ? c.adjusted_price : c.adjustedPrice)).filter((n) => n != null && n > 0);
+  if (adj.length < 3) return null;                         // too thin to form an independent opinion
+  const gSub = num(subjectGla);
+  const perGlas = real.map((c) => num(c.price_per_gla != null ? c.price_per_gla : c.pricePerGla)).filter((n) => n != null && n > 0);
+  const medianPerGla = perGlas.length >= 3 ? median(perGlas) : null;
+  const perGlaValue = (medianPerGla != null && gSub != null && gSub > 0) ? Math.round(medianPerGla * gSub) : null;
+  return { median: Math.round(median(adj)), low: Math.min(...adj), high: Math.max(...adj), perGlaValue, medianPerGla: medianPerGla != null ? Math.round(medianPerGla) : null, n: adj.length };
+}
+
+module.exports = { collateralScore, arvDefensibility, compImpliedValue, _internals: { cCode, qCode, median } };

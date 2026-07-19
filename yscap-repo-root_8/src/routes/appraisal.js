@@ -26,7 +26,7 @@ const { can, assigneeExistsSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const { runAppraisalImport } = require('../lib/appraisal/desk');
-const { collateralScore, arvDefensibility } = require('../lib/appraisal/scoring');
+const { collateralScore, arvDefensibility, compImpliedValue } = require('../lib/appraisal/scoring');
 const X = require('../lib/appraisal/xml');
 
 // Upload cap: aligned to the per-file limit the JSON body-parser actually allows,
@@ -91,6 +91,7 @@ router.get('/:appId', async (req, res, next) => {
     const score = {
       collateral: collateralScore({ a: appr, comps: comps.rows, summary }),
       arv: arvDefensibility({ arv: appr.arv_value, asIs: appr.as_is_value, rehab: rehab.rehab_budget, isReno }),
+      impliedValue: compImpliedValue({ comps: comps.rows, subjectGla: appr.gla }),
     };
     res.json({ appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows, summary, score });
   } catch (e) { next(e); }
