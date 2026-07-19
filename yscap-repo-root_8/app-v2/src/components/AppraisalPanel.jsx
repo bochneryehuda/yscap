@@ -452,6 +452,70 @@ function CompRow({ c }) {
   );
 }
 
+// The comparable-grid column header (shared by every grid so the two grids line up identically).
+function CompHead() {
+  return (
+    <thead>
+      <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)', background: 'var(--paper,#F6F3EC)' }}>
+        <th style={th}>#</th><th style={th}>Address</th><th style={th}>Proximity</th>
+        <th style={{ ...th, textAlign: 'right' }}>GLA</th><th style={{ ...th, textAlign: 'center' }}>C / Q</th>
+        <th style={{ ...th, textAlign: 'right' }}>Sale date</th><th style={{ ...th, textAlign: 'right' }}>DOM</th>
+        <th style={{ ...th, textAlign: 'right' }}>Sale price</th><th style={{ ...th, textAlign: 'right' }}>$/GLA</th>
+        <th style={{ ...th, textAlign: 'right' }}>Adjusted</th><th style={{ ...th, textAlign: 'right' }}>Net adj</th>
+      </tr>
+    </thead>
+  );
+}
+
+// Adjusted-price support for a set of comps vs a value — the bracket (min–max), the median, and
+// whether the value sits inside the range. This is computed WITHIN one grid, so an As-Is value is
+// never checked against ARV comps and vice-versa (the correctness the two-grid split delivers).
+function gridSupport(rows, value) {
+  const adj = rows.map((c) => Number(c.adjusted_price)).filter((n) => Number.isFinite(n) && n > 0);
+  if (!adj.length) return null;
+  const s = [...adj].sort((a, b) => a - b);
+  const median = s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  const v = Number(value);
+  const hasV = Number.isFinite(v) && v > 0;
+  return { lo: s[0], hi: s[s.length - 1], median: Math.round(median), n: adj.length, value: hasV ? v : null, bracketed: hasV ? (v >= s[0] && v <= s[s.length - 1]) : null };
+}
+
+// One labeled comparable grid (ARV / As-Is / Unclassified) with its own value-support line. A
+// renovation appraisal renders TWO of these — the ARV grid supporting the after-repair value and
+// the As-Is grid supporting the as-is value — never one mixed grid.
+function CompGrid({ title, subtitle, rows, value, tone }) {
+  if (!rows.length) return null;
+  const sup = gridSupport(rows, value);
+  const accent = tone === 'arv' ? 'var(--teal,#2F7F86)' : tone === 'as_is' ? 'var(--gold,#AE8746)' : 'var(--muted,#4B585C)';
+  return (
+    <div className="appr-avoid" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap', marginBottom: 6 }}>
+        <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: accent, alignSelf: 'center' }} />
+        <strong style={{ fontSize: 14.5 }}>{title}</strong>
+        <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>{rows.length} comp{rows.length === 1 ? '' : 's'}{subtitle ? ` · ${subtitle}` : ''}</span>
+      </div>
+      {sup && (
+        <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: 6 }}>
+          Adjusted range <strong style={{ color: 'var(--text,#141B22)' }}>{money(sup.lo)}–{money(sup.hi)}</strong> · median {money(sup.median)}
+          {sup.value != null && (
+            <> · value {money(sup.value)}{' '}
+              <span style={{ fontWeight: 700, color: sup.bracketed ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)' }}>
+                {sup.bracketed ? '✓ within range' : '⚠ outside range'}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+      <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, borderTop: `3px solid ${accent}` }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 780 }}>
+          <CompHead />
+          <tbody>{rows.map((c) => <CompRow key={c.id} c={c} />)}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // The custom branded print. A print-only stylesheet that ISOLATES the report card (hides the
 // rest of the page + the overlay chrome), lays it out for paper with page-break control, keeps
 // the brand colors (print-color-adjust:exact), and reveals a print-only masthead. This is the
@@ -954,30 +1018,41 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
           {/* Three-cap loan sizing — staff only (uses the pricing quote, no persistence). */}
           {!readOnly && <ThreeCapPanel appId={appId} />}
 
-          {/* ===== COMPARABLE SALES ===== */}
-          {comps.length > 0 && (
-            <>
-              <SecHead eyebrow="Evidence" title="Comparable sales"
-                extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{comps.filter((c) => !c.is_subject).length} comps · tap a row for the adjustment breakdown</span>} />
-              <div style={{ marginBottom: 14 }}><CompMap comps={comps} /></div>
-              <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 780 }}>
-                  <thead>
-                    <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)', background: 'var(--paper,#F6F3EC)' }}>
-                      <th style={th}>#</th><th style={th}>Address</th><th style={th}>Proximity</th>
-                      <th style={{ ...th, textAlign: 'right' }}>GLA</th><th style={{ ...th, textAlign: 'center' }}>C / Q</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Sale date</th><th style={{ ...th, textAlign: 'right' }}>DOM</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Sale price</th><th style={{ ...th, textAlign: 'right' }}>$/GLA</th>
-                      <th style={{ ...th, textAlign: 'right' }}>Adjusted</th><th style={{ ...th, textAlign: 'right' }}>Net adj</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {comps.map((c) => <CompRow key={c.id} c={c} />)}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
+          {/* ===== COMPARABLE SALES — split into the As-Is grid and the ARV grid ===== */}
+          {comps.length > 0 && (() => {
+            const real = comps.filter((c) => !c.is_subject);
+            const arvC = real.filter((c) => c.comp_set === 'arv');
+            const asisC = real.filter((c) => c.comp_set === 'as_is');
+            const unkC = real.filter((c) => c.comp_set === 'unknown' || !c.comp_set);
+            const twoGrid = arvC.length > 0 && asisC.length > 0;
+            return (
+              <>
+                <SecHead eyebrow="Evidence" title={twoGrid ? 'Comparable sales — As-Is & ARV grids' : 'Comparable sales'}
+                  extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{real.length} comps · {twoGrid ? 'two grids support two values' : 'tap a row for the adjustment breakdown'}</span>} />
+                {a.comp_split_needs_review && (
+                  <div className="appr-avoid" style={{ margin: '2px 0 12px', padding: '9px 12px', borderRadius: 10, fontSize: 12.5,
+                    background: 'rgba(174,135,70,.10)', border: '1px solid var(--gold,#AE8746)', color: 'var(--text,#141B22)' }}>
+                    <strong>Comp grids need a look.</strong> Some comparables could not be confidently sorted into the As-Is vs After-Repair grid, so the automatic value-bracketing was held back for those. Confirm which comps support which value.
+                  </div>
+                )}
+                <div style={{ marginBottom: 14 }}><CompMap comps={comps} /></div>
+                {twoGrid ? (
+                  <>
+                    <CompGrid title="After-Repair (ARV) comparables" subtitle="support the after-repair value" rows={arvC} value={a.arv_value} tone="arv" />
+                    <CompGrid title="As-Is comparables" subtitle="support the as-is value" rows={asisC} value={a.as_is_value} tone="as_is" />
+                    {unkC.length > 0 && <CompGrid title="Unclassified — needs review" subtitle="not confidently assigned to a grid" rows={unkC} value={null} tone="unknown" />}
+                  </>
+                ) : (
+                  <CompGrid
+                    title={arvC.length ? 'After-Repair (ARV) comparables' : asisC.length ? 'As-Is comparables' : 'Comparable sales'}
+                    subtitle={arvC.length ? 'support the after-repair value' : asisC.length ? 'support the as-is value' : null}
+                    rows={[...arvC, ...asisC, ...unkC]}
+                    value={arvC.length ? a.arv_value : a.as_is_value}
+                    tone={arvC.length ? 'arv' : 'as_is'} />
+                )}
+              </>
+            );
+          })()}
 
           {/* ===== PREPARED BY ===== */}
           <SecHead eyebrow="Provenance" title="Prepared by" />
