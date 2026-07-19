@@ -110,6 +110,7 @@ function computeRollup({ links = [], draws = [], requests = [], nameByKey = {} }
   const lineList = [];
   const project = { budget: 0, drawn: 0, approved_pending: 0, requested_open: 0, remaining: 0, pct_complete: 0,
     contingency: null, gc: null, line_count: 0, unit_count: 0 };
+  const physicalUnits = new Set(); // distinct unit indices = physical unit count (not per-unit cells)
   for (const key of Object.keys(lines)) {
     const line = lines[key];
     line.remaining = line.budgeted - line.drawn;
@@ -121,12 +122,13 @@ function computeRollup({ links = [], draws = [], requests = [], nameByKey = {} }
       project.approved_pending += line.approved_pending; project.requested_open += line.requested_open;
       if (line.kind === 'contingency') project.contingency = { budgeted: line.budgeted, drawn: line.drawn, remaining: line.remaining };
       else if (line.kind === 'gc') project.gc = { budgeted: line.budgeted, drawn: line.drawn, remaining: line.remaining };
-      else { project.line_count++; project.unit_count += line.units.length; }
+      else { project.line_count++; for (const u of line.units) physicalUnits.add(u.unit_index); }
     }
     lineList.push(line);
   }
   project.remaining = project.budget - project.drawn;
   project.pct_complete = pct(project.drawn, project.budget);
+  project.unit_count = physicalUnits.size; // distinct physical units, not per-unit cells
 
   // stable order: real lines first (by budget desc), then contingency, gc, media
   const rank = { line: 0, contingency: 1, gc: 2, media: 3 };
@@ -140,8 +142,10 @@ function computeRollup({ links = [], draws = [], requests = [], nameByKey = {} }
   }
   const drawList = draws.map((d) => {
     const reqs = reqByDraw.get(N(d.sitewire_draw_id)) || [];
-    const requested = N(d.total_requested_cents) || reqs.reduce((s, r) => s + N(r.requested_cents), 0);
-    const approved = N(d.total_approved_cents) || reqs.reduce((s, r) => s + N(r.approved_cents), 0);
+    // use the stored draw total when present (even if genuinely 0); fall back to summing the
+    // request rows only when the total is absent (pre-merge audit #6).
+    const requested = d.total_requested_cents != null ? N(d.total_requested_cents) : reqs.reduce((s, r) => s + N(r.requested_cents), 0);
+    const approved = d.total_approved_cents != null ? N(d.total_approved_cents) : reqs.reduce((s, r) => s + N(r.approved_cents), 0);
     return {
       sitewire_draw_id: N(d.sitewire_draw_id), number: d.number, status: d.status,
       requested_cents: requested, approved_cents: approved,

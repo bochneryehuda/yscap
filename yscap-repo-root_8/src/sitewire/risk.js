@@ -31,8 +31,11 @@ function assessDraw({ draw = {}, requests = [], links = [], rollup = null, opts 
   const flags = [];
   const add = (code, severity, message, key) => flags.push({ code, severity, message, key: key || null });
 
+  // Exclude removed crosswalk rows (matching rollup.js) so a draw request against a DELETED
+  // job item is flagged unknown/never budget-checked, not silently mapped to the dead line
+  // (pre-merge audit #2).
   const byJid = new Map();
-  for (const l of links) if (l.sitewire_job_item_id != null) byJid.set(N(l.sitewire_job_item_id), l);
+  for (const l of links) if (l.sitewire_job_item_id != null && (l.state || 'live') !== 'deleted') byJid.set(N(l.sitewire_job_item_id), l);
   const lineByKey = new Map();
   if (rollup && rollup.lines) for (const ln of rollup.lines) lineByKey.set(ln.sow_line_key, ln);
 
@@ -44,7 +47,7 @@ function assessDraw({ draw = {}, requests = [], links = [], rollup = null, opts 
     if (!l) { if (req > 0 || r.sitewire_job_item_id != null) add('unknown_line', 'high', `A draw line (Sitewire item ${r.sitewire_job_item_id}) has no Scope-of-Work match — it must be reviewed by hand, never auto-reconciled.`); continue; }
     const isMedia = !!l.is_media_item || String(l.sow_line_key).indexOf('__media__') === 0;
     if (isMedia) { if (req > 0) add('money_on_media_line', 'medium', `Money (${fmt(req)}) was requested against a photo/media line ("${l.name}"), which carries no budget.`, l.sow_line_key); continue; }
-    if (appr > req && req > 0) add('approved_exceeds_requested', 'high', `"${l.name}" was approved for ${fmt(appr)} but only ${fmt(req)} was requested.`, l.sow_line_key);
+    if (appr > req) add('approved_exceeds_requested', 'high', `"${l.name}" was approved for ${fmt(appr)} but only ${fmt(req)} was requested.`, l.sow_line_key);
     if (req > 0 && N(r.inspection_count) === 0) add('no_inspection', 'high', `"${l.name}" is requesting ${fmt(req)} with no inspection photos attached — the work isn't verified.`, l.sow_line_key);
     const agg = reqByLine.get(l.sow_line_key) || { requested: 0, approved: 0, label: rollup && lineByKey.get(l.sow_line_key) ? lineByKey.get(l.sow_line_key).label : l.name };
     agg.requested += req; agg.approved += appr;
@@ -63,6 +66,12 @@ function assessDraw({ draw = {}, requests = [], links = [], rollup = null, opts 
     }
     if (remaining <= 0 && agg.requested > 0) {
       add('line_already_complete', 'medium', `"${ln.label}" is already fully drawn, yet this draw requests ${fmt(agg.requested)} more against it.`, key);
+    }
+    // combined-pending cross-check: even if THIS draw fits, all open draws + drawn together may
+    // bust the line (requested_open already includes this draw). Catches concurrent draws that
+    // each look fine alone but jointly exceed the budget (pre-merge audit #3).
+    if (N(ln.drawn) + N(ln.requested_open) > budget && budget > 0 && agg.requested < N(ln.requested_open)) {
+      add('line_oversubscribed', 'medium', `"${ln.label}" has multiple open draws — together they request more than the ${fmt(budget - N(ln.drawn))} left on the line.`, key);
     }
   }
 

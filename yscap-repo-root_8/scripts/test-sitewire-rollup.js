@@ -156,6 +156,51 @@ const risk6 = RISK.assessDraw({ draw: { number: 2 }, requests: [{ sitewire_job_i
 assert.ok(risk6.flags.some((f) => f.code === 'unknown_line'), 'unknown Sitewire line flagged');
 ok('risk: an unmatched Sitewire draw line is flagged (never auto-reconciled)');
 
+// audit #2: a draw request against a DELETED crosswalk row is flagged unknown, never mapped
+const linksWithDeleted = links.concat([{ sitewire_job_item_id: 3000, sow_line_key: 'kitchen:0', section_token: 'all', unit_index: null, name: 'Cabinets', budgeted_cents: '400000', is_media_item: false, state: 'deleted' }]);
+const riskDel = RISK.assessDraw({ draw: { number: 2 }, requests: [{ sitewire_job_item_id: 3000, requested_cents: 400000, approved_cents: 0, inspection_count: 2 }], links: linksWithDeleted, rollup: roll });
+assert.ok(riskDel.flags.some((f) => f.code === 'unknown_line'), 'draw against a deleted line flagged unknown, not mapped to the dead line');
+assert.ok(!riskDel.flags.some((f) => f.code === 'no_inspection'), 'deleted-line request is not attributed to the removed line');
+ok('risk: a draw against a DELETED crosswalk row is flagged unknown (audit #2)');
+
+// audit #5: approved > requested with requested 0 is still an anomaly
+const riskZero = RISK.assessDraw({ draw: { number: 2 }, requests: [{ sitewire_job_item_id: 1001, requested_cents: 0, approved_cents: 50000, inspection_count: 1 }], links, rollup: roll });
+assert.ok(riskZero.flags.some((f) => f.code === 'approved_exceeds_requested'), 'approved money with a $0 request is flagged');
+ok('risk: approved money against a $0-request line is flagged (audit #5)');
+
+// audit #3: two concurrent open draws that jointly bust a line are flagged oversubscribed.
+// Build a rollup where the line already carries $14,000 of open requests on a $20,000 line
+// with $12,000 already drawn (so only $8,000 remains but $14,000 is open).
+const overLinks = [
+  { sitewire_job_item_id: 1000, sow_line_key: 'interior:4', section_token: 'u1', unit_index: 1, name: 'Unit 1 - Painting', budgeted_cents: 2000000, is_media_item: false, state: 'live' },
+];
+const overDraws = [
+  { sitewire_draw_id: 6001, number: 1, status: 'approved', total_requested_cents: 1200000, total_approved_cents: 1200000 },
+  { sitewire_draw_id: 6002, number: 2, status: 'inspecting', total_requested_cents: 700000, total_approved_cents: 0 },
+  { sitewire_draw_id: 6003, number: 3, status: 'inspecting', total_requested_cents: 700000, total_approved_cents: 0 },
+];
+const overReqs = [
+  { sitewire_draw_id: 6001, sitewire_job_item_id: 1000, requested_cents: 1200000, approved_cents: 1200000, inspection_count: 3 },
+  { sitewire_draw_id: 6002, sitewire_job_item_id: 1000, requested_cents: 700000, approved_cents: 0, inspection_count: 2 },
+  { sitewire_draw_id: 6003, sitewire_job_item_id: 1000, requested_cents: 700000, approved_cents: 0, inspection_count: 2 },
+];
+const overRoll = R.computeRollup({ links: overLinks, draws: overDraws, requests: overReqs });
+const riskOver = RISK.assessDraw({ draw: overDraws[1], requests: [overReqs[1]], links: overLinks, rollup: overRoll });
+assert.ok(riskOver.flags.some((f) => f.code === 'line_oversubscribed'), 'concurrent open draws that jointly exceed remaining are flagged');
+ok('risk: concurrent open draws that jointly bust a line are flagged oversubscribed (audit #3)');
+
+// audit #4: project.unit_count = distinct physical units, not per-unit cells
+const twoLineLinks = [
+  { sitewire_job_item_id: 1, sow_line_key: 'interior:4', section_token: 'u1', unit_index: 1, name: 'Unit 1 - Painting', budgeted_cents: 500000, is_media_item: false, state: 'live' },
+  { sitewire_job_item_id: 2, sow_line_key: 'interior:4', section_token: 'u2', unit_index: 2, name: 'Unit 2 - Painting', budgeted_cents: 500000, is_media_item: false, state: 'live' },
+  { sitewire_job_item_id: 3, sow_line_key: 'kitchen:0', section_token: 'u1', unit_index: 1, name: 'Unit 1 - Cabinets', budgeted_cents: 300000, is_media_item: false, state: 'live' },
+  { sitewire_job_item_id: 4, sow_line_key: 'kitchen:0', section_token: 'u2', unit_index: 2, name: 'Unit 2 - Cabinets', budgeted_cents: 300000, is_media_item: false, state: 'live' },
+];
+const twoLineRoll = R.computeRollup({ links: twoLineLinks, draws: [], requests: [] });
+assert.strictEqual(twoLineRoll.project.unit_count, 2, 'two physical units across two SOW lines counts as 2, not 4');
+assert.strictEqual(twoLineRoll.project.line_count, 2, 'two SOW lines');
+ok('rollup: project.unit_count = distinct physical units, not per-unit cells (audit #4)');
+
 // a totally clean draw -> no flags
 const risk7 = RISK.assessDraw({ draw: { number: 2, total_requested_cents: 200000 }, requests: [{ sitewire_job_item_id: 1001, requested_cents: 200000, approved_cents: 0, inspection_count: 4 }], links, rollup: roll });
 assert.strictEqual(risk7.flags.length, 0, 'a clean draw has no flags');

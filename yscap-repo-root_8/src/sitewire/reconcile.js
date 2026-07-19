@@ -12,6 +12,8 @@ const db = require('../db');
 const cfg = require('../config');
 const client = require('./client');
 const T = require('./transforms');
+const rollupMod = require('./rollup');
+const risk = require('./risk');
 
 // ---- capital-partner directory cache (+ which are on our lender) ----
 async function syncCapitalPartners() {
@@ -86,7 +88,50 @@ async function reconcileOne(appId) {
     n++;
   }
   await db.query(`UPDATE sitewire_property_links SET last_reconciled_at=now() WHERE application_id=$1`, [appId]);
+  // refresh the advisory draw-risk snapshot (best-effort — never fail the reconcile on it)
+  try { await assessAndStoreRisk(appId); } catch (_) {}
   return { draws: n };
+}
+
+// ---- admin-tunable risk / reallocation thresholds ----
+async function settingsMap() {
+  const rows = (await db.query(`SELECT key, value FROM sitewire_settings`)).rows;
+  const m = {}; for (const r of rows) m[r.key] = r.value; return m;
+}
+
+/**
+ * Refresh the advisory red-flag snapshot for a file's active draws (research doc §15).
+ * Assess each non-historical draw against the unified rollup (already-drawn EXCLUDES the
+ * pending draw, since drawn counts only APPROVED draws) and store level+flags. Advisory
+ * only — this never moves or blocks money.
+ */
+async function assessAndStoreRisk(appId) {
+  const links = (await db.query(
+    `SELECT sitewire_job_item_id, sow_line_key, name, budgeted_cents, is_media_item, unit_index, state
+       FROM sitewire_job_item_links WHERE application_id=$1`, [appId])).rows;
+  const rollup = await rollupMod.loadRollup(db, appId);
+  const s = await settingsMap();
+  const opts = { frontLoadPct: Number(s.front_load_pct) || 40, firstDrawMaxPct: Number(s.first_draw_max_pct) || 30 };
+  const draws = (await db.query(
+    `SELECT sitewire_draw_id, number, status, total_requested_cents, total_approved_cents, historical FROM sitewire_draws WHERE application_id=$1`, [appId])).rows;
+  let assessed = 0;
+  for (const d of draws) {
+    // Only assess OPEN draws. An approved/funded draw's approved_cents is already inside
+    // rollup.drawn, so assessing it against `remaining` would double-count and mislabel a
+    // perfectly legitimate funded draw as high-risk (pre-merge audit #1). Approved draws get
+    // their advisory snapshot CLEARED so a stale pending-era flag never lingers post-approval.
+    if (d.historical || d.status === 'approved') {
+      await db.query(`UPDATE sitewire_draws SET risk_level=NULL, risk_flags=NULL, risk_assessed_at=now() WHERE sitewire_draw_id=$1`, [d.sitewire_draw_id]);
+      continue;
+    }
+    const reqs = (await db.query(
+      `SELECT sitewire_job_item_id, requested_cents, approved_cents, inspection_count FROM sitewire_draw_requests WHERE sitewire_draw_id=$1`, [d.sitewire_draw_id])).rows;
+    const a = risk.assessDraw({ draw: d, requests: reqs, links, rollup, opts });
+    await db.query(`UPDATE sitewire_draws SET risk_level=$2, risk_flags=$3, risk_assessed_at=now() WHERE sitewire_draw_id=$1`,
+      [d.sitewire_draw_id, a.level, JSON.stringify(a.flags)]);
+    assessed++;
+  }
+  return { assessed };
 }
 
 // ---- reconcile ALL linked files (the poll pass) ----
@@ -130,4 +175,42 @@ async function fetchDrawFindings(sitewireDrawId) {
   return { draw_id: sitewireDrawId, status: draw.status, pdf_src: draw.pdf_src || null, lines, totals: { requested_cents: treq, approved_cents: tappr, not_approved_cents: Math.max(0, treq - tappr) } };
 }
 
-module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes };
+/**
+ * Persist a draw's findings for delivery to the borrower (research doc §14, Workflow B).
+ * Pulls the full per-line findings (photos/notes/approved-not-approved) and stores them,
+ * mapping each line back through the crosswalk to our SOW line/unit (only-ours). Returns
+ * the finding id + a reply_token for one-click email acceptance. Reads Sitewire only.
+ */
+async function persistDrawFindings(appId, sitewireDrawId, deliveredTo = null) {
+  const crypto = require('crypto');
+  const detail = await fetchDrawFindings(sitewireDrawId);
+  // crosswalk map: job_item_id -> {sow_line_key, unit_index}
+  const links = (await db.query(
+    `SELECT sitewire_job_item_id, sow_line_key, unit_index FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_job_item_id IS NOT NULL`, [appId])).rows;
+  const byJid = new Map(links.map((l) => [Number(l.sitewire_job_item_id), l]));
+
+  const token = crypto.randomBytes(24).toString('hex');
+  const finding = (await db.query(
+    `INSERT INTO draw_findings (application_id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, reply_token, delivered_to, delivered_at, updated_at)
+     VALUES ($1,$2,'delivered',$3,$4,$5,$6,now(),now())
+     ON CONFLICT (sitewire_draw_id) DO UPDATE SET status='delivered', total_requested_cents=EXCLUDED.total_requested_cents, total_approved_cents=EXCLUDED.total_approved_cents,
+       reply_token=COALESCE(draw_findings.reply_token, EXCLUDED.reply_token), delivered_to=EXCLUDED.delivered_to, delivered_at=now(), accepted_at=NULL, accepted_via=NULL, disputed_at=NULL, resolved_at=NULL, updated_at=now()
+     RETURNING id, reply_token`,
+    [appId, sitewireDrawId, detail.totals.requested_cents, detail.totals.approved_cents, token, deliveredTo ? JSON.stringify(deliveredTo) : null])).rows[0];
+
+  // replace the finding lines (idempotent re-deliver)
+  await db.query(`DELETE FROM draw_finding_lines WHERE finding_id=$1`, [finding.id]);
+  for (const ln of detail.lines) {
+    const x = byJid.get(Number(ln.job_item_id)) || {};
+    await db.query(
+      `INSERT INTO draw_finding_lines (finding_id, sitewire_request_id, sitewire_job_item_id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, lender_comments, photo_count, video_count, media, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,now(),now())`,
+      [finding.id, ln.request_id || null, ln.job_item_id || null, x.sow_line_key || null, x.unit_index || null,
+       ln.name || null, ln.requested_cents || 0, ln.approved_cents || 0, ln.not_approved_cents || 0,
+       ln.inspector_comments || null, ln.lender_comments || null, ln.photo_count || 0, ln.video_count || 0,
+       ln.media ? JSON.stringify(ln.media) : null]);
+  }
+  return { finding_id: finding.id, reply_token: finding.reply_token, lines: detail.lines.length, totals: detail.totals, status: detail.status };
+}
+
+module.exports = { syncCapitalPartners, syncStaffUsers, reconcileOne, reconcileAll, fetchDrawFindings, deriveTimes, assessAndStoreRisk, persistDrawFindings, settingsMap };
