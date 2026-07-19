@@ -3,8 +3,8 @@
  * Microsoft Azure AI Document Intelligence reader — the "best-in-class OCR" that reads
  * even scanned, faxed, or blurry documents (far beyond the old OCR.space fallback,
  * which caps at ~1MB and only reads clean pages). Given a document's bytes it returns
- * clean text + a page count, which the Claude "brain" (claude.js) then understands and
- * extracts. Runs in the owner's existing Microsoft/Azure account (one bill, one login).
+ * clean text + a page count, which the GPT-5 "brain" (azure-openai.js) then understands
+ * and extracts. Runs in the owner's existing Microsoft/Azure account (one bill, one login).
  *
  * Pure REST via fetch (no @azure SDK) with a simple resource key — the same "fetch"
  * shape as every other integration here, and simpler than the Google flow (no JWT: a

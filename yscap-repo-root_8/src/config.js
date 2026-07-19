@@ -330,11 +330,13 @@ module.exports = {
     model:      (process.env.AZURE_DOCINT_MODEL || 'prebuilt-read').trim(),
     apiVersion: (process.env.AZURE_DOCINT_API_VERSION || '2024-11-30').trim(),
   },
-  // Anthropic (Claude) — the AI document analyzer / underwriting brain
-  // (src/lib/ai/claude.js). Raw HTTPS via fetch (no @anthropic-ai/sdk). The model
-  // defaults to Opus 4.8; override per cost/latency with ANTHROPIC_MODEL.
-  anthropic: {
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model:  (process.env.ANTHROPIC_MODEL || 'claude-opus-4-8').trim(),
+  // Microsoft Azure OpenAI (GPT-5) — the AI document analyzer / underwriting brain
+  // (src/lib/ai/azure-openai.js), in the owner's existing Azure account. Endpoint +
+  // key + the deployment name you give the GPT-5 model. Raw HTTPS via fetch (no SDK).
+  azureOpenai: {
+    endpoint:   (process.env.AZURE_OPENAI_ENDPOINT || '').trim().replace(/\/+$/, ''),
+    key:        process.env.AZURE_OPENAI_KEY,
+    deployment: (process.env.AZURE_OPENAI_DEPLOYMENT || '').trim(),
+    apiVersion: (process.env.AZURE_OPENAI_API_VERSION || '2025-04-01-preview').trim(),
   },
 };

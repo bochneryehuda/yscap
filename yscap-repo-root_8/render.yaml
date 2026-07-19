@@ -75,16 +75,22 @@ services:
       - key: RESEND_INBOUND_API_KEY
         sync: false
       # Document underwriting: OCR reader (Azure AI Document Intelligence) + AI analyzer
-      # (Claude). All secrets are dashboard-only (sync:false) — never committed. The
-      # system stays dormant until the Azure endpoint+key and the Anthropic key are set.
+      # (Azure OpenAI GPT-5). All secrets are dashboard-only (sync:false) — never
+      # committed. The system stays dormant until the Azure endpoints + keys are set.
       - key: AZURE_DOCINT_ENDPOINT
         sync: false
       - key: AZURE_DOCINT_KEY
         sync: false
       - key: AZURE_DOCINT_API_VERSION
         value: "2024-11-30"
-      - key: ANTHROPIC_API_KEY
+      - key: AZURE_OPENAI_ENDPOINT
         sync: false
+      - key: AZURE_OPENAI_KEY
+        sync: false
+      - key: AZURE_OPENAI_DEPLOYMENT
+        sync: false
+      - key: AZURE_OPENAI_API_VERSION
+        value: "2025-04-01-preview"
       # Fill these in the dashboard when you wire the rest:
       # NOTIFY_ADMINS, MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, CLICKUP_API_TOKEN
       # SharePoint one-way sync (Pipeline Drive mirror — docs/SHAREPOINT-POLICY.md):
