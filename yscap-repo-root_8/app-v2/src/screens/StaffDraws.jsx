@@ -49,6 +49,24 @@ export default function StaffDraws() {
 
   if (!can('manage_draws')) return <div className="wrap"><div className="panel">You don't have access to the draw desk.</div></div>;
 
+  // One uniform set of stat tiles (the two rows used to be separate grids of different heights,
+  // which read as "every box a different size"). Build them into one list rendered by ONE
+  // responsive, equal-height grid so every box is identical.
+  const T = portfolio && portfolio.totals ? portfolio.totals : null;
+  const stats = [];
+  if (T) {
+    stats.push({ label: 'Committed budget', value: usd(T.budget_cents) });
+    stats.push({ label: 'Released', value: usd(T.drawn_cents), sub: `${T.pct_complete}% complete` });
+    stats.push({ label: 'Remaining exposure', value: usd(T.remaining_cents), accent: true });
+    stats.push({ label: 'In the pipeline', value: usd(T.pending_requested_cents), sub: `${T.pending_count} awaiting approval`, accent: T.pending_count > 0 });
+  }
+  if (status) {
+    stats.push({ label: 'Files in Sitewire', value: status.linked_files });
+    stats.push({ label: 'Draws tracked', value: status.mirrored_draws });
+    stats.push({ label: 'Flagged high-risk', value: T ? T.high_risk_count : '—', accent: !!(T && T.high_risk_count > 0) });
+    stats.push({ label: 'Needs review', value: status.open_reviews, accent: status.open_reviews > 0, link: '/internal/sync-reviews' });
+  }
+
   return (
     <div className="wrap">
       <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 12 }}>
@@ -65,20 +83,9 @@ export default function StaffDraws() {
         )}
       </div>
 
-      {portfolio && portfolio.totals && (
-        <div className="grid cols-4" style={{ marginTop: 14, gap: 12 }}>
-          <Stat label="Committed budget" value={usd(portfolio.totals.budget_cents)} />
-          <Stat label="Released" value={usd(portfolio.totals.drawn_cents)} sub={`${portfolio.totals.pct_complete}% complete`} />
-          <Stat label="Remaining exposure" value={usd(portfolio.totals.remaining_cents)} accent />
-          <Stat label="In the pipeline" value={usd(portfolio.totals.pending_requested_cents)} sub={`${portfolio.totals.pending_count} awaiting approval`} accent={portfolio.totals.pending_count > 0} />
-        </div>
-      )}
-      {status && (
-        <div className="grid cols-4" style={{ marginTop: 12, gap: 12 }}>
-          <Stat label="Files in Sitewire" value={status.linked_files} />
-          <Stat label="Draws tracked" value={status.mirrored_draws} />
-          <Stat label="Flagged high-risk" value={portfolio && portfolio.totals ? portfolio.totals.high_risk_count : '—'} accent={!!(portfolio && portfolio.totals && portfolio.totals.high_risk_count > 0)} />
-          <Stat label="Needs review" value={status.open_reviews} accent={status.open_reviews > 0} link="/internal/sync-reviews" />
+      {stats.length > 0 && (
+        <div style={{ marginTop: 14, display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+          {stats.map((s) => <Stat key={s.label} {...s} />)}
         </div>
       )}
 
@@ -147,12 +154,14 @@ export default function StaffDraws() {
 }
 
 function Stat({ label, value, accent, link, sub }) {
+  // Fixed height + flex column so every tile is the SAME size whether or not it has a sub-line
+  // (the value sits at a consistent position; the sub pins to the bottom).
   const body = (
-    <div className="panel" style={{ padding: '14px 16px' }}>
+    <div className="panel" style={{ padding: '14px 16px', height: '100%', minHeight: 104, display: 'flex', flexDirection: 'column', boxSizing: 'border-box' }}>
       <div className="muted" style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</div>
       <div style={{ fontSize: 26, fontWeight: 700, marginTop: 4, color: accent ? 'var(--gold, #ae8746)' : 'inherit' }}>{value ?? '—'}</div>
-      {sub && <div className="muted small" style={{ marginTop: 2 }}>{sub}</div>}
+      <div className="muted small" style={{ marginTop: 'auto', paddingTop: 4, minHeight: 16 }}>{sub || ''}</div>
     </div>
   );
-  return link ? <Link to={link} style={{ textDecoration: 'none', color: 'inherit' }}>{body}</Link> : body;
+  return link ? <Link to={link} style={{ textDecoration: 'none', color: 'inherit', display: 'block', height: '100%' }}>{body}</Link> : body;
 }

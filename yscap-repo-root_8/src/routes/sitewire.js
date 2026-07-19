@@ -148,7 +148,9 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
     const link = await orchestrator.getLink(appId);
     const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
     const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
-    const rule = cp.id ? await orchestrator.resolveRule(cp.id, program) : null;
+    // resolve by the note-buyer label first so a "handled externally" partner is recognized even when
+    // it isn't in the Sitewire directory (external partners usually aren't).
+    const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
     const insp = orchestrator.resolveInspection(link, rule);
     const budgetDollars = await rehab.requiredRehabBudget(appId).catch(() => null);
     const addr = T.addressForSitewire(a.property_address);
@@ -179,9 +181,11 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
         fee_physical_cents: rule && rule.fee_cents_physical != null ? Number(rule.fee_cents_physical) : null,
       },
       requires: { sitewire_inspector: !!(rule && rule.require_sitewire_inspector), capital_partner_approval: !!(rule && rule.require_capital_partner_approval) },
+      // handled externally = this capital partner runs draws in its own system; PILOT never pushes it.
+      handled_externally: !!(rule && rule.handled_externally),
       prereqs,
       open_reviews: openReviews,
-      can_start: Object.values(prereqs).every(Boolean),
+      can_start: !(rule && rule.handled_externally) && Object.values(prereqs).every(Boolean),
       switches: { enabled: cfg.sitewireEnabled, outbound: cfg.sitewireOutboundEnabled, dryrun: cfg.sitewireDryrun },
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -198,15 +202,20 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     const a = await orchestrator.loadFile(appId);
     if (!a) return res.status(404).json({ error: 'file not found' });
     if (a.status !== 'funded') return res.status(409).json({ error: 'the draw process starts once the loan is funded' });
+    const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
+    const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
+    const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
+    // HANDLED EXTERNALLY: this capital partner runs its draws in its own system — the file is never
+    // pushed to Sitewire, so there is nothing to start here (never guess around the owner's rule).
+    if (rule && rule.handled_externally) {
+      return res.status(422).json({ error: 'This capital partner is handled externally — its draws run in the partner\'s own system and are not pushed to Sitewire.' });
+    }
     // validate a coordinator-chosen method against what the file's rule allows (never guess)
     const body = req.body || {};
     let chosen = null;
     if (body.inspection_method != null) {
       chosen = body.inspection_method === 'traditional' ? 'traditional' : body.inspection_method === 'mobile' ? 'mobile' : null;
       if (!chosen) return res.status(400).json({ error: 'inspection_method must be mobile (virtual) or traditional (physical)' });
-      const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
-      const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
-      const rule = cp.id ? await orchestrator.resolveRule(cp.id, program) : null;
       if (rule) {
         if (chosen === 'mobile' && rule.allow_virtual === false) return res.status(422).json({ error: 'virtual inspection is not allowed for this program/partner' });
         if (chosen === 'traditional' && rule.allow_physical === false) return res.status(422).json({ error: 'on-site inspection is not allowed for this program/partner' });
@@ -420,12 +429,41 @@ router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req
 
 // ---- inspection + fee rules (admin/setup) ----
 router.get('/rules', requirePermission('platform_setup'), async (req, res) => {
-  const rules = (await db.query(`SELECT r.*, cp.name AS capital_partner_name FROM sitewire_inspection_rules r LEFT JOIN sitewire_capital_partners cp ON cp.sitewire_id=r.capital_partner_id ORDER BY r.capital_partner_id NULLS FIRST`)).rows;
-  const partners = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners ORDER BY name`)).rows;
+  const rules = (await db.query(`SELECT r.*, cp.name AS capital_partner_name FROM sitewire_inspection_rules r LEFT JOIN sitewire_capital_partners cp ON cp.sitewire_id=r.capital_partner_id ORDER BY r.partner_label NULLS FIRST, r.capital_partner_id NULLS FIRST`)).rows;
+  // The partner dropdown is EVERY note buyer we have — the Sitewire directory PLUS every distinct
+  // note-buyer label actually used on our files (applications.lender). External partners aren't in
+  // the Sitewire directory, so the note-buyer field is the real source of truth (owner-directed).
+  const dir = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners`)).rows;
+  const used = (await db.query(`SELECT DISTINCT btrim(lender) AS lender FROM applications WHERE lender IS NOT NULL AND btrim(lender) <> '' AND deleted_at IS NULL`)).rows.map((r) => r.lender);
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const byNorm = new Map();
+  for (const d of dir) byNorm.set(norm(d.name), { label: d.name, sitewire_id: Number(d.sitewire_id), on_our_lender: !!d.on_our_lender, in_directory: true, in_use: false });
+  for (const l of used) {
+    const k = norm(l); if (!k) continue;
+    const ex = byNorm.get(k);
+    if (ex) ex.in_use = true; else byNorm.set(k, { label: l, sitewire_id: null, on_our_lender: false, in_directory: false, in_use: true });
+  }
+  const partners = [...byNorm.values()].sort((a, b) => a.label.localeCompare(b.label));
   res.json({ rules, partners });
 });
 router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   const b = req.body || {};
+  // A rule is keyed by the NOTE-BUYER label (the dropdown value). Resolve the Sitewire directory id
+  // from that label best-effort — a partner not in the directory (external one) simply has no id, and
+  // that's fine: the label is the key and handled-externally rules don't push at all.
+  const partnerLabel = (b.partner_label != null && String(b.partner_label).trim() !== '') ? String(b.partner_label).trim() : null;
+  let cpId = b.capital_partner_id || null;
+  if (partnerLabel && !cpId) {
+    try { const m = await orchestrator.resolveCapitalPartnerId(partnerLabel); cpId = m.id || null; } catch (_) { cpId = null; }
+  }
+  const handledExternally = !!b.handled_externally;
+  // "Handled externally" must NAME a partner. A global-default rule (no partner_label) marked
+  // handled-externally would make resolveRule's last-resort fallback return handled_externally for
+  // EVERY unmatched file — silently stopping all Sitewire pushes portfolio-wide with no park/alert.
+  // Never allow that (owner's never-guess / never-silently-drop rule); reject it up front.
+  if (handledExternally && !partnerLabel) {
+    return res.status(400).json({ error: 'Pick a specific capital partner before marking a rule “handled externally” — the global default can’t be handled externally.' });
+  }
   const method = b.inspection_method === 'traditional' ? 'traditional' : 'mobile';
   // allow_virtual / allow_physical say which methods this program MAY use (both = coordinator can switch).
   // Default each to true when absent. Never let a rule forbid its own default method — that would leave a
@@ -443,11 +481,11 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) ? null : Math.round(pFee);
   try {
     const row = (await db.query(
-      `INSERT INTO sitewire_inspection_rules (capital_partner_id, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT (COALESCE(capital_partner_id,-1), COALESCE(program,'')) DO UPDATE SET inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, updated_at=now()
+      `INSERT INTO sitewire_inspection_rules (capital_partner_id, partner_label, program, inspection_method, require_sitewire_inspector, require_capital_partner_approval, allow_reallocation, fee_cents_virtual, fee_cents_physical, allow_virtual, allow_physical, handled_externally)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,'')) DO UPDATE SET capital_partner_id=EXCLUDED.capital_partner_id, partner_label=COALESCE(EXCLUDED.partner_label, sitewire_inspection_rules.partner_label), inspection_method=EXCLUDED.inspection_method, require_sitewire_inspector=EXCLUDED.require_sitewire_inspector, require_capital_partner_approval=EXCLUDED.require_capital_partner_approval, allow_reallocation=EXCLUDED.allow_reallocation, fee_cents_virtual=EXCLUDED.fee_cents_virtual, fee_cents_physical=EXCLUDED.fee_cents_physical, allow_virtual=EXCLUDED.allow_virtual, allow_physical=EXCLUDED.allow_physical, handled_externally=EXCLUDED.handled_externally, updated_at=now()
        RETURNING *`,
-      [b.capital_partner_id || null, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical])).rows[0];
+      [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally])).rows[0];
     res.json({ ok: true, rule: row });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
