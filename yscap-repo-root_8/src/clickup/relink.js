@@ -208,7 +208,13 @@ async function queueOrphanReview(appId) {
       applicationId: appId, borrowerId: row.borrower_id || null,
       taskId: SFR.syntheticTaskKey(appId),
       direction: 'outbound', fieldKey: 'file_link', reason: 'file_dead_unlinked',
-      suppressIfRejected: true, clickupValue: null, portalValue: row.one_line || null,
+      // suppressIfRejected is FALSE here (unlike the boot sweep, which re-runs
+      // every restart and must respect a prior dismiss). A manual admin unlink
+      // is a FRESH, intentional human action — it must ALWAYS surface a fresh
+      // review row even if an earlier orphan row for this file was dismissed,
+      // or we'd reproduce the exact "unlinked but not on the review screen" bug.
+      // The open-row ON CONFLICT still prevents duplicates within one open cycle.
+      suppressIfRejected: false, clickupValue: null, portalValue: row.one_line || null,
       rawValue: JSON.stringify({ applicationId: appId, syncState: 'manual_review', source: 'admin_unlink' }) });
   } catch (e) { console.warn('[relink] queueOrphanReview failed', appId, e && e.message); }
 }
