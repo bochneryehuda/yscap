@@ -25,6 +25,9 @@ const num = (v) => {
   return isFinite(n) ? n : null;
 };
 const int = (v) => { const n = num(v); return n == null ? null : Math.round(n); };
+// requested_ir_months is DB-constrained to 0..24 — clamp an out-of-range import
+// (a hand-edited/foreign file) instead of letting it throw a CHECK violation.
+const clampIrMonths = (v) => { const n = int(v); return n == null ? null : Math.max(0, Math.min(24, n)); };
 
 function mapBorrowerRow(b) {
   if (!b) return null;
@@ -278,14 +281,17 @@ async function createFromParsed(parsed, opts = {}) {
        int(extras.expFlips) || 0, int(extras.expHolds) || 0, int(extras.expGround) || 0,
        extras.sqftPre != null ? int(extras.sqftPre) : null,
        extras.sqftPost != null ? int(extras.sqftPost) : null,
-       // rental / carrying costs / providers (from PROPERTY_DETAIL + extension)
-       property.rentalIncome != null ? num(property.rentalIncome) : (extras.rentalIncome != null ? num(extras.rentalIncome) : null),
+       // rental / carrying costs / providers (from MISMO PROPERTY_DETAIL)
+       property.rentalIncome != null ? num(property.rentalIncome) : null,
        num(extras.appraisedRentalValue), num(extras.cdaValue),
        num(extras.propertyTaxes), num(extras.propertyInsurance), num(extras.propertyHoa),
        num(extras.firstLien), num(extras.secondLien),
        extras.titleCompany || null, extras.insuranceCompany || null, extras.appraiserName || null,
        asg.isAssignment, asg.underlying, asg.assignFee,
-       extras.interestReserveMonths != null ? int(extras.interestReserveMonths) : null,
+       // requested_ir_months carries a DB CHECK (0..24). A crafted/foreign file
+       // could exceed it — clamp rather than throw a raw constraint error, in the
+       // same spirit as sanitizeDob/sanitizeFico.
+       clampIrMonths(extras.interestReserveMonths),
        num(extras.interestReserveAmount),
        fields.sanitizeDateOnly(loan.estimatedClosingDate), fields.sanitizeDateOnly(extras.actualClosingDate),
        loan.investorLoanNumber || null, extras.lender || null, extras.channel || null,

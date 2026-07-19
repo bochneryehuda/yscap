@@ -43,8 +43,8 @@ const CHILD_ORDER = {
   COLLATERAL: ['PLEDGED_ASSET', 'SUBJECT_PROPERTY', 'COLLATERAL_DETAIL'],
 };
 // Recursively order every container's element children into MISMO's schema
-// sequence. Leaf text is untouched; our own YSCAP: extension leaves keep their
-// order (the importer reads them by name regardless).
+// sequence. Leaf text is untouched. Our own YSCAP: extension leaves get sorted
+// alphabetically too, which is harmless — the importer reads them by name.
 function sortMismoTree(node) {
   if (!node || typeof node === 'string' || !node.kids) return node;
   for (const k of node.kids) sortMismoTree(k);
