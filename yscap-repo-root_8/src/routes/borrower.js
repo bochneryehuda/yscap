@@ -834,6 +834,16 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   const open = findings.rows
     .filter((f) => !SCRUTINY_CODES.has(f.code))
     .map((f) => ({ ...f, title: scrubText(f.title) }));
+  // A hidden scrutiny finding can still be a REAL clear-to-close blocker (asis_below_price is
+  // fatal). We must not tell the borrower their file is clear while it's actually gated — but we
+  // also can't reveal the underwriting reason. If a filtered-out finding is a live blocker, surface
+  // ONE neutral placeholder so the borrower's summary honestly shows "under review", not "clear".
+  const hiddenBlocker = findings.rows.some((f) => SCRUTINY_CODES.has(f.code) && f.severity === 'fatal' && f.blocks_ctc);
+  if (hiddenBlocker) {
+    open.push({ id: 'appraisal_review', code: 'appraisal_under_review', severity: 'fatal', field: 'value',
+      appraisal_value: null, file_value: null, blocks_ctc: true, created_at: null,
+      title: 'Your appraisal is in final underwriting review' });
+  }
   // Borrower-safe appraisal object: drop staff-only bookkeeping (who imported it, the
   // source document ids) AND the free-text lender/AMC/client fields OUTRIGHT — a capital-partner
   // name can never reach a borrower. Scrubbing a free-text field only strips the names we know;
