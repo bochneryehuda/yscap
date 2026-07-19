@@ -171,8 +171,14 @@ router.post('/draws/:drawId/:action', requirePermission('manage_draws'), async (
 // ---- POST /api/sitewire/disbursements — record a release in OUR ledger (net = approved - fee) ----
 router.post('/disbursements', requirePermission('manage_draws'), async (req, res) => {
   const { application_id, sitewire_draw_id } = req.body;
-  const approved = Math.round(Number(req.body.approved_cents) || 0);
-  const fee = Math.round(Number(req.body.fee_cents) || 0);
+  // validate the money explicitly — a NaN/garbage amount must 400, never be coerced to $0 and
+  // recorded (mirrors the /approve validation; audit E-NAN-MONEY-DISB).
+  const approvedRaw = Number(req.body.approved_cents), feeRaw = Number(req.body.fee_cents);
+  if (!Number.isFinite(approvedRaw) || approvedRaw < 0 || !Number.isFinite(feeRaw) || feeRaw < 0) {
+    return res.status(400).json({ error: 'approved_cents and fee_cents must be non-negative whole numbers of cents' });
+  }
+  const approved = Math.round(approvedRaw);
+  const fee = Math.round(feeRaw);
   const feeKind = ['virtual', 'physical'].includes(req.body.fee_kind) ? req.body.fee_kind : null;
   const releaseDate = req.body.release_date || null;
   const fundedStatus = ['pending', 'released', 'held'].includes(req.body.funded_status) ? req.body.funded_status : 'pending';
@@ -224,7 +230,7 @@ router.get('/settings', requirePermission('manage_draws'), async (req, res) => {
   res.json({ settings: Object.fromEntries(rows.map((r) => [r.key, r.value])) });
 });
 router.patch('/settings', requirePermission('platform_setup'), async (req, res) => {
-  const allowed = new Set(['wire_turnaround_hours', 'variance_pct']);
+  const allowed = new Set(['wire_turnaround_hours', 'variance_pct', 'stale_days', 'no_draw_days', 'pacing_gap_pct', 'front_load_pct', 'first_draw_max_pct']);
   const updates = [];
   for (const k of Object.keys(req.body || {})) {
     if (!allowed.has(k)) continue;
@@ -257,7 +263,7 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     let sowState = null;
     try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
     const rollup = await rollupMod.loadRollup(db, appId, { sowState });
-    const link = (await db.query(`SELECT l.*, cs.full_name AS coordinator_name FROM sitewire_property_links l LEFT JOIN staff_users cs ON cs.id=l.coordinator_staff_id WHERE l.application_id=$1`, [appId])).rows[0] || null;
+    const link = (await db.query(`SELECT l.*, cs.full_name AS coordinator_name FROM sitewire_property_links l LEFT JOIN staff_users cs ON cs.id=l.coordinator_staff_id WHERE l.application_id=$1 AND l.matched_by='created'`, [appId])).rows[0] || null;
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     const requests = (await db.query(
       `SELECT r.sitewire_request_id, r.sitewire_draw_id, r.sitewire_job_item_id, r.job_item_name, r.requested_cents, r.approved_cents, r.inspection_count, r.lender_comments
@@ -282,14 +288,17 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
     // per-file budget (frozen) + drawn (approved on approved draws) + pending-approval counts
     const rows = (await db.query(
       `SELECT a.id AS application_id, a.ys_loan_number, a.property_address->>'oneLine' AS address, a.status,
+              a.actual_closing, a.term,
               l.sitewire_property_id,
               COALESCE((SELECT sum(ji.budgeted_cents) FROM sitewire_job_item_links ji WHERE ji.application_id=a.id AND ji.state<>'deleted' AND ji.is_media_item=false),0) AS budget_cents,
               COALESCE((SELECT sum(r.approved_cents) FROM sitewire_draw_requests r JOIN sitewire_draws d2 ON d2.sitewire_draw_id=r.sitewire_draw_id WHERE d2.application_id=a.id AND d2.status='approved'),0) AS drawn_cents,
               COALESCE((SELECT sum(d3.total_requested_cents) FROM sitewire_draws d3 WHERE d3.application_id=a.id AND d3.status NOT IN ('approved','drafting')),0) AS pending_requested_cents,
               (SELECT count(*) FROM sitewire_draws d4 WHERE d4.application_id=a.id AND d4.status='pending') AS pending_count,
+              (SELECT count(*) FROM sitewire_draws d6 WHERE d6.application_id=a.id) AS draw_count,
+              (SELECT max(greatest(coalesce(d7.approved_at,d7.submitted_at,d7.updated_at), d7.updated_at)) FROM sitewire_draws d7 WHERE d7.application_id=a.id) AS last_activity_at,
               (SELECT count(*) FROM sitewire_draws d5 WHERE d5.application_id=a.id AND d5.risk_level='high') AS high_risk_count
          FROM sitewire_property_links l JOIN applications a ON a.id=l.application_id
-        WHERE a.deleted_at IS NULL AND l.sitewire_property_id IS NOT NULL${sc.where}`, sc.params)).rows;
+        WHERE a.deleted_at IS NULL AND l.sitewire_property_id IS NOT NULL AND l.matched_by='created'${sc.where}`, sc.params)).rows;
     let budget = 0, drawn = 0, pendingReq = 0, pendingCount = 0, highRisk = 0;
     const files = rows.map((r) => {
       const b = Number(r.budget_cents) || 0, dr = Number(r.drawn_cents) || 0;
@@ -297,11 +306,27 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
       pendingCount += Number(r.pending_count) || 0; highRisk += Number(r.high_risk_count) || 0;
       return { application_id: r.application_id, ys_loan_number: r.ys_loan_number, address: r.address, status: r.status,
         budget_cents: b, drawn_cents: dr, remaining_cents: b - dr, pct_complete: b > 0 ? Math.round((dr / b) * 1000) / 10 : 0,
-        pending_requested_cents: Number(r.pending_requested_cents) || 0, pending_count: Number(r.pending_count) || 0, high_risk_count: Number(r.high_risk_count) || 0 };
+        pending_requested_cents: Number(r.pending_requested_cents) || 0, pending_count: Number(r.pending_count) || 0, high_risk_count: Number(r.high_risk_count) || 0,
+        funded_on: r.actual_closing || null, term: r.term || null, draw_count: Number(r.draw_count) || 0,
+        last_activity_at: r.last_activity_at ? new Date(r.last_activity_at).toISOString() : null };
     });
+    // early-warning monitoring (advisory, computed from real data only)
+    let alerts = { files: [], summary: { by_code: {}, flagged: 0, total: files.length } };
+    try {
+      const s = await reconcile.settingsMap();
+      const monitor = require('../sitewire/monitor');
+      alerts = monitor.assessPortfolioAlerts(files, {
+        nowMs: Date.now(),
+        staleDays: Number(s.stale_days) || 30, noDrawDays: Number(s.no_draw_days) || 45, pacingGapPct: Number(s.pacing_gap_pct) || 25,
+      });
+    } catch (_) {}
+    const alertByFile = {};
+    for (const af of alerts.files) alertByFile[af.application_id] = af.alerts;
+    for (const f of files) f.alerts = alertByFile[f.application_id] || [];
     res.json({ totals: { files: files.length, budget_cents: budget, drawn_cents: drawn, remaining_cents: budget - drawn,
-      pct_complete: budget > 0 ? Math.round((drawn / budget) * 1000) / 10 : 0, pending_requested_cents: pendingReq, pending_count: pendingCount, high_risk_count: highRisk },
-      files: files.sort((a, b) => b.pending_count - a.pending_count || b.remaining_cents - a.remaining_cents) });
+      pct_complete: budget > 0 ? Math.round((drawn / budget) * 1000) / 10 : 0, pending_requested_cents: pendingReq, pending_count: pendingCount, high_risk_count: highRisk,
+      flagged: alerts.summary.flagged, alert_codes: alerts.summary.by_code },
+      files: files.sort((a, b) => (b.alerts.length - a.alerts.length) || b.pending_count - a.pending_count || b.remaining_cents - a.remaining_cents) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -339,13 +364,15 @@ router.post('/files/:id/findings/:drawId/deliver', requirePermission('manage_dra
     const f = (await db.query(`SELECT a.property_address->>'oneLine' AS address, b.id AS borrower_id, b.email AS borrower_email FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1`, [appId])).rows[0] || {};
     const deliveredTo = { borrower: f.borrower_email || null };
     const result = await reconcile.persistDrawFindings(appId, drawId, deliveredTo);
-    // notify borrower (portal + email) + the loan team + coordinator
+    // notify borrower (portal + email) + the loan team + coordinator. The email links to the
+    // token accept page (`/draw-accept/:token`) so the borrower can review + one-click accept
+    // straight from the email, or sign in there to dispute a line (research doc §14).
     const addr = f.address || 'your property';
-    const link = `/app/${appId}`;
+    const acceptLink = result.reply_token ? `/draw-accept/${result.reply_token}` : `/app/${appId}`;
     if (f.borrower_id) await notify.notifyBorrower(f.borrower_id, {
       type: 'draw_findings', title: 'Your draw inspection results are ready',
       body: `The inspection results for a draw on ${addr} are ready to review. Please review each item and accept or dispute.`,
-      applicationId: appId, link, ctaLabel: 'Review draw results' }).catch(() => {});
+      applicationId: appId, link: acceptLink, ctaLabel: 'Review draw results' }).catch(() => {});
     await notify.notifyAppStaff(appId, { type: 'draw_findings', title: 'Draw findings delivered to borrower',
       body: `Inspection findings for ${addr} were delivered to the borrower to accept or dispute.`, applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
     res.json({ ok: true, ...result });
@@ -485,8 +512,13 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
       enqueueSitewirePush(appId, 'push_file').catch(() => {});
       await db.query(`UPDATE change_requests SET status='approved', decided_by=$2, decided_at=now(), updated_at=now() WHERE id=$1`, [crId, req.actor.id]);
       await db.query(`UPDATE sow_change_request_details SET updated_at=now() WHERE change_request_id=$1`, [crId]);
-      await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Budget reallocation applied', body: 'A net-zero Scope-of-Work reallocation was applied and is being pushed to Sitewire.', applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
-      return res.json({ ok: true, applied: true, pushed_to_sitewire: true });
+      // Only claim a Sitewire push when the integration is actually on — otherwise the enqueue
+      // no-ops and the DB SOW would silently diverge from Sitewire (audit E-REALLOC-FALSEPUSH).
+      const willPush = !!cfg.sitewireEnabled;
+      await notify.notifyAppStaff(appId, { type: 'sow_reallocation', title: 'Budget reallocation applied',
+        body: willPush ? 'A net-zero Scope-of-Work reallocation was applied and is being pushed to Sitewire.' : 'A net-zero Scope-of-Work reallocation was applied to the Scope of Work (Sitewire is currently off — it will sync when turned on).',
+        applicationId: appId, link: `/internal/app/${appId}` }).catch(() => {});
+      return res.json({ ok: true, applied: true, pushed_to_sitewire: willPush });
     }
 
     // BEFORE clear-to-close OR a total change: the construction total is changing, which

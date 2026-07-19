@@ -30,45 +30,59 @@ async function journal(e) {
       [e.appId || null, e.propertyId || null, e.budgetId || null, e.entity || null, e.entityId || null,
        e.idem || null, e.field || null, e.oldValue === undefined ? null : JSON.stringify(e.oldValue),
        e.newValue === undefined ? null : JSON.stringify(e.newValue), e.changed !== false, !!e.blocked, e.source || 'push']);
-  } catch (_) { /* journaling is best-effort but should rarely fail */ }
+  } catch (err) {
+    // The audit trail must never go dark silently — a real Sitewire write with no journal row
+    // is a compliance hole. Warn loudly (the write itself already happened; we don't undo it).
+    console.warn(`[sitewire] JOURNAL WRITE FAILED (Sitewire write proceeded, audit row missing) entity=${e.entity} field=${e.field}: ${db.describeError ? db.describeError(err) : err.message}`);
+  }
 }
 
-// ---- park a stuck/ambiguous state for a human (never guess) ----
-async function park({ appId, reason, fieldKey = 'sitewire', current = null, proposed = null }) {
+// ---- park a stuck/ambiguous state for a human (never guess, never silently drop) ----
+// `dedupe` differentiates DISTINCT failures that share a reason class (e.g. a bind failure on
+// line A vs line B) so they don't collapse into one row and lose the second failure's detail.
+async function park({ appId, reason, fieldKey = 'sitewire', current = null, proposed = null, dedupe = null }) {
+  const cls = String(reason).split(':')[0];
+  // The shared open-review unique index is (COALESCE(task_id,''), field_key, direction,
+  // COALESCE(proposed_value,'')) and does NOT include application_id. Stamp a per-(file,
+  // reason-class, instance) key into task_id (no FK; unused by sitewire rows) so distinct
+  // files / reasons / instances never collide on the index and none is silently swallowed.
+  const taskKey = `sitewire:${appId}:${cls}${dedupe ? ':' + String(dedupe).slice(0, 80) : ''}`;
   try {
-    // dedupe: one open row per (appId, reason)
     const existing = await db.query(
-      `SELECT id FROM sync_review_queue WHERE application_id=$1 AND field_key=$2 AND reason LIKE $3 AND status='open' LIMIT 1`,
-      [appId, fieldKey, reason.split(':')[0] + '%']);
+      `SELECT id FROM sync_review_queue WHERE task_id=$1 AND field_key=$2 AND status='open' LIMIT 1`, [taskKey, fieldKey]);
     if (existing.rowCount > 0) return existing.rows[0].id;
-    // The shared open-review unique index is (COALESCE(task_id,''), field_key, direction,
-    // COALESCE(proposed_value,'')) — it does NOT include application_id. Most Sitewire parks
-    // carry a null proposed_value, so without a discriminator they'd all collide on
-    // ('', 'sitewire', 'outbound', '') and every park after the first would be silently
-    // swallowed by the catch below (violating "nothing is silent"). Stamp a per-(file,
-    // reason-class) key into task_id (no FK; unused by sitewire rows) so distinct files /
-    // reasons never collide, while the SELECT-dedup above still catches a true repeat.
-    const taskKey = `sitewire:${appId}:${String(reason).split(':')[0]}`;
     const r = await db.query(
       `INSERT INTO sync_review_queue (application_id, task_id, direction, field_key, current_value, proposed_value, reason, status)
        VALUES ($1,$2,'outbound',$3,$4,$5,$6,'open') RETURNING id`,
       [appId, taskKey, fieldKey, current == null ? null : String(current), proposed == null ? null : String(proposed), reason]);
     const rid = r.rows[0].id;
-    // notify the file's loan officer (CLAUDE.md sync-review contract) — best-effort
     try { await require('../lib/sync-review').notifyLoanOfficer(rid); } catch (_) {}
     return rid;
-  } catch (_) { return null; }
+  } catch (err) {
+    // A concurrent insert may have raced us to the same task_id — return THAT row rather than
+    // letting this park vanish (the unique-index collision must never silently drop a review).
+    try { const ex = await db.query(`SELECT id FROM sync_review_queue WHERE task_id=$1 AND field_key=$2 AND status='open' LIMIT 1`, [taskKey, fieldKey]); if (ex.rowCount) return ex.rows[0].id; } catch (_) {}
+    console.warn(`[sitewire] PARK FAILED to record a review row (app=${appId}, reason="${reason}"): ${db.describeError ? db.describeError(err) : err.message}`);
+    return null;
+  }
 }
 
 // ---- rolling 10-minute volume circuit breaker (shared across every write path) ----
 async function circuitCheck(n = 1) {
+  let r;
   try {
-    const r = await db.query(`SELECT count(*)::int AS c FROM sitewire_write_log WHERE created_at > now() - interval '10 minutes' AND blocked=false`);
-    if ((r.rows[0].c + n) > cfg.sitewireMaxWrites10min) {
-      const e = new Error(`SITEWIRE_CIRCUIT_OPEN: >${cfg.sitewireMaxWrites10min} writes/10min`);
-      e.code = 'SITEWIRE_CIRCUIT_OPEN'; throw e;
-    }
-  } catch (e) { if (e.code === 'SITEWIRE_CIRCUIT_OPEN') throw e; }
+    r = await db.query(`SELECT count(*)::int AS c FROM sitewire_write_log WHERE created_at > now() - interval '10 minutes' AND blocked=false`);
+  } catch (err) {
+    // Fail CLOSED: if we can't read the breaker counter we must NOT let the write proceed
+    // unguarded (a runaway during DB trouble could otherwise bypass the cap). Throw retryable
+    // so the durable queue re-attempts once the DB recovers.
+    const e = new Error(`SITEWIRE_CIRCUIT_CHECK_FAILED: ${db.describeError ? db.describeError(err) : err.message}`);
+    e.retryable = true; throw e;
+  }
+  if ((r.rows[0].c + n) > cfg.sitewireMaxWrites10min) {
+    const e = new Error(`SITEWIRE_CIRCUIT_OPEN: >${cfg.sitewireMaxWrites10min} writes/10min`);
+    e.code = 'SITEWIRE_CIRCUIT_OPEN'; throw e;
+  }
 }
 
 // ---- resolve the capital-partner id from our free-text lender label (G-CP) ----
@@ -80,8 +94,11 @@ async function resolveCapitalPartnerId(lenderLabel) {
   const L = norm(label);
   const exact = rows.filter((r) => norm(r.name) === L);
   if (exact.length === 1) return { id: exact[0].sitewire_id, ambiguous: false };
+  // A fuzzy substring match is NOT auto-bound (that would be a guess — owner's #1 rule). A
+  // single close match is surfaced as a CANDIDATE so the push parks it for one-click human
+  // confirmation instead of silently binding "Capital" → "RCN Capital".
   const contains = rows.filter((r) => { const n = norm(r.name); return n.includes(L) || L.includes(n); });
-  if (contains.length === 1) return { id: contains[0].sitewire_id, ambiguous: false };
+  if (contains.length === 1) return { id: null, ambiguous: false, candidate: contains[0].sitewire_id, candidateName: contains[0].name };
   return { id: null, ambiguous: contains.length > 1 };
 }
 
@@ -158,7 +175,11 @@ async function pushFile(appId, opts = {}) {
 
   // resolve capital partner (G-CP) + rule + coordinator
   const cp = await resolveCapitalPartnerId(a.lender);
-  if (!cp.id) { await park({ appId, reason: `sitewire_capital_partner_unmatched: lender label "${a.lender || '(blank)'}" ${cp.ambiguous ? 'matched multiple' : 'matched no'} Sitewire capital partner`, current: a.lender }); return { parked: 'capital_partner' }; }
+  if (!cp.id) {
+    const why = cp.candidate ? `partially matched "${cp.candidateName}" — confirm it's the right partner` : `${cp.ambiguous ? 'matched multiple' : 'matched no'} Sitewire capital partner`;
+    await park({ appId, reason: `sitewire_capital_partner_unmatched: lender label "${a.lender || '(blank)'}" ${why}`, current: a.lender, proposed: cp.candidate ? String(cp.candidate) : null });
+    return { parked: 'capital_partner' };
+  }
   const rule = await resolveRule(cp.id, program);
   const inspectionMethod = (rule && rule.inspection_method) || 'mobile';
   const feeKind = T.feeKindFor(inspectionMethod);
@@ -201,7 +222,13 @@ async function pushFile(appId, opts = {}) {
     try {
       const all = await client.listProperties();
       existing = (all || []).find((p) => String(p.loan_number || '') === String(a.ys_loan_number));
-    } catch (e) { if (e.retryable) throw e; }
+    } catch (e) {
+      if (e.retryable) throw e; // transient → the queue retries the whole push
+      // A NON-retryable failure of the dupe check must NEVER fall through to create — that
+      // would risk a duplicate property (violating only-ours). Park instead of guessing safe.
+      await park({ appId, reason: `sitewire_dupe_check_failed: could not verify loan ${a.ys_loan_number} isn't already in Sitewire (${e.message}) — not creating, to avoid a duplicate` });
+      return { parked: 'dupe_check_failed' };
+    }
     if (existing) {
       await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} already exists in Sitewire (property ${existing.id}) — PILOT will not duplicate or adopt it`, current: String(existing.id) });
       return { parked: 'dupe_property' };
@@ -221,8 +248,14 @@ async function pushFile(appId, opts = {}) {
     throw e; // transient -> queue retries
   }
   if (property && property.__dryrun) return { dryrun: true, stage: 'property' };
-  const propertyId = property.id;
-  const budgetId = property.budget && property.budget.id;
+  const propertyId = property && property.id;
+  const budgetId = property && property.budget && property.budget.id;
+  // A 200 that came back without the ids we need to bind the crosswalk is NOT a success — never
+  // proceed with undefined ids or write a link row we can't reconcile (G-RAW / E-RAW-NOID).
+  if (!propertyId || !budgetId) {
+    await park({ appId, reason: `sitewire_bind_missing_property: Sitewire returned a property with no ${propertyId ? 'budget id' : 'property id'} — cannot bind. Response: ${JSON.stringify(property || {}).slice(0, 200)}` });
+    return { parked: 'no_ids' };
+  }
   await journal({ appId, propertyId, budgetId, entity: 'property', entityId: propertyId, field: 'property', newValue: propertyFields, source: link ? 'push' : 'create' });
 
   // upsert the link
@@ -295,8 +328,8 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
   }
   for (const c of ex.items) {
     const ji = respByName.get(c.name);
-    if (ji === undefined) { await park({ appId, reason: `sitewire_bind_missing: created line "${c.name}" not found in response — cannot bind id` }); continue; }
-    if (ji === null) { await park({ appId, reason: `sitewire_bind_ambiguous: line name "${c.name}" appears twice — cannot bind id` }); continue; }
+    if (ji === undefined) { await park({ appId, reason: `sitewire_bind_missing: created line "${c.name}" not found in response — cannot bind id`, dedupe: c.name }); continue; }
+    if (ji === null) { await park({ appId, reason: `sitewire_bind_ambiguous: line name "${c.name}" appears twice — cannot bind id`, dedupe: c.name }); continue; }
     await db.query(
       `INSERT INTO sitewire_job_item_links (application_id, sitewire_budget_id, sow_line_key, section_token, unit_index, sitewire_job_item_id, name, budgeted_cents, is_media_item, state, last_response_hash, last_pushed_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'live',$10,now(),now())
@@ -314,7 +347,12 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
       await park({ appId, reason: `sitewire_total_drift: Sitewire budget total ${T.usd(fresh.total_budgeted_cents)} != expected ${T.usd(budgetCents)} after write`, current: fresh.total_budgeted_cents, proposed: budgetCents });
       return { parked: 'total_drift' };
     }
-  } catch (_) { /* verify is best-effort; reconcile re-checks */ }
+  } catch (e) {
+    // If we can't confirm the write persisted, do NOT report success silently (there is no
+    // budget re-verify in the reconcile poll to catch it later). Park it for a human to confirm.
+    await park({ appId, reason: `sitewire_total_unverified: could not re-read the Sitewire budget to confirm it saved (${e.message}) — needs a manual check`, current: budgetId });
+    return { parked: 'verify_failed' };
+  }
   return { ok: true, created: diff.creates.length, updated: diff.updates.length, deleted: diff.deletes.length };
 }
 

@@ -25,12 +25,14 @@ function authHeaders() {
 const RPM = Math.max(1, parseInt(process.env.SITEWIRE_MAX_RPM || '90', 10) || 90);
 const MAX_TRIES = Math.max(1, parseInt(process.env.SITEWIRE_MAX_TRIES || '3', 10) || 3);
 const TIMEOUT_MS = Math.max(1000, parseInt(process.env.SITEWIRE_TIMEOUT_MS || '25000', 10) || 25000);
-const BASE_BACKOFF_MS = 500, MAX_BACKOFF_MS = 8000;
+const BASE_BACKOFF_MS = 500, MAX_BACKOFF_MS = 8000, RETRY_AFTER_MAX_MS = 60000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function isRetryableStatus(s) { return s === 429 || (s >= 500 && s <= 599); }
 function backoffMs(attempt, retryAfterSec) {
-  if (retryAfterSec && retryAfterSec > 0) return Math.min(retryAfterSec * 1000, MAX_BACKOFF_MS);
+  // Honor a server-requested Retry-After up to a higher ceiling than our own backoff cap — if
+  // Sitewire asks for 30s and we only wait 8s we'd just re-hit the 429 (audit note E-API-429).
+  if (retryAfterSec && retryAfterSec > 0) return Math.min(retryAfterSec * 1000, RETRY_AFTER_MAX_MS);
   return Math.min(BASE_BACKOFF_MS * 2 ** (attempt - 1), MAX_BACKOFF_MS);
 }
 function httpError(method, path, status, retryAfterSec, body) {

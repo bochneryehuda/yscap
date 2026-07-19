@@ -12,9 +12,29 @@ const db = require('../db');
 const cfg = require('../config');
 const orchestrator = require('../sitewire/orchestrator');
 const reconcile = require('../sitewire/reconcile');
+const { enqueueSitewirePush } = require('../sitewire/enqueue');
 
 let started = false;
 let lastDirectorySync = 0;
+
+/**
+ * Backfill stranded births (audit E-GATE-BIRTH-WHILE-OFF): a borrower who clicked "Request a
+ * draw" while SITEWIRE_ENABLED was off consumed the one-time claim, but the enqueue no-op'd, so
+ * the file has no Sitewire footprint and nothing ever re-fires. On worker start (Sitewire now
+ * on) we enqueue every funded + draw-requested file that has no link row yet, so turning the
+ * switch on catches up the backlog instead of silently stranding those files.
+ */
+async function backfillStrandedBirthsOnce() {
+  try {
+    const rows = (await db.query(
+      `SELECT a.id FROM applications a
+        WHERE a.status='funded' AND a.draw_setup_requested_at IS NOT NULL AND a.deleted_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM sitewire_property_links l WHERE l.application_id=a.id AND l.sitewire_property_id IS NOT NULL)
+        LIMIT 500`)).rows;
+    for (const r of rows) await enqueueSitewirePush(r.id, 'push_file').catch(() => {});
+    if (rows.length) console.log(`[sitewire] backfilled ${rows.length} funded+draw-requested file(s) with no Sitewire footprint`);
+  } catch (e) { console.warn('[sitewire] birth backfill skipped:', e.message); }
+}
 
 async function pushOutboxOnce() {
   const claim = await db.query(
@@ -68,9 +88,10 @@ function start() {
   if (!cfg.sitewireEnabled) { console.log('[sitewire] disabled (set SITEWIRE_ENABLED=1 to turn on)'); return; }
   started = true;
   console.log('[sitewire] worker starting — outbound=%s dryrun=%s poll=%ss', cfg.sitewireOutboundEnabled, cfg.sitewireDryrun, cfg.sitewirePollSec);
-  // one-shot warm of the directory + staff map
+  // one-shot warm of the directory + staff map, then catch up any stranded births
   reconcile.syncCapitalPartners().catch((e) => console.warn('[sitewire] partner sync:', e.message));
   reconcile.syncStaffUsers().catch(() => {});
+  setTimeout(() => backfillStrandedBirthsOnce(), 3000);
   const drain = async (fn, name) => { try { let guard = 0; while (await fn() && guard++ < 500) {} } catch (e) { console.warn('[sitewire]', name, 'error:', e.message); } };
   if (cfg.sitewireOutboundEnabled) setInterval(() => drain(pushOutboxOnce, 'push'), 4000);
   setInterval(reconcileOnce, Math.max(60, cfg.sitewirePollSec) * 1000);

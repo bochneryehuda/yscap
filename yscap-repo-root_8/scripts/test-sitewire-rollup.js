@@ -230,4 +230,38 @@ assert.strictEqual(risk7.flags.length, 0, 'a clean draw has no flags');
 assert.strictEqual(risk7.level, 'clear', 'clean draw level = clear');
 ok('risk: a clean, well-documented, in-budget draw raises no flags');
 
+// ============================ PORTFOLIO MONITOR ============================
+const MON = require('../src/sitewire/monitor');
+assert.strictEqual(MON.parseTermMonths('12 months'), 12);
+assert.strictEqual(MON.parseTermMonths('18 mo'), 18);
+assert.strictEqual(MON.parseTermMonths('bridge'), null, 'unparseable term -> null (never guessed)');
+ok('monitor: term parsing (skips when unclear)');
+
+const NOW = Date.parse('2026-07-19T00:00:00Z');
+const day = (n) => new Date(NOW - n * 86400000).toISOString().slice(0, 10);
+const monFiles = [
+  // overdrawn
+  { application_id: 'a', budget_cents: 1000000, drawn_cents: 1200000, draw_count: 2, funded_on: day(120), term: '12 months', last_activity_at: new Date(NOW - 5 * 86400000).toISOString() },
+  // funded 60 days ago, no draw yet
+  { application_id: 'b', budget_cents: 1000000, drawn_cents: 0, draw_count: 0, funded_on: day(60), term: '12 months', last_activity_at: null },
+  // stale: has a draw but no activity in 45 days, money left
+  { application_id: 'c', budget_cents: 1000000, drawn_cents: 300000, draw_count: 1, funded_on: day(90), term: '12 months', last_activity_at: new Date(NOW - 45 * 86400000).toISOString() },
+  // behind pace: 90% of a 12-mo term elapsed, only 20% drawn
+  { application_id: 'd', budget_cents: 1000000, drawn_cents: 200000, draw_count: 2, funded_on: day(330), term: '12 months', last_activity_at: new Date(NOW - 3 * 86400000).toISOString() },
+  // past maturity with money undrawn
+  { application_id: 'e', budget_cents: 1000000, drawn_cents: 400000, draw_count: 2, funded_on: day(400), term: '12 months', last_activity_at: new Date(NOW - 10 * 86400000).toISOString() },
+  // healthy: on pace, recent activity, nothing to flag
+  { application_id: 'f', budget_cents: 1000000, drawn_cents: 500000, draw_count: 3, funded_on: day(180), term: '12 months', last_activity_at: new Date(NOW - 2 * 86400000).toISOString() },
+];
+const mon = MON.assessPortfolioAlerts(monFiles, { nowMs: NOW });
+const codesOf = (id) => mon.files.find((f) => f.application_id === id).alerts.map((a) => a.code);
+assert.ok(codesOf('a').includes('overdrawn'), 'overdrawn flagged');
+assert.ok(codesOf('b').includes('no_draw_since_funding'), 'no-draw-since-funding flagged');
+assert.ok(codesOf('c').includes('stale'), 'stale flagged');
+assert.ok(codesOf('d').includes('behind_pace'), 'behind-pace flagged');
+assert.ok(codesOf('e').includes('past_maturity'), 'past-maturity flagged');
+assert.strictEqual(codesOf('f').length, 0, 'a healthy on-pace file raises no alerts');
+assert.strictEqual(mon.summary.flagged, 5, 'five of six files flagged');
+ok('monitor: stale / no-draw / overdrawn / behind-pace / past-maturity alerts computed from real data');
+
 console.log(`\nAll ${n} Sitewire rollup/reallocation/risk checks passed.`);

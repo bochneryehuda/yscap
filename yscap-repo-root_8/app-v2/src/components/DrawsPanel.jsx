@@ -40,7 +40,11 @@ export default function DrawsPanel({ appId }) {
   if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!data) return null;
 
-  const { rollup, link, draws = [], requests = [], ledger = [], findings = [], change_requests = [] } = data;
+  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [] } = data;
+  // Render draw cards from rollup.draws — it carries the money (requested/approved/net_release),
+  // the funded flag, and the merged risk flags + pdf_src. The top-level `draws` array has no
+  // money fields, so using it would render $0.00 everywhere.
+  const draws = rollup.draws || [];
   const reqsByDraw = {};
   for (const r of requests) (reqsByDraw[r.sitewire_draw_id] = reqsByDraw[r.sitewire_draw_id] || []).push(r);
   const findingByDraw = {};

@@ -47,8 +47,6 @@ export default function StaffDraws() {
     return draws;
   }, [draws, filter]);
 
-  const pendingCount = useMemo(() => draws.filter((d) => d.status === 'pending').length, [draws]);
-
   if (!can('manage_draws')) return <div className="wrap"><div className="panel">You don't have access to the draw desk.</div></div>;
 
   return (
@@ -81,6 +79,24 @@ export default function StaffDraws() {
           <Stat label="Draws tracked" value={status.mirrored_draws} />
           <Stat label="Flagged high-risk" value={portfolio && portfolio.totals ? portfolio.totals.high_risk_count : '—'} accent={!!(portfolio && portfolio.totals && portfolio.totals.high_risk_count > 0)} />
           <Stat label="Needs review" value={status.open_reviews} accent={status.open_reviews > 0} link="/internal/sync-reviews" />
+        </div>
+      )}
+
+      {portfolio && Array.isArray(portfolio.files) && portfolio.files.some((f) => f.alerts && f.alerts.length) && (
+        <div className="panel" style={{ marginTop: 14 }}>
+          <h3 style={{ marginTop: 0, marginBottom: 8 }}>Attention needed</h3>
+          {portfolio.files.filter((f) => f.alerts && f.alerts.length).map((f) => (
+            <div key={f.application_id} className="row between" style={{ padding: '6px 0', borderTop: '1px solid var(--line,#e6e0d4)', gap: 8, flexWrap: 'wrap' }}>
+              <div>
+                <Link to={`/internal/app/${f.application_id}`} style={{ fontWeight: 600 }}>{f.address || f.ys_loan_number || 'File'}</Link>
+                <div className="small" style={{ marginTop: 2 }}>
+                  {f.alerts.map((a, i) => (
+                    <span key={i} className={'pill ' + (a.severity === 'high' ? 'sw-pending' : 'sw-insp')} style={{ marginRight: 6 }} title={a.message}>{a.message}</span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

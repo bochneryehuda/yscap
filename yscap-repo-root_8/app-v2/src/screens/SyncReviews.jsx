@@ -50,8 +50,12 @@ const SITEWIRE_REASON_COPY = {
   sitewire_borrower_assign_failed: 'The borrower couldn’t be added to the Sitewire property by email. Check the borrower’s email on the file.',
   sitewire_budget_rejected: 'Sitewire rejected the budget push. The exact reason is in the details below — fix it and it retries.',
   sitewire_bind_missing: 'A budget line we created didn’t come back from Sitewire, so we couldn’t link it. This needs a quick manual check before draws reconcile.',
+  sitewire_bind_missing_property: 'Sitewire accepted the property but didn’t return the id we need to link it. Nothing was linked — a person should check the property in Sitewire before draws are set up.',
   sitewire_bind_ambiguous: 'Two budget lines share the same name, so we couldn’t tell which Sitewire line is which. Rename one so every line is unique.',
   sitewire_total_drift: 'After the push, Sitewire’s budget total didn’t match what we sent. Nothing else was changed — a person should reconcile it.',
+  sitewire_total_unverified: 'We saved the budget to Sitewire but couldn’t read it back to confirm it stuck (a temporary connection issue). Nothing is wrong yet — please re-check the budget in Sitewire.',
+  sitewire_dupe_check_failed: 'We couldn’t check whether this loan is already in Sitewire, so we did NOT create it (to avoid a duplicate). Try again once the connection is back, or check Sitewire by hand.',
+  sitewire_unknown_draw_line: 'A draw came in for a budget line PILOT doesn’t recognize (it wasn’t one we created). It was NOT auto-applied — a person needs to reconcile it by hand.',
 };
 // FILE-LEVEL resolution options per reason (mirrors REASON_ACTIONS in
 // src/lib/sync-file-review.js — the server validates; this only renders).

@@ -60,7 +60,7 @@ function developmentType(propertyType) {
   if (/single|sfr|1\s*unit|detached/.test(t)) return 'single_family_residential';
   if (/multi|2-4|5\+|duplex|triplex|fourplex|apartment/.test(t)) return 'multi_family_residential';
   if (/mixed|commercial|retail|office/.test(t)) return 'commercial';
-  return null; // unrecognized -> caller parks for review, never guesses
+  return null; // unrecognized -> the push OMITS this optional field (left blank), never guesses a type
 }
 
 // loan_type/rehab_type -> Sitewire construction_type. Unknown -> null (never guessed).

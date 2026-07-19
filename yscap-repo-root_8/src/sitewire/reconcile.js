@@ -75,15 +75,19 @@ async function reconcileOne(appId) {
        full.quick_notify_status_id || d.quick_notify_status_id || null, full.pdf_src || null,
        times.submitted || null, times.approved || null, link.budget_version || null,
        full.draw_events ? JSON.stringify(full.draw_events) : null, d.updated_at || null]);
-    // mirror requests
+    // mirror requests — per-row guarded so one poison row can't strand the whole file's mirror
     for (const r of (full.requests || [])) {
-      await db.query(
-        `INSERT INTO sitewire_draw_requests (sitewire_draw_id, sitewire_request_id, sitewire_job_item_id, job_item_name, requested_cents, approved_cents, lender_comments, inspector_comments, inspection_count, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
-         ON CONFLICT (sitewire_request_id) DO UPDATE SET requested_cents=EXCLUDED.requested_cents, approved_cents=EXCLUDED.approved_cents, lender_comments=EXCLUDED.lender_comments, inspector_comments=EXCLUDED.inspector_comments, updated_at=now()`,
-        [d.id, r.id, (r.job_item && r.job_item.id) || null, (r.job_item && r.job_item.name) || null,
-         r.requested_cents || 0, r.approved_cents == null ? null : r.approved_cents, r.lender_comments || null, r.inspector_comments || null,
-         Array.isArray(r.inspections) ? r.inspections.length : 0]);
+      try {
+        await db.query(
+          `INSERT INTO sitewire_draw_requests (sitewire_draw_id, sitewire_request_id, sitewire_job_item_id, job_item_name, requested_cents, approved_cents, lender_comments, inspector_comments, inspection_count, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+           ON CONFLICT (sitewire_request_id) DO UPDATE SET requested_cents=EXCLUDED.requested_cents, approved_cents=EXCLUDED.approved_cents, lender_comments=EXCLUDED.lender_comments, inspector_comments=EXCLUDED.inspector_comments, updated_at=now()`,
+          [d.id, r.id, (r.job_item && r.job_item.id) || null, (r.job_item && r.job_item.name) || null,
+           r.requested_cents || 0, r.approved_cents == null ? null : r.approved_cents, r.lender_comments || null, r.inspector_comments || null,
+           Array.isArray(r.inspections) ? r.inspections.length : 0]);
+      } catch (rowErr) {
+        console.warn(`[sitewire] reconcile: skipped a bad request row (draw ${d.id}, request ${r && r.id}): ${db.describeError ? db.describeError(rowErr) : rowErr.message}`);
+      }
     }
     n++;
   }
@@ -110,6 +114,17 @@ async function assessAndStoreRisk(appId) {
     `SELECT sitewire_job_item_id, sow_line_key, name, budgeted_cents, is_media_item, unit_index, state
        FROM sitewire_job_item_links WHERE application_id=$1`, [appId])).rows;
   const rollup = await rollupMod.loadRollup(db, appId);
+  // CLAUDE.md rule 5: an UNKNOWN inbound draw line (a Sitewire job item with no crosswalk row)
+  // must PARK a review row — never just an advisory flag that vanishes when the draw is approved.
+  if (rollup.unknown && rollup.unknown.length) {
+    try {
+      await require('./orchestrator').park({
+        appId, dedupe: rollup.unknown.slice().sort((a, b) => a - b).join('-'),
+        reason: `sitewire_unknown_draw_line: Sitewire draw line id(s) ${rollup.unknown.join(', ')} have no Scope-of-Work match — reconcile by hand, never auto-applied`,
+        current: rollup.unknown.join(','),
+      });
+    } catch (_) {}
+  }
   const s = await settingsMap();
   const opts = { frontLoadPct: Number(s.front_load_pct) || 40, firstDrawMaxPct: Number(s.first_draw_max_pct) || 30 };
   const draws = (await db.query(
@@ -138,7 +153,16 @@ async function assessAndStoreRisk(appId) {
 async function reconcileAll() {
   const rows = (await db.query(`SELECT application_id FROM sitewire_property_links WHERE sitewire_property_id IS NOT NULL AND matched_by='created'`)).rows;
   let total = 0;
-  for (const r of rows) { try { const res = await reconcileOne(r.application_id); total += res.draws || 0; } catch (_) {} }
+  for (const r of rows) {
+    try {
+      const res = await reconcileOne(r.application_id);
+      total += res.draws || 0;
+      // a per-file error is surfaced, never silently swallowed (a stranded mirror must be visible)
+      if (res && res.error) console.warn(`[sitewire] reconcile: file ${r.application_id} could not sync: ${res.error}`);
+    } catch (err) {
+      console.warn(`[sitewire] reconcile: file ${r.application_id} threw: ${db.describeError ? db.describeError(err) : err.message}`);
+    }
+  }
   return { files: rows.length, draws: total };
 }
 

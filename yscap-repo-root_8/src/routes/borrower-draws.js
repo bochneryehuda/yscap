@@ -40,30 +40,35 @@ const scrub = (s) => (s == null ? null : borrowerSafe.scrubText(String(s)));
 
 // ---- GET /draws — every draw across the borrower's files (borrower-safe) ----
 router.get('/draws', async (req, res) => {
-  const rows = (await db.query(
-    `SELECT d.sitewire_draw_id, d.application_id, d.number, d.status, d.total_requested_cents, d.total_approved_cents,
-            d.submitted_at, d.approved_at, a.property_address->>'oneLine' AS address,
-            (SELECT status FROM draw_findings f WHERE f.sitewire_draw_id=d.sitewire_draw_id) AS findings_status,
-            (SELECT id FROM draw_findings f WHERE f.sitewire_draw_id=d.sitewire_draw_id) AS finding_id
-       FROM sitewire_draws d JOIN applications a ON a.id=d.application_id
-      WHERE a.deleted_at IS NULL AND (${OWN_FILE_SQL('a', '$1')})
-      ORDER BY d.updated_at DESC NULLS LAST LIMIT 200`, [me(req)])).rows;
-  res.json({ draws: rows });
+  try {
+    const rows = (await db.query(
+      `SELECT d.sitewire_draw_id, d.application_id, d.number, d.status, d.total_requested_cents, d.total_approved_cents,
+              d.submitted_at, d.approved_at, a.property_address->>'oneLine' AS address,
+              (SELECT status FROM draw_findings f WHERE f.sitewire_draw_id=d.sitewire_draw_id) AS findings_status,
+              (SELECT id FROM draw_findings f WHERE f.sitewire_draw_id=d.sitewire_draw_id) AS finding_id
+         FROM sitewire_draws d JOIN applications a ON a.id=d.application_id
+        WHERE a.deleted_at IS NULL AND (${OWN_FILE_SQL('a', '$1')})
+        ORDER BY d.updated_at DESC NULLS LAST LIMIT 200`, [me(req)])).rows;
+    res.json({ draws: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ---- GET /draws/:appId/rollup — the unified per-line picture (borrower-safe) ----
 router.get('/draws/:appId/rollup', async (req, res) => {
   if (!(await ownsApp(req, req.params.appId))) return res.status(403).json({ error: 'forbidden' });
-  let sowState = null;
-  try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [req.params.appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
-  const rollup = await rollupMod.loadRollup(db, req.params.appId, { sowState });
-  for (const l of rollup.lines) l.label = scrub(l.label);
-  res.json({ rollup });
+  try {
+    let sowState = null;
+    try { const s = (await db.query(`SELECT tool_payload FROM checklist_items WHERE application_id=$1 AND tool_key='rehab_budget' ORDER BY created_at LIMIT 1`, [req.params.appId])).rows[0]; sowState = s && s.tool_payload && s.tool_payload.state ? s.tool_payload.state : null; } catch (_) {}
+    const rollup = await rollupMod.loadRollup(db, req.params.appId, { sowState });
+    for (const l of rollup.lines) l.label = scrub(l.label);
+    res.json({ rollup });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ---- GET /draws/:appId/findings — inspection findings delivered for this file ----
 router.get('/draws/:appId/findings', async (req, res) => {
   if (!(await ownsApp(req, req.params.appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
   const findings = (await db.query(
     `SELECT id, sitewire_draw_id, status, total_requested_cents, total_approved_cents, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at, wire_due_at
        FROM draw_findings WHERE application_id=$1 ORDER BY delivered_at DESC`, [req.params.appId])).rows;
@@ -76,6 +81,7 @@ router.get('/draws/:appId/findings', async (req, res) => {
     out.push({ ...f, lines });
   }
   res.json({ findings: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ---- POST /findings/:findingId/accept — borrower accepts (IN PILOT) → starts the wire SLA ----

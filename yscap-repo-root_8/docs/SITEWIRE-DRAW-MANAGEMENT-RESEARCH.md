@@ -701,3 +701,113 @@ postponed; none is silently missing.
 Everything in §12–§15 is **built and tested** (pure-logic unit tests in
 `scripts/test-sitewire-rollup.js`; DB-backed verification; two adversarial audit passes with all
 findings fixed). Still off by default behind `SITEWIRE_ENABLED` / `SITEWIRE_OUTBOUND_ENABLED`.
+
+---
+
+## 16. FULL ERROR-HANDLING SPECIFICATION (owner-directed 2026-07-19 — "nothing is guessed")
+
+This is the definitive catalog of every error the integration can hit, how it is detected, how
+it is handled, and how it recovers — with the guarantee the owner requires: **nothing is ever
+guessed, and nothing is ever silently dropped.** Grounded in an exhaustive read of the code, a
+reliability audit, and research into how real draw platforms (Built, Rabbet, Land Gorilla) and
+financial-API guidance (AWS/Stripe idempotency + backoff, RFC 9457) handle failure.
+
+### 16.0 Five principles (applied everywhere)
+1. **Never guess a value.** A missing address part, an unknown property type, an unmatched (or
+   only fuzzily-matched) capital partner, a budget that doesn't tie to the cent — none is filled
+   in. The push stops and a review row is created.
+2. **Never silently drop.** Every failure either retries on a durable queue, or parks a visible
+   `sync_review_queue` row (`field_key='sitewire'`), or (for infra/journal failures) at minimum
+   logs a warning. No empty `catch{}` on a path that could lose a value.
+3. **Treat the first API response as provisional.** A write isn't "done" until read-after-write
+   confirms it; if we can't confirm, we park rather than report success.
+4. **Fail closed on the safety checks.** If the volume circuit breaker can't read its counter
+   (DB trouble), the write is refused (retryable), not waved through.
+5. **Human-in-the-loop for anything ambiguous.** Parks carry a plain-language reason and notify
+   the file's loan officer; staff resolve at `/internal/sync-reviews`.
+
+### 16.1 Error-code registry
+Every distinct failure has a stable code, a detection point, a handling verb, and a recovery
+path. Handling verbs: **RETRY** (durable queue re-attempts), **PARK** (visible review row),
+**BLOCK** (refuse the write), **DEGRADE** (log + continue), **DEAD** (dead-letter → PARK).
+
+| Code | Trigger | Handling | Recovery |
+|---|---|---|---|
+| E-API-TIMEOUT/5XX/429 | Sitewire slow / 5xx / rate-limit | client backoff+jitter (honors Retry-After ≤60s), then RETRY via queue (600s, DEAD@40 ≈7h) | auto, then PARK `push_dead_lettered` |
+| E-API-422-PROPERTY / -BUDGET | Sitewire rejects a write (geocode / validation) | PARK `property_rejected` / `budget_rejected` (body excerpt) | human fixes the file |
+| E-RAW-NOID | 200 with no property/budget id | PARK `bind_missing_property`; link NOT written | human checks Sitewire |
+| E-RAW-TOTALDRIFT | re-read budget total ≠ expected | PARK `total_drift` | human reconciles |
+| E-RAW-VERIFYFAIL | the read-after-write GET itself fails | PARK `total_unverified` (never reports ok blind) | human confirms |
+| E-DUPE-LISTFAIL | the only-ours dupe check can't run | transient→RETRY; else PARK `dupe_check_failed`, **never creates** | retry / human |
+| E-LOAN-ALREADY | loan number already in Sitewire | PARK `loan_already_in_sitewire`, never adopt/duplicate | human decides |
+| E-BIND-MISSING / -AMBIGUOUS | created line absent / duplicate-named in response | PARK per-line (`dedupe` = line name, so N failures = N rows) | human renames/checks |
+| E-BUDGET-MISMATCH | Σ SOW ≠ frozen budget (>$1) | BLOCK + PARK `budget_mismatch` before any write | human fixes SOW |
+| E-CP-UNMATCHED / -AMBIGUOUS / -FUZZY | 0, >1, or only a fuzzy substring partner match | PARK `capital_partner_unmatched` (fuzzy candidate surfaced in the row) | human confirms |
+| E-ADDR-INCOMPLETE / -GEOCODE | missing address part / Sitewire can't place it | PARK `address_incomplete` / `property_rejected` | human fixes address |
+| E-UNKNOWN-DRAW-LINE | inbound draw line has no crosswalk row | PARK `unknown_draw_line` (per reconcile) **and** advisory flag | human reconciles |
+| E-NAN-MONEY | non-numeric money on `/approve` or `/disbursements` | BLOCK 400 (never coerces to $0) | caller resubmits |
+| E-NEG-MONEY | negative net / approved | BLOCK 422/400 | caller resubmits |
+| E-REALLOC-* | not net-zero / below-drawn (per unit) / no CP approval / SOW ≠ budget | BLOCK 422/409, re-validated at apply against the live rollup | human fixes |
+| E-DELIVER-OVER-ACTED | re-deliver over an accepted/disputed finding | BLOCK 409 unless `force:true` (protects borrower state) | explicit force |
+| E-TOKEN-* | bad / reused / expired accept token | 404 / idempotent `already` / 410 after 30 days (portal still works) | sign in |
+| E-CIRCUIT-OPEN | >300 writes/10min | BLOCK (RETRY later) + audit | auto |
+| E-CIRCUIT-DBFAIL | breaker counter unreadable | **fail closed** — BLOCK retryable | auto retry |
+| E-DEADLETTER | push failed past the attempt cap | DEAD + PARK `push_dead_lettered` | human |
+| E-JOB-STUCK | worker died mid-job | reclaimed after 5 min (`FOR UPDATE SKIP LOCKED`) | auto |
+| E-BIRTH-STRANDED | draw requested while Sitewire was off | worker start backfills funded+requested+unlinked files | auto on enable |
+| E-RECONCILE-ROW / -FILE | one poison request row / one file's poll fails | per-row + per-file try/catch → DEGRADE (warn), next poll retries | auto + logged |
+| E-JOURNAL-FAIL / E-PARK-FAIL | audit/park insert fails | DEGRADE (console.warn) — never silent | logged |
+
+### 16.2 API-resilience layer (`src/sitewire/client.js`)
+Per-minute **token bucket** (RPM 90); **capped exponential backoff + jitter** (retryable only:
+429/5xx/network), honoring `Retry-After` up to 60s; a **25s timeout** via `AbortController`;
+errors tagged `status`/`retryable`/`retryAfter`/`body` so the durable queue owns the long game.
+Write safety in the same chokepoint: the **DRY-RUN gate** (logs the exact body, sends nothing),
+`guardNoUnsafeWrite` (refuses any body JSON would turn into a field-clearing null/NaN), and the
+**draw-transition allowlist** (`approve/amend/reopen` only — `reject` is capital-partner-only).
+Idempotency posture: property/budget re-push is **structurally idempotent** (a linked file
+UPDATEs, never re-creates; the budget diff binds by id), and the only non-idempotent op (property
+create) is fenced by **G-DUPEPROP** — which now refuses to create if its own dupe check can't run.
+
+### 16.3 The park-in-review contract (`orchestrator.park`)
+Every park writes a `sync_review_queue` row keyed by a `task_id` of
+`sitewire:<appId>:<reason-class>[:<instance>]`. The `<instance>` discriminator (e.g. the line
+name on a bind failure) means **distinct failures never collapse into one row**; a true repeat
+dedupes. On a unique-index race the existing row id is returned (never vanishes); on any DB
+failure it logs a warning. Every new park notifies the file's loan officer.
+
+### 16.4 Outbox + worker contract (`src/sync/sitewire-sync.js`)
+The outbox is `sync_queue` (`target='sitewire'`). A worker claims one job with
+`FOR UPDATE SKIP LOCKED`, reclaims jobs stuck in `processing` after 5 min, and classifies a
+failure as **outage** (circuit-open / retryable / network → patient 600s retry, DEAD@40) or
+**bad-value** (backoff, DEAD@8). A dead-letter always PARKs `push_dead_lettered`. On start (with
+Sitewire on) it backfills any stranded births. Gating is layered: `SITEWIRE_ENABLED` (reads +
+worker), a SEPARATE `SITEWIRE_OUTBOUND_ENABLED` (writes), `SITEWIRE_DRYRUN` (log, send nothing);
+no path leaks an outbound network write past those gates.
+
+### 16.5 Reconcile resilience (`src/sitewire/reconcile.js`)
+Scoped only to properties we created (`matched_by='created'`). Each request row is upserted in
+its own try/catch (a poison row can't strand the file); each file's poll is wrapped (one bad file
+can't stop the sweep); a `getProperty`/`getDraw` failure degrades gracefully and retries next
+poll. An **unknown inbound draw line** (no crosswalk) PARKs a review row — it is never folded
+into a SOW line, and the park survives even after the draw is approved (unlike the advisory flag).
+
+### 16.6 Draw-domain rejection reasons → our guards (from industry research)
+Research shows the leading real-world draw problems; each maps to a guard/flag we enforce:
+- **Missing/incorrect lien waivers** (the #1 hold) → **deferred** (roadmap §15.4); today Sitewire
+  owns document collection. Flagged as a known gap, never silently "passed."
+- **Math / reconciliation errors** (SOV totals don't tie) → **G-RECON** blocks any budget that
+  isn't Σ-to-the-cent; the rollup reconciles per line/unit.
+- **Failed inspection / SOV mismatch** → the **risk engine** flags `no_inspection`,
+  `exceeds_remaining`, `front_loading`; the findings workflow surfaces not-approved lines.
+- **Budget overages** → `exceeds_remaining` / `over_total_budget` / `overdrawn` (portfolio).
+- **Minor admin issues** (wrong address, wrong draw number) → address guard + the crosswalk keys
+  each draw to a specific job item; nothing is matched by loose text.
+
+### 16.7 Known limitations (documented, never silent)
+- **Duplicate SOW base labels** produce colliding exploded names → each now PARKs its own
+  `bind_ambiguous` row (visible); a deeper fix (enforced name uniqueness pre-push) is roadmap.
+- **Reallocation apply TOCTOU** — re-validated at apply time against the live rollup, but not in a
+  single transaction with the SOW write; a concurrent approval in the same instant is a rare edge.
+- **Retainage / lien waivers / stored materials / interest reserve** — modeled in the research,
+  intentionally deferred; their absence is a documented roadmap item, not a silent omission.
