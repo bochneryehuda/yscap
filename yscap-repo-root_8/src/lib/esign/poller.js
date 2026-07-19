@@ -22,6 +22,7 @@ const send = require('./send');
 const orchestrate = require('./orchestrate');
 const gate = require('./gate');
 const onDeadLetter = require('./dead-letter');
+const cfg = require('../../config').docusign;
 
 const POLL_SEC = parseInt(process.env.DOCUSIGN_POLL_SEC || '60', 10);
 const STALE_MIN = parseInt(process.env.DOCUSIGN_RECONCILE_STALE_MIN || '30', 10);
@@ -43,6 +44,11 @@ let timer = null;
  * deal sends a fresh one.
  */
 async function retrySend(opts = {}) {
+  // Honor the master kill-switch here too (belt-and-suspenders — sendClaimedEnvelope
+  // also refuses): when sending is paused, don't even claim/drain the send queue.
+  // Reconcile of already-sent envelopes still runs (tracking must not stop). Tests
+  // toggle the config singleton, so read it live rather than caching a boolean.
+  if (!cfg.sendEnabled) return { paused: true };
   const db = opts.db || dbDefault;
   const storage = opts.storage || storageDefault;
   const ds = opts.docusign || docusign;
@@ -77,23 +83,30 @@ async function reconcileStale(opts = {}) {
     try { out.push({ id: row.id, status: await webhook.reconcileEnvelope(db, docusign, opts.storage || require('../storage'), row) }); }
     catch (e) { out.push({ id: row.id, error: e.message }); }
   }
-  // Certificate-of-Completion backfill: a transient cert-download failure at
-  // completion time is otherwise never retried (this scan only covers sent/delivered).
-  // Re-drive completed REAL envelopes whose cert never landed — handleCompletion is
-  // idempotent and only re-fetches the still-missing certificate.
-  const certless = (await db.query(
+  // Completion-artifact backfill: a transient download failure at completion time is
+  // otherwise never retried (the scan above only covers sent/delivered). Re-drive a
+  // completed REAL envelope that is missing EITHER the Certificate of Completion OR
+  // any signed document (an esign_envelope_docs row with no completed_document_id).
+  // handleCompletion is per-doc idempotent — it only re-fetches what's still missing.
+  // (Under the current ordering a missing signed doc keeps the envelope out of
+  // 'completed', so this mainly guards legacy rows / any future path that could stamp
+  // completed early — belt-and-suspenders so a signed copy can never be left behind.)
+  const incomplete = (await db.query(
     `SELECT e.* FROM esign_envelopes e
       WHERE e.status = 'completed' AND e.application_id IS NOT NULL AND e.envelope_id IS NOT NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM documents d
-           WHERE d.application_id = e.application_id
-             AND d.doc_kind = 'esign_certificate'
-             AND d.filename = 'esign_certificate_' || e.envelope_id || '.pdf')
+        AND (NOT EXISTS (
+              SELECT 1 FROM documents d
+               WHERE d.application_id = e.application_id
+                 AND d.doc_kind = 'esign_certificate'
+                 AND d.filename = 'esign_certificate_' || e.envelope_id || '.pdf')
+          OR EXISTS (
+              SELECT 1 FROM esign_envelope_docs ed
+               WHERE ed.envelope_row_id = e.id AND ed.completed_document_id IS NULL))
       ORDER BY e.completed_at NULLS FIRST
       LIMIT 10`)).rows;
-  for (const row of certless) {
-    try { await webhook.handleCompletion(db, docusign, opts.storage || require('../storage'), row); out.push({ id: row.id, cert: 'redriven' }); }
-    catch (e) { out.push({ id: row.id, certError: e.message }); }
+  for (const row of incomplete) {
+    try { await webhook.handleCompletion(db, docusign, opts.storage || require('../storage'), row); out.push({ id: row.id, backfill: 'redriven' }); }
+    catch (e) { out.push({ id: row.id, backfillError: e.message }); }
   }
   return out;
 }

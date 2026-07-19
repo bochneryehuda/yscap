@@ -8,6 +8,7 @@
  * docs/DOCUSIGN-WORKFORCE-BUILD-SPEC.md §11).
  */
 const gate = require('./gate');
+const cfg = require('../../config').docusign;
 
 const isSigned = (r) => !!(r.signedAt || r.status === 'completed' || r.status === 'signed');
 const isDeclined = (r) => !!(r.declinedAt || r.status === 'declined');
@@ -84,11 +85,33 @@ async function dashboard(db, scope = { where: '', params: [] }) {
   const keyOf = (e) => (e.isTest ? `test:${e.id}` : `${e.applicationId}:${e.purpose}`);
   const latestByKey = new Map();
   for (const e of envelopes) { const k = keyOf(e); if (!latestByKey.has(k)) latestByKey.set(k, e.id); }
+  // A 'voided' latest envelope counts too: an expired (auto-voided after 30 days)
+  // or cancelled package with no re-issue is a stalled signing that needs a look. A
+  // deliberate void that IS re-issued stops counting — the newer envelope supersedes
+  // it (latestByKey), so only an unreplaced void shows.
   counts.needsAttention = envelopes.filter((e) =>
-    (['declined', 'error'].includes(e.phase) || e.deadLetteredAt)
+    (['declined', 'voided', 'error'].includes(e.phase) || e.deadLetteredAt)
     && latestByKey.get(keyOf(e)) === e.id).length;
   counts.awaitingCountersign = envelopes.filter((e) => e.phase === 'awaiting_countersign').length;
-  return { envelopes, counts };
+
+  // Send-engine health — an ops signal so staff can tell "it's DocuSign / it's paused"
+  // from "PILOT is broken" when packages sit without progress. Aggregate counts only
+  // (no PII), so it's safe to compute globally regardless of the file scope.
+  const sh = (await db.query(
+    `SELECT
+       count(*) FILTER (WHERE status='not_sent' AND application_id IS NOT NULL AND next_attempt_at IS NOT NULL AND next_attempt_at > now()) AS "backingOff",
+       count(*) FILTER (WHERE status='not_sent' AND application_id IS NOT NULL AND (next_attempt_at IS NULL OR next_attempt_at <= now()) AND dead_lettered_at IS NULL) AS "queued",
+       count(*) FILTER (WHERE status='error' AND dead_lettered_at IS NOT NULL AND application_id IS NOT NULL) AS "deadLettered",
+       count(*) FILTER (WHERE sent_at > now() - interval '10 minutes' AND application_id IS NOT NULL) AS "sent10min"
+     FROM esign_envelopes`)).rows[0];
+  const sendHealth = {
+    sendEnabled: !!cfg.sendEnabled,
+    breakerOpen: Number(sh.sent10min) >= cfg.maxSends10min,
+    queued: Number(sh.queued),
+    backingOff: Number(sh.backingOff),
+    deadLettered: Number(sh.deadLettered),
+  };
+  return { envelopes, counts, sendHealth };
 }
 
 /** Per-file: the send-gate + the two packages' envelopes (with signed-doc links). */

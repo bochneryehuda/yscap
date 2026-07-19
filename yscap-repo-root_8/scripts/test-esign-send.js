@@ -37,6 +37,7 @@ const get = async (id) => (await db.query(`SELECT * FROM esign_envelopes WHERE i
   // itself is exercised separately in cases 6/6b/6c. (fakeDs defaults to prod host.)
   const dcfg = require(R + '/src/config').docusign;
   dcfg.testMode = false;
+  dcfg.sendEnabled = true;   // master switch ON — the engine refuses to send when it's off (case 6d)
 
   // 1. happy path
   let row = await newRow();
@@ -108,6 +109,21 @@ const get = async (id) => (await db.query(`SELECT * FROM esign_envelopes WHERE i
   const dsLive = fakeDs({ demo:false });
   const r6c = await send.sendClaimedEnvelope(row.id, { db, docusign: dsLive, buildDefinition });
   ok(r6c.sent === true && dsLive.calls === 1, 'prod host + test mode OFF: send proceeds (true go-live)');
+
+  // 6d. MASTER KILL-SWITCH off (DOCUSIGN_SEND_ENABLED=0) → the retry engine must NOT
+  // send, even for a due row it would otherwise mail. Held before the claim (no
+  // attempt burned, no envelope), so it resumes cleanly when re-enabled.
+  dcfg.sendEnabled = false;
+  try {
+    row = await newRow();
+    const dsPaused = fakeDs({ demo:false });
+    const r6d = await send.sendClaimedEnvelope(row.id, { db, docusign: dsPaused, buildDefinition });
+    ok(r6d.held === true && r6d.disposition === 'paused', 'kill-switch off: send held (paused), never sent');
+    ok(dsPaused.calls === 0, 'kill-switch off: createEnvelope NEVER called');
+    after = await get(row.id);
+    ok(after.status === 'not_sent' && after.envelope_id === null && Number(after.attempts) === 0,
+       'kill-switch off: row untouched (not_sent, no envelope, no attempt burned)');
+  } finally { dcfg.sendEnabled = true; }
 
   // 7. M-12 reclaim: stale claim (6 min old, no envelope) is reclaimed and sent
   row = await newRow();

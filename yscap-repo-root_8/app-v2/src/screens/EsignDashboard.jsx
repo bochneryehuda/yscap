@@ -63,10 +63,13 @@ function Recipient({ r }) {
   );
 }
 
-function EnvelopeCard({ e, onReload }) {
+function EnvelopeCard({ e, onReload, isAdmin }) {
   const [busy, setBusy] = useState(false);
   const [actErr, setActErr] = useState('');
-  const canResend = !!e.envelopeId && !TERMINAL.includes(e.phase);   // one shared terminal vocabulary across all e-sign surfaces
+  // A test envelope's resend/void is admin-only server-side (403 otherwise) — don't
+  // show the buttons to a see-all non-admin, or a click just errors. Real envelopes
+  // stay open to all staff.
+  const canResend = !!e.envelopeId && !TERMINAL.includes(e.phase) && (!e.isTest || isAdmin);   // one shared terminal vocabulary across all e-sign surfaces
   const canVoid = canResend;   // same window: sent but not yet finished
   async function resend() {
     setBusy(true); setActErr('');
@@ -201,7 +204,8 @@ export default function EsignDashboard() {
 
   const counts = (data && data.counts) || {};
   const envelopes = (data && data.envelopes) || [];
-  const attention = (e) => ['declined', 'error'].includes(e.phase) || e.deadLetteredAt;
+  const sendHealth = (data && data.sendHealth) || null;
+  const attention = (e) => ['declined', 'voided', 'error'].includes(e.phase) || e.deadLetteredAt;
   const shown = envelopes.filter((e) => {
     const t = TABS.find((x) => x.key === tab);
     if (!t || t.key === 'all') return true;
@@ -236,6 +240,23 @@ export default function EsignDashboard() {
 
       {err && <div role="alert" className="notice err" style={{ marginBottom: 12 }}>{err}</div>}
 
+      {/* Send-engine health — tells staff "it's DocuSign / it's paused" vs "PILOT is broken." */}
+      {sendHealth && !sendHealth.sendEnabled && (
+        <div className="notice info" style={{ marginBottom: 12 }}>
+          <strong>Sending is paused.</strong> New packages and resends are held until sending is turned back on — already-sent packages still track and update normally.
+        </div>
+      )}
+      {sendHealth && sendHealth.sendEnabled && sendHealth.breakerOpen && (
+        <div className="notice info" style={{ marginBottom: 12 }}>
+          <strong>DocuSign is busy right now.</strong> Sends are automatically pacing themselves and will catch up — nothing is lost.
+        </div>
+      )}
+      {sendHealth && sendHealth.sendEnabled && !sendHealth.breakerOpen && sendHealth.backingOff > 0 && (
+        <div className="notice info" style={{ marginBottom: 12 }}>
+          {sendHealth.backingOff} package{sendHealth.backingOff > 1 ? 's are' : ' is'} waiting to send (DocuSign was briefly unavailable) — retrying automatically.
+        </div>
+      )}
+
       <div className="esign-stats">
         <StatCard label="All packages" value={counts.total || 0} active={tab === 'all'} onClick={() => setTab('all')} />
         <StatCard label="Awaiting borrower" value={counts.awaiting_borrower || 0} tone="teal" active={tab === 'borrower'} onClick={() => setTab('borrower')} />
@@ -260,7 +281,7 @@ export default function EsignDashboard() {
             : 'Nothing in this view right now.'}
         </p></div>
       ) : (
-        shown.map((e) => <EnvelopeCard key={e.id} e={e} onReload={() => load(true)} />)
+        shown.map((e) => <EnvelopeCard key={e.id} e={e} isAdmin={isAdmin} onReload={() => load(true)} />)
       )}
     </div>
   );

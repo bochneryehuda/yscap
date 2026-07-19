@@ -245,6 +245,33 @@ function fakeStorage() {
     eq(versions.length, 2, 'two envelope rows over the file life');
     ok(String(versions[0].product_version) !== String(versions[1].product_version), 're-issue got a distinct product_version (distinct idempotency key)');
 
+    // ---- HIGH-2: a stored term sheet produced BEFORE the appraisal is blocked -
+    // (it could carry a pre-appraisal loan amount that contradicts the disclosure,
+    // which regenerates on the current amount — one envelope, two loan figures).
+    {
+      const tsRow = (await pool.query(
+        `SELECT * FROM esign_envelopes WHERE application_id=$1 AND purpose='term_sheet_package' ORDER BY created_at DESC LIMIT 1`, [app])).rows[0];
+      // appraisal came back 2026-07-10; backdate the term sheet to before that.
+      await pool.query(`UPDATE documents SET created_at='2026-07-01T00:00:00Z' WHERE application_id=$1 AND doc_kind='term_sheet'`, [app]);
+      let staleBlocked = false;
+      try { await orchestrate.buildDefinition(tsRow, { db: pool, storage }); }
+      catch (e) { staleBlocked = /before the appraisal/.test(e.message) && e.retryable === false; }
+      ok(staleBlocked, 'HIGH-2: a term sheet produced before the appraisal is blocked (non-retryable)');
+      // refresh it to AFTER the appraisal → the freshness guard must NOT fire
+      await pool.query(`UPDATE documents SET created_at=now() WHERE application_id=$1 AND doc_kind='term_sheet'`, [app]);
+      let freshFreshnessOk = true;
+      try { await orchestrate.buildDefinition(tsRow, { db: pool, storage }); }
+      catch (e) { freshFreshnessOk = !/before the appraisal/.test(e.message); }
+      ok(freshFreshnessOk, 'HIGH-2: a term sheet refreshed after the appraisal passes the freshness guard');
+      // The application_export (borrower-submitted, no post-appraisal regen flow) is
+      // NOT freshness-checked — a pre-appraisal one must NOT block the send.
+      await pool.query(`UPDATE documents SET created_at='2026-07-01T00:00:00Z' WHERE application_id=$1 AND doc_kind='application_export'`, [app]);
+      let appExportNotBlocked = true;
+      try { await orchestrate.buildDefinition(tsRow, { db: pool, storage }); }
+      catch (e) { appExportNotBlocked = !/before the appraisal/.test(e.message); }
+      ok(appExportNotBlocked, 'HIGH-2: a pre-appraisal application_export is NOT freshness-blocked (no regen flow)');
+    }
+
     // ---- gate blocks when product signed BEFORE the appraisal ----------------
     await pool.query(`UPDATE checklist_items SET signed_off_at='2026-07-05T00:00:00Z' WHERE application_id=$1 AND template_id=$2`, [app, tmpl['rtl_p1_product']]);
     let blocked = false;
