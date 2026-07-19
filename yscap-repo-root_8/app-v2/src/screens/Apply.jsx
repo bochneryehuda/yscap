@@ -15,7 +15,18 @@ import TermSheetStudio, {
 
 const STEPS = ['Property', 'Loan', 'Borrower', 'Price & register'];
 // The property identity is step 1's job — everything else in the studio is editable.
-const STUDIO_LOCKED = ['propAddr', 'addrTBD', 'propState'];
+// Step 4 ("Price & register") prices and registers off the application's committed
+// economics — the borrower edits those on the earlier application steps, which
+// persist. Locking the full economics set here (matching the borrower file-page
+// ProductStudioPanel) stops a step-4 studio edit that the register can't keep from
+// silently diverging: the draft is closed at submit and the borrower register
+// whitelist drops these fields, so an unlocked edit showed a loan the file never
+// registered (audit #7). To change a number, the borrower steps back.
+const STUDIO_LOCKED = [
+  'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
+  'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
+  'expFlips', 'expBrrrr', 'expGround',
+];
 // Ground-Up is a PROGRAM (not a loan type/purpose). DSCR Rental is intentionally
 // not offered here for now.
 const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'Not sure yet'];

@@ -168,7 +168,11 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
           <Row k="Loan-to-ARV" v={pct(s.arvPct, 1)} />
           {reg.target_ltc > 0 && <Row k="Selected leverage (LTC target)" v={pct(reg.target_ltc, 1)} />}
           {s.binding && <Row k="Binding limit" v={s.binding} />}
-          {caps && <Row k="Program max — LTC / ARV / as-is" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)} / ${pct(caps.maxAcqLtv, 1)}`} />}
+          {caps && ((q.kind === 'bridge' || caps.maxLtc >= 1 || caps.maxArvLtv >= 1)
+            // Bridge / no-cap products have no LTC/ARV ceiling (100% sentinel) —
+            // show only the real as-is advance cap, not a fake 100% (audit #12).
+            ? <Row k="Program max — as-is" v={pct(caps.maxAcqLtv, 1)} />
+            : <Row k="Program max — LTC / ARV / as-is" v={`${pct(caps.maxLtc, 1)} / ${pct(caps.maxArvLtv, 1)} / ${pct(caps.maxAcqLtv, 1)}`} />)}
         </div>
         <div>
           <p className="muted small" style={{ margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.06em' }}>Fees & cash to close</p>
@@ -381,10 +385,18 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
 
   // Borrowers can price/choose but never change the file's deal economics
   // from here — those change through the loan team. Staff edit everything.
-  const lockedIds = useMemo(() => (isStaff ? [] : [
-    'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
-    'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
-  ]), [isStaff]);
+  const lockedIds = useMemo(() => (isStaff
+    // Staff: purchase price & as-is are not written back on register (owned by the
+    // application form) — lock them so a studio edit can't size a loan the file
+    // never persists and then snap back on reopen (audit #24).
+    ? ['price', 'asIs']
+    : [
+      'propAddr', 'addrTBD', 'propState', 'propType', 'dealPurpose', 'dealType',
+      'price', 'isAssign', 'origPrice', 'asIs', 'arv', 'construction', 'rehabScope', 'sqft',
+      // Sizing prices off the CLAIM of record; a studio experience edit is stripped
+      // on register, so lock it — the claim is edited on the application form (#44).
+      'expFlips', 'expBrrrr', 'expGround',
+    ]), [isStaff]);
 
   const d = snap && snap.d;
   const canRegister = !!(snap && snap.ready && snap.program && d && d.status !== 'INELIGIBLE' && d.totalLoan > 0);
