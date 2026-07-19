@@ -71,7 +71,7 @@ async function storeSignedDocument(db, storage, { applicationId, checklistItemId
   } catch (e) {
     // A concurrent drain (poller tick + manual /esign/drain interleaving at an
     // await) can pass the existence check and both INSERT — the uq_documents_
-    // esign_signed partial index (db/136) rejects the loser; reuse the winner.
+    // esign_signed partial index (db/142) rejects the loser; reuse the winner.
     if (e && e.code === '23505') {
       const again = await db.query(
         `SELECT id FROM documents WHERE application_id=$1 AND doc_kind=$2 AND filename=$3 LIMIT 1`,

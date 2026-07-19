@@ -1,5 +1,5 @@
 -- ============================================================================
--- 134_esign_recipients.sql — per-recipient signing status (staff dashboard +
+-- 140_esign_recipients.sql — per-recipient signing status (staff dashboard +
 --                            admin counter-signature)
 --
 -- One row per recipient on an esign envelope, so the staff DocuSign section can

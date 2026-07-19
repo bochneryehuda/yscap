@@ -1,5 +1,5 @@
 -- ============================================================================
--- 136_esign_signed_doc_unique.sql — DB backstop against a duplicate signed doc
+-- 142_esign_signed_doc_unique.sql — DB backstop against a duplicate signed doc
 --
 -- The completion drainer stores each signed PDF + the Certificate of Completion
 -- under a DETERMINISTIC filename (<doc_kind>_<envelopeId>.pdf). Its in-code

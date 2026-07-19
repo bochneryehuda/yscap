@@ -12,6 +12,7 @@ import Forgot from './screens/Forgot.jsx';
 import Reset from './screens/Reset.jsx';
 import Accept from './screens/Accept.jsx';
 import GuestChat from './screens/GuestChat.jsx';
+import DrawAccept from './screens/DrawAccept.jsx';
 import Dashboard from './screens/Dashboard.jsx';
 import Apply from './screens/Apply.jsx';
 import Application from './screens/Application.jsx';
@@ -36,6 +37,8 @@ import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
+import StaffDraws from './screens/StaffDraws.jsx';
+import StaffDrawRules from './screens/StaffDrawRules.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 import SyncReviews from './screens/SyncReviews.jsx';
 import EsignDashboard from './screens/EsignDashboard.jsx';
@@ -94,6 +97,7 @@ export default function App() {
           <Route path="/accept" element={<Accept />} />
           {/* #75 — magic-link guest chat for external email participants (no login). */}
           <Route path="/guest/:key" element={<GuestChat />} />
+          <Route path="/draw-accept/:token" element={<DrawAccept />} />
           <Route path="/internal/login" element={<StaffLogin />} />
           {/* Staff console has its OWN reset screen so a dual borrower+staff
               account is never sent two different reset emails (owner 2026-07-14). */}
@@ -126,6 +130,8 @@ export default function App() {
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />
+          <Route path="/internal/draws" element={<StaffPrivate><StaffDraws /></StaffPrivate>} />
+          <Route path="/internal/draw-rules" element={<StaffPrivate><StaffDrawRules /></StaffPrivate>} />
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />
           <Route path="/internal/sync-reviews" element={<StaffPrivate><SyncReviews /></StaffPrivate>} />
           <Route path="/internal/esign" element={<StaffPrivate><EsignDashboard /></StaffPrivate>} />

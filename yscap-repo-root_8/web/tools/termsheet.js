@@ -249,8 +249,14 @@
     // interest-only payment logic (industry standard): during construction the borrower pays
     // interest only on funds DRAWN — starts on the initial advance, grows to the full loan.
     var rFrac = (R.noteRate || 0) / 12;
-    var initialPayment = initialAdvance * rFrac;           // while only the initial advance is out
-    var fullPayment = totalLoan * rFrac;                   // after all rehab draws complete
+    // Use the engine's own payment figures (round2 of the sized loan) so the printed
+    // monthly payment / reserve / liquidity match the REGISTERED file to the penny.
+    // normalize() persists s.fullPayment/s.initialPayment; recomputing here on the
+    // floored loan drifted 1-2 cents (audit 2026-07-19). Falls back to the floored
+    // loan if the engine ever omits them. Does NOT touch the financed-reserve
+    // reconciliation (that stays on the floored totalLoan/initial/holdback residual).
+    var initialPayment = (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac);   // while only the initial advance is out
+    var fullPayment = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac);                 // after all rehab draws complete
     var monthlyInterest = s.monthlyInterest || fullPayment;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
     var titleOvr = adminTitle();
@@ -330,7 +336,7 @@
       financedIR: financedIRr, unfinancedIR: 0,
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
-      initialPayment: initialAdvance * rFrac, fullPayment: totalLoan * rFrac, monthlyInterest: totalLoan * rFrac,
+      initialPayment: (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac), fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac), monthlyInterest: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
       totalCost: basisPrice + num("construction") + financedIRr,
       downPayment: s.downPayment || 0, excessOOP: excessOOP,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
@@ -937,6 +943,18 @@
         ["Liquidity to show", gOk ? money2(gd.liquidity) : EM]
       ];
     }
+    // Extra company fees (NY settlement etc.) as their own line, inserted before
+    // "Estimated cash to close" so the Excel fee list adds up to cash-to-close just
+    // like the on-screen panel and the PDF (audit 2026-07-19 — Excel was the only
+    // surface that folded the fee into the total without naming it).
+    if (stdOk && d.extraFees && d.extraFees.length) {
+      var si = std.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      if (si > -1) Array.prototype.splice.apply(std, [si, 0].concat(d.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
+    }
+    if (gd && !gd.unavailable && gOk && gd.extraFees && gd.extraFees.length) {
+      var gi = gold.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      if (gi > -1) Array.prototype.splice.apply(gold, [gi, 0].concat(gd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
+    }
     return [{ title: "Deal & property", items: deal }, { title: "Purchase & project costs", items: costs },
             { title: "Standard Program", items: std }, { title: "Gold Standard Program", items: gold }];
   }
@@ -1107,7 +1125,7 @@
       yL = cardHead(xL, colW, "Loan structure", yL);
       yL = rowIn(xL, colW, isRefi() ? "As-is value" : "Purchase price", money(isRefi() ? d.basisPrice : (num("price") || d.basisPrice)), yL);
       if (!isRefi() && isAssign()) yL = rowIn(xL, colW, "Seller price / assignment fee", money(num("origPrice")) + " / " + money(Math.max(0, num("price") - num("origPrice"))), yL);
-      if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) yL = rowIn(xL, colW, "Effective purchase price " + (d.asg.overridden ? "(admin exception)" : "(fee capped at 15%)"), money(d.asg.recognizedPrice), yL);
+      if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) yL = rowIn(xL, colW, "Effective purchase price " + (d.asg.overridden ? "(admin exception)" : d.asg.dollarCap ? "(fee capped at the program limit)" : "(fee capped at 15%)"), money(d.asg.recognizedPrice), yL);
       if (!isBridge) {
         yL = rowIn(xL, colW, "Construction / rehab budget", money(d.constr), yL);
         if (d.financedIR > 0) { var finMo = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (d.irMonths || 0); yL = rowIn(xL, colW, "Financed interest reserve (" + finMo + " mo)", money(d.financedIR), yL); }
@@ -1143,7 +1161,7 @@
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
       if (sized && d.extraFees) d.extraFees.forEach(function (f) { yR = rowIn(xR, colW, f.name, money2(f.amount), yR); });
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
-      if (d.excessOOP > 0) yR = rowIn(xR, colW, "Assignment over 15% (out of pocket)", money(d.excessOOP), yR);
+      if (d.excessOOP > 0) yR = rowIn(xR, colW, ((d.asg && d.asg.dollarCap) ? "Assignment over cap (out of pocket)" : "Assignment over 15% (out of pocket)"), money(d.excessOOP), yR);
       yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
       var liqLbl = d.gold ? ("Liquidity to show (" + Math.round((d.liquidityPct || 0.05) * 100) + "% of loan)") : ("Liquidity to show (" + d.reserveMo + " mo)");
       yR = rowIn(xR, colW, liqLbl, sized ? money2(d.liquidity) : "\u2014", yR);
@@ -1594,7 +1612,7 @@
       [isRefi ? "As-is value entered" : "Purchase price entered", money(isRefi ? num("asIs") : num("price"))],
       assignOn ? ["Assignment \u2014 seller's contract price", money(num("origPrice"))] : null,
       assignOn ? ["Assignment fee", money(num("assignFee"))] : null,
-      (assignOn && d.asg && d.asg.overLimit) ? ["Effective purchase price \u2014 fee counted up to 15% of the seller's price", money(d.asg.recognizedPrice)] : null,
+      (assignOn && d.asg && (d.asg.overLimit || d.asg.overridden)) ? ["Effective purchase price \u2014 " + (d.asg.overridden ? "approved exception" : d.asg.dollarCap ? "fee capped at the program limit" : "fee counted up to 15% of the seller's price"), money(d.asg.recognizedPrice)] : null,
       (!isRefi && num("asIs") > 0) ? ["As-is value entered", money(num("asIs"))] : null,
       num("arv") > 0 ? ["After-repair value (ARV)", money(num("arv"))] : null,
       num("construction") > 0 ? ["Construction / rehab budget", money(num("construction"))] : null,

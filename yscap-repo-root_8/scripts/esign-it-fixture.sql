@@ -60,7 +60,7 @@ CREATE UNIQUE INDEX uq_documents_esign_signed ON documents(application_id, doc_k
 
 CREATE TABLE staff_users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), full_name text);
 
--- esign_envelopes: the db/037 stub grown by db/132/133/134 (only touched cols).
+-- esign_envelopes: the db/037 stub grown by db/138/139/140 (only touched cols).
 CREATE TABLE esign_envelopes (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   application_id uuid REFERENCES applications(id),

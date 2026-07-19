@@ -18,6 +18,7 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
+import DrawsPanel from '../components/DrawsPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
@@ -2454,6 +2455,7 @@ export default function StaffApplication() {
     { id: 'sec-overview', label: 'File overview' },
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
+    ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
     { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
     { id: 'sec-entity', label: 'LLC condition', badge: app.llc_id && app.llc_verified ? '✓' : '' },
@@ -2686,6 +2688,13 @@ export default function StaffApplication() {
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
       </Section>
+
+      {can('manage_draws') && app.status === 'funded' && (
+        <Section id="sec-draws" title="Construction draws"
+          info="The draw desk for this file: the Scope-of-Work budget vs. what's been drawn per line and per unit, each draw's approvals, our fee and net release, the inspection findings the borrower accepts or disputes, and Scope-of-Work reallocations. Powered by the Sitewire integration.">
+          <DrawsPanel appId={id} />
+        </Section>
+      )}
 
       <Section id="sec-conditions" title="Conditions to close"
         info="The SAME list the borrower sees — shared both ways. Upload on their behalf, accept (signs off), accept-but-request-one-more, or reject with a reason (the file moves to the trash and the condition reopens)."

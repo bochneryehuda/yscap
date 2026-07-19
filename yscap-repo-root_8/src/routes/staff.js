@@ -1098,19 +1098,33 @@ router.get('/applications/:id', async (req, res) => {
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
+            pr.stale AS registered_stale,
             pr.created_at AS registered_at
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
      LEFT JOIN llcs l ON l.id=a.llc_id
      LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
      LEFT JOIN LATERAL (
-       SELECT program, product_label, status, note_rate, total_loan, quote, created_at
+       SELECT program, product_label, status, note_rate, total_loan, quote, stale, created_at
          FROM product_registrations
         WHERE application_id=a.id AND is_current
         ORDER BY created_at DESC LIMIT 1
      ) pr ON true
      WHERE a.id=$1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-  res.json(r.rows[0]);
+  const fileRow = r.rows[0];
+  // Flag the overview when the CURRENT registration is stale — the leverage %/loan
+  // amount on the snapshot are "as last registered" until a re-price, so they must
+  // not read as live numbers next to freshly-edited economics (audit 2026-07-19).
+  // Use the authoritative, trigger-maintained flag: product_registrations.stale is
+  // set true by db/096+126 whenever ANY pricing input on the file changes after it
+  // was registered (ARV/rehab/purchase/term/program/rehab-type/sq-ft/co-borrower/
+  // FICO/assignment/…), and cleared on re-register — so this covers every driver and
+  // avoids fetching the registered inputs (which carry the internal per-file markup).
+  // (The raw applications.file_markup_* columns still ride a.* here as before; keeping
+  // those off non-admin staff clients is a separate pre-existing follow-up.)
+  fileRow.pricing_stale = !!(fileRow.registered_quote && fileRow.registered_stale);
+  delete fileRow.registered_stale;
+  res.json(fileRow);
 });
 
 // Resolve-or-create a co-borrower from an identity payload and bind it to a
