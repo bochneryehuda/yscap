@@ -31,6 +31,47 @@ function Section({ title, count, children }) {
   );
 }
 
+function Stat({ label, value, tone }) {
+  return (
+    <div className="panel" style={{ padding: '6px 10px', minWidth: 110 }}>
+      <div className="muted small">{label}</div>
+      <div style={{ fontSize: 16, color: tone ? `var(--${tone})` : undefined }}><strong>{value}</strong></div>
+    </div>
+  );
+}
+
+/* Advisory RISK SUMMARY — an at-a-glance digest of the report for the
+   underwriter (utilization, derogatories, collections, inquiries, thin-file). It
+   never blocks; the alerts above are the gate. */
+function RiskSummary({ s }) {
+  if (!s) return null;
+  const util = s.revolvingUtilizationPct;
+  const utilTone = util == null ? undefined : util >= 50 ? 'danger' : util >= 30 ? 'gold' : 'teal';
+  const flagTone = (sev) => (sev === 'high' ? 'danger' : sev === 'medium' ? 'gold' : 'teal');
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <Stat label="Own accounts" value={`${s.openTradelineCount} open / ${s.tradelineCount}`} />
+        <Stat label="Total balance" value={money(s.totalBalance)} />
+        <Stat label="Revolving use" value={util == null ? '—' : `${util}%`} tone={utilTone} />
+        <Stat label="Derogatory" value={s.derogatoryCount} tone={s.derogatoryCount > 0 ? 'danger' : undefined} />
+        <Stat label="Collections" value={s.collectionsCount > 0 ? `${s.collectionsCount} (${money(s.collectionsTotal)})` : '0'} tone={s.collectionsCount > 0 ? 'danger' : undefined} />
+        <Stat label="Public records" value={s.publicRecordCount} tone={s.publicRecordCount > 0 ? 'danger' : undefined} />
+        <Stat label="Inquiries (6mo)" value={s.recentInquiries6mo} tone={s.recentInquiries6mo >= 4 ? 'gold' : undefined} />
+        <Stat label="Late 30/60/90" value={`${s.late30Count}/${s.late60Count}/${s.late90Count}`} tone={(s.late60Count + s.late90Count) > 0 ? 'danger' : s.late30Count > 0 ? 'gold' : undefined} />
+        {s.oldestAccountMonths != null && <Stat label="Oldest account" value={`${Math.floor(s.oldestAccountMonths / 12)}y ${Math.round(s.oldestAccountMonths % 12)}m`} />}
+      </div>
+      {s.flags && s.flags.length > 0 && (
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+          {s.flags.map((f) => (
+            <span key={f.key} className="tchip" style={{ borderColor: `var(--${flagTone(f.severity)})` }}>{f.label}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AlertsPanel({ alerts }) {
   if (!alerts || !alerts.length) {
     return <div className="notice ok" style={{ marginTop: 8 }}>No fraud, OFAC, freeze, or address alerts on this report.</div>;
@@ -138,7 +179,7 @@ export default function CreditReportDetail({ reportId, onClose }) {
   const body = () => {
     if (err) return <div className="notice err">{err}</div>;
     if (!data) return <div className="muted">Loading the full report…</div>;
-    const { report, scores, tradelines, inquiries, publicRecords, collections, identities, alerts, borrowerNames } = data;
+    const { report, scores, tradelines, inquiries, publicRecords, collections, identities, alerts, borrowerNames, riskSummary, riskByBorrower } = data;
     const borrowerIds = [...new Set([...(scores || []), ...(tradelines || []), ...(identities || [])].map((x) => x.borrower_id).filter(Boolean))];
     const tabs = borrowerIds.length > 1
       ? [{ id: '__all__', name: 'All borrowers' }, ...borrowerIds.map((id) => ({ id, name: borrowerNames[id] || 'Borrower' }))]
@@ -166,6 +207,10 @@ export default function CreditReportDetail({ reportId, onClose }) {
             ))}
           </div>
         )}
+
+        <Section title="Risk summary" count={active === '__all__' ? 'all borrowers' : null}>
+          <RiskSummary s={active === '__all__' ? riskSummary : (riskByBorrower && riskByBorrower[active])} />
+        </Section>
 
         <Section title="Scores by bureau">
           <ScoreStrip scores={forB(scores)} />

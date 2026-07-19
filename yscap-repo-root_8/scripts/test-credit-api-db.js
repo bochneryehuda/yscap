@@ -109,6 +109,8 @@ const importTransport = async () => ({ status: 200, headers: { get: () => 'text/
   ok('detail account number is MASKED (last-4)', det.j.tradelines[0].account_identifier_masked === '••••1234');
   ok('detail NEVER exposes the encrypted account column', det.j.tradelines.every((t) => !('account_identifier_encrypted' in t)));
   ok('detail NEVER exposes the raw audit blob', det.j.tradelines.every((t) => !('raw' in t)));
+  ok('detail includes a risk summary', det.j.riskSummary && typeof det.j.riskSummary.tradelineCount === 'number' && Array.isArray(det.j.riskSummary.flags));
+  ok('detail includes a per-borrower risk breakdown', det.j.riskByBorrower && typeof det.j.riskByBorrower === 'object');
   ok('detail 403 (off-file LO — no IDOR)', (await call('GET', `/credit/reports/${rep}/detail`, OFF)).status === 403);
   ok('detail 404 (unknown report)', (await call('GET', '/credit/reports/00000000-0000-0000-0000-000000000000/detail', A)).status === 404);
   ok('detail 403 (no pull_credit)', (await call('GET', `/credit/reports/${rep}/detail`, NP)).status === 403);

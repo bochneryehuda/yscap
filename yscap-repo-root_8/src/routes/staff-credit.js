@@ -20,6 +20,7 @@ const db = require('../db');
 const { can, VISIBLE_OFFICERS_SQL } = require('../lib/permissions');
 const providers = require('../lib/credit/providers');
 const credentials = require('../lib/credit/credentials');
+const { summarizeRisk } = require('../lib/credit/risk-summary');
 const creditImport = require('../lib/credit/import');
 const adverseAction = require('../lib/credit/adverse-action');
 const { serveDocument } = require('../lib/serve-document');
@@ -224,7 +225,20 @@ router.get('/credit/reports/:id/detail', requirePull, async (req, res) => {
     }
 
     await audit(req, 'credit_report_detail_view', { creditReportId: reportId, applicationId: report.application_id });
-    res.json({ report, scores, tradelines, inquiries, publicRecords, collections, identities, alerts, borrowerNames });
+    // Advisory risk summary (E5-safe) computed server-side from the blocks — an
+    // overall snapshot + a per-borrower breakdown (never gates; the alerts do).
+    const riskSummary = summarizeRisk({ tradelines, collections, inquiries, publicRecords });
+    const riskByBorrower = {};
+    for (const bid of bIds) {
+      riskByBorrower[bid] = summarizeRisk({
+        tradelines: tradelines.filter((t) => t.borrower_id === bid),
+        collections: collections.filter((c) => c.borrower_id === bid),
+        inquiries: inquiries.filter((q) => q.borrower_id === bid),
+        publicRecords: publicRecords.filter((p) => p.borrower_id === bid),
+      });
+    }
+
+    res.json({ report, scores, tradelines, inquiries, publicRecords, collections, identities, alerts, borrowerNames, riskSummary, riskByBorrower });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
