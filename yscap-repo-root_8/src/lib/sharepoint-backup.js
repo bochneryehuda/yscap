@@ -805,42 +805,91 @@ async function mirrorRowInner(row, scopeKey) {
   return { webUrl: up.item.webUrl, path: `${target.fullPath}/${category}${version ? `/Version ${version}` : ''}` };
 }
 
+// ROOT of "why does a document get stuck?" (owner-directed 2026-07-17): the
+// mirror used to retry EVERY failure blindly 8× and re-arm daily — treating a
+// PERMANENT failure (one retrying can never fix) exactly like a network blip.
+// So a doomed upload churned invisibly for days. The fix is to UNDERSTAND the
+// error and route it:
+//   • permanent — a human must act; retrying is pointless. Surface it FAST
+//     (after 2 attempts, to rule out a one-off), with the specific cause, and
+//     PARK it so the daily reset stops re-driving a doomed upload.
+//   • throttle  — Graph is rate-limiting; back off and keep retrying (the
+//     escalation ceiling cards it only if it persists for many hours).
+//   • transient — a network/5xx blip; retry, escalate past the ceiling.
+const TRANSIENT_ERROR = /(^|[^0-9])(500|502|503|504)([^0-9]|$)|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|fetch failed|aborted|socket hang up/i;
+const THROTTLE_ERROR = /(^|[^0-9])429([^0-9]|$)|retry-after|throttl/i;
+// Permanent: retrying the SAME upload will never succeed — a human (or a config
+// change) must intervene. Each maps to a concrete, plain-language cause.
+const PERMANENT_PATTERNS = [
+  { re: /no application or borrower to file under/i, cause: 'this document is not linked to any borrower or loan file, so there is nowhere to file it. Link it to a file/borrower in PILOT (or remove it).' },
+  { re: /ENOENT|no such file|invalid storage ref|storage.*not configured/i, cause: 'the document’s own saved copy could not be read from PILOT storage (its file is missing). This usually means it was saved to a non-persistent disk. Re-upload the document.' },
+  { re: /not configured \(MS_|AADSTS|invalid_client|unauthorized_client|certificate|client assertion|token via/i, cause: 'SharePoint authentication is failing (an expired or misconfigured certificate/secret). Rotate/renew the Microsoft credential — nothing will mirror until it is fixed.' },
+  { re: /Access denied|accessDenied|403|Forbidden|Sites\.|permission/i, cause: 'SharePoint denied access (a permissions problem on the target site/folder). An admin must grant the app write access to this location.' },
+  { re: /name conflict persisted after uniquification/i, cause: 'the upload keeps colliding with an existing item and could not be uniquified. A human should check the target folder in SharePoint.' },
+  { re: /invalidRequest|malformed|Invalid path|path.*too long|400/i, cause: 'SharePoint rejected the request as invalid (often a folder path or name problem). Review the folder match for this file.' },
+];
+function classifyMirrorError(message) {
+  const m = String(message || '');
+  const perm = PERMANENT_PATTERNS.find((p) => p.re.test(m) && !THROTTLE_ERROR.test(m) && !TRANSIENT_ERROR.test(m));
+  if (perm) return { class: 'permanent', cause: perm.cause };
+  if (THROTTLE_ERROR.test(m)) return { class: 'throttle', cause: 'SharePoint is rate-limiting the sync (throttling). The mirror backs off and keeps retrying automatically.' };
+  if (TRANSIENT_ERROR.test(m)) return { class: 'transient', cause: 'a temporary network or SharePoint error. The mirror retries automatically.' };
+  return { class: 'transient', cause: 'an unclassified error; treated as temporary and retried.' };
+}
+
+async function cardMirrorFailure(row, error, kind, extra = {}) {
+  await require('./sync-review').queueReview({
+    applicationId: row.app_id || null, borrowerId: row.borrower_id || null,
+    taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
+    reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
+    clickupValue: null,
+    portalValue: `${row.filename || 'document'} — ${extra.cause || row.item_label || row.slot_label || row.doc_kind || 'file'}`.slice(0, 300),
+    rawValue: JSON.stringify({ docId: row.id, attempts: extra.attempts, errorClass: kind,
+      error: String(error).slice(0, 300) }).slice(0, 500) });
+}
+
+// Attempts before a PERMANENT-classed error is surfaced (small — one retry to
+// rule out a fluke, then card + park so it stops churning).
+const PERMANENT_CARD_AT = 2;
+
 async function recordFailure(row, err) {
+  const lastError = String((err && err.message) || err);
+  const verdict = classifyMirrorError(lastError);
   const r = await db.query(
     `UPDATE documents SET sharepoint_backup_error=$2,
         sharepoint_backup_attempts = sharepoint_backup_attempts + 1,
         sharepoint_backup_attempted_at = now()
       WHERE id=$1 RETURNING sharepoint_backup_attempts`,
-    [row.id, String((err && err.message) || err).slice(0, 500)]);
-  // EXHAUSTED → MANUAL REVIEW (owner-directed 2026-07-15 night: "enhance the
-  // SharePoint error handling — when it should be sent to manual review").
-  // Transient failures retry silently through the attempt budget + the daily
-  // fresh chance; a document that BURNS the whole budget is stuck on
-  // something real (permissions, a bad path, an unreadable local file) and a
-  // human must see it. One row per document (synthetic spdoc:<id> key),
-  // dismiss sticks, auto-closed by the success path when a later retry lands.
-  // NO FAKE CARDS (owner-directed 2026-07-16): an exhaustion whose final error
-  // is TRANSIENT INFRASTRUCTURE noise (Graph throttling, a network blip, a
-  // service outage) is NOT a human-actionable problem — the boot/daily resets
-  // keep retrying it and the admin health screen counts it. Only errors a
-  // human can actually act on reach the review queue.
-  const TRANSIENT_ERROR = /(^|[^0-9])(429|503|504)([^0-9]|$)|retry-after|throttl|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|fetch failed|aborted|socket hang up/i;
+    [row.id, lastError.slice(0, 500)]);
   try {
     const attempts = r.rows[0] ? Number(r.rows[0].sharepoint_backup_attempts) : 0;
-    const lastError = String((err && err.message) || err);
-    if (attempts >= MAX_ATTEMPTS && TRANSIENT_ERROR.test(lastError)) {
-      console.warn(`[sp-sync] doc ${row.id} exhausted on a TRANSIENT error — no review card (resets keep retrying): ${lastError.slice(0, 120)}`);
+
+    // PERMANENT → surface FAST (retrying can't help) and PARK the doc so the
+    // boot/daily reset stops re-driving a doomed upload. Its review card's
+    // Retry re-arms it once the human fixes the cause.
+    if (verdict.class === 'permanent' && attempts >= PERMANENT_CARD_AT) {
+      await cardMirrorFailure(row, lastError, 'permanent', { attempts, cause: verdict.cause });
+      // Park at the attempt ceiling with a marker so the resets skip it (they
+      // only re-arm docs whose error is NOT a parked permanent one).
+      await db.query(
+        `UPDATE documents SET sharepoint_backup_attempts = $2,
+            sharepoint_backup_error = $3
+          WHERE id = $1`,
+        [row.id, MAX_ATTEMPTS, `[permanent] ${verdict.cause} · ${lastError}`.slice(0, 500)]);
+      console.warn(`[sp-sync] doc ${row.id} PERMANENT failure parked for review: ${verdict.cause}`);
+      return;
+    }
+
+    // TRANSIENT/THROTTLE exhaustion: no fake card for brief blips — the resets
+    // keep retrying and the escalation ceiling (escalateStuckDocs) cards it if
+    // it persists for hours. (This is the correct behavior for genuinely
+    // temporary errors; permanent ones are handled above.)
+    if (attempts >= MAX_ATTEMPTS && (verdict.class === 'throttle' || verdict.class === 'transient')) {
+      console.warn(`[sp-sync] doc ${row.id} exhausted on a ${verdict.class} error — retrying via resets; escalates if it persists: ${lastError.slice(0, 120)}`);
       return;
     }
     if (attempts >= MAX_ATTEMPTS) {
-      await require('./sync-review').queueReview({
-        applicationId: row.app_id || null, borrowerId: row.borrower_id || null,
-        taskId: `spdoc:${row.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
-        reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
-        clickupValue: null,
-        portalValue: `${row.filename || 'document'} — ${row.item_label || row.slot_label || row.doc_kind || 'file'}`.slice(0, 160),
-        rawValue: JSON.stringify({ docId: row.id, attempts,
-          error: String((err && err.message) || err).slice(0, 300) }).slice(0, 500) });
+      await cardMirrorFailure(row, lastError, verdict.class, { attempts, cause: verdict.cause });
     }
   } catch (_) { /* visibility is best-effort — never breaks the mirror */ }
 }
@@ -1184,10 +1233,14 @@ async function drain() {
   try {
     // Documents that exhausted their attempts get one fresh chance per day —
     // a persistent outage (or a bug fixed by a deploy) must not orphan them.
+    // EXCEPT a PARKED PERMANENT failure: retrying it can't help, so re-arming
+    // it would just churn a doomed upload forever (the root of "stuck"). Its
+    // review card's Retry (which clears the error) is the only re-arm path.
     await db.query(
       `UPDATE documents SET sharepoint_backup_attempts = 0
         WHERE sharepoint_backed_up_at IS NULL AND sharepoint_backup_attempts >= $1
-          AND sharepoint_backup_attempted_at < now() - interval '1 day'`,
+          AND sharepoint_backup_attempted_at < now() - interval '1 day'
+          AND COALESCE(sharepoint_backup_error, '') NOT LIKE '[permanent]%'`,
       [MAX_ATTEMPTS]).catch(() => {});
     for (let i = 0; i < MAX_DRAIN_LOOPS; i++) {
       const res = await runOnce({});
@@ -1485,5 +1538,6 @@ module.exports = {
   start, stop, kick, runOnce, drain, enabled, health, categoryFor, mirrorRow,
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
   reconciliation, checkBacklogSlo, stuckDocuments, escalateStuckDocs,
+  classifyMirrorError,
   MAX_ATTEMPTS, VERIFY_RECHECK_DAYS,
 };
