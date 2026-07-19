@@ -19,6 +19,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import DrawsPanel from '../components/DrawsPanel.jsx';
+import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
@@ -2106,6 +2107,10 @@ export default function StaffApplication() {
   const [newCond, setNewCond] = useState('');
   const [conds, setConds] = useState([]);
   const [gating, setGating] = useState(null);
+  // Appraisal review summary (fatal/warning counts) — reported up by AppraisalPanel so
+  // the section nav can show a findings badge without a second fetch here.
+  const [apprSummary, setApprSummary] = useState(null);
+  const onApprSummary = useCallback((s) => setApprSummary(s), []);
   // Known internal (ClickUp) statuses for the picker — file-independent, loaded once.
   const [internalStatuses, setInternalStatuses] = useState([]);
   const [condFilter, setCondFilter] = useState('all');
@@ -2455,6 +2460,7 @@ export default function StaffApplication() {
     { id: 'sec-overview', label: 'File overview' },
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
+    { id: 'sec-appraisal', label: 'Appraisal & findings', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
     ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
     { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
@@ -2687,6 +2693,12 @@ export default function StaffApplication() {
         badge={app.registered_program ? 'Registered ✓' : 'Not registered'}>
       <ProductStudioPanel ref={studioRef} appId={id} app={app} onRegistered={load} mode="staff" staffRole={role}
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} />
+      </Section>
+
+      <Section id="sec-appraisal" title="Appraisal & PILOT findings"
+        info="Import the appraisal XML (1004 / 1025 / 1073) and PILOT builds the whole property profile from it — As-Is, ARV, comparables, the appraiser and everything the file needs — then compares it to the loan file. Every value that differs becomes a PILOT finding your team reviews; a value change reprices the loan and nothing is ever overwritten silently."
+        badge={apprSummary ? (apprSummary.fatal ? `${apprSummary.fatal} fatal` : (apprSummary.warning ? `${apprSummary.warning} warning` : 'Reviewed ✓')) : ''}>
+        <AppraisalPanel appId={id} onSummary={onApprSummary} />
       </Section>
 
       {can('manage_draws') && app.status === 'funded' && (

@@ -517,6 +517,13 @@ export const api = {
   staffAppraisalCard:(appId) => req('GET', `/api/staff/applications/${appId}/appraisal-card`),
   staffSaveAppraisalCard:(appId, b) => req('POST', `/api/staff/applications/${appId}/appraisal-card`, b),
 
+  // ---- Appraisal desk: import the appraisal XML, read the property profile, resolve findings ----
+  appraisalGet:            (appId) => req('GET', `/api/appraisal/${appId}`),
+  appraisalImport:         (appId, b) => req('POST', `/api/appraisal/${appId}/import`, b),
+  appraisalResolveFinding: (appId, fid, b) => req('POST', `/api/appraisal/${appId}/findings/${fid}/resolve`, b),
+  // Borrower READ-ONLY view of the same appraisal report + findings (no actions).
+  appraisalGetBorrower:    (appId) => req('GET', `/api/borrower/applications/${appId}/appraisal`),
+
   // ---- admin: team / staff management ----
   adminStaff:        () => req('GET', '/api/admin/staff'),
   adminCreateStaff:  (b) => req('POST', '/api/admin/staff', b),
