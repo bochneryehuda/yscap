@@ -151,11 +151,20 @@ function fmtMoney(n) {
 }
 function fmtDate(d) {
   if (!d) return '';
+  // A date-only 'YYYY-MM-DD' string must NEVER go through new Date() — that reads
+  // it as UTC midnight and shifts the day back one in any west-of-UTC timezone
+  // (the repo's hard date-only rule / the DOB-date incident). Format its parts
+  // directly, and format everything else in UTC so the rendered day is
+  // deterministic regardless of the server's timezone.
+  if (typeof d === 'string') {
+    const m = d.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[2]}/${m[3]}/${m[1]}`;
+  }
   const dt = (d instanceof Date) ? d : new Date(d);
   if (isNaN(dt.getTime())) return String(d);
-  const mm = String(dt.getMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getDate()).padStart(2, '0');
-  return `${mm}/${dd}/${dt.getFullYear()}`;
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${mm}/${dd}/${dt.getUTCFullYear()}`;
 }
 
 // ---- signature rule runs (replace the leftover yellow "Sign Here" tag image) --
