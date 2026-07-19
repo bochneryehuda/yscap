@@ -13,6 +13,7 @@ import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import EsignBorrowerCard from '../components/EsignBorrowerCard.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import FileContacts from '../components/FileContacts.jsx';
@@ -875,6 +876,7 @@ export default function Application() {
       <Section id="sec-conditions" title="Conditions to close"
         info="Every item your loan team needs before closing, in the order it's worked. Upload to a condition and it moves to review; your team accepts, or asks for a fix — you'll be notified either way."
         badge={`${nDone}/${items.length} complete`}>
+      <EsignBorrowerCard appId={id} />
       <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Your conditions</h3>

@@ -2327,3 +2327,9 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 .esign-gate li.ok .esign-gate-ic{color:var(--ok)}
 .esign-gate li.bad .esign-gate-ic{color:var(--danger)}
 .esign-file h4{font-family:var(--serif);font-weight:500;font-size:15px;margin:0}
+
+/* e-sign: borrower "Sign now" card */
+.esign-b-item{padding:12px 0;border-top:1px solid var(--border)}
+.esign-b-item:first-of-type{border-top:none;padding-top:6px}
+.esign-b-track{margin:10px 0 8px}
+.esign-b-track .step{min-width:96px}
