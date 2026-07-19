@@ -44,6 +44,20 @@ function fileAddress(file) {
   if (typeof pa === 'string') { try { return JSON.parse(pa); } catch { return { line: pa }; } }
   return pa;
 }
+// Map the file's property_type text to a class key. Mirrors src/lib/mismo/enums.js
+// (unitsHint/toMismoAttachment) so the appraisal + loan-interchange modules agree on
+// the portal's property-type vocabulary. Returns null when unknown (never guesses).
+function fileClass(t) {
+  const s = String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!s) return null;
+  if (s.startsWith('sfr') || s.includes('singlefamily')) return 'sfr';
+  if (s.includes('condo')) return 'condo';
+  if (s.includes('town')) return 'town';
+  if (s.includes('multi5') || s.includes('multi54')) return 'multi5';
+  if (s.includes('multi2') || s.includes('multi24')) return 'multi24';
+  if (s.includes('mixed')) return 'mixed';
+  return null;
+}
 
 function finding(f) {
   return Object.assign({ source: 'appraisal', severity: 'fatal', status: 'open', blocksCtc: f.severity !== 'warning' && f.severity !== 'info' }, f);
@@ -79,8 +93,19 @@ function computeFindings(appraisal, file, opts = {}) {
       actions: ['replace', 'keep', 'custom', 'dismiss', 'decline'], reprices: true }));
   }
 
-  // ---- 3. Property type (soft — text) ----
-  // (left as a warning: vendor free-text vs our enum; only flag when clearly different)
+  // ---- 3. Property type ----
+  // The appraisal form implies a property class; flag when the file clearly disagrees.
+  // Class keys mirror src/lib/mismo/enums.js so the two modules never drift on the
+  // portal's property-type vocabulary ('SFR (1 unit)' | 'Multi 2–4' | 'Condo' | …).
+  const formClass = { FNM1004: 'sfr', FNM1025: 'multi24', FNM1073: 'condo' }[A.formType];
+  const fc = fileClass(file && file.property_type);
+  if (formClass && fc && fc !== formClass && !(formClass === 'multi24' && fc === 'multi5')) {
+    out.push(finding({ code: 'property_type_mismatch', severity: 'fatal', field: 'property_type',
+      appraisalValue: A.formType, fileValue: file.property_type,
+      title: `Property type disagrees — appraisal is a ${formClass === 'sfr' ? 'single-family (1004)' : formClass === 'condo' ? 'condo (1073)' : '2–4 unit (1025)'} form, file says ${file.property_type}`,
+      howTo: 'The appraisal form and the file describe different property kinds. Confirm which is right — a wrong type changes the program and eligibility.',
+      actions: ['replace', 'keep', 'custom', 'dismiss', 'decline'], reprices: true }));
+  }
 
   // ---- 4. ARV ----
   const fArv = num(file && file.arv);

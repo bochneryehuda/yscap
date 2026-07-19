@@ -125,6 +125,11 @@ async function importAppraisal(db, {
   if (v.arv != null && v.arvConfidence === 'definite') {
     await db.query(`UPDATE applications SET arv = $2 WHERE id = $1 AND arv IS NULL`, [applicationId, v.arv]);
   }
+  // Fill the file's appraiser name (blank-only) so the MISMO 3.4 loan export
+  // (src/lib/mismo) carries the real appraiser — synergy, same overwrite-shield posture.
+  if (ap.name) {
+    await db.query(`UPDATE applications SET appraiser_name = $2 WHERE id = $1 AND (appraiser_name IS NULL OR appraiser_name = '')`, [applicationId, ap.name]);
+  }
 
   return {
     ok: true, appraisalId, findings, summary: sum,
