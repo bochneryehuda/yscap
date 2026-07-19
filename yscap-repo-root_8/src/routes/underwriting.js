@@ -95,7 +95,9 @@ async function crossForFile(client, appId) {
 router.get('/insights/feedback', async (req, res, next) => {
   try {
     if (!can(req.actor, 'see_all_files')) return res.status(403).json({ error: 'this report needs access to every file' });
-    // Only resolved/dismissed findings carry a signal; still-open ones are pending.
+    // Include 'open' too: a posted-condition / requested-document finding stays OPEN but was
+    // still acted on, so feedback.js scores it REAL by its resolution verb. A finding with no
+    // resolution yet is counted pending and never affects a rate. (Superseded rows are omitted.)
     const { rows } = await db.query(
       `SELECT code, severity, status, resolution FROM document_findings
         WHERE status IN ('resolved','dismissed','open')`);
@@ -153,10 +155,15 @@ router.post('/:appId/documents/:documentId/analyze', async (req, res, next) => {
     }
 
     // The document must belong to THIS file, or be a PROFILE-LEVEL document of this file's
-    // borrower (application_id IS NULL — e.g. a government ID / bank statement filed at the
-    // borrower profile and legitimately shared across their files). A document tied to a
-    // DIFFERENT application of the same borrower must NOT resolve here — otherwise file B's
-    // document could be analyzed and mis-filed onto file A (both are the same borrower).
+    // borrower (application_id IS NULL). In this codebase government IDs / bank statements are
+    // uploaded UNDER an application (they carry that application_id), so they resolve via the
+    // first branch when they belong to this file; the NULL branch covers borrower-profile /
+    // LLC documents (e.g. an operating agreement) that aren't tied to one application. A
+    // document tied to a DIFFERENT application of the same borrower must NOT resolve here —
+    // otherwise file B's document could be analyzed and mis-filed onto file A (same borrower).
+    // (This intentionally matches only the borrower, not the file's LLC — the staff document
+    // picker is scoped the same way, and keeping the borrower check tight blocks a layered
+    // entity owned by a different borrower.)
     const doc = (await db.query(
       `SELECT id, application_id, borrower_id, filename, content_type, storage_provider, storage_ref
          FROM documents
