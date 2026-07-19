@@ -130,4 +130,28 @@ async function read({ buffer, base64 } = {}) {
   return { ok: true, text, pageCount };
 }
 
-module.exports = { read, configured, MAX_BYTES };
+/**
+ * Auth-only health ping — lists document models (needs the endpoint + key, no document).
+ * Confirms the Render values are entered correctly. Never throws.
+ * @returns {Promise<{ok:boolean, reason?:string}>}
+ */
+async function ping() {
+  if (!configured()) return { ok: false, reason: 'endpoint or key not set' };
+  const base = String(cfg.docint.endpoint || '').replace(/\/+$/, '');
+  const ver = cfg.docint.apiVersion || '2024-11-30';
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 15000);
+  try {
+    const r = await fetch(`${base}/documentintelligence/documentModels?api-version=${ver}`, {
+      headers: { 'Ocp-Apim-Subscription-Key': cfg.docint.key }, signal: ac.signal,
+    });
+    if (r.ok) return { ok: true };
+    if (r.status === 401 || r.status === 403) return { ok: false, reason: `bad key (HTTP ${r.status})` };
+    if (r.status === 404) return { ok: false, reason: 'endpoint URL looks wrong (HTTP 404)' };
+    return { ok: false, reason: `HTTP ${r.status}` };
+  } catch (e) {
+    return { ok: false, reason: e.name === 'AbortError' ? 'timed out' : e.message };
+  } finally { clearTimeout(timer); }
+}
+
+module.exports = { read, ping, configured, MAX_BYTES };

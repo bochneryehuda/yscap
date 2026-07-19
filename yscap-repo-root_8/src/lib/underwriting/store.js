@@ -105,6 +105,33 @@ function rollup(findings) {
   };
 }
 
+/**
+ * Resolve one finding the way an underwriter chose (post a condition, request a document,
+ * fix the file, clear, dismiss, grant an exception, decline). Records who/what/when so the
+ * decision is auditable. post_condition/request_document keep the finding OPEN (and still
+ * CTC-blocking if fatal) until the follow-up clears; the rest close it.
+ * @returns {Promise<object|null>} the updated finding row, or null if not found/already closed
+ */
+async function resolveFinding(client, { findingId, action, note, value, by } = {}) {
+  const { validateResolution } = require('./actions');
+  const v = validateResolution(action, { note, value });
+  if (!v.ok) throw new Error(v.reason);
+  const status = v.outcome; // 'open' | 'resolved' | 'dismissed'
+  const terminal = status !== 'open';
+  const { rows } = await client.query(
+    `UPDATE document_findings
+        SET status = $2,
+            resolution = $3,
+            resolution_note = $4,
+            resolution_value = $5,
+            resolved_by = CASE WHEN $6 THEN $7 ELSE resolved_by END,
+            resolved_at = CASE WHEN $6 THEN now() ELSE resolved_at END
+      WHERE id = $1 AND status IN ('open')
+      RETURNING *`,
+    [findingId, status, v.action, note || null, value != null ? String(value) : null, terminal, by || null]);
+  return rows[0] || null;
+}
+
 /** Open findings + roll-up for a whole loan file (all its documents). */
 async function getFileFindings(client, applicationId) {
   const { rows } = await client.query(
@@ -115,4 +142,4 @@ async function getFileFindings(client, applicationId) {
   return { findings: rows, summary: rollup(rows) };
 }
 
-module.exports = { saveAnalysis, getFileFindings, rollup, maskFields, _internals: { maskValue } };
+module.exports = { saveAnalysis, resolveFinding, getFileFindings, rollup, maskFields, _internals: { maskValue } };

@@ -45,7 +45,18 @@ const store = require('../src/lib/underwriting/store');
     assert.strictEqual(roll1.summary.fatal, 1);
     assert.strictEqual(roll1.summary.blocksCtc, true);
 
-    // 3. Re-analyze the SAME document → prior extraction/findings superseded, only new current.
+    // 2b. Underwriter resolves it: post_condition keeps it open (still blocks); clear closes it.
+    const posted = await store.resolveFinding(client, { findingId: r1.findingIds[0], action: 'post_condition', note: 'request an updated ID', by: b.id });
+    assert.strictEqual(posted.status, 'open');
+    assert.strictEqual(posted.resolution, 'post_condition');
+    assert.strictEqual((await store.getFileFindings(client, app.id)).summary.blocksCtc, true, 'a posted condition still blocks until cleared');
+    const cleared = await store.resolveFinding(client, { findingId: r1.findingIds[0], action: 'clear', by: b.id });
+    assert.strictEqual(cleared.status, 'resolved');
+    assert.strictEqual((await store.getFileFindings(client, app.id)).summary.fatal, 0, 'clearing drops the open fatal');
+    // Resolving an already-closed finding is a no-op.
+    assert.strictEqual(await store.resolveFinding(client, { findingId: r1.findingIds[0], action: 'dismiss', by: b.id }), null);
+
+    // 3. Re-analyze the SAME document → prior extraction superseded, exactly one current.
     const r2 = await store.saveAnalysis(client, {
       documentId: doc.id, applicationId: app.id, borrowerId: b.id, docType: 'government_id',
       extraction: { fields: { firstName: 'John' }, status: 'analyzed', confidence: 'analyzed' },
@@ -53,10 +64,8 @@ const store = require('../src/lib/underwriting/store');
     });
     const currents = (await client.query(`SELECT count(*)::int n FROM document_extractions WHERE document_id=$1 AND is_current`, [doc.id])).rows[0].n;
     assert.strictEqual(currents, 1, 'exactly one current extraction after re-analysis');
-    const openOld = (await client.query(`SELECT status FROM document_findings WHERE id=$1`, [r1.findingIds[0]])).rows[0].status;
-    assert.strictEqual(openOld, 'superseded', 'prior findings superseded on re-analysis');
-    const roll2 = await store.getFileFindings(client, app.id);
-    assert.strictEqual(roll2.summary.fatal, 0, 'clean re-analysis clears the open fatal');
+    const prevExt = (await client.query(`SELECT is_current FROM document_extractions WHERE id=$1`, [r1.extractionId])).rows[0];
+    assert.strictEqual(prevExt.is_current, false, 'prior extraction superseded on re-analysis');
     assert.ok(r2.extractionId);
 
     await client.query('ROLLBACK');

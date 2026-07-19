@@ -165,4 +165,22 @@ async function extract({ system, instructions, schema, ocrText, imageBase64, ima
   return { ok: true, data, raw: res.text, usage: res.usage };
 }
 
-module.exports = { available, complete, extract, buildUserContent };
+/**
+ * Auth+deployment health ping — a tiny chat call. Confirms the endpoint, key, AND the
+ * deployment name are all correct together (401 = bad key, 404 = wrong deployment/endpoint).
+ * Never throws. @returns {Promise<{ok:boolean, reason?:string}>}
+ */
+async function ping() {
+  if (!available()) return { ok: false, reason: 'endpoint, key, or deployment not set' };
+  const res = await complete({
+    userContent: 'Reply with the word OK.',
+    maxTokens: 16,
+    timeoutMs: 20000,
+  });
+  if (res.ok) return { ok: true };
+  if (/HTTP 401/.test(res.reason || '')) return { ok: false, reason: 'bad key (HTTP 401)' };
+  if (/HTTP 404/.test(res.reason || '')) return { ok: false, reason: 'deployment name or endpoint looks wrong (HTTP 404)' };
+  return { ok: false, reason: res.reason };
+}
+
+module.exports = { available, complete, extract, buildUserContent, ping };
