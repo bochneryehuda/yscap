@@ -253,10 +253,33 @@ function zip(v) { const s = clean(v); return s && /^\d{5}(-\d{4})?$/.test(s) ? s
 function year(v) { const n = toNum(v); return n != null && n >= 1700 && n <= CUR_YEAR ? String(n) : null; }
 
 // ---- top-level extract ------------------------------------------------------
+// Detect the appraisal dataset format from the raw XML. PILOT's parser reads UAD 2.6 (MISMO 2.6,
+// the attribute-heavy VALUATION_RESPONSE). The GSE redesign — UAD 3.6 / MISMO 3.x (URAR) — uses a
+// MESSAGE root + the 2009+ schema and a totally different shape; we must recognise it and fail
+// LOUDLY with a clear reason, never extract nulls from a file we don't actually understand.
+function detectMismo(xml) {
+  const s = String(xml || '');
+  const ref = /MISMOReferenceModelIdentifier\s*=\s*"?(\d+\.\d+)/i.exec(s);
+  const isV3 = (ref && /^3\./.test(ref[1]))
+    || /<(?:[A-Za-z_][\w.-]*:)?MESSAGE[\s>]/.test(s)
+    || /mismo\.org\/residential\/2009/i.test(s);
+  const uad36 = /\bUAD\s*3\.?6\b/i.test(s) || (isV3 && /uniform\s+residential\s+appraisal\s+report/i.test(s));
+  return { model: isV3 ? '3.x' : '2.x', ref: ref ? ref[1] : null, uad36 };
+}
+
 function extract(xml) {
   const root = X.parse(xml);
   const rep = X.find(root, 'REPORT');
-  if (!rep) return { ok: false, error: 'not a MISMO VALUATION_RESPONSE / REPORT' };
+  if (!rep) {
+    // Give the officer the real reason. A UAD 3.6 / MISMO 3.x file is a KNOWN, named format we
+    // don't yet read — say so, rather than a generic "not a REPORT".
+    const d = detectMismo(xml);
+    if (d.model === '3.x' || d.uad36) {
+      return { ok: false, format: { model: '3.x', uad36: true, ref: d.ref },
+        error: `This appraisal is in the UAD 3.6 / MISMO 3.x format${d.ref ? ` (reference model ${d.ref})` : ''}. PILOT currently reads UAD 2.6 (MISMO 2.6) appraisals — a 3.6 reader is required, so this file was not imported. Please provide the UAD 2.6 export, or import the PDF.` };
+    }
+    return { ok: false, error: 'not a MISMO VALUATION_RESPONSE / REPORT' };
+  }
   const formType = clean(X.attr(rep, 'AppraisalFormType'));
   const warnings = [];
 
