@@ -523,6 +523,9 @@ export const api = {
   appraisalResolveFinding: (appId, fid, b) => req('POST', `/api/appraisal/${appId}/findings/${fid}/resolve`, b),
   // Borrower READ-ONLY view of the same appraisal report + findings (no actions).
   appraisalGetBorrower:    (appId) => req('GET', `/api/borrower/applications/${appId}/appraisal`),
+  // Fetch an appraisal photo's bytes (blob) for inline display — staff vs borrower channel.
+  appraisalPhotoBlob:      async (docId) => (await download(`/api/staff/documents/${docId}/download?inline=1`)).blob,
+  appraisalPhotoBlobBorrower: async (docId) => (await download(`/api/borrower/documents/${docId}/download?inline=1`)).blob,
 
   // ---- admin: team / staff management ----
   adminStaff:        () => req('GET', '/api/admin/staff'),
