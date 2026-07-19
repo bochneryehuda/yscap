@@ -264,4 +264,9 @@ assert.strictEqual(codesOf('f').length, 0, 'a healthy on-pace file raises no ale
 assert.strictEqual(mon.summary.flagged, 5, 'five of six files flagged');
 ok('monitor: stale / no-draw / overdrawn / behind-pace / past-maturity alerts computed from real data');
 
+// wire-SLA overdue flag
+const wo = MON.assessPortfolioAlerts([{ application_id: 'w', budget_cents: 1000000, drawn_cents: 200000, draw_count: 1, funded_on: day(30), term: '12 months', last_activity_at: new Date(NOW - 2 * 86400000).toISOString(), wire_overdue: true }], { nowMs: NOW });
+assert.ok(wo.files[0].alerts.some((a) => a.code === 'wire_overdue' && a.severity === 'high'), 'accepted draw past its wire deadline is flagged');
+ok('monitor: wire-SLA overdue flagged (accepted but not funded past deadline)');
+
 console.log(`\nAll ${n} Sitewire rollup/reallocation/risk checks passed.`);

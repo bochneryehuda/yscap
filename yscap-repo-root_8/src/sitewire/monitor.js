@@ -53,6 +53,9 @@ function assessPortfolioAlerts(files, opts = {}) {
     const alerts = [];
     const add = (code, severity, message) => { alerts.push({ code, severity, message }); bump(code); };
 
+    // WIRE OVERDUE — the borrower accepted the findings but the release is past its SLA deadline.
+    if (f.wire_overdue) add('wire_overdue', 'high', 'The borrower accepted a draw but its release is past the wire deadline and hasn’t been funded yet.');
+
     // OVERDRAWN — money out has passed the budget (guards should prevent it; flag if it slips).
     if (budget > 0 && drawn > budget) add('overdrawn', 'high', `Drawn ${fmt(drawn)} exceeds the ${fmt(budget)} construction budget by ${fmt(drawn - budget)}.`);
 

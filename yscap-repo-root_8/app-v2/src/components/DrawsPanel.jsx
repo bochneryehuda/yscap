@@ -94,6 +94,9 @@ export default function DrawsPanel({ appId }) {
 
           {/* ---- Scope-of-Work reallocations ---- */}
           <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
+
+          {/* ---- audit trail ---- */}
+          <ActivityTrail appId={appId} />
         </>
       )}
     </div>
@@ -333,6 +336,37 @@ function LedgerPanel({ appId, ledger, draws, onSaved }) {
         <button className="btn btn-sm primary" disabled={busy || net < 0} onClick={save}>Record release</button>
       </div>
       {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
+function ActivityTrail({ appId }) {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState(null);
+  useEffect(() => { if (open && rows === null) api.get(`/api/sitewire/files/${appId}/activity`).then((d) => setRows(d.activity || [])).catch(() => setRows([])); }, [open, rows, appId]);
+  const KIND = { write: 'Sitewire', draw: 'Draw', money: 'Release', findings: 'Findings', reallocation: 'Budget' };
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row between" style={{ alignItems: 'center' }}>
+        <h3 style={{ margin: 0 }}>Draw activity (audit trail)</h3>
+        <div className="row" style={{ gap: 6 }}>
+          <button className="btn btn-sm ghost" onClick={() => api.sitewireExportActivity(appId).catch(() => {})}>Export</button>
+          <button className="btn btn-sm ghost" onClick={() => setOpen((o) => !o)}>{open ? 'Hide' : 'Show'}</button>
+        </div>
+      </div>
+      {open && rows === null && <div className="muted small" style={{ marginTop: 8 }}>Loading…</div>}
+      {open && rows && rows.length === 0 && <div className="muted small" style={{ marginTop: 8 }}>No activity recorded yet.</div>}
+      {open && rows && rows.length > 0 && (
+        <div style={{ marginTop: 8, maxHeight: 320, overflowY: 'auto' }}>
+          {rows.map((a, i) => (
+            <div key={i} className="row" style={{ gap: 8, padding: '5px 0', borderTop: i ? '1px solid var(--line,#e6e0d4)' : 'none', alignItems: 'baseline' }}>
+              <span className="muted small" style={{ minWidth: 130, fontVariantNumeric: 'tabular-nums' }}>{new Date(a.at).toLocaleString('en-US')}</span>
+              <span className="pill sw-draft" style={{ flex: 'none' }}>{KIND[a.kind] || a.kind}</span>
+              <span className="small">{a.summary}{a.actor ? <span className="muted"> · {a.actor}</span> : null}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

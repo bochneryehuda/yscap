@@ -296,7 +296,9 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
               (SELECT count(*) FROM sitewire_draws d4 WHERE d4.application_id=a.id AND d4.status='pending') AS pending_count,
               (SELECT count(*) FROM sitewire_draws d6 WHERE d6.application_id=a.id) AS draw_count,
               (SELECT max(greatest(coalesce(d7.approved_at,d7.submitted_at,d7.updated_at), d7.updated_at)) FROM sitewire_draws d7 WHERE d7.application_id=a.id) AS last_activity_at,
-              (SELECT count(*) FROM sitewire_draws d5 WHERE d5.application_id=a.id AND d5.risk_level='high') AS high_risk_count
+              (SELECT count(*) FROM sitewire_draws d5 WHERE d5.application_id=a.id AND d5.risk_level='high') AS high_risk_count,
+              (SELECT count(*) FROM draw_findings df WHERE df.application_id=a.id AND df.status='accepted' AND df.wire_due_at < now()
+                 AND NOT EXISTS (SELECT 1 FROM draw_disbursements dd WHERE dd.sitewire_draw_id=df.sitewire_draw_id AND dd.funded_status='released')) AS overdue_wire_count
          FROM sitewire_property_links l JOIN applications a ON a.id=l.application_id
         WHERE a.deleted_at IS NULL AND l.sitewire_property_id IS NOT NULL AND l.matched_by='created'${sc.where}`, sc.params)).rows;
     let budget = 0, drawn = 0, pendingReq = 0, pendingCount = 0, highRisk = 0;
@@ -308,7 +310,8 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
         budget_cents: b, drawn_cents: dr, remaining_cents: b - dr, pct_complete: b > 0 ? Math.round((dr / b) * 1000) / 10 : 0,
         pending_requested_cents: Number(r.pending_requested_cents) || 0, pending_count: Number(r.pending_count) || 0, high_risk_count: Number(r.high_risk_count) || 0,
         funded_on: r.actual_closing || null, term: r.term || null, draw_count: Number(r.draw_count) || 0,
-        last_activity_at: r.last_activity_at ? new Date(r.last_activity_at).toISOString() : null };
+        last_activity_at: r.last_activity_at ? new Date(r.last_activity_at).toISOString() : null,
+        wire_overdue: Number(r.overdue_wire_count) > 0 };
     });
     // early-warning monitoring (advisory, computed from real data only)
     let alerts = { files: [], summary: { by_code: {}, flagged: 0, total: files.length } };
@@ -327,6 +330,63 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
       pct_complete: budget > 0 ? Math.round((drawn / budget) * 1000) / 10 : 0, pending_requested_cents: pendingReq, pending_count: pendingCount, high_risk_count: highRisk,
       flagged: alerts.summary.flagged, alert_codes: alerts.summary.by_code },
       files: files.sort((a, b) => (b.alerts.length - a.alerts.length) || b.pending_count - a.pending_count || b.remaining_cents - a.remaining_cents) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Assemble a file's complete draw audit trail (examiner-ready) from every source we record:
+// our write journal, the Sitewire draw lifecycle events, the money ledger, findings accept/
+// dispute, and Scope-of-Work reallocations. Time-ordered, newest first. Read-only.
+async function buildDrawActivity(appId) {
+  const ev = [];
+  const push = (at, kind, summary, actor) => { if (at) ev.push({ at: new Date(at).toISOString(), kind, summary, actor: actor || null }); };
+  // 1) our guarded writes to Sitewire (journal)
+  for (const w of (await db.query(`SELECT entity, field, source, created_at FROM sitewire_write_log WHERE application_id=$1 ORDER BY created_at DESC LIMIT 500`, [appId])).rows) {
+    push(w.created_at, 'write', `PILOT ${w.source || 'push'}: ${w.entity || 'record'}${w.field ? ' · ' + w.field : ''}`);
+  }
+  // 2) Sitewire draw lifecycle events (draw_events come back unsorted — we sort by occurred_at)
+  for (const d of (await db.query(`SELECT number, events FROM sitewire_draws WHERE application_id=$1`, [appId])).rows) {
+    for (const e of (Array.isArray(d.events) ? d.events : [])) {
+      push(e.occurred_at, 'draw', `Draw #${d.number ?? '—'}: ${String(e.event || 'event').replace(/_/g, ' ')}`, e.actor || (e.actor_role) || null);
+    }
+  }
+  // 3) money released (our ledger)
+  for (const l of (await db.query(`SELECT sitewire_draw_id, net_release_cents, release_date, funded_status, created_at, created_by FROM draw_disbursements WHERE application_id=$1`, [appId])).rows) {
+    push(l.release_date || l.created_at, 'money', `Release recorded: net ${T.usd(l.net_release_cents)} (${l.funded_status})${l.sitewire_draw_id ? ' · draw #' + l.sitewire_draw_id : ''}`);
+  }
+  // 4) findings accept/dispute lifecycle
+  for (const f of (await db.query(`SELECT sitewire_draw_id, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at FROM draw_findings WHERE application_id=$1`, [appId])).rows) {
+    push(f.delivered_at, 'findings', `Findings delivered to borrower (draw #${f.sitewire_draw_id})`);
+    push(f.accepted_at, 'findings', `Borrower ACCEPTED findings (${f.accepted_via || 'portal'})`);
+    push(f.disputed_at, 'findings', 'Borrower DISPUTED findings');
+    push(f.resolved_at, 'findings', 'Dispute resolved');
+  }
+  // 5) Scope-of-Work reallocations
+  for (const c of (await db.query(`SELECT status, reason, created_at, decided_at FROM change_requests WHERE application_id=$1 AND field='sow_reallocation'`, [appId])).rows) {
+    push(c.created_at, 'reallocation', `Scope-of-Work change requested${c.reason ? ': ' + c.reason : ''}`);
+    if (c.status === 'approved') push(c.decided_at, 'reallocation', 'Scope-of-Work change applied');
+  }
+  ev.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  return ev;
+}
+
+// ---- GET /files/:id/activity — the draw audit trail (examiner-ready) ----
+router.get('/files/:id/activity', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try { res.json({ activity: await buildDrawActivity(req.params.id) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- GET /files/:id/activity/export — audit trail as an Excel-openable CSV ----
+router.get('/files/:id/activity/export', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const activity = await buildDrawActivity(req.params.id);
+    const esc = (v) => { let s = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const lines = [['When', 'Type', 'Detail', 'Who'].map(esc).join(',')];
+    for (const a of activity) lines.push([a.at, a.kind, a.summary, a.actor || ''].map(esc).join(','));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="draw-activity-${req.params.id}.csv"`);
+    res.send(lines.join('\n'));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

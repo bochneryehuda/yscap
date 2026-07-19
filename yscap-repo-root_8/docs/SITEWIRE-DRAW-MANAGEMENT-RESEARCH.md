@@ -811,3 +811,24 @@ Research shows the leading real-world draw problems; each maps to a guard/flag w
   single transaction with the SOW write; a concurrent approval in the same instant is a rare edge.
 - **Retainage / lien waivers / stored materials / interest reserve** — modeled in the research,
   intentionally deferred; their absence is a documented roadmap item, not a silent omission.
+
+---
+
+## 18. Examiner-ready audit trail + SLA monitoring (built 2026-07-19)
+
+Two more best-in-class capabilities, from a review of Built's "audit-ready documentation" and
+Rabbet's SLA/covenant reporting:
+
+- **Draw audit trail** (`GET /api/sitewire/files/:id/activity` + `/activity/export`): a single
+  time-ordered record of the WHOLE draw lifecycle for a file — every guarded PILOT write (from
+  `sitewire_write_log`), every Sitewire draw lifecycle event (sorted by `occurred_at`), every
+  release recorded, every findings delivery/accept/dispute/resolution, and every Scope-of-Work
+  reallocation. Newest-first, CSV-exportable (formula-injection-guarded), examiner-ready. Shown
+  as a collapsible "Draw activity" panel on the file's draw desk.
+- **Wire-SLA monitoring**: a `wire_overdue` portfolio alert fires when the borrower has ACCEPTED a
+  draw but its release is past the (admin-configurable) wire deadline and no release is recorded —
+  surfaced on the dashboard "Attention needed" panel alongside the pacing/stale/overdrawn alerts.
+
+Both are advisory + read-only; no new tables (assembled from existing records). The gap-analysis
+roadmap items (retainage, lien waivers, stored materials, AI photo % complete, interest reserve)
+remain explicitly deferred, never silently missing.
