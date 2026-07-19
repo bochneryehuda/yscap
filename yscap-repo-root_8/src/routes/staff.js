@@ -2514,6 +2514,7 @@ async function signOffGate(itemId, actor) {
   const isInsurance = code === 'rtl_cond_insurance';
   const isTitle = code === 'rtl_cond_title';
   const isFraud = code === 'rtl_cond_fraud';
+  const isAppraisalDocs = code === 'rtl_cond_appraisaldocs';   // two slots: XML + PDF
 
   // EMERGENCY doc-gate (owner-directed): a DOCUMENT-upload condition can never be
   // signed off with ZERO documents on it — the sign-off would attest to a file
@@ -2529,7 +2530,7 @@ async function signOffGate(itemId, actor) {
   // sign-off contradicted the flag (owner-reported 2026-07-16). Required
   // document conditions keep the gate exactly as before.
   if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false
-      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud) {
+      && code !== 'rtl_p1_llc' && !isInsurance && !isTitle && !isFraud && !isAppraisalDocs) {
     if (!actor || actor.role !== 'super_admin') {
       const has = await db.query(
         `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
@@ -2542,7 +2543,7 @@ async function signOffGate(itemId, actor) {
   // Document-gated conditions: cannot be signed off until the required upload(s)
   // are present on the item (current, non-rejected versions). slot_label carries
   // the slot key/label, so a case-insensitive substring identifies each slot.
-  if (isInsurance || isTitle || isFraud) {
+  if (isInsurance || isTitle || isFraud || isAppraisalDocs) {
     const docs = await db.query(
       `SELECT lower(coalesce(slot_label,'')) AS slot FROM documents
         WHERE checklist_item_id=$1 AND is_current AND COALESCE(review_status,'') <> 'rejected'`, [itemId]);
@@ -2551,6 +2552,11 @@ async function signOffGate(itemId, actor) {
     if (isInsurance) {
       if (!hasSlot('binder') || !hasSlot('invoice'))
         return 'Upload BOTH the insurance binder and the insurance invoice before signing off — this condition cannot be completed without both documents.';
+      return null;
+    }
+    if (isAppraisalDocs) {
+      if (!hasSlot('xml') || !hasSlot('pdf'))
+        return 'Upload BOTH the appraisal data file (XML) and the appraisal report (PDF) before signing off — this condition cannot be completed without both.';
       return null;
     }
     if (isTitle) {
@@ -5308,6 +5314,42 @@ router.post('/applications/:id/documents', async (req, res) => {
   // An LLC-slot upload re-drives the umbrella LLC condition on every open file
   // vesting in the entity (all slots present → received; etc).
   if (llcId) { try { await llcLib.syncLlcConditions(llcId); } catch (_) { /* best-effort */ } }
+
+  // Auto-import: an appraisal XML dropped on the appraisal-documents condition's XML slot
+  // imports the appraisal right there (builds the property report + PILOT findings + the two
+  // internal conditions) — the officer never has to use the separate import screen, though it
+  // still works. Best-effort: a bad/unparseable XML notes the failure on the condition and
+  // never breaks the upload.
+  if (b.checklistItemId && !llcId && /xml/i.test(slot || '')) {
+    try {
+      const tc = (await db.query(
+        `SELECT t.code FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
+        [b.checklistItemId])).rows[0];
+      if (tc && tc.code === 'rtl_cond_appraisaldocs') {
+        const xml = buf.toString('utf8');
+        const pdfDoc = (await db.query(
+          `SELECT id FROM documents WHERE checklist_item_id=$1 AND is_current
+             AND lower(coalesce(slot_label,'')) LIKE '%pdf%' ORDER BY created_at DESC LIMIT 1`,
+          [b.checklistItemId])).rows[0];
+        const out = await require('../lib/appraisal/desk').runAppraisalImport({
+          appId: req.params.id, xml, importedBy: req.actor.id,
+          xmlDocumentId: r.rows[0].id, pdfDocumentId: pdfDoc && pdfDoc.id,
+        });
+        if (out && out.ok) {
+          await audit(req, 'appraisal_import', 'application', req.params.id,
+            { via: 'condition_slot', appraisalId: out.appraisalId, findings: out.summary });
+        } else {
+          // Never silent: tell the officer the XML didn't import and why.
+          try {
+            await db.query(
+              `UPDATE checklist_items SET notes=CASE WHEN notes IS NULL OR notes LIKE '[auto]%' THEN $2 ELSE notes END, updated_at=now() WHERE id=$1`,
+              [b.checklistItemId, `[auto] The uploaded appraisal XML could not be imported${out && out.error ? ` (${out.error})` : ''}. Please confirm it is the appraisal DATA file (XML), not the PDF.`]);
+          } catch (_) { /* best-effort */ }
+        }
+      }
+    } catch (e) { console.error('[appraisal] condition auto-import failed (non-fatal):', e && e.message); }
+  }
+
   await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
