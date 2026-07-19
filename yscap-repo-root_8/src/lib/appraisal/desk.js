@@ -12,10 +12,12 @@
  * so they only attach here, on demand.
  */
 const db = require('../../db');
+const cfg = require('../../config');
 const storage = require('../storage');
 const { importAppraisal } = require('./import');
 const { ocrAsIsCandidate, buildOcrNote } = require('./ocr');
 const { extractPhotos } = require('./photos');
+const { crossCheckFlood } = require('./flood');
 const X = require('./xml');
 
 // Today as a 'YYYY-MM-DD' string from the DB (NY) — never new Date() in a date path.
@@ -103,6 +105,37 @@ async function extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy) {
 }
 
 // Fire-and-forget wrapper: runs AFTER the import returns so it never slows the officer down.
+// FEMA flood cross-check (fire-and-forget, gated by APPRAISAL_FLOOD_CHECK_ENABLED). Geocodes the
+// subject address, reads the official FEMA zone, stores the comparison on the appraisals row, and
+// raises a WARNING finding when the appraisal disagrees with FEMA on special-flood-hazard status.
+// Best-effort and never-guess: unreachable services store nothing and raise nothing.
+function fireFloodCheck(appraisalId, appId) {
+  if (!cfg.appraisalFloodCheckEnabled || !appraisalId) return;
+  (async () => {
+    const row = (await db.query(
+      `SELECT subject_address, subject_city, subject_state, subject_zip, flood_zone FROM appraisals WHERE id=$1`, [appraisalId])).rows[0];
+    if (!row) return;
+    const address = [row.subject_address, row.subject_city, row.subject_state, row.subject_zip].filter(Boolean).join(', ');
+    if (!address) return;
+    const r = await crossCheckFlood({ address, appraisalZone: row.flood_zone });
+    if (!r.checked) return;                    // never store a guessed zone
+    const cmp = r.comparison || {};
+    await db.query(
+      `UPDATE appraisals SET fema_flood_zone=$2, fema_flood_sfha=$3, fema_flood_agrees=$4, fema_flood_note=$5, fema_flood_checked_at=now()
+         WHERE id=$1 AND superseded=false`,
+      [appraisalId, r.femaZone, r.sfha, cmp.agrees, cmp.note]);
+    if (cmp.kind === 'sfha_mismatch') {
+      await db.query(
+        `INSERT INTO appraisal_findings (appraisal_id, application_id, source, code, severity, field, appraisal_value, file_value, title, how_to, blocks_ctc)
+         SELECT $1,$2,'appraisal','flood_zone_mismatch','warning','flood_zone',$3,$4,$5,$6,false
+          WHERE NOT EXISTS (SELECT 1 FROM appraisal_findings WHERE appraisal_id=$1 AND code='flood_zone_mismatch' AND status='open')
+            AND EXISTS (SELECT 1 FROM appraisals WHERE id=$1 AND superseded=false)`,
+        [appraisalId, appId, `FEMA zone ${r.femaZone}`, row.flood_zone ? `Appraisal zone ${row.flood_zone}` : null,
+         'Flood zone disagrees with the FEMA flood map', cmp.note]);
+    }
+  })().catch(() => { /* best-effort advisory — never breaks the import */ });
+}
+
 function firePhotoExtraction(appraisalId, appId, pdfB64, importedBy) {
   if (!appraisalId || !pdfB64) return;
   extractAndStorePhotos(appraisalId, appId, pdfB64, importedBy)
@@ -141,6 +174,7 @@ async function runAppraisalImport(args) {
     fireOcrAdvisory(appId, pdfB64, importedBy);
   }
   firePhotoExtraction(out.appraisalId, appId, pdfB64, importedBy);
+  fireFloodCheck(out.appraisalId, appId);
   return out;
 }
 

@@ -156,6 +156,12 @@ module.exports = {
   // https://ocr.space/ocrapi; unset falls back to the public demo key.
   ocrSpaceApiKey: process.env.OCR_SPACE_API_KEY,
 
+  // FEMA flood cross-check (appraisal zone vs the official FEMA map, via the free Census
+  // geocoder + FEMA NFHL — no signup/key). Off by default: it makes outbound calls to
+  // government APIs, so it must be enabled once the environment's network policy allows egress
+  // to geocoding.geo.census.gov + hazards.fema.gov.
+  appraisalFloodCheckEnabled: process.env.APPRAISAL_FLOOD_CHECK_ENABLED === '1',
+
   // --- document storage ---
   storageProvider: process.env.STORAGE_PROVIDER || 'local', // 'local' | 's3' | 'sharepoint'
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)

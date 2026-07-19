@@ -673,6 +673,12 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
                 ['Zoning', or(a.zoning_id), or(a.zoning_desc) !== '—' ? a.zoning_desc : null],
                 ['Zoning compliance', or(a.zoning_compliance)],
                 ['Flood zone', or(a.flood_zone)],
+                // FEMA cross-check — shown only once we've actually checked (never a guess).
+                a.fema_flood_checked_at && ['FEMA flood map',
+                  <span style={{ color: a.fema_flood_agrees === false ? 'var(--crit,#B4483C)' : a.fema_flood_agrees ? 'var(--good,#3F7A5B)' : 'inherit' }}>
+                    {a.fema_flood_zone ? `Zone ${a.fema_flood_zone}` : 'No zone mapped'}{a.fema_flood_agrees === true ? ' · agrees' : a.fema_flood_agrees === false ? ' · differs' : ''}
+                  </span>,
+                  a.fema_flood_agrees === false ? a.fema_flood_note : null],
                 ['Site value (cost)', a.site_value != null ? money(a.site_value) : '—'],
               ]} />
             </DCard>
