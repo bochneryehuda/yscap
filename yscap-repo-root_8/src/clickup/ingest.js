@@ -1183,10 +1183,11 @@ async function ingestTask(task, options = {}, opts = {}) {
  * Returns { applicationId, matchStatus, detail }.
  */
 async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) {
-  const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
+  const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
   const a = read.app || {};
   const lo = await resolveStaffByEmail(loanOfficerEmail);
-  const pr = await resolveStaffByEmail(processorEmail);
+  // PROCESSOR IS PORTAL-OWNED — the inbound ClickUp sync NEVER resolves or writes
+  // a processor (owner-directed 2026-07-19; see the processor_id note in `cols`).
   // Underwriter comes from ClickUp's "Underwriter" users field (may hold several
   // users — take the first), matched to staff_users by clickup_user_id. Pull-only.
   const uw = await resolveStaffByClickupUserId(firstUserIdFromField(task, F.PIPELINE.underwriter));
@@ -1220,7 +1221,18 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     internal_status: internal, status: external,
     clickup_extra: Object.keys(read.extra).length ? JSON.stringify(read.extra) : null,
     // Officer assignment (COALESCE on update: reassign when resolved, keep when not).
-    loan_officer_id: lo.id, loan_officer_name: lo.name, processor_id: pr.id,
+    // PROCESSOR IS PORTAL-OWNED, EXPLICIT-PICK ONLY (owner-directed 2026-07-19): the
+    // inbound sync deliberately does NOT set processor_id. The ClickUp "Processor
+    // Email" field is populated in ClickUp by defaults / automations / task
+    // duplication (never by our push, which only writes the Processor *users*
+    // field), so mirroring it in re-asserted a processor nobody picked — Lisa Katz
+    // (the DRAW coordinator) kept re-appearing on files, and because this ran as a
+    // COALESCE-overwrite on every pull, clearing her in the portal was futile (the
+    // next sync put her back). A file's processor is now set ONLY by an explicit
+    // portal pick (the staff New-File dropdown or the /assign endpoint); the
+    // portal is the sole owner and the outbound push still mirrors a real pick OUT
+    // to ClickUp. Do NOT re-add processor_id here.
+    loan_officer_id: lo.id, loan_officer_name: lo.name,
     // Underwriter assignment — same COALESCE semantics: set when resolved, keep when not.
     underwriter_id: uw.id,
     clickup_folder_id: folderId != null ? Number(folderId) : null,
