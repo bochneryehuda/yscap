@@ -361,12 +361,15 @@ manual-review gate (§8), not fire-and-forget.
    `signOffGate` enforces (`staff.js:2400-2540`) — satisfied naturally because step 4 attached the
    signed PDF. It then `enqueueChecklistStatusPush(itemId)` (mirror to the ClickUp dropdown) and writes
    an audit row.
-6. **Re-fire on change:** `db/096_product_fatal_on_economics_change.sql:68-78` already **reopens
-   `rtl_cond_signedts`** (→ `outstanding`, sign-off cleared, `[auto]` note "generate the new term sheet
-   and collect a fresh signature") whenever deal economics change. So a re-registration correctly
-   **voids/re-sends**: the webhook flow must, on reopen, **void** the outstanding envelope
-   (`PUT …/envelopes/{id}` `status:"voided"`) and enqueue a fresh send. This is the "re-issue after
-   renegotiation" path and it is already wired at the DB level.
+6. **Re-fire on change — via a HUMAN review gate, never auto-void.** `db/096_product_fatal_on_economics_change.sql:68-78`
+   already **reopens `rtl_cond_signedts`** (→ `outstanding`, sign-off cleared, `[auto]` note "generate the
+   new term sheet and collect a fresh signature") whenever deal economics change. When that reopen fires
+   **and** an envelope for that condition is still outstanding, the system does **NOT** auto-void it
+   (voiding is destructive — see Error-Handling §6 "no auto-void ever"). Instead it raises a
+   **`esign_stale_needs_reissue` review row** ("the deal economics changed — the outstanding signature no
+   longer matches; **void & re-send?**") with the `void_and_resend` action, so a human confirms before the
+   old envelope is voided and a fresh one goes out. _(Resolves the auto-void contradiction flagged by the
+   no-guessing audit — HARDENING §6.7.)_
 
 ### 6.2 Loan-application signing (± combined with the term sheet)
 

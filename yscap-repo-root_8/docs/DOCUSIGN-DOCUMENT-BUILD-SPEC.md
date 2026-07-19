@@ -273,7 +273,10 @@ per BLUEPRINT §5.3):
    `includeData` has `custom_fields`). **Ack 200 fast**, process async.
 2. Enumerate documents authoritatively: `GET .../envelopes/{id}/documents` → each `{documentId, name,
    type}` (content docs are `type:"content"`; the certificate is `type:"summary"` /
-   `documentId:"certificate"`). Match `documentId`/`name` to what we assigned at create.
+   `documentId:"certificate"`). Match by the **numeric `documentId` we assigned at send and stored in
+   `esign_envelope_docs`** — **NEVER by document `name`** (names collide/drift — name-matching is a guess;
+   no-guessing audit DP3). A returned content doc whose `documentId` isn't in `esign_envelope_docs` →
+   **review row, never a name-based or `DOC_KIND_TO_TEMPLATE` fallback**.
 3. Fetch each signed PDF: `GET .../envelopes/{id}/documents/{documentId}` with `Accept: application/pdf`.
    Fetch the Certificate of Completion: `GET .../envelopes/{id}/documents/certificate`.
 4. Persist each via the standard chokepoint → `documents` rows with the SIGNED kind

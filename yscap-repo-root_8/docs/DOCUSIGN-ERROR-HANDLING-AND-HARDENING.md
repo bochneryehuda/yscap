@@ -234,6 +234,59 @@ A `docs/DOCUSIGN-DATA-SAFETY.md` companion should encode these; they mirror the 
 
 ---
 
+## 6.7 No-guessing audit — required design corrections (must land before go-live)
+
+An adversarial "does it ever guess?" audit of the design found it anti-guessing by intent, with a few
+concrete holes. These are the mandatory fixes so the system **only follows instructions, never guesses**:
+
+1. **Auto-void contradiction — RESOLVED to human-gated (DP7).** BLUEPRINT §6.1 step 6 previously implied
+   auto-voiding the outstanding envelope on an economics-change re-issue, which violated "no auto-void
+   ever" (§6.2). **Fix:** the reopen raises an `esign_stale_needs_reissue` **review row** with a
+   `void_and_resend` action — a human confirms; the system never auto-voids. (BLUEPRINT §6.1 step 6 now
+   says this.)
+2. **Match returning documents by numeric `documentId` ONLY, never by name (DP3).** BUILD-SPEC §5.4 step 2
+   corrected. A completed content doc whose `documentId` isn't in `esign_envelope_docs` → review row; no
+   name-based or `DOC_KIND_TO_TEMPLATE` fallback for envelope-originated docs.
+3. **The send gate must assert registration-reflects-appraisal, not just two independent flags (DP1).**
+   The pre-send gate requires (1) product registered, (2) `rtl_cond_appraisaldocs` signed off, **(3) the
+   CURRENT `product_registrations.is_current` row was created at/after the appraisal sign-off (its
+   `as_is_value`/`arv` reflect the appraised value).** Otherwise a stale registration + a separately-signed
+   appraisal could both be "satisfied" without the numbers ever reconciling. This is the frozen-value
+   safety valve — the signed term sheet must reflect the appraisal-confirmed structure.
+4. **`satisfyConditionBySystem` MUST call `signOffGate(itemId, null)` — do NOT copy the gate-bypass
+   precedents (DP5).** `llc.js:325-339`, `liquidity.js:100`, `experience.js:150` set `status='satisfied'`
+   *directly* with no gate; the DocuSign auto-clear must NOT. Passing `null` actor keeps the doc-present
+   check armed (`staff.js:2428-2437`). And keep the rule-gated **tier-3 auto-satisfy OFF for every e-sign
+   condition at go-live** (esp. term sheet + wire auth) so a processor eyeballs the actual signed PDF.
+5. **Ship the v2 schema the guarantees depend on** — `esign_envelope_docs` (documentId→doc_kind→condition
+   map), `purpose`, the send-claim column + `UNIQUE(application_id,purpose)`, and `docusign_event_inbox`.
+   Until these exist, "correlate by id / one-envelope-many-conditions / idempotent / send-once" are
+   aspirational — `db/037`'s `esign_envelopes` is single-doc + non-idempotent.
+6. **Extend the `docKind` whitelist in BOTH `staff.js:5107` and `borrower.js:1990`** for the new/signed
+   kinds *before* any generator or completion handler writes — else a signed PDF is **silently dropped**.
+   A signed-doc persist failure must dead-letter to review (a completed signature with no stored PDF must
+   never be silent).
+7. **Add the `heter_iska_signed` denylist guard** to `sharepoint-backup.js` and `tpr-export.js` now (even
+   though nothing produces it yet), so a future `KIND_STREAM`/`folderPathFor` edit can never leak it.
+
+**Manual-review gates to add before go-live** (all route through the existing `sync_review_queue`, so LO
+notification + 3/7-day escalation come free):
+- **G1** Pre-send gate (fix #3) — the "send" click is blocked until (1)+(2)+(3) hold.
+- **G2** Signed → condition `received`, **human sign-off** (tier-3 auto-satisfy OFF at go-live).
+- **G3** Unmatched inbound (no DB row for the envelope, or a `documentId` not in `esign_envelope_docs`) →
+  review, never a name-match/kind-guess fallback.
+- **G4** Decline / void / bounce / dead-lettered send → review with actions (§5).
+- **G5** Any void/resend is human-approved (`guardNoAutoVoid()`; surface only as review actions).
+- **G6** Completion whose recipient set doesn't match what we sent → review, don't clear.
+- **G7** Before any unattended/server-rendered term sheet (Phase 2+), a human confirms it's byte-identical
+  to the frozen jsPDF output.
+
+**Verdict:** correlation, doc→condition binding, signer selection, and default auto-clear are all
+ID/instruction-driven with a human on the trigger and the sign-off. With fixes #1–#7 the rule "the system
+does not guess, it only follows instructions" holds end-to-end.
+
+---
+
 ## 7. Write journal + audit (PII-free)
 
 - **`docusign_write_log`** (or reuse `clickup_write_log`'s shape, `db/107:15-31`): append-only record of
