@@ -70,6 +70,12 @@ BEGIN
     INTO v_finding, v_reconciled
     FROM credit_reports
    WHERE application_id = NEW.application_id
+     -- Only IMPORTED reports carry a decision/finding. A later failed / in_doubt /
+     -- review / ordering re-pull writes a NEWER row with a NULL finding; without
+     -- this filter that row would become "the latest report" and MASK an earlier
+     -- imported report's unreconciled fatal finding. Kept in lock-step with the
+     -- app-layer gate (staff.js signOffGate) and reopen-sweep.js.
+     AND status = 'imported'
    -- `id DESC` tiebreaker: this trigger and the app-layer gate (signOffGate) must
    -- resolve the SAME "latest report" even on a same-timestamp tie, or the two
    -- layers could disagree (one allows the sign-off, the other raises).
@@ -122,6 +128,7 @@ UPDATE checklist_items ci
             AND cr.underwriting_finding_reconciled_at IS NULL
        FROM credit_reports cr
       WHERE cr.application_id = a.id
+        AND cr.status = 'imported'
       ORDER BY cr.created_at DESC, cr.id DESC
       LIMIT 1
    );

@@ -2588,6 +2588,13 @@ async function signOffGate(itemId, actor) {
       `SELECT underwriting_finding, underwriting_finding_reconciled_at
          FROM credit_reports
         WHERE application_id=$1
+          -- Only IMPORTED reports carry a decision/finding. A later failed /
+          -- in_doubt / review / ordering re-pull writes a NEWER row with a NULL
+          -- finding; without this filter that row would become "the latest report"
+          -- and MASK an earlier imported report's unreconciled fatal finding,
+          -- letting the loan clear on a FICO the bureau never confirmed. Matches
+          -- reopen-sweep.js, which scopes "latest report" the same way.
+          AND status = 'imported'
         -- id DESC is a deterministic tiebreaker so this app-layer gate and the
         -- db/168 trigger backstop always resolve the SAME latest report even on a
         -- same-timestamp tie -- otherwise the two layers could disagree (one allows,

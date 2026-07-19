@@ -16,7 +16,7 @@ BEGIN
 
   -- credit report WITH a fatal FICO-mismatch finding
   INSERT INTO credit_reports (application_id, provider_id, status, underwriting_finding)
-    VALUES (aid, 1, 'complete', '{"type":"fico_mismatch","severity":"fatal","verified":732,"claimed":699,"verifiedBracket":"720-739","claimedBracket":"680-699"}'::jsonb)
+    VALUES (aid, 1, 'imported', '{"type":"fico_mismatch","severity":"fatal","verified":732,"claimed":699,"verifiedBracket":"720-739","claimedBracket":"680-699"}'::jsonb)
     RETURNING id INTO crid;
   INSERT INTO checklist_items (scope,label,application_id,template_id,status)
     VALUES ('application','Credit report',aid,tmpl,'received');
@@ -43,7 +43,7 @@ BEGIN
   -- staff-credit.js's "most recent report".)
   UPDATE credit_reports SET underwriting_finding_reconciled_at=NULL WHERE id=crid;
   INSERT INTO credit_reports (application_id, provider_id, status, underwriting_finding, created_at)
-    VALUES (aid, 1, 'complete', NULL, now() + interval '1 minute');
+    VALUES (aid, 1, 'imported', NULL, now() + interval '1 minute');
   UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
   RAISE NOTICE 'PASS T3: latest clean report clears the gate (older finding ignored)';
 
@@ -66,9 +66,9 @@ BEGIN
   UPDATE checklist_items SET status='received' WHERE application_id=aid AND template_id=tmpl;
   DELETE FROM credit_reports WHERE application_id=aid;
   INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
-    VALUES ('00000000-0000-0000-0000-000000000001', aid, 1, 'complete', NULL, timestamptz '2020-01-01 00:00:00+00');
+    VALUES ('00000000-0000-0000-0000-000000000001', aid, 1, 'imported', NULL, timestamptz '2020-01-01 00:00:00+00');
   INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
-    VALUES ('00000000-0000-0000-0000-000000000002', aid, 1, 'complete',
+    VALUES ('00000000-0000-0000-0000-000000000002', aid, 1, 'imported',
             '{"severity":"fatal","verified":732,"claimed":699}'::jsonb, timestamptz '2020-01-01 00:00:00+00');
   blocked := false;
   BEGIN
@@ -79,12 +79,32 @@ BEGIN
   -- Now give the CLEAN report the higher id => clean is "latest" => sign-off ALLOWED.
   DELETE FROM credit_reports WHERE application_id=aid;
   INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
-    VALUES ('00000000-0000-0000-0000-000000000001', aid, 1, 'complete',
+    VALUES ('00000000-0000-0000-0000-000000000001', aid, 1, 'imported',
             '{"severity":"fatal","verified":732,"claimed":699}'::jsonb, timestamptz '2020-01-01 00:00:00+00');
   INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
-    VALUES ('00000000-0000-0000-0000-000000000002', aid, 1, 'complete', NULL, timestamptz '2020-01-01 00:00:00+00');
+    VALUES ('00000000-0000-0000-0000-000000000002', aid, 1, 'imported', NULL, timestamptz '2020-01-01 00:00:00+00');
   UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
   RAISE NOTICE 'PASS T6: same-timestamp tiebreaker is deterministic (id DESC) — fatal-higher blocks, clean-higher allows';
+
+  -- TEST 7: a later FAILED / in_doubt re-pull must NOT mask an earlier imported
+  -- report's fatal finding. The finding lives only on 'imported' rows; a failed
+  -- order writes a newer 'in_doubt'/'error' row with a NULL finding. The gate
+  -- reads only imported reports, so the earlier fatal finding still blocks.
+  UPDATE checklist_items SET status='received' WHERE application_id=aid AND template_id=tmpl;
+  DELETE FROM credit_reports WHERE application_id=aid;
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-0000000000a1', aid, 1, 'imported',
+            '{"severity":"fatal","verified":732,"claimed":699}'::jsonb, timestamptz '2020-01-01 00:00:00+00');
+  -- a NEWER in_doubt re-pull (no finding) — must NOT clear the gate
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-0000000000a2', aid, 1, 'in_doubt', NULL, timestamptz '2020-06-01 00:00:00+00');
+  blocked := false;
+  BEGIN
+    UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  EXCEPTION WHEN check_violation THEN blocked := true;
+  END;
+  IF NOT blocked THEN RAISE EXCEPTION 'FAIL T7: a later in_doubt re-pull MASKED the imported fatal finding'; END IF;
+  RAISE NOTICE 'PASS T7: a failed/in_doubt re-pull does not mask an earlier imported fatal finding';
 
   DELETE FROM checklist_items WHERE application_id=aid;
   DELETE FROM credit_reports WHERE application_id=aid;

@@ -327,17 +327,33 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
     let froze = false;
     if (assessment.decision === 'imported') {
       await client.query(`SET LOCAL app.credit_reverify = 'on'`);
-      for (const pb of scored.perBorrower) {
-        const dbBorrowerId = dbIdFor(pb);
-        if (!dbBorrowerId || pb.middle.middle == null) continue;
+      // Freeze BOTH borrowers in ONE multi-row UPDATE. The representative-aware
+      // reopen trigger (db/158) is AFTER ROW and reads GREATEST(primary.fico,
+      // co.fico); Postgres queues AFTER-ROW triggers to end-of-statement, so a
+      // single statement lets each row's trigger see BOTH borrowers' FINAL scores.
+      // A per-borrower loop fired the trigger after each statement — the primary's
+      // update was evaluated against the co-borrower's STALE score, which could
+      // transiently cross a bracket and spuriously reopen a cleared, signed
+      // registration + term sheet even when the true representative bracket never
+      // changed (joint files only; the flag was never cleared).
+      const freezeRows = scored.perBorrower
+        .map((pb) => ({ id: dbIdFor(pb), fico: pb.middle.middle, source: pb.sourceLabel }))
+        .filter((r) => r.id && r.fico != null);
+      if (freezeRows.length) {
+        const params = [parsed.reportIdentifier || null, parsed.firstIssuedDate || '', actorId];
+        const valuesSql = freezeRows.map((r, i) => {
+          const base = params.length;
+          params.push(r.id, r.fico, r.source);
+          return `($${base + 1}::uuid, $${base + 2}::int, $${base + 3}::text)`;
+        }).join(', ');
         await client.query(
-          `UPDATE borrowers
-              SET verified_fico=$2, fico=$2, verified_fico_source=$3, verified_report_id=$4,
-                  verified_pulled_at = NULLIF($5,'')::date, verified_imported_at=now(), verified_imported_by=$6,
-                  fico_locked=true
-            WHERE id=$1`,
-          [dbBorrowerId, pb.middle.middle, pb.sourceLabel, parsed.reportIdentifier || null,
-           parsed.firstIssuedDate || '', actorId]);
+          `UPDATE borrowers b
+              SET verified_fico=v.fico, fico=v.fico, verified_fico_source=v.source,
+                  verified_report_id=$1, verified_pulled_at=NULLIF($2,'')::date,
+                  verified_imported_at=now(), verified_imported_by=$3, fico_locked=true
+             FROM (VALUES ${valuesSql}) AS v(id, fico, source)
+            WHERE b.id = v.id`,
+          params);
         froze = true;
       }
       // Capture the score the loan was priced on at import time (for the audit of
@@ -420,13 +436,23 @@ async function orderAndImport(opts = {}) {
   const kit = versionKit(opts.mismoVersion || cfg.xactus.mismoVersion);
   if (!kit.endpoint) throw httpError(400, `Xactus ${kit.version} endpoint is not configured`);
 
+  // The in-flight dedup window MUST exceed the full order lifetime. A row stays
+  // 'ordering' for the entire billable POST (up to timeoutMs) plus parse/persist;
+  // if the window were shorter than the timeout, a second click during the tail of
+  // a slow-but-live order (e.g. 30–45s in) would fall OUTSIDE the window, pass both
+  // dedup checks, and place a SECOND billable POST for the same file+action. Derive
+  // it from the timeout so it can never regress below it (with margin), while still
+  // honoring a larger configured dedupWindowSec. A genuinely stuck 'ordering' row is
+  // handled separately by the stale-order sweep (staleOrderMinutes), not here.
+  const inflightWindowSec = Math.max(cfg.xactus.dedupWindowSec, Math.ceil(cfg.xactus.timeoutMs / 1000) + 15);
+
   // In-flight dedup window: a double-click that DIDN'T reuse the key must not place
   // two billable orders for the same file + action. Return the in-flight one.
   const inflight = (await db.query(
     `SELECT id FROM credit_reports
       WHERE application_id=$1 AND action_type=$2 AND status='ordering'
         AND ordered_at > now() - ($3 || ' seconds')::interval
-      ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(cfg.xactus.dedupWindowSec)])).rows[0];
+      ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(inflightWindowSec)])).rows[0];
   if (inflight) return { reportId: inflight.id, status: 'ordering', deduped: true, inflight: true };
 
   // Spend/volume circuit breaker (billable-path guard) — cap pulls per 10 min.
@@ -479,7 +505,7 @@ async function orderAndImport(opts = {}) {
       `SELECT id FROM credit_reports
         WHERE application_id=$1 AND action_type=$2 AND status='ordering'
           AND ordered_at > now() - ($3 || ' seconds')::interval
-        ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(cfg.xactus.dedupWindowSec)])).rows[0];
+        ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(inflightWindowSec)])).rows[0];
     if (dup) {
       await jc.query('COMMIT');
       dedupResult = { reportId: dup.id, status: 'ordering', deduped: true, inflight: true };

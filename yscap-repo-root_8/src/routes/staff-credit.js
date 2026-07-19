@@ -270,7 +270,10 @@ router.patch('/credit/adverse-action/:id', requirePull, async (req, res) => {
     if (!row) return res.status(404).json({ error: 'draft not found' });
     if (!(await canSeeApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
     await db.query(`UPDATE adverse_action_letters SET status=$2, reviewed_by=$3, reviewed_at=now() WHERE id=$1`, [req.params.id, status, req.actor.id]);
-    await audit(req, 'credit_adverse_action_status', { letterId: Number(req.params.id), status });
+    // The letter id is a uuid — keep it as a string. Number(uuid) is NaN, which
+    // serializes to null and erases WHICH draft was acted on from the compliance
+    // (GLBA) audit trail.
+    await audit(req, 'credit_adverse_action_status', { letterId: req.params.id, status });
     res.json({ ok: true, status });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
