@@ -222,15 +222,22 @@ async function backfillAppraisalPhotosOnce(limit = 25) {
         WHERE a.superseded=false
           AND (a.pdf_document_id IS NOT NULL OR a.source_xml_document_id IS NOT NULL)
           AND NOT EXISTS (SELECT 1 FROM appraisal_photos ap WHERE ap.appraisal_id=a.id AND ap.document_id IS NOT NULL)
+          -- and not already attempted-with-no-result (so we don't re-decode a no-photo PDF each boot)
+          AND NOT EXISTS (SELECT 1 FROM appraisal_photos ap WHERE ap.appraisal_id=a.id AND ap.category='backfill_none')
         ORDER BY a.imported_at DESC
         LIMIT $1`, [limit])).rows;
     for (const r of rows) {
       scanned++;
       try {
         const pdfB64 = await pdfBytesForAppraisal(r);
-        if (!pdfB64) continue;
+        if (!pdfB64) continue;                             // no decodable PDF (cheap check, no re-decode)
         const n = await extractAndStorePhotos(r.id, r.application_id, pdfB64, null);
         if (n > 0) { filled++; photos += n; }
+        else {
+          // Had a PDF but nothing extractable — drop a sentinel so the (CPU-heavy) decode isn't
+          // retried on every boot. A real re-import creates a new appraisal row and re-attempts.
+          try { await db.query(`INSERT INTO appraisal_photos (appraisal_id, category, caption) VALUES ($1,'backfill_none','no extractable photos found')`, [r.id]); } catch (_) { /* best-effort */ }
+        }
       } catch (_) { /* per-appraisal best-effort */ }
     }
   } catch (_) { /* best-effort */ }
