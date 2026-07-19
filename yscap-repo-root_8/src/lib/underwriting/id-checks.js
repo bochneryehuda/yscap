@@ -17,11 +17,7 @@
  * prior_address). `opts.today` ('YYYY-MM-DD') is injected — no `new Date()` in date
  * paths, matching the appraisal engine. Returns findings in the document_findings shape.
  */
-
-function norm(s) {
-  return String(s == null ? '' : s).toLowerCase().replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim();
-}
-function digitsOnly(s) { return String(s == null ? '' : s).replace(/\D/g, ''); }
+const { norm, addrMatches, addrLine, daysBetween } = require('./compare');
 
 // The borrower's name from the file, and the ID's name (prefer first/last, fall back to
 // splitting fullName). Returns normalized "first last" strings, or null when unknown.
@@ -34,37 +30,6 @@ function idName(id) {
   if (fn || ln) return `${fn} ${ln}`.trim();
   const full = norm(id && id.fullName);
   return full || null;
-}
-
-// Address compare on house-number + zip (the two hardest-to-fake, easiest-to-match
-// signals), tolerant of formatting. Returns true/false, or null when uncomparable.
-function addrKey(a) {
-  if (!a) return null;
-  const line1 = norm(a.line1 || a.line || '');
-  const zip = digitsOnly(a.zip).slice(0, 5);
-  if (!line1 && !zip) return null;
-  const houseNo = (line1.match(/^\d+/) || [''])[0];
-  return { houseNo, zip, line1 };
-}
-function addrMatches(idAddr, fileAddr) {
-  const a = addrKey(idAddr), b = addrKey(fileAddr);
-  if (!a || !b) return null;
-  // Match when the zip agrees AND the house number agrees (when both carry one).
-  const zipOk = a.zip && b.zip ? a.zip === b.zip : null;
-  const houseOk = a.houseNo && b.houseNo ? a.houseNo === b.houseNo : null;
-  if (zipOk === true && houseOk !== false) return true;
-  if (zipOk === false) return false;
-  // Fall back to a whole-line containment check when zips are missing.
-  if (a.line1 && b.line1) return a.line1.includes(b.line1) || b.line1.includes(a.line1);
-  return null;
-}
-
-// Whole-day difference between two 'YYYY-MM-DD' strings (no Date-of-now dependence).
-function daysBetween(a, b) {
-  const pa = /^(\d{4})-(\d{2})-(\d{2})$/.exec(a), pb = /^(\d{4})-(\d{2})-(\d{2})$/.exec(b);
-  if (!pa || !pb) return null;
-  const da = Date.UTC(+pa[1], +pa[2] - 1, +pa[3]), db = Date.UTC(+pb[1], +pb[2] - 1, +pb[3]);
-  return Math.round((db - da) / 86400000);
 }
 
 function finding(f) {
@@ -123,10 +88,9 @@ function computeIdFindings(id, borrower, opts = {}) {
   if (matchesCurrent === false) {
     const matchesPrior = addrMatches(id.address, borrower && borrower.prior_address);
     if (matchesPrior !== true) {
-      const a = id.address || {};
       out.push(finding({ code: 'id_address_mismatch', severity: 'warning', field: 'current_address',
-        docValue: [a.line1, a.city, a.state, a.zip].filter(Boolean).join(', ') || null,
-        fileValue: (() => { const f = borrower && borrower.current_address; return f ? [f.line1, f.city, f.state, f.zip].filter(Boolean).join(', ') : null; })(),
+        docValue: addrLine(id.address),
+        fileValue: addrLine(borrower && borrower.current_address),
         title: 'Address on the ID does not match the file',
         howTo: 'IDs often show a prior address after a move. Confirm the borrower’s current primary address on file; update it or acknowledge the difference.',
         actions: ['fix_file', 'acknowledge', 'custom', 'dismiss'] }));

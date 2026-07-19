@@ -51,4 +51,49 @@ const GOVERNMENT_ID = {
   },
 };
 
-module.exports = { GOVERNMENT_ID };
+// ---- Purchase & sale contract (incl. assignment / wholesale addendum) ----
+const PURCHASE_CONTRACT = {
+  docType: 'purchase_contract',
+  instructions:
+    "You are reviewing a real-estate purchase & sale contract (and any assignment or " +
+    "wholesale addendum) for a loan file. Extract the fields exactly as written. Use null " +
+    "for anything absent or unreadable — do NOT guess. Write dates as YYYY-MM-DD and all " +
+    "prices as plain numbers (no $, no commas). List EVERY seller named. Identify the buyer " +
+    "exactly as written (usually an LLC). If this is an assignment/wholesale deal (the buyer " +
+    "is assigning their contract to a new buyer for a fee), set isAssignment true, capture the " +
+    "assignmentFee, and capture underlyingPrice = the seller's ORIGINAL contract price (before " +
+    "the fee). Set readable=false if the document is too poor to trust.",
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      propertyAddress: {
+        type: ['object', 'null'],
+        additionalProperties: false,
+        properties: {
+          line1: { type: ['string', 'null'] },
+          city:  { type: ['string', 'null'] },
+          state: { type: ['string', 'null'] },
+          zip:   { type: ['string', 'null'] },
+        },
+        required: ['line1', 'city', 'state', 'zip'],
+      },
+      purchasePrice:   { type: ['number', 'null'] },
+      sellerNames:     { type: 'array', items: { type: 'string' } },
+      buyerName:       { type: ['string', 'null'] },
+      isAssignment:    { type: 'boolean' },
+      assignmentFee:   { type: ['number', 'null'] },
+      underlyingPrice: { type: ['number', 'null'] },   // seller's original contract price
+      closingDate:     { type: ['string', 'null'] },   // YYYY-MM-DD
+      earnestMoney:    { type: ['number', 'null'] },
+      readable:        { type: 'boolean' },
+      notes:           { type: ['string', 'null'] },
+    },
+    required: [
+      'propertyAddress', 'purchasePrice', 'sellerNames', 'buyerName', 'isAssignment',
+      'assignmentFee', 'underlyingPrice', 'closingDate', 'earnestMoney', 'readable', 'notes',
+    ],
+  },
+};
+
+module.exports = { GOVERNMENT_ID, PURCHASE_CONTRACT };
