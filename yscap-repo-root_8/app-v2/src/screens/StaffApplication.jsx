@@ -20,6 +20,7 @@ import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import DrawsPanel from '../components/DrawsPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
+import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
@@ -2111,6 +2112,8 @@ export default function StaffApplication() {
   // the section nav can show a findings badge without a second fetch here.
   const [apprSummary, setApprSummary] = useState(null);
   const onApprSummary = useCallback((s) => setApprSummary(s), []);
+  const [uwSummary, setUwSummary] = useState(null);
+  const onUwSummary = useCallback((s) => setUwSummary(s), []);
   // Known internal (ClickUp) statuses for the picker — file-independent, loaded once.
   const [internalStatuses, setInternalStatuses] = useState([]);
   const [condFilter, setCondFilter] = useState('all');
@@ -2461,6 +2464,7 @@ export default function StaffApplication() {
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
     { id: 'sec-appraisal', label: 'Appraisal & findings', badge: apprSummary && apprSummary.fatal ? `${apprSummary.fatal} ⚠` : '' },
+    { id: 'sec-underwriting', label: 'Document review', badge: uwSummary && uwSummary.fatal ? `${uwSummary.fatal} ⚠` : '' },
     ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
     { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
@@ -2699,6 +2703,12 @@ export default function StaffApplication() {
         info="Import the appraisal XML (1004 / 1025 / 1073) and PILOT builds the whole property profile from it — As-Is, ARV, comparables, the appraiser and everything the file needs — then compares it to the loan file. Every value that differs becomes a PILOT finding your team reviews; a value change reprices the loan and nothing is ever overwritten silently."
         badge={apprSummary ? (apprSummary.fatal ? `${apprSummary.fatal} fatal` : (apprSummary.warning ? `${apprSummary.warning} warning` : 'Reviewed ✓')) : ''}>
         <AppraisalPanel appId={id} onSummary={onApprSummary} />
+      </Section>
+
+      <Section id="sec-underwriting" title="Document review & PILOT findings"
+        info="PILOT reads every uploaded document (government ID, purchase contract, title, bank statement and more), understands it, and checks it against the loan file — flagging anything that doesn't match on the document itself AND anything that disagrees across documents (the seller, price, and property address must be the same on the contract, title, and appraisal). Choose a document and the type it is, and PILOT reads and checks it. Each finding is yours to resolve: post a condition, request a document, fix the file, clear it, grant an exception, dismiss, or decline. Nothing is ever written onto the loan file automatically."
+        badge={uwSummary ? (uwSummary.fatal ? `${uwSummary.fatal} fatal` : (uwSummary.warning ? `${uwSummary.warning} warning` : 'Reviewed ✓')) : ''}>
+        <UnderwritingPanel appId={id} docs={docs} onSummary={onUwSummary} />
       </Section>
 
       {can('manage_draws') && app.status === 'funded' && (

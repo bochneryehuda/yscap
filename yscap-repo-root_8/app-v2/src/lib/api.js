@@ -527,6 +527,11 @@ export const api = {
   appraisalPhotoBlob:      async (docId) => (await download(`/api/staff/documents/${docId}/download?inline=1`)).blob,
   appraisalPhotoBlobBorrower: async (docId) => (await download(`/api/borrower/documents/${docId}/download?inline=1`)).blob,
 
+  // ---- Document-underwriting desk: read + understand each document, resolve findings ----
+  underwritingGet:            (appId) => req('GET', `/api/underwriting/${appId}`),
+  underwritingAnalyze:        (appId, docId, b) => req('POST', `/api/underwriting/${appId}/documents/${docId}/analyze`, b),
+  underwritingResolveFinding: (appId, fid, b) => req('POST', `/api/underwriting/${appId}/findings/${fid}/resolve`, b),
+
   // ---- admin: team / staff management ----
   adminStaff:        () => req('GET', '/api/admin/staff'),
   adminCreateStaff:  (b) => req('POST', '/api/admin/staff', b),
