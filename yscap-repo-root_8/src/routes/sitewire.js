@@ -22,6 +22,7 @@ const T = require('../sitewire/transforms');
 const rehab = require('../lib/rehab-budget');
 const notify = require('../lib/notify');
 const { enqueueSitewirePush } = require('../sitewire/enqueue');
+const { buildXlsx } = require('../lib/xlsx');
 
 router.use(requireAuth, requireStaff);
 
@@ -381,12 +382,12 @@ router.get('/files/:id/activity/export', requirePermission('manage_draws'), asyn
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try {
     const activity = await buildDrawActivity(req.params.id);
-    const esc = (v) => { let s = String(v == null ? '' : v); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-    const lines = [['When', 'Type', 'Detail', 'Who'].map(esc).join(',')];
-    for (const a of activity) lines.push([a.at, a.kind, a.summary, a.actor || ''].map(esc).join(','));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="draw-activity-${req.params.id}.csv"`);
-    res.send(lines.join('\n'));
+    const rows = [['When', 'Type', 'Detail', 'Who']];
+    for (const a of activity) rows.push([a.at, a.kind, a.summary, a.actor || '']);
+    const buf = buildXlsx(rows, 'Draw Activity');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="draw-activity-${req.params.id}.xlsx"`);
+    res.send(buf);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -567,7 +568,12 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
     if (phase === 'after_ctc' && plan.totals.net_zero) {
       const gate = await rehab.checkSowBudget(appId, proposedPayload);
       if (!gate.ok) return res.status(422).json({ error: `new Scope of Work must still total the frozen budget to the cent — ${gate.message || 'mismatch'}` });
-      await db.query(`UPDATE checklist_items SET tool_payload=$2, updated_at=now() WHERE application_id=$1 AND tool_key='rehab_budget'`, [appId, JSON.stringify(proposedPayload)]);
+      // Write the new Version-2 Scope of Work AND reopen its condition (→ 'issue', sign-off
+      // cleared) so the borrower re-signs the revised budget — mirrors the budget-change reopen
+      // pattern. A net-zero move keeps total == frozen budget, so it can be re-signed.
+      await db.query(`UPDATE checklist_items SET tool_payload=$2, status='issue', signed_off_at=NULL, signed_off_by=NULL,
+        notes=COALESCE(notes,'') || CASE WHEN COALESCE(notes,'')='' THEN '' ELSE E'\n' END || '[auto] Scope of Work reallocated — please re-sign the revised budget.', updated_at=now()
+        WHERE application_id=$1 AND tool_key='rehab_budget'`, [appId, JSON.stringify(proposedPayload)]);
       await db.query(`UPDATE sitewire_property_links SET budget_version=budget_version+1, updated_at=now() WHERE application_id=$1`, [appId]);
       enqueueSitewirePush(appId, 'push_file').catch(() => {});
       await db.query(`UPDATE change_requests SET status='approved', decided_by=$2, decided_at=now(), updated_at=now() WHERE id=$1`, [crId, req.actor.id]);
@@ -597,22 +603,18 @@ router.get('/change-requests/:crId/export', requirePermission('manage_draws'), a
   const cr = (await db.query(`SELECT cr.*, d.deltas FROM change_requests cr JOIN sow_change_request_details d ON d.change_request_id=cr.id WHERE cr.id=$1 AND cr.field='sow_reallocation'`, [req.params.crId])).rows[0];
   if (!cr || !(await canSeeFile(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
   const deltas = Array.isArray(cr.deltas) ? cr.deltas : [];
-  const esc = (v) => {
-    let s = String(v == null ? '' : v);
-    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // neutralize spreadsheet formula injection on a leading =,+,-,@
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  };
-  const usd = (c) => (Number(c || 0) / 100).toFixed(2);
-  const lines = [['Line item', 'Version 1 (current)', 'Already drawn', 'Version 2 (proposed)', 'Change', 'Movable (undrawn)', 'Over threshold'].map(esc).join(',')];
+  const usd = (c) => Math.round(Number(c || 0)) / 100; // numeric cells (dollars) for real Excel math
+  const rows = [['Line item', 'Version 1 (current)', 'Already drawn', 'Version 2 (proposed)', 'Change', 'Movable (undrawn)', 'Over threshold']];
   let b = 0, aTot = 0, dr = 0;
   for (const c of deltas) {
     b += Number(c.budget_cents || 0); aTot += Number(c.new_cents || 0); dr += Number(c.drawn_cents || 0);
-    lines.push([c.label, usd(c.budget_cents), usd(c.drawn_cents), usd(c.new_cents), usd(c.delta_cents), usd(c.movable_cents), c.material ? 'YES' : ''].map(esc).join(','));
+    rows.push([c.label, usd(c.budget_cents), usd(c.drawn_cents), usd(c.new_cents), usd(c.delta_cents), usd(c.movable_cents), c.material ? 'YES' : '']);
   }
-  lines.push(['TOTAL', usd(b), usd(dr), usd(aTot), usd(aTot - b), '', ''].map(esc).join(','));
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="sow-reallocation-${req.params.crId}.csv"`);
-  res.send(lines.join('\n'));
+  rows.push(['TOTAL', usd(b), usd(dr), usd(aTot), usd(aTot - b), '', '']);
+  const buf = buildXlsx(rows, 'SOW Reallocation');
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="sow-reallocation-${req.params.crId}.xlsx"`);
+  res.send(buf);
 });
 
 module.exports = router;

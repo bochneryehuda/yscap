@@ -10,6 +10,19 @@ import { useAuth } from '../lib/auth.jsx';
 const dollars = (c) => (Number(c || 0) / 100).toFixed(0);
 const toCents = (v) => Math.round(Number(String(v).replace(/[^0-9.]/g, '')) * 100);
 
+function SettingField({ label, k, settings, onSave }) {
+  const [v, setV] = useState('');
+  useEffect(() => { const cur = settings[k]; if (cur != null) setV(String(cur)); }, [settings, k]);
+  return (
+    <label className="small">{label}
+      <div className="row" style={{ gap: 6 }}>
+        <input className="input" style={{ width: 80 }} value={v} onChange={(e) => setV(e.target.value)} />
+        <button className="btn btn-sm ghost" onClick={() => { const n = Number(v); if (Number.isFinite(n) && n >= 0) onSave(k, n); }}>Save</button>
+      </div>
+    </label>
+  );
+}
+
 export default function StaffDrawRules() {
   const { can } = useAuth();
   const [rules, setRules] = useState([]);
@@ -20,10 +33,27 @@ export default function StaffDrawRules() {
 
   function blankDraft() { return { capital_partner_id: '', program: '', inspection_method: 'mobile', require_sitewire_inspector: true, require_capital_partner_approval: false, allow_reallocation: false, fee_cents_virtual: '299', fee_cents_physical: '499' }; }
 
+  const [settings, setSettings] = useState({});
+  const [status, setStatus] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+
   function load() {
     api.get('/api/sitewire/rules').then((d) => { setRules(d.rules || []); setPartners(d.partners || []); }).catch((e) => setErr(e?.data?.error || e.message));
+    api.get('/api/sitewire/settings').then((d) => setSettings(d.settings || {})).catch(() => {});
+    api.get('/api/sitewire/status').then(setStatus).catch(() => {});
   }
   useEffect(() => { if (can('platform_setup')) load(); }, [can]);
+
+  async function syncDirectory() {
+    setSyncing(true); setMsg(''); setErr('');
+    try { const r = await api.post('/api/sitewire/sync-directory', {}); setMsg(`Directory synced — ${r.capital_partners} partners, ${r.staff_matched} staff matched.`); load(); }
+    catch (e) { setErr(e?.data?.error || e.message || 'Could not sync.'); } finally { setSyncing(false); }
+  }
+  async function saveSetting(key, value) {
+    setMsg(''); setErr('');
+    try { await api.patch('/api/sitewire/settings', { [key]: value }); setMsg('Setting saved.'); }
+    catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); }
+  }
 
   async function save() {
     setMsg(''); setErr('');
@@ -48,6 +78,22 @@ export default function StaffDrawRules() {
     <div className="wrap">
       <h1 style={{ marginBottom: 2 }}>Inspection & fee rules</h1>
       <div className="muted">How each capital partner's files are inspected and what we charge per draw. Everything still records in Sitewire.</div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Connection & settings</h3>
+            {status && <div className="muted small" style={{ marginTop: 2 }}>{status.enabled ? 'Connected' : 'Turned off'}{status.enabled ? (status.outbound ? ' · writing on' : ' · read-only') : ''}{status.dryrun ? ' · dry-run' : ''} · {status.linked_files} files · {status.mirrored_draws} draws · {status.open_reviews} need review</div>}
+          </div>
+          <button className="btn btn-sm ghost" disabled={syncing} onClick={syncDirectory}>{syncing ? 'Syncing…' : 'Sync capital-partner directory'}</button>
+        </div>
+        <div className="grid cols-4" style={{ gap: 10, marginTop: 10 }}>
+          <SettingField label="Wire turnaround (hours)" k="wire_turnaround_hours" settings={settings} onSave={saveSetting} />
+          <SettingField label="Reallocation variance %" k="variance_pct" settings={settings} onSave={saveSetting} />
+          <SettingField label="Stale after (days)" k="stale_days" settings={settings} onSave={saveSetting} />
+          <SettingField label="No-draw alert (days)" k="no_draw_days" settings={settings} onSave={saveSetting} />
+        </div>
+      </div>
 
       <div className="panel" style={{ marginTop: 16 }}>
         <h3 style={{ marginTop: 0 }}>Add / update a rule</h3>
