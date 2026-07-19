@@ -47,10 +47,10 @@ engineering sessions.
 | Source | What it provided |
 |---|---|
 | Encompass Developer Connect 26.2 Postman collection (800 requests, local upload) | The complete endpoint surface, request/response samples, field-ID examples |
-| Pre-built endpoint index (`scratchpad/research/postman-endpoint-index.md`) | Line-referenced inventory used for classification |
+| Pre-built endpoint index generated from the collection (session working file, not committed) | Line-referenced inventory used for classification |
 | developer.icemortgagetechnology.com (fetched 2026-07-19) | Official contracts, limits, changelogs (URLs cited in the C1–C7 findings files) |
 | Portal repo (read-only) | Existing patterns to reuse: token cache (`src/lib/sharepoint.js`), write guards (`src/clickup/client.js`), webhook receiver (`src/routes/clickup-webhook.js`), sync queue (`src/sync/queue.js`), review queue (`db/108_sync_review_queue.sql`) |
-| Findings files | `scratchpad/research/findings/C1.md` (auth) … `C7.md` (classification); machine-readable classification in `scratchpad/research/c7-classified.json` |
+| Findings files | Research-workflow findings C1 (auth) … C7 (classification) plus a machine-readable classification JSON — session working files, not committed; their conclusions are fully folded into this doc |
 
 Three identifiers exist and must not be confused: the **OAuth client_id** (the API key), the
 **Encompass Client ID** (10 digits), and the **Instance ID** (`BE11397907` for YS Cap).
@@ -435,8 +435,7 @@ pulled data instead, via the portal's existing notifications engine.
 ## 9. The full endpoint classification (all 800 requests)
 
 C7 classified every request in the 26.2 Postman collection. Full per-request tables live in
-`scratchpad/research/findings/C7.md`; machine-readable copy in
-`scratchpad/research/c7-classified.json`.
+the C7 research findings and their machine-readable classification JSON (session working files, not committed — the full classification is reproduced in §9–§10 of this doc).
 
 ### 9.1 Classification legend
 
@@ -445,7 +444,7 @@ C7 classified every request in the 26.2 Postman collection. Full per-request tab
 | **READ** | GET, no state change | Allowlist candidates |
 | **READ_VIA_POST** | POST verb but read/compute semantics (fieldReader, pipeline queries, auditTrail, download-URL generators, calculators, introspection) | Allowlist candidates, by exact path |
 | **WRITE_LOAN** | Creates/updates/deletes loan or business data | **Forbidden — deny always** |
-| **WRITE_CONFIG** | Platform configuration (webhooks, settings, users/SCIM) | Deny by default; tiny admin-gated subset (§10.2) |
+| **WRITE_CONFIG** | Platform configuration (webhooks, settings, users/SCIM) | Deny by default; none exercised in Phase 1 — future admin-gated subset (§10.2) |
 | **AMBIGUOUS** | Cannot be proven read-only from available evidence | Deny (none are needed) |
 | **AUTH** | OAuth2 token grants | Required plumbing |
 
@@ -698,7 +697,7 @@ Consolidated from all seven passes; each blocks or shapes a design decision.
 
 ## 13. Where the detail lives
 
-Full findings with per-claim source URLs: `scratchpad/research/findings/C1.md` (auth), `C2.md`
+Full findings with per-claim source URLs: research-workflow findings C1 (auth), C2
 (loan reads/schema), `C3.md` (pipeline/discovery), `C4.md` (webhooks), `C5.md`
 (conditions/eFolder/disclosures), `C6.md` (milestones/locks/lifecycle), `C7.md` (all 800 requests
 classified, per-request tables) + `c7-classified.json` (machine-readable). Repo patterns referenced

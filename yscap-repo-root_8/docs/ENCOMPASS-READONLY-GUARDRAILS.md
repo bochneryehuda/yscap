@@ -87,7 +87,7 @@ Sections: deny-matrix (every tripwire, every ambiguous endpoint, `fieldReader` a
 
 ### 2.6 Frozen files and change ceremony
 
-`allowlist.js` and the guard block of `client.js` are **FROZEN** in the same sense as the pricing engines (CLAUDE.md): any edit requires owner sign-off in their own words, an entry in `docs/ENCOMPASS-READ-ONLY-POLICY.md` (modeled on `docs/SHAREPOINT-POLICY.md`), an updated hash pin in the guard test, evidence the endpoint is a *proven* pure read ("probably read-only" stays denied), and the mandatory two-audit-agent gate. A CLAUDE.md session-rule paragraph mirroring the ClickUp/SharePoint hard rules makes every future agent session inherit the invariant.
+`allowlist.js` and the guard block of `client.js` are **FROZEN** in the same sense as the pricing engines (CLAUDE.md): any edit requires owner sign-off in their own words, an entry in `docs/ENCOMPASS-READ-ONLY-POLICY.md` (to be created; modeled on `docs/SHAREPOINT-POLICY.md`), an updated hash pin in the guard test, evidence the endpoint is a *proven* pure read ("probably read-only" stays denied), and the mandatory two-audit-agent gate. A CLAUDE.md session-rule paragraph mirroring the ClickUp/SharePoint hard rules makes every future agent session inherit the invariant.
 
 ---
 
@@ -170,7 +170,7 @@ Enforcement: (a) Encompass-side persona **field denies**; (b) request-side `fiel
 | 3 — HASH/DERIVE | **SSN: never persist a full SSN from Encompass — no second ciphertext.** Default: don't request it at all; if matching measurably needs it, transient in-memory HMAC via the existing `ssn_hash`/`SSN_MATCH_KEY`, store last4 at most. **DOB: no full DOB persists**; in-memory compare, store a `dob_match` boolean; mismatches go to review (a DOB change is always a human decision) | Plaintext discarded in the same request scope; `ssnForStorage()` (`src/lib/crypto.js`) is never invoked for Encompass data in Phase 1 |
 | 4 — EXCLUDE | Full SSN/ITIN/DL/passport numbers, account numbers, credit-report payloads, income docs/figures beyond the Tier-2 aggregate, tax transcripts, HMDA GMI, eFolder attachments, free-text conversation logs | Persona-denied; intake filter rejects on arrival |
 
-The allowlist lives as a code constant + a versioned `docs/ENCOMPASS-FIELD-INVENTORY.md`; adding a field = code change + doc update + compliance-owner sign-off. **Decided (Decision D3, 2026-07-19): launch with Tier 3 disabled** and measure unmatched-loan rates first — the launch matching ladder is loan number, then canonical address + last name, then name + entity + amount/date corroboration (DATA-MAPPING §2).
+The allowlist lives as a code constant + a versioned `docs/ENCOMPASS-FIELD-INVENTORY.md` (to be created); adding a field = code change + doc update + compliance-owner sign-off. **Decided (Decision D3, 2026-07-19): launch with Tier 3 disabled** and measure unmatched-loan rates first — the launch matching ladder is loan number, then canonical address + last name, then name + entity + amount/date corroboration (DATA-MAPPING §2).
 
 ### 5.2 Storage, access, audit, retention
 
@@ -180,7 +180,7 @@ The allowlist lives as a code constant + a versioned `docs/ENCOMPASS-FIELD-INVEN
 
 **Audit:** every fetch and every gate evaluation logged — `audit_log` actions in a new `encompass` category (`encompass_pull_loan`, `encompass_gate_eval`, `encompass_ctc_gate_fail`, `encompass_intake_violation`, …; `detail` never carries PII), plus the two journals, INSERT/SELECT-only for the app DB role.
 
-**Retention:** snapshots pruned aggressively (rolling ~90 days + keep-last-10 per loan; terminal loans drop to keep-last-1 after 30 days — safe because relied-on values live in the gate log, and thin snapshots are also the "not a warehouse" evidence). Pull log, gate log, and related audit rows **≥ 5 years** (final number set by the written retention schedule once the licensed-state list is confirmed — do **not** copy the inaccurate "GLBA ≥ 6 years" line from `docs/SHAREPOINT-SECURITY-COMPLIANCE.md:38`). A legal-hold flag suspends pruning and purge cascades. An incident runbook (`docs/ENCOMPASS-INCIDENT-RUNBOOK.md`) pre-stages the six F3 §6 scenarios — credential compromise, persona drift, wrong-loan match, DB breach, ICE-side outage, gate regression — all starting from the same two levers: kill switch + log preservation.
+**Retention:** snapshots pruned aggressively (rolling ~90 days + keep-last-10 per loan; terminal loans drop to keep-last-1 after 30 days — safe because relied-on values live in the gate log, and thin snapshots are also the "not a warehouse" evidence). Pull log, gate log, and related audit rows **≥ 5 years** (final number set by the written retention schedule once the licensed-state list is confirmed — do **not** copy the inaccurate "GLBA ≥ 6 years" line from `docs/SHAREPOINT-SECURITY-COMPLIANCE.md:38`). A legal-hold flag suspends pruning and purge cascades. An incident runbook (`docs/ENCOMPASS-INCIDENT-RUNBOOK.md`, to be created) pre-stages the six F3 §6 scenarios — credential compromise, persona drift, wrong-loan match, DB breach, ICE-side outage, gate regression — all starting from the same two levers: kill switch + log preservation.
 
 ---
 

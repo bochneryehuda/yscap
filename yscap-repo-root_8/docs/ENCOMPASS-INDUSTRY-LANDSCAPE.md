@@ -4,7 +4,7 @@ _Research pass, 2026-07-17. Status: **research only — nothing implemented.** R
 
 _Revision note (2026-07-19): post-critique consistency pass applied (decisions D1–D17)._
 
-This is the "outside world" half of the Encompass research: how the rest of the mortgage industry integrates with Encompass (ICE Mortgage Technology's loan origination system), what the developer community has learned the hard way, what compliance and data-governance norms apply to pulling LOS data, and what licensing/platform risks ICE itself introduces. It synthesizes four dedicated research streams (D1 vendor landscape, D2 developer community, D3 compliance, D4 licensing/platform risk — full findings in `scratchpad/research/findings/D1.md`–`D4.md`), the local **Encompass Developer Connect 26.2 Postman collection** (800 requests), and read-only inspection of the portal codebase at `/home/user/yscap/yscap-repo-root_8`. The companion current-state/architecture doc pattern follows `docs/SHAREPOINT-INTEGRATION-RESEARCH.md`.
+This is the "outside world" half of the Encompass research: how the rest of the mortgage industry integrates with Encompass (ICE Mortgage Technology's loan origination system), what the developer community has learned the hard way, what compliance and data-governance norms apply to pulling LOS data, and what licensing/platform risks ICE itself introduces. It synthesizes four dedicated research streams (D1 vendor landscape, D2 developer community, D3 compliance, D4 licensing/platform risk — full findings in the research workflow’s session working files, not committed — their conclusions are folded into this doc), the local **Encompass Developer Connect 26.2 Postman collection** (800 requests), and read-only inspection of the portal codebase at `/home/user/yscap/yscap-repo-root_8`. The companion current-state/architecture doc pattern follows `docs/SHAREPOINT-INTEGRATION-RESEARCH.md`.
 
 ---
 
@@ -271,7 +271,7 @@ Consolidated from all four research streams; none block continued design work, a
 
 ## 9. Sources
 
-Every external URL cited across the four research streams, grouped. Local sources: the 26.2 Developer Connect Postman collection (800 requests) and its generated endpoint index (`scratchpad/research/postman-endpoint-index.md`); read-only inspection of `/home/user/yscap/yscap-repo-root_8`.
+Every external URL cited across the four research streams, grouped. Local sources: the 26.2 Developer Connect Postman collection (800 requests) and its generated endpoint index (session working file, not committed); read-only inspection of `/home/user/yscap/yscap-repo-root_8`.
 
 ### ICE / Encompass official — Developer Connect docs
 - https://developer.icemortgagetechnology.com/developer-connect/docs/welcome

@@ -142,7 +142,7 @@ Encompass calls borrower pairs "applications" *within* a loan; the pair list is 
 
 | Portal | Encompass source |
 |---|---|
-| `checklist_items` (primary engine) / `conditions` (first-class) | Branch on **`ENHANCEDCOND.X1`** / `useEnhancedConditionIndicator`: V3 enhanced (`GET /v3/loans/{id}/conditions`) **or** V1 standard (`GET /v1/loans/{id}/conditions/underwriting|preliminary|postclosing`) — mutually exclusive per loan |
+| `checklist_items` (primary engine) / `conditions` (first-class) | Branch on **`ENHANCEDCOND.X1`** / `useEnhancedConditionIndicator`: V3 enhanced (`GET /v3/loans/{id}/conditions`) **or** V1 standard (`GET /v1/loans/{id}/conditions/underwriting\|preliminary\|postclosing`) — mutually exclusive per loan |
 | `conditions.severity` (`standard/prior_to_docs/prior_to_funding/post_closing`) | `priorTo` (Approval/Docs/Funding/Closing/Purchase) — near-1:1 vocabulary |
 | `post_closing_items` (`db/023`) | Post-closing condition type/set |
 | Cheap roll-up cross-checks | Virtual counts: `UWC.*` (20 fields), `PRECON.*` (19), `PCC.ALL`/`PCC.NOTCLEARED` (string blobs — corroboration only, format unverified) |
