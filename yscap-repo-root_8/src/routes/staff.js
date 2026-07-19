@@ -1119,7 +1119,9 @@ router.get('/applications/:id', async (req, res) => {
   // set true by db/096+126 whenever ANY pricing input on the file changes after it
   // was registered (ARV/rehab/purchase/term/program/rehab-type/sq-ft/co-borrower/
   // FICO/assignment/…), and cleared on re-register — so this covers every driver and
-  // never fetches the internal per-file markup to the client.
+  // avoids fetching the registered inputs (which carry the internal per-file markup).
+  // (The raw applications.file_markup_* columns still ride a.* here as before; keeping
+  // those off non-admin staff clients is a separate pre-existing follow-up.)
   fileRow.pricing_stale = !!(fileRow.registered_quote && fileRow.registered_stale);
   delete fileRow.registered_stale;
   res.json(fileRow);
