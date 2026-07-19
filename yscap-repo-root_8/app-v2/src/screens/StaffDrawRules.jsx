@@ -27,7 +27,7 @@ function SettingField({ label, k, settings, onSave, info }) {
 /* Plain-language help for each setting, shown behind the little ⓘ. */
 const HELP = {
   wire_turnaround: 'How long, in hours, a wire should take to go out after a draw is approved. Used only to flag draws that are sitting too long — it never blocks anything.',
-  variance: 'When a borrower asks to move money between Scope-of-Work line items, this is how big a single line\'s change can be before we flag it for the capital partner to approve. Example: at 10%, a line can grow or shrink by up to 10% of its budget on its own; a bigger change gets flagged for sign-off.',
+  variance: 'A borrower can ask to shift money from one Scope-of-Work line to another (a “reallocation”). This sets how much a single line is allowed to move on its own before the capital partner has to approve it. Example: set to 10% — a line can go up or down by up to 10% of its budgeted amount automatically; anything bigger waits for sign-off. This is only a threshold — it never moves money by itself.',
   stale: 'A draw with no update for this many days is flagged as “stale” on the portfolio, so nothing slips.',
   no_draw: 'A funded file with no draw activity for this many days is flagged, so an idle project gets a nudge.',
   partner: 'Which capital partner (note buyer) this rule applies to — the list is every note buyer we use, matched to the file\'s note-buyer field. “Global default” covers every file that doesn\'t have its own rule.',
@@ -39,7 +39,7 @@ const HELP = {
   inspector: 'Whether a Sitewire inspector must sign off each draw before it can be approved.',
   cp_approval: 'Whether approved draws route to the capital partner for their own sign-off before release.',
   realloc: 'Whether the borrower may move money between Scope-of-Work lines (a reallocation request).',
-  retainage: 'Retainage is money we hold back from each approved draw and release only at the end, to make sure the work is finished. Example: at 10%, a $10,000 approved draw pays out $9,000 now and holds $1,000 until the project wraps up. Most files use 0 (no hold-back).',
+  retainage: 'Money you hold back from each approved draw and release at the very end, so the last piece isn\'t paid until the work is fully finished. Example: set to 10% — a $10,000 approved draw pays the borrower $9,000 now and keeps $1,000 until the project is done and signed off. Leave it at 0 for no hold-back (most files).',
   lien: 'Blocks a draw from being released until every required lien waiver is received or waived. Off unless this project uses lien waivers.',
   advanced: 'These aren\'t part of the standard draw workflow, so they stay hidden on the draw desk. Turn them on here — globally, or for one specific project — and they\'ll appear on that file\'s desk.',
 };
