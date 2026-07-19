@@ -49,10 +49,15 @@ const OWN_FILE_SQL = (alias, p) => {
 };
 const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
 async function audit(req, action, entity_type, entity_id, detail) {
+  // detail lands in a jsonb column: an object serializes to valid JSON via pg, but a
+  // bare scalar is rejected ("invalid input syntax for type json"). Wrap any scalar
+  // so a logging write can never fail an otherwise-successful request.
+  let d = detail;
+  if (d != null && typeof d !== 'object') d = { note: String(d) };
   await db.query(
     `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
      VALUES ('borrower',$1,$2,$3,$4,$5,$6,$7)`,
-    [me(req), action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, detail || null]);
+    [me(req), action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
 }
 function intField(v) {
   const n = parseInt(v, 10);

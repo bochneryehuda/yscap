@@ -6510,7 +6510,9 @@ router.post('/applications/:id/esign/send', async (req, res) => {
     const r = out.result || {};
     res.json({
       ok: out.ok, envelopeRowId: out.envelopeRowId, result: r,
-      dead: !!r.dead, error: r.dead ? (r.error || 'The document could not be sent.') : undefined,
+      dead: !!r.dead, queued: !!r.queued,
+      error: r.dead ? (r.error || 'The document could not be sent.')
+           : (r.queued ? 'Not delivered yet — the send is queued and will retry automatically. Refresh in a minute.' : undefined),
     });
   } catch (e) {
     res.status(esignErrStatus(e)).json({ error: e.message, outstanding: e.outstanding });

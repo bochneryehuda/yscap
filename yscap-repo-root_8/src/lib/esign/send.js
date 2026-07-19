@@ -99,7 +99,17 @@ async function sendClaimedEnvelope(rowId, opts = {}) {
         AND (next_attempt_at IS NULL OR next_attempt_at <= now())
       RETURNING *`,
     [rowId, String(CLAIM_STALE_MIN)]);
-  if (!claimed.rows.length) return { skipped: true };   // already sent / dead / held by another / backing off
+  if (!claimed.rows.length) {
+    // Claim missed — disambiguate so a caller never reports a false "Sent." The row
+    // is already sent (a real success), dead-lettered, or merely backing off / held
+    // by a concurrent worker (NOT delivered on this attempt).
+    const cur = (await db.query(
+      `SELECT envelope_id, dead_lettered_at, last_error FROM esign_envelopes WHERE id = $1`, [rowId])).rows[0];
+    if (!cur) return { skipped: true, disposition: 'gone' };
+    if (cur.envelope_id) return { skipped: true, alreadySent: true, disposition: 'already_sent', envelopeId: cur.envelope_id };
+    if (cur.dead_lettered_at) return { dead: true, disposition: 'dead', error: cur.last_error };
+    return { skipped: true, queued: true, disposition: 'queued', error: cur.last_error };
+  }
   const row = claimed.rows[0];
 
   try {

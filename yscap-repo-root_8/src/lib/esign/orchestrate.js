@@ -116,6 +116,8 @@ async function loadDocGenData(db, applicationId) {
             a.property_address->>'zip'    AS addr_zip,
             a.property_address->>'oneLine'           AS addr_oneline,
             a.property_address->>'formatted_address' AS addr_formatted,
+            CASE WHEN jsonb_typeof(a.property_address) = 'string'
+                 THEN a.property_address #>> '{}' END        AS addr_scalar,
             b.first_name AS b_first, b.last_name AS b_last,
             cb.first_name AS cb_first, cb.last_name AS cb_last,
             a.co_borrower_id
@@ -137,7 +139,10 @@ async function loadDocGenData(db, applicationId) {
   // Covers a fully-unstructured file (ClickUp oneLine-only) AND a partially
   // structured one (e.g. city present but no street line) — the disclosure's
   // property block must never be blank in a field we can derive.
-  const oneLine = a.addr_oneline || a.addr_formatted || '';
+  // addr_scalar covers a property_address stored as a bare JSON string (not an
+  // object) — every ->>'key' returns null for it, so without this the whole block
+  // would render blank on the disclosure.
+  const oneLine = a.addr_oneline || a.addr_formatted || a.addr_scalar || '';
   if (oneLine && (!street || !city || !state || !zip)) {
     const p = parseAddress(oneLine);
     if (!street) street = [p.line1, p.unit].filter(Boolean).join(' ').trim() || oneLine;
@@ -158,6 +163,32 @@ async function loadDocGenData(db, applicationId) {
     hasCoBorrower: !!a.co_borrower_id,
     cbFirst: a.cb_first || '', cbLast: a.cb_last || '',
   };
+}
+
+/**
+ * Guard the generated-document data BEFORE a legal document is assembled: a real
+ * send must never render a blank loan number / property, a $0.00 amount, or a
+ * nameless signer. Throws non-retryable (a human must complete the file) — checked
+ * only against the fields the package's GENERATED docs actually print.
+ */
+function validateGenerated(spec, data) {
+  const genKinds = spec.docs.filter((d) => d.generate).map((d) => d.kind);
+  if (!genKinds.length) return;
+  const missing = [];
+  // Both generated docs (disclosure + Heter Iska) print the loan amount + borrower name.
+  if (data.loanAmount == null || !isFinite(Number(data.loanAmount)) || Number(data.loanAmount) <= 0) missing.push('loan amount');
+  if (!`${data.bFirst || ''} ${data.bLast || ''}`.trim()) missing.push('borrower name');
+  if (data.hasCoBorrower && !`${data.cbFirst || ''} ${data.cbLast || ''}`.trim()) missing.push('co-borrower name');
+  // The disclosure additionally prints the loan number + the subject property.
+  if (genKinds.includes('bp_disclosure')) {
+    if (!data.loanNumber) missing.push('loan number');
+    if (!(data.propStreet || data.propCity || data.propState || data.propZip)) missing.push('property address');
+  }
+  if (missing.length) {
+    const e = new Error(`Cannot prepare the signing documents — the file is missing: ${missing.join(', ')}. Complete the file, then send.`);
+    e.retryable = false;
+    throw e;
+  }
 }
 
 /** The latest current, non-rejected stored PDF for a doc_kind on this application. */
@@ -309,7 +340,13 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   const documents = [];
   const documentIdByKind = {};
   const missing = [];
-  let docGenData = null;   // loaded lazily, once, only if a generated doc is present
+  // Load the generated-document field values ONCE up front (if this package has any
+  // generated doc) and VALIDATE before assembling — a missing loan number, amount,
+  // property, or signer name must fail with a clear reason, never render blank/$0.00
+  // on a legal document.
+  const hasGenerated = spec.docs.some((d) => d.generate);
+  const docGenData = hasGenerated ? await loadDocGenData(db, row.application_id) : null;
+  if (hasGenerated) validateGenerated(spec, docGenData);
   for (let i = 0; i < spec.docs.length; i++) {
     const d = spec.docs[i];
     const documentId = i + 1;
@@ -317,10 +354,11 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     if (d.generate) {
       // Built on our server from the stored Word template + this file's data.
       // DocuSign converts the .docx → PDF for free, so we upload it as .docx.
-      if (!docGenData) docGenData = await loadDocGenData(db, row.application_id);
       let buf;
+      // A docgen/template failure is a code/data problem, not a transient outage —
+      // fail PERMANENT (dead-letter, visible) instead of retrying for ~6.7h.
       try { buf = docgen.generate(d.kind, docGenData); }
-      catch (e) { const err = new Error(`Could not generate ${d.kind}: ${e.message}`); err.retryable = (e.retryable !== false); throw err; }
+      catch (e) { const err = new Error(`Could not generate ${d.kind}: ${e.message}`); err.retryable = (e.retryable === true); throw err; }
       documentIdByKind[d.kind] = documentId;
       documents.push({ base64: Buffer.from(buf).toString('base64'), name: d.name, documentId, fileExtension: 'docx' });
       continue;
@@ -345,6 +383,20 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   const recips = (await db.query(
     `SELECT role, routing_order, recipient_id_ds, name, email, client_user_id, is_countersigner
        FROM esign_recipients WHERE envelope_row_id = $1 ORDER BY routing_order, role`, [row.id])).rows;
+  // Re-resolve the borrower / co-borrower identity from the CURRENT file record: the
+  // roster snapshot was taken at row-creation, and a corrected email/name since then
+  // must reach the ACTUAL send (with test mode off there is no allow-list backstop to
+  // catch a stale off-file address). The admin counter-signer keeps its config value.
+  for (const r of recips) {
+    let email, name;
+    if (r.role === 'borrower') { email = app.b_email; name = `${app.b_first || ''} ${app.b_last || ''}`.trim(); }
+    else if (r.role === 'co_borrower') { email = app.cb_email; name = `${app.cb_first || ''} ${app.cb_last || ''}`.trim(); }
+    if ((email && email !== r.email) || (name && name !== r.name)) {
+      r.email = email || r.email; r.name = name || r.name;
+      await db.query(`UPDATE esign_recipients SET email=$2, name=$3, updated_at=now() WHERE envelope_row_id=$1 AND recipient_id_ds=$4`,
+        [row.id, r.email, r.name, r.recipient_id_ds]);
+    }
+  }
   const signers = recips.map((r) => ({
     recipientId: r.recipient_id_ds,
     name: r.name,
@@ -354,6 +406,11 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN',       // hybrid: ALSO send the DocuSign email
     tabsByDoc: tabsFor(r.role, spec, documentIdByKind),
   }));
+  // A roster that seeded to zero recipients (a concurrent claim landing between the
+  // envelope INSERT and the recipient seeding) must NOT proceed to a non-retryable
+  // "at least one signer" dead-letter — treat it as transient so the real send
+  // re-drives once seeding has committed.
+  if (!signers.length) { const e = new Error('Recipient roster not ready yet — will retry.'); e.retryable = true; throw e; }
 
   const webhookUrl = `${cfg.appUrl}/api/esign/webhook`;
   return {
@@ -411,11 +468,13 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
     buildDefinition: (r) => buildDefinition(r, { db, storage }),
     onDeadLetter,   // a failed send notifies the file's team (in-app + email)
   });
-  return { ok: !!(result && (result.sent || result.skipped)), envelopeRowId: row.id, result };
+  // ok ONLY for a genuine send or an already-sent envelope — a merely queued /
+  // backing-off row is NOT delivered and must not report success (the false "Sent").
+  return { ok: !!(result && (result.sent || result.alreadySent)), envelopeRowId: row.id, result };
 }
 
 module.exports = {
   PACKAGES, packageSpec, buildDefinition, sendPackage,
   createOrClaimEnvelope, buildRoster, tabsFor, resolveConditionItem, latestDocument, loadApplication,
-  loadDocGenData,
+  loadDocGenData, validateGenerated,
 };

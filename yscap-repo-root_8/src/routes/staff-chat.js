@@ -21,10 +21,15 @@ const ROLE_LABEL = {
 };
 
 async function audit(req, action, entity_type, entity_id, detail) {
+  // detail lands in a jsonb column: an object serializes to valid JSON via pg, but a
+  // bare scalar is rejected ("invalid input syntax for type json"). Wrap any scalar
+  // so a logging write can never fail an otherwise-successful request.
+  let d = detail;
+  if (d != null && typeof d !== 'object') d = { note: String(d) };
   await db.query(
     `INSERT INTO audit_log (actor_kind,actor_id,action,entity_type,entity_id,ip_address,user_agent,detail)
      VALUES ('staff',$1,$2,$3,$4,$5,$6,$7)`,
-    [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, detail || null]);
+    [req.actor.id, action, entity_type, entity_id || null, req.ip, req.get('user-agent') || null, d || null]);
 }
 async function actorName(req) {
   const r = await db.query(`SELECT full_name FROM staff_users WHERE id=$1`, [req.actor.id]);
