@@ -15,6 +15,7 @@ export const PHASE = {
 export const PURPOSE = {
   term_sheet_package: 'Term-Sheet Package',
   heter_iska: 'Heter Iska',
+  test: 'Test',
 };
 export const ROLE = {
   borrower: 'Borrower',
