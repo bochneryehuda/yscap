@@ -137,5 +137,13 @@ function stubDb(appRow) {
   d = await orch.loadDocGenData(stubDb({ ...base, loan_amount: null, purchase_price: '500000.00', addr_oneline: '1 A St, B, NJ 07001' }), 'x');
   eq(String(d.loanAmount), '500000.00', 'loader: loan_amount null → purchase_price fallback');
 
+  // PARTIAL structured address (city present, no street/state/zip) → fill the gaps
+  // from oneLine, keep the structured city.
+  d = await orch.loadDocGenData(stubDb({ ...base, addr_city: 'Lakewood', addr_oneline: '9 Pine Ave, Lakewood, NJ 08701' }), 'x');
+  eq(d.propStreet, '9 Pine Ave', 'loader: partial address → street filled from oneLine');
+  eq(d.propCity, 'Lakewood', 'loader: partial address → structured city preserved');
+  eq(d.propState, 'NJ', 'loader: partial address → state filled from oneLine');
+  eq(d.propZip, '08701', 'loader: partial address → zip filled from oneLine');
+
   console.log(`\n✓ esign docgen: ${n} assertions passed`);
 })().catch((e) => { console.error('\n✗ FAILED:', e); process.exit(1); });

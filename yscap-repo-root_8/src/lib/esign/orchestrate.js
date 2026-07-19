@@ -133,13 +133,17 @@ async function loadDocGenData(db, applicationId) {
   // parse the one-line form into parts so the property is never blank.
   let street = [a.addr_line1 || a.addr_street, a.addr_unit].filter(Boolean).join(' ').trim();
   let city = a.addr_city || '', state = a.addr_state || '', zip = a.addr_zip || '';
-  if (!street && !city && !state && !zip) {
-    const oneLine = a.addr_oneline || a.addr_formatted || '';
-    if (oneLine) {
-      const p = parseAddress(oneLine);
-      street = [p.line1, p.unit].filter(Boolean).join(' ').trim() || oneLine;
-      city = p.city || ''; state = p.state || ''; zip = p.zip || '';
-    }
+  // Fill ANY missing part from the one-line form (structured values always win).
+  // Covers a fully-unstructured file (ClickUp oneLine-only) AND a partially
+  // structured one (e.g. city present but no street line) — the disclosure's
+  // property block must never be blank in a field we can derive.
+  const oneLine = a.addr_oneline || a.addr_formatted || '';
+  if (oneLine && (!street || !city || !state || !zip)) {
+    const p = parseAddress(oneLine);
+    if (!street) street = [p.line1, p.unit].filter(Boolean).join(' ').trim() || oneLine;
+    if (!city) city = p.city || '';
+    if (!state) state = p.state || '';
+    if (!zip) zip = p.zip || '';
   }
   return {
     loanNumber: a.ys_loan_number || '',
