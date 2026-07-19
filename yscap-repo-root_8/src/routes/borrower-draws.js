@@ -77,7 +77,15 @@ router.get('/draws/:appId/findings', async (req, res) => {
     const lines = (await db.query(
       `SELECT id, sow_line_key, unit_index, name, requested_cents, approved_cents, not_approved_cents, inspector_comments, lender_comments, photo_count, video_count, media, dispute_status, dispute_desired_cents, dispute_note
          FROM draw_finding_lines WHERE finding_id=$1 ORDER BY id`, [f.id])).rows
-      .map((l) => ({ ...l, name: scrub(l.name), inspector_comments: scrub(l.inspector_comments), lender_comments: scrub(l.lender_comments) }));
+      // scrub every free-text field a capital-partner name could hide in — including each inspection
+      // media NOTE (was leaking unscrubbed to the borrower). Keep the photo/video src (inspection evidence).
+      .map((l) => ({
+        ...l,
+        name: scrub(l.name),
+        inspector_comments: scrub(l.inspector_comments),
+        lender_comments: scrub(l.lender_comments),
+        media: Array.isArray(l.media) ? l.media.map((m) => (m && typeof m === 'object' ? { ...m, note: scrub(m.note) } : m)) : l.media,
+      }));
     out.push({ ...f, lines });
   }
   res.json({ findings: out });
