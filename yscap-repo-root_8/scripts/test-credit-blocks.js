@@ -26,6 +26,13 @@ ok('freeze is warning', severityOf('security_freeze') === 'warning');
 ok('ofac compliance-only', isComplianceOnly('ofac') === true);
 ok('deceased compliance-only', isComplianceOnly('deceased') === true);
 ok('fraud not compliance-only', isComplianceOnly('fraud_alert') === false);
+// FraudPoint / risk-SCORE is a WARNING, not a fatal fraud alert — even though the
+// product name contains "fraud". (Regression guard for the rule-order fix.)
+eq('cat fraudpoint text -> high_risk_score', categorizeAlert('', 'FraudPoint score of 850 indicates elevated risk'), 'high_risk_score');
+eq('cat risk-score enum -> high_risk_score', categorizeAlert('FACTARiskScoreValue', ''), 'high_risk_score');
+ok('high_risk_score is a warning', severityOf('high_risk_score') === 'warning');
+// A GENUINE fraud-victim alert stays fatal (never downgraded by the risk rule).
+eq('cat real fraud victim stays fraud_alert', categorizeAlert('', 'Consumer is a victim of identity theft'), 'fraud_alert');
 
 // ---- 2.3.1 blocks ----
 const XML2 = `<?xml version="1.0"?><RESPONSE_GROUP MISMOVersionID="2.3.1"><RESPONSE><RESPONSE_DATA><CREDIT_RESPONSE CreditReportIdentifier="R1" CreditReportType="Other">
@@ -50,6 +57,10 @@ eq('2.3.1 first creditor', b2.tradelines[0].creditorName, 'CHASE CARD');
 eq('2.3.1 first balance (string)', b2.tradelines[0].unpaidBalance, '1500');
 eq('2.3.1 first late30', b2.tradelines[0].late30Count, '1');
 ok('2.3.1 authorized-user flagged', b2.tradelines[2].isAuthorizedUser === true);
+eq('2.3.1 account identifier extracted (full — masking is import.js job)', b2.tradelines[0].accountIdentifier, '4111111111111234');
+ok('2.3.1 normal tradeline not derogatory', b2.tradelines[0].derogatoryIndicator === false);
+ok('2.3.1 normal tradeline not a collection', b2.tradelines[0].isCollection === false);
+ok('2.3.1 collection tradeline flagged is_collection', b2.tradelines[1].isCollection === true);
 eq('2.3.1 collection derived', b2.collections.length, 1);
 eq('2.3.1 collection agency', b2.collections[0].collectionAgencyName, 'ABC COLLECTIONS');
 eq('2.3.1 inquiry count', b2.inquiries.length, 1);
@@ -91,6 +102,27 @@ eq('3.4 identity addr', b3.reportedIdentity.currentAddress, '10 Main St, New Hav
 eq('3.4 identity employer', b3.reportedIdentity.employers, ['ACME INC']);
 eq('3.4 alerts count', p3.alerts.length, 1);
 eq('3.4 alert category', p3.alerts[0].category, 'address_discrepancy');
+
+// ---- 3.4 JOINT: two borrowers. Per E1, tradelines/inquiries/records attach to
+// the PRIMARY and the report is FLAGGED unsplit (precise RELATIONSHIP-based per-
+// borrower split of blocks is an E3 refinement). Identity IS split per borrower.
+// This test locks in the documented behavior so a future split is a deliberate
+// change, not an accident.
+const XML3J = `<?xml version="1.0"?><MESSAGE><DEAL_SETS><DEAL_SET><DEALS><DEAL><PARTIES>
+  <PARTY SequenceNumber="1"><INDIVIDUAL><NAME><FirstName>JANE</FirstName><LastName>DOE</LastName></NAME></INDIVIDUAL><ROLES><ROLE><ROLE_DETAIL><PartyRoleType>Borrower</PartyRoleType></ROLE_DETAIL><BORROWER><RESIDENCES><RESIDENCE><ADDRESS><AddressLineText>10 Main St</AddressLineText><CityName>New Haven</CityName><StateCode>CT</StateCode></ADDRESS></RESIDENCE></RESIDENCES></BORROWER></ROLE></ROLES></PARTY>
+  <PARTY SequenceNumber="2"><INDIVIDUAL><NAME><FirstName>JOHN</FirstName><LastName>DOE</LastName></NAME></INDIVIDUAL><ROLES><ROLE><ROLE_DETAIL><PartyRoleType>Borrower</PartyRoleType></ROLE_DETAIL><BORROWER><RESIDENCES><RESIDENCE><ADDRESS><AddressLineText>22 Elm St</AddressLineText><CityName>Bridgeport</CityName><StateCode>CT</StateCode></ADDRESS></RESIDENCE></RESIDENCES></BORROWER></ROLE></ROLES></PARTY>
+</PARTIES><SERVICES><SERVICE><CREDIT><CREDIT_RESPONSE><CreditReportIdentifier>RJ</CreditReportIdentifier><CREDIT_LIABILITIES>
+  <CREDIT_LIABILITY><CREDIT_REPOSITORIES><CREDIT_REPOSITORY><CreditRepositorySourceType>Equifax</CreditRepositorySourceType></CREDIT_REPOSITORY></CREDIT_REPOSITORIES><CREDIT_LIABILITY_CREDITOR><FullName>CHASE CARD</FullName></CREDIT_LIABILITY_CREDITOR><CREDIT_LIABILITY_DETAIL><CreditLiabilityAccountType>Revolving</CreditLiabilityAccountType><CreditLiabilityUnpaidBalanceAmount>1500</CreditLiabilityUnpaidBalanceAmount></CREDIT_LIABILITY_DETAIL></CREDIT_LIABILITY>
+  <CREDIT_LIABILITY><CREDIT_REPOSITORIES><CREDIT_REPOSITORY><CreditRepositorySourceType>Experian</CreditRepositorySourceType></CREDIT_REPOSITORY></CREDIT_REPOSITORIES><CREDIT_LIABILITY_CREDITOR><FullName>WELLS AUTO</FullName></CREDIT_LIABILITY_CREDITOR><CREDIT_LIABILITY_DETAIL><CreditLiabilityAccountType>Installment</CreditLiabilityAccountType><CreditLiabilityUnpaidBalanceAmount>9000</CreditLiabilityUnpaidBalanceAmount></CREDIT_LIABILITY_DETAIL></CREDIT_LIABILITY>
+</CREDIT_LIABILITIES></CREDIT_RESPONSE></CREDIT></SERVICE></SERVICES></DEAL></DEALS></DEAL_SET></DEAL_SETS></MESSAGE>`;
+const p3j = m3.parseCreditResponse(XML3J);
+eq('3.4 joint: two borrowers', p3j.borrowers.length, 2);
+eq('3.4 joint: both tradelines on the primary', p3j.borrowers[0].tradelines.length, 2);
+eq('3.4 joint: co-borrower has no tradelines (unsplit → primary)', p3j.borrowers[1].tradelines.length, 0);
+ok('3.4 joint: report flagged multiBorrowerBlocksUnsplit', p3j.multiBorrowerBlocksUnsplit === true);
+// identity IS correctly per-borrower even though blocks are not
+eq('3.4 joint: primary identity address', p3j.borrowers[0].reportedIdentity.currentAddress, '10 Main St, New Haven, CT');
+eq('3.4 joint: co-borrower identity address', p3j.borrowers[1].reportedIdentity.currentAddress, '22 Elm St, Bridgeport, CT');
 
 console.log(`\ncredit-blocks: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

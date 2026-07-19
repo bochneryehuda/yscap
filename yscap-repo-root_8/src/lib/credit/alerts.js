@@ -39,8 +39,14 @@ const KEYWORD_RULES = [
   [/security freeze|file is frozen|credit freeze|suppressed/i, 'security_freeze'],
   [/address discrepancy|address (does not|doesn.?t) match|address mismatch/i, 'address_discrepancy'],
   [/ssn|social security|not (been )?issued|issued (prior to|before)|number (belongs|is associated)/i, 'ssn_alert'],
+  // The FraudPoint / risk-SCORE PRODUCT (a warning) MUST be matched before the
+  // fraud-victim rule below — "FraudPoint" contains "fraud", so the fraud rule
+  // would otherwise wrongly escalate a mere risk score to a fatal fraud alert.
+  // Kept narrow (product tokens only) so a genuine fraud alert that happens to
+  // say "high risk" is NOT downgraded — real victim alerts say fraud/identity
+  // theft/victim, never "fraudpoint" or "risk score".
+  [/\bfraud\s?point\b|risk score|high[\s-]?risk score|score of \d+ indicates/i, 'high_risk_score'],
   [/fraud|identity theft|id theft|victim|hawk\s*alert|id ?vision|initial alert|extended alert/i, 'fraud_alert'],
-  [/fraud ?point|high[\s-]?risk|risk score|score of \d+ indicates/i, 'high_risk_score'],
   [/consumer statement|victim statement/i, 'consumer_statement'],
 ];
 

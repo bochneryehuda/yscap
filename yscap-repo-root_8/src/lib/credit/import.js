@@ -327,6 +327,121 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
       }
     }
 
+    // ---- Full-report BLOCKS (E1) --------------------------------------------
+    // tradelines / inquiries / public records / collections / per-borrower
+    // reported identity / report-level alerts. Replace-on-reimport (like
+    // credit_scores) so a reissue is idempotent. Values arrive as STRINGS from
+    // the parsers (no numeric coercion there — the "030"→30 trap); cast at THIS
+    // DB boundary. Account numbers: an ENCRYPTED copy (bytea, AES-256-GCM) + a
+    // masked last-4 for display — never plaintext (GLBA Safeguards). SSN is
+    // NEVER stored here — only a masked last-4 on the identity row.
+    await client.query(`DELETE FROM credit_tradelines        WHERE credit_report_id=$1`, [reportRowId]);
+    await client.query(`DELETE FROM credit_inquiries         WHERE credit_report_id=$1`, [reportRowId]);
+    await client.query(`DELETE FROM credit_public_records    WHERE credit_report_id=$1`, [reportRowId]);
+    await client.query(`DELETE FROM credit_collections       WHERE credit_report_id=$1`, [reportRowId]);
+    await client.query(`DELETE FROM credit_report_identities WHERE credit_report_id=$1`, [reportRowId]);
+    await client.query(`DELETE FROM credit_alerts            WHERE credit_report_id=$1`, [reportRowId]);
+
+    const numOrNull = (v) => {
+      if (v == null || v === '') return null;
+      const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+      return Number.isFinite(n) ? n : null;
+    };
+    const intOrNull = (v) => { const n = numOrNull(v); return n == null ? null : Math.trunc(n); };
+    const dtOrNull = (v) => sanitizeDateOnly(v) || null;
+    const boolOrNull = (v) => (v == null ? null : !!v);
+    // last-4 of an account/SSN identifier for DISPLAY only (strip separators).
+    const last4 = (v) => { const s = String(v == null ? '' : v).replace(/[^0-9A-Za-z]/g, ''); return s ? s.slice(-4) : null; };
+    const maskAcct = (v) => { const l = last4(v); return l ? `••••${l}` : null; };
+    const jsonOrNull = (v) => (v == null ? null : JSON.stringify(v));
+
+    for (const pb of scored.perBorrower) {
+      const dbBorrowerId = dbIdFor(pb);
+      const rbid = pb.reportBorrowerId;
+      const src = pb.identity || {};
+
+      for (const t of (src.tradelines || [])) {
+        await client.query(
+          `INSERT INTO credit_tradelines
+             (credit_report_id, borrower_id, report_borrower_id, bureau, credit_file_id,
+              creditor_name, creditor_address, account_type, account_ownership_type, account_status_type,
+              account_identifier_masked, account_identifier_encrypted,
+              unpaid_balance, credit_limit, high_credit, monthly_payment, past_due_amount, charge_off_amount,
+              date_opened, date_reported, date_closed, last_activity_date, months_reviewed_count,
+              current_rating_code, current_rating_type, late_30_count, late_60_count, late_90_count,
+              payment_pattern, derogatory_indicator, is_collection, is_authorized_user, raw)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33::jsonb)`,
+          [reportRowId, dbBorrowerId, rbid, t.bureau || null, t.creditFileId || null,
+           t.creditorName || null, t.creditorAddress || null, t.accountType || null, t.accountOwnershipType || null, t.accountStatusType || null,
+           maskAcct(t.accountIdentifier), t.accountIdentifier ? crypto.encryptSecret(t.accountIdentifier) : null,
+           numOrNull(t.unpaidBalance), numOrNull(t.creditLimit), numOrNull(t.highCredit), numOrNull(t.monthlyPayment), numOrNull(t.pastDueAmount), numOrNull(t.chargeOffAmount),
+           dtOrNull(t.dateOpened), dtOrNull(t.dateReported), dtOrNull(t.dateClosed), dtOrNull(t.lastActivityDate), intOrNull(t.monthsReviewedCount),
+           t.currentRatingCode || null, t.currentRatingType || null, intOrNull(t.late30Count), intOrNull(t.late60Count), intOrNull(t.late90Count),
+           // NEVER persist the full account number in the audit blob — the masked
+           // last-4 + the encrypted copy are the only forms allowed to land (GLBA).
+           t.paymentPattern || null, boolOrNull(t.derogatoryIndicator), !!t.isCollection, !!t.isAuthorizedUser,
+           jsonOrNull({ ...t, accountIdentifier: undefined })]);
+      }
+
+      for (const q of (src.inquiries || [])) {
+        await client.query(
+          `INSERT INTO credit_inquiries
+             (credit_report_id, borrower_id, report_borrower_id, bureau, inquiry_date, inquiring_party_name, business_type, loan_type, raw)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
+          [reportRowId, dbBorrowerId, rbid, q.bureau || null, dtOrNull(q.inquiryDate), q.inquiringPartyName || null, q.businessType || null, q.loanType || null, jsonOrNull(q)]);
+      }
+
+      for (const pr of (src.publicRecords || [])) {
+        await client.query(
+          `INSERT INTO credit_public_records
+             (credit_report_id, borrower_id, report_borrower_id, bureau, record_type, filed_date, reported_date,
+              disposition_type, disposition_date, amount, court_name, docket_identifier, plaintiff_name, derogatory_indicator, raw)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)`,
+          [reportRowId, dbBorrowerId, rbid, pr.bureau || null, pr.recordType || null, dtOrNull(pr.filedDate), dtOrNull(pr.reportedDate),
+           pr.dispositionType || null, dtOrNull(pr.dispositionDate), numOrNull(pr.amount), pr.courtName || null, pr.docketIdentifier || null, pr.plaintiffName || null, boolOrNull(pr.derogatoryIndicator), jsonOrNull(pr)]);
+      }
+
+      for (const co of (src.collections || [])) {
+        await client.query(
+          `INSERT INTO credit_collections
+             (credit_report_id, borrower_id, report_borrower_id, bureau, collection_agency_name, original_creditor_name, amount, status, date_reported, raw)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`,
+          [reportRowId, dbBorrowerId, rbid, co.bureau || null, co.collectionAgencyName || null, co.originalCreditorName || null, numOrNull(co.amount), co.status || null, dtOrNull(co.dateReported), jsonOrNull(co)]);
+      }
+
+      const id = src.reportedIdentity;
+      if (id && Object.keys(id).length) {
+        await client.query(
+          `INSERT INTO credit_report_identities
+             (credit_report_id, borrower_id, report_borrower_id, bureau, reported_name, aliases, dob, ssn_masked,
+              current_address, former_addresses, employers, infile_date, alert_messages, raw)
+           VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12,$13::jsonb,$14::jsonb)`,
+          [reportRowId, dbBorrowerId, rbid, id.bureau || null, id.reportedName || null,
+           jsonOrNull(Array.isArray(id.aliases) ? id.aliases : []), dtOrNull(id.dob), last4(id.ssn),
+           jsonOrNull(id.currentAddress != null ? id.currentAddress : null),
+           jsonOrNull(Array.isArray(id.formerAddresses) ? id.formerAddresses : []),
+           jsonOrNull(Array.isArray(id.employers) ? id.employers : []),
+           dtOrNull(id.infileDate), jsonOrNull(Array.isArray(id.alertMessages) ? id.alertMessages : null),
+           // NEVER persist the raw reported SSN — strip it out of the audit blob.
+           jsonOrNull({ ...id, ssn: undefined })]);
+      }
+    }
+
+    // Report-level alerts (fraud / freeze / active-duty / deceased / OFAC /
+    // address-discrepancy / SSN / high-risk). borrowerId is the report label
+    // (B1/C1) or null — resolve to a DB borrower when it is borrower-specific.
+    for (const al of (parsed.alerts || [])) {
+      const dbBorrowerId = al.borrowerId != null
+        ? (orderMeta.borrowerDbIdByReportId[al.borrowerId] != null ? orderMeta.borrowerDbIdByReportId[al.borrowerId] : null)
+        : null;
+      await client.query(
+        `INSERT INTO credit_alerts
+           (credit_report_id, borrower_id, report_borrower_id, bureau, category, raw_type, message_text, raw)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+        [reportRowId, dbBorrowerId, al.borrowerId != null ? al.borrowerId : null, al.bureau || null,
+         al.category || 'other', al.rawType || null, al.text || null, jsonOrNull(al)]);
+    }
+
     // Freeze the verified FICO — ONLY on a fully-usable import. Under the
     // sanctioned reverify GUC (transaction-local) so the belt permits it and the
     // representative-aware reopen trigger fires on a bracket change.

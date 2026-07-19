@@ -32,10 +32,40 @@ function responseXml({ withCo = false, coNoScore = false, issuedDate = '2026-07-
   return fixup(_responseXml({ withCo, coNoScore }));
 }
 function _responseXml({ withCo = false, coNoScore = false } = {}) {
-  const b1 = `<BORROWER BorrowerID="B1" _FirstName="NICKIE" _LastName="GREEN" _SSN="123003333"/>
+  const b1 = `<BORROWER BorrowerID="B1" _FirstName="NICKIE" _LastName="GREEN" _SSN="123003333" _BirthDate="1985-03-12" _UnparsedEmployment="ACME CORP">
+          <_RESIDENCE _StreetAddress="100 Terrace Ave" _City="West Haven" _State="CT" _PostalCode="06516"/>
+          <_RESIDENCE _StreetAddress="55 Old Rd" _City="Milford" _State="CT" _PostalCode="06460"/>
+          <_ALIAS _UnparsedName="NICKIE GREENE"/>
+        </BORROWER>
         ${score('1', 'B1', 'Equifax', '734', 'EquifaxBeacon5.0', true)}
         ${score('2', 'B1', 'Experian', '732', 'ExperianFairIsaac')}
         ${score('3', 'B1', 'TransUnion', '730', 'FICORiskScoreClassic04')}`;
+  // ---- Full-report BLOCKS (E1) on B1: a normal installment tradeline (1×30),
+  // a collection tradeline (derives a collection block), an authorized-user
+  // revolving tradeline, an inquiry, a public record, and a fraud alert.
+  const blocks = `
+        <CREDIT_LIABILITY BorrowerID="B1" CreditRepositorySourceType="Equifax" CreditFileID="F1"
+            _AccountType="Installment" _AccountOwnershipType="Individual" _AccountStatusType="Open"
+            _AccountIdentifier="4000123412341234" _UnpaidBalanceAmount="12000.00" _CreditLimitAmount="25000"
+            _HighCreditAmount="25000" _MonthlyPaymentAmount="450" _AccountOpenedDate="2020-01-15"
+            _AccountReportedDate="2026-06-30" _MonthsReviewedCount="60" _DerogatoryDataIndicator="N">
+          <_CREDITOR _Name="CHASE AUTO"/>
+          <_CURRENT_RATING _Code="1" _Type="AsAgreed"/>
+          <_LATE_COUNT _30Days="1" _60Days="0" _90Days="0"/>
+        </CREDIT_LIABILITY>
+        <CREDIT_LIABILITY BorrowerID="B1" CreditRepositorySourceType="Experian"
+            _AccountType="Collection" _AccountOwnershipType="Individual" _AccountStatusType="Open"
+            _AccountIdentifier="99881234" _UnpaidBalanceAmount="850" _AccountReportedDate="2026-05-01">
+          <_CREDITOR _Name="MIDLAND FUNDING"/>
+        </CREDIT_LIABILITY>
+        <CREDIT_LIABILITY BorrowerID="B1" CreditRepositorySourceType="TransUnion"
+            _AccountType="Revolving" _AccountOwnershipType="Authorized User" _AccountStatusType="Open"
+            _AccountIdentifier="551200005512" _UnpaidBalanceAmount="300" _CreditLimitAmount="5000" _AccountOpenedDate="2019-03-01">
+          <_CREDITOR _Name="CAPITAL ONE"/>
+        </CREDIT_LIABILITY>
+        <CREDIT_INQUIRY BorrowerID="B1" CreditRepositorySourceType="Equifax" _Date="2026-06-01" _Name="ROCKET MORTGAGE" CreditBusinessType="Mortgage" CreditLoanType="Conventional"/>
+        <CREDIT_PUBLIC_RECORD BorrowerID="B1" CreditRepositorySourceType="Experian" _Type="Bankruptcy" _FiledDate="2018-04-10" _Amount="0" _CourtName="US Bankruptcy Court" _DispositionType="Discharged" _DispositionDate="2018-10-01" _DocketIdentifier="18-12345" _PlaintiffName="US Trustee"/>
+        <ALERT_MESSAGE BorrowerID="B1" _Type="FACTAFraudVictimInitial" MessageText="Initial fraud alert on file. Verify consumer identity before extending credit."/>`;
   const coScores = coNoScore
     ? `${score('4', 'C1', 'Equifax', '9002', 'EquifaxBeacon5.0')}`   // reject code → no score
     : `${score('4', 'C1', 'Equifax', '700', 'EquifaxBeacon5.0')}
@@ -51,6 +81,7 @@ function _responseXml({ withCo = false, coNoScore = false } = {}) {
         <CREDIT_REPOSITORY_INCLUDED _EquifaxIndicator="Y" _ExperianIndicator="Y" _TransUnionIndicator="Y"/>
         ${b1}
         ${co}
+        ${blocks}
         <EMBEDDED_FILE _Type="PDF" _Name="report.pdf" _Extension="pdf" MIMEType="application/pdf" _EncodingType="base64">
           <DOCUMENT><![CDATA[${MINI_PDF}]]></DOCUMENT>
         </EMBEDDED_FILE>
@@ -125,6 +156,75 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   const appPriced = (await db.query(`SELECT fico_used_for_pricing FROM applications WHERE id=$1`, [appId])).rows[0];
   eq('fico_used_for_pricing captured', appPriced.fico_used_for_pricing, 732);
 
+  // ---- Full-report BLOCKS (E1) persisted + attributed to the borrower --------
+  const tls = (await db.query(
+    `SELECT bureau, creditor_name, account_type, account_ownership_type, account_identifier_masked,
+            account_identifier_encrypted, unpaid_balance, credit_limit, monthly_payment, date_opened,
+            late_30_count, is_collection, is_authorized_user, borrower_id, raw
+       FROM credit_tradelines WHERE credit_report_id=$1 ORDER BY creditor_name`, [out.reportId])).rows;
+  eq('3 tradelines stored', tls.length, 3);
+  ok('every tradeline attributed to the borrower', tls.every(t => t.borrower_id === bId));
+  const chase = tls.find(t => t.creditor_name === 'CHASE AUTO');
+  ok('chase tradeline present', !!chase);
+  eq('chase bureau', chase.bureau, 'Equifax');
+  eq('chase balance is numeric (no "030" coercion trap — kept exact)', Number(chase.unpaid_balance), 12000);
+  eq('chase credit limit', Number(chase.credit_limit), 25000);
+  eq('chase monthly payment', Number(chase.monthly_payment), 450);
+  eq('chase date_opened cast to date', String(chase.date_opened).slice(0, 10), '2020-01-15');
+  eq('chase 1x30 late', chase.late_30_count, 1);
+  ok('chase not a collection', chase.is_collection === false);
+  // account number: MASKED last-4 for display + ENCRYPTED bytea, NEVER plaintext.
+  eq('chase account masked to last-4', chase.account_identifier_masked, '••••1234');
+  ok('chase account encrypted is bytea', Buffer.isBuffer(chase.account_identifier_encrypted) && chase.account_identifier_encrypted.length > 0);
+  eq('chase account decrypts to the full number', crypto.decryptSecret(chase.account_identifier_encrypted), '4000123412341234');
+  ok('no plaintext full account number in any column',
+     !Object.entries(chase).filter(([k]) => k !== 'raw' && k !== 'account_identifier_encrypted').some(([, v]) => typeof v === 'string' && v.includes('4000123412341234')));
+  // The audit blob (raw jsonb) must NOT re-leak the full account number (GLBA).
+  ok('raw audit blob has NO full account number', !JSON.stringify(chase.raw || {}).includes('4000123412341234'));
+  ok('raw audit blob keeps the rest of the tradeline', /CHASE AUTO/.test(JSON.stringify(chase.raw || {})));
+  const capone = tls.find(t => t.creditor_name === 'CAPITAL ONE');
+  ok('authorized-user tradeline flagged', capone && capone.is_authorized_user === true);
+  const midland = tls.find(t => t.creditor_name === 'MIDLAND FUNDING');
+  ok('collection tradeline flagged is_collection', midland && midland.is_collection === true);
+
+  const cols = (await db.query(`SELECT collection_agency_name, amount, borrower_id FROM credit_collections WHERE credit_report_id=$1`, [out.reportId])).rows;
+  eq('1 collection derived', cols.length, 1);
+  eq('collection agency', cols[0].collection_agency_name, 'MIDLAND FUNDING');
+  eq('collection amount', Number(cols[0].amount), 850);
+  ok('collection attributed', cols[0].borrower_id === bId);
+
+  const inq = (await db.query(`SELECT inquiring_party_name, inquiry_date, business_type, borrower_id FROM credit_inquiries WHERE credit_report_id=$1`, [out.reportId])).rows;
+  eq('1 inquiry stored', inq.length, 1);
+  eq('inquiry party', inq[0].inquiring_party_name, 'ROCKET MORTGAGE');
+  eq('inquiry date cast', String(inq[0].inquiry_date).slice(0, 10), '2026-06-01');
+  ok('inquiry attributed', inq[0].borrower_id === bId);
+
+  const prs = (await db.query(`SELECT record_type, filed_date, court_name, docket_identifier, borrower_id FROM credit_public_records WHERE credit_report_id=$1`, [out.reportId])).rows;
+  eq('1 public record stored', prs.length, 1);
+  eq('public record type', prs[0].record_type, 'Bankruptcy');
+  eq('public record filed date', String(prs[0].filed_date).slice(0, 10), '2018-04-10');
+  eq('public record court', prs[0].court_name, 'US Bankruptcy Court');
+  ok('public record attributed', prs[0].borrower_id === bId);
+
+  const idr = (await db.query(`SELECT reported_name, dob, ssn_masked, aliases, current_address, former_addresses, employers, raw, borrower_id FROM credit_report_identities WHERE credit_report_id=$1`, [out.reportId])).rows;
+  eq('1 identity row stored', idr.length, 1);
+  eq('identity dob cast', String(idr[0].dob).slice(0, 10), '1985-03-12');
+  eq('identity ssn stored MASKED only (last-4)', idr[0].ssn_masked, '3333');
+  ok('identity carries NO raw SSN in ssn_masked', idr[0].ssn_masked.length === 4);
+  ok('identity raw blob has NO raw reported SSN', !JSON.stringify(idr[0].raw || {}).includes('123003333'));
+  ok('identity aliases captured', Array.isArray(idr[0].aliases) && idr[0].aliases.includes('NICKIE GREENE'));
+  ok('identity current address captured', /Terrace Ave/.test(String(idr[0].current_address)));
+  ok('identity former address captured', Array.isArray(idr[0].former_addresses) && idr[0].former_addresses.some(a => /Old Rd/.test(a)));
+  ok('identity employer captured', Array.isArray(idr[0].employers) && idr[0].employers.includes('ACME CORP'));
+  ok('identity attributed', idr[0].borrower_id === bId);
+
+  const alr = (await db.query(`SELECT category, raw_type, message_text, borrower_id FROM credit_alerts WHERE credit_report_id=$1`, [out.reportId])).rows;
+  eq('1 alert stored', alr.length, 1);
+  eq('fraud alert categorized', alr[0].category, 'fraud_alert');
+  eq('alert raw type preserved', alr[0].raw_type, 'FACTAFraudVictimInitial');
+  ok('alert text preserved', /Initial fraud alert/.test(alr[0].message_text));
+  ok('alert attributed to the borrower', alr[0].borrower_id === bId);
+
   // ---- DATE SAFETY: a MALFORMED vendor date must NOT roll back an already-billed
   // import (the persist path sanitizes bad dates to NULL instead of throwing on
   // ::date). The scores are the payload; a bad date is not worth losing a billed pull.
@@ -196,6 +296,10 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   eq('idempotent same report', dup.reportId, out.reportId);
   const cnt = (await db.query(`SELECT count(*)::int n FROM credit_reports WHERE application_id=$1`, [appId])).rows[0];
   eq('only one report row', cnt.n, 1);
+  // A deduped re-order never re-persists, so the blocks are untouched — a repeated
+  // intent can never duplicate tradelines/inquiries/etc.
+  const tlDup = (await db.query(`SELECT count(*)::int n FROM credit_tradelines WHERE credit_report_id=$1`, [out.reportId])).rows[0];
+  eq('dedup leaves tradelines unduplicated', tlDup.n, 3);
 
   // ---- FREEZE holds: a plain fico write is blocked after import ----
   let blocked = false;
