@@ -20,12 +20,17 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-const { requireAuth, requireStaff } = require('../auth');
+const cfg = require('../config');
+const { requireAuth, requireStaff, requirePermission } = require('../auth');
 const { can, assigneeExistsSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const { importAppraisal } = require('../lib/appraisal/import');
 const X = require('../lib/appraisal/xml');
+
+// Upload cap: aligned to the per-file limit the JSON body-parser actually allows,
+// so the decode cap can never exceed what express.json() accepts (no dead ceiling).
+const MAX_UPLOAD_BYTES = Math.max(1, cfg.maxUploadMb) * 1024 * 1024;
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 
@@ -41,10 +46,10 @@ async function today() {
 async function fileFor(req, appId) {
   if (!isUuid(appId)) return null;
   if (can(req.actor, 'see_all_files')) {
-    return (await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1`, [appId])).rows[0] || null;
+    return (await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
   }
   return (await db.query(
-    `SELECT a.id, a.borrower_id FROM applications a WHERE a.id=$1 AND ${assigneeExistsSql('a', '$2')}`,
+    `SELECT a.id, a.borrower_id FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
     [appId, req.actor.id])).rows[0] || null;
 }
 
@@ -110,13 +115,18 @@ router.post('/:appId/import', async (req, res, next) => {
     const app = await fileFor(req, req.params.appId);
     if (!app) return res.status(404).json({ error: 'not found' });
     const b = req.body || {};
+    // decodeUploadBase64 returns { buf, sha256 } — destructure the Buffer (not the object).
     let xml;
     try {
-      xml = b.xmlBase64 ? decodeUploadBase64(b.xmlBase64, { maxBytes: 80 * 1024 * 1024 }).toString('utf8') : (b.xml ? String(b.xml) : null);
+      if (b.xmlBase64) { const { buf } = decodeUploadBase64(b.xmlBase64, { maxBytes: MAX_UPLOAD_BYTES }); xml = buf.toString('utf8'); }
+      else if (b.xml) { xml = String(b.xml); }
+      else { xml = null; }
     } catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     if (!xml) return res.status(400).json({ error: 'the appraisal XML is required' });
 
-    // store the XML document
+    // Store the XML + (embedded or uploaded) PDF documents. Best-effort: a storage/DB
+    // failure here must not lose the imported data, but we LOG it (a silent null doc-id
+    // means the appraisal has no source document on file — worth surfacing).
     let xmlDocId = null, pdfDocId = null;
     try {
       const xbuf = Buffer.from(xml, 'utf8');
@@ -129,14 +139,14 @@ router.post('/:appId/import', async (req, res, next) => {
       // PDF: use the uploaded slot if given, else the PDF embedded in the XML.
       const pdfB64 = b.pdfBase64 || X.embeddedPdfBase64(xml);
       if (pdfB64) {
-        const pbuf = decodeUploadBase64(pdfB64, { maxBytes: 80 * 1024 * 1024 });
+        const { buf: pbuf } = decodeUploadBase64(pdfB64, { maxBytes: MAX_UPLOAD_BYTES });
         const ps = await storage.save(pbuf, { filename: (b.filename || 'appraisal').replace(/\.xml$/i, '') + '.pdf' });
         pdfDocId = (await db.query(
           `INSERT INTO documents (application_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind)
            VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',$7,'appraisal_pdf') RETURNING id`,
           [app.id, app.borrower_id, 'appraisal.pdf', pbuf.length, ps.provider, ps.ref, req.actor.id])).rows[0].id;
       }
-    } catch (e) { /* storage is best-effort; still import the data */ }
+    } catch (e) { console.error('[appraisal] document storage failed (import continues):', e && e.message); }
 
     const out = await importAppraisal(db, {
       applicationId: app.id, xml, importedBy: req.actor.id,
@@ -159,7 +169,12 @@ router.post('/:appId/import', async (req, res, next) => {
 const REPRICE_COLS = { arv: 'numeric', as_is_value: 'numeric', purchase_price: 'numeric', units: 'int', property_type: 'text' };
 const ACTIONS = new Set(['replace', 'keep', 'custom', 'dismiss', 'decline', 'acknowledge', 'grant_exception', 'request_revision']);
 
-router.post('/:appId/findings/:fid/resolve', async (req, res, next) => {
+// Resolving a PILOT finding can rewrite a reprice-affecting value on the loan file and
+// gates clear-to-close — an underwriter/processor action. Loan officers (review_conditions
+// only, not sign_off_conditions) may SEE findings via GET but never act on them; the
+// borrower view is read-only. Mirrors every other money-affecting write (sitewire → a
+// capability gate). super_admin/admin/underwriter/processor carry sign_off_conditions.
+router.post('/:appId/findings/:fid/resolve', requirePermission('sign_off_conditions'), async (req, res, next) => {
   try {
     const app = await fileFor(req, req.params.appId);
     if (!app) return res.status(404).json({ error: 'not found' });
