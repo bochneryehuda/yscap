@@ -110,6 +110,26 @@ eq('resp -> middle 732', S.borrowerMiddle(succ.borrowers[0].scores).middle, 732)
 ok('resp has pdf base64', !!succ.pdf && succ.pdf.base64 === MINI_PDF);
 ok('resp repos returned', succ.repositoriesReturned && succ.repositoriesReturned.equifax === true);
 
+// score factors (_FACTOR reason codes) extracted per score
+const factorXml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.3.1"><RESPONSE><RESPONSE_DATA>
+  <CREDIT_RESPONSE MISMOVersionID="2.3.1" CreditReportIdentifier="RF1" CreditReportType="Other">
+    <BORROWER BorrowerID="B1" _FirstName="NICKIE" _LastName="GREEN" _SSN="123003333"/>
+    <CREDIT_SCORE BorrowerID="B1" CreditRepositorySourceType="Equifax" _Value="734" _ModelNameType="EquifaxBeacon5.0">
+      <_FACTOR _Code="038" _Text="Serious delinquency, and public record or collection filed"/>
+      <_FACTOR _Code="018" _Text="Number of accounts with delinquency"/>
+    </CREDIT_SCORE>
+  </CREDIT_RESPONSE>
+</RESPONSE_DATA></RESPONSE></RESPONSE_GROUP>`;
+const rf = P.parseCreditResponse(factorXml);
+eq('factors extracted count', rf.borrowers[0].scores[0].factors.length, 2);
+eq('factor code kept as string', rf.borrowers[0].scores[0].factors[0].code, '038');
+ok('factor text present', /Serious delinquency/.test(rf.borrowers[0].scores[0].factors[0].text));
+// factors survive scoring classification
+const cls = S.classifyScore(rf.borrowers[0].scores[0]);
+eq('classified keeps factors', cls.factors.length, 2);
+eq('score node without factors -> []', succ.borrowers[0].scores[0].factors.length, 0);
+
 // decode + verify the PDF
 const dec = P.decodeReportPdf(succ.pdf.base64);
 ok('pdf decodes to %PDF', dec.buf.slice(0, 5).toString('latin1') === '%PDF-');

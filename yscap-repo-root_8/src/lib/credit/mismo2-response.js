@@ -147,6 +147,12 @@ function parseCreditResponse(xml) {
       exclusionReason: A(s, '_ExclusionReasonType'),   // present on some feeds; scoring.js also catches reject-code values
       date: A(s, '_Date'),
       creditFileId: A(s, 'CreditFileID'),
+      // Score reason codes (the "factors that most affected this score"). ~4 per
+      // score, bureau-specific; codes may be zero-padded so keep them as strings.
+      // These are the principal-reason source for an adverse-action notice and a
+      // clear "why" for staff + borrower.
+      factors: arr(s._FACTOR).map((f) => ({ code: A(f, '_Code'), text: A(f, '_Text') }))
+        .filter((f) => f.code || f.text),
     });
   }
   result.borrowers = [...byId.values()];

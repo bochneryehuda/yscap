@@ -68,19 +68,33 @@ async function draftForApplication({ applicationId, borrowerId, creditReportId, 
     const b = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE id=$1`, [borrowerId])).rows[0];
     if (b) name = [b.first_name, b.last_name].filter(Boolean).join(' ');
   }
+  let suggestedReasons = [];
   if (creditReportId && borrowerId) {
     const rows = (await db.query(
-      `SELECT bureau, value FROM credit_scores WHERE credit_report_id=$1 AND borrower_id=$2 AND usable ORDER BY bureau`,
+      `SELECT bureau, value, factors FROM credit_scores WHERE credit_report_id=$1 AND borrower_id=$2 AND usable ORDER BY bureau`,
       [creditReportId, borrowerId])).rows;
     scoresDisclosed = rows.map((r) => ({ bureau: r.bureau, score: r.value }));
+    // Auto-suggest the principal reasons from the real bureau factor codes (the
+    // human still confirms/edits before issuing). Dedup by text, cap the list.
+    const seen = new Set();
+    for (const r of rows) {
+      const factors = Array.isArray(r.factors) ? r.factors : [];
+      for (const f of factors) {
+        const t = (f && f.text ? String(f.text) : '').trim();
+        if (t && !seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); suggestedReasons.push(t); }
+      }
+    }
+    suggestedReasons = suggestedReasons.slice(0, 4);   // FCRA: up to 4 principal reasons
   }
-  const body = draftBody({ borrowerName: name, decision, principalReasons, scoresDisclosed });
+  // A caller-supplied reason set wins; otherwise seed from the bureau factors.
+  const reasons = (principalReasons && principalReasons.length) ? principalReasons : suggestedReasons;
+  const body = draftBody({ borrowerName: name, decision, principalReasons: reasons, scoresDisclosed });
   const ins = await db.query(
     `INSERT INTO adverse_action_letters
        (application_id, borrower_id, credit_report_id, decision, principal_reasons, scores_disclosed, notice_body, status, created_by)
      VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,'draft',$8) RETURNING id`,
     [applicationId || null, borrowerId || null, creditReportId || null, decision,
-     JSON.stringify(principalReasons), JSON.stringify(scoresDisclosed), body, actorId || null]);
+     JSON.stringify(reasons), JSON.stringify(scoresDisclosed), body, actorId || null]);
   return ins.rows[0].id;
 }
 

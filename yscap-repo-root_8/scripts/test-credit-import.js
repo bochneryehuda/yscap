@@ -16,11 +16,13 @@ const eq = (n, g, e) => { if (JSON.stringify(g) === JSON.stringify(e)) pass++; e
 const ok = (n, c) => { if (c) pass++; else { fail++; console.log(`FAIL ${n}`); } };
 
 const MINI_PDF = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF').toString('base64');
-const score = (id, bid, bureau, val, model) =>
-  `<CREDIT_SCORE CreditScoreID="${id}" BorrowerID="${bid}" CreditFileID="F${id}" CreditReportIdentifier="RPT1" CreditRepositorySourceType="${bureau}" _Date="2026-07-19" _Value="${val}" _ModelNameType="${model}"/>`;
+const score = (id, bid, bureau, val, model, withFactors) =>
+  `<CREDIT_SCORE CreditScoreID="${id}" BorrowerID="${bid}" CreditFileID="F${id}" CreditReportIdentifier="RPT1" CreditRepositorySourceType="${bureau}" _Date="2026-07-19" _Value="${val}" _ModelNameType="${model}">${
+    withFactors ? '<_FACTOR _Code="038" _Text="Serious delinquency"/><_FACTOR _Code="008" _Text="Too many recent inquiries"/>' : ''
+  }</CREDIT_SCORE>`;
 function responseXml({ withCo = false, coNoScore = false } = {}) {
   const b1 = `<BORROWER BorrowerID="B1" _FirstName="NICKIE" _LastName="GREEN" _SSN="123003333"/>
-        ${score('1', 'B1', 'Equifax', '734', 'EquifaxBeacon5.0')}
+        ${score('1', 'B1', 'Equifax', '734', 'EquifaxBeacon5.0', true)}
         ${score('2', 'B1', 'Experian', '732', 'ExperianFairIsaac')}
         ${score('3', 'B1', 'TransUnion', '730', 'FICORiskScoreClassic04')}`;
   const coScores = coNoScore
@@ -106,6 +108,19 @@ async function seedBorrower(email, first) {
   eq('3 usable', Number(scRows.usable), 3);
   const appPriced = (await db.query(`SELECT fico_used_for_pricing FROM applications WHERE id=$1`, [appId])).rows[0];
   eq('fico_used_for_pricing captured', appPriced.fico_used_for_pricing, 732);
+
+  // score factors stored on the Equifax row
+  const eqFactors = (await db.query(`SELECT factors FROM credit_scores WHERE credit_report_id=$1 AND bureau='Equifax'`, [out.reportId])).rows[0];
+  ok('equifax factors stored', Array.isArray(eqFactors.factors) && eqFactors.factors.length === 2);
+  ok('factor text present', /Serious delinquency/.test(JSON.stringify(eqFactors.factors)));
+  // adverse-action auto-populates principal reasons from the real bureau factors
+  const aa = require('../src/lib/credit/adverse-action');
+  const aaId = await aa.draftForApplication({ applicationId: appId, borrowerId: bId, creditReportId: out.reportId, decision: 'declined', actorId });
+  const aaRow = (await db.query(`SELECT principal_reasons, scores_disclosed, notice_body, status FROM adverse_action_letters WHERE id=$1`, [aaId])).rows[0];
+  ok('AA status draft', aaRow.status === 'draft');
+  ok('AA reasons auto-populated from factors', Array.isArray(aaRow.principal_reasons) && aaRow.principal_reasons.some(r => /Serious delinquency/.test(r)));
+  ok('AA discloses the score', Array.isArray(aaRow.scores_disclosed) && aaRow.scores_disclosed.length >= 1);
+  await db.query(`DELETE FROM adverse_action_letters WHERE id=$1`, [aaId]);
 
   // condition wired: outstanding -> received on import
   const condStatus = (await db.query(`SELECT status FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appId, credTmpl])).rows[0];

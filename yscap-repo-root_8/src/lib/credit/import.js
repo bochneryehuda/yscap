@@ -245,10 +245,11 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
       const dbBorrowerId = orderMeta.borrowerDbIdByReportId[pb.reportBorrowerId] || null;
       for (const c of pb.middle.classified) {
         await client.query(
-          `INSERT INTO credit_scores (credit_report_id, borrower_id, report_borrower_id, bureau, model, value, raw_value, exclusion_reason, usable, reason)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          `INSERT INTO credit_scores (credit_report_id, borrower_id, report_borrower_id, bureau, model, value, raw_value, exclusion_reason, usable, reason, factors)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
           [reportRowId, dbBorrowerId, pb.reportBorrowerId, c.bureau, c.model,
-           c.usable ? c.value : null, c.rawValue == null ? null : String(c.rawValue), c.exclusionReason, c.usable, c.reason]);
+           c.usable ? c.value : null, c.rawValue == null ? null : String(c.rawValue), c.exclusionReason, c.usable, c.reason,
+           JSON.stringify(Array.isArray(c.factors) ? c.factors : [])]);
       }
     }
 

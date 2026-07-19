@@ -100,7 +100,10 @@ function classifyScore(raw, opts = {}) {
   const bureau = raw && raw.bureau != null ? String(raw.bureau) : null;
   const model = raw && raw.model != null ? String(raw.model) : null;
   const rawValue = raw ? raw.value : undefined;
-  const out = { bureau, model, rawValue, value: null, usable: false, reason: 'missing', exclusionReason: null };
+  const out = { bureau, model, rawValue, value: null, usable: false, reason: 'missing', exclusionReason: null,
+    // Pass the bureau reason-code factors straight through so every classified
+    // score keeps its "why" (adverse-action + display). Never affects scoring.
+    factors: Array.isArray(raw && raw.factors) ? raw.factors : [] };
 
   // (1) explicit exclusion wins regardless of value
   const ex = raw && raw.exclusionReason != null ? String(raw.exclusionReason).trim() : '';
