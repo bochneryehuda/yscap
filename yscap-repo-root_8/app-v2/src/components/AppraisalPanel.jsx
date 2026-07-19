@@ -1040,10 +1040,11 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
             const asisC = real.filter((c) => c.comp_set === 'as_is');
             const unkC = real.filter((c) => c.comp_set === 'unknown' || !c.comp_set);
             const twoGrid = arvC.length > 0 && asisC.length > 0;
+            const splitHow = { narrative: 'grids read from the appraiser’s narrative', proximity: 'grids inferred from comp pricing', single_grid: null, undetermined: null }[a.comp_split_confidence];
             return (
               <>
                 <SecHead eyebrow="Evidence" title={twoGrid ? 'Comparable sales — As-Is & ARV grids' : 'Comparable sales'}
-                  extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{real.length} comps · {twoGrid ? 'two grids support two values' : 'tap a row for the adjustment breakdown'}</span>} />
+                  extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{real.length} comps{twoGrid && splitHow ? ` · ${splitHow}` : twoGrid ? ' · two grids support two values' : ' · tap a row for the adjustment breakdown'}</span>} />
                 {a.comp_split_needs_review && (
                   <div className="appr-avoid" style={{ margin: '2px 0 12px', padding: '9px 12px', borderRadius: 10, fontSize: 12.5,
                     background: 'rgba(174,135,70,.10)', border: '1px solid var(--gold,#AE8746)', color: 'var(--text,#141B22)' }}>
