@@ -8,6 +8,11 @@ import { api } from '../lib/api.js';
 
 const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US');
 const usd2 = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Borrower-friendly draw status (no capital-partner detail).
+const DRAW_STATUS = {
+  drafting: 'Being prepared', pending_borrower: 'Waiting on you', inspecting: 'Inspection under way',
+  pending: 'Under review', pending_capital_partner: 'Final review', approved: 'Approved & released',
+};
 
 export default function BorrowerDraws({ appId }) {
   const [rollup, setRollup] = useState(null);
@@ -56,6 +61,24 @@ export default function BorrowerDraws({ appId }) {
             </table>
           </div>
         </>
+      )}
+
+      {rollup && Array.isArray(rollup.draws) && rollup.draws.length > 0 && (
+        <div className="panel" style={{ marginTop: 12, overflowX: 'auto', padding: 0 }}>
+          <table className="table" style={{ width: '100%', minWidth: 420 }}>
+            <thead><tr><th>Draw</th><th>Status</th><th style={{ textAlign: 'right' }}>Requested</th><th style={{ textAlign: 'right' }}>Approved</th></tr></thead>
+            <tbody>
+              {rollup.draws.map((d) => (
+                <tr key={d.sitewire_draw_id}>
+                  <td>#{d.number ?? '—'}</td>
+                  <td><span className={'pill ' + (d.is_funded ? 'sw-approved' : 'sw-insp')}>{DRAW_STATUS[d.status] || d.status}</span></td>
+                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.requested_cents)}</td>
+                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.approved_cents)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {findings.map((f) => <FindingCard key={f.id} finding={f} onChanged={load} />)}
