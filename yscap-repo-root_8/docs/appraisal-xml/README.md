@@ -20,6 +20,7 @@ prototype parser and `per-file-extraction-proof.md` cover all 33.)
 | `1025-SmallIncome-field-map.md` | Complete field map for **Form 1025 (2–4 unit)** — adds units, per-unit rent schedule, income/GRM approach. |
 | `industry-research.md` | MISMO 2.6 / UAD standards, As-Is vs ARV encoding, RTL underwriting ratios, DSCR, parsing pitfalls, 20 CTC match rules. |
 | `photos-comps-variation.md` | Image/photo taxonomy, comparable structure, comp As-Is/ARV split signal, cross-vendor gotchas + primary/fallback strategy. |
+| `1073-condo-notes.md` | Form 1073 (condominium) support — same value logic + a small condo-specific card (project, unit/floor, HOA fee). Not a major difference. |
 | `expanded-field-catalog.md` | The long-tail field inventory across all 33 (construction, cost-approach breakdown, full comp adjustment grids, flood/site, neighborhood + 1004MC market stats, 1025 income detail) with per-field reliability. |
 | `property-report-design-research.md` | Premium property-report design research → the PILOT report section stack + visual treatment. |
 | `error-handling-and-confidence.md` | Confidence model (definite/estimate/non-UAD/missing); ARV mandatory; As-Is → officer condition; PDF + photo extraction findings. |
