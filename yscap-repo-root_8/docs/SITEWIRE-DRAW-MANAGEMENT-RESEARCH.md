@@ -856,5 +856,10 @@ Three of the deferred best-of-breed items, now built (all OFF by default; never-
   retainage held, net release, status, dates — as a real Excel workbook for the accounting team /
   QuickBooks import.
 
-Still deferred (documented, never silent): AIA G702/G703 pay-app packet auto-assembly, stored
+- **Draw packet** (`GET /files/:id/draws/:drawId/packet`): a per-draw Excel workbook assembling the
+  cover, the SCHEDULE OF VALUES (each SOW line: budget, drawn-to-date, this-draw requested/approved,
+  remaining, % complete), the inspection findings (per line: approved/not-approved, photo/video
+  counts, inspector note), and the lien waivers — the "draw packaging" Built/Rabbet lead with.
+
+Still deferred (documented, never silent): a direct QuickBooks push, stored
 materials, interest-reserve draw tracking, AI photo % complete, and a direct QuickBooks push.
