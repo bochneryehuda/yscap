@@ -645,3 +645,59 @@ policy → lender final approval → revised amounts flow back (Built/Land Goril
 - `draw_findings` + `draw_finding_lines` (per-line requested/approved/not-approved/reason/photos,
   accept/dispute state) and `draw_finding_disputes` (per-line desired amount, evidence, resolution).
 - `sitewire_settings` (`wire_turnaround_hours`, variance policy) — admin-editable.
+
+---
+
+## 15. The unified rollup + advisory draw-risk engine (built 2026-07-19)
+
+Two capabilities that make PILOT more than a mirror — grounded in a review of the best-in-class
+platforms (Built Technologies' "Draw Agent", Rabbet's portfolio exposure views, Land Gorilla's
+lien/progress monitoring) and construction-loan fraud-control literature.
+
+### 15.1 Unified rollup (`src/sitewire/rollup.js`) — "one system"
+The single view tying **draws ↔ Scope of Work ↔ construction budget**. It rolls the per-unit
+Sitewire draw requests back up through the crosswalk to each SOW line and layers the money story:
+`budgeted` (frozen, per line & unit), `drawn` (= approved on **approved** draws only — mirrors
+Sitewire `total_released_cents`), `approved_pending` / `requested_open` (in the pipeline),
+`remaining`, `pct_complete`. Contingency / GC / media are separated; an unmatched Sitewire line is
+surfaced in `unknown` and never folded in. Pure core + a thin DB loader that also folds the money
+ledger (fee → net release → date) onto each draw. Powers the staff DrawsPanel, the borrower view,
+and the `/portfolio` exposure/pacing dashboard.
+
+### 15.2 Advisory draw-risk engine (`src/sitewire/risk.js`) — "audit mode"
+A red-flag engine that **advises, never blocks** (a human draw coordinator always decides — the
+"Audit" mode of Built's Draw Agent, deliberately not "Automate"). Per draw it flags:
+`no_inspection` (money requested with no photos), `exceeds_remaining` / `over_total_budget`
+(over-budget lines — the #1 fraud red flag), `approved_exceeds_requested`, `large_first_draw` &
+`front_loading` (drawing ahead of verified work — the classic front-loading scheme),
+`line_oversubscribed` (concurrent open draws that jointly bust a line), `money_on_media_line`,
+`line_already_complete`, and `unknown_line`. Snapshot (`risk_level`/`risk_flags`) refreshed on
+every reconcile; **only OPEN draws are assessed** (an approved draw's amount is already in `drawn`,
+so re-assessing it would false-flag it). Sources: Rabbet & Built fraud-prevention guidance
+(front-loading, over-billing, duplicate/false pay-applications, draws that outrun verifiable
+progress); private-lender draw-schedule controls.
+
+### 15.3 Reallocation rules (`src/sitewire/reallocation.js`) — encoded from the domain
+Grounded in construction-loan reallocation/change-order practice (AIA contingency guidance; Rabbet
+"Basics of Reallocations & Change Orders"; lender draw-administration playbooks): **after** clear-to-
+close the budget must **net to zero** (money only moves, it is never created); **only undrawn money
+is movable** (a line — and, on multi-unit lines, a *unit* — can never be cut below what's already
+drawn); a **material** line change (> the admin `variance_pct`, default 10%) and any after-CTC move
+need **capital-partner approval**; a **before**-CTC total change re-opens Products & Pricing (the
+loan was sized off the old budget) rather than silently changing the frozen `rehab_budget`.
+
+### 15.4 Best-of-breed feature gap-analysis (research 2026-07-19)
+Confirmed present / built here, matched against Built, Rabbet, Land Gorilla, Nectar: line-item draws
+with % complete; per-line/per-unit budget vs. drawn vs. remaining; portfolio exposure & pacing;
+inspection routing (virtual vs. on-site) + geo-tagged photo review; per-partner fee schedule; draw
+risk/fraud red-flags (audit mode); budget reallocation with net-zero + undrawn-only + material-
+variance gating; borrower accept/dispute with a wire SLA; money ledger (fee → net release → date);
+CSV export; capital-partner approval routing. **Deferred (roadmap, per owner):** retainage/holdback,
+conditional/unconditional lien-waiver tracking, structured wire references, interest-reserve draw
+tracking, AI photo analysis — each is a known industry feature we've scoped but intentionally
+postponed; none is silently missing.
+
+### 15.5 Implementation status
+Everything in §12–§15 is **built and tested** (pure-logic unit tests in
+`scripts/test-sitewire-rollup.js`; DB-backed verification; two adversarial audit passes with all
+findings fixed). Still off by default behind `SITEWIRE_ENABLED` / `SITEWIRE_OUTBOUND_ENABLED`.
