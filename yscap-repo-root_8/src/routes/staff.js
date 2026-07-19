@@ -4988,8 +4988,12 @@ router.post('/leads/:id/convert', async (req, res) => {
     // staff never re-key from memory (and never miss the assignment flag, which
     // would mis-price on the fee-inclusive total). loan_amount is intentionally
     // excluded — it's set by the pricing engine on registration (audit #23).
+    // collectState() (web/*/suite.js) buckets inputs by kind: text/select in .v,
+    // checkboxes in .c, RADIOS in .rad. Read each field from the right bucket under
+    // its REAL loan-application id (verified against the tool): the rehab budget is
+    // `rehab` (not "construction"), and loan purpose is the `purpose` radio.
     const pl = (lead.tool === 'loan_application' && lead.payload) ? lead.payload : {};
-    const pv = (pl && pl.v) || {}, pc = (pl && pl.c) || {};
+    const pv = (pl && pl.v) || {}, pc = (pl && pl.c) || {}, pr = (pl && pl.rad) || {};
     const numv = (x) => { const n = Number(String(x == null ? '' : x).replace(/,/g, '')); return isFinite(n) && n > 0 ? n : null; };
     const econIsAssign = !!pc.isAssign;
     const econPrice = numv(pv.price);
@@ -4997,7 +5001,7 @@ router.post('/leads/:id/convert', async (req, res) => {
     const econFee = (econIsAssign && econPrice && econSeller) ? Math.max(0, econPrice - econSeller) : null;
     const econReserveOn = !!pc.finReserve;
     const econFico = (() => { const n = Number(pv.fico); return isFinite(n) && n >= 300 && n <= 850 ? Math.round(n) : null; })();
-    const econLoanType = /refi/i.test(String(pv.purpose || pv.dealPurpose || '')) ? 'Refinance' : 'Purchase';
+    const econLoanType = /refi/i.test(String(pr.purpose || '')) ? 'Refinance' : 'Purchase';
 
     const br = await db.query(
       `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
@@ -5030,7 +5034,7 @@ router.post('/leads/:id/convert', async (req, res) => {
         b.propertyType || pv.propType || lead.property_type || null,
         b.program || pv.dealType || lead.program || null, officerId, officerName,
         econLoanType,
-        econPrice, numv(pv.asIs), numv(pv.arv), numv(pv.construction),
+        econPrice, numv(pv.asIs), numv(pv.arv), numv(pv.rehab),
         pv.termMonths ? String(parseInt(pv.termMonths, 10) || '') || null : null,
         (econReserveOn ? (parseInt(pv.resMonths, 10) || null) : null),
         (econReserveOn ? numv(pv.resAmount) : null),
