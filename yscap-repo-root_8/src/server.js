@@ -34,6 +34,9 @@ app.use('/api/inbound/chat', require('./routes/inbound-chat'));
 // Mounted BEFORE the JSON parser for the same raw-body reason as the chat/ClickUp
 // webhooks. Separate URL from /api/inbound/chat (which is unchanged).
 app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
+// DocuSign Connect webhook — RAW body for the base64 HMAC verification, mounted
+// BEFORE the JSON parser for the same reason as the ClickUp/inbound webhooks.
+app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 app.use(express.json({ limit: `${JSON_LIMIT_MB}mb` }));
 
 // Rate limits (IP-based, in-memory) on the sensitive/unauthenticated surface.
@@ -161,6 +164,10 @@ app.use('/api/address', require('./routes/address')); // address autocomplete/ve
 app.use('/api/leads', require('./routes/leads'));     // public marketing-tool submissions (saved + emailed server-side)
 app.use('/api/guest', require('./routes/guest-chat')); // #75 magic-link guest chat (key-authenticated, public)
 app.use('/api/intake', require('./routes/intake'));
+// Public e-signature bounce endpoint (/api/esign/return) — where a signer lands
+// after signing; resolves the real destination from our DB and 302s into the
+// portal. The Connect webhook (/api/esign/webhook) is mounted above, pre-JSON.
+app.use('/api/esign', require('./routes/esign-public'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/staff', require('./routes/staff'));
 // The Condition Center studio is gated by the manage_conditions capability (not

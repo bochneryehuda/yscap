@@ -54,7 +54,10 @@ async function dashboard(db, scope = { where: '', params: [] }) {
             e.sent_at AS "sentAt", e.completed_at AS "completedAt", e.declined_at AS "declinedAt",
             e.voided_at AS "voidedAt", e.void_reason AS "voidReason", e.created_at AS "createdAt",
             e.last_error AS "lastError", e.dead_lettered_at AS "deadLetteredAt",
-            a.property_address AS "propertyAddress", a.ys_loan_number AS "loanNumber",
+            COALESCE(a.property_address->>'oneLine',
+                     NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                      a.property_address->>'state', a.property_address->>'zip'), '')) AS "propertyAddress",
+            a.ys_loan_number AS "loanNumber",
             b.first_name AS "firstName", b.last_name AS "lastName",
             ${RECIP_JSON}
        FROM esign_envelopes e
