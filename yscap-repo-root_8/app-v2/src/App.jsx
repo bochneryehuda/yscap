@@ -41,6 +41,7 @@ import StaffDraws from './screens/StaffDraws.jsx';
 import StaffDrawRules from './screens/StaffDrawRules.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 import SyncReviews from './screens/SyncReviews.jsx';
+import EsignDashboard from './screens/EsignDashboard.jsx';
 
 /* Borrower-only area. Internal users who land here are bounced to their console.
    An unauthenticated hit carries the intended route through sign-in (`from`) so
@@ -133,6 +134,7 @@ export default function App() {
           <Route path="/internal/draw-rules" element={<StaffPrivate><StaffDrawRules /></StaffPrivate>} />
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />
           <Route path="/internal/sync-reviews" element={<StaffPrivate><SyncReviews /></StaffPrivate>} />
+          <Route path="/internal/esign" element={<StaffPrivate><EsignDashboard /></StaffPrivate>} />
 
           {/* legacy /staff/* deep links (old emails, bookmarks) → /internal/* */}
           <Route path="/staff" element={<LegacyStaffRedirect />} />
