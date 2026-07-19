@@ -4,8 +4,9 @@
    Second YS Capital program (separate from the Standard Program engine).
    IMPORTANT brand & pricing rules, mirroring the Standard engine:
      • The source program name is NEVER exposed anywhere user-facing.
-     • The borrower NOTE RATE = the sheet price + adjustments (NO markup). The
-       only borrower add-on is the 1% origination, same as the Standard Program.
+     • The borrower NOTE RATE = the sheet price + adjustments + the YS markup
+       (0.5%, except top-experience Tier 1 which is exempt). The only borrower
+       fee add-on is the 1.25% origination, same as the Standard Program.
    Distinct mechanics vs. the Standard Program (do not cross-wire):
      • Pricing is FLAT per product × tier — leverage does NOT change the
        rate. Leverage caps only limit the loan size.
@@ -26,8 +27,9 @@
   "use strict";
 
   /* ---------------- constants ---------------- */
-  // Gold Standard has NO rate markup — the sheet's price IS the borrower note rate.
-  // (The borrower's only add-on is the 1% origination, same as the Standard Program.)
+  // Gold Standard rate = sheet price + adjustments + 0.5% markup (top-experience
+  // Tier 1 is exempt — see markupFor()). The borrower's only fee add-on is the
+  // 1.25% origination, same as the Standard Program.
   var MARKUP = 0.005;            // base YS markup (0.5%); top-experience Tier 1 is exempt — see markupFor()
   var MARKUP_OVR = null;         // admin-set markup override (fraction); null = default
   function effMarkup() { return (MARKUP_OVR == null) ? MARKUP : MARKUP_OVR; }

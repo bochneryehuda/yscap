@@ -370,7 +370,7 @@
     YS.put("stdOrigPts", origPtStr(adminOrigPct("standard")));
     setBadge("stdBadge", d.status, ready);
     var stdWhy = stdExit ? shortMsg(exitMsg(d.reasons)) : (d.status !== "ELIGIBLE" ? shortReason(d.reasons) : "");
-    YS.put("stdSub", !ready ? "Enter price, budget &amp; ARV to begin"
+    YS.put("stdSub", !ready ? "Enter price, budget & ARV to begin"
       : (stdWhy || (d.caps ? "Max LTC " + pctLbl(d.caps.maxLTC) + " \u00b7 " + (d.tierLabel || "") : "")));
 
     // ---- Gold Standard card ----
@@ -388,9 +388,9 @@
       var gs = G.sizing || {};
       var goldExit = ready && (G.exitShortfall > 0);   // costs>ARV is INELIGIBLE (kept for the explanatory sub-line)
       var gSized = ready && (gs.totalLoan > 0) && G.status !== "INELIGIBLE" && !goldExit;
-      YS.put("goldLoanBig", gSized ? YS.fmtUSD(gs.totalLoan) : ((ready && G.status !== "INELIGIBLE") ? "$0" : EM));
+      YS.put("goldLoanBig", gSized ? YS.fmtUSD(Math.floor(gs.totalLoan)) : ((ready && G.status !== "INELIGIBLE") ? "$0" : EM));
       YS.put("goldRateBig", (gSized && G.pricingReady && G.noteRate > 0) ? (G.noteRate * 100).toFixed(2) + "%" : EM);
-      YS.put("goldOrigBig", gSized ? YS.fmtUSD((gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
+      YS.put("goldOrigBig", gSized ? YS.fmtUSD2(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
       YS.put("goldOrigPts", origPtStr(adminOrigPct("gold")));
       setBadge("goldBadge", G.status, ready);
       var goldWhy = goldExit ? shortMsg(exitMsg(G.reasons)) : (G.status !== "ELIGIBLE" ? shortReason(G.reasons) : "");
@@ -456,6 +456,10 @@
     var wrap = el("rLevWrap"); if (!wrap) return;
     var isGold = chosenProgram === "gold";
     if (!ready || !chosenProgram) { wrap.style.display = "none"; return; }
+    // On a manual admin exception (LTC/rate overwritten) the leverage-by-tier ladder
+    // is meaningless — the admin fixed the basis, so every "tier" would show the same
+    // overridden loan/rate. Hide the slider entirely (audit #13/#35).
+    if (manualOn() && (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMRate") != null)) { wrap.style.display = "none"; return; }
     var ladder = isGold ? goldLadder() : YSP.priceLadder(gather());
     if (!ladder.eligible || !ladder.rows.length) { wrap.style.display = "none"; return; }
     var rows = ladder.rows;
@@ -485,14 +489,14 @@
     } else {
       lv.textContent = pctLbl(row.targetLtcPct) + " LTC";
       if (isGold) {
-        hint.innerHTML = "<b>Reduced leverage.</b> At " + pctLbl(row.targetLtcPct) + " LTC the loan is <b>" + YS.fmtUSD(row.totalLoan) +
-          "</b>, cash down " + YS.fmtUSD(row.downPayment) + ". Gold's rate is unchanged across leverage. Drag right for more.";
+        hint.innerHTML = "<b>Reduced leverage.</b> At " + pctLbl(row.targetLtcPct) + " LTC the loan is <b>" + YS.fmtUSD(Math.floor(row.totalLoan)) +
+          "</b>, cash down " + YS.fmtUSD(Math.floor(row.downPayment)) + ". Gold's rate is unchanged across leverage. Drag right for more.";
       } else {
         var maxRow = rows[0], delta = (maxRow.noteRate - row.noteRate) * 100;
         hint.innerHTML = "<b>Lower leverage, lower rate.</b> At " + pctLbl(row.targetLtcPct) +
           " LTC your rate is <b>" + (row.noteRate * 100).toFixed(2) + "%</b> \u2014 " + delta.toFixed(2) +
-          "% below the maximum-leverage rate. Loan " + YS.fmtUSD(row.totalLoan) +
-          ", cash down " + YS.fmtUSD(row.downPayment) + ". Drag right for more leverage.";
+          "% below the maximum-leverage rate. Loan " + YS.fmtUSD(Math.floor(row.totalLoan)) +
+          ", cash down " + YS.fmtUSD(Math.floor(row.downPayment)) + ". Drag right for more leverage.";
       }
     }
     wrap.style.display = "";
@@ -759,11 +763,11 @@
       var notes = [];
       if (ready && d.R.reserveTermCapped) {
         if (d.R.reserveCapIsConstruction) {
-          notes.push("<strong>Construction interest reserve capped at 75% of the full term (" + Math.round(d.R.reserveTermMonths) + " months).</strong> You requested " + d.irMonths +
-            " months; a construction reserve is financed up to 75% of the term's interest, so it covers " + Math.round(d.R.reserveTermMonths) + " months.");
+          notes.push("<strong>Construction interest reserve capped at 75% of the full term (" + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months).</strong> You requested " + d.irMonths +
+            " months; a construction reserve is financed up to 75% of the term's interest, so it covers " + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months.");
         } else {
           notes.push("<strong>Interest reserve capped at the loan term (" + d.R.reserveTermMonths + " months).</strong> You requested " + d.irMonths +
-            " months, but a reserve can't finance more interest than the loan runs \u2014 so it covers " + d.R.reserveTermMonths + " months.");
+            " months, but a reserve can't finance more interest than the loan runs \u2014 so it covers " + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months.");
         }
       }
       if (ready && d.reserveCapped && d.maxReserve >= 0) {
@@ -1191,8 +1195,12 @@
       // ---------------- FINAL PAGE: leverage / pricing ladder (STANDARD PROGRAM ONLY) ----------------
       // The Gold Standard Program prices a flat rate that does NOT vary by leverage, so there is no
       // per-LTC pricing ladder and this page must never render for Gold.
-      var lad = (!d.gold) ? YSP.priceLadder(gather()) : { eligible: false, rows: [] };
-      if (!d.gold && lad.eligible && lad.rows.length) {
+      // Suppress the ladder on a manual admin exception too — the overridden basis
+      // makes every leverage step identical, so the page would print duplicate rows
+      // on a signable document (audit #13/#35).
+      var ladderOverridden = manualOn() && (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMRate") != null);
+      var lad = (!d.gold && !ladderOverridden) ? YSP.priceLadder(gather()) : { eligible: false, rows: [] };
+      if (!d.gold && !ladderOverridden && lad.eligible && lad.rows.length) {
         doc.addPage(); header(); y = 92;
         doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
         doc.text("Your pricing at every leverage level", M, y); y += 16;
@@ -1221,7 +1229,7 @@
           doc.setTextColor.apply(doc, isSel ? [28, 24, 16] : DARK);
           var vals = [
             pc(r.targetLtcPct) + (r.isMax ? "  (maximum)" : ""),
-            money(r.totalLoan), money(r.downPayment), money(r.monthlyPayment) + "/mo",
+            money(Math.floor(r.totalLoan)), money(Math.floor(r.downPayment)), money(Math.floor(r.totalLoan) * (r.noteRate / 12)) + "/mo",
             (r.noteRate * 100).toFixed(2) + "%"
           ];
           var cx2 = M;
