@@ -26,7 +26,7 @@ const { can, assigneeExistsSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const { runAppraisalImport } = require('../lib/appraisal/desk');
-const { collateralScore, arvDefensibility } = require('../lib/appraisal/scoring');
+const { collateralScore, arvDefensibility, compImpliedValue } = require('../lib/appraisal/scoring');
 const X = require('../lib/appraisal/xml');
 
 // Upload cap: aligned to the per-file limit the JSON body-parser actually allows,
@@ -91,6 +91,7 @@ router.get('/:appId', async (req, res, next) => {
     const score = {
       collateral: collateralScore({ a: appr, comps: comps.rows, summary }),
       arv: arvDefensibility({ arv: appr.arv_value, asIs: appr.as_is_value, rehab: rehab.rehab_budget, isReno }),
+      impliedValue: compImpliedValue({ comps: comps.rows, subjectGla: appr.gla }),
     };
     res.json({ appraisal: appr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows, summary, score });
   } catch (e) { next(e); }
@@ -150,6 +151,20 @@ router.post('/:appId/import', async (req, res, next) => {
       { appraisalId: out.appraisalId, findings: out.summary, warnings: (out.warnings || []).map((w) => w.code) });
 
     res.json({ ok: true, appraisalId: out.appraisalId, summary: out.summary, needsAsIsCondition: out.needsAsIsCondition, warnings: out.warnings });
+  } catch (e) { next(e); }
+});
+
+// ---- POST /:appId/photos/refresh -------------------------------------------
+// Re-pull the property photos for the current appraisal from its stored PDF (embedded in the XML
+// or the uploaded PDF slot), on demand. For files imported before the photo feature, or where the
+// PDF arrived after the XML. Best-effort; returns how many photos were stored.
+router.post('/:appId/photos/refresh', async (req, res, next) => {
+  try {
+    const app = await fileFor(req, req.params.appId);
+    if (!app) return res.status(404).json({ error: 'not found' });
+    const stored = await require('../lib/appraisal/desk').repullAppraisalPhotos(app.id);
+    try { await audit(req.actor.id, 'appraisal_photos_refresh', app.id, { stored }); } catch (_) { /* audit best-effort */ }
+    res.json({ ok: true, stored });
   } catch (e) { next(e); }
 });
 

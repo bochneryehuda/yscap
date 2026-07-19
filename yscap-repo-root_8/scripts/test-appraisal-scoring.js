@@ -2,7 +2,7 @@
  * Unit assertions for the PILOT collateral scoring module (src/lib/appraisal/scoring):
  * the explainable 1–5 collateral read and the ARV-defensibility cross-check. Pure — no DB.
  */
-const { collateralScore, arvDefensibility } = require('../src/lib/appraisal/scoring');
+const { collateralScore, arvDefensibility, compImpliedValue } = require('../src/lib/appraisal/scoring');
 let failures = 0;
 const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failures++; };
 
@@ -65,6 +65,22 @@ assert(collateralScore({ a: null }) === null, 'no appraisal → null');
 {
   assert(arvDefensibility({ arv: null, asIs: 400000, rehab: 50000 }) === null, 'no ARV → null');
   assert(arvDefensibility({ arv: 500000, asIs: null, rehab: 50000 }) === null, 'no As-Is → null');
+}
+
+// ---- compImpliedValue (independent comp-implied value) ----
+{
+  const comps = [{ adjusted_price: 300000, price_per_gla: 150 }, { adjusted_price: 310000, price_per_gla: 155 }, { adjusted_price: 320000, price_per_gla: 160 }];
+  const iv = compImpliedValue({ comps, subjectGla: 2000 });
+  assert(iv && iv.median === 310000, `median of adjusted comps is 310k (got ${iv && iv.median})`);
+  assert(iv.low === 300000 && iv.high === 320000, 'low/high bracket the adjusted comps');
+  assert(iv.perGlaValue === 310000, 'median $/GLA (155) × 2000 sqft = 310k');
+  assert(iv.n === 3, 'counts 3 comps');
+}
+assert(compImpliedValue({ comps: [{ adjusted_price: 1 }, { adjusted_price: 2 }] }) === null, 'fewer than 3 adjusted comps → null (never guessed)');
+assert(compImpliedValue({ comps: [{ is_subject: true, adjusted_price: 9 }, { adjustedPrice: 300000 }, { adjustedPrice: 310000 }, { adjustedPrice: 320000 }] }).n === 3, 'subject comp excluded; parsed-shape (adjustedPrice) accepted');
+{
+  const iv = compImpliedValue({ comps: [{ adjusted_price: 300000 }, { adjusted_price: 310000 }, { adjusted_price: 320000 }], subjectGla: null });
+  assert(iv && iv.perGlaValue === null, 'no subject GLA → no $/GLA value (not guessed), median still returned');
 }
 
 console.log(`\n${failures ? failures + ' FAILURE(S)' : 'ALL scoring assertions passed'}`);
