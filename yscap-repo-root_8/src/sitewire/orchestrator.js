@@ -333,7 +333,13 @@ async function pushFile(appId, opts = {}) {
       [appId, propertyId, budgetId, cp.id, JSON.stringify({ inspectionMethod, feeCents })]);
     link = await getLink(appId);
   } finally {
-    if (lockConn) { try { await lockConn.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]); } catch (_) {} lockConn.release(); }
+    if (lockConn) {
+      let unlockErr = null;
+      try { await lockConn.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]); } catch (e) { unlockErr = e; }
+      // if the unlock failed, DESTROY the connection (pass the error) — never return a still-lock-holding
+      // session to the pool.
+      lockConn.release(unlockErr || undefined);
+    }
   }
 
   // assign borrower (best-effort; parks on 422)
@@ -360,6 +366,22 @@ async function pushFile(appId, opts = {}) {
  * unique name, journal, and read-after-write verify the total (G-RAW/G-RECON).
  */
 async function pushBudget(appId, budgetId, ex, budgetCents) {
+  // Serialize budget pushes per file with a per-file advisory lock so two concurrent births (coordinator
+  // Start inline + the worker draining the borrower's request) can't both bind the same crosswalk and
+  // create duplicate Sitewire job items. The loser blocks, then re-reads the crosswalk (now bound) inside
+  // pushBudgetInner → no creates → unchanged. Same leak-safe lock/release(err) pattern as the birth.
+  const lockConn = await db.getClient();
+  const lockKey = `sw-budget:${appId}`;
+  try {
+    await lockConn.query('SELECT pg_advisory_lock(hashtext($1))', [lockKey]);
+    return await pushBudgetInner(appId, budgetId, ex, budgetCents);
+  } finally {
+    let unlockErr = null;
+    try { await lockConn.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]); } catch (e) { unlockErr = e; }
+    lockConn.release(unlockErr || undefined);
+  }
+}
+async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
   const links = (await db.query(
     `SELECT id, sow_line_key, section_token, sitewire_job_item_id, budgeted_cents, name FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_budget_id=$2`,
     [appId, budgetId])).rows;

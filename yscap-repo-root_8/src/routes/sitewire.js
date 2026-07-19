@@ -132,6 +132,9 @@ router.post('/files/:id/reconcile', requirePermission('manage_draws'), async (re
 
 // ---- POST /api/sitewire/files/:id/push — manual birth push (admin/setup, guarded) ----
 router.post('/files/:id/push', requirePermission('platform_setup'), async (req, res) => {
+  // scope like every other per-file route — platform_setup alone (e.g. the software_setup persona) must
+  // not be able to birth a file it has no relationship to into Sitewire.
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json(await orchestrator.pushFile(req.params.id, { force: !!req.body.force })); }
   catch (e) { res.status(e.status === 422 ? 422 : 502).json({ error: e.message }); }
 });
@@ -404,11 +407,20 @@ router.post('/files/:id/waivers', requirePermission('manage_draws'), async (req,
   const scope = ['progress', 'final'].includes(b.scope) ? b.scope : 'progress';
   const tier = ['gc', 'subcontractor', 'supplier'].includes(b.tier) ? b.tier : 'gc';
   const amt = Math.max(0, Math.round(Number(b.amount_cents) || 0));
+  // if a draw is named, it MUST belong to THIS file — never store a draw id from another file (the lien
+  // gate + packet key on the draw id only, so a foreign draw id would block/leak the other file's draw).
+  let waiverDrawId = null;
+  if (b.sitewire_draw_id != null && b.sitewire_draw_id !== '') {
+    if (!/^\d+$/.test(String(b.sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
+    const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [b.sitewire_draw_id, appId]);
+    if (!own.rowCount) return res.status(400).json({ error: 'that draw is not on this file' });
+    waiverDrawId = b.sitewire_draw_id;
+  }
   try {
     const row = (await db.query(
       `INSERT INTO draw_lien_waivers (application_id, sitewire_draw_id, kind, scope, tier, party_name, amount_cents, status, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,'required',$8,$9) RETURNING *`,
-      [appId, /^\d+$/.test(String(b.sitewire_draw_id)) ? b.sitewire_draw_id : null, kind, scope, tier, b.party_name || null, amt, b.note || null, req.actor.id])).rows[0];
+      [appId, waiverDrawId, kind, scope, tier, b.party_name || null, amt, b.note || null, req.actor.id])).rows[0];
     res.json({ ok: true, waiver: row });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
