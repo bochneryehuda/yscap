@@ -115,6 +115,11 @@ async function expectHttp(status, fn) {
     assert.strictEqual(parseTaskId('  868abc123  '), '868abc123', 'trims whitespace');
     assert.strictEqual(parseTaskId('https://app.clickup.com/t/868abc123'), '868abc123', 'plain /t/ URL');
     assert.strictEqual(parseTaskId('https://app.clickup.com/9006/v/li/x/t/868abc123?foo=1'), '868abc123', 'deep URL + query');
+    // CUSTOM-ID URL: /t/<workspace>/<CUSTOM-ID> → the CUSTOM id, never the
+    // workspace number (owner's real URL shape, FILLE-1911).
+    assert.strictEqual(parseTaskId('https://app.clickup.com/t/9011888435/FILLE-1911'), 'FILLE-1911', 'custom-id URL → custom id, not workspace');
+    assert.strictEqual(parseTaskId('https://app.clickup.com/t/9011888435/FILLE-1911?comment=5'), 'FILLE-1911', 'custom-id URL + query');
+    assert.strictEqual(parseTaskId('FILLE-1911'), 'FILLE-1911', 'bare custom id passes through');
     assert.strictEqual(parseTaskId('868abc123?comment=42'), '868abc123', 'strips trailing query on a bare id');
     assert.strictEqual(parseTaskId(''), '', 'empty → empty');
     assert.strictEqual(parseTaskId(null), '', 'null → empty (no invented id)');
