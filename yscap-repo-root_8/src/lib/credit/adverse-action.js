@@ -34,11 +34,17 @@ const ECOA_NOTICE =
  * confirms; `scoresDisclosed` are the borrower's bureau scores used (FCRA
  * §615(a) disclosure when a score factored into the decision).
  */
-function draftBody({ borrowerName, decision, principalReasons = [], scoresDisclosed = [] }) {
+function draftBody({ borrowerName, decision, principalReasons = [], scoresDisclosed = [], partyRole = 'applicant' }) {
   const lines = [];
   lines.push(`RE: Your recent business-purpose loan request${borrowerName ? ` — ${borrowerName}` : ''}`);
   lines.push('');
   lines.push('DRAFT — for compliance review. Not for delivery until reviewed and approved.');
+  if (partyRole === 'guarantor') {
+    lines.push('');
+    lines.push('⚠ GUARANTOR: This individual signed as a guarantor, not an applicant. Under ECOA/Reg B '
+      + 'and FCRA, an adverse-action notice is generally NOT owed to a guarantor. Confirm with '
+      + 'compliance whether any notice is required before issuing this — it likely is not.');
+  }
   lines.push('');
   const decisionText = decision === 'counteroffer' ? 'we are able to offer credit only on different terms'
     : decision === 'incomplete' ? 'we were unable to complete our evaluation'
@@ -61,7 +67,8 @@ function draftBody({ borrowerName, decision, principalReasons = [], scoresDisclo
  * scores from the credit report if a reportId is given. Returns the new row's id.
  * Never issues/sends — status is always 'draft'.
  */
-async function draftForApplication({ applicationId, borrowerId, creditReportId, decision = 'declined', principalReasons = [], actorId }) {
+async function draftForApplication({ applicationId, borrowerId, creditReportId, decision = 'declined', principalReasons = [], partyRole = 'applicant', actorId }) {
+  const role = ['applicant', 'co_applicant', 'guarantor'].includes(partyRole) ? partyRole : 'applicant';
   let scoresDisclosed = [];
   let name = null;
   if (borrowerId) {
@@ -88,13 +95,13 @@ async function draftForApplication({ applicationId, borrowerId, creditReportId, 
   }
   // A caller-supplied reason set wins; otherwise seed from the bureau factors.
   const reasons = (principalReasons && principalReasons.length) ? principalReasons : suggestedReasons;
-  const body = draftBody({ borrowerName: name, decision, principalReasons: reasons, scoresDisclosed });
+  const body = draftBody({ borrowerName: name, decision, principalReasons: reasons, scoresDisclosed, partyRole: role });
   const ins = await db.query(
     `INSERT INTO adverse_action_letters
-       (application_id, borrower_id, credit_report_id, decision, principal_reasons, scores_disclosed, notice_body, status, created_by)
-     VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,'draft',$8) RETURNING id`,
+       (application_id, borrower_id, credit_report_id, decision, principal_reasons, scores_disclosed, notice_body, party_role, status, created_by)
+     VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,'draft',$9) RETURNING id`,
     [applicationId || null, borrowerId || null, creditReportId || null, decision,
-     JSON.stringify(reasons), JSON.stringify(scoresDisclosed), body, actorId || null]);
+     JSON.stringify(reasons), JSON.stringify(scoresDisclosed), body, role, actorId || null]);
   return ins.rows[0].id;
 }
 

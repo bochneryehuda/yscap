@@ -43,6 +43,17 @@ const BUREAU = {
 
 function httpError(status, msg, extra) { const e = new Error(msg); e.status = status; if (extra) Object.assign(e, extra); return e; }
 
+// Append-only black-box event (observability). Best-effort — a logging failure
+// must NEVER affect the billable operation. No PII / no raw XML / no secret here.
+function logEvent(ev) {
+  db.query(
+    `INSERT INTO credit_order_events (report_id, application_id, correlation_id, actor_id, provider_id, phase, action, outcome, http_status, latency_ms)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [ev.reportId || null, ev.applicationId || null, ev.correlationId || null, ev.actorId || null, ev.providerId || null,
+     ev.phase, ev.action || null, ev.outcome || null, ev.httpStatus || null, ev.latencyMs == null ? null : ev.latencyMs])
+    .catch(() => {});
+}
+
 // ---- in-process circuit breaker (per provider) -----------------------------
 // A run of network/5xx failures (vendor down) trips the breaker so we stop
 // hammering — and, critically, stop placing billable calls that will fail. It
@@ -387,10 +398,13 @@ async function orderAndImport(opts = {}) {
      VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,'ordering',now()) RETURNING id`,
     [applicationId, provider.id, actorId, action, product === 'prequal' ? 'Other' : 'Merge', requestType, requestId, idempotencyKey]);
   const reportRowId = journal.rows[0].id;
+  const evBase = { reportId: reportRowId, applicationId, correlationId: requestId, actorId, providerId: provider.id, action };
+  logEvent({ ...evBase, phase: 'journal' });
 
   breakerCheck(provider.id, clock);
 
   let resp;
+  const postStart = clock;
   try {
     resp = await xactus.orderReport({
       requestXml,
@@ -400,6 +414,7 @@ async function orderAndImport(opts = {}) {
       transport: opts.transport,
     });
     breakerOk(provider.id);
+    logEvent({ ...evBase, phase: 'post', outcome: 'ok', httpStatus: resp.httpStatus, latencyMs: (typeof opts.nowMs === 'number' ? 0 : Date.now() - postStart) });
   } catch (e) {
     // Mark the credential invalid on an auth failure so the officer is told to fix it.
     if (e.kind === 'auth') { try { await credentials.markStatus(actorId, provider.id, 'invalid'); } catch (_) {} }
@@ -420,6 +435,7 @@ async function orderAndImport(opts = {}) {
               completed_at = CASE WHEN $4='in_doubt' THEN NULL ELSE now() END
         WHERE id=$1`,
       [reportRowId, reason, JSON.stringify({ kind: e.kind || 'error', httpStatus: e.httpStatus || null, retriable: !!e.retriable }), finalStatus]);
+    logEvent({ ...evBase, phase: finalStatus, outcome: e.kind || 'error', httpStatus: e.httpStatus, latencyMs: (typeof opts.nowMs === 'number' ? 0 : Date.now() - postStart) });
     throw httpError(e.kind === 'auth' ? 401 : 502, `credit order failed: ${e.message}`,
       { kind: e.kind, retriable: !!e.retriable, inDoubt, reportId: reportRowId });
   }
@@ -431,6 +447,7 @@ async function orderAndImport(opts = {}) {
     await db.query(
       `UPDATE credit_reports SET status='error', review_reason=$2, error_detail=$3::jsonb, xml_encrypted=$4, completed_at=now() WHERE id=$1`,
       [reportRowId, `unreadable credit response: ${e.message}`, JSON.stringify({ parse: true }), crypto.encryptSecret(resp.body)]);
+    logEvent({ ...evBase, phase: 'parse', outcome: 'parse_error' });
     throw httpError(502, `credit response could not be read: ${e.message}`, { reportId: reportRowId });
   }
   const scored = scoreParsed(parsed);
@@ -444,6 +461,7 @@ async function orderAndImport(opts = {}) {
     parsed, scored, assessment, rawXml: resp.body,
     orderMeta: { reportIdentifier: parsed.reportIdentifier, requestType, action, borrowerDbIdByReportId },
   });
+  logEvent({ ...evBase, phase: 'persist', outcome: assessment.decision });
 
   // Push the verified FICO out to ClickUp (owner: locked in ClickUp in/out). A
   // no-op when ClickUp sync is disabled; best-effort — never fails the import.

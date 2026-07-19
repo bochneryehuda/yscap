@@ -126,6 +126,18 @@ async function seedBorrower(email, first) {
   const condStatus = (await db.query(`SELECT status FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appId, credTmpl])).rows[0];
   eq('credit condition -> received on import', condStatus.status, 'received');
 
+  // ---- APPEND-ONLY EVENT LOG: emission + immutability ----
+  await new Promise((r) => setTimeout(r, 300));   // let fire-and-forget events flush
+  const evs = (await db.query(`SELECT phase FROM credit_order_events WHERE report_id=$1 ORDER BY id`, [out.reportId])).rows.map(r => r.phase);
+  ok('events emitted (journal + post + persist)', evs.includes('journal') && evs.includes('post') && evs.includes('persist'));
+  // append-only: UPDATE and DELETE are blocked by the trigger
+  const anyEv = (await db.query(`SELECT id FROM credit_order_events WHERE report_id=$1 LIMIT 1`, [out.reportId])).rows[0];
+  let updBlocked = false, delBlocked = false;
+  try { await db.query(`UPDATE credit_order_events SET phase='hacked' WHERE id=$1`, [anyEv.id]); } catch (_) { updBlocked = true; }
+  try { await db.query(`DELETE FROM credit_order_events WHERE id=$1`, [anyEv.id]); } catch (_) { delBlocked = true; }
+  ok('event log UPDATE blocked', updBlocked);
+  ok('event log DELETE blocked', delBlocked);
+
   // ---- 120-DAY SWEEP: aged report reopens a satisfied condition ----
   const sweep = require('../src/lib/credit/reopen-sweep');
   await db.query(`UPDATE credit_reports SET first_issued_date = current_date - 130 WHERE application_id=$1`, [appId]);

@@ -124,6 +124,8 @@ function transportOf(status, body, ct) {
   ok('aa includes ECOA notice', /Equal Credit Opportunity Act/.test(body));
   ok('aa counteroffer wording', /different terms/.test(aa.draftBody({ decision: 'counteroffer' })));
   ok('aa no-scores omits disclosure', !/Credit scores used/.test(aa.draftBody({ decision: 'declined' })));
+  ok('aa guarantor flags not-owed', /GUARANTOR/.test(aa.draftBody({ decision: 'declined', partyRole: 'guarantor' })));
+  ok('aa applicant no guarantor note', !/GUARANTOR/.test(aa.draftBody({ decision: 'declined', partyRole: 'applicant' })));
 
   console.log(`\ncredit-credentials: ${pass} passed, ${fail} failed`);
   if (fail) process.exit(1);

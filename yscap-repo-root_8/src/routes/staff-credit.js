@@ -170,6 +170,28 @@ router.get('/credit/review-queue', requirePull, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Integration health (see_all_files): in-flight / in-doubt counts + a 24h
+// outcome + latency summary from the append-only event log. Read-only.
+router.get('/credit/health', requirePull, async (req, res) => {
+  if (!can(req.actor, 'see_all_files')) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const [state, outcomes24, latency] = await Promise.all([
+      db.query(`SELECT count(*) FILTER (WHERE status='in_doubt')::int AS in_doubt,
+                       count(*) FILTER (WHERE status='ordering')::int AS ordering,
+                       count(*) FILTER (WHERE status='review')::int AS review,
+                       count(*) FILTER (WHERE status='imported' AND completed_at > now()-interval '24 hours')::int AS imported_24h
+                  FROM credit_reports`),
+      db.query(`SELECT outcome, count(*)::int AS n FROM credit_order_events
+                 WHERE created_at > now()-interval '24 hours' AND phase IN ('post','error','in_doubt','parse')
+                 GROUP BY outcome ORDER BY n DESC`),
+      db.query(`SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50,
+                       percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95
+                  FROM credit_order_events WHERE phase='post' AND latency_ms IS NOT NULL AND created_at > now()-interval '24 hours'`),
+    ]);
+    res.json({ state: state.rows[0], outcomes24h: outcomes24.rows, latencyMs: latency.rows[0] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Serve a report PDF (staff, inline). The PDF is stored staff_only; staff view it here.
 router.get('/credit/reports/:id/pdf', requirePull, async (req, res) => {
   try {
