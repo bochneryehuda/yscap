@@ -55,6 +55,9 @@ async function importAppraisal(db, {
     value_sales_approach: v.valueSalesApproach, value_cost_approach: v.valueCostApproach,
     value_income_approach: v.valueIncomeApproach, grm: v.grm, site_value: v.siteValue,
     contract_price: v.contractPrice, contract_date: v.contractDate,
+    prior_sale_amount: s.priorSale ? s.priorSale.priorAmount : null,
+    prior_sale_date: s.priorSale ? s.priorSale.priorDate : null,
+    has_prior_sale: s.priorSale ? s.priorSale.hasPrior : null,
     subject_address: s.address, subject_city: s.city, subject_county: s.county, subject_state: s.state, subject_zip: s.zip,
     apn: s.apn, legal_description: s.legal, census_tract: s.censusTract, neighborhood: s.neighborhood,
     property_type: s.propertyType, units: s.units, year_built: s.yearBuilt, gla: s.gla,
@@ -79,14 +82,21 @@ async function importAppraisal(db, {
     keys.map((k) => cols[k]));
   const appraisalId = ins.rows[0].id;
 
-  // 3. comparables (real comps; seq-0 subject is excluded by the parser)
+  // 3. comparables (real comps; seq-0 subject is excluded by the parser). Store the full
+  //    sales-grid line each comp carries — settled sale date, GLA, UAD condition/quality,
+  //    days-on-market, $/GLA, and the itemized adjustments — so the review checks (and the
+  //    report grid) have the data. Every field is null when the appraisal didn't carry it.
   if (A.comparables && A.comparables.length) {
     for (const c of A.comparables) {
       await db.query(
         `INSERT INTO appraisal_comparables
-           (appraisal_id, seq, is_subject, address, city, state, zip, proximity, sale_price, adjusted_price, net_adjustment, net_adj_pct, gross_adj_pct)
-         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-        [appraisalId, c.seq, c.address, c.city, c.state, c.zip, c.proximity, c.salePrice, c.adjustedPrice, c.netAdjustment, c.netAdjPct, c.grossAdjPct]);
+           (appraisal_id, seq, is_subject, address, city, state, zip, proximity, sale_price, adjusted_price,
+            gla, sale_date, condition_uad, quality_uad, days_on_market, price_per_gla,
+            net_adjustment, net_adj_pct, gross_adj_pct, adjustments)
+         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+        [appraisalId, c.seq, c.address, c.city, c.state, c.zip, c.proximity, c.salePrice, c.adjustedPrice,
+         c.gla, c.saleDate, c.conditionUad, c.qualityUad, c.dom == null ? null : String(c.dom), c.pricePerGla,
+         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || [])]);
     }
   }
 
