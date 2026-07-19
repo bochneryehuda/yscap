@@ -249,7 +249,7 @@
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost;      // fees admin-overridable; appraisal is POC (excluded)
-    var excessOOP = s.assignmentExcessOOP || 0;
+    var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = (s.downPayment || 0) + excessOOP + closing;   // reserve is never brought to the table
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
     var liquidity = cashToClose + reserves;
@@ -307,7 +307,7 @@
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var closing = origFee + lenderFee + creditFee + titleCost;
-    var excessOOP = s.assignmentExcessOOP || 0;
+    var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = (s.downPayment || 0) + excessOOP + closing;
     var goldReservePct = R.liquidityPct || 0.05;
     var goldReserve = totalLoan * goldReservePct;            // Gold reserve = 5% of the loan, shown ON TOP of cash to close
@@ -870,6 +870,12 @@
       ["Estimated FICO", num("fico") ? String(num("fico")) : EM],
       ["Experience (flips / holds / ground-up)", num("expFlips") + " / " + num("expBrrrr") + " / " + num("expGround")]
     ];
+    if (d.asg && (d.asg.overLimit || d.asg.overridden)) {
+      costs.splice(1, 0,
+        ["Assignment \u2014 seller's contract price", money(d.asg.sellerPrice)],
+        ["Assignment fee", money(d.asg.fee)],
+        ["Effective purchase price (used for all sizing)", money(d.asg.recognizedPrice)]);
+    }
     var stdExit = d.exitShortfall > 0, stdCity = !!d.cityReview, stdOk = !stdExit && !stdCity && d.pricingReady && d.status !== "INELIGIBLE" && d.totalLoan > 0;
     var std = [
       ["Status", statusLabel(d.status)],
@@ -1086,7 +1092,7 @@
       yL = cardHead(xL, colW, "Loan structure", yL);
       yL = rowIn(xL, colW, isRefi() ? "As-is value" : "Purchase price", money(isRefi() ? d.basisPrice : (num("price") || d.basisPrice)), yL);
       if (!isRefi() && isAssign()) yL = rowIn(xL, colW, "Seller price / assignment fee", money(num("origPrice")) + " / " + money(Math.max(0, num("price") - num("origPrice"))), yL);
-      if (!isRefi() && isAssign() && d.asg && d.asg.overLimit) yL = rowIn(xL, colW, "Effective purchase price (fee capped at 15%)", money(d.asg.recognizedPrice), yL);
+      if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) yL = rowIn(xL, colW, "Effective purchase price " + (d.asg.overridden ? "(admin exception)" : "(fee capped at 15%)"), money(d.asg.recognizedPrice), yL);
       if (!isBridge) {
         yL = rowIn(xL, colW, "Construction / rehab budget", money(d.constr), yL);
         if (d.financedIR > 0) { var finMo = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (d.irMonths || 0); yL = rowIn(xL, colW, "Financed interest reserve (" + finMo + " mo)", money(d.financedIR), yL); }
@@ -1556,7 +1562,7 @@
     ]);
 
     var propRow = chk("addrTBD") ? "To be determined" : ((val("propAddr") || "\u2014") + (val("propState") ? "" : ""));
-    var assignOn = !!d.asg || chk("isAssignment") || num("origPrice") > 0;
+    var assignOn = !!d.asg;   // only what actually priced (audit #48)
     section("Property & project (as entered)", [
       ["Property", propRow],
       ["State", val("propState") || inp.state || "\u2014"],
@@ -1581,7 +1587,7 @@
       derivRows.push(["Basis (as-is value)", money(d.basisPrice)]);
       derivRows.push(["Loan advanced", money(d.totalLoan), "tot"]);
     } else {
-      derivRows.push(["Cost basis \u2014 lower of " + ((d.asg && d.asg.overLimit) ? "effective purchase price" : "price") + " / as-is", money(d.basisPrice)]);
+      derivRows.push(["Cost basis \u2014 " + ((d.asg && (d.asg.overLimit || d.asg.overridden)) ? "effective purchase price" : "price / as-is basis"), money(d.basisPrice)]);
       derivRows.push(["Initial advance at closing", money(d.initialAdvance)]);
       derivRows.push(["= " + pc(d.ltvPct) + " of as-is value (initial LTV)", "", "sub"]);
       if (d.rehabHoldback > 0) derivRows.push(["Construction holdback \u2014 " + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "capped below the budget" : "100% of budget"), money(d.rehabHoldback)]);
