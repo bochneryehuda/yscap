@@ -28,12 +28,13 @@ function monthsAgo(dateStr, nowMs) {
 }
 const money = (n) => `$${Math.round(n).toLocaleString('en-US')}`;
 
-function summarizeRisk(blocks = {}, opts = {}) {
+function summarizeRisk(blocks, opts = {}) {
+  const b = blocks || {};
   const nowMs = opts.nowMs != null ? opts.nowMs : Date.now();
-  const tradelines = Array.isArray(blocks.tradelines) ? blocks.tradelines : [];
-  const collections = Array.isArray(blocks.collections) ? blocks.collections : [];
-  const inquiries = Array.isArray(blocks.inquiries) ? blocks.inquiries : [];
-  const publicRecords = Array.isArray(blocks.publicRecords) ? blocks.publicRecords : [];
+  const tradelines = Array.isArray(b.tradelines) ? b.tradelines : [];
+  const collections = Array.isArray(b.collections) ? b.collections : [];
+  const inquiries = Array.isArray(b.inquiries) ? b.inquiries : [];
+  const publicRecords = Array.isArray(b.publicRecords) ? b.publicRecords : [];
 
   // The borrower's OWN debt excludes authorized-user tradelines (not their debt).
   const own = tradelines.filter((t) => !t.is_authorized_user);
@@ -41,9 +42,17 @@ function summarizeRisk(blocks = {}, opts = {}) {
   let totalBalance = 0, revBalance = 0, revLimit = 0, late30 = 0, late60 = 0, late90 = 0, derog = 0, openCount = 0;
   for (const t of own) {
     const bal = numOr0(t.unpaid_balance);
-    totalBalance += bal;
+    // Collection tradelines are surfaced separately as collectionsTotal — keep
+    // them OUT of the standard balance so it isn't double-counted.
+    if (!t.is_collection) totalBalance += bal;
     if (!isClosed(t)) openCount++;
-    if (isRevolving(t)) { revBalance += bal; revLimit += numOr0(t.credit_limit); }
+    if (isRevolving(t)) {
+      // Utilization needs a real limit: fall back to the high-credit high-water
+      // mark, and SKIP a revolving line with no limit entirely so a single
+      // limitless line can't inflate (or pollute) the ratio.
+      const lim = numOr0(t.credit_limit) || numOr0(t.high_credit);
+      if (lim > 0) { revBalance += bal; revLimit += lim; }
+    }
     late30 += numOr0(t.late_30_count);
     late60 += numOr0(t.late_60_count);
     late90 += numOr0(t.late_90_count);

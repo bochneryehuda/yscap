@@ -64,7 +64,9 @@ function RiskSummary({ s }) {
       {s.flags && s.flags.length > 0 && (
         <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
           {s.flags.map((f) => (
-            <span key={f.key} className="tchip" style={{ borderColor: `var(--${flagTone(f.severity)})` }}>{f.label}</span>
+            // Explicit border (the .tchip class has no border-style, so a bare
+            // borderColor paints nothing) so the severity colour is actually shown.
+            <span key={f.key} style={{ display: 'inline-block', border: `1px solid var(--${flagTone(f.severity)})`, color: `var(--${flagTone(f.severity)})`, borderRadius: 6, padding: '2px 8px', fontSize: 12 }}>{f.label}</span>
           ))}
         </div>
       )}
