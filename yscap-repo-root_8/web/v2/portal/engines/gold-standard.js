@@ -107,7 +107,11 @@
     // purchase price or as-is value; plus ADU, GLA expansion > 250 sqft, change of use, or
     // modification/removal of load-bearing structures.
     var pp = num(input.purchasePrice), aiv = num(input.asIsValue), rehab = num(input.rehabBudget);
-    var basis = Math.min(pp > 0 ? pp : Infinity, aiv > 0 ? aiv : Infinity);
+    // Refinances have no purchase price in the deal — classify Heavy off the as-is
+    // value alone (mirrors standard-program.js heavyBasis); purchases use min(price, as-is).
+    var basis = (up(input.loanType) === "REFINANCE")
+      ? (aiv > 0 ? aiv : (pp > 0 ? pp : Infinity))
+      : Math.min(pp > 0 ? pp : Infinity, aiv > 0 ? aiv : Infinity);
     if (basis < Infinity && basis > 0 && rehab >= 0.50 * basis) return true;
     if (input.sqftAddition || input.aduAddition || input.changeOfUse || input.loadBearing) return true;
     return input.heavyRehab === true;   // otherwise honor an explicit escalation to Heavy; default Light
@@ -364,14 +368,17 @@
     // ---- min / max loan → manual review ----
     var loanAmt = sizing.totalLoan || 0;
     if (loanAmt > 0 && loanAmt < MIN_LOAN) add("MANUAL", "The supported loan of " + dollars(loanAmt) + " is below the $100,000 minimum — submit for manual review.");
-    if (loanAmt > MAX_LOAN) add("MANUAL", "The supported loan exceeds the $3,000,000 maximum — submit for manual review.");
+    // Flag off the PRE-CAP demand: sizeLoan already caps the total at $3M, so the
+    // supported loan never exceeds it — the leverage-supported amount before the
+    // dollar ceiling is what tells us the borrower's demand blew past the max.
+    if ((sizing.preMaxTotal || loanAmt) > MAX_LOAN + 0.5) add("MANUAL", "The supported loan exceeds the $3,000,000 maximum — submit for manual review.");
     // rehab/construction budget larger than the program can finance (total capped at the max/ARV wall)
     if (sizing.rehabOverCap) add("MANUAL", "The rehab/construction budget exceeds what this program can finance — the loan is capped at " + dollars(sizing.totalLoan) + ", so the remaining budget would be funded out of pocket. Reduce the scope or use a larger facility.");
 
     // ---- loan profitability: for any loan with a renovation or construction component,
     //      if total project costs exceed the ARV the loan is INELIGIBLE for purchase. Bridge is exempt
     //      (acquisition-only, no rehab / ARV component).
-    var exitGap = (pr.kind === "bridge") ? 0 : YSP.exitShortfall(effPurchase, num(input.rehabBudget), input.arv);
+    var exitGap = (pr.kind === "bridge") ? 0 : YSP.exitShortfall(loanType === "Purchase" ? effPurchase : num(input.asIsValue), num(input.rehabBudget), input.arv);
     if (exitGap > 0) add("INELIGIBLE", "Total project costs exceed the after-repair value (short by " + dollars(exitGap) + ") — the business plan isn't profitable, so this loan is ineligible for purchase.");
 
     // ---- escalation triggers (Gold Standard Program): deal stays ELIGIBLE, but flagged for review ----

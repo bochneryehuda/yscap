@@ -66,6 +66,31 @@ function engineStrategy(s) {
   return clean(s);
 }
 
+// Normalize a stored property-type label to the exact tokens the frozen engines'
+// ineligible-property list matches on. The engines match by EXACT string equality,
+// so portal labels like "Multi 5+" / "Mixed Use" would otherwise never match their
+// ineligible entries ("multifamily 5+" / "mixed-use") and a 5+/mixed-use building
+// would price as an eligible 1-4 unit deal (audit findings #5/#6, 2026-07-17).
+// Eligible types (SFR / 2-4 / condo / townhouse / PUD) pass through unchanged.
+function normPropertyType(v) {
+  const x = clean(v).toLowerCase();
+  if (!x) return clean(v);
+  if (/(^|[^0-9])5\s*\+|5\+\s*unit|multifamily\s*5|multi\s*5|5\s*or\s*more/.test(x)) return 'multifamily 5+';
+  if (/mixed[\s-]*use/.test(x)) return 'mixed-use';
+  if (/\bco[\s-]*op\b|cooperative/.test(x)) return 'co-op';
+  if (/mobile\s*home/.test(x)) return 'mobile home';
+  if (/manufactured/.test(x)) return 'manufactured';
+  if (/commercial/.test(x)) return 'commercial';
+  return clean(v);
+}
+// Is a normalized property type one the engines will (correctly) declare ineligible?
+const ENGINE_INELIGIBLE_PROPERTY = ['co-op', 'cooperative', 'mobile home', 'manufactured',
+  'mixed-use', 'mixed use', 'commercial', 'rural', 'agricultural', 'bed and breakfast',
+  'boarding house', 'half-way house', 'care facility', 'condemned', 'multifamily 5+', '5+ units'];
+function isIneligiblePropertyType(v) {
+  return ENGINE_INELIGIBLE_PROPERTY.indexOf(normPropertyType(v)) > -1;
+}
+
 // Refinance if the loan type mentions refi; cash-out if it says so.
 function loanTypeOf(app) {
   const lt = clean(app.loan_type).toLowerCase();
@@ -100,7 +125,7 @@ function buildInputs(app, experience, overrides) {
     state: clean(addr.state).toUpperCase(),
     city: clean(addr.city),
     address: clean(addr.line1 || addr.address || ''),
-    propertyType: clean(app.property_type),
+    propertyType: normPropertyType(app.property_type),
     units: num(app.units) || 0,
     purchasePrice: totalPrice,
     sellerPrice,
@@ -165,6 +190,14 @@ function buildInputs(app, experience, overrides) {
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
+  out.propertyType = normPropertyType(out.propertyType);   // override labels get normalized too
+  // The studio's property-type control only expresses "SFR (1 unit)" / "2-4 units",
+  // so it can never represent a 5+/mixed-use/commercial building. If the FILE's real
+  // recorded type is engine-ineligible, never let a studio-collapsed override launder
+  // it into an eligible 1-4 type — the real ineligible type wins (findings #5/#6).
+  if (isIneligiblePropertyType(app.property_type) && !isIneligiblePropertyType(out.propertyType)) {
+    out.propertyType = normPropertyType(app.property_type);
+  }
   if (out.manualPricing) {
     out.forcePrice = true;
     if (Object.prototype.hasOwnProperty.call(out, 'ovrAcqLTVPct')) out.ovrAcqLTV = num(out.ovrAcqLTVPct) / 100;

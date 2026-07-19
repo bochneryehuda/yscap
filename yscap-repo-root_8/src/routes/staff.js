@@ -1585,7 +1585,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
-    if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
+    // Gold renovation finances NO interest reserve — zero BOTH request forms so a
+    // leftover amount can't silently finance a reserve if the file later moves to the
+    // Standard program, and the registered scenario never carries a phantom request
+    // (audit findings #14/#34/#40/#49, 2026-07-17).
+    if (program === 'gold' && quote.kind === 'reno') { inputs.irMonths = 0; inputs.irAmount = 0; }
     if (quote.status === 'INELIGIBLE' && !overrides.forcePrice) {
       return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote }, 'ineligible', { program });
     }

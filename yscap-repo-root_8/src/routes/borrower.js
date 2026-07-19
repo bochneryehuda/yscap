@@ -672,7 +672,9 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
-    if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
+    // Gold renovation finances NO interest reserve — zero BOTH request forms (see the
+    // matching note in staff.js; audit findings #14/#34/#40/#49, 2026-07-17).
+    if (program === 'gold' && quote.kind === 'reno') { inputs.irMonths = 0; inputs.irAmount = 0; }
     if (quote.status === 'INELIGIBLE') return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote: stripQuoteInternal(quote) }, 'ineligible', { program });
     const total = quote.sizing ? quote.sizing.totalLoan : 0;
     if (!(total > 0)) return refuse(422, { error: 'no loan sized', quote: stripQuoteInternal(quote) }, 'no_loan_sized', { program });
