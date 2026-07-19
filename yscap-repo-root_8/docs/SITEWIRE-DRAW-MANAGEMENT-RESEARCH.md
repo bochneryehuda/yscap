@@ -584,12 +584,20 @@ policy → lender final approval → revised amounts flow back (Built/Land Goril
 - On draw reconcile, for each `request` pull `requested_cents`, `approved_cents`, `not_approved =
   requested − approved`, `lender_comments`/`inspector_comments` (**why** not approved), and
   `inspections[]` photos (geo + timestamp + thumbnail). Roll up to our SOW lines via the crosswalk.
+- **CAPABILITY VERIFIED LIVE (draw 107399, 546 S 20th St):** every finding is retrievable via
+  `GET /requests/{id}` — **64 photos + 9 videos** (each with `media.src`, `thumbnail`, latitude/
+  longitude, `captured_at`), **inspector notes on 15 of 19 lines**, and exact per-line
+  requested/approved/not-approved (e.g. Vinyl req $6,000→appr $0; HVAC-Duct $1,900→$1,400; Plumbing
+  Other $5,000→$2,000 with both inspector AND lender notes). Nothing needed is missing from the API.
 - **Deliver to borrower + LO + draw coordinator**: a portal **findings screen** and a **findings
   email** (new `catalog.js` builder, registered in `builders`; new `notify` type in `CATEGORY_OF`;
   routed through `notifyBorrower` so capital-partner names are scrubbed) with full per-line detail +
   photos, `Reply-To: fileReplyTo(appId)`.
 
 ### 14.2 Borrower ACCEPT
+- **The borrower NEVER approves in the Sitewire portal.** The go-ahead is captured in **PILOT** — a
+  portal button OR an email reply — and it means "borrower authorizes OUR team to proceed with
+  funding." It is stored + audited in our system; it is not a Sitewire write.
 - **Portal button** OR **email reply** (parsed by `topReply` in the reused `inbound-file-email.js` /
   `file-inbox.js` path — a `findings+<token>@domain` family mirroring `chatKeyFromRecipients`; the
   reply also routes to LO + draw coordinator via `forwardToAssignees`). Accept → findings
