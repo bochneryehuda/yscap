@@ -284,6 +284,16 @@ module.exports = {
     // Off by default so saving a credential never accidentally bills; flip on
     // once the endpoint is live.
     verifyOnSave:        process.env.XACTUS_VERIFY_ON_SAVE === '1',
+    // Spend/volume circuit breaker — cap BILLABLE pulls in a rolling 10-min window
+    // so a runaway loop / double-submit / compromised login can't rack up charges.
+    maxPulls10minUser:   parseInt(process.env.CREDIT_MAX_PULLS_10MIN_USER || '15', 10),
+    maxPulls10minGlobal: parseInt(process.env.CREDIT_MAX_PULLS_10MIN_GLOBAL || '60', 10),
+    // Collapse a double-click into one order: a second order for the same file +
+    // action within this window returns the in-flight one instead of re-billing.
+    dedupWindowSec:      parseInt(process.env.CREDIT_DEDUP_WINDOW_SEC || '30', 10),
+    // An 'ordering' row older than this (crash between journal and completion) is
+    // swept to 'in_doubt' for reconciliation rather than blocking forever.
+    staleOrderMinutes:   parseInt(process.env.CREDIT_STALE_ORDER_MIN || '15', 10),
     // Optional platform-level fallback login (single-login deployments only).
     username:            process.env.XACTUS_USERNAME,
     password:            process.env.XACTUS_PASSWORD,

@@ -54,14 +54,37 @@ async function sweepAgedCreditConditions({ days = REOPEN_DAYS } = {}) {
   return { reopenedItems: rows.length, reopenedApplications: apps.size };
 }
 
-// Daily scheduler (started from server.js). Runs once shortly after boot, then
-// every 24h. .unref() so it never keeps the process alive on its own.
-function startSweep({ intervalMs = 24 * 60 * 60 * 1000, firstDelayMs = 30000 } = {}) {
-  const run = () => sweepAgedCreditConditions()
-    .then((r) => { if (r.reopenedItems) console.log(`[credit] reopened ${r.reopenedItems} aged credit condition(s) on ${r.reopenedApplications} file(s)`); })
-    .catch((e) => console.error('[credit] reopen sweep failed:', e.message));
-  setTimeout(run, firstDelayMs).unref();
-  return setInterval(run, intervalMs).unref();
+// A crash between the pre-POST journal INSERT and completion leaves a row stuck
+// in 'ordering' forever. Sweep any 'ordering' row older than `minutes` to
+// 'in_doubt' (an UNKNOWN outcome — the vendor may have billed) so it surfaces for
+// reconciliation instead of blocking or being silently lost. Never re-orders.
+async function sweepStaleOrders({ minutes } = {}) {
+  const m = Number.isFinite(minutes) ? Math.max(1, Math.floor(minutes))
+    : (require('../../config').xactus.staleOrderMinutes || 15);
+  const { rows } = await db.query(
+    `UPDATE credit_reports
+        SET status='in_doubt',
+            review_reason = COALESCE(review_reason, 'order never completed (process crash?) — verify in Xactus before re-ordering')
+      WHERE status='ordering' AND ordered_at < now() - ($1 || ' minutes')::interval
+      RETURNING id`, [String(m)]);
+  return { swept: rows.length };
 }
 
-module.exports = { sweepAgedCreditConditions, startSweep, REOPEN_DAYS, AGED_REOPEN_CODES };
+// Daily scheduler (started from server.js). Runs once shortly after boot, then
+// every 24h. .unref() so it never keeps the process alive on its own. Also runs
+// the stale-order sweep on a tighter cadence (in-flight orders age in minutes).
+function startSweep({ intervalMs = 24 * 60 * 60 * 1000, firstDelayMs = 30000, staleIntervalMs = 10 * 60 * 1000 } = {}) {
+  const runDaily = () => sweepAgedCreditConditions()
+    .then((r) => { if (r.reopenedItems) console.log(`[credit] reopened ${r.reopenedItems} aged credit condition(s) on ${r.reopenedApplications} file(s)`); })
+    .catch((e) => console.error('[credit] reopen sweep failed:', e.message));
+  const runStale = () => sweepStaleOrders()
+    .then((r) => { if (r.swept) console.log(`[credit] swept ${r.swept} stale in-flight order(s) to in_doubt`); })
+    .catch((e) => console.error('[credit] stale-order sweep failed:', e.message));
+  setTimeout(runDaily, firstDelayMs).unref();
+  setTimeout(runStale, firstDelayMs).unref();
+  const t1 = setInterval(runDaily, intervalMs).unref();
+  setInterval(runStale, staleIntervalMs).unref();
+  return t1;
+}
+
+module.exports = { sweepAgedCreditConditions, sweepStaleOrders, startSweep, REOPEN_DAYS, AGED_REOPEN_CODES };

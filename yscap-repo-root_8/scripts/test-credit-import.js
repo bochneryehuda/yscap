@@ -172,14 +172,62 @@ async function seedBorrower(email, first) {
   ok('review left borrower unlocked', b2After.fico_locked === false);
   eq('review left verified_fico null', b2After.verified_fico, null);
 
+  // ---- RESILIENCE: in_doubt on timeout, no idempotency poison, dedup, breaker ----
+  const b3 = await seedBorrower(`b3-${suffix}@t.test`, 'Nickie');
+  const app3 = (await db.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [b3])).rows[0].id;
+  // A transport that times out (AbortError) → the order is UNKNOWN, not error.
+  const abortTransport = async () => { const e = new Error('aborted'); e.name = 'AbortError'; throw e; };
+  let inDoubtThrew = false, inDoubtFlag = false;
+  try {
+    await creditImport.orderAndImport({ applicationId: app3, actorId, action: 'Reissue', creditReportIdentifier: 'RPT1',
+      idempotencyKey: `k-${suffix}-doubt`, nowMs: 4000, transport: abortTransport });
+  } catch (e) { inDoubtThrew = true; inDoubtFlag = !!e.inDoubt; }
+  ok('timeout throws', inDoubtThrew);
+  ok('timeout flagged inDoubt', inDoubtFlag);
+  const doubtRow = (await db.query(`SELECT status, completed_at FROM credit_reports WHERE application_id=$1 ORDER BY ordered_at DESC LIMIT 1`, [app3])).rows[0];
+  eq('timeout row -> in_doubt (not error)', doubtRow.status, 'in_doubt');
+  ok('in_doubt has no completed_at', doubtRow.completed_at === null);
+  // NO POISON: a FRESH key re-orders and succeeds despite the prior in_doubt.
+  const retry = await creditImport.orderAndImport({ applicationId: app3, actorId, action: 'Reissue', creditReportIdentifier: 'RPT1',
+    idempotencyKey: `k-${suffix}-doubt2`, nowMs: 5000, transport: transportOf(responseXml()) });
+  eq('fresh-key retry imports (no poison)', retry.status, 'imported');
+  // in_doubt surfaces in the review queue set (status IN review,in_doubt)
+  const inQueue = (await db.query(`SELECT count(*)::int n FROM credit_reports WHERE application_id=$1 AND status IN ('review','in_doubt')`, [app3])).rows[0];
+  ok('in_doubt visible to review queue', inQueue.n >= 1);
+
+  // IN-FLIGHT DEDUP: an existing 'ordering' row for the same app+action collapses
+  // a second order (fresh key) instead of double-billing.
+  await db.query(`INSERT INTO credit_reports (application_id, provider_id, ordered_by, action_type, status, ordered_at) VALUES ($1,$2,$3,'Reissue','ordering',now())`, [app3, provider.id, actorId]);
+  const dedupOut = await creditImport.orderAndImport({ applicationId: app3, actorId, action: 'Reissue', creditReportIdentifier: 'RPT1',
+    idempotencyKey: `k-${suffix}-dedup`, nowMs: 6000, transport: transportOf('<SHOULD_NOT_CALL/>') });
+  ok('in-flight dedup returns ordering', dedupOut.deduped === true && dedupOut.inflight === true);
+
+  // STALE-ORDER SWEEP: an old 'ordering' row → in_doubt.
+  await db.query(`UPDATE credit_reports SET ordered_at = now() - interval '30 minutes' WHERE application_id=$1 AND status='ordering'`, [app3]);
+  const staleOut = await require('../src/lib/credit/reopen-sweep').sweepStaleOrders({ minutes: 15 });
+  ok('stale-order sweep moved >=1', staleOut.swept >= 1);
+
+  // SPEND BREAKER: fake enough recent orders for this user to trip the 10-min cap.
+  const cap = require('../src/config').xactus.maxPulls10minUser;
+  for (let i = 0; i < cap + 1; i++) {
+    await db.query(`INSERT INTO credit_reports (application_id, provider_id, ordered_by, action_type, status, ordered_at) VALUES ($1,$2,$3,'Reissue','error',now())`, [app3, provider.id, actorId]);
+  }
+  let breakerThrew = false, breakerKind = null;
+  try {
+    await creditImport.orderAndImport({ applicationId: app3, actorId, action: 'Submit',
+      idempotencyKey: `k-${suffix}-spend`, nowMs: 7000, transport: transportOf(responseXml()) });
+  } catch (e) { breakerThrew = true; breakerKind = e.kind; }
+  ok('spend breaker throws', breakerThrew);
+  eq('spend breaker kind', breakerKind, 'spend_limit_user');
+
   // cleanup
-  await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1)`, [[appId, app2]]);
-  await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id = ANY($1))`, [[appId, app2]]);
-  await db.query(`DELETE FROM credit_reports WHERE application_id = ANY($1)`, [[appId, app2]]);
-  await db.query(`DELETE FROM documents WHERE application_id = ANY($1)`, [[appId, app2]]);
-  await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[appId, app2]]);
-  await db.query(`DELETE FROM credit_fico_audit WHERE borrower_id = ANY($1)`, [[bId, b2, co2]]);
-  await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bId, b2, co2]]);
+  await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1)`, [[appId, app2, app3]]);
+  await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id = ANY($1))`, [[appId, app2, app3]]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id = ANY($1)`, [[appId, app2, app3]]);
+  await db.query(`DELETE FROM documents WHERE application_id = ANY($1)`, [[appId, app2, app3]]);
+  await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[appId, app2, app3]]);
+  await db.query(`DELETE FROM credit_fico_audit WHERE borrower_id = ANY($1)`, [[bId, b2, co2, b3]]);
+  await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bId, b2, co2, b3]]);
   await db.query(`DELETE FROM user_credit_credentials WHERE user_id=$1`, [actorId]);
   await db.query(`DELETE FROM staff_users WHERE id=$1`, [actorId]);
 

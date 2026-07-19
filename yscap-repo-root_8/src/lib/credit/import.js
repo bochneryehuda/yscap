@@ -325,23 +325,49 @@ async function orderAndImport(opts = {}) {
   if (!provider) throw httpError(400, 'no credit provider is configured');
   if (!provider.enabled) throw httpError(400, `${provider.displayName} is not enabled`);
 
-  // Idempotency: a reused key returns the prior outcome, never a second order.
+  // Idempotency REPLAY: a reused key replays only a COMPLETED outcome, never a
+  // transient failure. Replaying an 'error'/'in_doubt' as a terminal answer would
+  // poison a legitimate retry; those return their real state (no re-bill), and a
+  // fresh key (per click) re-orders cleanly.
   const prior = (await db.query(
     `SELECT id, status, representative_score, representative_bracket, review_reason
        FROM credit_reports WHERE idempotency_key=$1`, [idempotencyKey])).rows[0];
   if (prior) {
     if (prior.status === 'ordering') throw httpError(409, 'an order with this key is already in progress');
-    return { reportId: prior.id, status: prior.status, representativeScore: prior.representative_score,
-      representativeBracket: prior.representative_bracket, reviewReason: prior.review_reason, deduped: true };
+    if (prior.status === 'imported' || prior.status === 'review') {
+      return { reportId: prior.id, status: prior.status, representativeScore: prior.representative_score,
+        representativeBracket: prior.representative_bracket, reviewReason: prior.review_reason, deduped: true };
+    }
+    return { reportId: prior.id, status: prior.status, reviewReason: prior.review_reason, deduped: true };
+  }
+
+  const product = opts.product || 'prequal';
+  const action = opts.action || 'Reissue';
+
+  // In-flight dedup window: a double-click that DIDN'T reuse the key must not place
+  // two billable orders for the same file + action. Return the in-flight one.
+  const inflight = (await db.query(
+    `SELECT id FROM credit_reports
+      WHERE application_id=$1 AND action_type=$2 AND status='ordering'
+        AND ordered_at > now() - ($3 || ' seconds')::interval
+      ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(cfg.xactus.dedupWindowSec)])).rows[0];
+  if (inflight) return { reportId: inflight.id, status: 'ordering', deduped: true, inflight: true };
+
+  // Spend/volume circuit breaker (billable-path guard) — cap pulls per 10 min.
+  const spend = (await db.query(
+    `SELECT count(*) FILTER (WHERE ordered_by=$1)::int AS mine, count(*)::int AS total
+       FROM credit_reports WHERE ordered_at > now() - interval '10 minutes'`, [actorId])).rows[0];
+  if (spend.mine >= cfg.xactus.maxPulls10minUser) {
+    throw httpError(429, `credit pull limit reached (${cfg.xactus.maxPulls10minUser} in 10 min) — pause and check for a stuck loop before retrying`, { kind: 'spend_limit_user' });
+  }
+  if (spend.total >= cfg.xactus.maxPulls10minGlobal) {
+    throw httpError(429, 'company-wide credit pull limit reached for the moment — please retry shortly', { kind: 'spend_limit_global' });
   }
 
   const credential = await credentials.getUsable(actorId, provider.id);
   if (!credential) throw httpError(400, `set up your ${provider.displayName} login before pulling credit`);
 
   const { app, requestBorrowers } = await loadOrderBorrowers(applicationId);
-
-  const product = opts.product || 'prequal';
-  const action = opts.action || 'Reissue';
   const requestId = `ys-${applicationId}-${idempotencyKey}`.slice(0, 80);
   const requestType = requestBorrowers.length > 1 ? 'Joint' : 'Individual';
 
@@ -381,11 +407,24 @@ async function orderAndImport(opts = {}) {
     // Mark the credential invalid on an auth failure so the officer is told to fix it.
     if (e.kind === 'auth') { try { await credentials.markStatus(actorId, provider.id, 'invalid'); } catch (_) {} }
     if (e.retriable) breakerFail(provider.id, clock);
-    // Record the failed order (never delete/reuse the journal row silently).
+    // A timeout/network failure is an UNKNOWN OUTCOME, not an error: the vendor may
+    // have generated and BILLED the report. Mark it 'in_doubt' (completed_at stays
+    // NULL) so it goes to reconciliation, NOT 'error' (which reads as "nothing
+    // happened" and would invite a blind, double-billing re-order). Only a real
+    // HTTP 4xx / auth / parse failure — where the vendor definitively did not
+    // produce a billable report — is a terminal 'error'.
+    const inDoubt = e.kind === 'timeout' || e.kind === 'network' || e.kind === 'http' && e.httpStatus >= 500;
+    const finalStatus = inDoubt ? 'in_doubt' : 'error';
+    const reason = inDoubt
+      ? `unknown outcome (${e.kind}) — the vendor may have processed and billed this. Verify in Xactus before re-ordering.`
+      : `order failed: ${e.message}`;
     await db.query(
-      `UPDATE credit_reports SET status='error', review_reason=$2, error_detail=$3::jsonb, completed_at=now() WHERE id=$1`,
-      [reportRowId, `order failed: ${e.message}`, JSON.stringify({ kind: e.kind || 'error', httpStatus: e.httpStatus || null, retriable: !!e.retriable })]);
-    throw httpError(e.kind === 'auth' ? 401 : 502, `credit order failed: ${e.message}`, { kind: e.kind, retriable: !!e.retriable, reportId: reportRowId });
+      `UPDATE credit_reports SET status=$4, review_reason=$2, error_detail=$3::jsonb,
+              completed_at = CASE WHEN $4='in_doubt' THEN NULL ELSE now() END
+        WHERE id=$1`,
+      [reportRowId, reason, JSON.stringify({ kind: e.kind || 'error', httpStatus: e.httpStatus || null, retriable: !!e.retriable }), finalStatus]);
+    throw httpError(e.kind === 'auth' ? 401 : 502, `credit order failed: ${e.message}`,
+      { kind: e.kind, retriable: !!e.retriable, inDoubt, reportId: reportRowId });
   }
 
   // Parse + score + assess.

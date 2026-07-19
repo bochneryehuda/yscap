@@ -96,18 +96,28 @@ export default function CreditReportPanel({ appId }) {
     if (action === 'Reissue' && !reissueId.trim()) { setErr('A reissue needs the prior credit report identifier.'); return; }
     setBusy(true);
     try {
+      // A fresh key per click so a deliberate retry is a new order, while a
+      // double-fire of THIS click reuses the key (server also has an in-flight
+      // window). crypto.randomUUID is available in the portal's secure context.
+      const idempotencyKey = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID() : `k-${appId}-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
       const out = await api.creditOrder({
         applicationId: appId, product, action,
         creditReportIdentifier: action === 'Reissue' ? reissueId.trim() : undefined,
+        idempotencyKey,
       });
       setMsg(out.deduped
-        ? 'That order was already placed — showing the existing report.'
+        ? (out.inflight ? 'An order is already in progress — showing it.' : 'That order was already placed — showing the existing report.')
         : out.status === 'review'
           ? `Imported, but it needs manual review: ${out.reviewReason || ''}`
           : `Done — representative FICO ${out.representativeScore ?? 'n/a'} (${out.representativeBracket || '—'}).`);
       await load();
     } catch (e) {
-      setErr(e.message + (e.data && e.data.retriable ? ' (safe to retry a reissue)' : ''));
+      // An in-doubt (timeout) outcome must NOT invite a blind re-order.
+      const extra = e.data && e.data.inDoubt
+        ? ' — the vendor may have processed this; check Xactus before re-ordering (it may already be in the review queue).'
+        : (e.data && e.data.retriable ? ' (safe to retry a reissue)' : '');
+      setErr(e.message + extra);
     } finally { setBusy(false); }
   }
 

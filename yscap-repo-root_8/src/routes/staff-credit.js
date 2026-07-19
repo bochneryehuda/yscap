@@ -110,7 +110,11 @@ router.post('/credit/order', requirePull, async (req, res) => {
       repositories: b.repositories,
       providerKey: b.providerKey,
       providerId: b.providerId,
-      idempotencyKey: b.idempotencyKey || `${b.applicationId}:${b.action || 'Reissue'}:${b.creditReportIdentifier || 'new'}`,
+      // A fresh key per click (client sends one; else random) so a legitimate
+      // retry is a NEW intent — never a deterministic key that replays a prior
+      // failure forever. Same-click double-fires reuse the client key + the
+      // in-flight window collapses them.
+      idempotencyKey: (b.idempotencyKey && String(b.idempotencyKey).trim()) || require('crypto').randomUUID(),
     });
     await audit(req, 'credit_order', { applicationId: b.applicationId, reportId: out.reportId, status: out.status,
       representativeScore: out.representativeScore, froze: out.froze, deduped: !!out.deduped });
@@ -145,12 +149,12 @@ router.get('/credit/reports', requirePull, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// The manual-review queue: reports needing a human (frozen bureau / no score /
-// vendor error). Company-wide for staff who pull credit.
+// The manual-review queue: reports needing a human — a frozen bureau / no score /
+// vendor error ('review'), PLUS 'in_doubt' orders (timed out; the vendor may have
+// billed) that need reconciliation before a re-order. Company-wide for staff who
+// pull credit; scoped officers see only their own files.
 router.get('/credit/review-queue', requirePull, async (req, res) => {
   try {
-    // Scoped officers see only review items on files they can see; see_all_files
-    // staff (the usual back-office reviewers) see the whole queue.
     const scoped = !can(req.actor, 'see_all_files');
     const rows = (await db.query(
       `SELECT cr.id, cr.application_id, cr.representative_score, cr.review_reason, cr.status, cr.created_at,
@@ -158,7 +162,7 @@ router.get('/credit/review-queue', requirePull, async (req, res) => {
          FROM credit_reports cr
          LEFT JOIN applications a ON a.id = cr.application_id
          LEFT JOIN borrowers b ON b.id = a.borrower_id
-        WHERE cr.status = 'review'
+        WHERE cr.status IN ('review','in_doubt')
           ${scoped ? `AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$1')}` : ''}
         ORDER BY cr.created_at DESC LIMIT 200`,
       scoped ? [req.actor.id] : [])).rows;
