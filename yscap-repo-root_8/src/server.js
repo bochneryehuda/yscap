@@ -180,6 +180,10 @@ app.use('/api/sitewire', require('./routes/sitewire'));
 // Appraisal desk: import the appraisal XML, reconcile it against the file, and resolve
 // PILOT findings. The router applies requireAuth + requireStaff + per-file scoping itself.
 app.use('/api/appraisal', require('./routes/appraisal'));
+// Document-underwriting desk: read + understand each uploaded document (Azure Document
+// Intelligence + Azure OpenAI), raise per-document and cross-document findings, and let an
+// underwriter post conditions / request documents / clear them. Same auth + per-file scoping.
+app.use('/api/underwriting', require('./routes/underwriting'));
 // The Condition Center studio is gated by the manage_conditions capability (not
 // admin-only), so an underwriter or software-setup persona granted it can author
 // the library. Mounted before /api/admin so it isn't shadowed by requireRole.
