@@ -6478,6 +6478,18 @@ async function loadEsignEnvelope(req, rowId) {
   return { row };
 }
 
+// Admin "send myself a test envelope": confirms DocuSign renders our generated
+// documents + the signing flow, without a real loan file passing the send-gate.
+// Reuses the send-once engine's guards — refuses unless DOCUSIGN_SEND_ENABLED is
+// on, and only ever reaches an allow-listed address in test mode.
+router.post('/esign/test-send', requireRole('admin'), async (req, res) => {
+  try {
+    const out = await require('../lib/esign/test-send').sendTestEnvelope({ actorId: req.actor.id, db, docusign: docusignLib });
+    await audit(req, 'esign_test_send', 'esign_test', null, out.to);
+    res.json({ ok: true, ...out });
+  } catch (e) { res.status(esignErrStatus(e)).json({ error: e.message }); }
+});
+
 // Send a package for a file. Rides the /applications/:id scope guard.
 router.post('/applications/:id/esign/send', async (req, res) => {
   const purpose = String((req.body && req.body.purpose) || '');
