@@ -246,7 +246,7 @@ function dateSignedAnchor(anchor) {
  *               tabsByDoc:{ [documentId]: { sign:['/anchor/'], date:['/anchor/'] } } }]
  *  eventNotification: the per-envelope Connect config (webhook + HMAC) — optional
  */
-function buildEnvelopeDefinition({ documents, signers, subject, status = 'sent', emailBlurb, brandId, customFields, eventNotification: evtNotif }) {
+function buildEnvelopeDefinition({ documents, signers, subject, status = 'sent', emailBlurb, brandId, customFields, eventNotification: evtNotif, notification }) {
   if (!Array.isArray(documents) || !documents.length) throw dsError('buildEnvelope: at least one document required', { code: 'DOCUSIGN_ARG', retryable: false });
   if (!Array.isArray(signers) || !signers.length) throw dsError('buildEnvelope: at least one signer required', { code: 'DOCUSIGN_ARG', retryable: false });
   for (const s of signers) {
@@ -282,11 +282,16 @@ function buildEnvelopeDefinition({ documents, signers, subject, status = 'sent',
           tabs: { signHereTabs, dateSignedTabs },
         };
         if (s.clientUserId) signer.clientUserId = String(s.clientUserId);   // embedded (in-portal) signer
+        // Hybrid email+embedded: SIGN_AT_DOCUSIGN makes DocuSign ALSO send the
+        // email invite while still allowing an embedded recipient view. (Trade-off:
+        // hybrid recipients don't get DocuSign auto-reminders — we drive our own.)
+        if (s.embeddedRecipientStartURL) signer.embeddedRecipientStartURL = s.embeddedRecipientStartURL;
         return signer;
       }),
     },
   };
   if (emailBlurb) def.emailBlurb = emailBlurb;
+  if (notification) def.notification = notification;   // reminders + expiration (per-envelope)
   if (brandId) def.brandId = brandId;
   if (customFields) def.customFields = customFields;                 // { textCustomFields:[{name,value,show:'false'}] } — correlation only, NO PII
   if (evtNotif) def.eventNotification = evtNotif;                    // per-envelope Connect (webhook + HMAC)
@@ -314,9 +319,16 @@ function eventNotification(webhookUrl, { includeCertificate = true } = {}) {
       { envelopeEventStatusCode: 'Declined' },
       { envelopeEventStatusCode: 'Voided' },
     ],
+    // Recipient events must be enabled explicitly, else only envelope-* fire.
+    // These drive the per-recipient dashboard + the "borrowers done → admin's turn"
+    // transition (recipient-completed at order 1 → recipient-sent at order 2).
     recipientEvents: [
+      { recipientEventStatusCode: 'Sent' },
+      { recipientEventStatusCode: 'Delivered' },
       { recipientEventStatusCode: 'Completed' },
       { recipientEventStatusCode: 'Declined' },
+      { recipientEventStatusCode: 'AuthenticationFailed' },
+      { recipientEventStatusCode: 'AutoResponded' },
     ],
     eventData: { version: 'restv2.1', format: 'json', includeData: ['recipients', 'custom_fields'] },
   };
@@ -342,10 +354,19 @@ async function createEnvelope(envelopeDefinition, { idempotencyKey: idem } = {})
   return { envelopeId: j.envelopeId, status: j.status, statusDateTime: j.statusDateTime, uri: j.uri };
 }
 
-async function getEnvelope(envelopeId) {
+async function getEnvelope(envelopeId, { include } = {}) {
   ensure();
   const base = await apiBase();
-  return authedJson((token) => httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}`), { headers: { Authorization: `Bearer ${token}` } }));
+  const q = include ? `?include=${encodeURIComponent(Array.isArray(include) ? include.join(',') : include)}` : '';
+  return authedJson((token) => httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}${q}`), { headers: { Authorization: `Bearer ${token}` } }));
+}
+
+/** Download the combined signed PDF of all documents, with the Certificate of Completion appended. */
+async function getCombinedDocument(envelopeId, { certificate = true } = {}) {
+  ensure();
+  const base = await apiBase();
+  return authedBinary((token) => httpBinary(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/documents/combined?certificate=${certificate ? 'true' : 'false'}`),
+    { headers: { Authorization: `Bearer ${token}`, Accept: 'application/pdf' } }));
 }
 
 async function listRecipients(envelopeId) {
@@ -425,6 +446,61 @@ async function createRecipientView(envelopeId, { returnUrl, email, userName, cli
   return j.url;
 }
 
+// ---- reminders/expiration + per-recipient status helpers --------------------
+/** Per-envelope reminders + expiration (days). Overrides account defaults. */
+function notificationSettings({ reminderDelayDays = 2, reminderFrequencyDays = 3, expireAfterDays = 30, expireWarnDays = 5 } = {}) {
+  return {
+    useAccountDefaults: 'false',
+    reminders: { reminderEnabled: 'true', reminderDelay: String(reminderDelayDays), reminderFrequency: String(reminderFrequencyDays) },
+    expirations: { expireEnabled: 'true', expireAfter: String(expireAfterDays), expireWarn: String(expireWarnDays) },
+  };
+}
+
+/**
+ * Normalize an envelope's signers into a flat per-recipient list for the staff
+ * dashboard. Pass an envelope fetched with include:'recipients'. Completion keys
+ * on signedDateTime (the terminal status string can be 'signed' or 'completed').
+ */
+function parseRecipients(envelope) {
+  const signers = (envelope && envelope.recipients && envelope.recipients.signers) || [];
+  return signers.map((s) => ({
+    recipientId: s.recipientId,
+    routingOrder: s.routingOrder != null ? Number(s.routingOrder) : null,
+    name: s.name,
+    email: s.email,
+    status: s.status || (s.signedDateTime ? 'completed' : 'created'),
+    signed: !!s.signedDateTime || s.status === 'completed' || s.status === 'signed',
+    declined: s.status === 'declined' || !!s.declinedDateTime,
+    sentAt: s.sentDateTime || null,
+    deliveredAt: s.deliveredDateTime || null,   // "viewed"
+    signedAt: s.signedDateTime || null,
+    declinedAt: s.declinedDateTime || null,
+    declineReason: s.declinedReason || s.declineReason || null,
+  }));
+}
+
+/**
+ * Derive the human-facing phase — DocuSign has no native "awaiting
+ * counter-signature" status; we compute it from currentRoutingOrder + recipients.
+ * adminRoutingOrder (default 2) is where the counter-signer sits.
+ * Returns: awaiting_borrower | awaiting_countersign | completed | declined | voided.
+ */
+function derivePhase(envelope, { adminRoutingOrder = 2 } = {}) {
+  const status = ((envelope && envelope.status) || '').toLowerCase();
+  if (status === 'completed') return 'completed';
+  if (status === 'declined') return 'declined';
+  if (status === 'voided') return 'voided';
+  const recips = parseRecipients(envelope);
+  const hasCounterSigner = recips.some((r) => r.routingOrder >= adminRoutingOrder);
+  if (!hasCounterSigner) return 'awaiting_borrower';   // e.g. the Iska package (no admin)
+  const current = envelope && envelope.currentRoutingOrder != null ? Number(envelope.currentRoutingOrder) : null;
+  const order1 = recips.filter((r) => r.routingOrder === 1);
+  const order1Done = order1.length > 0 && order1.every((r) => r.signed);
+  const adminPending = recips.some((r) => r.routingOrder >= adminRoutingOrder && !r.signed && !r.declined);
+  if ((current != null && current >= adminRoutingOrder) || (order1Done && adminPending)) return 'awaiting_countersign';
+  return 'awaiting_borrower';
+}
+
 // ---- inbound Connect HMAC verify (fail-closed, multi-key, base64) -----------
 // DocuSign signs the raw request body with each configured HMAC key and sends
 // X-DocuSign-Signature-1..N (base64). We accept iff one of OUR keys reproduces
@@ -478,10 +554,12 @@ module.exports = {
   idempotencyKey,
   buildEnvelopeDefinition,
   eventNotification,
+  notificationSettings,
   signHereAnchor,
   dateSignedAnchor,
   createEnvelope,
   getEnvelope,
+  getCombinedDocument,
   listRecipients,
   getDocument,
   getCertificate,
@@ -489,6 +567,8 @@ module.exports = {
   voidEnvelope,
   resendEnvelope,
   createRecipientView,
+  parseRecipients,
+  derivePhase,
   // inbound webhook
   verifyConnectHmac,
   connectSignatureHeaders,

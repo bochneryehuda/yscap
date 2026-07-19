@@ -87,6 +87,49 @@ const parDef = d.buildEnvelopeDefinition({
 });
 ok(parDef.recipients.signers.every((s) => s.routingOrder === '1'), 'L-A: co-signers default to parallel routing (order 1)');
 
+// 6b. buildEnvelopeDefinition: hybrid email+embedded (SIGN_AT_DOCUSIGN) + reminders/expiration
+const wfDef = d.buildEnvelopeDefinition({
+  documents: [{ base64: 'AAAA', documentId: 1 }, { base64: 'BBBB', documentId: 2 }],
+  signers: [
+    { recipientId: 1, name: 'Borrower', email: 'b@x.co', routingOrder: 1, clientUserId: 'b1', embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN', tabsByDoc: { 1: { sign: ['/app_b1_sig/'] } } },
+    { recipientId: 3, name: 'Admin', email: 'a@x.co', routingOrder: 2, clientUserId: 'admin', embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN', tabsByDoc: { 2: { sign: ['/ts_admin_sig/'] } } },
+  ],
+  notification: d.notificationSettings({ reminderDelayDays: 2, expireAfterDays: 30 }),
+});
+ok(wfDef.recipients.signers[0].embeddedRecipientStartURL === 'SIGN_AT_DOCUSIGN', 'hybrid: borrower gets SIGN_AT_DOCUSIGN');
+ok(wfDef.recipients.signers[1].routingOrder === '2', 'counter-signer at routingOrder 2');
+ok(wfDef.notification && wfDef.notification.useAccountDefaults === 'false' && wfDef.notification.reminders.reminderEnabled === 'true', 'reminders/expiration set on envelope');
+ok(wfDef.recipients.signers[1].tabs.signHereTabs[0].documentId === '2', 'admin sign tab scoped to the term-sheet doc (documentId 2)');
+
+// 6c. notificationSettings shape
+const ns = d.notificationSettings({ reminderDelayDays: 3, reminderFrequencyDays: 4, expireAfterDays: 21, expireWarnDays: 2 });
+ok(ns.reminders.reminderDelay === '3' && ns.reminders.reminderFrequency === '4' && ns.expirations.expireAfter === '21' && ns.expirations.expireWarn === '2', 'notificationSettings maps days to strings');
+
+// 6d. parseRecipients: normalize signers[] from an envelope GET
+const env1 = { status: 'sent', currentRoutingOrder: '1', recipients: { signers: [
+  { recipientId: '1', routingOrder: '1', name: 'B', email: 'b@x.co', status: 'delivered', sentDateTime: '2026-07-19T14:00:00Z', deliveredDateTime: '2026-07-19T14:05:00Z', signedDateTime: null },
+  { recipientId: '2', routingOrder: '1', name: 'Co', email: 'c@x.co', status: 'completed', signedDateTime: '2026-07-19T14:10:00Z' },
+  { recipientId: '3', routingOrder: '2', name: 'Admin', email: 'a@x.co', status: 'created', signedDateTime: null },
+] } };
+const rc = d.parseRecipients(env1);
+ok(rc.length === 3, 'parseRecipients returns all signers');
+ok(rc[0].deliveredAt === '2026-07-19T14:05:00Z' && rc[0].signed === false, 'recipient 1 viewed, not signed');
+ok(rc[1].signed === true && rc[1].signedAt === '2026-07-19T14:10:00Z', 'recipient 2 signed w/ timestamp');
+ok(rc[2].status === 'created' && rc[2].signed === false, 'admin (order 2) not yet reached');
+
+// 6e. derivePhase: awaiting_borrower / awaiting_countersign / completed / declined
+ok(d.derivePhase(env1) === 'awaiting_borrower', 'phase: borrower still signing (order 1 incomplete)');
+const env2 = { status: 'delivered', currentRoutingOrder: '2', recipients: { signers: [
+  { recipientId: '1', routingOrder: '1', status: 'completed', signedDateTime: '2026-07-19T14:10:00Z' },
+  { recipientId: '3', routingOrder: '2', status: 'delivered', signedDateTime: null },
+] } };
+ok(d.derivePhase(env2) === 'awaiting_countersign', 'phase: order 1 done, admin pending -> awaiting_countersign');
+ok(d.derivePhase({ status: 'completed', recipients: { signers: [] } }) === 'completed', 'phase: completed envelope');
+ok(d.derivePhase({ status: 'declined', recipients: { signers: [] } }) === 'declined', 'phase: declined envelope');
+// Iska package (no admin/order-2 recipient) never shows awaiting_countersign
+const iskaEnv = { status: 'sent', currentRoutingOrder: '1', recipients: { signers: [ { recipientId: '1', routingOrder: '1', status: 'completed', signedDateTime: '2026-07-19T14:10:00Z' } ] } };
+ok(d.derivePhase(iskaEnv) === 'awaiting_borrower', 'Iska (no counter-signer) never awaiting_countersign');
+
 // 7. L-C: createRecipientView rejects a returnUrl NOT on the app origin (before any network)
 (async () => {
   let blocked = false;
