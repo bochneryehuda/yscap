@@ -8,16 +8,18 @@
  *   'application' — the loan-file view the caller builds from the application (+ entity)
  * `image: true` means the original image is also sent to the analyzer (photo IDs).
  */
-const { GOVERNMENT_ID, PURCHASE_CONTRACT } = require('./schemas');
+const { GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT } = require('./schemas');
 const { computeIdFindings } = require('./id-checks');
 const { computeContractFindings } = require('./purchase-contract-checks');
+const { computeTitleFindings } = require('./title-checks');
+const { computeBankFindings } = require('./bank-statement-checks');
 
 const REGISTRY = {
   government_id: {
     docType: 'government_id',
     schema: GOVERNMENT_ID.schema,
     instructions: GOVERNMENT_ID.instructions,
-    subject: 'borrower',
+    subject: 'borrower',       // compares against the borrowers row
     image: true,
     check: computeIdFindings,
   },
@@ -25,9 +27,25 @@ const REGISTRY = {
     docType: 'purchase_contract',
     schema: PURCHASE_CONTRACT.schema,
     instructions: PURCHASE_CONTRACT.instructions,
-    subject: 'application',
+    subject: 'application',    // compares against the loan-file view
     image: false,
     check: computeContractFindings,
+  },
+  title: {
+    docType: 'title',
+    schema: TITLE.schema,
+    instructions: TITLE.instructions,
+    subject: 'application',    // property_address; sellers feed the cross-document match
+    image: false,
+    check: computeTitleFindings,
+  },
+  bank_statement: {
+    docType: 'bank_statement',
+    schema: BANK_STATEMENT.schema,
+    instructions: BANK_STATEMENT.instructions,
+    subject: 'assets',         // { borrower_name, entity_names[] } — ownership + math rules
+    image: false,
+    check: computeBankFindings,
   },
 };
 

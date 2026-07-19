@@ -96,4 +96,70 @@ const PURCHASE_CONTRACT = {
   },
 };
 
-module.exports = { GOVERNMENT_ID, PURCHASE_CONTRACT };
+// ---- Title report / preliminary title commitment ----
+const TITLE = {
+  docType: 'title',
+  instructions:
+    "You are reviewing a title report / preliminary title commitment for a loan file. " +
+    "Extract the vested owner(s) of record (the current SELLER for a purchase), the buyer/grantee " +
+    "if shown, the property address, the legal description, and every lien/encumbrance listed. Use " +
+    "null for anything absent or unreadable — do NOT guess. Prices/amounts as plain numbers. " +
+    "Set readable=false if the document is too poor to trust.",
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      propertyAddress: {
+        type: ['object', 'null'], additionalProperties: false,
+        properties: { line1: { type: ['string', 'null'] }, city: { type: ['string', 'null'] }, state: { type: ['string', 'null'] }, zip: { type: ['string', 'null'] } },
+        required: ['line1', 'city', 'state', 'zip'],
+      },
+      vestedOwners:  { type: 'array', items: { type: 'string' } },   // sellers / owner(s) of record
+      buyerNames:    { type: 'array', items: { type: 'string' } },
+      legalDescription: { type: ['string', 'null'] },
+      liens: {
+        type: 'array',
+        items: {
+          type: 'object', additionalProperties: false,
+          properties: { holder: { type: ['string', 'null'] }, amount: { type: ['number', 'null'] }, type: { type: ['string', 'null'] } },
+          required: ['holder', 'amount', 'type'],
+        },
+      },
+      effectiveDate: { type: ['string', 'null'] },
+      readable:      { type: 'boolean' },
+      notes:         { type: ['string', 'null'] },
+    },
+    required: ['propertyAddress', 'vestedOwners', 'buyerNames', 'legalDescription', 'liens', 'effectiveDate', 'readable', 'notes'],
+  },
+};
+
+// ---- Bank statement (assets / proof of funds) ----
+const BANK_STATEMENT = {
+  docType: 'bank_statement',
+  instructions:
+    "You are reviewing a bank statement for a loan file (assets / proof of funds). Extract the exact " +
+    "account-holder name as printed, whether the holder is a person or a business/LLC, the bank name, " +
+    "the account number, the statement period, and the opening balance, closing balance, total deposits, " +
+    "and total withdrawals as printed. Use null for anything absent/unreadable — do NOT guess or compute " +
+    "values that aren't printed. Amounts as plain numbers. Set readable=false if the copy is too poor to trust.",
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      accountHolderName: { type: ['string', 'null'] },
+      holderIsBusiness:  { type: ['boolean', 'null'] },   // true if the holder is an LLC/entity
+      bankName:          { type: ['string', 'null'] },
+      accountNumber:     { type: ['string', 'null'] },     // masked to last-4 on storage
+      statementPeriod:   { type: ['string', 'null'] },
+      openingBalance:    { type: ['number', 'null'] },
+      closingBalance:    { type: ['number', 'null'] },
+      totalDeposits:     { type: ['number', 'null'] },
+      totalWithdrawals:  { type: ['number', 'null'] },
+      readable:          { type: 'boolean' },
+      notes:             { type: ['string', 'null'] },
+    },
+    required: ['accountHolderName', 'holderIsBusiness', 'bankName', 'accountNumber', 'statementPeriod', 'openingBalance', 'closingBalance', 'totalDeposits', 'totalWithdrawals', 'readable', 'notes'],
+  },
+};
+
+module.exports = { GOVERNMENT_ID, PURCHASE_CONTRACT, TITLE, BANK_STATEMENT };
