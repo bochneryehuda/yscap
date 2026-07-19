@@ -64,6 +64,48 @@
   .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
   .btn.ghost:hover{border-color:var(--gold)}
 
+  /* Audience toggle + findings badge */
+  .viewtoggle{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .vt{font-family:var(--sans);font-size:12.5px;font-weight:600;border:0;background:transparent;color:var(--muted);padding:7px 12px;cursor:pointer}
+  .vt.on{background:var(--ink);color:var(--paper)}
+  .findings-badge{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;color:var(--crit);
+    background:var(--crit-bg);border:1px solid color-mix(in srgb,var(--crit) 30%,var(--line));border-radius:999px;padding:5px 12px;cursor:pointer}
+  .fb-dot{width:8px;height:8px;border-radius:50%;background:var(--crit);animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  @media (prefers-reduced-motion:reduce){.fb-dot{animation:none}}
+  /* Staff-only content is hidden in borrower view */
+  body.view-borrower .staff-only{display:none !important}
+
+  /* Findings / underwriting */
+  .blocked-banner{display:flex;align-items:center;gap:12px;background:var(--crit-bg);border:1px solid color-mix(in srgb,var(--crit) 30%,var(--line));
+    border-radius:var(--r-sm);padding:14px 18px;margin-bottom:18px;font-size:14px;font-weight:600;color:var(--crit)}
+  .findings-list{display:flex;flex-direction:column;gap:14px}
+  .finding{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
+  .finding.fatal{border-left:4px solid var(--crit)}
+  .finding.warn{border-left:4px solid var(--amber)}
+  .finding.info{border-left:4px solid var(--teal)}
+  .finding-head{display:flex;align-items:center;gap:12px;padding:15px 18px 12px}
+  .sev{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:3px 8px;border-radius:6px}
+  .sev.fatal{background:var(--crit-bg);color:var(--crit)} .sev.warn{background:var(--amber-bg);color:var(--amber)} .sev.info{background:color-mix(in srgb,var(--teal) 14%,transparent);color:var(--teal-deep)}
+  .finding-head .t{font-weight:700;font-size:15px}
+  .diff{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--line-soft);margin:0 18px;border-radius:8px;overflow:hidden;border:1px solid var(--line-soft)}
+  .diff div{background:var(--card);padding:10px 14px}
+  .diff .h{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .diff .v{font-family:var(--serif);font-size:19px;font-weight:600;margin-top:2px}
+  .diff .appr .v{color:var(--teal-deep)} .diff .delta .v{color:var(--crit)}
+  .howto{margin:12px 18px 0;font-size:13px;color:var(--muted)}
+  .howto b{color:var(--ink)}
+  .actions{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px 16px}
+  .act{font-family:var(--sans);font-size:12.5px;font-weight:600;border-radius:8px;padding:7px 13px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink)}
+  .act.primary{background:var(--teal);color:#fff;border-color:var(--teal)}
+  .act.primary:hover{background:var(--teal-deep)}
+  .act.danger{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 35%,var(--line))}
+  .act:hover{border-color:var(--gold)}
+  .act .rp{font-weight:500;color:var(--muted);font-size:11px}
+  .finding.resolved{opacity:.6}
+  .finding.resolved .actions{display:none}
+  .resolved-tag{font-size:11.5px;font-weight:700;color:var(--good);background:var(--good-bg);padding:3px 9px;border-radius:6px;margin-left:auto}
+
   section{padding:40px 0;border-top:1px solid var(--line-soft)}
   section:first-of-type{border-top:0}
   .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:22px}
@@ -231,7 +273,14 @@
       <span class="chip">Subject-to-Repairs</span>
     </div>
     <span class="spacer"></span>
-    <button class="btn ghost" onclick="window.print()">Export PILOT Report</button>
+    <span class="findings-badge staff-only" title="2 open fatal findings block clear-to-close" onclick="document.getElementById('sec-findings').scrollIntoView({behavior:'smooth'})">
+      <span class="fb-dot"></span>2 findings
+    </span>
+    <div class="viewtoggle" role="tablist" aria-label="Viewing as">
+      <button class="vt on" data-view="staff" onclick="setView('staff')">Loan officer</button>
+      <button class="vt" data-view="borrower" onclick="setView('borrower')">Borrower</button>
+    </div>
+    <button class="btn ghost" onclick="window.print()">Export</button>
   </div>
 </div>
 
@@ -271,6 +320,69 @@
           </div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- PILOT FINDINGS (staff only) -->
+  <section id="sec-findings" class="staff-only">
+    <div class="sec-head">
+      <div><div class="lbl">Underwriting</div><h2>PILOT findings</h2></div>
+      <span class="chip" style="color:var(--crit);border-color:color-mix(in srgb,var(--crit) 30%,var(--line))">2 fatal</span>
+      <span class="chip" style="color:var(--amber)">1 warning</span>
+    </div>
+    <div class="blocked-banner">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      Clear-to-close is blocked. The internal condition <b style="margin:0 4px">“Appraisal review cleared”</b> stays open until every fatal is resolved.
+    </div>
+    <p style="color:var(--muted);font-size:13.5px;margin:-6px 0 16px">Every field that differs between the appraisal and this file is raised here. Nothing is overwritten automatically — the underwriter decides each one.</p>
+    <div class="findings-list">
+
+      <div class="finding fatal">
+        <div class="finding-head"><span class="sev fatal">Fatal</span><span class="t">Units don’t match — appraisal says 3, file says 2</span></div>
+        <div class="diff">
+          <div class="appr"><div class="h">Appraisal</div><div class="v">3 units</div></div>
+          <div class="file"><div class="h">Our file</div><div class="v">2 units</div></div>
+          <div class="delta"><div class="h">Difference</div><div class="v">+1 unit</div></div>
+        </div>
+        <div class="howto"><b>How to clear:</b> confirm the real unit count. If the appraisal is right, replacing re-prices the loan (a 3-unit changes the program &amp; sizing). If the file is right, the appraisal may be the wrong property.</div>
+        <div class="actions">
+          <button class="act primary">Replace with appraisal (3) <span class="rp">re-prices loan</span></button>
+          <button class="act">Keep file value (2)</button>
+          <button class="act">Enter custom…</button>
+          <button class="act">Dismiss…</button>
+          <button class="act danger">Decline file</button>
+        </div>
+      </div>
+
+      <div class="finding fatal">
+        <div class="finding-head"><span class="sev fatal">Fatal</span><span class="t">ARV differs from the file</span></div>
+        <div class="diff">
+          <div class="appr"><div class="h">Appraisal ARV</div><div class="v">$575,000</div></div>
+          <div class="file"><div class="h">Our file ARV</div><div class="v">$560,000</div></div>
+          <div class="delta"><div class="h">Difference</div><div class="v">+$15,000</div></div>
+        </div>
+        <div class="howto"><b>How to clear:</b> the appraisal came in $15k higher (+2.7%). Replacing writes $575,000 to the file and re-prices (higher ARV may allow more loan). <b>What-if:</b> loan re-sizes to ~$402k, LTARV 70%.</div>
+        <div class="actions">
+          <button class="act primary">Replace with $575,000 <span class="rp">re-prices loan</span></button>
+          <button class="act">Keep file ($560,000)</button>
+          <button class="act">Enter custom…</button>
+          <button class="act">Dismiss…</button>
+        </div>
+      </div>
+
+      <div class="finding warn">
+        <div class="finding-head"><span class="sev warn">Warning</span><span class="t">Comparable #3 has a large adjustment</span><span class="resolved-tag" style="background:var(--amber-bg);color:var(--amber)">acknowledge</span></div>
+        <div class="howto" style="margin-top:12px"><b>Net adjustment 16%</b> exceeds the 15% guideline — the appraiser reached for this comp. Not a blocker; acknowledge or note it.</div>
+        <div class="actions">
+          <button class="act primary">Acknowledge</button>
+          <button class="act">Dismiss with reason…</button>
+        </div>
+      </div>
+
+      <div class="finding info resolved">
+        <div class="finding-head"><span class="sev info">Info</span><span class="t">As-Is value matches the file</span><span class="resolved-tag">✓ matches — $430,000</span></div>
+      </div>
+
     </div>
   </section>
 
@@ -343,6 +455,17 @@
           <table class="comps"><thead><tr><th>Unit</th><th class="num">Actual rent</th><th class="num">Market rent</th></tr></thead>
           <tbody>__UNIT_ROWS__</tbody></table>
         </div>
+      </div>
+      <div class="card" style="border-style:dashed">
+        <h3>Condo / association <span class="lbl">shown on 1073 condo files</span></h3>
+        <dl class="kv">
+          <dt>Project</dt><dd>Throopway Condominium</dd>
+          <dt>Type</dt><dd>Mid-rise · elevator</dd>
+          <dt>Unit / floor</dt><dd>Unit 2A · Floor 2</dd>
+          <dt>HOA fee</dt><dd class="num">$410 / month</dd>
+          <dt>Fee includes</dt><dd>Water · sewer · common area</dd>
+        </dl>
+        <p class="muted small" style="margin:12px 0 0;color:var(--muted);font-size:12px">Example — this card appears automatically when the imported appraisal is a condominium (Form 1073).</p>
       </div>
     </div>
   </section>
@@ -457,6 +580,30 @@
       var lb=document.getElementById('lb');
       document.getElementById('lbimg').src=img.src;
       lb.classList.add('open');
+    });
+  });
+  function setView(v){
+    document.body.classList.toggle('view-borrower', v==='borrower');
+    document.querySelectorAll('.vt').forEach(function(b){ b.classList.toggle('on', b.dataset.view===v); });
+  }
+  // Demo interaction: a "Replace/Keep/Acknowledge" action marks the finding resolved and
+  // decrements the badge — the real screen wires these to the audited resolve endpoints.
+  document.querySelectorAll('.finding .act').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var card = btn.closest('.finding');
+      if (btn.classList.contains('danger')) return; // decline opens a confirm in the real app
+      card.classList.add('resolved');
+      var tag = document.createElement('span');
+      tag.className = 'resolved-tag'; tag.textContent = '✓ resolved';
+      card.querySelector('.finding-head').appendChild(tag);
+      var open = document.querySelectorAll('.finding.fatal:not(.resolved), .finding.warn:not(.resolved)').length;
+      var badge = document.querySelector('.findings-badge');
+      if (badge) badge.childNodes[1].textContent = open ? (open+' findings') : 'all clear';
+      if (!document.querySelectorAll('.finding.fatal:not(.resolved)').length){
+        var b = document.querySelector('.blocked-banner');
+        if (b){ b.style.background='var(--good-bg)'; b.style.color='var(--good)'; b.style.borderColor='color-mix(in srgb,var(--good) 30%,var(--line))';
+          b.innerHTML='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg> All fatal findings resolved — the “Appraisal review cleared” condition can now be signed off.'; }
+      }
     });
   });
 </script>
