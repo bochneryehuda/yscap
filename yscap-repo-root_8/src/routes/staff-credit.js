@@ -21,6 +21,7 @@ const { can } = require('../lib/permissions');
 const providers = require('../lib/credit/providers');
 const credentials = require('../lib/credit/credentials');
 const creditImport = require('../lib/credit/import');
+const adverseAction = require('../lib/credit/adverse-action');
 const { serveDocument } = require('../lib/serve-document');
 
 // Best-effort audit trail (never blocks the request).
@@ -203,6 +204,73 @@ router.get('/credit/reports/:id/pdf', requirePull, async (req, res) => {
     await audit(req, 'credit_report_pdf_view', { reportId: req.params.id });
     return serveDocument(res, r.rows[0], { inline: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- adverse-action DRAFT scaffolding (compliance review ONLY — never sends) --
+// RTL loans are business-purpose (ECOA/Reg B business-credit path). These routes
+// materialize a STRUCTURED DRAFT for a human compliance reviewer to edit + decide;
+// nothing here issues, delivers, or finalizes a notice. A guarantor is generally
+// NOT owed a notice — the draft body flags that. Per-file access + capability gated.
+const AA_DECISIONS = new Set(['declined', 'counteroffer', 'incomplete']);
+
+// Create a draft for a file+borrower (auto-seeds the principal reasons from the
+// bureau factor codes; the reviewer confirms/edits). Never sends.
+router.post('/credit/adverse-action', requirePull, async (req, res) => {
+  const b = req.body || {};
+  if (!b.applicationId) return res.status(400).json({ error: 'applicationId is required' });
+  if (!(await canSeeApp(req, b.applicationId))) return res.status(403).json({ error: 'forbidden' });
+  const decision = b.decision == null ? 'declined' : String(b.decision);
+  if (!AA_DECISIONS.has(decision)) return res.status(400).json({ error: 'decision must be declined, counteroffer, or incomplete' });
+  try {
+    // The borrower (if given) must actually be on THIS file — never draft for an unrelated borrower.
+    if (b.borrowerId) {
+      const on = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND (borrower_id=$2 OR co_borrower_id=$2)`, [b.applicationId, b.borrowerId]);
+      if (!on.rows[0]) return res.status(400).json({ error: 'that borrower is not on this file' });
+    }
+    // The report (if given) must belong to this file too.
+    if (b.creditReportId) {
+      const rr = await db.query(`SELECT 1 FROM credit_reports WHERE id=$1 AND application_id=$2`, [b.creditReportId, b.applicationId]);
+      if (!rr.rows[0]) return res.status(400).json({ error: 'that credit report is not on this file' });
+    }
+    const id = await adverseAction.draftForApplication({
+      applicationId: b.applicationId, borrowerId: b.borrowerId || null, creditReportId: b.creditReportId || null,
+      decision, principalReasons: Array.isArray(b.principalReasons) ? b.principalReasons : [],
+      partyRole: b.partyRole, actorId: req.actor.id,
+    });
+    await audit(req, 'credit_adverse_action_draft', { applicationId: b.applicationId, borrowerId: b.borrowerId || null, letterId: id, decision });
+    const row = (await db.query(
+      `SELECT id, borrower_id, credit_report_id, decision, principal_reasons, scores_disclosed, notice_body, party_role, status, created_at
+         FROM adverse_action_letters WHERE id=$1`, [id])).rows[0];
+    res.json({ ok: true, draft: row });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// List drafts for a file (compliance review).
+router.get('/credit/adverse-action', requirePull, async (req, res) => {
+  const appId = req.query.applicationId;
+  if (!appId) return res.status(400).json({ error: 'applicationId is required' });
+  if (!(await canSeeApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const rows = (await db.query(
+      `SELECT id, borrower_id, credit_report_id, decision, principal_reasons, scores_disclosed, notice_body, party_role, status, created_at
+         FROM adverse_action_letters WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
+    res.json({ drafts: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Advance a draft through the REVIEW workflow only — 'reviewed' or 'cancelled'.
+// Issuance/delivery is intentionally NOT here: this scaffold never sends a notice.
+router.patch('/credit/adverse-action/:id', requirePull, async (req, res) => {
+  const status = String((req.body && req.body.status) || '');
+  if (!['reviewed', 'cancelled'].includes(status)) return res.status(400).json({ error: 'status must be reviewed or cancelled (issuing/sending is not done here)' });
+  try {
+    const row = (await db.query(`SELECT application_id FROM adverse_action_letters WHERE id=$1`, [req.params.id])).rows[0];
+    if (!row) return res.status(404).json({ error: 'draft not found' });
+    if (!(await canSeeApp(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
+    await db.query(`UPDATE adverse_action_letters SET status=$2, reviewed_by=$3, reviewed_at=now() WHERE id=$1`, [req.params.id, status, req.actor.id]);
+    await audit(req, 'credit_adverse_action_status', { letterId: Number(req.params.id), status });
+    res.json({ ok: true, status });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 module.exports = router;
