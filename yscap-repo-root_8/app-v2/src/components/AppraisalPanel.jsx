@@ -163,10 +163,15 @@ function lightBtn(side) {
     border: 'none', background: 'rgba(255,255,255,.16)', color: '#fff', fontSize: 26, cursor: 'pointer', lineHeight: 1 };
 }
 
+// Which finding fields can be previewed against the pricing engine, and the engine override key
+// each maps to. property_type is excluded (its finding value is a form code, not a portal type).
+const PREVIEW_KEY = { as_is_value: 'asIsValue', arv: 'arv', purchase_price: 'purchasePrice', units: 'units' };
+
 function Finding({ appId, f, onChange, readOnly }) {
   const [busy, setBusy] = useState(false);
   const [custom, setCustom] = useState('');
   const [showCustom, setShowCustom] = useState(false);
+  const [preview, setPreview] = useState(null);   // {loading}|{err}|{base,whatif,val}
   const s = SEV[f.severity] || SEV.info;
   const act = async (action, value) => {
     setBusy(true);
@@ -175,6 +180,21 @@ function Finding({ appId, f, onChange, readOnly }) {
     finally { setBusy(false); }
   };
   const canWriteBack = ['arv', 'as_is_value', 'purchase_price', 'units', 'property_type'].includes(f.field);
+  // A dry-run "what-if": price the file WITH the appraisal's value as an override and compare to
+  // the current terms — NON-persisting (reuses the /pricing/quote engine, nothing is written).
+  const previewKey = PREVIEW_KEY[f.field];
+  const previewVal = previewKey ? Number(String(f.appraisal_value == null ? '' : f.appraisal_value).replace(/[^0-9.-]/g, '')) : null;
+  const canPreview = !readOnly && previewKey && Number.isFinite(previewVal) && previewVal > 0;
+  const doPreview = async () => {
+    setPreview({ loading: true });
+    try {
+      const [base, whatif] = await Promise.all([
+        api.staffPricingQuote(appId, {}),
+        api.staffPricingQuote(appId, { [previewKey]: previewVal }),
+      ]);
+      setPreview({ base, whatif, val: previewVal });
+    } catch (e) { setPreview({ err: e.message || 'Could not preview the re-price' }); }
+  };
   return (
     <div style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${s.fg}`, borderRadius: 12, background: 'var(--card,#fff)', padding: '14px 16px', marginBottom: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
@@ -192,10 +212,44 @@ function Finding({ appId, f, onChange, readOnly }) {
       {!readOnly && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {canWriteBack && <button disabled={busy} onClick={() => act('replace')} style={btn(true)}>Replace with appraisal · re-prices</button>}
+          {canPreview && <button disabled={busy || (preview && preview.loading)} onClick={doPreview} style={btn()} title="See how this would re-price the loan — without changing anything">↻ Preview the re-price</button>}
           <button disabled={busy} onClick={() => act('keep')} style={btn()}>Keep file value</button>
           {canWriteBack && <button disabled={busy} onClick={() => setShowCustom((v) => !v)} style={btn()}>Enter custom…</button>}
           <button disabled={busy} onClick={() => act('dismiss')} style={btn()}>Dismiss</button>
           {f.severity === 'fatal' && <button disabled={busy} onClick={() => { if (confirm('Decline this file?')) act('decline'); }} style={btn(false, true)}>Decline file</button>}
+        </div>
+      )}
+      {/* What-if re-price preview — dry-run only, nothing is written to the file. */}
+      {!readOnly && preview && (
+        <div style={{ marginTop: 10, background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, padding: '10px 12px', fontSize: 12.5 }}>
+          {preview.loading ? (
+            <span style={{ color: 'var(--muted,#4B585C)' }}>Calculating the re-price…</span>
+          ) : preview.err ? (
+            <span style={{ color: 'var(--crit,#B4483C)' }}>{preview.err}</span>
+          ) : (
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>If you replace with {money(preview.val)} <span style={{ fontWeight: 400, color: 'var(--muted,#4B585C)' }}>— preview only, nothing changes yet</span></div>
+              {['standard', 'gold'].map((pg) => {
+                const b = preview.base && preview.base[pg], w = preview.whatif && preview.whatif[pg];
+                if (!b || !w) return null;
+                const bl = b.sizing && b.sizing.totalLoan, wl = w.sizing && w.sizing.totalLoan;
+                if (bl == null && wl == null) return null;
+                const d = (wl || 0) - (bl || 0);
+                const label = (w.programLabel || b.programLabel || pg);
+                return (
+                  <div key={pg} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '2px 0' }}>
+                    <span style={{ minWidth: 92, color: 'var(--muted,#4B585C)' }}>{label}</span>
+                    {!w.eligible ? <span style={{ color: 'var(--amber,#B7791F)' }}>ineligible with this value{w.status ? ` (${w.status})` : ''}</span> : (
+                      <span>{money(bl)} <span style={{ color: 'var(--muted,#4B585C)' }}>→</span> <b>{money(wl)}</b>
+                        {d !== 0 && <span style={{ marginLeft: 6, color: d > 0 ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)', fontWeight: 700 }}>{d > 0 ? '▲ +' : '▼ '}{money(Math.abs(d))}</span>}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              <div style={{ marginTop: 6, color: 'var(--muted,#4B585C)' }}>To actually apply it, use “Replace with appraisal”.</div>
+            </div>
+          )}
         </div>
       )}
       {!readOnly && showCustom && (
