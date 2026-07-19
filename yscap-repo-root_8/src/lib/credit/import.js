@@ -40,6 +40,12 @@ const scoring = require('./scoring');
 const outcomes = require('./outcomes');
 const underwriting = require('./underwriting');
 const storage = require('../storage');
+// Vendor dates are UNTRUSTED — a malformed value ("N/A", "2026-13-45") cast to
+// ::date would throw inside the persist transaction and roll back an ALREADY-BILLED
+// import (scores + freeze + XML all lost). sanitizeDateOnly coerces any bad date to
+// null so the import survives; the scores are the payload, a date is not worth
+// losing a billed pull over. Same "never trust the vendor value" stance as scoring.
+const { sanitizeDateOnly } = require('../fields');
 
 // Xactus source type → { key for repositories flags, verified_fico_source label }.
 const BUREAU = {
@@ -300,7 +306,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
         WHERE id=$1`,
       [reportRowId, parsed.reportIdentifier || null, parsed.reportType || null, parsed.otherDescription || null,
        orderMeta.requestType || null, orderMeta.action || null,
-       parsed.firstIssuedDate || '', parsed.lastUpdatedDate || '',
+       sanitizeDateOnly(parsed.firstIssuedDate) || '', sanitizeDateOnly(parsed.lastUpdatedDate) || '',
        rawXml ? crypto.encryptSecret(rawXml) : null, pdfDocumentId,
        scored.rep.score, scored.rep.bracket,
        assessment.decision === 'imported' ? 'imported' : assessment.decision,
@@ -317,7 +323,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,NULLIF($12,'')::date)`,
           [reportRowId, dbBorrowerId, pb.reportBorrowerId, c.bureau, c.model,
            c.usable ? c.value : null, c.rawValue == null ? null : String(c.rawValue), c.exclusionReason, c.usable, c.reason,
-           JSON.stringify(Array.isArray(c.factors) ? c.factors : []), c.date || '']);
+           JSON.stringify(Array.isArray(c.factors) ? c.factors : []), sanitizeDateOnly(c.date) || '']);
       }
     }
 
@@ -340,7 +346,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
         .map((pb) => ({ id: dbIdFor(pb), fico: pb.middle.middle, source: pb.sourceLabel }))
         .filter((r) => r.id && r.fico != null);
       if (freezeRows.length) {
-        const params = [parsed.reportIdentifier || null, parsed.firstIssuedDate || '', actorId];
+        const params = [parsed.reportIdentifier || null, sanitizeDateOnly(parsed.firstIssuedDate) || '', actorId];
         const valuesSql = freezeRows.map((r, i) => {
           const base = params.length;
           params.push(r.id, r.fico, r.source);
@@ -419,9 +425,14 @@ async function orderAndImport(opts = {}) {
   // transient failure. Replaying an 'error'/'in_doubt' as a terminal answer would
   // poison a legitimate retry; those return their real state (no re-bill), and a
   // fresh key (per click) re-orders cleanly.
+  // Scope the replay to THIS application: the idempotency key is client-supplied,
+  // so a client that reused one key across two files must never be handed file A's
+  // report for file B's order. A reused key on a different file finds no prior here
+  // and proceeds (the global unique index then fails that INSERT closed — a safe
+  // 409, never a wrong-file replay).
   const prior = (await db.query(
     `SELECT id, status, representative_score, representative_bracket, review_reason
-       FROM credit_reports WHERE idempotency_key=$1`, [idempotencyKey])).rows[0];
+       FROM credit_reports WHERE idempotency_key=$1 AND application_id=$2`, [idempotencyKey, applicationId])).rows[0];
   if (prior) {
     if (prior.status === 'ordering') throw httpError(409, 'an order with this key is already in progress');
     if (prior.status === 'imported' || prior.status === 'review') {
@@ -495,6 +506,13 @@ async function orderAndImport(opts = {}) {
   // inside the lock sees it and dedups instead of billing again. The lock is
   // released at COMMIT — BEFORE the billable POST — so it is never held across the
   // network call (no long-lived connection, no lock during the ~45s vendor call).
+  // Check the spend/volume breaker BEFORE writing the journal row. If the breaker
+  // is open (vendor down / rate-limited), throw now so we never create an
+  // 'ordering' row that no POST will follow — otherwise the stale-order sweep would
+  // later flag that never-sent row as in_doubt ("the vendor may have billed this"),
+  // a false entry in the human reconciliation queue.
+  breakerCheck(provider.id, clock);
+
   let reportRowId;
   let dedupResult = null;
   const jc = await db.getClient();
@@ -532,8 +550,6 @@ async function orderAndImport(opts = {}) {
   const evBase = { reportId: reportRowId, applicationId, correlationId: requestId, actorId, providerId: provider.id, action };
   logEvent({ ...evBase, phase: 'journal' });
 
-  breakerCheck(provider.id, clock);
-
   let resp;
   const postStart = clock;
   try {
@@ -559,7 +575,11 @@ async function orderAndImport(opts = {}) {
     // produce a billable report — is a terminal 'error'. A 429 rate-limit is a
     // definitive NOT-billed rejection (vendor refused the request), so it's a
     // terminal 'error' the staffer retries — never in-doubt.
-    const inDoubt = e.kind === 'timeout' || e.kind === 'network' || (e.kind === 'http' && e.httpStatus >= 500);
+    // An empty HTTP 200 body is AMBIGUOUS — the vendor accepted the request and
+    // may have produced (and billed) a report we simply couldn't read. Treat it as
+    // in_doubt (reconcile, don't blindly re-order) rather than a terminal error.
+    const inDoubt = e.kind === 'timeout' || e.kind === 'network' || e.kind === 'empty'
+      || (e.kind === 'http' && e.httpStatus >= 500);
     const finalStatus = inDoubt ? 'in_doubt' : 'error';
     const retryHint = e.retryAfterMs != null ? ` The vendor asked us to wait about ${Math.ceil(e.retryAfterMs / 1000)}s before retrying.` : '';
     const reason = inDoubt

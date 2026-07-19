@@ -116,7 +116,17 @@ const assigneeExistsSql = (alias, p) =>
   `EXISTS (SELECT 1 FROM application_assignees aa` +
   ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL)`;
 
+// The canonical "can this staffer see this application" scope fragment, shared so
+// every access gate resolves visibility from ONE definition (primary LO/processor
+// pointer + visible-officer delegation + active assignees). `${alias}.id`,
+// `${alias}.loan_officer_id`, `${alias}.processor_id` must be selectable; `p` is
+// the acting staff-id param placeholder. Never re-inline this — import it.
+const VISIBLE_OFFICERS_SQL = (alias, p) =>
+  `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
+  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
+  ` OR ${assigneeExistsSql(alias, p)})`;
+
 module.exports = {
   ROLES, ROLE_KEYS, ROLE_LABEL, CAPABILITIES, CAP_KEYS, ROLE_DEFAULTS,
-  defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql,
+  defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql, VISIBLE_OFFICERS_SQL,
 };

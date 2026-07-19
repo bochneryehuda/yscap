@@ -17,7 +17,7 @@
  */
 const router = require('../lib/safe-router')();
 const db = require('../db');
-const { can } = require('../lib/permissions');
+const { can, VISIBLE_OFFICERS_SQL } = require('../lib/permissions');
 const providers = require('../lib/credit/providers');
 const credentials = require('../lib/credit/credentials');
 const creditImport = require('../lib/credit/import');
@@ -37,15 +37,11 @@ async function audit(req, action, detail) {
 const requirePull = (req, res, next) =>
   can(req.actor, 'pull_credit') ? next() : res.status(403).json({ error: 'You do not have permission to pull credit.' });
 
-// Per-file access, mirroring staff.js VISIBLE_OFFICERS_SQL: a see_all_files
-// staffer reaches any file; everyone else only files they own / process / are an
-// assistant on / are a visible officer for. Keeps a scoped officer from ordering
-// or reading credit on another officer's file.
-const VISIBLE_OFFICERS_SQL = (alias, p) =>
-  `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
-  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
-  ` OR EXISTS (SELECT 1 FROM application_assignees aa` +
-  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL))`;
+// Per-file access uses the shared VISIBLE_OFFICERS_SQL (imported from
+// ../lib/permissions — ONE canonical definition, never re-inlined): a
+// see_all_files staffer reaches any file; everyone else only files they own /
+// process / are an assistant on / are a visible officer for. Keeps a scoped
+// officer from ordering or reading credit on another officer's file.
 async function canSeeApp(req, appId) {
   if (!appId) return false;
   if (can(req.actor, 'see_all_files')) return true;
@@ -64,13 +60,17 @@ router.get('/credit/providers', async (req, res) => {
 });
 
 // ---- per-user credentials (write-only secret) ------------------------------
-router.get('/credit/credentials', async (req, res) => {
+// Gated on pull_credit: only staff who can actually pull credit have any use for
+// a Xactus login, and the write path can fire a live vendor auth probe
+// (XACTUS_VERIFY_ON_SAVE) — keep that behind the same capability so a staffer who
+// can't pull credit can't use it as a credential-testing oracle.
+router.get('/credit/credentials', requirePull, async (req, res) => {
   try {
     res.json({ credentials: await credentials.listForUser(req.actor.id) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-router.put('/credit/credentials', async (req, res) => {
+router.put('/credit/credentials', requirePull, async (req, res) => {
   const { providerKey, providerId, operatorIdentifier, password } = req.body || {};
   try {
     const out = await credentials.setForUser(req.actor.id, {
@@ -84,7 +84,7 @@ router.put('/credit/credentials', async (req, res) => {
   }
 });
 
-router.delete('/credit/credentials/:pid', async (req, res) => {
+router.delete('/credit/credentials/:pid', requirePull, async (req, res) => {
   try {
     await credentials.removeForUser(req.actor.id, req.params.pid);
     await audit(req, 'credit_credential_removed', { providerId: Number(req.params.pid) });

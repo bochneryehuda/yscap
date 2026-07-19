@@ -23,7 +23,15 @@ const score = (id, bid, bureau, val, model, withFactors) =>
   `<CREDIT_SCORE CreditScoreID="${id}" BorrowerID="${bid}" CreditFileID="F${id}" CreditReportIdentifier="RPT1" CreditRepositorySourceType="${bureau}" _Date="2026-07-19" _Value="${val}" _ModelNameType="${model}">${
     withFactors ? '<_FACTOR _Code="038" _Text="Serious delinquency"/><_FACTOR _Code="008" _Text="Too many recent inquiries"/>' : ''
   }</CREDIT_SCORE>`;
-function responseXml({ withCo = false, coNoScore = false } = {}) {
+function responseXml({ withCo = false, coNoScore = false, issuedDate = '2026-07-19' } = {}) {
+  // When a caller passes a malformed issuedDate, swap it in for EVERY date in the
+  // template (report issued/updated dates + each score _Date) so the whole import
+  // sees the bad vendor date — proving the persist path sanitizes rather than
+  // throwing on the ::date cast.
+  const fixup = (xml) => (issuedDate === '2026-07-19' ? xml : xml.split('2026-07-19').join(issuedDate));
+  return fixup(_responseXml({ withCo, coNoScore }));
+}
+function _responseXml({ withCo = false, coNoScore = false } = {}) {
   const b1 = `<BORROWER BorrowerID="B1" _FirstName="NICKIE" _LastName="GREEN" _SSN="123003333"/>
         ${score('1', 'B1', 'Equifax', '734', 'EquifaxBeacon5.0', true)}
         ${score('2', 'B1', 'Experian', '732', 'ExperianFairIsaac')}
@@ -116,6 +124,23 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   eq('3 usable', Number(scRows.usable), 3);
   const appPriced = (await db.query(`SELECT fico_used_for_pricing FROM applications WHERE id=$1`, [appId])).rows[0];
   eq('fico_used_for_pricing captured', appPriced.fico_used_for_pricing, 732);
+
+  // ---- DATE SAFETY: a MALFORMED vendor date must NOT roll back an already-billed
+  // import (the persist path sanitizes bad dates to NULL instead of throwing on
+  // ::date). The scores are the payload; a bad date is not worth losing a billed pull.
+  const bIdD = await seedBorrower(`bdate-${suffix}@t.test`, 'Datey');
+  await db.query(`UPDATE borrowers SET fico=730 WHERE id=$1`, [bIdD]);
+  const appD = (await db.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [bIdD])).rows[0].id;
+  const dOut = await creditImport.orderAndImport({
+    applicationId: appD, actorId, action: 'Reissue', creditReportIdentifier: 'RPT1',
+    idempotencyKey: `k-${suffix}-baddate`, nowMs: 1500, transport: transportOf(responseXml({ issuedDate: 'N/A' })),
+  });
+  eq('bad-date import still imported (not rolled back)', dOut.status, 'imported');
+  ok('bad-date import still froze the FICO', dOut.froze === true);
+  const dRpt = (await db.query(`SELECT status, first_issued_date FROM credit_reports WHERE id=$1`, [dOut.reportId])).rows[0];
+  ok('malformed first_issued_date stored as NULL', dRpt.first_issued_date === null);
+  const dScoreDates = (await db.query(`SELECT count(*)::int n FROM credit_scores WHERE credit_report_id=$1 AND score_date IS NOT NULL`, [dOut.reportId])).rows[0];
+  eq('malformed score dates stored as NULL', dScoreDates.n, 0);
 
   // score factors stored on the Equifax row
   const eqFactors = (await db.query(`SELECT factors FROM credit_scores WHERE credit_report_id=$1 AND bureau='Equifax'`, [out.reportId])).rows[0];
@@ -304,13 +329,13 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   await db.query(`DELETE FROM staff_users WHERE id=$1`, [uwStaff]);
 
   // cleanup
-  await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1)`, [[appId, app2, app3]]);
-  await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id = ANY($1))`, [[appId, app2, app3]]);
-  await db.query(`DELETE FROM credit_reports WHERE application_id = ANY($1)`, [[appId, app2, app3]]);
-  await db.query(`DELETE FROM documents WHERE application_id = ANY($1)`, [[appId, app2, app3]]);
-  await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[appId, app2, app3]]);
-  await db.query(`DELETE FROM credit_fico_audit WHERE borrower_id = ANY($1)`, [[bId, b2, co2, b3]]);
-  await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bId, b2, co2, b3]]);
+  await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1)`, [[appId, app2, app3, appD]]);
+  await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id = ANY($1))`, [[appId, app2, app3, appD]]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id = ANY($1)`, [[appId, app2, app3, appD]]);
+  await db.query(`DELETE FROM documents WHERE application_id = ANY($1)`, [[appId, app2, app3, appD]]);
+  await db.query(`DELETE FROM applications WHERE id = ANY($1)`, [[appId, app2, app3, appD]]);
+  await db.query(`DELETE FROM credit_fico_audit WHERE borrower_id = ANY($1)`, [[bId, b2, co2, b3, bIdD]]);
+  await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bId, b2, co2, b3, bIdD]]);
   await db.query(`DELETE FROM user_credit_credentials WHERE user_id=$1`, [actorId]);
   await db.query(`DELETE FROM staff_users WHERE id=$1`, [actorId]);
 

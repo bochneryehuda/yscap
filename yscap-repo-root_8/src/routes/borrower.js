@@ -2507,7 +2507,8 @@ router.get('/credit', async (req, res) => {
   try {
     const reports = (await db.query(
       `SELECT DISTINCT cr.id, cr.first_issued_date, cr.representative_bracket, cr.pdf_document_id, cr.created_at,
-              (a.co_borrower_id IS NOT NULL) AS file_has_co
+              (a.co_borrower_id IS NOT NULL) AS file_has_co,
+              (cr.request_type='Joint') AS report_is_joint
          FROM credit_reports cr
          JOIN applications a ON a.id = cr.application_id
         WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND cr.status='imported'
@@ -2544,7 +2545,7 @@ router.get('/credit', async (req, res) => {
         id: r.id,
         pulledOn: r.first_issued_date,
         scores: scoresByReport.get(r.id) || [],
-        hasPdf: !!r.pdf_document_id && !r.file_has_co && !jointIds.has(r.id),
+        hasPdf: !!r.pdf_document_id && !r.file_has_co && !r.report_is_joint && !jointIds.has(r.id),
       })),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -2562,6 +2563,13 @@ router.get('/credit/:id/pdf', async (req, res) => {
          JOIN documents d ON d.id = cr.pdf_document_id
          JOIN applications a ON a.id = cr.application_id
         WHERE cr.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND cr.status='imported'
+          -- Report-level belt: a JOINT pull (request_type='Joint', set at order
+          -- time from >1 requested borrower) is NEVER released through self-service,
+          -- regardless of how its per-score borrower_id attribution landed. This
+          -- closes the residual edge where a co-borrower's scores could be stored
+          -- with a NULL borrower_id AND the co-borrower is later unlinked — both the
+          -- co_borrower_id and per-score guards would then pass.
+          AND cr.request_type IS DISTINCT FROM 'Joint'
           AND a.co_borrower_id IS NULL
           AND NOT EXISTS (SELECT 1 FROM credit_scores cs
                            WHERE cs.credit_report_id=cr.id AND cs.borrower_id IS NOT NULL AND cs.borrower_id <> $2)`,

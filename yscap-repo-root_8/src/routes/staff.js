@@ -30,7 +30,7 @@ const conditionRegistry = require('../lib/conditions/field-registry');
 const { CONDITION_TYPES, TOOLS, CATEGORIES, conditionTypeOf } = require('../lib/conditions/types');
 const { raiseEntityIssue } = require('../lib/raise-issue');
 
-const { can } = require('../lib/permissions');
+const { can, VISIBLE_OFFICERS_SQL } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
 // (below) decide what each can see and do.
 router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter', 'loan_coordinator', 'software_setup'));
@@ -133,11 +133,8 @@ async function audit(req, action, entity_type, entity_id, detail) {
 // assignee EXISTS also covers the primary (backfilled + trigger-synced), so this
 // term is behavior-identical until assistants are actually added. Single-param
 // ($p repeated) — no caller changes. Requires ${alias}.id to be selectable.
-const VISIBLE_OFFICERS_SQL = (alias, p) =>
-  `(${alias}.loan_officer_id=${p} OR ${alias}.processor_id=${p}` +
-  ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
-  ` OR EXISTS (SELECT 1 FROM application_assignees aa` +
-  ` WHERE aa.application_id=${alias}.id AND aa.staff_id=${p} AND aa.removed_at IS NULL))`;
+// VISIBLE_OFFICERS_SQL is imported from ../lib/permissions (one canonical
+// definition shared with staff-credit.js and the chat modules).
 function scopeClause(req, alias = 'a') {
   if (seesAll(req)) return { where: '', params: [] };
   return { where: `AND ${VISIBLE_OFFICERS_SQL(alias, '$SCOPE')}`, params: [req.actor.id] };
