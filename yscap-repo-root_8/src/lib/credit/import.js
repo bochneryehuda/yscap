@@ -460,6 +460,19 @@ async function orderAndImport(opts = {}) {
     logEvent({ ...evBase, phase: 'parse', outcome: 'parse_error' });
     throw httpError(502, `credit response could not be read: ${e.message}`, { reportId: reportRowId });
   }
+  // Keep only response borrowers we actually REQUESTED (match by SSN). The
+  // response can echo placeholder/responding parties (e.g. a masked 000000000
+  // SSN with no scores) that the parser can't tell from a real borrower; a
+  // phantom would otherwise force a genuine import to "review" on a false
+  // no-score. A legitimately frozen/no-hit co-borrower is preserved because its
+  // SSN IS one we requested. Only filter when we can match at least one — never
+  // drop everything.
+  const requestedSsns = new Set(requestBorrowers.map((b) => String(b.ssn || '').replace(/\D/g, '')).filter(Boolean));
+  if (requestedSsns.size && Array.isArray(parsed.borrowers) && parsed.borrowers.length > 1) {
+    const kept = parsed.borrowers.filter((b) => { const s = String(b.ssn || '').replace(/\D/g, ''); return !s || requestedSsns.has(s); });
+    if (kept.length) parsed.borrowers = kept;
+  }
+
   const scored = scoreParsed(parsed);
   const assessment = assessReport(parsed, scored);
 

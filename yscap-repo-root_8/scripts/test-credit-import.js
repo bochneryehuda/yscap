@@ -56,8 +56,8 @@ async function seedStaff(email) {
     `INSERT INTO staff_users (email, full_name, role) VALUES ($1,'Test Officer','loan_officer') RETURNING id`, [email]);
   return r.rows[0].id;
 }
-async function seedBorrower(email, first) {
-  const ssn = crypto.ssnForStorage('123-00-3333');
+async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
+  const ssn = crypto.ssnForStorage(ssnRaw);
   const r = await db.query(
     `INSERT INTO borrowers (first_name,last_name,email,ssn_encrypted,ssn_last4,current_address,fico)
      VALUES ($1,'Green',$2,$3,$4,$5::jsonb,700) RETURNING id`,
@@ -171,7 +171,7 @@ async function seedBorrower(email, first) {
 
   // ---- REVIEW path (co-borrower no score) ----
   const b2 = await seedBorrower(`b2p-${suffix}@t.test`, 'Nickie');
-  const co2 = await seedBorrower(`b2c-${suffix}@t.test`, 'Ann');
+  const co2 = await seedBorrower(`b2c-${suffix}@t.test`, 'Ann', '992-70-0027');   // matches the mock C1 SSN so the SSN-match filter keeps it
   const app2 = (await db.query(`INSERT INTO applications (borrower_id, co_borrower_id) VALUES ($1,$2) RETURNING id`, [b2, co2])).rows[0].id;
   const rev = await creditImport.orderAndImport({
     applicationId: app2, actorId, action: 'Reissue', creditReportIdentifier: 'RPT1',

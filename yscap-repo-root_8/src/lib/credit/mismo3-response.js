@@ -145,28 +145,35 @@ function parseCreditResponse(xml) {
   });
   // The deep PARTY scan picks up nested/echoed borrower parties (per-bureau
   // BORROWER blocks, the request echo, the response borrower) — all the SAME
-  // person repeated. Collapse to DISTINCT borrowers keyed by SSN (else name), so
-  // a single borrower is one entry and a real joint stays two.
+  // person repeated, and often WITHOUT an SSN. Collapse by NAME primarily (so a
+  // no-SSN echo merges into the real borrower), using SSN only to keep two
+  // genuinely different same-name people apart. A single borrower → one entry; a
+  // real joint (distinct names, or same name + distinct SSNs) → two.
   const seen = new Map();
   for (const p of borrowerParties) {
     const nm = findAll(p, 'NAME')[0];
     const first = nm ? findFirstText(nm, 'FirstName') : null;
     const last = nm ? findFirstText(nm, 'LastName') : null;
-    const ssn = findFirstText(p, 'TaxpayerIdentifierValue');
-    const key = (ssn && String(ssn).replace(/\D/g, '')) || `${(first || '').toUpperCase()}|${(last || '').toUpperCase()}`;
-    if (!key || key === '|') continue;
-    if (!seen.has(key)) {
-      seen.set(key, {
-        borrowerId: attr(findAll(p, 'ROLE')[0], 'xlink:label') || (seen.size === 0 ? 'B1' : `C${seen.size}`),
-        firstName: first, lastName: last, middleName: nm ? findFirstText(nm, 'MiddleName') : null, ssn, scores: [],
-      });
+    const ssn = (findFirstText(p, 'TaxpayerIdentifierValue') || '').replace(/\D/g, '') || null;
+    const nameKey = `${(first || '').toUpperCase()}|${(last || '').toUpperCase()}`;
+    if (nameKey === '|') continue;
+    let entry = seen.get(nameKey);
+    if (entry && ssn && entry.ssn && ssn !== entry.ssn) {
+      // same name but a different SSN → a distinct person; key by name+ssn.
+      const k2 = `${nameKey}#${ssn}`;
+      entry = seen.get(k2);
+      if (!entry) { entry = { firstName: first, lastName: last, middleName: nm ? findFirstText(nm, 'MiddleName') : null, ssn, scores: [] }; seen.set(k2, entry); }
+    } else if (!entry) {
+      entry = { firstName: first, lastName: last, middleName: nm ? findFirstText(nm, 'MiddleName') : null, ssn, scores: [] };
+      seen.set(nameKey, entry);
     } else {
-      const cur = seen.get(key);   // fill any identity gaps from a later, richer copy
-      if (!cur.firstName && first) cur.firstName = first;
-      if (!cur.lastName && last) cur.lastName = last;
+      if (!entry.ssn && ssn) entry.ssn = ssn;   // fill SSN from a richer copy of the same person
+      if (!entry.firstName && first) entry.firstName = first;
+      if (!entry.lastName && last) entry.lastName = last;
     }
   }
   const identities = [...seen.values()];
+  identities.forEach((b, i) => { b.borrowerId = i === 0 ? 'B1' : `C${i}`; });
   if (!identities.length) identities.push({ borrowerId: 'B1', firstName: findFirstText(message, 'FirstName'), lastName: findFirstText(message, 'LastName'), ssn: null, scores: [] });
 
   // Score→borrower mapping. Single borrower → all scores. Multiple → group by the
@@ -192,7 +199,10 @@ function parseCreditResponse(xml) {
     }
     if (!grouped) { identities[0].scores = scoreNodes; result.multiBorrowerUnsplit = true; }
   }
-  result.borrowers = identities;
+  // Drop any lingering phantom: an identity with NO scores AND no SSN is an
+  // echo, not a real borrower (a genuine no-score borrower still has an SSN).
+  const real = identities.filter((b) => b.scores.length > 0 || b.ssn);
+  result.borrowers = real.length ? real : identities;
 
   // ---- PDF (embedded base64) ----
   const vf = findAll(message, 'VIEW_FILE')[0] || findAll(message, 'DOCUMENT')[0];

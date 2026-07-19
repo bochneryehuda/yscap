@@ -80,6 +80,14 @@ const er = P.parseCreditResponse(errResp);
 ok('3.4 error not ok', !er.ok);
 ok('3.4 error code E103', er.errors.some((e) => e.code === 'E103'));
 
+// phantom echo: the same borrower repeated WITHOUT an SSN must collapse to one
+// (a real Xactus response echoes the borrower in several places).
+const echoResp = okResp.replace('</DEAL></DEALS></DEAL_SET>',
+  '<PARTIES><PARTY SequenceNumber="9"><INDIVIDUAL><NAME><FirstName>ANDY</FirstName><LastName>FREDDIE</LastName></NAME></INDIVIDUAL><ROLES><ROLE xlink:label="Echo"><ROLE_DETAIL><PartyRoleType>Borrower</PartyRoleType></ROLE_DETAIL></ROLE></ROLES></PARTY></PARTIES></DEAL></DEALS></DEAL_SET>');
+const ec = P.parseCreditResponse(echoResp);
+eq('3.4 no-SSN echo collapses to one borrower', ec.borrowers.length, 1);
+eq('3.4 collapsed borrower keeps its 3 scores', ec.borrowers[0].scores.length, 3);
+
 // frozen file status
 const frzResp = okResp.replace('<CREDIT_SCORES>', '<CREDIT_FILE><CreditRepositorySourceType>Experian</CreditRepositorySourceType><CreditFileResultStatusType>NoFileReturnedCreditFreeze</CreditFileResultStatusType></CREDIT_FILE><CREDIT_SCORES>');
 ok('3.4 frozen file surfaced', P.parseCreditResponse(frzResp).errors.some((e) => /freeze/i.test((e.texts || []).join(' ') + (e.code || ''))));
