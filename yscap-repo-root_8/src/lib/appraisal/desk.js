@@ -178,4 +178,70 @@ async function runAppraisalImport(args) {
   return out;
 }
 
-module.exports = { ensureAppraisalCondition, runAppraisalImport, extractAndStorePhotos, todayNY };
+// Recover the appraisal's PDF bytes from what we stored at import: the dedicated PDF document if
+// one was uploaded, else the PDF embedded inside the stored source XML. Returns base64 or null.
+async function pdfBytesForAppraisal(appr) {
+  const loadDoc = async (id) => {
+    if (!id) return null;
+    try {
+      const d = (await db.query('SELECT storage_ref FROM documents WHERE id=$1', [id])).rows[0];
+      if (!d || !d.storage_ref) return null;
+      const b = await storage.read(d.storage_ref);
+      return b && b.length ? b : null;
+    } catch (_) { return null; }
+  };
+  const pdf = await loadDoc(appr.pdf_document_id);
+  if (pdf) return pdf.toString('base64');
+  const xmlBuf = await loadDoc(appr.source_xml_document_id);
+  if (xmlBuf) { try { const e = X.embeddedPdfBase64(xmlBuf.toString('utf8')); if (e) return e; } catch (_) { /* no embedded pdf */ } }
+  return null;
+}
+
+// Re-pull the photos for a file's CURRENT appraisal on demand (staff "Pull photos" button, and
+// the boot backfill below). Idempotent-ish: extractAndStorePhotos retires an older set and
+// re-inserts; a file with no recoverable PDF simply yields 0. Returns the count stored.
+async function repullAppraisalPhotos(appId) {
+  const appr = (await db.query(
+    `SELECT id, application_id, pdf_document_id, source_xml_document_id
+       FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
+  if (!appr) return 0;
+  const pdfB64 = await pdfBytesForAppraisal(appr);
+  if (!pdfB64) return 0;
+  return extractAndStorePhotos(appr.id, appr.application_id, pdfB64, null);
+}
+
+// Boot backfill (previous AND future rule): every CURRENT appraisal that has a recoverable PDF but
+// NO extracted photos gets its gallery filled. Bounded per boot (photo decode is CPU-heavy); it
+// naturally drains because a filled appraisal drops out of the query. Best-effort, never throws.
+async function backfillAppraisalPhotosOnce(limit = 25) {
+  let scanned = 0, filled = 0, photos = 0;
+  try {
+    const rows = (await db.query(
+      `SELECT a.id, a.application_id, a.pdf_document_id, a.source_xml_document_id
+         FROM appraisals a
+        WHERE a.superseded=false
+          AND (a.pdf_document_id IS NOT NULL OR a.source_xml_document_id IS NOT NULL)
+          AND NOT EXISTS (SELECT 1 FROM appraisal_photos ap WHERE ap.appraisal_id=a.id AND ap.document_id IS NOT NULL)
+          -- and not already attempted-with-no-result (so we don't re-decode a no-photo PDF each boot)
+          AND NOT EXISTS (SELECT 1 FROM appraisal_photos ap WHERE ap.appraisal_id=a.id AND ap.category='backfill_none')
+        ORDER BY a.imported_at DESC
+        LIMIT $1`, [limit])).rows;
+    for (const r of rows) {
+      scanned++;
+      try {
+        const pdfB64 = await pdfBytesForAppraisal(r);
+        if (!pdfB64) continue;                             // no decodable PDF (cheap check, no re-decode)
+        const n = await extractAndStorePhotos(r.id, r.application_id, pdfB64, null);
+        if (n > 0) { filled++; photos += n; }
+        else {
+          // Had a PDF but nothing extractable — drop a sentinel so the (CPU-heavy) decode isn't
+          // retried on every boot. A real re-import creates a new appraisal row and re-attempts.
+          try { await db.query(`INSERT INTO appraisal_photos (appraisal_id, category, caption) VALUES ($1,'backfill_none','no extractable photos found')`, [r.id]); } catch (_) { /* best-effort */ }
+        }
+      } catch (_) { /* per-appraisal best-effort */ }
+    }
+  } catch (_) { /* best-effort */ }
+  return { scanned, filled, photos };
+}
+
+module.exports = { ensureAppraisalCondition, runAppraisalImport, extractAndStorePhotos, repullAppraisalPhotos, backfillAppraisalPhotosOnce, todayNY };

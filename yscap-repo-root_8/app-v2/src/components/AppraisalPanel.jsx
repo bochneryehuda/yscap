@@ -32,7 +32,7 @@ function btn(primary, danger) {
     fontSize: 12.5, fontWeight: 600, borderRadius: 8, padding: '7px 13px', cursor: 'pointer',
     border: '1px solid ' + (primary ? 'var(--teal,#2F7F86)' : danger ? 'color-mix(in srgb,var(--crit,#B4483C) 35%,var(--line,#E7E1D3))' : 'var(--line,#E7E1D3)'),
     background: primary ? 'var(--teal,#2F7F86)' : 'transparent',
-    color: primary ? '#fff' : danger ? 'var(--crit,#B4483C)' : 'var(--ink,#141B22)',
+    color: primary ? '#fff' : danger ? 'var(--crit,#B4483C)' : 'var(--text,#141B22)',
   };
 }
 
@@ -335,7 +335,7 @@ function Approaches({ a }) {
       {tiles.map(([k, sub, v], i) => (
         <div key={i} className="appr-avoid" style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 14px' }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--muted,#4B585C)' }}>{k}<span style={{ fontWeight: 400 }}> · {sub}</span></div>
-          <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 20, fontWeight: 600, marginTop: 3, color: i === 0 ? 'var(--teal-deep,#256168)' : 'var(--ink,#141B22)' }}>{money(v)}</div>
+          <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 20, fontWeight: 600, marginTop: 3, color: i === 0 ? 'var(--teal-deep,#256168)' : 'var(--text,#141B22)' }}>{money(v)}</div>
         </div>
       ))}
     </div>
@@ -510,7 +510,7 @@ function CompMap({ comps }) {
         {['N', 'E', 'S', 'W'].map((d) => { const [x, y] = xy(maxMi, d); return <text key={d} x={x} y={y} fontSize="10" fontWeight="700" fill={muted} textAnchor="middle" dominantBaseline="middle">{d}</text>; })}
         {/* subject */}
         <circle cx={cx} cy={cy} r={6} fill="var(--gold,#AE8746)" />
-        <text x={cx} y={cy - 10} fontSize="10.5" fontWeight="700" fill="var(--ink,#141B22)" textAnchor="middle">Subject</text>
+        <text x={cx} y={cy - 10} fontSize="10.5" fontWeight="700" fill="var(--text,#141B22)" textAnchor="middle">Subject</text>
         {/* comps */}
         {pts.map(({ c, p }) => {
           const [x, y] = xy(p.miles, p.dir);
@@ -535,6 +535,61 @@ function CompMap({ comps }) {
         </div>
         {unmapped > 0 && <div style={{ fontSize: 11.5, color: muted, marginTop: 8 }}>{unmapped} comp{unmapped === 1 ? '' : 's'} had no mappable distance/direction.</div>}
       </div>
+    </div>
+  );
+}
+
+// Three-cap loan-sizing panel (staff only). Fetches the current pricing quote (frozen engine, no
+// persistence) and shows where the loan lands on each leverage measure — As-Is/acquisition LTV,
+// loan-to-cost, ARV LTV — and which one is binding. Renders nothing if pricing is unavailable.
+function ThreeCapPanel({ appId }) {
+  const [state, setState] = useState(null);   // null=loading | {err} | {data}
+  useEffect(() => {
+    let live = true;
+    api.staffPricing(appId).then((r) => { if (live) setState({ data: r }); }).catch((e) => { if (live) setState({ err: e && e.message }); });
+    return () => { live = false; };
+  }, [appId]);
+  if (!state || state.err) return null;                       // quiet while loading / if unavailable
+  const d = state.data || {};
+  const quote = d.quote || {};
+  const prog = d.current && d.current.program;
+  const pick = (prog && quote[prog] && quote[prog].eligible) ? quote[prog]
+    : (quote.standard && quote.standard.eligible) ? quote.standard
+      : (quote.gold && quote.gold.eligible) ? quote.gold : null;
+  if (!pick || !pick.sizing) return null;
+  const s = pick.sizing;
+  const b = String(s.binding || '').toLowerCase();
+  const caps = [
+    { label: 'As-Is / acquisition LTV', pct: s.acqLtvPct, key: 'acq' },
+    { label: 'Loan-to-cost', pct: s.ltcPct, key: 'ltc' },
+    { label: 'ARV LTV', pct: s.arvPct, key: 'arv' },
+  ].filter((c) => c.pct != null);
+  if (!caps.length) return null;
+  const isBinding = (k) => (k === 'acq' && /acq|as.?is|ltv/.test(b) && !/arv/.test(b)) || (k === 'ltc' && /ltc|cost/.test(b)) || (k === 'arv' && /arv/.test(b));
+  return (
+    <div className="appr-avoid" style={{ marginTop: 14, background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>Loan sizing — leverage by measure</span>
+        {s.totalLoan != null && <span style={{ fontSize: 13 }}>Sized loan <b style={{ fontFamily: 'var(--serif,Georgia,serif)' }}>{money(s.totalLoan)}</b>{pick.programLabel ? <span style={{ color: 'var(--muted,#4B585C)' }}> · {pick.programLabel}</span> : null}</span>}
+      </div>
+      <div style={{ display: 'grid', gap: 9 }}>
+        {caps.map((c) => {
+          const pct = Math.max(0, Math.min(100, Number(c.pct)));
+          const bind = isBinding(c.key);
+          return (
+            <div key={c.key}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, marginBottom: 3 }}>
+                <span style={{ color: 'var(--muted,#4B585C)' }}>{c.label}{bind && <span style={{ color: 'var(--teal-deep,#256168)', fontWeight: 700 }}> · binding</span>}</span>
+                <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{pct.toFixed(1)}%</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 6, background: 'var(--line,#E7E1D3)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${pct}%`, background: bind ? 'var(--teal,#2F7F86)' : 'var(--gold,#AE8746)', borderRadius: 6 }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 8 }}>Where this loan lands on each leverage measure at today's file values — the binding one sets the size. Live preview, nothing saved.</div>
     </div>
   );
 }
@@ -649,6 +704,17 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
     finally { setImporting(false); }
   };
 
+  const [pulling, setPulling] = useState(false);
+  const pullPhotos = async () => {
+    setPulling(true); setErr('');
+    try {
+      const r = await api.appraisalRefreshPhotos(appId);
+      await load();
+      if (!r || !r.stored) setErr('No photos could be pulled — the appraisal PDF may not be on file yet. Upload the PDF to the appraisal condition, then try again.');
+    } catch (e3) { setErr(e3.message || 'Could not pull photos'); }
+    finally { setPulling(false); }
+  };
+
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the appraisal…</p>;
 
   const a = data && data.appraisal;
@@ -702,7 +768,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
               </div>
               <ValueStory a={a} />
               {a.appraised_value != null && (
-                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 8 }}>Appraised value on the report: <b style={{ color: 'var(--ink,#141B22)' }}>{money(a.appraised_value)}</b></div>
+                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 8 }}>Appraised value on the report: <b style={{ color: 'var(--text,#141B22)' }}>{money(a.appraised_value)}</b></div>
               )}
             </div>
           </div>
@@ -748,7 +814,20 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
           )}
 
           {/* ===== PHOTO GALLERY ===== */}
-          <PhotoGallery photos={photos} readOnly={readOnly} />
+          {photos.length > 0 ? (
+            <PhotoGallery photos={photos} readOnly={readOnly} />
+          ) : (
+            <div className="appr-avoid appr-noprint" style={{ background: 'var(--paper,#F6F3EC)', border: '1px dashed var(--line,#E7E1D3)', borderRadius: 14, padding: 18, marginTop: 6, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 15, fontWeight: 600 }}>Photographs</div>
+                <div style={{ fontSize: 13, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+                  {readOnly ? 'The property photos will appear here once the appraisal PDF has been processed.'
+                    : 'No photos yet — they’re pulled from the appraisal PDF. If the PDF is on file, pull them now; otherwise upload the PDF to the appraisal condition.'}
+                </div>
+              </div>
+              {!readOnly && <button onClick={pullPhotos} disabled={pulling} style={{ ...OPEN_BTN, marginLeft: 0 }}>{pulling ? 'Pulling photos…' : '⤓ Pull photos from the PDF'}</button>}
+            </div>
+          )}
 
           {/* ===== PROPERTY DETAILS — the dossier cards ===== */}
           <SecHead eyebrow="The subject" title="Property details" />
@@ -803,10 +882,21 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
 
             {(a.value_income_approach != null || a.grm != null || (data.units || []).length > 0) && (
               <DCard title="Income & rents" tag={a.form_type === 'FNM1025' ? '1025' : null}>
-                <KV rows={[
-                  ['Gross rent multiplier', a.grm != null ? Number(a.grm).toLocaleString('en-US') : '—'],
-                  ['Value — income approach', a.value_income_approach != null ? money(a.value_income_approach) : '—'],
-                ]} />
+                <KV rows={(() => {
+                  const units = data.units || [];
+                  const mkt = units.reduce((s, u) => s + (num(u.market_rent) || 0), 0);
+                  const act = units.reduce((s, u) => s + (num(u.actual_rent) || 0), 0);
+                  const valForYield = num(a.value_income_approach) != null ? num(a.value_income_approach)
+                    : num(a.as_is_value) != null ? num(a.as_is_value) : num(a.appraised_value);
+                  const yieldPct = (mkt > 0 && valForYield) ? (mkt * 12) / valForYield * 100 : null;
+                  return [
+                    mkt > 0 && ['Market rent', `${money(mkt)} / mo`, `${money(mkt * 12)} / yr`],
+                    act > 0 && ['Actual rent', `${money(act)} / mo`],
+                    ['Gross rent multiplier', a.grm != null ? Number(a.grm).toLocaleString('en-US') : '—'],
+                    ['Value — income approach', a.value_income_approach != null ? money(a.value_income_approach) : '—'],
+                    yieldPct != null && ['Gross yield (market)', `${yieldPct.toFixed(1)}%`, 'annual market rent ÷ value'],
+                  ];
+                })()} />
                 {(data.units || []).length > 0 && (
                   <div style={{ marginTop: 12, overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
@@ -843,6 +933,16 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
           {/* ===== WHAT IT'S WORTH ===== */}
           <SecHead eyebrow="Valuation" title="What it's worth" />
           <Approaches a={a} />
+          {/* Independent second opinion — what the comps themselves imply (not the appraiser's
+              reconciliation). Shown only when we have enough comps to form one. */}
+          {data.score && data.score.impliedValue && (
+            <div className="appr-avoid" style={{ marginTop: 12, display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 14px', fontSize: 13 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>Independent comp check</span>
+              <span>The comps imply <b style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 16 }}>{money(data.score.impliedValue.median)}</b>
+                <span style={{ color: 'var(--muted,#4B585C)' }}> (median of {data.score.impliedValue.n} adjusted comps; range {money(data.score.impliedValue.low)}–{money(data.score.impliedValue.high)}{data.score.impliedValue.perGlaValue ? `; $/sqft implies ${money(data.score.impliedValue.perGlaValue)}` : ''})</span>
+              </span>
+            </div>
+          )}
           <div className="appr-avoid" style={{ marginTop: 14, background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '14px 16px', fontSize: 13.5 }}>
             <span style={{ fontWeight: 700, color: 'var(--teal-deep,#256168)' }}>Value basis:&nbsp;</span>
             {isArvBasis
@@ -850,6 +950,9 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
               : <>This is the <b>current As-Is market value</b> of the property, as reconciled by the appraiser from the sales-comparison approach.</>}
             {a.as_is_confidence && a.as_is_confidence !== 'definite' && <> The As-Is figure was read from the report’s narrative — PILOT opens a task for an officer to confirm it rather than guess.</>}
           </div>
+
+          {/* Three-cap loan sizing — staff only (uses the pricing quote, no persistence). */}
+          {!readOnly && <ThreeCapPanel appId={appId} />}
 
           {/* ===== COMPARABLE SALES ===== */}
           {comps.length > 0 && (
