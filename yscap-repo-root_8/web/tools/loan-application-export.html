@@ -111,13 +111,19 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="vendor/jspdf.umd.min.js" onerror="window.__jspdfFailed=1"></script>
 <script>
 (function(){
   var LENDER = { name:"YS Capital Group", nmls:"2609746", addr:"5 New Montrose Avenue, Brooklyn, NY 11211", phone:"(718) 635-0277" };
   function el(id){ return document.getElementById(id); }
   function v(id){ var e=el(id); return e ? e.value : ""; }
   function pdfSafe(s){ return String(s==null?"":s).replace(/[‘’]/g,"'").replace(/[“”]/g,'"').replace(/[–—]/g,"-").replace(/•/g,"*").replace(/[^\x00-\xFF]/g,""); }
+  // Single-line truncation so long officer/vesting/address values can't overflow or overlap.
+  function fit(s,max){ s=String(s==null?"":s); return s.length>max ? s.slice(0,max)+"..." : s; }
+  // NOTE (build item): jsPDF's core font is Latin-1 only, so a fully non-Latin (e.g. Hebrew) legal
+  // name strips to empty and its row is omitted rather than drawn blank. The production version must
+  // embed a Unicode TTF to render non-Latin borrower names. (Hebrew docs like the Heter Iska are handled
+  // by DocuSign Document Generation from the Word template, not this jsPDF path.)
 
   function gather(){
     var hasCo = el("hasCo").checked;
@@ -135,6 +141,7 @@
   }
 
   function build(returnBase64){
+    if (!window.jspdf || !window.jspdf.jsPDF) throw new Error("PDF engine not loaded");
     var jsPDF = window.jspdf.jsPDF;
     var doc = new jsPDF({ unit:"pt", format:"letter", orientation:"portrait" });
     var W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 40;
@@ -157,7 +164,7 @@
       var o=d.o;
       if (o && (o.name||o.phone||o.email)){
         doc.setFontSize(7.6); doc.setFont("helvetica","bold"); doc.setTextColor(60,66,72);
-        doc.text(pdfSafe("Your loan officer: "+o.name+(o.title?", "+o.title:"")+(o.phone?"  ·  "+o.phone:"")+(o.email?"  ·  "+o.email:"")+(o.nmls?"  ·  NMLS "+o.nmls:"")), M, H-52, {maxWidth:W-2*M});
+        doc.text(pdfSafe(fit("Your loan officer: "+o.name+(o.title?", "+o.title:"")+(o.phone?"  ·  "+o.phone:"")+(o.email?"  ·  "+o.email:"")+(o.nmls?"  ·  NMLS "+o.nmls:""), 118)), M, H-52);
       }
       doc.setFontSize(7); doc.setTextColor(150,158,162); doc.setFont("helvetica","normal");
       doc.text(pdfSafe(LENDER.name+" · NMLS "+LENDER.nmls+" · "+LENDER.addr+" · "+LENDER.phone), M, H-40, {maxWidth:W-2*M});
@@ -165,7 +172,7 @@
     }
     function brk(need){ if (y+need > H-56){ footer(); doc.addPage(); header(); y=92; } }
     function band(t){ brk(30); doc.setFillColor.apply(doc, TEAL); doc.roundedRect(M,y,W-2*M,17,2.5,2.5,"F"); doc.setFont("helvetica","bold"); doc.setFontSize(8.2); doc.setTextColor(255,255,255); doc.text(pdfSafe(t.toUpperCase()), M+7, y+11.5); y+=23; }
-    function rowFull(k,val,opts){ opts=opts||{}; if(val==null||val==="") return; brk(16); doc.setFont("helvetica","normal"); doc.setFontSize(8.4); doc.setTextColor.apply(doc,GRAY); doc.text(pdfSafe(k), M+3, y+8); doc.setFont("helvetica","bold"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, opts.accent?GOLD:DARK); doc.text(pdfSafe(String(val)), W-M-3, y+8, {align:"right"}); y+=15; doc.setDrawColor.apply(doc,LINE); doc.setLineWidth(0.4); doc.line(M+3,y-3.5,W-M-3,y-3.5); }
+    function rowFull(k,val,opts){ opts=opts||{}; var sv=pdfSafe(fit(String(val==null?"":val),64)); if(val==null||val===""||!/\S/.test(sv)) return; brk(16); doc.setFont("helvetica","normal"); doc.setFontSize(8.4); doc.setTextColor.apply(doc,GRAY); doc.text(pdfSafe(k), M+3, y+8); doc.setFont("helvetica","bold"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, opts.accent?GOLD:DARK); doc.text(sv, W-M-3, y+8, {align:"right"}); y+=15; doc.setDrawColor.apply(doc,LINE); doc.setLineWidth(0.4); doc.line(M+3,y-3.5,W-M-3,y-3.5); }
     function para(t,size){ var ls=doc.splitTextToSize(pdfSafe(t), W-2*M-6); brk(ls.length*10.5+4); doc.setFont("helvetica","normal"); doc.setFontSize(size||8); doc.setTextColor(70,78,82); doc.text(ls, M+3, y+8); y+=ls.length*10.5+8; }
 
     // Invisible DocuSign anchor: white, tiny, machine-readable only.
@@ -179,7 +186,7 @@
       doc.setFont("helvetica","normal"); doc.setFontSize(7.6); doc.setTextColor.apply(doc, GRAY);
       doc.text(pdfSafe(role), x, y+44);
       doc.setFont("helvetica","bold"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, DARK);
-      doc.text(pdfSafe(who), x, y+57);
+      var nm=pdfSafe(fit(who,42)); if(/\S/.test(nm)) doc.text(nm, x, y+57);
       doc.setDrawColor.apply(doc, GRAY); doc.line(x, y+78, x+w, y+78);
       anchor("/"+prefix+"_dt/", x+2, y+74);                  // date slot
       doc.setFont("helvetica","normal"); doc.setFontSize(7.6); doc.setTextColor.apply(doc, GRAY);
@@ -191,9 +198,9 @@
       doc.setFillColor(246,243,236); doc.rect(0,78.2,W,19,"F");
       doc.setDrawColor.apply(doc,LINE); doc.setLineWidth(0.5); doc.line(0,97.2,W,97.2);
       doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor.apply(doc,TEAL);
-      doc.text(pdfSafe("Prepared by "+o.name+(o.title?", "+o.title:"")), M, 91);
+      doc.text(pdfSafe(fit("Prepared by "+o.name+(o.title?", "+o.title:""), 52)), M, 91);
       doc.setFont("helvetica","normal"); doc.setTextColor.apply(doc,GRAY);
-      doc.text(pdfSafe((o.phone||"")+(o.email?"   ·   "+o.email:"")+(o.nmls?"   ·   NMLS "+o.nmls:"")), W-M, 91, {align:"right"});
+      doc.text(pdfSafe(fit((o.phone||"")+(o.email?"   ·   "+o.email:"")+(o.nmls?"   ·   NMLS "+o.nmls:""), 50)), W-M, 91, {align:"right"});
     })();
     y = 108;
 
@@ -245,21 +252,23 @@
     band("Business-Purpose Acknowledgment");
     para("The undersigned applies for the above loan solely for business, commercial, or investment purposes and not for personal, family, or household use. The subject property is and will remain non-owner-occupied. The undersigned certifies that the information provided in this application is true, complete, and correct.", 8);
 
+    brk(140);   // reserve band + both signature blocks up front so the header can't orphan at a page bottom
     band("Signatures");
-    brk(110);
     sigBlock(M, d.b.name, "Borrower signature", "app_b1");
     if (d.c) sigBlock(M + (W-2*M-24)/2 + 24, d.c.name, "Co-Borrower / Guarantor signature", "app_b2");
     y += 100;
 
+    footer();   // H-1 fix: the last/only page (the signature page) MUST carry the NMLS + business-purpose disclosure
     if (returnBase64) return doc.output("datauristring").split(",")[1];
-    doc.save("YS_Business_Purpose_Application_"+(d.b.name||"Applicant").replace(/[^A-Za-z0-9]+/g,"_")+".pdf");
+    var stem=String(d.b.name||"Applicant").replace(/[^A-Za-z0-9]+/g,"_").replace(/^_+|_+$/g,"")||"Applicant";
+    doc.save("YS_Business_Purpose_Application_"+stem+".pdf");
   }
 
   el("hasCo").addEventListener("change", function(){ el("coCard").style.display = this.checked ? "" : "none"; });
-  el("gen").addEventListener("click", function(){ try{ build(false); }catch(e){ alert("Generate needs an internet connection (loads the PDF engine). "+e.message); } });
+  el("gen").addEventListener("click", function(){ try{ build(false); }catch(e){ alert("Could not generate the PDF: "+e.message); } });
 
-  // Headless-render hook: window.APPEXPORT.generate(true) -> base64 PDF
-  window.APPEXPORT = { generate: build };
+  // Headless-render hook: window.APPEXPORT.generate(true) -> base64 PDF; .ready() gates it.
+  window.APPEXPORT = { generate: build, ready: function(){ return !!(window.jspdf && window.jspdf.jsPDF); } };
 })();
 </script>
 </body>
