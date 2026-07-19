@@ -139,7 +139,7 @@ router.get('/credit/reports', requirePull, async (req, res) => {
               status, review_reason, bureau_status, underwriting_finding, error_detail, mismo_version,
               underwriting_finding_reconciled_at, underwriting_finding_reconciled_by, underwriting_finding_reconcile_note,
               pdf_document_id, created_at, completed_at
-         FROM credit_reports WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
+         FROM credit_reports WHERE application_id=$1 ORDER BY created_at DESC, id DESC`, [appId])).rows;
     const ids = reports.map((r) => r.id);
     let scores = [];
     if (ids.length) {

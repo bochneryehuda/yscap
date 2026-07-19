@@ -2588,7 +2588,11 @@ async function signOffGate(itemId, actor) {
       `SELECT underwriting_finding, underwriting_finding_reconciled_at
          FROM credit_reports
         WHERE application_id=$1
-        ORDER BY created_at DESC LIMIT 1`, [item.application_id])).rows[0];
+        -- id DESC is a deterministic tiebreaker so this app-layer gate and the
+        -- db/168 trigger backstop always resolve the SAME latest report even on a
+        -- same-timestamp tie -- otherwise the two layers could disagree (one allows,
+        -- the other raises).
+        ORDER BY created_at DESC, id DESC LIMIT 1`, [item.application_id])).rows[0];
     const f = cr && cr.underwriting_finding;
     if (f && typeof f === 'object' && f.severity === 'fatal' && !cr.underwriting_finding_reconciled_at) {
       const ve = f.verified != null ? f.verified : '—';

@@ -59,6 +59,33 @@ BEGIN
   UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
   RAISE NOTICE 'PASS T5: a non-fatal finding never blocks';
 
+  -- TEST 6: SAME created_at tiebreaker is DETERMINISTIC (id DESC). Two reports
+  -- share a timestamp — a fatal one and a clean one. The gate must pick the same
+  -- row every time (highest id), so the app layer and this trigger never disagree.
+  -- Fatal report given the HIGHER id => it is "latest" => sign-off BLOCKED.
+  UPDATE checklist_items SET status='received' WHERE application_id=aid AND template_id=tmpl;
+  DELETE FROM credit_reports WHERE application_id=aid;
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-000000000001', aid, 1, 'complete', NULL, timestamptz '2020-01-01 00:00:00+00');
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-000000000002', aid, 1, 'complete',
+            '{"severity":"fatal","verified":732,"claimed":699}'::jsonb, timestamptz '2020-01-01 00:00:00+00');
+  blocked := false;
+  BEGIN
+    UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  EXCEPTION WHEN check_violation THEN blocked := true;
+  END;
+  IF NOT blocked THEN RAISE EXCEPTION 'FAIL T6a: fatal report with higher id at same timestamp did NOT block'; END IF;
+  -- Now give the CLEAN report the higher id => clean is "latest" => sign-off ALLOWED.
+  DELETE FROM credit_reports WHERE application_id=aid;
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-000000000001', aid, 1, 'complete',
+            '{"severity":"fatal","verified":732,"claimed":699}'::jsonb, timestamptz '2020-01-01 00:00:00+00');
+  INSERT INTO credit_reports (id, application_id, provider_id, status, underwriting_finding, created_at)
+    VALUES ('00000000-0000-0000-0000-000000000002', aid, 1, 'complete', NULL, timestamptz '2020-01-01 00:00:00+00');
+  UPDATE checklist_items SET status='satisfied' WHERE application_id=aid AND template_id=tmpl;
+  RAISE NOTICE 'PASS T6: same-timestamp tiebreaker is deterministic (id DESC) — fatal-higher blocks, clean-higher allows';
+
   DELETE FROM checklist_items WHERE application_id=aid;
   DELETE FROM credit_reports WHERE application_id=aid;
   DELETE FROM applications WHERE id=aid;

@@ -70,7 +70,10 @@ BEGIN
     INTO v_finding, v_reconciled
     FROM credit_reports
    WHERE application_id = NEW.application_id
-   ORDER BY created_at DESC
+   -- `id DESC` tiebreaker: this trigger and the app-layer gate (signOffGate) must
+   -- resolve the SAME "latest report" even on a same-timestamp tie, or the two
+   -- layers could disagree (one allows the sign-off, the other raises).
+   ORDER BY created_at DESC, id DESC
    LIMIT 1;
 
   IF v_finding IS NOT NULL
@@ -119,6 +122,6 @@ UPDATE checklist_items ci
             AND cr.underwriting_finding_reconciled_at IS NULL
        FROM credit_reports cr
       WHERE cr.application_id = a.id
-      ORDER BY cr.created_at DESC
+      ORDER BY cr.created_at DESC, cr.id DESC
       LIMIT 1
    );
