@@ -246,6 +246,11 @@ const TPR_DOC_SELECT = `
      -- inside the next one must never happen.
      AND COALESCE(d.doc_kind,'') NOT IN ('track_record_html','tpr_export')
      AND COALESCE(d.doc_kind,'') NOT LIKE '%\\_export'
+     -- HARD RULE (owner-directed): the signed Heter Iska is NEVER in the TPR
+     -- export (kept only in-system + on DocuSign). Belt-and-suspenders alongside
+     -- rtl_cond_iska.tpr_exclude=true — a loosely-attached heter_iska_signed
+     -- must not slip through. See docs/DOCUSIGN-DOCUMENT-BUILD-SPEC Addendum A.9.
+     AND COALESCE(d.doc_kind,'') <> 'heter_iska_signed'
      -- #83: an EXPIRED Certificate of Good Standing behaves like empty
      -- everywhere, so it must not ship as if it were a live document. Guard the
      -- template_id IS NOT NULL first: a loose/profile/entity doc has NULL
