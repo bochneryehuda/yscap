@@ -125,7 +125,17 @@ async function runAppraisalImport(args) {
   if (!out.ok) return out;
   await ensureAppraisalCondition(appId, 'appraisal_review_cleared');
   let embedded = null; try { embedded = X.embeddedPdfBase64(xml); } catch (_) { embedded = null; }
-  const pdfB64 = pdfBase64 || embedded;
+  let pdfB64 = pdfBase64 || embedded;
+  // If no PDF was passed inline and none is embedded in the XML, but a PDF document was
+  // uploaded to the appraisal condition's PDF slot (pdfDocumentId), load its bytes from storage
+  // so the SEPARATELY-uploaded PDF still feeds photo extraction + the As-Is OCR. Best-effort —
+  // a storage miss never breaks the import (the report is already built from the XML).
+  if (!pdfB64 && pdfDocumentId) {
+    try {
+      const d = (await db.query('SELECT storage_ref FROM documents WHERE id=$1', [pdfDocumentId])).rows[0];
+      if (d && d.storage_ref) { const buf = await storage.read(d.storage_ref); if (buf && buf.length) pdfB64 = buf.toString('base64'); }
+    } catch (_) { /* best-effort: no PDF bytes → no photos, never a hard fail */ }
+  }
   if (out.needsAsIsCondition) {
     await ensureAppraisalCondition(appId, 'appraisal_as_is_verify');
     fireOcrAdvisory(appId, pdfB64, importedBy);

@@ -138,6 +138,49 @@ function valuation(root) {
 }
 
 // ---- comps (exclude the seq-0 subject; count distinct seq≥1) ----------------
+// Normalize a date to YYYY-MM-DD ('08/14/2009' or '2009-08-14'). Historical (no upper bound);
+// never new Date(). Returns null if not a plausible calendar date.
+function isoDate(v) {
+  const s = clean(v); if (!s) return null;
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
+  if (m && +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+  if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) return `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+  return null;
+}
+// A comp's "s03/25;c07/25" DateOfSale → the SETTLED month as YYYY-MM-01 (s=settled, c=contract).
+function settledMonth(desc) {
+  const s = String(desc || '');
+  const m = /s\s*(\d{1,2})\/(\d{2,4})/i.exec(s) || /(\d{1,2})\/(\d{2,4})/.exec(s);
+  if (!m) return null;
+  let mo = parseInt(m[1], 10), yr = parseInt(m[2], 10);
+  if (yr < 100) yr = 2000 + yr;
+  if (mo < 1 || mo > 12 || yr < 2000 || yr > CUR_YEAR + 1) return null;
+  return `${yr}-${String(mo).padStart(2, '0')}-01`;
+}
+// Comp-level grid data mined from a comp's SALE_PRICE_ADJUSTMENT rows + its COMPARISON_DETAIL.
+function compGrid(c) {
+  const out = { gla: null, saleDate: null, conditionUad: null, qualityUad: null, dom: null, pricePerGla: money(X.attr(c, 'SalesPricePerGrossLivingAreaAmount')), adjustments: [] };
+  for (const spa of X.findAll(c, 'SALE_PRICE_ADJUSTMENT')) {
+    const t = clean(X.attr(spa, '_Type'));
+    const d = clean(X.attr(spa, '_Description'));
+    const amt = toNum(X.attr(spa, '_Amount'));
+    if (t) out.adjustments.push({ type: t, description: d, amount: amt });
+    if (t === 'GrossLivingArea' && d) { const g = toNum(d); if (g != null && g > 100 && g < 100000) out.gla = g; }
+    else if (t === 'GrossBuildingArea' && d && out.gla == null) { const g = toNum(d); if (g != null && g > 100 && g < 100000) out.gla = g; }
+    else if (t === 'DateOfSale' && d) out.saleDate = settledMonth(d);
+    else if (t === 'Condition' && d && UAD_C.test(d)) out.conditionUad = d;
+    else if (t === 'Quality' && d && UAD_Q.test(d)) out.qualityUad = d;
+  }
+  const cd = X.find(c, 'COMPARISON_DETAIL');
+  if (cd) {
+    if (!out.conditionUad) { const cc = clean(X.attr(cd, 'GSEOverallConditionType')); if (cc && UAD_C.test(cc)) out.conditionUad = cc; }
+    if (!out.qualityUad) { const qq = clean(X.attr(cd, 'GSEQualityOfConstructionRatingType')); if (qq && UAD_Q.test(qq)) out.qualityUad = qq; }
+    const dom = toNum(X.attr(cd, 'GSEDaysOnMarketDescription')); if (dom != null && dom >= 0 && dom < 3000) out.dom = dom;
+  }
+  return out;
+}
+
 function comparables(root) {
   const all = X.findAll(root, 'COMPARABLE_SALE');
   const subject0 = all.find((c) => X.attr(c, 'PropertySequenceIdentifier') === '0') || null;
@@ -148,6 +191,7 @@ function comparables(root) {
     if (seq === '0' || seq == null || seen.has(seq)) continue;
     seen.add(seq);
     const loc = X.find(c, 'LOCATION');
+    const g = compGrid(c);
     comps.push({
       seq,
       address: clean(X.attr(loc, 'PropertyStreetAddress')),
@@ -160,9 +204,28 @@ function comparables(root) {
       netAdjustment: toNum(X.attr(c, 'SalePriceTotalAdjustmentAmount')),
       netAdjPct: toNum(X.attr(c, 'SalePriceTotalAdjustmentNetPercent')),
       grossAdjPct: toNum(X.attr(c, 'SalesPriceTotalAdjustmentGrossPercent')),
+      gla: g.gla, saleDate: g.saleDate, conditionUad: g.conditionUad, qualityUad: g.qualityUad,
+      dom: g.dom, pricePerGla: g.pricePerGla, adjustments: g.adjustments.length ? g.adjustments : null,
     });
   }
   return { comps, subject0 };
+}
+
+// Subject prior sale (for flip / recent-sale detection) — the structured PRIOR_SALES under the
+// seq-0 subject comp, plus the has-prior-sale flag from SALES_COMPARISON/RESEARCH/SUBJECT.
+function subjectPriorSale(root, subject0) {
+  const out = { hasPrior: null, priorDate: null, priorAmount: null };
+  const ps = subject0 ? X.find(subject0, 'PRIOR_SALES') : null;
+  if (ps) {
+    out.priorAmount = money(X.attr(ps, 'PropertySalesAmount'));
+    out.priorDate = isoDate(X.attr(ps, 'PropertySalesDate'));
+  }
+  const rs = X.find(root, 'RESEARCH');
+  const subj = rs ? X.find(rs, 'SUBJECT') : null;
+  const flag = subj ? clean(X.attr(subj, '_HasPriorSalesIndicator')) : null;
+  if (flag) out.hasPrior = /^y/i.test(flag);
+  else if (out.priorAmount != null || out.priorDate != null) out.hasPrior = true;
+  return out;
 }
 
 // ---- subject condition/quality from the seq-0 comp (UAD codes only) ---------
@@ -234,6 +297,7 @@ function extract(xml) {
     floodZone: clean(X.attr(X.find(root, 'FLOOD_ZONE'), 'NFIPFloodZoneIdentifier')),
     conditionUad: cq.conditionUad,
     qualityUad: cq.qualityUad,
+    priorSale: subjectPriorSale(root, subject0),
   };
   // imply units by form when blank (1004/1073 → 1)
   if (subject.units == null && (formType === 'FNM1004' || formType === 'FNM1073')) subject.units = 1;
