@@ -29,9 +29,11 @@ const BB = '»';   // »  (merge-field close guillemet)
 
 // ---- small XML helpers ------------------------------------------------------
 function escapeXml(s) {
+  // w:t text is XML ELEMENT CONTENT, where only & < > must be escaped — quotes and
+  // apostrophes stay literal (exactly what Word itself writes for e.g. O'Brien),
+  // so the value renders identically no matter how the .docx→PDF converter decodes.
   return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /** An invisible (white, 1pt) run carrying a DocuSign anchor string. */
