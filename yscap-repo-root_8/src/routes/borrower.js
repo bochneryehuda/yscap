@@ -15,6 +15,7 @@ const { requireAuth, requireBorrower } = require('../auth');
 const notify = require('../lib/notify');
 const mail = require('../lib/email/catalog');
 const { fileReplyTo } = require('../lib/file-address');   // #68 per-file shared reply-to
+const { enqueueSitewirePush } = require('../sitewire/enqueue'); // birth push on the Request-a-draw click (self-gated)
 const { redactPII } = require('../lib/redact');
 const { serveDocument } = require('../lib/serve-document');
 const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
@@ -317,6 +318,10 @@ router.post('/applications/:id/request-draw', async (req, res) => {
   if (!claim.rows[0]) {
     return res.json({ ok: true, already: true, requestedAt: a.draw_setup_requested_at });
   }
+  // BIRTH of the Sitewire draw integration for this file (research doc §4.6): the
+  // funded + Request-a-draw click is what pushes the property + budget into Sitewire.
+  // Self-gated (no-op unless SITEWIRE_ENABLED) so it's inert until turned on.
+  enqueueSitewirePush(a.id, 'push_file').catch(() => {});
   const addr = (a.property_address && (a.property_address.oneLine || a.property_address.line1 || a.property_address.street)) || 'your property';
   const borrowerName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
   try {

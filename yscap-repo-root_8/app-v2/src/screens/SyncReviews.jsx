@@ -35,6 +35,28 @@ const REASON_COPY = {
   borrower_identity_conflict: 'TWO DIFFERENT PEOPLE appear to share ONE borrower profile: this file’s ClickUp task and the PILOT profile disagree on identity (name, phone, or SSN), and the profile also belongs to another officer’s relationship (a lead or owned profile). This usually comes from a family-shared email + the family last name. Do NOT adopt either value — that would change the other person too. Click Split: the file’s person gets their OWN fresh profile (rebuilt from ClickUp), and the other person keeps the original profile untouched. Dismiss only if you are sure it is genuinely the same human.',
   shared_email_needs_reassignment: 'TWO BORROWER PROFILES are using ONE email address (shown under “In ClickUp”; the two people under “In PILOT”). Two ways to settle it: (1) if the sharing is RIGHT — spouses on the same deals, or the same person twice — click Allow: the two profiles are LINKED, whoever logs in with the email sees BOTH sets of files, and this never flags again (nothing is merged; each keeps their own profile and officer). (2) If they are unrelated people, give one of them their OWN email — edit it on their borrower screen in PILOT or on the ClickUp task — and this card closes itself. Until settled, the system deliberately refuses to link files by this email.',
 };
+// Sitewire draw-management parks (field_key='sitewire'). The stored reason is
+// "<class>: <detail>"; we key friendly copy by the class and show the detail beneath.
+// These are "fix the file, then it re-pushes" rows — never silently applied.
+const SITEWIRE_REASON_COPY = {
+  sitewire_missing_loan_number: 'This file has no YS loan number, so its construction draws can’t be set up in Sitewire. Add the loan number on the file, and the setup pushes automatically.',
+  sitewire_no_budget: 'No frozen construction budget is registered yet. Register the product first, then draws can be set up.',
+  sitewire_no_sow: 'There’s no saved Scope of Work to turn into a Sitewire budget. Have the borrower (or staff) complete the Scope of Work.',
+  sitewire_budget_mismatch: 'The Scope-of-Work line items don’t add up to the frozen construction budget to the penny, so nothing was pushed. Fix the Scope of Work so it matches the budget exactly.',
+  sitewire_capital_partner_unmatched: 'The file’s capital partner couldn’t be matched to a Sitewire partner, so the property wasn’t created. Set the correct capital partner, or add the rule, and it retries.',
+  sitewire_address_incomplete: 'The property address is missing part of the street / city / state / ZIP, so Sitewire can’t place it. Complete the address on the file.',
+  sitewire_property_rejected: 'Sitewire rejected the property (usually the address wouldn’t geocode). Fix the address and it retries — nothing was guessed.',
+  sitewire_loan_already_in_sitewire: 'A Sitewire property already carries this loan number (hand-entered earlier). PILOT will not duplicate or take it over — decide by hand whether to manage it here.',
+  sitewire_borrower_assign_failed: 'The borrower couldn’t be added to the Sitewire property by email. Check the borrower’s email on the file.',
+  sitewire_budget_rejected: 'Sitewire rejected the budget push. The exact reason is in the details below — fix it and it retries.',
+  sitewire_bind_missing: 'A budget line we created didn’t come back from Sitewire, so we couldn’t link it. This needs a quick manual check before draws reconcile.',
+  sitewire_bind_missing_property: 'Sitewire accepted the property but didn’t return the id we need to link it. Nothing was linked — a person should check the property in Sitewire before draws are set up.',
+  sitewire_bind_ambiguous: 'Two budget lines share the same name, so we couldn’t tell which Sitewire line is which. Rename one so every line is unique.',
+  sitewire_total_drift: 'After the push, Sitewire’s budget total didn’t match what we sent. Nothing else was changed — a person should reconcile it.',
+  sitewire_total_unverified: 'We saved the budget to Sitewire but couldn’t read it back to confirm it stuck (a temporary connection issue). Nothing is wrong yet — please re-check the budget in Sitewire.',
+  sitewire_dupe_check_failed: 'We couldn’t check whether this loan is already in Sitewire, so we did NOT create it (to avoid a duplicate). Try again once the connection is back, or check Sitewire by hand.',
+  sitewire_unknown_draw_line: 'A draw came in for a budget line PILOT doesn’t recognize (it wasn’t one we created). It was NOT auto-applied — a person needs to reconcile it by hand.',
+};
 // FILE-LEVEL resolution options per reason (mirrors REASON_ACTIONS in
 // src/lib/sync-file-review.js — the server validates; this only renders).
 const REASON_FILE_ACTIONS = {
@@ -125,6 +147,7 @@ const FIELD_LABELS = {
   borrower_identity: 'Borrower identity — one profile, two people',
   co_borrower_identity: 'Co-borrower identity — one profile, two people',
   shared_email: 'Shared email — two borrowers',
+  sitewire: 'Construction draws (Sitewire)',
 };
 // Field keys the two-sided resolver can apply to BOTH systems today.
 // 'file_link' / 'ys_loan_number' rows are deliberately NOT here: they are
@@ -184,6 +207,13 @@ export default function SyncReviews() {
     } catch (e) { if (mine === loadSeq.current) { setErr(e.message || 'Could not load the review queue'); setRows([]); } }
   }, [status]);
   useEffect(() => { load(); }, [load]);
+
+  async function sitewireAct(id, action) {
+    setBusyId(id); setErr('');
+    try { await api.post(`/api/sitewire/reviews/${id}/${action}`, {}); await load(); }
+    catch (e) { setErr(e?.data?.error || e.message || 'That didn\'t work.'); }
+    finally { setBusyId(null); }
+  }
 
   async function act(id, verb, body) {
     setBusyId(id); setErr('');
@@ -261,6 +291,7 @@ export default function SyncReviews() {
         const sidesEqual = cu != null && p != null && String(cu) === String(p);
         const canResolve = RESOLVABLE.has(r.field_key) && !sidesEqual;
         const isDob = r.field_key === 'date_of_birth';
+        const isSitewire = r.field_key === 'sitewire';
         const fileActions = (REASON_FILE_ACTIONS[r.reason] || null)?.filter((a) => !a.adminOnly || isAdmin) || null;
         const candidates = fileActions && fileActions.some((a) => a.needsTarget) ? linkCandidates(r) : [];
         return (
@@ -271,22 +302,42 @@ export default function SyncReviews() {
                   onChange={(e) => setSelected((m) => ({ ...m, [r.id]: e.target.checked }))} />
               )}
               <strong>{FIELD_LABELS[r.field_key] || r.field_key}</strong>
-              <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT'}</span>
+              <span className={`pill ${r.direction === 'outbound' ? '' : 'done'}`}>{isSitewire ? 'PILOT → Sitewire' : (r.direction === 'outbound' ? 'PILOT → ClickUp' : 'ClickUp → PILOT')}</span>
               <span className="muted small">{new Date(r.created_at).toLocaleString()}</span>
               <div className="spacer" />
               {r.application_id && <Link className="btn ghost btn-sm" to={`/internal/app/${r.application_id}`}>Open file</Link>}
             </div>
             <div className="metrow"><span className="k">Who</span><span className="v">{r.borrower_name || '—'}{r.property ? ` — ${r.property}` : ''}</span></div>
-            <div className="metrow"><span className="k">In ClickUp</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
-            <div className="metrow"><span className="k">In PILOT</span><span className="v"><strong>{showVal(p)}</strong>{isDob ? <em className="muted small">{dobNote(p)}</em> : null}</span></div>
+            {isSitewire ? (
+              (cu != null || p != null) && <div className="metrow"><span className="k">Details</span><span className="v">{p != null ? <>expected <strong>{showVal(p)}</strong></> : null}{p != null && cu != null ? ' · ' : ''}{cu != null ? <>found <strong>{showVal(cu)}</strong></> : null}</span></div>
+            ) : (
+              <>
+                <div className="metrow"><span className="k">In ClickUp</span><span className="v"><strong>{showVal(cu)}</strong>{isDob ? <em className="muted small">{dobNote(cu)}</em> : null}</span></div>
+                <div className="metrow"><span className="k">In PILOT</span><span className="v"><strong>{showVal(p)}</strong>{isDob ? <em className="muted small">{dobNote(p)}</em> : null}</span></div>
+              </>
+            )}
             {(r.field_key === 'sharepoint_doc' || r.field_key === 'sharepoint_folder') && spError(r) ? (
               <div className="metrow"><span className="k">Last error</span><span className="v"><em className="muted">{spError(r)}</em></span></div>
             ) : null}
             <p className="muted small" style={{ margin: '8px 0' }}>
-              {sidesEqual && r.reason === 'clickup_dob_differs_from_portal'
-                ? REASON_COPY.dob_same_but_impossible   /* legacy rows queued before the common-sense reasons */
-                : (REASON_COPY[r.reason] || r.reason)}
+              {isSitewire
+                ? (SITEWIRE_REASON_COPY[String(r.reason || '').split(':')[0]] || r.reason)
+                : (sidesEqual && r.reason === 'clickup_dob_differs_from_portal'
+                  ? REASON_COPY.dob_same_but_impossible   /* legacy rows queued before the common-sense reasons */
+                  : (REASON_COPY[r.reason] || r.reason))}
             </p>
+            {isSitewire && String(r.reason || '').includes(':') && (
+              <p className="muted small" style={{ margin: '0 0 8px', fontStyle: 'italic' }}>{String(r.reason).split(':').slice(1).join(':').trim()}</p>
+            )}
+            {status === 'open' && isSitewire && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Re-attempt the Sitewire push for this file (after fixing the cause above)"
+                  onClick={() => sitewireAct(r.id, 'retry')}>{busyId === r.id ? '…' : 'Retry push'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
+            )}
             {status === 'open' && canResolve && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 <button className="btn primary btn-sm" disabled={busyId === r.id}

@@ -231,6 +231,27 @@ module.exports = {
   clickupInboundCreateFiles: process.env.CLICKUP_INBOUND_CREATE_FILES === '1',
   clickupRunAudit:           process.env.CLICKUP_RUN_AUDIT === '1',   // boot: log data-coverage/assignment audit
 
+  // --- Sitewire draw-management integration (server-side token only) ---
+  // Auth is a 3-header token pair (access-token + client + uid), created in the
+  // Sitewire API tab. Secrets live ONLY here (Render env), never in source. The
+  // integration manages ONLY properties PILOT created (the "only-ours" rule) and
+  // is BORN on the funded + Request-a-draw click. Staged rollout, all default off:
+  //   SITEWIRE_ENABLED         master switch  — read/reconcile loops
+  //   SITEWIRE_OUTBOUND_ENABLED separate gate — portal -> Sitewire WRITES
+  //   SITEWIRE_DRYRUN           print the exact push bodies to logs, send nothing
+  sitewireBaseUrl:      (process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
+  sitewireAccessToken:  process.env.SITEWIRE_ACCESS_TOKEN,
+  sitewireClient:       process.env.SITEWIRE_CLIENT,
+  sitewireUid:          process.env.SITEWIRE_UID,
+  sitewireLenderId:     parseInt(process.env.SITEWIRE_LENDER_ID || '236', 10),
+  sitewireEnabled:      process.env.SITEWIRE_ENABLED === '1',           // master switch (default off)
+  sitewireOutboundEnabled: process.env.SITEWIRE_OUTBOUND_ENABLED === '1', // gate portal -> Sitewire writes
+  sitewireDryrun:       process.env.SITEWIRE_DRYRUN === '1',            // validate-only, no network writes
+  sitewirePollSec:      parseInt(process.env.SITEWIRE_POLL_SEC || '300', 10),
+  sitewireDefaultCoordinatorId: parseInt(process.env.SITEWIRE_DEFAULT_COORDINATOR_ID || '16146', 10), // Lisa Katz
+  sitewireDefaultChecklistTemplateId: parseInt(process.env.SITEWIRE_CHECKLIST_TEMPLATE_ID || '84', 10),
+  sitewireMaxWrites10min: parseInt(process.env.SITEWIRE_MAX_WRITES_10MIN || '300', 10), // volume circuit breaker
+
   // --- address autocomplete / verification (server-side proxy) ---
   // The frontend calls OUR /api/address/*; any real key lives only here, never
   // in the public site bundle. Provider auto-detects: Google if a key is set,

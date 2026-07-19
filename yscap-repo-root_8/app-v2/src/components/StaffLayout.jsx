@@ -314,6 +314,7 @@ export default function StaffLayout({ children }) {
   const canManageConditions = can('manage_conditions');
   const canManagePricing = can('manage_pricing');
   const canManageVendors = can('manage_vendors');
+  const canManageDraws = can('manage_draws');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
   const canViewAudit = can('view_audit_log');
@@ -344,6 +345,7 @@ export default function StaffLayout({ children }) {
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
+        {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Construction draws — requested vs approved, per-draw status, and releases"><NavIcon name="pipeline" />Draws</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
         {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><NavIcon name="archived" />Archived</NavLink>}
@@ -352,6 +354,7 @@ export default function StaffLayout({ children }) {
         {canManageTeam && <NavLink className="sb-link" to="/internal/team"><NavIcon name="team" />Team</NavLink>}
         {canManagePricing && <NavLink className="sb-link" to="/internal/pricing" title="Pricing Admin Center — company-wide markup, origination & fee defaults"><NavIcon name="pricing" />Pricing</NavLink>}
         {canPlatformSetup && <NavLink className="sb-link" to="/internal/clickup" title="ClickUp Control Center — sync health, dry-run, backfill"><NavIcon name="clickup" />ClickUp</NavLink>}
+        {canPlatformSetup && <NavLink className="sb-link" to="/internal/draw-rules" title="Inspection & fee rules — virtual vs on-site and the per-partner fee schedule for draws"><NavIcon name="pipeline" />Draw rules</NavLink>}
         {canViewAudit && <NavLink className="sb-link" to="/internal/audit" title="System audit log — every action across every file & borrower"><NavIcon name="audit" />Audit log</NavLink>}
         <NavLink className="sb-link" to="/internal/sync-reviews" title="Sync review — suspicious PILOT ⇄ ClickUp changes held for human approval before anything is rewritten"><NavIcon name="audit" />Sync review
           {reviewCount > 0 && <span className="sb-badge">{reviewCount > 99 ? '99+' : reviewCount}</span>}</NavLink>

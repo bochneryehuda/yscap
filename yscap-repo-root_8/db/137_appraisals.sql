@@ -1,5 +1,5 @@
 -- ============================================================================
--- 131_appraisals.sql — store the imported appraisal (parsed from the MISMO XML),
+-- 137_appraisals.sql — store the imported appraisal (parsed from the MISMO XML),
 -- its comparables / per-unit rents / photos, and the PILOT underwriting findings.
 --
 -- The parser (src/lib/appraisal) turns an uploaded appraisal XML into structured,
