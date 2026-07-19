@@ -176,6 +176,7 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       capital_partner: { id: cp.id != null ? Number(cp.id) : null, name: (cpName && cpName.name) || null, candidate: cp.candidate != null ? Number(cp.candidate) : null, candidate_name: cp.candidateName || null, ambiguous: !!cp.ambiguous },
       inspection: {
         method: insp.method, fee_kind: insp.feeKind, fee_cents: Number(insp.feeCents),
+        rule_fee_cents: Number(insp.ruleFeeCents), fee_overridden: !!insp.overridden,
         allow_virtual: insp.allowVirtual, allow_physical: insp.allowPhysical,
         can_switch: insp.allowVirtual && insp.allowPhysical,
         default_method: (rule && rule.inspection_method) || 'mobile',
@@ -224,6 +225,17 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
         if (chosen === 'traditional' && rule.allow_physical === false) return res.status(422).json({ error: 'on-site inspection is not allowed for this program/partner' });
       }
     }
+    // The coordinator may set a per-file draw FEE (integer cents), overriding the rule's fee for this
+    // file. A fee EQUAL to the chosen method's rule fee clears the override (the rule stays authoritative);
+    // a bad/blank value leaves the fee untouched. Never guess — reject an out-of-range amount up front.
+    let feeOverride; // undefined = don't touch the stored override
+    if (body.fee_cents != null && body.fee_cents !== '') {
+      const fc = Math.round(Number(body.fee_cents));
+      if (!Number.isFinite(fc) || fc < 0 || fc > 10000000) return res.status(400).json({ error: 'The draw fee must be a dollar amount between $0 and $100,000.' });
+      const methodForFee = chosen || (rule && rule.inspection_method) || 'mobile';
+      const ruleFee = rule ? (methodForFee === 'traditional' ? (rule.fee_cents_physical != null ? Number(rule.fee_cents_physical) : Number(rule.fee_cents_virtual)) : Number(rule.fee_cents_virtual)) : 29900;
+      feeOverride = (fc === Number(ruleFee)) ? null : fc;
+    }
     // ensure a link row exists to carry the coordinator's choice + who/when started
     await db.query(
       `INSERT INTO sitewire_property_links (application_id, matched_by, state, inspection_method, draw_setup_started_at, draw_setup_started_by)
@@ -231,6 +243,11 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
        ON CONFLICT (application_id) DO UPDATE SET inspection_method=COALESCE($2, sitewire_property_links.inspection_method),
          draw_setup_started_at=COALESCE(sitewire_property_links.draw_setup_started_at, now()), draw_setup_started_by=COALESCE(sitewire_property_links.draw_setup_started_by, $3), updated_at=now()`,
       [appId, chosen, req.actor.id]);
+    // apply the fee override separately so we can CLEAR it (COALESCE in the upsert can't express "set to null")
+    if (feeOverride !== undefined) {
+      await db.query(`UPDATE sitewire_property_links SET fee_cents_override=$2, updated_at=now() WHERE application_id=$1`, [appId, feeOverride]);
+      await orchestrator.journal({ appId, entity: 'settings', field: 'draw_fee_cents', newValue: feeOverride == null ? '(rule default)' : String(feeOverride), source: 'coordinator_start', changed: true }).catch(() => {});
+    }
     // push everything now (guarded). When Sitewire is off, the link row above (draw_setup_started_at)
     // is the durable birth record — the worker's stranded-birth backfill enqueues the push the moment
     // the switch is turned on, so nothing is lost while staged off.
@@ -461,15 +478,33 @@ router.get('/rules', requirePermission('platform_setup'), async (req, res) => {
   // the Sitewire directory, so the note-buyer field is the real source of truth (owner-directed).
   const dir = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners`)).rows;
   const used = (await db.query(`SELECT DISTINCT btrim(lender) AS lender FROM applications WHERE lender IS NOT NULL AND btrim(lender) <> '' AND deleted_at IS NULL`)).rows.map((r) => r.lender);
+  const links = (await db.query(`SELECT label_norm, sitewire_id FROM sitewire_partner_links`)).rows;
   const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const linkByNorm = new Map(links.map((l) => [l.label_norm, l.sitewire_id == null ? null : Number(l.sitewire_id)]));
   const byNorm = new Map();
-  for (const d of dir) byNorm.set(norm(d.name), { label: d.name, sitewire_id: Number(d.sitewire_id), on_our_lender: !!d.on_our_lender, in_directory: true, in_use: false });
+  for (const d of dir) byNorm.set(norm(d.name), { label: d.name, sitewire_id: Number(d.sitewire_id), directory_id: Number(d.sitewire_id), on_our_lender: !!d.on_our_lender, in_directory: true, in_use: false });
   for (const l of used) {
     const k = norm(l); if (!k) continue;
     const ex = byNorm.get(k);
-    if (ex) ex.in_use = true; else byNorm.set(k, { label: l, sitewire_id: null, on_our_lender: false, in_directory: false, in_use: true });
+    if (ex) ex.in_use = true; else byNorm.set(k, { label: l, sitewire_id: null, directory_id: null, on_our_lender: false, in_directory: false, in_use: true });
   }
-  const partners = [...byNorm.values()].sort((a, b) => a.label.localeCompare(b.label));
+  // Enrich each partner with its smart-link state so the UI can show Linked / Exact / Suggested.
+  const partners = [];
+  for (const p of byNorm.values()) {
+    const k = norm(p.label);
+    const linked = linkByNorm.has(k) ? linkByNorm.get(k) : undefined; // undefined = no link row; null = "no Sitewire partner"
+    p.linked_sitewire_id = linked === undefined ? null : linked;
+    p.has_link = linked !== undefined;
+    // If not exact and not linked, offer the resolver's best candidate as a one-click suggestion.
+    if (!p.in_directory && !p.has_link) {
+      try {
+        const m = await orchestrator.resolveCapitalPartnerId(p.label);
+        if (m && m.candidate != null) { p.suggested_sitewire_id = Number(m.candidate); p.suggested_name = m.candidateName || null; }
+      } catch (_) { /* suggestion is best-effort */ }
+    }
+    partners.push(p);
+  }
+  partners.sort((a, b) => a.label.localeCompare(b.label));
   res.json({ rules, partners });
 });
 router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
@@ -513,6 +548,43 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
        RETURNING *`,
       [cpId, partnerLabel, b.program || null, method, b.require_sitewire_inspector !== false, !!b.require_capital_partner_approval, !!b.allow_reallocation, feeVirtual, feePhysical, allowVirtual, allowPhysical, handledExternally])).rows[0];
     res.json({ ok: true, rule: row });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- GET /capital-partners — the Sitewire directory, for the smart-link picker ----
+router.get('/capital-partners', requirePermission('platform_setup'), async (req, res) => {
+  const partners = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners ORDER BY on_our_lender DESC, name`)).rows
+    .map((r) => ({ sitewire_id: Number(r.sitewire_id), name: r.name, on_our_lender: !!r.on_our_lender }));
+  res.json({ partners });
+});
+
+// ---- POST /partner-links — confirm (or clear) the note-buyer → Sitewire-partner link ----
+// The smart-link chokepoint: a rule for a note buyer whose name differs from Sitewire's directory
+// ("Fidelis" vs "Fidelis Investments LLC") pushes to the right partner ONLY because a human confirmed
+// this link. sitewire_id null = an explicit "no Sitewire partner" (handled externally). Nothing guessed.
+router.post('/partner-links', requirePermission('platform_setup'), async (req, res) => {
+  const b = req.body || {};
+  const label = String(b.label || '').trim();
+  if (!label) return res.status(400).json({ error: 'A note-buyer name is required.' });
+  const labelNorm = label.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  if (!labelNorm) return res.status(400).json({ error: 'That note-buyer name has no letters or numbers to match on.' });
+  let sitewireId = null;
+  if (b.sitewire_id != null && b.sitewire_id !== '') {
+    const n = Number(b.sitewire_id);
+    if (!Number.isInteger(n) || n <= 0) return res.status(400).json({ error: 'Pick a Sitewire capital partner (or “not in Sitewire”).' });
+    // Only allow linking to a partner that actually exists in the synced directory — never a made-up id.
+    const ok = (await db.query(`SELECT 1 FROM sitewire_capital_partners WHERE sitewire_id=$1`, [n])).rowCount;
+    if (!ok) return res.status(400).json({ error: 'That Sitewire partner isn’t in the synced directory — sync the directory first.' });
+    sitewireId = n;
+  }
+  const actorId = (req.actor && isUuid(req.actor.id)) ? req.actor.id : null;
+  try {
+    await db.query(
+      `INSERT INTO sitewire_partner_links (label_norm, label, sitewire_id, confirmed_by, confirmed_at, updated_at)
+       VALUES ($1,$2,$3,$4,now(),now())
+       ON CONFLICT (label_norm) DO UPDATE SET label=EXCLUDED.label, sitewire_id=EXCLUDED.sitewire_id, confirmed_by=EXCLUDED.confirmed_by, updated_at=now()`,
+      [labelNorm, label, sitewireId, actorId]);
+    res.json({ ok: true, label, sitewire_id: sitewireId });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
