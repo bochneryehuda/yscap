@@ -27,7 +27,7 @@ module.exports = async function onDeadLetter(row, err) {
       body: `An e-signature ${label} for this file couldn't be sent and needs attention. `
           + `Reason: ${reason}. Open the file's e-signature section to review and re-send.`,
       applicationId: row.application_id,
-      link: `${cfg.appUrl || ''}/portal/#/internal/app/${row.application_id}`,
+      link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${row.application_id}`,
     };
     const sent = await notify.notifyAppStaff(row.application_id, opts);
     if (!sent || !sent.length) await notify.notifyAdmins(opts);   // unassigned file → admins

@@ -112,6 +112,23 @@ async function sendClaimedEnvelope(rowId, opts = {}) {
   }
   const row = claimed.rows[0];
 
+  // Master kill-switch — the owner's emergency stop. The synchronous entry point
+  // (orchestrate.sendPackage) checks DOCUSIGN_SEND_ENABLED, but the durable retry
+  // engine (poller → drainDue → here) MUST honor it too: otherwise a queued /
+  // backing-off envelope would still mail a real borrower AFTER the switch is
+  // flipped off. Checked right after the claim (so an already-sent/dead/gone row
+  // still reports its TRUE disposition above — that path sends nothing) but before
+  // we build or POST anything: release the claim and roll back the attempt this
+  // claim just added, leaving the row exactly as it was to re-drive cleanly when
+  // sending is re-enabled. (The config is a singleton, so tests toggle it directly.)
+  if (!cfg.sendEnabled) {
+    await db.query(
+      `UPDATE esign_envelopes
+          SET send_claimed_at = NULL, attempts = GREATEST(attempts - 1, 0), updated_at = now()
+        WHERE id = $1`, [row.id]);
+    return { held: true, disposition: 'paused' };
+  }
+
   try {
     // Circuit breaker (before we mint anything) — a runaway loop stops hard.
     if (await breakerOpen(db)) {

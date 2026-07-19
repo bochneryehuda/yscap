@@ -49,7 +49,7 @@ const PACKAGES = {
     // `generate:true` docs are BUILT on our server from a stored Word template
     // (docgen.js) at send time — no paid DocuSign DocGen add-on, no pre-stored PDF.
     docs: [
-      { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet' },
+      { kind: 'term_sheet',         prefix: 'ts',  signedKind: 'term_sheet_signed',    condition: 'rtl_cond_signedts',  name: 'Term Sheet', freshnessCheck: true },
       { kind: 'application_export', prefix: 'app', signedKind: 'application_signed',    condition: 'rtl_cond_signed_app', name: 'Loan Application' },
       { kind: 'bp_disclosure',      prefix: 'bpd', signedKind: 'bp_disclosure_signed',  condition: 'rtl_cond_disclosures', name: 'Business-Purpose Disclosure', generate: true },
     ],
@@ -198,7 +198,7 @@ function validateGenerated(spec, data) {
 /** The latest current, non-rejected stored PDF for a doc_kind on this application. */
 async function latestDocument(db, applicationId, docKind) {
   const r = await db.query(
-    `SELECT id, filename, content_type, storage_ref, storage_provider
+    `SELECT id, filename, content_type, storage_ref, storage_provider, created_at
        FROM documents
       WHERE application_id = $1 AND doc_kind = $2
         AND COALESCE(review_status,'') <> 'rejected'
@@ -351,6 +351,16 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   const hasGenerated = spec.docs.some((d) => d.generate);
   const docGenData = hasGenerated ? await loadDocGenData(db, row.application_id) : null;
   if (hasGenerated) validateGenerated(spec, docGenData);
+  // The TERM SHEET must have been produced AT/AFTER the appraisal came back —
+  // otherwise it can carry a pre-appraisal loan figure while the disclosure
+  // regenerates on the CURRENT (post-appraisal) amount, and the borrower gets one
+  // binding envelope showing two different loan amounts. Same "refresh on the
+  // appraised value" contract the gate enforces for P&P, and staff re-save the term
+  // sheet from the Term Sheet Studio. ONLY the term sheet is freshness-checked
+  // (`freshnessCheck`): the application_export is a borrower-submitted document with
+  // NO post-appraisal regeneration flow, so checking it would false-block every send.
+  const needsFreshness = spec.docs.some((d) => d.freshnessCheck);
+  const apprBackAt = needsFreshness ? await gate.appraisalBackAt(row.application_id, { db }) : null;
   for (let i = 0; i < spec.docs.length; i++) {
     const d = spec.docs[i];
     const documentId = i + 1;
@@ -370,6 +380,15 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
 
     const doc = await latestDocument(db, row.application_id, d.kind);
     if (!doc) { missing.push(d.kind); continue; }
+    // Stale-document guard (see apprBackAt above): the term sheet (freshnessCheck),
+    // if created before the appraisal came back, may show a pre-appraisal loan
+    // amount. Block (permanent) so staff regenerate it on the appraised value —
+    // never mail a contradictory package.
+    if (apprBackAt && d.freshnessCheck && doc.created_at && new Date(doc.created_at) < apprBackAt) {
+      const err = new Error(`Cannot send ${spec.label}: the ${d.name} on file was produced before the appraisal came back, so it may show a loan amount that no longer matches. Regenerate the ${d.name} on the appraised value, then send.`);
+      err.retryable = false;
+      throw err;
+    }
     let buf;
     try { buf = await storage.read(doc.storage_ref); }
     catch (e) { const err = new Error(`Could not read ${d.kind} bytes: ${e.message}`); err.retryable = true; throw err; }
@@ -457,9 +476,12 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
  * envelope row (+ docs map + recipient roster), then hands off to the send-once
  * engine. Returns { ok, envelopeRowId, result } or throws with a clear reason.
  *
- * Gated: refuses unless cfg.docusign.sendEnabled (master switch) is on. The
- * send-engine additionally blocks any non-allow-listed recipient while in test
- * mode, so nothing reaches a real borrower until a deliberate go-live.
+ * Gated: refuses unless cfg.docusign.sendEnabled (master switch) is on — enforced
+ * here AND in the send engine (sendClaimedEnvelope), so a paused switch stops queued
+ * retries too. In TEST mode the engine also blocks any non-allow-listed recipient;
+ * once LIVE (test mode off) that backstop is intentionally gone, and real borrowers
+ * are protected by the appraisal gate + validateGenerated + the roster completeness
+ * check + the stale-document guard instead.
  */
 async function sendPackage(applicationId, purpose, actor, opts = {}) {
   const db = opts.db || dbDefault;
