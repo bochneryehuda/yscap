@@ -170,7 +170,7 @@ app.use('/api/intake', require('./routes/intake'));
 app.use('/api/esign', require('./routes/esign-public'));
 // Public token-authenticated draw-findings accept (the one-click "Accept" link we email the
 // borrower — the reply_token is the capability; no login needed to release their own money).
-app.use('/api/public/draw-findings', require('./routes/draw-findings-public'));
+app.use('/api/public/draw-findings', rateLimit({ bucket: 'draw-public', windowMs: 60000, max: 60 }), require('./routes/draw-findings-public'));
 app.use('/api/borrower', require('./routes/borrower'));
 app.use('/api/borrower', require('./routes/borrower-draws')); // borrower draw status + findings accept/dispute + change requests
 app.use('/api/staff', require('./routes/staff'));
@@ -408,6 +408,13 @@ if (require.main === module) {
         require('./lib/experience').backfillCoBorrowerExperience()
           .then((n) => n && console.log('[boot] co-borrower experience backfill:', n))
           .catch((e) => console.error('[boot] experience backfill failed:', e.message));
+        // Previous-files fix: appraisals imported before the photo feature (or before a PDF was
+        // available) have empty galleries. Re-extract photos from each current appraisal's
+        // recoverable PDF (embedded XML or the uploaded PDF slot). Bounded per boot, self-draining,
+        // idempotent, fire-and-forget.
+        require('./lib/appraisal/desk').backfillAppraisalPhotosOnce()
+          .then((r) => r && r.filled && console.log('[boot] appraisal photo backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal photo backfill failed:', e.message));
       } catch (e) {
         console.error('[migrate] unexpected error (continuing):', require('./db').describeError(e));
       }

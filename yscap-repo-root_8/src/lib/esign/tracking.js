@@ -57,13 +57,14 @@ async function dashboard(db, scope = { where: '', params: [] }) {
             COALESCE(a.property_address->>'oneLine',
                      NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
                                       a.property_address->>'state', a.property_address->>'zip'), '')) AS "propertyAddress",
-            a.ys_loan_number AS "loanNumber",
+            COALESCE(a.ys_loan_number, e.test_label) AS "loanNumber",
+            e.is_test AS "isTest",
             b.first_name AS "firstName", b.last_name AS "lastName",
             ${RECIP_JSON}
        FROM esign_envelopes e
-       JOIN applications a ON a.id = e.application_id
+       LEFT JOIN applications a ON a.id = e.application_id
        LEFT JOIN borrowers b ON b.id = a.borrower_id
-      WHERE a.deleted_at IS NULL ${scope.where}
+      WHERE (e.is_test OR a.deleted_at IS NULL) ${scope.where}
       ORDER BY e.created_at DESC
       LIMIT 300`, scope.params)).rows;
   const envelopes = rows.map((r) => {
@@ -78,11 +79,14 @@ async function dashboard(db, scope = { where: '', params: [] }) {
   // creates a newer envelope, which supersedes the old failure so it stops
   // counting (otherwise resolved dead-letters inflate the badge forever). Rows are
   // ordered created_at DESC, so the first one seen per key is the latest.
+  // A test row has no (application_id, purpose) identity — every one shares
+  // 'null:test' — so key each test by its own id (each is its own latest).
+  const keyOf = (e) => (e.isTest ? `test:${e.id}` : `${e.applicationId}:${e.purpose}`);
   const latestByKey = new Map();
-  for (const e of envelopes) { const k = `${e.applicationId}:${e.purpose}`; if (!latestByKey.has(k)) latestByKey.set(k, e.id); }
+  for (const e of envelopes) { const k = keyOf(e); if (!latestByKey.has(k)) latestByKey.set(k, e.id); }
   counts.needsAttention = envelopes.filter((e) =>
     (['declined', 'error'].includes(e.phase) || e.deadLetteredAt)
-    && latestByKey.get(`${e.applicationId}:${e.purpose}`) === e.id).length;
+    && latestByKey.get(keyOf(e)) === e.id).length;
   counts.awaitingCountersign = envelopes.filter((e) => e.phase === 'awaiting_countersign').length;
   return { envelopes, counts };
 }

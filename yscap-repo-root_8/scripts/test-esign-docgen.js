@@ -44,13 +44,17 @@ eq(dg.escapeXml('Tom & Sons <LLC>'), 'Tom &amp; Sons &lt;LLC&gt;', 'escape & < >
 eq(dg.escapeXml("O'Brien \"x\""), 'O\'Brien "x"', 'quotes/apostrophes stay literal (Word style)');
 eq(dg.fmtMoney(1287500.5), '1,287,500.50', 'money: commas + 2 decimals');
 eq(dg.fmtMoney(650000), '650,000.00', 'money: whole dollars → .00');
-eq(dg.fmtMoney(null), '0.00', 'money: null → 0.00');
+eq(dg.fmtMoney(null), '', 'money: null → empty (never a real-looking $0.00 on a legal doc)');
 eq(dg.fmtMoney(undefined), '', 'money: undefined → empty');
+eq(dg.fmtMoney(0), '0.00', 'money: a real 0 → 0.00');
 // Date-only string must NOT shift a day in any timezone (repo hard rule).
 process.env.TZ = 'America/New_York';
 eq(dg.fmtDate('2026-06-01'), '06/01/2026', 'date-only string: no day-shift in NY');
 eq(dg.fmtDate('2026-06-01T00:00:00Z'), '06/01/2026', 'ISO datetime string → date');
-eq(dg.fmtDate(new Date('2026-06-01T00:00:00Z')), '06/01/2026', 'Date object (UTC) → deterministic day');
+eq(dg.fmtDate(new Date('2026-06-01T12:00:00Z')), '06/01/2026', 'Date object midday UTC → same ET calendar day');
+// Regression: an evening-ET instant (22:00 ET May 31 = 02:00 UTC Jun 1) must render
+// the ET calendar day (05/31), NOT the UTC day (06/01) — the legal-doc day-shift bug.
+eq(dg.fmtDate(new Date('2026-06-01T02:00:00Z')), '05/31/2026', 'Date object evening-ET → ET day, not UTC tomorrow');
 eq(dg.fmtDate(null), '', 'date: null → empty');
 
 // ---- 2. structural surgery helpers -------------------------------------------

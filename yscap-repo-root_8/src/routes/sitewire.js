@@ -132,6 +132,9 @@ router.post('/files/:id/reconcile', requirePermission('manage_draws'), async (re
 
 // ---- POST /api/sitewire/files/:id/push — manual birth push (admin/setup, guarded) ----
 router.post('/files/:id/push', requirePermission('platform_setup'), async (req, res) => {
+  // scope like every other per-file route — platform_setup alone (e.g. the software_setup persona) must
+  // not be able to birth a file it has no relationship to into Sitewire.
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   try { res.json(await orchestrator.pushFile(req.params.id, { force: !!req.body.force })); }
   catch (e) { res.status(e.status === 422 ? 422 : 502).json({ error: e.message }); }
 });
@@ -173,6 +176,7 @@ router.get('/files/:id/draw-setup', requirePermission('manage_draws'), async (re
       capital_partner: { id: cp.id != null ? Number(cp.id) : null, name: (cpName && cpName.name) || null, candidate: cp.candidate != null ? Number(cp.candidate) : null, candidate_name: cp.candidateName || null, ambiguous: !!cp.ambiguous },
       inspection: {
         method: insp.method, fee_kind: insp.feeKind, fee_cents: Number(insp.feeCents),
+        rule_fee_cents: Number(insp.ruleFeeCents), fee_overridden: !!insp.overridden,
         allow_virtual: insp.allowVirtual, allow_physical: insp.allowPhysical,
         can_switch: insp.allowVirtual && insp.allowPhysical,
         default_method: (rule && rule.inspection_method) || 'mobile',
@@ -221,6 +225,21 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
         if (chosen === 'traditional' && rule.allow_physical === false) return res.status(422).json({ error: 'on-site inspection is not allowed for this program/partner' });
       }
     }
+    // The coordinator may set a per-file draw FEE (integer cents), overriding the rule's fee for this
+    // file. A fee EQUAL to the chosen method's rule fee clears the override (the rule stays authoritative);
+    // a bad/blank value leaves the fee untouched. Never guess — reject an out-of-range amount up front.
+    let feeOverride; // undefined = don't touch the stored override
+    if (body.fee_cents != null && body.fee_cents !== '') {
+      const fc = Math.round(Number(body.fee_cents));
+      if (!Number.isFinite(fc) || fc < 0 || fc > 10000000) return res.status(400).json({ error: 'The draw fee must be a dollar amount between $0 and $100,000.' });
+      // Compare against the rule fee for the file's EFFECTIVE method — the coordinator's new pick, else
+      // the already-stored per-file method, else the rule default — so "fee == default → clear override"
+      // matches what resolveInspection will actually charge (never the wrong method's fee).
+      const existingLink = await orchestrator.getLink(appId);
+      const methodForFee = chosen || (existingLink && existingLink.inspection_method) || (rule && rule.inspection_method) || 'mobile';
+      const ruleFee = rule ? (methodForFee === 'traditional' ? (rule.fee_cents_physical != null ? Number(rule.fee_cents_physical) : Number(rule.fee_cents_virtual)) : Number(rule.fee_cents_virtual)) : 29900;
+      feeOverride = (fc === Number(ruleFee)) ? null : fc;
+    }
     // ensure a link row exists to carry the coordinator's choice + who/when started
     await db.query(
       `INSERT INTO sitewire_property_links (application_id, matched_by, state, inspection_method, draw_setup_started_at, draw_setup_started_by)
@@ -228,6 +247,11 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
        ON CONFLICT (application_id) DO UPDATE SET inspection_method=COALESCE($2, sitewire_property_links.inspection_method),
          draw_setup_started_at=COALESCE(sitewire_property_links.draw_setup_started_at, now()), draw_setup_started_by=COALESCE(sitewire_property_links.draw_setup_started_by, $3), updated_at=now()`,
       [appId, chosen, req.actor.id]);
+    // apply the fee override separately so we can CLEAR it (COALESCE in the upsert can't express "set to null")
+    if (feeOverride !== undefined) {
+      await db.query(`UPDATE sitewire_property_links SET fee_cents_override=$2, updated_at=now() WHERE application_id=$1`, [appId, feeOverride]);
+      await orchestrator.journal({ appId, entity: 'settings', field: 'draw_fee_cents', newValue: feeOverride == null ? '(rule default)' : String(feeOverride), source: 'coordinator_start', changed: true }).catch(() => {});
+    }
     // push everything now (guarded). When Sitewire is off, the link row above (draw_setup_started_at)
     // is the durable birth record — the worker's stranded-birth backfill enqueues the push the moment
     // the switch is turned on, so nothing is lost while staged off.
@@ -326,9 +350,19 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   let drawId = null;
   if (sitewire_draw_id != null && sitewire_draw_id !== '') {
     if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
-    const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id]);
-    if (!own.rowCount) return res.status(400).json({ error: 'that draw is not on this file' });
+    const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
+    if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
     drawId = sitewire_draw_id;
+    // M1: don't record a release larger than what the lender actually approved on this draw (unless overridden) —
+    // the ledger (and retainage) should never exceed the real approved figure.
+    const drawApproved = Number(own.total_approved_cents) || 0;
+    if (drawApproved > 0 && approved > drawApproved && !req.body.override) {
+      return res.status(422).json({ error: `${T.usd(approved)} is more than the ${T.usd(drawApproved)} approved on this draw — pass override:true to record it anyway.` });
+    }
+    // H1: a draw is released once — block a duplicate ledger row up front (the db/148 unique index is the
+    // belt-and-suspenders). A duplicate would double-count into the retainage pool.
+    const dup = await db.query(`SELECT 1 FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw'`, [drawId]);
+    if (dup.rowCount) return res.status(409).json({ error: 'A release is already recorded for this draw — correct the existing entry instead of adding another.' });
   }
   try {
     // retainage: hold a % of the approved amount; net = approved − fee − retainage held
@@ -349,7 +383,11 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
       [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note || null, req.actor.id])).rows[0];
     res.json({ ok: true, disbursement: row });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    // db/148 unique index — a second draw release raced past the pre-check
+    if (e.code === '23505') return res.status(409).json({ error: 'A release is already recorded for this draw.' });
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ---- POST /files/:id/retainage-release — release the accumulated retainage at completion ----
@@ -390,11 +428,20 @@ router.post('/files/:id/waivers', requirePermission('manage_draws'), async (req,
   const scope = ['progress', 'final'].includes(b.scope) ? b.scope : 'progress';
   const tier = ['gc', 'subcontractor', 'supplier'].includes(b.tier) ? b.tier : 'gc';
   const amt = Math.max(0, Math.round(Number(b.amount_cents) || 0));
+  // if a draw is named, it MUST belong to THIS file — never store a draw id from another file (the lien
+  // gate + packet key on the draw id only, so a foreign draw id would block/leak the other file's draw).
+  let waiverDrawId = null;
+  if (b.sitewire_draw_id != null && b.sitewire_draw_id !== '') {
+    if (!/^\d+$/.test(String(b.sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
+    const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [b.sitewire_draw_id, appId]);
+    if (!own.rowCount) return res.status(400).json({ error: 'that draw is not on this file' });
+    waiverDrawId = b.sitewire_draw_id;
+  }
   try {
     const row = (await db.query(
       `INSERT INTO draw_lien_waivers (application_id, sitewire_draw_id, kind, scope, tier, party_name, amount_cents, status, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,'required',$8,$9) RETURNING *`,
-      [appId, /^\d+$/.test(String(b.sitewire_draw_id)) ? b.sitewire_draw_id : null, kind, scope, tier, b.party_name || null, amt, b.note || null, req.actor.id])).rows[0];
+      [appId, waiverDrawId, kind, scope, tier, b.party_name || null, amt, b.note || null, req.actor.id])).rows[0];
     res.json({ ok: true, waiver: row });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -435,15 +482,33 @@ router.get('/rules', requirePermission('platform_setup'), async (req, res) => {
   // the Sitewire directory, so the note-buyer field is the real source of truth (owner-directed).
   const dir = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners`)).rows;
   const used = (await db.query(`SELECT DISTINCT btrim(lender) AS lender FROM applications WHERE lender IS NOT NULL AND btrim(lender) <> '' AND deleted_at IS NULL`)).rows.map((r) => r.lender);
+  const links = (await db.query(`SELECT label_norm, sitewire_id FROM sitewire_partner_links`)).rows;
   const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const linkByNorm = new Map(links.map((l) => [l.label_norm, l.sitewire_id == null ? null : Number(l.sitewire_id)]));
   const byNorm = new Map();
-  for (const d of dir) byNorm.set(norm(d.name), { label: d.name, sitewire_id: Number(d.sitewire_id), on_our_lender: !!d.on_our_lender, in_directory: true, in_use: false });
+  for (const d of dir) byNorm.set(norm(d.name), { label: d.name, sitewire_id: Number(d.sitewire_id), directory_id: Number(d.sitewire_id), on_our_lender: !!d.on_our_lender, in_directory: true, in_use: false });
   for (const l of used) {
     const k = norm(l); if (!k) continue;
     const ex = byNorm.get(k);
-    if (ex) ex.in_use = true; else byNorm.set(k, { label: l, sitewire_id: null, on_our_lender: false, in_directory: false, in_use: true });
+    if (ex) ex.in_use = true; else byNorm.set(k, { label: l, sitewire_id: null, directory_id: null, on_our_lender: false, in_directory: false, in_use: true });
   }
-  const partners = [...byNorm.values()].sort((a, b) => a.label.localeCompare(b.label));
+  // Enrich each partner with its smart-link state so the UI can show Linked / Exact / Suggested.
+  const partners = [];
+  for (const p of byNorm.values()) {
+    const k = norm(p.label);
+    const linked = linkByNorm.has(k) ? linkByNorm.get(k) : undefined; // undefined = no link row; null = "no Sitewire partner"
+    p.linked_sitewire_id = linked === undefined ? null : linked;
+    p.has_link = linked !== undefined;
+    // If not exact and not linked, offer the resolver's best candidate as a one-click suggestion.
+    if (!p.in_directory && !p.has_link) {
+      try {
+        const m = await orchestrator.resolveCapitalPartnerId(p.label);
+        if (m && m.candidate != null) { p.suggested_sitewire_id = Number(m.candidate); p.suggested_name = m.candidateName || null; }
+      } catch (_) { /* suggestion is best-effort */ }
+    }
+    partners.push(p);
+  }
+  partners.sort((a, b) => a.label.localeCompare(b.label));
   res.json({ rules, partners });
 });
 router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
@@ -475,7 +540,9 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   // (a null physical fee falls back to the virtual fee at push time) — a non-numeric value must
   // become null, never NaN (which Postgres would reject as a 500). An explicit 0 is honored.
   const vFee = Number(b.fee_cents_virtual);
-  const feeVirtual = Number.isFinite(vFee) && vFee > 0 ? Math.round(vFee) : 29900;
+  // Honor an explicit 0 (a free virtual inspection) — only blank/garbage falls back to $299,
+  // matching the physical-fee handling below. A typed 0 must never be silently reset to $299.
+  const feeVirtual = Number.isFinite(vFee) && vFee >= 0 ? Math.round(vFee) : 29900;
   const pRaw = b.fee_cents_physical;
   const pFee = Number(pRaw);
   const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) ? null : Math.round(pFee);
@@ -490,6 +557,43 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---- GET /capital-partners — the Sitewire directory, for the smart-link picker ----
+router.get('/capital-partners', requirePermission('platform_setup'), async (req, res) => {
+  const partners = (await db.query(`SELECT sitewire_id, name, on_our_lender FROM sitewire_capital_partners ORDER BY on_our_lender DESC, name`)).rows
+    .map((r) => ({ sitewire_id: Number(r.sitewire_id), name: r.name, on_our_lender: !!r.on_our_lender }));
+  res.json({ partners });
+});
+
+// ---- POST /partner-links — confirm (or clear) the note-buyer → Sitewire-partner link ----
+// The smart-link chokepoint: a rule for a note buyer whose name differs from Sitewire's directory
+// ("Fidelis" vs "Fidelis Investments LLC") pushes to the right partner ONLY because a human confirmed
+// this link. sitewire_id null = an explicit "no Sitewire partner" (handled externally). Nothing guessed.
+router.post('/partner-links', requirePermission('platform_setup'), async (req, res) => {
+  const b = req.body || {};
+  const label = String(b.label || '').trim();
+  if (!label) return res.status(400).json({ error: 'A note-buyer name is required.' });
+  const labelNorm = label.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  if (!labelNorm) return res.status(400).json({ error: 'That note-buyer name has no letters or numbers to match on.' });
+  let sitewireId = null;
+  if (b.sitewire_id != null && b.sitewire_id !== '') {
+    const n = Number(b.sitewire_id);
+    if (!Number.isInteger(n) || n <= 0) return res.status(400).json({ error: 'Pick a Sitewire capital partner (or “not in Sitewire”).' });
+    // Only allow linking to a partner that actually exists in the synced directory — never a made-up id.
+    const ok = (await db.query(`SELECT 1 FROM sitewire_capital_partners WHERE sitewire_id=$1`, [n])).rowCount;
+    if (!ok) return res.status(400).json({ error: 'That Sitewire partner isn’t in the synced directory — sync the directory first.' });
+    sitewireId = n;
+  }
+  const actorId = (req.actor && isUuid(req.actor.id)) ? req.actor.id : null;
+  try {
+    await db.query(
+      `INSERT INTO sitewire_partner_links (label_norm, label, sitewire_id, confirmed_by, confirmed_at, updated_at)
+       VALUES ($1,$2,$3,$4,now(),now())
+       ON CONFLICT (label_norm) DO UPDATE SET label=EXCLUDED.label, sitewire_id=EXCLUDED.sitewire_id, confirmed_by=EXCLUDED.confirmed_by, updated_at=now()`,
+      [labelNorm, label, sitewireId, actorId]);
+    res.json({ ok: true, label, sitewire_id: sitewireId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---- refresh the capital-partner directory + staff<->Sitewire-user map ----
 router.post('/sync-directory', requirePermission('platform_setup'), async (req, res) => {
   if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
@@ -501,7 +605,7 @@ router.post('/sync-directory', requirePermission('platform_setup'), async (req, 
 });
 
 // ---- settings (wire turnaround hours, variance) ----
-router.get('/settings', requirePermission('manage_draws'), async (req, res) => {
+router.get('/settings', requirePermission(['manage_draws', 'platform_setup']), async (req, res) => {
   const rows = (await db.query(`SELECT key, value FROM sitewire_settings`)).rows;
   res.json({ settings: Object.fromEntries(rows.map((r) => [r.key, r.value])) });
 });
@@ -545,7 +649,7 @@ router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (re
 });
 
 // ---- health/status (setup screen) ----
-router.get('/status', requirePermission('manage_draws'), async (req, res) => {
+router.get('/status', requirePermission(['manage_draws', 'platform_setup']), async (req, res) => {
   try {
     const linked = (await db.query(`SELECT count(*)::int c FROM sitewire_property_links WHERE sitewire_property_id IS NOT NULL`)).rows[0].c;
     const draws = (await db.query(`SELECT count(*)::int c FROM sitewire_draws`)).rows[0].c;
@@ -654,7 +758,13 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
 // dispute, and Scope-of-Work reallocations. Time-ordered, newest first. Read-only.
 async function buildDrawActivity(appId) {
   const ev = [];
-  const push = (at, kind, summary, actor) => { if (at) ev.push({ at: new Date(at).toISOString(), kind, summary, actor: actor || null }); };
+  // A date-only value ('YYYY-MM-DD', e.g. a release_date) must NOT be run through new Date().toISOString()
+  // — that stamps UTC midnight and the browser then renders the PREVIOUS calendar day (the repo's date
+  // rule). Keep date-only values as the calendar string and tag them so the UI formats them as a day.
+  const push = (at, kind, summary, actor, dateOnly) => {
+    if (!at) return;
+    ev.push({ at: dateOnly ? String(at).slice(0, 10) : new Date(at).toISOString(), date_only: !!dateOnly, kind, summary, actor: actor || null });
+  };
   // 1) our guarded writes to Sitewire (journal)
   for (const w of (await db.query(`SELECT entity, field, source, created_at FROM sitewire_write_log WHERE application_id=$1 ORDER BY created_at DESC LIMIT 500`, [appId])).rows) {
     push(w.created_at, 'write', `PILOT ${w.source || 'push'}: ${w.entity || 'record'}${w.field ? ' · ' + w.field : ''}`);
@@ -667,7 +777,9 @@ async function buildDrawActivity(appId) {
   }
   // 3) money released (our ledger)
   for (const l of (await db.query(`SELECT sitewire_draw_id, net_release_cents, release_date, funded_status, created_at, created_by FROM draw_disbursements WHERE application_id=$1`, [appId])).rows) {
-    push(l.release_date || l.created_at, 'money', `Release recorded: net ${T.usd(l.net_release_cents)} (${l.funded_status})${l.sitewire_draw_id ? ' · draw #' + l.sitewire_draw_id : ''}`);
+    // release_date is a date-only column → keep it a calendar day (dateOnly); fall back to the true
+    // created_at instant when no release date was recorded.
+    push(l.release_date || l.created_at, 'money', `Release recorded: net ${T.usd(l.net_release_cents)} (${l.funded_status})${l.sitewire_draw_id ? ' · draw #' + l.sitewire_draw_id : ''}`, null, !!l.release_date);
   }
   // 4) findings accept/dispute lifecycle
   for (const f of (await db.query(`SELECT sitewire_draw_id, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at FROM draw_findings WHERE application_id=$1`, [appId])).rows) {
@@ -774,7 +886,13 @@ router.post('/files/:id/lien-waivers-setting', requirePermission('platform_setup
   // true = on for this project, false = off for this project, null = inherit the global setting
   const v = req.body.enabled === null ? null : req.body.enabled === true ? true : req.body.enabled === false ? false : undefined;
   if (v === undefined) return res.status(400).json({ error: 'enabled must be true, false, or null (inherit global)' });
-  await db.query(`UPDATE sitewire_property_links SET require_lien_waivers=$2, updated_at=now() WHERE application_id=$1`, [appId, v]);
+  // upsert so the setting persists even before the file has a link row (else a plain UPDATE is a
+  // silent no-op that still returns 200 — the "returned 200 but didn't save" class).
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, matched_by, state, require_lien_waivers)
+     VALUES ($1,'created','pending',$2)
+     ON CONFLICT (application_id) DO UPDATE SET require_lien_waivers=$2, updated_at=now()`,
+    [appId, v]);
   await orchestrator.journal({ appId, entity: 'settings', field: 'require_lien_waivers', newValue: v, source: 'review_resolve', changed: true }).catch(() => {});
   res.json({ ok: true, require_lien_waivers: v });
 });
@@ -836,7 +954,13 @@ router.post('/files/:id/coordinator', requirePermission('platform_setup'), async
   const staffId = req.body.coordinator_staff_id || null;
   if (staffId && !isUuid(staffId)) return res.status(400).json({ error: 'unknown staff user' });
   if (staffId) { const ok = (await db.query(`SELECT 1 FROM staff_users WHERE id=$1 AND is_active`, [staffId])).rowCount; if (!ok) return res.status(400).json({ error: 'unknown staff user' }); }
-  await db.query(`UPDATE sitewire_property_links SET coordinator_staff_id=$2, updated_at=now() WHERE application_id=$1`, [appId, staffId]);
+  // upsert so a coordinator can be set before the file has a link row (a plain UPDATE would be a
+  // silent 200 no-op otherwise).
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, matched_by, state, coordinator_staff_id)
+     VALUES ($1,'created','pending',$2)
+     ON CONFLICT (application_id) DO UPDATE SET coordinator_staff_id=$2, updated_at=now()`,
+    [appId, staffId]);
   res.json({ ok: true });
 });
 
@@ -939,6 +1063,16 @@ router.get('/files/:id/change-requests', requirePermission('manage_draws'), asyn
   res.json({ change_requests: rows });
 });
 
+// Explode a proposed Scope of Work AND reconcile it to the file's frozen budget (the same target the
+// crosswalk's CURRENT budgets were reconciled to at birth), so a ≤$1 per-cell percentage-rounding
+// drift can't make a genuine net-zero reallocation read as non-net-zero and get wrongly rejected.
+// Falls back to a raw explode when the frozen budget isn't known.
+function reconciledExplode(rollup, state) {
+  const raw = M.explodeSow(state, {});
+  const budgetCents = Number(rollup && rollup.project && rollup.project.budget) || 0;
+  return budgetCents > 0 ? M.reconcileToBudget(raw, budgetCents) : raw;
+}
+
 // ---- POST /files/:id/change-requests — create + validate a SOW reallocation ----
 router.post('/files/:id/change-requests', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id;
@@ -949,7 +1083,11 @@ router.post('/files/:id/change-requests', requirePermission('manage_draws'), asy
     const a = (await db.query(`SELECT status FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
     if (!a) return res.status(404).json({ error: 'file not found' });
     const rollup = await rollupMod.loadRollup(db, appId);
-    const ex = M.explodeSow(proposedPayload.state, {});
+    // Reconcile the proposed explosion to the frozen budget BEFORE building cells — the same way
+    // the birth push does (orchestrator) and the way the crosswalk's `before` budgets were set.
+    // Otherwise a ≤$1 per-cell percentage-rounding drift makes a genuine net-zero move read as
+    // non-net-zero and get wrongly rejected (esp. Gold Standard's 5% contingency).
+    const ex = reconciledExplode(rollup, proposedPayload.state);
     const cells = buildReallocationCells(rollup, ex.items);
     const phase = phaseFor(a.status);
     const plan = planReallocation(cells, { phase, variancePct: await variancePct() });
@@ -994,7 +1132,7 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
   try {
     // re-validate against the CURRENT rollup (drawn amounts may have moved since creation)
     const rollup = await rollupMod.loadRollup(db, appId);
-    const ex = M.explodeSow(proposedPayload.state, {});
+    const ex = reconciledExplode(rollup, proposedPayload.state);
     const cells = buildReallocationCells(rollup, ex.items);
     const plan = planReallocation(cells, { phase, variancePct: await variancePct() });
     if (!plan.ok) return res.status(422).json({ error: 'reallocation is no longer valid', plan });

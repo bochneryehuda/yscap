@@ -15,6 +15,19 @@ export const PHASE = {
 export const PURPOSE = {
   term_sheet_package: 'Term-Sheet Package',
   heter_iska: 'Heter Iska',
+  test: 'Test',
+};
+
+// Friendly confirmation shown when a signer bounces back from DocuSign's embedded
+// signing view (…/api/esign/return sets ?esign=<state>). Keyed by landing state.
+export const ESIGN_RETURN_MSG = {
+  signed:    { tone: 'ok',   text: 'Thanks — we’ve received your signature. It can take a moment to show as completed.' },
+  viewed:    { tone: 'info', text: 'You’ve reviewed the documents. You can sign anytime from your email link.' },
+  declined:  { tone: 'info', text: 'You declined to sign. Reach out to your loan officer with any questions.' },
+  expired:   { tone: 'info', text: 'That signing link expired — please use your latest email link or request a new one.' },
+  cancelled: { tone: 'info', text: 'No problem — you can come back and sign anytime from your email link.' },
+  timeout:   { tone: 'info', text: 'Your signing session timed out — please reopen the link from your email to continue.' },
+  done:      { tone: 'ok',   text: 'Thanks — you’re all set.' },
 };
 export const ROLE = {
   borrower: 'Borrower',

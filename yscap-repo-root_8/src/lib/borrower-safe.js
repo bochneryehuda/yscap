@@ -30,6 +30,9 @@ const PARTNER_PATTERNS = [
   /\bchurchill\b/gi,
   /\bfidelis\b/gi,
   /\brcn\b/gi,
+  /\bcorr[\s-]?first\b/gi,
+  /\bkiavi\b/gi,
+  /\broc\b/gi,
 ];
 
 /**

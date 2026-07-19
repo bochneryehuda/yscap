@@ -17,6 +17,8 @@
  * {source, field, appraisalValue|sourceValue, fileValue} shape.
  */
 
+const { arvDefensibility, compImpliedValue } = require('./scoring');
+
 const DEFAULTS = {
   valueTolerancePct: 2,        // ARV/As-Is: treat within this % (and $) as a match
   valueToleranceAbs: 5000,
@@ -26,11 +28,22 @@ const DEFAULTS = {
   maxGrossAdjPct: 25,          // comp gross adjustment guideline
   effectiveDateMaxDays: 120,   // appraisal staleness at note
   flipMarkupPct: 20,           // prior-sale markup that flags a flip
+  // ---- comp-grid review checks (Phase 1; all advisory warnings, never CTC-blocking) ----
+  minClosedComps: 3,           // fewer closed comps than this is a thin support pool
+  compRecencyMaxMonths: 12,    // a comp settled more than this before the effective date is stale
+  compDistanceMaxMiles: 2,     // a comp farther than this from the subject is a distance concern (market-dependent)
+  glaBracketTolerancePct: 10,  // subject GLA should sit within (±this%) the comp GLA range
+  valueVsCompsPct: 10,         // a value this% above the comp median (but still in range) is flagged
+  flipSeasoningMonths: 12,     // a subject resold within this window before the appraisal flags for seasoning
   today: null,                 // 'YYYY-MM-DD' — injected (no new Date() in date paths)
 };
 
 const money = (n) => (n == null ? null : `$${Number(n).toLocaleString('en-US')}`);
-function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+// Number or null. CRUCIAL: null/undefined/'' → null (NOT 0). `Number(null)` is 0, which would
+// make an empty file value (e.g. a file with no ARV yet) read as $0 and fire a false "appraisal
+// vs file 0" mismatch — exactly the kind of guessed comparison the owner forbids. So a value we
+// don't have is "can't compare", never zero.
+function num(v) { if (v == null || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
 function withinTol(a, b, pct, abs) {
   if (a == null || b == null) return null;                 // can't compare
   const d = Math.abs(a - b);
@@ -238,6 +251,146 @@ function computeFindings(appraisal, file, opts = {}) {
     }
   }
 
+  // ---- 14–20. Comp-grid review checks (advisory warnings from the appraisal-review
+  //   research — they inform the underwriter, they never block clear-to-close and never
+  //   change the file). Each fires ONLY when the data it needs was actually read. ----
+  const comps = A.comparables || [];
+  const closed = comps.filter((c) => num(c.salePrice) != null);
+
+  // 14. Comp pool adequacy — a thin closed-sale pool weakens the value opinion.
+  if (comps.length > 0 && closed.length < o.minClosedComps) {
+    out.push(finding({ code: 'comp_pool_thin', severity: 'warning', field: 'comps',
+      appraisalValue: `${closed.length} closed`, fileValue: null,
+      title: `Only ${closed.length} closed comparable sale${closed.length === 1 ? '' : 's'} (guideline is ${o.minClosedComps}+)`,
+      howTo: 'A thin comp pool gives the value less support. Confirm the appraiser could not find more closed sales, or request additional comps.',
+      actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+  }
+
+  // 15. Comp recency — comps settled long before the effective date are stale support.
+  if (v.effectiveDate) {
+    const stale = closed
+      .map((c) => ({ c, mo: monthsBetween(c.saleDate, v.effectiveDate) }))
+      .filter((x) => x.mo != null && x.mo > o.compRecencyMaxMonths);
+    if (stale.length) {
+      out.push(finding({ code: 'comp_recency', severity: 'warning', field: 'comps',
+        appraisalValue: stale.map((x) => `#${x.c.seq} (${x.mo}mo)`).join(', '),
+        title: `${stale.length} comp${stale.length === 1 ? '' : 's'} sold more than ${o.compRecencyMaxMonths} months before the effective date`,
+        howTo: 'Older sales reflect an older market. Confirm no more recent comps exist, or ask for updated support.',
+        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+    }
+  }
+
+  // 16. Value bracketing — the opinion of value should sit within the adjusted comp range.
+  const adj = closed.map((c) => num(c.adjustedPrice)).filter((n) => n != null);
+  const subjVal = num(v.appraisedValue) != null ? num(v.appraisedValue) : num(v.valueSalesApproach);
+  if (subjVal != null && adj.length >= o.minClosedComps) {
+    const hi = Math.max(...adj), lo = Math.min(...adj);
+    if (subjVal > hi || subjVal < lo) {
+      const above = subjVal > hi;
+      out.push(finding({ code: 'value_not_bracketed', severity: 'warning', field: 'value',
+        appraisalValue: money(subjVal), fileValue: `${money(lo)}–${money(hi)}`,
+        title: `Opinion of value is ${above ? 'above' : 'below'} the adjusted comparable range`,
+        howTo: `The value ${money(subjVal)} sits ${above ? 'above the highest' : 'below the lowest'} adjusted comp (${money(lo)}–${money(hi)}). A value the comps don't bracket is worth a second look — confirm the adjustments support it.`,
+        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+    }
+  }
+
+  // 16b. Independent value cross-check — even WITHIN the comp range, a value well above what the
+  //   comps imply (their median adjusted price) is worth a second look. Fires only when the value
+  //   is inside the CLOSED-comp bracket (the same `adj`/`hi` value_not_bracketed uses, so the two
+  //   can never double-flag — even when a listing comp with no sale price lifts the implied high)
+  //   and materially above the comp median. Advisory.
+  if (subjVal != null && adj.length >= o.minClosedComps) {
+    const implied = compImpliedValue({ comps: A.comparables, subjectGla: A.subject.gla });
+    const hiClosed = Math.max(...adj);
+    if (implied && subjVal <= hiClosed && subjVal > implied.median * (1 + o.valueVsCompsPct / 100)) {
+      const overPct = Math.round(((subjVal - implied.median) / implied.median) * 100);
+      out.push(finding({ code: 'value_vs_comps', severity: 'warning', field: 'value',
+        appraisalValue: money(subjVal), fileValue: `comps imply ${money(implied.median)}`,
+        title: `Opinion of value is ${overPct}% above what the comps imply`,
+        howTo: `The reconciled value ${money(subjVal)} is ${overPct}% above the median adjusted comp (${money(implied.median)}${implied.perGlaValue ? `; $/sqft implies ${money(implied.perGlaValue)}` : ''}). It's still within the comp range, but sits at the top — confirm the adjustments carry it.`,
+        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+    }
+  }
+
+  // 17. GLA bracketing — the subject size should be bracketed by the comps.
+  const glas = closed.map((c) => num(c.gla)).filter((n) => n != null && n > 0);
+  const subjGla = num(A.subject.gla);
+  if (subjGla != null && glas.length >= o.minClosedComps) {
+    const hi = Math.max(...glas), lo = Math.min(...glas);
+    const band = (o.glaBracketTolerancePct / 100);
+    if (subjGla > hi * (1 + band) || subjGla < lo * (1 - band)) {
+      const above = subjGla > hi;
+      out.push(finding({ code: 'gla_not_bracketed', severity: 'warning', field: 'gla',
+        appraisalValue: `${subjGla.toLocaleString('en-US')} sqft`, fileValue: `${lo.toLocaleString('en-US')}–${hi.toLocaleString('en-US')} sqft`,
+        title: `Subject size is not bracketed by the comps (${above ? 'larger' : 'smaller'} than the comp range)`,
+        howTo: `The subject is ${subjGla.toLocaleString('en-US')} sqft vs a comp range of ${lo.toLocaleString('en-US')}–${hi.toLocaleString('en-US')} sqft. Comps that don't bracket the size lean on larger GLA adjustments — review those adjustments.`,
+        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+    }
+  }
+
+  // 18. Comp distance — comps well beyond the subject's neighborhood weaken locality.
+  const far = closed
+    .map((c) => ({ c, mi: parseMiles(c.proximity) }))
+    .filter((x) => x.mi != null && x.mi > o.compDistanceMaxMiles);
+  if (far.length) {
+    out.push(finding({ code: 'comp_distance', severity: 'warning', field: 'comps',
+      appraisalValue: far.map((x) => `#${x.c.seq} (${x.mi} mi)`).join(', '),
+      title: `${far.length} comp${far.length === 1 ? '' : 's'} more than ${o.compDistanceMaxMiles} miles from the subject`,
+      howTo: 'Distant comps may be a different market. Confirm the appraiser justified crossing the neighborhood, or ask for closer sales.',
+      actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+  }
+
+  // 19. Appraiser geographic competency — licensed in the subject's state?
+  if (A.appraiser && A.appraiser.licenseState && A.subject.state &&
+      A.appraiser.licenseState.toUpperCase() !== A.subject.state.toUpperCase()) {
+    out.push(finding({ code: 'appraiser_geo', severity: 'warning', field: 'appraiser',
+      appraisalValue: A.appraiser.licenseState, fileValue: A.subject.state,
+      title: `Appraiser is licensed in ${A.appraiser.licenseState}, subject is in ${A.subject.state}`,
+      howTo: 'An appraiser should be licensed in the state where the property sits. Confirm licensure (or a valid reciprocal) before relying on the report.',
+      actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+  }
+
+  // 20. Flip / recent resale of the subject — a fresh prior sale before the appraisal is a
+  //   seasoning / value-inflation signal. Advisory for a fix-and-flip lender (often expected),
+  //   with the markup called out when both the prior price and current value are known.
+  const ps = A.subject.priorSale || {};
+  if (ps.priorDate && v.effectiveDate) {
+    const mo = monthsBetween(ps.priorDate, v.effectiveDate);
+    if (mo != null && mo >= 0 && mo <= o.flipSeasoningMonths) {
+      const cur = subjVal != null ? subjVal : num(v.asIs);
+      const prior = num(ps.priorAmount);
+      // A nominal transfer ($1 quitclaim / intra-family) is NOT an arm's-length price — computing
+      // a markup off it yields an absurd % (e.g. "+63,999,900%"). Only show a markup when the prior
+      // price is a real sale (≥ $1,000); a nominal prior is flagged as a transfer without a %.
+      const armsLength = prior != null && prior >= 1000;
+      let markup = null;
+      if (cur != null && armsLength) markup = Math.round(((cur - prior) / prior) * 100);
+      out.push(finding({ code: 'subject_recent_resale', severity: 'warning', field: 'value',
+        appraisalValue: [ps.priorAmount != null ? money(ps.priorAmount) : null, ps.priorDate].filter(Boolean).join(' on '),
+        fileValue: cur != null ? money(cur) : null,
+        title: `Subject was ${armsLength ? 'sold' : 'transferred'} within ${o.flipSeasoningMonths} months before the appraisal${markup != null ? ` (${markup >= 0 ? '+' : ''}${markup}% since)` : ''}`,
+        howTo: `The subject last transferred ${ps.priorDate}${prior != null ? ` for ${money(prior)}` : ''}${!armsLength && prior != null ? ' — a nominal amount, likely a non-arm’s-length transfer; confirm the true prior price' : markup != null && markup >= o.flipMarkupPct ? ` — a ${markup}% jump warrants a close look at what supports the increase` : '. Confirm the prior sale and any value change is supported'}.`,
+        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+    }
+  }
+
+  // ---- 21. ARV defensibility — is the after-repair uplift backed by the rehab budget? ----
+  // Only on a renovation/subject-to deal, and only when BOTH ARV and As-Is are known. Advisory:
+  // flags a thin (uplift ≫ budget), no-uplift, or no-budget case. Never blocks CTC.
+  const isReno = A.formType !== 'FNM1073' && (v.arv != null || /SubjectTo/i.test(String(v.conditionOfAppraisal || '')));
+  if (isReno && v.arv != null && v.asIs != null) {
+    const rehab = o.rehab != null ? o.rehab : (file && file.rehab_budget);
+    const def = arvDefensibility({ arv: v.arv, asIs: v.asIs, rehab, isReno: true });
+    if (def && (def.band === 'thin' || def.band === 'no_uplift' || def.band === 'no_budget')) {
+      out.push(finding({ code: 'arv_defensibility', severity: 'warning', field: 'arv',
+        appraisalValue: def.uplift != null ? `+${money(def.uplift)} uplift` : null,
+        fileValue: def.rehab != null ? `${money(def.rehab)} rehab` : null,
+        title: def.title, howTo: def.detail,
+        actions: ['acknowledge', 'dismiss', 'request_revision'] }));
+    }
+  }
+
   return out;
 }
 
@@ -247,6 +400,24 @@ function daysBetween(a, b) {
   if (!pa || !pb) return null;
   const da = Date.UTC(+pa[1], +pa[2] - 1, +pa[3]), db = Date.UTC(+pb[1], +pb[2] - 1, +pb[3]);
   return Math.round((db - da) / 86400000);
+}
+// Whole-month difference between two 'YYYY-MM-DD' (or 'YYYY-MM-01') strings — b minus a.
+// Positive = b is later. No new Date()/now dependence. Null if either isn't a calendar date.
+function monthsBetween(a, b) {
+  const pa = /^(\d{4})-(\d{2})/.exec(String(a || '')), pb = /^(\d{4})-(\d{2})/.exec(String(b || ''));
+  if (!pa || !pb) return null;
+  return (+pb[1] - +pa[1]) * 12 + (+pb[2] - +pa[2]);
+}
+// Miles from a MISMO proximity description ("0.35 miles", "1.2 mi", "0.08 miles SW").
+// Only reads an explicit mile figure — a description in blocks/feet/none returns null (never
+// guessed into miles). "adjacent" / "abuts" reads as 0.
+function parseMiles(s) {
+  const t = String(s || '').toLowerCase();
+  if (!t) return null;
+  if (/\b(adjacent|abuts|abutting)\b/.test(t)) return 0;
+  const m = /(\d+(?:\.\d+)?)\s*(?:mi\b|mile)/.exec(t);
+  if (m) { const n = Number(m[1]); return Number.isFinite(n) ? n : null; }
+  return null;
 }
 
 // Severity roll-up for the badge + blocking condition.
@@ -260,4 +431,4 @@ function summarize(findings) {
   };
 }
 
-module.exports = { computeFindings, summarize, DEFAULTS, _internals: { daysBetween, withinTol, normAddr } };
+module.exports = { computeFindings, summarize, DEFAULTS, _internals: { daysBetween, monthsBetween, parseMiles, withinTol, normAddr } };

@@ -32,7 +32,7 @@ function btn(primary, danger) {
     fontSize: 12.5, fontWeight: 600, borderRadius: 8, padding: '7px 13px', cursor: 'pointer',
     border: '1px solid ' + (primary ? 'var(--teal,#2F7F86)' : danger ? 'color-mix(in srgb,var(--crit,#B4483C) 35%,var(--line,#E7E1D3))' : 'var(--line,#E7E1D3)'),
     background: primary ? 'var(--teal,#2F7F86)' : 'transparent',
-    color: primary ? '#fff' : danger ? 'var(--crit,#B4483C)' : 'var(--ink,#141B22)',
+    color: primary ? '#fff' : danger ? 'var(--crit,#B4483C)' : 'var(--text,#141B22)',
   };
 }
 
@@ -163,10 +163,15 @@ function lightBtn(side) {
     border: 'none', background: 'rgba(255,255,255,.16)', color: '#fff', fontSize: 26, cursor: 'pointer', lineHeight: 1 };
 }
 
+// Which finding fields can be previewed against the pricing engine, and the engine override key
+// each maps to. property_type is excluded (its finding value is a form code, not a portal type).
+const PREVIEW_KEY = { as_is_value: 'asIsValue', arv: 'arv', purchase_price: 'purchasePrice', units: 'units' };
+
 function Finding({ appId, f, onChange, readOnly }) {
   const [busy, setBusy] = useState(false);
   const [custom, setCustom] = useState('');
   const [showCustom, setShowCustom] = useState(false);
+  const [preview, setPreview] = useState(null);   // {loading}|{err}|{base,whatif,val}
   const s = SEV[f.severity] || SEV.info;
   const act = async (action, value) => {
     setBusy(true);
@@ -175,6 +180,21 @@ function Finding({ appId, f, onChange, readOnly }) {
     finally { setBusy(false); }
   };
   const canWriteBack = ['arv', 'as_is_value', 'purchase_price', 'units', 'property_type'].includes(f.field);
+  // A dry-run "what-if": price the file WITH the appraisal's value as an override and compare to
+  // the current terms — NON-persisting (reuses the /pricing/quote engine, nothing is written).
+  const previewKey = PREVIEW_KEY[f.field];
+  const previewVal = previewKey ? Number(String(f.appraisal_value == null ? '' : f.appraisal_value).replace(/[^0-9.-]/g, '')) : null;
+  const canPreview = !readOnly && previewKey && Number.isFinite(previewVal) && previewVal > 0;
+  const doPreview = async () => {
+    setPreview({ loading: true });
+    try {
+      const [base, whatif] = await Promise.all([
+        api.staffPricingQuote(appId, {}),
+        api.staffPricingQuote(appId, { [previewKey]: previewVal }),
+      ]);
+      setPreview({ base, whatif, val: previewVal });
+    } catch (e) { setPreview({ err: e.message || 'Could not preview the re-price' }); }
+  };
   return (
     <div style={{ border: '1px solid var(--line,#E7E1D3)', borderLeft: `4px solid ${s.fg}`, borderRadius: 12, background: 'var(--card,#fff)', padding: '14px 16px', marginBottom: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
@@ -192,10 +212,44 @@ function Finding({ appId, f, onChange, readOnly }) {
       {!readOnly && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
           {canWriteBack && <button disabled={busy} onClick={() => act('replace')} style={btn(true)}>Replace with appraisal · re-prices</button>}
+          {canPreview && <button disabled={busy || (preview && preview.loading)} onClick={doPreview} style={btn()} title="See how this would re-price the loan — without changing anything">↻ Preview the re-price</button>}
           <button disabled={busy} onClick={() => act('keep')} style={btn()}>Keep file value</button>
           {canWriteBack && <button disabled={busy} onClick={() => setShowCustom((v) => !v)} style={btn()}>Enter custom…</button>}
           <button disabled={busy} onClick={() => act('dismiss')} style={btn()}>Dismiss</button>
           {f.severity === 'fatal' && <button disabled={busy} onClick={() => { if (confirm('Decline this file?')) act('decline'); }} style={btn(false, true)}>Decline file</button>}
+        </div>
+      )}
+      {/* What-if re-price preview — dry-run only, nothing is written to the file. */}
+      {!readOnly && preview && (
+        <div style={{ marginTop: 10, background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 10, padding: '10px 12px', fontSize: 12.5 }}>
+          {preview.loading ? (
+            <span style={{ color: 'var(--muted,#4B585C)' }}>Calculating the re-price…</span>
+          ) : preview.err ? (
+            <span style={{ color: 'var(--crit,#B4483C)' }}>{preview.err}</span>
+          ) : (
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 6 }}>If you replace with {money(preview.val)} <span style={{ fontWeight: 400, color: 'var(--muted,#4B585C)' }}>— preview only, nothing changes yet</span></div>
+              {['standard', 'gold'].map((pg) => {
+                const b = preview.base && preview.base[pg], w = preview.whatif && preview.whatif[pg];
+                if (!b || !w) return null;
+                const bl = b.sizing && b.sizing.totalLoan, wl = w.sizing && w.sizing.totalLoan;
+                if (bl == null && wl == null) return null;
+                const d = (wl || 0) - (bl || 0);
+                const label = (w.programLabel || b.programLabel || pg);
+                return (
+                  <div key={pg} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '2px 0' }}>
+                    <span style={{ minWidth: 92, color: 'var(--muted,#4B585C)' }}>{label}</span>
+                    {!w.eligible ? <span style={{ color: 'var(--amber,#B7791F)' }}>ineligible with this value{w.status ? ` (${w.status})` : ''}</span> : (
+                      <span>{money(bl)} <span style={{ color: 'var(--muted,#4B585C)' }}>→</span> <b>{money(wl)}</b>
+                        {d !== 0 && <span style={{ marginLeft: 6, color: d > 0 ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)', fontWeight: 700 }}>{d > 0 ? '▲ +' : '▼ '}{money(Math.abs(d))}</span>}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              <div style={{ marginTop: 6, color: 'var(--muted,#4B585C)' }}>To actually apply it, use “Replace with appraisal”.</div>
+            </div>
+          )}
         </div>
       )}
       {!readOnly && showCustom && (
@@ -223,11 +277,398 @@ function riskChips(a, comps, sum) {
   return chips;
 }
 
+// A section heading — gold eyebrow + serif title (mockup .sec-head).
+function SecHead({ eyebrow, title, extra }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 14, margin: '30px 0 14px', flexWrap: 'wrap' }}>
+      <div>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', marginBottom: 4 }}>{eyebrow}</div>
+        <h2 style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 22, margin: 0, fontWeight: 600, lineHeight: 1.1 }}>{title}</h2>
+      </div>
+      {extra}
+    </div>
+  );
+}
+
+// A titled dossier card (mockup .card + h3).
+function DCard({ title, tag, children, dashed }) {
+  return (
+    <div className="appr-avoid" style={{ background: 'var(--card,#fff)', border: `1px ${dashed ? 'dashed' : 'solid'} var(--line,#E7E1D3)`, borderRadius: 14, padding: 18, minWidth: 0 }}>
+      <h3 style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 15.5, margin: '0 0 12px', fontWeight: 600, display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        <span>{title}</span>
+        {tag && <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>{tag}</span>}
+      </h3>
+      {children}
+    </div>
+  );
+}
+
+// A key/value list (mockup dl.kv) — rows are [label, value, sub?]; falsy rows are skipped so a
+// caller can inline `cond && ['x', y]`. Never invents a value — missing renders as "—".
+function KV({ rows }) {
+  return (
+    <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '9px 14px', fontSize: 13.5, alignItems: 'baseline' }}>
+      {rows.filter(Boolean).map(([k, v, sub], i) => (
+        <React.Fragment key={i}>
+          <dt style={{ color: 'var(--muted,#4B585C)', whiteSpace: 'nowrap' }}>{k}</dt>
+          <dd style={{ margin: 0, textAlign: 'right', fontWeight: 600, overflowWrap: 'anywhere' }}>
+            {v == null || v === '' ? '—' : v}
+            {sub && <span style={{ display: 'block', fontWeight: 400, fontSize: 11.5, color: 'var(--muted,#4B585C)' }}>{sub}</span>}
+          </dd>
+        </React.Fragment>
+      ))}
+    </dl>
+  );
+}
+
+// The three valuation approaches as tiles (mockup .approaches). Only shows tiles the appraisal
+// actually carried a value for.
+function Approaches({ a }) {
+  const tiles = [
+    ['Sales comparison', 'reconciled opinion', a.value_sales_approach],
+    ['Cost approach', 'replacement', a.value_cost_approach],
+    ['Income approach', a.grm ? `GRM ${a.grm}` : 'rental basis', a.value_income_approach],
+  ].filter((t) => t[2] != null);
+  if (!tiles.length) return null;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginTop: 4 }}>
+      {tiles.map(([k, sub, v], i) => (
+        <div key={i} className="appr-avoid" style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 14px' }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--muted,#4B585C)' }}>{k}<span style={{ fontWeight: 400 }}> · {sub}</span></div>
+          <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 20, fontWeight: 600, marginTop: 3, color: i === 0 ? 'var(--teal-deep,#256168)' : 'var(--text,#141B22)' }}>{money(v)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// "Prepared by" — the appraiser + firm + license, and (staff only) the client/lender and
+// AMC/vendor. The borrower payload has these scrubbed, but we also gate on readOnly so a
+// capital-partner name can never render on the borrower side even if one slipped through.
+function PreparedBy({ a, readOnly }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))', gap: 16 }}>
+      <div className="appr-avoid" style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 18 }}>
+        <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 18, fontWeight: 600 }}>{or(a.appraiser_name)}</div>
+        <div style={{ color: 'var(--muted,#4B585C)', fontSize: 13, marginBottom: 12 }}>{or(a.appraiser_company)}</div>
+        <KV rows={[
+          ['License #', a.license_id],
+          ['State', a.license_state],
+          a.license_type && ['License type', a.license_type],
+          ['Expires', a.license_exp],
+          a.appraiser_phone && ['Phone', a.appraiser_phone],
+          a.appraiser_email && ['Email', a.appraiser_email],
+          a.supervisor_name && ['Supervisor', a.supervisor_name],
+          !readOnly && a.lender_name && ['Client / lender', a.lender_name],
+          !readOnly && a.amc_name && ['AMC / vendor', a.amc_name],
+        ]} />
+      </div>
+      <div className="appr-avoid" style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 18 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', marginBottom: 10 }}>Report dates</div>
+        <KV rows={[
+          ['Effective date', a.effective_date],
+          ['Report signed', a.report_signed_date],
+          ['Inspection date', a.inspection_date],
+          a.condition_of_appraisal && ['Made as', a.condition_of_appraisal],
+          ['Form', a.form_type],
+        ]} />
+      </div>
+    </div>
+  );
+}
+
+// The source-document tiles (staff only — the borrower payload drops the document ids). Opens
+// the stored PDF / XML in a new tab through the authed download (a plain link can't send the token).
+function SourceDocs({ a }) {
+  const [busy, setBusy] = useState('');
+  const openDoc = async (id) => {
+    setBusy(id);
+    try {
+      const { blob } = await api.staffDownloadDoc(id);
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank', 'noopener');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) { alert(e.message || 'Could not open the document'); }
+    finally { setBusy(''); }
+  };
+  const docs = [];
+  if (a.pdf_document_id) docs.push(['PDF', 'Full appraisal report', 'The complete PDF pulled from the appraisal file — every photo, sketch and map.', a.pdf_document_id]);
+  if (a.source_xml_document_id) docs.push(['XML', 'Appraisal data file (MISMO)', 'The machine-readable file this whole profile was built from.', a.source_xml_document_id]);
+  if (!docs.length) return null;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', gap: 14 }}>
+      {docs.map(([kind, title, sub, id]) => (
+        <div key={id} className="appr-avoid appr-noprint" style={{ display: 'flex', alignItems: 'center', gap: 14, background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 16 }}>
+          <div style={{ flex: 'none', width: 46, height: 46, borderRadius: 10, background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 800, color: 'var(--teal-deep,#256168)', letterSpacing: '.04em' }}>{kind}</div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{title}</div>
+            <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>{sub}</div>
+          </div>
+          <button onClick={() => openDoc(id)} disabled={busy === id} style={{ ...btn(true), flex: 'none' }}>{busy === id ? 'Opening…' : `Open ${kind}`}</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// One comparable-sales row with an expandable adjustment breakdown (the itemized grid the
+// appraiser applied). `adjustments` is the jsonb list stored at import.
+function CompRow({ c }) {
+  const [open, setOpen] = useState(false);
+  const adj = Array.isArray(c.adjustments) ? c.adjustments : (() => { try { return JSON.parse(c.adjustments || '[]'); } catch { return []; } })();
+  const cq = [c.condition_uad, c.quality_uad].filter(Boolean).join(' / ') || '—';
+  return (
+    <>
+      <tr style={{ borderTop: '1px solid var(--line-soft,#EFEADD)', background: c.is_subject ? 'var(--paper,#F6F3EC)' : undefined, cursor: adj.length ? 'pointer' : 'default' }} onClick={() => adj.length && setOpen((v) => !v)}>
+        <td style={td}>{c.is_subject ? 'Subj' : c.seq}</td>
+        <td style={td}>{or(c.address)}{c.city ? `, ${c.city} ${c.state || ''}` : ''}{adj.length ? <span style={{ color: 'var(--muted,#4B585C)', fontSize: 11 }}> {open ? '▲' : '▼'}</span> : null}</td>
+        <td style={td}>{or(c.proximity)}</td>
+        <td style={{ ...td, textAlign: 'right' }}>{c.gla ? Number(c.gla).toLocaleString('en-US') : '—'}</td>
+        <td style={{ ...td, textAlign: 'center' }}>{cq}</td>
+        <td style={{ ...td, textAlign: 'right' }}>{or(c.sale_date)}</td>
+        <td style={{ ...td, textAlign: 'right' }}>{c.days_on_market != null && c.days_on_market !== '' ? c.days_on_market : '—'}</td>
+        <td style={{ ...td, textAlign: 'right' }}>{money(c.sale_price)}</td>
+        <td style={{ ...td, textAlign: 'right' }}>{c.price_per_gla != null ? money(c.price_per_gla) : '—'}</td>
+        <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{money(c.adjusted_price)}</td>
+        <td style={{ ...td, textAlign: 'right' }}>{c.net_adj_pct != null ? pct(c.net_adj_pct) : (c.net_adjustment != null ? money(c.net_adjustment) : '—')}</td>
+      </tr>
+      {open && adj.length > 0 && (
+        <tr style={{ background: 'var(--paper,#F6F3EC)' }}>
+          <td />
+          <td colSpan={10} style={{ padding: '4px 10px 12px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.06em', textTransform: 'uppercase', color: 'var(--muted,#4B585C)', margin: '4px 0 6px' }}>Adjustments applied</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(190px,1fr))', gap: '4px 18px' }}>
+              {adj.filter((x) => x && x.amount != null && Number(x.amount) !== 0).map((x, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12.5 }}>
+                  <span style={{ color: 'var(--muted,#4B585C)' }}>{x.type || 'Adjustment'}{x.description ? ` (${x.description})` : ''}</span>
+                  <span style={{ fontVariantNumeric: 'tabular-nums', color: Number(x.amount) < 0 ? 'var(--crit,#B4483C)' : 'var(--good,#3F7A5B)' }}>{Number(x.amount) > 0 ? '+' : ''}{money(x.amount)}</span>
+                </div>
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+// The custom branded print. A print-only stylesheet that ISOLATES the report card (hides the
+// rest of the page + the overlay chrome), lays it out for paper with page-break control, keeps
+// the brand colors (print-color-adjust:exact), and reveals a print-only masthead. This is the
+// "our own print", not a raw browser dump — the design lives here. Only rendered while the
+// full-screen report is open, so printing from anywhere else is unaffected.
+const PRINT_CSS = `
+@media print {
+  @page { margin: 14mm; }
+  html, body { background: #fff !important; }
+  body * { visibility: hidden !important; }
+  .appr-print-root, .appr-print-root * { visibility: visible !important; }
+  .appr-print-root { position: absolute !important; inset: 0 !important; z-index: 0 !important;
+    background: #fff !important; padding: 0 !important; display: block !important; overflow: visible !important; }
+  .appr-print-root > div { max-width: none !important; width: 100% !important; margin: 0 !important;
+    border: 0 !important; border-radius: 0 !important; box-shadow: none !important; background: #fff !important; }
+  .appr-noprint { display: none !important; }
+  .appr-print-only { display: block !important; }
+  .appr-avoid { break-inside: avoid; }
+  h2, h3, h4 { break-after: avoid; }
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+}
+`;
+
+// Compass bearing → degrees clockwise from North.
+const DIRS = { N: 0, NNE: 22.5, NE: 45, ENE: 67.5, E: 90, ESE: 112.5, SE: 135, SSE: 157.5, S: 180, SSW: 202.5, SW: 225, WSW: 247.5, W: 270, WNW: 292.5, NW: 315, NNW: 337.5 };
+// Parse a MISMO proximity string ("0.35 miles SW") → { miles, dir }. Returns null if it can't be
+// read as an explicit mile distance (never guessed — a "2 blocks" description maps to nothing).
+function parseProximity(s) {
+  const t = String(s || '').toUpperCase();
+  const m = /(\d+(?:\.\d+)?)\s*(?:MI\b|MILE)/.exec(t);
+  if (!m) return null;
+  const miles = Number(m[1]);
+  const dm = /(NNE|ENE|ESE|SSE|SSW|WSW|WNW|NNW|NE|SE|SW|NW|N|E|S|W)\s*$/.exec(t.replace(/MILES?/g, '').trim());
+  return { miles: Number.isFinite(miles) ? miles : null, dir: dm ? dm[1] : null };
+}
+
+// Comp location map — the subject at centre, each comparable plotted by its distance (radius) and
+// compass direction from the appraisal's proximity field. Pure SVG, no tiles, no network, no deps.
+function CompMap({ comps }) {
+  const pts = (comps || []).filter((c) => !c.is_subject)
+    .map((c) => ({ c, p: parseProximity(c.proximity) }))
+    .filter((x) => x.p && x.p.miles != null && x.p.dir && DIRS[x.p.dir] != null);
+  if (pts.length < 2) return null;                       // not enough mappable comps to be useful
+  const maxMi = Math.max(0.5, ...pts.map((x) => x.p.miles));
+  const SIZE = 280, cx = SIZE / 2, cy = SIZE / 2, R = SIZE / 2 - 26;
+  const rFor = (mi) => (mi / maxMi) * R;
+  const xy = (mi, dir) => { const rad = (DIRS[dir] * Math.PI) / 180; const r = rFor(mi); return [cx + r * Math.sin(rad), cy - r * Math.cos(rad)]; };
+  const rings = [maxMi / 2, maxMi];
+  const line = 'var(--line,#E7E1D3)', muted = 'var(--muted,#4B585C)';
+  const unmapped = (comps || []).filter((c) => !c.is_subject).length - pts.length;
+  return (
+    <div className="appr-avoid" style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 16, display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'center' }}>
+      <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} style={{ flex: 'none', maxWidth: '100%' }} role="img" aria-label="Map of comparable sales relative to the subject">
+        {rings.map((mi, i) => <circle key={i} cx={cx} cy={cy} r={rFor(mi)} fill="none" stroke={line} strokeDasharray="3 3" />)}
+        {rings.map((mi, i) => <text key={`l${i}`} x={cx + 3} y={cy - rFor(mi) + 12} fontSize="9.5" fill={muted}>{mi.toFixed(mi < 1 ? 2 : 1)} mi</text>)}
+        {['N', 'E', 'S', 'W'].map((d) => { const [x, y] = xy(maxMi, d); return <text key={d} x={x} y={y} fontSize="10" fontWeight="700" fill={muted} textAnchor="middle" dominantBaseline="middle">{d}</text>; })}
+        {/* subject */}
+        <circle cx={cx} cy={cy} r={6} fill="var(--gold,#AE8746)" />
+        <text x={cx} y={cy - 10} fontSize="10.5" fontWeight="700" fill="var(--text,#141B22)" textAnchor="middle">Subject</text>
+        {/* comps */}
+        {pts.map(({ c, p }) => {
+          const [x, y] = xy(p.miles, p.dir);
+          return (
+            <g key={c.id}>
+              <line x1={cx} y1={cy} x2={x} y2={y} stroke={line} />
+              <circle cx={x} cy={y} r={5} fill="var(--teal,#2F7F86)" />
+              <text x={x} y={y - 8} fontSize="10" fontWeight="700" fill="var(--teal-deep,#256168)" textAnchor="middle">{c.seq}</text>
+            </g>
+          );
+        })}
+      </svg>
+      <div style={{ minWidth: 160, flex: 1 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', marginBottom: 8 }}>Comp locations</div>
+        <div style={{ display: 'grid', gap: 5, fontSize: 12.5 }}>
+          {pts.map(({ c, p }) => (
+            <div key={c.id} style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span style={{ flex: 'none', width: 18, height: 18, borderRadius: '50%', background: 'var(--teal,#2F7F86)', color: '#fff', fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>{c.seq}</span>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{or(c.address)} <span style={{ color: muted }}>· {p.miles} mi {p.dir}</span></span>
+            </div>
+          ))}
+        </div>
+        {unmapped > 0 && <div style={{ fontSize: 11.5, color: muted, marginTop: 8 }}>{unmapped} comp{unmapped === 1 ? '' : 's'} had no mappable distance/direction.</div>}
+      </div>
+    </div>
+  );
+}
+
+// Three-cap loan-sizing panel (staff only). Fetches the current pricing quote (frozen engine, no
+// persistence) and shows where the loan lands on each leverage measure — As-Is/acquisition LTV,
+// loan-to-cost, ARV LTV — and which one is binding. Renders nothing if pricing is unavailable.
+function ThreeCapPanel({ appId }) {
+  const [state, setState] = useState(null);   // null=loading | {err} | {data}
+  useEffect(() => {
+    let live = true;
+    api.staffPricing(appId).then((r) => { if (live) setState({ data: r }); }).catch((e) => { if (live) setState({ err: e && e.message }); });
+    return () => { live = false; };
+  }, [appId]);
+  if (!state || state.err) return null;                       // quiet while loading / if unavailable
+  const d = state.data || {};
+  const quote = d.quote || {};
+  const prog = d.current && d.current.program;
+  const pick = (prog && quote[prog] && quote[prog].eligible) ? quote[prog]
+    : (quote.standard && quote.standard.eligible) ? quote.standard
+      : (quote.gold && quote.gold.eligible) ? quote.gold : null;
+  if (!pick || !pick.sizing) return null;
+  const s = pick.sizing;
+  const b = String(s.binding || '').toLowerCase();
+  const caps = [
+    { label: 'As-Is / acquisition LTV', pct: s.acqLtvPct, key: 'acq' },
+    { label: 'Loan-to-cost', pct: s.ltcPct, key: 'ltc' },
+    { label: 'ARV LTV', pct: s.arvPct, key: 'arv' },
+  ].filter((c) => c.pct != null);
+  if (!caps.length) return null;
+  const isBinding = (k) => (k === 'acq' && /acq|as.?is|ltv/.test(b) && !/arv/.test(b)) || (k === 'ltc' && /ltc|cost/.test(b)) || (k === 'arv' && /arv/.test(b));
+  return (
+    <div className="appr-avoid" style={{ marginTop: 14, background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>Loan sizing — leverage by measure</span>
+        {s.totalLoan != null && <span style={{ fontSize: 13 }}>Sized loan <b style={{ fontFamily: 'var(--serif,Georgia,serif)' }}>{money(s.totalLoan)}</b>{pick.programLabel ? <span style={{ color: 'var(--muted,#4B585C)' }}> · {pick.programLabel}</span> : null}</span>}
+      </div>
+      <div style={{ display: 'grid', gap: 9 }}>
+        {caps.map((c) => {
+          const pct = Math.max(0, Math.min(100, Number(c.pct)));
+          const bind = isBinding(c.key);
+          return (
+            <div key={c.key}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, marginBottom: 3 }}>
+                <span style={{ color: 'var(--muted,#4B585C)' }}>{c.label}{bind && <span style={{ color: 'var(--teal-deep,#256168)', fontWeight: 700 }}> · binding</span>}</span>
+                <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{pct.toFixed(1)}%</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 6, background: 'var(--line,#E7E1D3)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${pct}%`, background: bind ? 'var(--teal,#2F7F86)' : 'var(--gold,#AE8746)', borderRadius: 6 }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 8 }}>Where this loan lands on each leverage measure at today's file values — the binding one sets the size. Live preview, nothing saved.</div>
+    </div>
+  );
+}
+
+// PILOT collateral read — a 1–5 roll-up + (staff) the ARV-defensibility cross-check. Honest and
+// explainable: every factor that moved the score is listed on demand; nothing is fabricated. All
+// advisory — it never changes the file or blocks a deal.
+function ScoreCard({ score }) {
+  const [open, setOpen] = useState(false);
+  if (!score || (!score.collateral && !score.arv)) return null;
+  const col = score.collateral;
+  const arv = score.arv;
+  const colTone = (n) => (n >= 4 ? { fg: 'var(--good,#3F7A5B)', bg: 'var(--good-bg,#E9F1EA)' }
+    : n === 3 ? { fg: 'var(--teal-deep,#256168)', bg: 'rgba(47,127,134,.12)' }
+      : n === 2 ? { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' }
+        : { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' });
+  const arvToneMap = {
+    strong: { fg: 'var(--good,#3F7A5B)', bg: 'var(--good-bg,#E9F1EA)' },
+    moderate: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' },
+    thin: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
+    no_uplift: { fg: 'var(--crit,#B4483C)', bg: 'var(--crit-bg,#F6E7E4)' },
+    no_budget: { fg: 'var(--amber,#B7791F)', bg: 'var(--amber-bg,#F6EEDD)' },
+  };
+  return (
+    <div className="appr-avoid" style={{ display: 'grid', gridTemplateColumns: arv ? 'repeat(auto-fit,minmax(260px,1fr))' : '1fr', gap: 14, marginBottom: 18 }}>
+      {col && (() => {
+        const t = colTone(col.score);
+        return (
+          <div style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ flex: 'none', width: 58, height: 58, borderRadius: 12, background: t.bg, color: t.fg, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--serif,Georgia,serif)', lineHeight: 1 }}>
+                <span style={{ fontSize: 24, fontWeight: 700 }}>{col.score}</span>
+                <span style={{ fontSize: 10, opacity: .8 }}>/ 5</span>
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>PILOT collateral read</div>
+                <div style={{ fontSize: 17, fontWeight: 700, fontFamily: 'var(--serif,Georgia,serif)', color: t.fg }}>{col.band}</div>
+                {col.factors && col.factors.length > 0 && (
+                  <button onClick={() => setOpen((v) => !v)} style={{ marginTop: 2, background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--muted,#4B585C)', fontSize: 12, textDecoration: 'underline' }}>
+                    {open ? 'Hide why' : `Why — ${col.factors.length} factor${col.factors.length === 1 ? '' : 's'}`}
+                  </button>
+                )}
+              </div>
+            </div>
+            {open && col.factors && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--line-soft,#EFEADD)', display: 'grid', gap: 7 }}>
+                {col.factors.map((f, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12.5 }}>
+                    <span style={{ flex: 'none', width: 26, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: f.effect > 0 ? 'var(--good,#3F7A5B)' : 'var(--crit,#B4483C)' }}>{f.effect > 0 ? '+' : ''}{f.effect}</span>
+                    <span><b>{f.label}</b> — <span style={{ color: 'var(--muted,#4B585C)' }}>{f.detail}</span></span>
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: 'var(--muted,#4B585C)', marginTop: 4 }}>An advisory read of the appraisal's own signals — it never changes the file.</div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+      {arv && (() => {
+        const t = arvToneMap[arv.band] || arvToneMap.moderate;
+        return (
+          <div style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)', marginBottom: 6 }}>ARV defensibility</div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: t.bg, color: t.fg, borderRadius: 999, padding: '4px 12px', fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>{arv.verdict}</div>
+            <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 4 }}>{arv.title}</div>
+            <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>{arv.detail}</div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [importing, setImporting] = useState(false);
+  const [expanded, setExpanded] = useState(false);   // full-screen "open the whole report" view
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -241,6 +682,15 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // Close the full-screen report on Esc — bound to the window so it fires the moment the
+  // overlay opens, without needing the dialog to hold focus first.
+  useEffect(() => {
+    if (!expanded) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setExpanded(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded]);
+
   const onFile = async (e) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
@@ -252,6 +702,17 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
       await load();
     } catch (e2) { setErr(e2.message || 'Import failed'); }
     finally { setImporting(false); }
+  };
+
+  const [pulling, setPulling] = useState(false);
+  const pullPhotos = async () => {
+    setPulling(true); setErr('');
+    try {
+      const r = await api.appraisalRefreshPhotos(appId);
+      await load();
+      if (!r || !r.stored) setErr('No photos could be pulled — the appraisal PDF may not be on file yet. Upload the PDF to the appraisal condition, then try again.');
+    } catch (e3) { setErr(e3.message || 'Could not pull photos'); }
+    finally { setPulling(false); }
   };
 
   if (loading) return <p style={{ color: 'var(--muted,#4B585C)' }}>Loading the appraisal…</p>;
@@ -268,8 +729,8 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
   const isArvBasis = num(a && a.arv_value) != null && /subject|hypothetical|as.?repair|as.?complet/i.test(String((a && a.condition_of_appraisal) || ''));
   const chips = a ? riskChips(a, comps, sum) : [];
 
-  return (
-    <div>
+  const body = (
+    <>
       {err && <p style={{ color: 'var(--crit,#B4483C)', fontSize: 13 }}>{err}</p>}
 
       {/* import row — staff only. Borrowers see the report, never the upload. */}
@@ -280,9 +741,15 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
             <input type="file" accept=".xml,text/xml,application/xml" onChange={onFile} disabled={importing} style={{ display: 'none' }} />
           </label>
           {a && <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>Form {or(a.form_type)} · effective {or(a.effective_date)} · imported {a.imported_at ? String(a.imported_at).slice(0, 10) : '—'}</span>}
+          {a && !expanded && <button onClick={() => setExpanded(true)} style={OPEN_BTN} title="Open the full property report">⤢ Open full report</button>}
         </div>
       ) : (
-        a && <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginBottom: 16 }}>Form {or(a.form_type)} · effective {or(a.effective_date)}</div>
+        a && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>Form {or(a.form_type)} · effective {or(a.effective_date)}</span>
+            {!expanded && <button onClick={() => setExpanded(true)} style={OPEN_BTN} title="Open the full property report">⤢ Open full report</button>}
+          </div>
+        )
       )}
 
       {!a && !importing && (
@@ -301,7 +768,7 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
               </div>
               <ValueStory a={a} />
               {a.appraised_value != null && (
-                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 8 }}>Appraised value on the report: <b style={{ color: 'var(--ink,#141B22)' }}>{money(a.appraised_value)}</b></div>
+                <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)', marginTop: 8 }}>Appraised value on the report: <b style={{ color: 'var(--text,#141B22)' }}>{money(a.appraised_value)}</b></div>
               )}
             </div>
           </div>
@@ -313,6 +780,9 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
               ? 'This valuation reflects the After-Repair Value (ARV) — subject to completion of the repairs described in the appraisal.'
               : 'This is the current As-Is market value of the property.'}</span>
           </div>
+
+          {/* PILOT collateral read (1–5) + ARV-defensibility (staff only) */}
+          <ScoreCard score={data.score} />
 
           {/* collateral snapshot + risk rail */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 18 }}>
@@ -344,104 +814,228 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary }) {
           )}
 
           {/* ===== PHOTO GALLERY ===== */}
-          <PhotoGallery photos={photos} readOnly={readOnly} />
-
-          {/* ===== PROPERTY DOSSIER ===== */}
-          <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '22px 0 12px' }}>Property profile</h4>
-          <div style={{ background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 14, padding: 18 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 16 }}>
-              <Fact label="As-Is value" value={money(a.as_is_value)} sub={a.as_is_confidence && a.as_is_confidence !== 'definite' ? 'from narrative' : null} />
-              <Fact label="ARV" value={money(a.arv_value)} />
-              <Fact label="Appraised" value={money(a.appraised_value)} />
-              <Fact label="Year built" value={or(a.year_built)} />
-              <Fact label="Units" value={or(a.units)} />
-              <Fact label="GLA (sq ft)" value={a.gla ? Number(a.gla).toLocaleString('en-US') : '—'} />
-              <Fact label="Beds / baths" value={`${or(a.beds)} / ${a.baths_full != null ? a.baths_full + (a.baths_half ? '.' + a.baths_half : '') : '—'}`} />
-              <Fact label="Lot area" value={or(a.lot_area)} />
-              <Fact label="Zoning" value={or(a.zoning_id)} sub={or(a.zoning_desc) !== '—' ? a.zoning_desc : null} />
-              <Fact label="Design / style" value={or(a.design_style)} />
-              <Fact label="Flood zone" value={or(a.flood_zone)} />
-              <Fact label="Cost approach" value={money(a.value_cost_approach)} />
-            </div>
-            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line-soft,#EFEADD)', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(180px,1fr))', gap: 16 }}>
-              <Pips label="Condition (UAD)" code={a.condition_uad} />
-              <Pips label="Quality (UAD)" code={a.quality_uad} />
-              {a.value_income_approach != null && <Fact label="Income approach" value={money(a.value_income_approach)} sub={a.grm ? `GRM ${a.grm}` : null} />}
-            </div>
-
-            {a.condo_project_name && (
-              <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line-soft,#EFEADD)', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 16 }}>
-                <Fact label="Condo project" value={or(a.condo_project_name)} />
-                <Fact label="Unit / floor" value={`${or(a.condo_unit_identifier)} · ${or(a.condo_floor)}`} />
-                <Fact label="HOA fee" value={a.hoa_fee_amount != null ? `${money(a.hoa_fee_amount)} / ${(a.hoa_fee_period || '').toLowerCase() || 'mo'}` : '—'} />
+          {photos.length > 0 ? (
+            <PhotoGallery photos={photos} readOnly={readOnly} />
+          ) : (
+            <div className="appr-avoid appr-noprint" style={{ background: 'var(--paper,#F6F3EC)', border: '1px dashed var(--line,#E7E1D3)', borderRadius: 14, padding: 18, marginTop: 6, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 15, fontWeight: 600 }}>Photographs</div>
+                <div style={{ fontSize: 13, color: 'var(--muted,#4B585C)', marginTop: 2 }}>
+                  {readOnly ? 'The property photos will appear here once the appraisal PDF has been processed.'
+                    : 'No photos yet — they’re pulled from the appraisal PDF. If the PDF is on file, pull them now; otherwise upload the PDF to the appraisal condition.'}
+                </div>
               </div>
-            )}
-
-            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--line-soft,#EFEADD)', display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(170px,1fr))', gap: 16 }}>
-              <Fact label="Appraiser" value={or(a.appraiser_name)} />
-              <Fact label="Company" value={or(a.appraiser_company)} />
-              <Fact label="License" value={a.license_id ? `${a.license_id}${a.license_state ? ' · ' + a.license_state : ''}` : '—'} />
-              <Fact label="License exp." value={or(a.license_exp)} />
-              <Fact label="Effective date" value={or(a.effective_date)} />
-            </div>
-          </div>
-
-          {/* per-unit rent schedule (1025/1073) */}
-          {(data.units || []).length > 0 && (
-            <div style={{ marginTop: 18, overflowX: 'auto' }}>
-              <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 10px' }}>Units &amp; rents</h4>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead><tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
-                  <th style={th}>Unit</th><th style={th}>Beds / baths</th><th style={{ ...th, textAlign: 'right' }}>Actual rent</th><th style={{ ...th, textAlign: 'right' }}>Market rent</th>
-                </tr></thead>
-                <tbody>
-                  {(data.units || []).map((u) => (
-                    <tr key={u.id} style={{ borderTop: '1px solid var(--line-soft,#EFEADD)' }}>
-                      <td style={td}>{u.unit_seq != null ? `Unit ${u.unit_seq}` : '—'}</td>
-                      <td style={td}>{`${or(u.beds)} / ${or(u.baths)}`}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>{money(u.actual_rent)}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>{money(u.market_rent)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              {!readOnly && <button onClick={pullPhotos} disabled={pulling} style={{ ...OPEN_BTN, marginLeft: 0 }}>{pulling ? 'Pulling photos…' : '⤓ Pull photos from the PDF'}</button>}
             </div>
           )}
+
+          {/* ===== PROPERTY DETAILS — the dossier cards ===== */}
+          <SecHead eyebrow="The subject" title="Property details" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 16 }}>
+            <DCard title="Identity & location">
+              <KV rows={[
+                ['Address', or(a.subject_address)],
+                a.subject_unit && ['Unit', a.subject_unit],
+                ['City / state', [a.subject_city, a.subject_state, a.subject_zip].filter(Boolean).join(', ') || '—'],
+                ['County', or(a.subject_county)],
+                ['Parcel / APN', or(a.apn)],
+                ['Census tract', or(a.census_tract)],
+                ['Neighborhood', or(a.neighborhood)],
+                a.legal_description && ['Legal', a.legal_description],
+              ]} />
+            </DCard>
+
+            <DCard title="Structure">
+              <KV rows={[
+                ['Design / style', or(a.design_style)],
+                ['Property type', or(a.property_type)],
+                ['Units', or(a.units)],
+                ['Total rooms', or(a.rooms)],
+                ['Beds / baths', `${or(a.beds)} / ${a.baths_full != null ? a.baths_full + (a.baths_half ? '.' + a.baths_half : '') : '—'}`],
+                ['Stories', or(a.stories)],
+                ['Gross living area', a.gla ? `${Number(a.gla).toLocaleString('en-US')} sf` : '—'],
+                ['Year built', or(a.year_built)],
+              ]} />
+              {(a.condition_uad || a.quality_uad) && (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line-soft,#EFEADD)', display: 'grid', gap: 12 }}>
+                  <Pips label="Condition (UAD)" code={a.condition_uad} />
+                  <Pips label="Quality (UAD)" code={a.quality_uad} />
+                </div>
+              )}
+            </DCard>
+
+            <DCard title="Site & zoning">
+              <KV rows={[
+                ['Lot size', or(a.lot_area)],
+                ['Zoning', or(a.zoning_id), or(a.zoning_desc) !== '—' ? a.zoning_desc : null],
+                ['Zoning compliance', or(a.zoning_compliance)],
+                ['Flood zone', or(a.flood_zone)],
+                // FEMA cross-check — shown only once we've actually checked (never a guess).
+                a.fema_flood_checked_at && ['FEMA flood map',
+                  <span style={{ color: a.fema_flood_agrees === false ? 'var(--crit,#B4483C)' : a.fema_flood_agrees ? 'var(--good,#3F7A5B)' : 'inherit' }}>
+                    {a.fema_flood_zone ? `Zone ${a.fema_flood_zone}` : 'No zone mapped'}{a.fema_flood_agrees === true ? ' · agrees' : a.fema_flood_agrees === false ? ' · differs' : ''}
+                  </span>,
+                  a.fema_flood_agrees === false ? a.fema_flood_note : null],
+                ['Site value (cost)', a.site_value != null ? money(a.site_value) : '—'],
+              ]} />
+            </DCard>
+
+            {(a.value_income_approach != null || a.grm != null || (data.units || []).length > 0) && (
+              <DCard title="Income & rents" tag={a.form_type === 'FNM1025' ? '1025' : null}>
+                <KV rows={(() => {
+                  const units = data.units || [];
+                  const mkt = units.reduce((s, u) => s + (num(u.market_rent) || 0), 0);
+                  const act = units.reduce((s, u) => s + (num(u.actual_rent) || 0), 0);
+                  const valForYield = num(a.value_income_approach) != null ? num(a.value_income_approach)
+                    : num(a.as_is_value) != null ? num(a.as_is_value) : num(a.appraised_value);
+                  const yieldPct = (mkt > 0 && valForYield) ? (mkt * 12) / valForYield * 100 : null;
+                  return [
+                    mkt > 0 && ['Market rent', `${money(mkt)} / mo`, `${money(mkt * 12)} / yr`],
+                    act > 0 && ['Actual rent', `${money(act)} / mo`],
+                    ['Gross rent multiplier', a.grm != null ? Number(a.grm).toLocaleString('en-US') : '—'],
+                    ['Value — income approach', a.value_income_approach != null ? money(a.value_income_approach) : '—'],
+                    yieldPct != null && ['Gross yield (market)', `${yieldPct.toFixed(1)}%`, 'annual market rent ÷ value'],
+                  ];
+                })()} />
+                {(data.units || []).length > 0 && (
+                  <div style={{ marginTop: 12, overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+                      <thead><tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
+                        <th style={th}>Unit</th><th style={{ ...th, textAlign: 'right' }}>Actual</th><th style={{ ...th, textAlign: 'right' }}>Market</th>
+                      </tr></thead>
+                      <tbody>
+                        {(data.units || []).map((u) => (
+                          <tr key={u.id} style={{ borderTop: '1px solid var(--line-soft,#EFEADD)' }}>
+                            <td style={td}>{u.unit_seq != null ? `Unit ${u.unit_seq}` : '—'}</td>
+                            <td style={{ ...td, textAlign: 'right' }}>{money(u.actual_rent)}</td>
+                            <td style={{ ...td, textAlign: 'right' }}>{money(u.market_rent)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </DCard>
+            )}
+
+            {a.condo_project_name && (
+              <DCard title="Condo / association" tag="1073">
+                <KV rows={[
+                  ['Project', or(a.condo_project_name)],
+                  ['Type', or(a.condo_project_type)],
+                  ['Unit / floor', `${or(a.condo_unit_identifier)} · ${or(a.condo_floor)}`],
+                  ['HOA fee', a.hoa_fee_amount != null ? `${money(a.hoa_fee_amount)} / ${(a.hoa_fee_period || '').toLowerCase() || 'mo'}` : '—'],
+                ]} />
+              </DCard>
+            )}
+          </div>
+
+          {/* ===== WHAT IT'S WORTH ===== */}
+          <SecHead eyebrow="Valuation" title="What it's worth" />
+          <Approaches a={a} />
+          {/* Independent second opinion — what the comps themselves imply (not the appraiser's
+              reconciliation). Shown only when we have enough comps to form one. */}
+          {data.score && data.score.impliedValue && (
+            <div className="appr-avoid" style={{ marginTop: 12, display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', background: 'var(--card,#fff)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '12px 14px', fontSize: 13 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--gold,#AE8746)' }}>Independent comp check</span>
+              <span>The comps imply <b style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 16 }}>{money(data.score.impliedValue.median)}</b>
+                <span style={{ color: 'var(--muted,#4B585C)' }}> (median of {data.score.impliedValue.n} adjusted comps; range {money(data.score.impliedValue.low)}–{money(data.score.impliedValue.high)}{data.score.impliedValue.perGlaValue ? `; $/sqft implies ${money(data.score.impliedValue.perGlaValue)}` : ''})</span>
+              </span>
+            </div>
+          )}
+          <div className="appr-avoid" style={{ marginTop: 14, background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12, padding: '14px 16px', fontSize: 13.5 }}>
+            <span style={{ fontWeight: 700, color: 'var(--teal-deep,#256168)' }}>Value basis:&nbsp;</span>
+            {isArvBasis
+              ? <>The headline value reflects the <b>After-Repair Value</b> — this appraisal is made <b>subject to completion</b> of the repairs described in the report. The <b>As-Is value</b> is stored separately so pricing never confuses the two.</>
+              : <>This is the <b>current As-Is market value</b> of the property, as reconciled by the appraiser from the sales-comparison approach.</>}
+            {a.as_is_confidence && a.as_is_confidence !== 'definite' && <> The As-Is figure was read from the report’s narrative — PILOT opens a task for an officer to confirm it rather than guess.</>}
+          </div>
+
+          {/* Three-cap loan sizing — staff only (uses the pricing quote, no persistence). */}
+          {!readOnly && <ThreeCapPanel appId={appId} />}
 
           {/* ===== COMPARABLE SALES ===== */}
           {comps.length > 0 && (
-            <div style={{ marginTop: 18, overflowX: 'auto' }}>
-              <h4 style={{ fontFamily: 'var(--serif,Georgia,serif)', margin: '0 0 10px' }}>Comparable sales</h4>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)' }}>
-                    <th style={th}>#</th><th style={th}>Address</th><th style={th}>Proximity</th>
-                    <th style={{ ...th, textAlign: 'right' }}>GLA</th><th style={{ ...th, textAlign: 'right' }}>Sale date</th>
-                    <th style={{ ...th, textAlign: 'right' }}>Sale price</th><th style={{ ...th, textAlign: 'right' }}>Adjusted</th>
-                    <th style={{ ...th, textAlign: 'right' }}>Net adj</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {comps.map((c) => (
-                    <tr key={c.id} style={{ borderTop: '1px solid var(--line-soft,#EFEADD)', background: c.is_subject ? 'var(--paper,#F6F3EC)' : undefined }}>
-                      <td style={td}>{c.is_subject ? 'Subj' : c.seq}</td>
-                      <td style={td}>{or(c.address)}{c.city ? `, ${c.city} ${c.state || ''}` : ''}</td>
-                      <td style={td}>{or(c.proximity)}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>{c.gla ? Number(c.gla).toLocaleString('en-US') : '—'}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>{or(c.sale_date)}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>{money(c.sale_price)}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>{money(c.adjusted_price)}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>{c.net_adj_pct != null ? pct(c.net_adj_pct) : (c.net_adjustment != null ? money(c.net_adjustment) : '—')}</td>
+            <>
+              <SecHead eyebrow="Evidence" title="Comparable sales"
+                extra={<span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted,#4B585C)' }}>{comps.filter((c) => !c.is_subject).length} comps · tap a row for the adjustment breakdown</span>} />
+              <div style={{ marginBottom: 14 }}><CompMap comps={comps} /></div>
+              <div style={{ overflowX: 'auto', border: '1px solid var(--line,#E7E1D3)', borderRadius: 12 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 780 }}>
+                  <thead>
+                    <tr style={{ textAlign: 'left', color: 'var(--muted,#4B585C)', background: 'var(--paper,#F6F3EC)' }}>
+                      <th style={th}>#</th><th style={th}>Address</th><th style={th}>Proximity</th>
+                      <th style={{ ...th, textAlign: 'right' }}>GLA</th><th style={{ ...th, textAlign: 'center' }}>C / Q</th>
+                      <th style={{ ...th, textAlign: 'right' }}>Sale date</th><th style={{ ...th, textAlign: 'right' }}>DOM</th>
+                      <th style={{ ...th, textAlign: 'right' }}>Sale price</th><th style={{ ...th, textAlign: 'right' }}>$/GLA</th>
+                      <th style={{ ...th, textAlign: 'right' }}>Adjusted</th><th style={{ ...th, textAlign: 'right' }}>Net adj</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {comps.map((c) => <CompRow key={c.id} c={c} />)}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {/* ===== PREPARED BY ===== */}
+          <SecHead eyebrow="Provenance" title="Prepared by" />
+          <PreparedBy a={a} readOnly={readOnly} />
+
+          {/* ===== ORIGINAL APPRAISAL (staff only — needs the source document ids) ===== */}
+          {!readOnly && (a.pdf_document_id || a.source_xml_document_id) && (
+            <>
+              <SecHead eyebrow="Source document" title="Original appraisal" />
+              <SourceDocs a={a} />
+            </>
           )}
         </>
       )}
-    </div>
+    </>
   );
+
+  // Full-screen "open the whole report" view — the same report, given room to breathe (and to
+  // print / save as a branded PDF). Click the dimmed backdrop or Close to return. Esc-friendly.
+  if (expanded) {
+    return (
+      <div
+        className="appr-print-root"
+        role="dialog" aria-modal="true"
+        onClick={(e) => { if (e.target === e.currentTarget) setExpanded(false); }}
+        style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(20,27,34,.55)', display: 'flex', flexDirection: 'column', padding: 'clamp(8px,2vh,28px) clamp(8px,2vw,28px)', overflowY: 'auto' }}>
+        <style>{PRINT_CSS}</style>
+        <div style={{ maxWidth: 1080, width: '100%', margin: '0 auto', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 16, boxShadow: '0 24px 70px rgba(0,0,0,.4)' }}>
+          <div className="appr-noprint" style={{ position: 'sticky', top: 0, zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 18px', borderBottom: '1px solid var(--line,#E7E1D3)', background: 'var(--card,#fff)', borderRadius: '16px 16px 0 0' }}>
+            <b style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Property report{a && a.subject_address ? ` — ${a.subject_address}` : ''}
+            </b>
+            <div style={{ display: 'flex', gap: 8, flex: 'none' }}>
+              <button onClick={() => window.print()} style={{ ...OPEN_BTN, marginLeft: 0 }} title="Print or save the report as a nicely formatted PDF">🖨 Print / Save PDF</button>
+              <button onClick={() => setExpanded(false)} style={btn()}>✕ Close</button>
+            </div>
+          </div>
+          <div style={{ padding: 'clamp(14px,2.4vw,26px)' }}>
+            {/* Branded masthead — only appears on the printed / saved PDF, not on screen. */}
+            <div className="appr-print-only" style={{ display: 'none', paddingBottom: 12, marginBottom: 14, borderBottom: '2px solid var(--gold,#AE8746)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', gap: 16 }}>
+                <div>
+                  <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 22, fontWeight: 600, letterSpacing: '.02em' }}>PILOT <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted,#4B585C)' }}>by YS Capital</span></div>
+                  <div style={{ fontSize: 12.5, color: 'var(--muted,#4B585C)' }}>Property profile report</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontFamily: 'var(--serif,Georgia,serif)', fontSize: 16, fontWeight: 600 }}>{a && a.subject_address ? a.subject_address : ''}</div>
+                  <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)' }}>{a ? [a.subject_city, a.subject_state, a.subject_zip].filter(Boolean).join(', ') : ''}{a && a.effective_date ? ` · effective ${a.effective_date}` : ''}</div>
+                </div>
+              </div>
+            </div>
+            {body}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return <div>{body}</div>;
 }
 
 // Hero photo tile — loads its own blob (independent of the gallery so the hero shows immediately).
@@ -469,3 +1063,12 @@ function HeroPhoto({ photo, readOnly }) {
 
 const th = { padding: '6px 10px', fontSize: 11, fontWeight: 700, letterSpacing: '.05em', textTransform: 'uppercase', whiteSpace: 'nowrap' };
 const td = { padding: '8px 10px', fontVariantNumeric: 'tabular-nums' };
+
+// The "Open full report" call-to-action — a bold, filled, always-readable button (the earlier
+// ghost variant rendered near-invisible on the paper background). Same on staff + borrower.
+const OPEN_BTN = {
+  marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 7,
+  fontSize: 13.5, fontWeight: 700, borderRadius: 10, padding: '9px 17px', cursor: 'pointer',
+  border: '1px solid var(--teal-deep,#256168)', background: 'var(--teal,#2F7F86)', color: '#fff',
+  boxShadow: '0 1px 2px rgba(20,27,34,.08)',
+};

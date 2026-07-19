@@ -69,7 +69,14 @@ async function reconcileOne(appId) {
     await db.query(
       `INSERT INTO sitewire_draws (application_id, sitewire_draw_id, sitewire_property_id, number, name, status, historical, total_requested_cents, total_approved_cents, coordinator_id, quick_notify_status_id, pdf_src, submitted_at, approved_at, budget_version_at_draw, events, sitewire_updated_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now())
-       ON CONFLICT (sitewire_draw_id) DO UPDATE SET status=EXCLUDED.status, total_requested_cents=EXCLUDED.total_requested_cents, total_approved_cents=EXCLUDED.total_approved_cents, coordinator_id=EXCLUDED.coordinator_id, quick_notify_status_id=EXCLUDED.quick_notify_status_id, pdf_src=EXCLUDED.pdf_src, submitted_at=EXCLUDED.submitted_at, approved_at=EXCLUDED.approved_at, events=EXCLUDED.events, sitewire_updated_at=EXCLUDED.sitewire_updated_at, updated_at=now()`,
+       ON CONFLICT (sitewire_draw_id) DO UPDATE SET status=EXCLUDED.status, total_requested_cents=EXCLUDED.total_requested_cents, total_approved_cents=EXCLUDED.total_approved_cents,
+         -- coordinator_id / quick_notify_status_id are draw-DETAIL fields (set via PATCH /draws); the /draws
+         -- summary may omit them, so if the per-draw getDraw failed (full=d) EXCLUDED is NULL — COALESCE
+         -- so a failed detail read never WIPES a previously-good coordinator / quick-notify value either.
+         coordinator_id=COALESCE(EXCLUDED.coordinator_id, sitewire_draws.coordinator_id), quick_notify_status_id=COALESCE(EXCLUDED.quick_notify_status_id, sitewire_draws.quick_notify_status_id),
+         -- detail-only columns come from the per-draw getDraw; if that call failed (rate-limit/timeout) they arrive
+         -- NULL — COALESCE so a failed detail read never WIPES a good submitted/approved/events/pdf on the desk.
+         pdf_src=COALESCE(EXCLUDED.pdf_src, sitewire_draws.pdf_src), submitted_at=COALESCE(EXCLUDED.submitted_at, sitewire_draws.submitted_at), approved_at=COALESCE(EXCLUDED.approved_at, sitewire_draws.approved_at), events=COALESCE(EXCLUDED.events, sitewire_draws.events), sitewire_updated_at=EXCLUDED.sitewire_updated_at, updated_at=now()`,
       [appId, d.id, link.sitewire_property_id, d.number, d.name, d.status, !!d.historical,
        d.total_requested_cents || 0, d.total_approved_cents || 0, full.coordinator_id || d.coordinator_id || null,
        full.quick_notify_status_id || d.quick_notify_status_id || null, full.pdf_src || null,

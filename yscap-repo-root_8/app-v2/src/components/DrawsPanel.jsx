@@ -10,6 +10,15 @@ import { useAuth } from '../lib/auth.jsx';
 
 const usd = (c) => '$' + (Math.round(Number(c) || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const usd2 = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Parse a money text field to integer cents, or NULL when it isn't a real number. Blank ("") or
+// non-numeric ("abc", "$") → null, so a mis-click / empty box can never be coerced to a $0 money
+// write (Number('') === 0 is the trap this closes). A real 0 must be typed as "0".
+const centsOrNull = (v) => {
+  const s = String(v ?? '').trim();
+  if (s === '' || !/[0-9]/.test(s)) return null;
+  const n = Math.round(Number(s.replace(/[^0-9.]/g, '')) * 100);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+};
 const fmtDay = (v) => (v ? String(v).slice(0, 10) : '—');
 const STATUS = {
   drafting: 'Drafting', pending_borrower: 'With borrower', inspecting: 'Inspecting',
@@ -86,11 +95,11 @@ export default function DrawsPanel({ appId }) {
           )}
 
           {/* ---- rollup summary tiles (responsive: wrap instead of squishing in the narrow file column) ---- */}
-          <div style={{ marginTop: 12, gap: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+          <div style={{ marginTop: 12, gap: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gridAutoRows: '1fr' }}>
             <Tile label="Construction budget" value={usd(rollup.project.budget)} />
             <Tile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${rollup.project.pct_complete}% complete`} />
             <Tile label="Remaining" value={usd(rollup.project.remaining)} accent />
-            <Tile label="In the pipeline" value={usd(rollup.project.approved_pending + rollup.project.requested_open)} sub="awaiting approval" />
+            <Tile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
           </div>
 
           {/* ---- the unified per-line / per-unit rollup ---- */}
@@ -129,9 +138,9 @@ export default function DrawsPanel({ appId }) {
    error while pushing lands in the review queue instead of being silently applied. */
 function CheckRow({ ok, label }) {
   return (
-    <div className="row" style={{ gap: 8, alignItems: 'center', padding: '3px 0' }}>
-      <span style={{ color: ok ? 'var(--teal,#2f7f86)' : 'var(--bad,#b04a3f)', fontWeight: 700, width: 16 }}>{ok ? '✓' : '•'}</span>
-      <span className={ok ? '' : 'muted'}>{label}</span>
+    <div className="row" style={{ gap: 9, alignItems: 'center', padding: '4px 0' }}>
+      <span style={{ display: 'inline-grid', placeItems: 'center', width: 18, height: 18, borderRadius: 999, flex: '0 0 auto', fontSize: 11, fontWeight: 800, background: ok ? 'var(--success-soft)' : 'var(--ink-3)', color: ok ? 'var(--success)' : 'var(--text-soft)' }}>{ok ? '✓' : '·'}</span>
+      <span className={ok ? '' : 'muted'} style={{ fontSize: 14 }}>{label}</span>
     </div>
   );
 }
@@ -142,28 +151,37 @@ function StartDrawCard({ appId, onStarted }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [method, setMethod] = useState('');
+  const [feeInput, setFeeInput] = useState('');
+  const [feeEdited, setFeeEdited] = useState(false);
   const [msg, setMsg] = useState('');
 
   const load = useCallback(() => {
     setLoading(true);
     api.get(`/api/sitewire/files/${appId}/draw-setup`)
-      .then((d) => { setS(d); setErr(''); setMethod(''); })
+      .then((d) => {
+        setS(d); setErr(''); setMethod('');
+        const insp = d.inspection || {};
+        // seed the fee box from the effective fee (includes any stored override); an existing override
+        // counts as "edited" so switching method won't silently reset the coordinator's amount.
+        setFeeInput(insp.fee_cents != null ? String(Math.round(Number(insp.fee_cents) / 100)) : '');
+        setFeeEdited(!!insp.fee_overridden);
+      })
       .catch((e) => setErr(e?.data?.error || e.message || 'Could not load draw setup'))
       .finally(() => setLoading(false));
   }, [appId]);
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return <div className="panel" style={{ marginTop: 12 }}>Loading draw setup…</div>;
-  if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
+  if (loading) return <div className="dd-card" style={{ marginTop: 12 }}>Loading draw setup…</div>;
+  if (err) return <div className="dd-card" style={{ marginTop: 12, color: 'var(--danger)' }}>{err}</div>;
   if (!s) return null;
 
   // Handled externally: this capital partner runs its own draw process — PILOT never pushes to
   // Sitewire, so there's nothing for the coordinator to start here.
   if (s.handled_externally) {
     return (
-      <div className="panel" style={{ marginTop: 12 }}>
-        <h3 style={{ margin: 0 }}>Draws are handled externally</h3>
-        <div className="muted small" style={{ marginTop: 6 }}>
+      <div className="dd-card" style={{ marginTop: 12 }}>
+        <div className="dd-card-h"><span className="dd-card-ic"><SdIcon name="ext" /></span><h3>Draws are handled externally</h3></div>
+        <div className="dd-sub" style={{ marginTop: 2 }}>
           {(s.capital_partner && s.capital_partner.name) ? `${s.capital_partner.name} runs` : 'This capital partner runs'} its own draw process in its own system, so PILOT does not send this file to Sitewire. Nothing to start here.
         </div>
       </div>
@@ -176,19 +194,31 @@ function StartDrawCard({ appId, onStarted }) {
   // the method actually in effect (the coordinator's live switch, else the resolved default)
   const effMethod = method || insp.method;
   const effKind = effMethod === 'traditional' ? 'physical' : 'virtual';
-  // per-kind fee if the rule sets it, else the other kind, else the resolved default
-  // (insp.fee_cents — what the server WILL actually charge when no rule exists). Never blank
-  // out the fee when a real amount ($299 default) will be applied.
-  const perKind = effKind === 'physical'
-    ? (insp.fee_physical_cents != null ? insp.fee_physical_cents : insp.fee_virtual_cents)
-    : insp.fee_virtual_cents;
-  const effFee = perKind != null ? perKind : insp.fee_cents;
+  // the rule's default fee for a given method (physical falls back to virtual, then the resolved fee)
+  function defaultFeeForMethod(m) {
+    const kind = m === 'traditional' ? 'physical' : 'virtual';
+    const c = kind === 'physical' ? (insp.fee_physical_cents != null ? insp.fee_physical_cents : insp.fee_virtual_cents) : insp.fee_virtual_cents;
+    return c != null ? c : (insp.rule_fee_cents != null ? insp.rule_fee_cents : insp.fee_cents);
+  }
+  function pickMethod(m) {
+    setMethod(m);
+    // if the coordinator hasn't customized the fee, follow the new method's default
+    if (!feeEdited) { const d = defaultFeeForMethod(m); setFeeInput(d != null ? String(Math.round(Number(d) / 100)) : ''); }
+  }
+  // A BLANK fee box means "use the rule default" — never $0. Only a typed number is sent as an
+  // override; blank leaves the stored fee untouched (so clearing the box can't silently push a $0 fee).
+  const feeBlank = String(feeInput).trim() === '';
+  const feeCents = centsOrNull(feeInput); // null = blank OR non-numeric garbage (never coerced to 0)
+  const feeValid = feeBlank || (feeCents != null && feeCents <= 10000000);
+  const isCustomFee = !feeBlank && feeCents != null && feeCents !== Number(defaultFeeForMethod(effMethod));
   const alreadyStarted = !!s.started_at; // coordinator pressed Start earlier; awaiting the switch/push
 
   async function start() {
     setBusy(true); setMsg('');
     try {
-      const body = method && method !== insp.method ? { inspection_method: method } : {};
+      const body = {};
+      if (method && method !== insp.method) body.inspection_method = method;
+      if (!feeBlank && feeValid) body.fee_cents = feeCents; // a typed fee only; blank = leave the fee as-is (backend clears the override when it equals the rule fee)
       const r = await api.post(`/api/sitewire/files/${appId}/start-draw`, body);
       setMsg(r && r.note ? r.note : 'Draw process started — everything was sent to Sitewire.');
       load();
@@ -198,50 +228,63 @@ function StartDrawCard({ appId, onStarted }) {
   }
 
   return (
-    <div className="panel" style={{ marginTop: 12 }}>
-      <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
-        <div>
-          <h3 style={{ margin: 0 }}>Start the draw process</h3>
-          <div className="muted small" style={{ marginTop: 3 }}>This sends the property, construction budget, Scope of Work and fees to Sitewire, then reads them back to confirm. Do this once, after the loan is funded.</div>
+    <div className="dd-card" style={{ marginTop: 12 }}>
+      <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
+        <div className="row" style={{ gap: 10, alignItems: 'center' }}>
+          <span className="dd-card-ic"><SdIcon name="rocket" /></span>
+          <div>
+            <h3>Start the draw process</h3>
+            <div className="dd-sub" style={{ marginTop: 1 }}>Sends the property, construction budget, Scope of Work and fees to Sitewire, then reads them back to confirm. Do this once, after funding.</div>
+          </div>
         </div>
-        {!s.switches?.enabled && <span className="pill" style={{ background: 'var(--paper,#f6f3ec)' }}>Sitewire is off — this will be queued</span>}
-        {s.switches?.enabled && s.switches?.dryrun && <span className="pill" style={{ background: 'var(--paper,#f6f3ec)' }}>Dry-run (nothing sent yet)</span>}
-        {s.switches?.enabled && !s.switches?.dryrun && !s.switches?.outbound && <span className="pill" style={{ background: 'var(--paper,#f6f3ec)' }}>Read-only mode</span>}
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          {!s.switches?.enabled && <span className="dd-chip warn"><span className="dot" />Sitewire off — will queue</span>}
+          {s.switches?.enabled && s.switches?.dryrun && <span className="dd-chip warn"><span className="dot" />Dry-run</span>}
+          {s.switches?.enabled && !s.switches?.dryrun && !s.switches?.outbound && <span className="dd-chip warn"><span className="dot" />Read-only</span>}
+        </div>
       </div>
 
       {alreadyStarted && (
-        <div className="small" style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'var(--paper,#f6f3ec)', color: 'var(--teal,#256168)' }}>
+        <div className="small" style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--success-soft)', color: 'var(--success)', fontWeight: 600 }}>
           ✓ Draw setup was started on {fmtDay(s.started_at)}{insp.chosen_override ? ` (${insp.chosen_override === 'traditional' ? 'on-site' : 'virtual'} inspection)` : ''}.
           {s.switches?.enabled ? ' You can re-send it below if needed.' : ' It will push to Sitewire automatically the moment Sitewire is turned on — nothing more to do.'}
         </div>
       )}
 
-      <div className="grid cols-2" style={{ gap: 16, marginTop: 12 }}>
-        <div>
-          <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Before we can start</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 14, marginTop: 14 }}>
+        <div style={{ background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 10, padding: '14px 16px' }}>
+          <div className="dd-field-l" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6, fontSize: 11 }}>Before we can start</div>
           <CheckRow ok={p.funded} label="Loan is funded" />
           <CheckRow ok={p.loan_number} label="YS loan number set" />
           <CheckRow ok={p.capital_partner} label={cp.name ? `Capital partner: ${cp.name}` : 'Capital partner matched'} />
           <CheckRow ok={p.budget} label="Construction budget frozen" />
           <CheckRow ok={p.scope_of_work} label="Scope of Work saved" />
           <CheckRow ok={p.address} label="Property address complete" />
-          {!p.capital_partner && cp.ambiguous && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 4 }}>The capital-partner name matches more than one — fix the lender label on the file.</div>}
-          {!p.capital_partner && cp.candidate_name && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 4 }}>Closest match is “{cp.candidate_name}”, but it isn't exact — it needs confirming before we can push.</div>}
+          {!p.capital_partner && cp.ambiguous && <div className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>The capital-partner name matches more than one — fix the lender label on the file.</div>}
+          {!p.capital_partner && cp.candidate_name && <div className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>Closest match is “{cp.candidate_name}”, but it isn't exact — link it in Draw settings before we can push.</div>}
         </div>
-        <div>
-          <div className="muted small" style={{ textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Inspection & fee</div>
+        <div style={{ background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 10, padding: '14px 16px' }}>
+          <div className="dd-field-l" style={{ textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8, fontSize: 11 }}>Inspection &amp; fee</div>
           {insp.can_switch ? (
-            <label className="small">Inspection method
-              <select className="input" value={effMethod} onChange={(e) => setMethod(e.target.value)}>
+            <label className="small" style={{ display: 'block', marginBottom: 10 }}>Inspection method
+              <select className="input" value={effMethod} onChange={(e) => pickMethod(e.target.value)}>
                 <option value="mobile">Virtual (mobile){insp.default_method === 'mobile' ? ' — default' : ''}</option>
                 <option value="traditional">On-site (traditional){insp.default_method === 'traditional' ? ' — default' : ''}</option>
               </select>
             </label>
           ) : (
-            <div>{effMethod === 'traditional' ? 'On-site (traditional)' : 'Virtual (mobile)'}<span className="muted small"> — set by the program, can't switch</span></div>
+            <div style={{ marginBottom: 10 }}>{effMethod === 'traditional' ? 'On-site (traditional)' : 'Virtual (mobile)'}<span className="muted small"> — {insp.allow_virtual === false || insp.allow_physical === false ? 'set by the program, can’t switch' : 'the only method allowed'}</span></div>
           )}
-          <div style={{ marginTop: 8 }}>Draw fee: <b>{effFee != null ? usd(effFee) : '—'}</b> <span className="muted small">per draw ({effKind})</span></div>
-          <div className="muted small" style={{ marginTop: 8 }}>
+          <label className="small" style={{ display: 'block' }}>Draw fee ({effKind})
+            <div className="row" style={{ gap: 6, alignItems: 'center' }}>
+              <span className="muted" style={{ fontWeight: 600 }}>$</span>
+              <input className="input" style={{ maxWidth: 120 }} value={feeInput} onChange={(e) => { setFeeInput(e.target.value); setFeeEdited(true); }} />
+              <span className="muted small">per draw</span>
+            </div>
+          </label>
+          {!feeValid && <div className="small" style={{ color: 'var(--danger)', marginTop: 4 }}>Enter a fee between $0 and $100,000.</div>}
+          {feeValid && isCustomFee && <div className="small" style={{ color: 'var(--warning)', marginTop: 4 }}>Custom fee for this file (rule default is {usd(defaultFeeForMethod(effMethod))}).</div>}
+          <div className="muted small" style={{ marginTop: 10 }}>
             {s.requires?.sitewire_inspector ? 'A Sitewire inspector must sign off each draw.' : 'No Sitewire inspector required.'}<br />
             {s.requires?.capital_partner_approval ? 'Approved draws route to the capital partner.' : 'No capital-partner approval step.'}
           </div>
@@ -249,31 +292,42 @@ function StartDrawCard({ appId, onStarted }) {
       </div>
 
       {s.open_reviews > 0 && (
-        <div className="small" style={{ marginTop: 10, color: 'var(--bad,#b04a3f)' }}>
+        <div className="small" style={{ marginTop: 12, color: 'var(--danger)', fontWeight: 600 }}>
           {s.open_reviews} item{s.open_reviews === 1 ? '' : 's'} on this file need review before it will go through cleanly. <a href="#/internal/sync-reviews">Open the review list</a>.
         </div>
       )}
 
-      <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center' }}>
+      <div className="row" style={{ gap: 10, marginTop: 16, alignItems: 'center' }}>
         {/* When started while Sitewire is off, there's nothing more to press — the worker pushes on switch-on. */}
         {!(alreadyStarted && !s.switches?.enabled) && (
-          <button className="btn primary" disabled={busy || !s.can_start} onClick={start}>
+          <button className="btn primary" disabled={busy || !s.can_start || !feeValid} onClick={start}>
             {busy ? 'Starting…' : alreadyStarted ? 'Re-send to Sitewire' : s.switches?.enabled ? 'Start the draw process' : 'Start (queue for Sitewire)'}
           </button>
         )}
         {!s.can_start && <span className="muted small">Finish the checklist above first.</span>}
-        {msg && <span className="small" style={{ color: 'var(--teal,#2f7f86)' }}>{msg}</span>}
+        {msg && <span className="small" style={{ color: 'var(--success)', fontWeight: 600 }}>{msg}</span>}
       </div>
     </div>
   );
 }
 
+/* Tiny inline icon set for the start-draw card. */
+function SdIcon({ name }) {
+  const p = {
+    rocket: <><path d="M12 3c3 1 5 4 5 8l-2 5H9l-2-5c0-4 2-7 5-8z" /><circle cx="12" cy="9" r="1.6" /><path d="M9 16l-2 3M15 16l2 3" /></>,
+    ext: <><path d="M14 4h6v6" /><path d="M20 4l-8 8" /><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4" /></>,
+  }[name] || null;
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>;
+}
+
 function Tile({ label, value, sub, accent }) {
+  // Same container-query value tile as the portfolio, compact variant — the number scales to the box
+  // width so a large amount never spills outside it.
   return (
-    <div className="panel" style={{ padding: '12px 14px' }}>
-      <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, marginTop: 3, color: accent ? 'var(--gold,#ae8746)' : 'inherit' }}>{value}</div>
-      {sub && <div className="muted small" style={{ marginTop: 2 }}>{sub}</div>}
+    <div className="panel stat-tile compact">
+      <div className="stat-tile-label">{label}</div>
+      <div className={'stat-tile-value' + (accent ? ' gold' : '')}>{value}</div>
+      {sub && <div className="muted small stat-tile-sub">{sub}</div>}
     </div>
   );
 }
@@ -351,11 +405,14 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
   const [edits, setEdits] = useState({}); // reqId -> approved dollars string
 
   async function setApproved(r) {
-    const dollars = edits[r.sitewire_request_id];
-    const cents = Math.round(Number(String(dollars).replace(/[^0-9.]/g, '')) * 100);
-    if (!Number.isFinite(cents) || cents < 0) return;
+    // reject a blank / non-numeric box — never let a mis-clicked empty Save push $0 approved to
+    // Sitewire (that would destroy the lender-approved amount for the line). A real 0 must be typed.
+    const cents = centsOrNull(edits[r.sitewire_request_id]);
+    if (cents == null) return;
     await act('appr:' + r.sitewire_request_id, async () => {
       await api.post(`/api/sitewire/requests/${r.sitewire_request_id}/approve`, { approved_cents: cents });
+      // clear the input on success so it doesn't keep showing a stale typed value
+      setEdits((s) => { const n = { ...s }; delete n[r.sitewire_request_id]; return n; });
       return { msg: 'Approved amount saved.' };
     });
   }
@@ -364,7 +421,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
       <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
         <div className="row" style={{ gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
           <b>Draw #{draw.number ?? '—'}</b>
-          <span className="pill sw-insp">{STATUS[draw.status] || draw.status}</span>
+          <span className="pill sw-insp">{STATUS[draw.status] || 'In progress'}</span>
           {risk && flags.length > 0 && <span className={'pill ' + risk.cls}>{risk.label} · {flags.length}</span>}
         </div>
         <div className="muted small">Requested {usd2(draw.requested_cents)} · Approved {usd2(draw.approved_cents)} · Net {usd2(draw.net_release_cents)}</div>
@@ -459,11 +516,12 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
   // any. Show the retainage column/summary/preview ONLY when this project actually uses it — otherwise
   // it stays out of the ledger entirely.
   const showRetainage = !!(retainage && (pct > 0 || retainage.held_cents > 0 || retainage.holding_cents > 0));
-  const approvedC = Math.round(Number(f.approved || 0) * 100);
-  const feeC = Math.round(Number(f.fee || 0) * 100);
-  const retC = Math.round(approvedC * pct / 100);
-  const net = approvedC - feeC - retC;
+  const approvedC = centsOrNull(f.approved); // null when the Approved box is blank/garbage
+  const feeC = centsOrNull(f.fee) || 0;       // a $0 fee is legitimate
+  const retC = Math.round((approvedC || 0) * pct / 100);
+  const net = (approvedC || 0) - feeC - retC;
   async function save() {
+    if (approvedC == null || approvedC <= 0) { setErr('Enter the approved amount.'); return; }
     setBusy(true); setErr('');
     try {
       await api.post('/api/sitewire/disbursements', {
@@ -524,7 +582,7 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
         </label>
         <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
         <div className="small" style={{ alignSelf: 'center' }}>{pct > 0 ? <>Retainage: <b>{usd2(retC)}</b> · </> : null}Net: <b>{usd2(net)}</b></div>
-        <button className="btn btn-sm primary" disabled={busy || net < 0} onClick={save}>Record release</button>
+        <button className="btn btn-sm primary" disabled={busy || approvedC == null || approvedC <= 0 || net < 0} onClick={save}>Record release</button>
       </div>
       {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
     </div>
@@ -552,6 +610,9 @@ function WaiversPanel({ appId, waivers, draws, onChanged }) {
   const [f, setF] = useState({ sitewire_draw_id: '', tier: 'subcontractor', kind: 'conditional', scope: 'progress', party_name: '', amount: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // friendly draw number (same mapping the ledger uses) so this table reads "Draw #1", not "#8001"
+  const numByDraw = {};
+  for (const d of (draws || [])) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
   const STA = { required: { label: 'Outstanding', cls: 'sw-pending' }, received: { label: 'Received', cls: 'sw-approved' }, waived: { label: 'Waived', cls: 'sw-approved' }, na: { label: 'N/A', cls: 'sw-draft' } };
   async function add() {
     setBusy(true); setErr('');
@@ -574,7 +635,7 @@ function WaiversPanel({ appId, waivers, draws, onChanged }) {
                 const s = STA[w.status] || { label: w.status, cls: '' };
                 return (
                   <tr key={w.id}>
-                    <td>{w.sitewire_draw_id ? '#' + w.sitewire_draw_id : '—'}</td>
+                    <td>{w.sitewire_draw_id ? 'Draw #' + (numByDraw[String(w.sitewire_draw_id)] ?? w.sitewire_draw_id) : '—'}</td>
                     <td>{w.party_name || '—'}</td>
                     <td className="muted">{w.tier}</td>
                     <td className="muted small">{w.kind} · {w.scope}</td>
@@ -631,7 +692,7 @@ function ActivityTrail({ appId }) {
         <div style={{ marginTop: 8, maxHeight: 320, overflowY: 'auto' }}>
           {rows.map((a, i) => (
             <div key={i} className="row" style={{ gap: 8, padding: '5px 0', borderTop: i ? '1px solid var(--line,#e6e0d4)' : 'none', alignItems: 'baseline' }}>
-              <span className="muted small" style={{ minWidth: 130, fontVariantNumeric: 'tabular-nums' }}>{new Date(a.at).toLocaleString('en-US')}</span>
+              <span className="muted small" style={{ minWidth: 130, fontVariantNumeric: 'tabular-nums' }}>{a.date_only ? fmtDay(a.at) : new Date(a.at).toLocaleString('en-US')}</span>
               <span className="pill sw-draft" style={{ flex: 'none' }}>{KIND[a.kind] || a.kind}</span>
               <span className="small">{a.summary}{a.actor ? <span className="muted"> · {a.actor}</span> : null}</span>
             </div>
