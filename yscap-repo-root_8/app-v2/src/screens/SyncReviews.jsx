@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { fmtDay } from '../lib/dates.js';
+import { useAuth } from '../lib/auth.jsx';
 
 /* Sync review queue — the human gate for PILOT ⇄ ClickUp disagreements
  * (2026-07-15). The auto-resolution engine settles the provable conflicts by
@@ -26,7 +27,8 @@ const REASON_COPY = {
   copied_loan_number_needs_assignment: 'Two of this borrower’s tasks carried the SAME YS loan number (the duplicate-a-task workflow copies it), and this file is the one holding a copy — a loan number belongs to exactly one loan, so it was not kept here. Fix it in ClickUp: enter this deal’s correct number on this task (it syncs in and this row closes itself), or clear the number on whichever task is the duplicate — the system automatically gives a contested number to the task that rightfully owns it (the older task, or the only one still carrying it).',
   task_deleted_needs_decision: 'This file’s ClickUp task was DELETED and no live task for the same deal exists. Decide what the file should do: archive it (reversible, ClickUp untouched), or keep it in PILOT without a task.',
   push_dead_lettered: 'An update from PILOT could not reach ClickUp after every retry (the fields and the last error are shown above). Nothing was lost in PILOT. Retry the push once the cause is fixed — this row also closes itself when any later push for the file succeeds.',
-  file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Create its ClickUp task now, or dismiss if this file intentionally lives outside ClickUp.',
+  file_unlinked_no_task: 'This PILOT file has NO ClickUp task, so it does not sync at all (it is older than the automatic recovery window). Link it to the correct existing ClickUp card, create a fresh ClickUp task, or dismiss if this file intentionally lives outside ClickUp.',
+  file_dead_unlinked: 'This is a LIVE file that lost its ClickUp card and went orphaned — it no longer syncs, and if another (often near-empty duplicate) file is holding the card, every update has been flowing into that wrong file. Fix it: paste the correct ClickUp card link/id to move the card onto THIS file (if the card is on another file, you’ll be asked to confirm the move), or give it a fresh card, archive it, or keep it as-is.',
   identity_mismatch_audit: 'The portfolio audit found the two systems carrying DIFFERENT values for this borrower-identity field. Nothing was changed anywhere (identity fields never overwrite silently) — compare the sides and adopt the correct one; it is applied to both systems. If both are fine (e.g. an old phone number), dismiss and this stays closed.',
   sharepoint_match_uncertain: 'The SharePoint mirror was NOT SURE which folder this file’s documents belong in (an ambiguous folder match, or no officer yet), so it filed into a safe, clearly-marked new folder — shown under “In PILOT”. If that is the wrong tree: merge or rename the folders IN SharePoint (the mirror never moves or renames anything itself), then click Re-match. Dismiss keeps the new folder.',
   sharepoint_mirror_failed: 'This document could NOT be mirrored to SharePoint after every automatic retry — the exact error is shown on the “Last error” line above. Fix the cause if it needs a human (a folder problem, an unreadable file), then Retry the document; if the folder match itself is wrong, use Re-match. Nothing is lost — the document is safe in PILOT.',
@@ -51,7 +53,14 @@ const REASON_FILE_ACTIONS = {
     { action: 'retry_push', label: 'Retry the push', title: 'Re-queue the failed update through the normal guarded push' },
   ],
   file_unlinked_no_task: [
+    { action: 'relink_task', label: 'Link an existing card', title: 'Move an existing ClickUp card onto this file (asks to confirm if the card is on another file). Admin only.', needsTaskInput: true, adminOnly: true },
     { action: 'create_task', label: 'Create its ClickUp task', title: 'Create the ClickUp task for this file via the normal create path' },
+  ],
+  file_dead_unlinked: [
+    { action: 'relink_task', label: 'Move the correct card here', title: 'Move an existing ClickUp card onto this file (asks to confirm if the card is currently on another file). Admin only.', needsTaskInput: true, adminOnly: true },
+    { action: 'create_task', label: 'Create a fresh card', title: 'Create a brand-new ClickUp task for this file' },
+    { action: 'archive_file', label: 'Archive the file', title: 'Soft-archive (reversible; ClickUp untouched)' },
+    { action: 'keep_file', label: 'Keep as-is', title: 'Keep it in PILOT without a ClickUp card' },
   ],
   sharepoint_match_uncertain: [
     { action: 'sp_rematch', label: 'Re-match folders now', title: 'Clear the folder match so the next document sync re-runs it — fix the folders in SharePoint first (the mirror never moves anything itself)' },
@@ -135,11 +144,16 @@ function sides(r) {
 }
 
 export default function SyncReviews() {
+  const { role } = useAuth();
+  // relink_task (moving a ClickUp card between files) is admin-only — hide it
+  // from processors/LOs/underwriters (the server also enforces this).
+  const isAdmin = role === 'admin' || role === 'super_admin';
   const [status, setStatus] = useState('open');
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState('');
   const [busyId, setBusyId] = useState(null);
   const [linkTarget, setLinkTarget] = useState({});   // rowId -> chosen candidate application id
+  const [relinkInput, setRelinkInput] = useState({}); // rowId -> pasted ClickUp card link/id (relink_task)
   const [customVal, setCustomVal] = useState({});     // rowId -> reviewer-typed correct value
   const [selected, setSelected] = useState({});       // rowId -> checked (bulk actions)
   const [bulkMsg, setBulkMsg] = useState('');
@@ -176,6 +190,29 @@ export default function SyncReviews() {
     try { await api.post(`/api/staff/sync-reviews/${id}/${verb}`, body || {}); await load(); }
     catch (e) { setErr(e.message || `Could not ${verb}`); }
     finally { setBusyId(null); }
+  }
+
+  // relink_task: move an EXISTING ClickUp card onto this orphaned file. If the
+  // card is currently on another file, the server returns needsConfirm + the
+  // holder so we can confirm the move (admin-only; enforced server-side).
+  async function relinkFromRow(id, confirmMove) {
+    const taskInput = (relinkInput[id] || '').trim();
+    if (!taskInput) { setErr('Paste the correct ClickUp card link or id first.'); return; }
+    setBusyId(id); setErr('');
+    try {
+      await api.post(`/api/staff/sync-reviews/${id}/resolve-file`, { action: 'relink_task', targetTaskId: taskInput, confirmMove: !!confirmMove });
+      await load();
+    } catch (e) {
+      if (e && e.data && e.data.needsConfirm) {
+        const h = e.data.holder || {};
+        const who = [h.borrower, h.address].filter(Boolean).join(' — ') || 'another file';
+        if (window.confirm(`That ClickUp card is currently linked to:\n\n${who}\n\nMove it to THIS file? The other file will be unlinked (nothing is deleted) and left for you to review.`)) {
+          setBusyId(null);
+          return relinkFromRow(id, true);
+        }
+        setErr('Move cancelled — nothing changed.');
+      } else { setErr(e.message || 'Could not link the card'); }
+    } finally { setBusyId(null); }
   }
 
   return (
@@ -224,7 +261,7 @@ export default function SyncReviews() {
         const sidesEqual = cu != null && p != null && String(cu) === String(p);
         const canResolve = RESOLVABLE.has(r.field_key) && !sidesEqual;
         const isDob = r.field_key === 'date_of_birth';
-        const fileActions = REASON_FILE_ACTIONS[r.reason] || null;
+        const fileActions = (REASON_FILE_ACTIONS[r.reason] || null)?.filter((a) => !a.adminOnly || isAdmin) || null;
         const candidates = fileActions && fileActions.some((a) => a.needsTarget) ? linkCandidates(r) : [];
         return (
           <div className="panel" key={r.id} style={{ marginBottom: 10 }}>
@@ -279,7 +316,9 @@ export default function SyncReviews() {
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                 {fileActions.map((a) => {
                   const needsPick = a.needsTarget;
+                  const needsTask = a.needsTaskInput;
                   const picked = linkTarget[r.id] || '';
+                  const typed = (relinkInput[r.id] || '').trim();
                   if (needsPick && !candidates.length) return null;   // no linkable candidates surfaced
                   return (
                     <React.Fragment key={a.action}>
@@ -292,9 +331,16 @@ export default function SyncReviews() {
                           ))}
                         </select>
                       )}
+                      {needsTask && (
+                        <input className="input" style={{ maxWidth: 280 }} placeholder="Correct ClickUp card link or id…"
+                          value={relinkInput[r.id] || ''} aria-label="ClickUp card to link to this file"
+                          onChange={(e) => setRelinkInput((m) => ({ ...m, [r.id]: e.target.value }))} />
+                      )}
                       <button className="btn primary btn-sm" title={a.title}
-                        disabled={busyId === r.id || (needsPick && !picked)}
-                        onClick={() => act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined })}>
+                        disabled={busyId === r.id || (needsPick && !picked) || (needsTask && !typed)}
+                        onClick={() => needsTask
+                          ? relinkFromRow(r.id, false)
+                          : act(r.id, 'resolve-file', { action: a.action, targetApplicationId: needsPick ? picked : undefined })}>
                         {busyId === r.id ? '…' : a.label}
                       </button>
                     </React.Fragment>

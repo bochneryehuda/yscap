@@ -2616,6 +2616,24 @@ async function syncProfileFromApplication(borrowerId, b) {
  */
 async function inviteCoBorrower(appId, primaryName, co) {
   if (!co || !co.email) return null;
+  // N-2 (round-2): if this email is already on file under a DIFFERENT (name-
+  // conflicting) borrower — common with shared family emails in this book of
+  // business — do NOT silently adopt them onto this file (that would grant a
+  // stranger portal access to this borrower's SSN/DOB/documents). Fail closed:
+  // skip the co-borrower and leave a traceable audit row for staff to resolve.
+  {
+    const identity = require('../clickup/identity');
+    const em = String(co.email).toLowerCase().trim();
+    const ex = (await db.query(`SELECT first_name, last_name FROM borrowers WHERE email=$1 LIMIT 1`, [em])).rows[0];
+    if (ex && identity.nameConflict(co.firstName, co.lastName, ex.first_name, ex.last_name)) {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind, action, entity_type, entity_id, detail)
+         VALUES ('system', 'coborrower_email_conflict_blocked', 'application', $1, $2)`,
+        [appId, JSON.stringify({ email: em, typed: `${co.firstName || ''} ${co.lastName || ''}`.trim(),
+          onFile: `${ex.first_name || ''} ${ex.last_name || ''}`.trim() })]).catch(() => {});
+      return null;
+    }
+  }
   // #97: capture the co-borrower's FICO from the application (sanitized to a
   // valid 3-digit score). Fill only when the co-borrower has NO score yet —
   // COALESCE(existing, new) keeps their OWN canonical FICO (they're a full

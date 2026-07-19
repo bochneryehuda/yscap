@@ -238,7 +238,12 @@ function buildTaskFields(ctx, options = {}, ysProgramFieldId = null) {
   }
   // officer / processor users fields
   if (ctx.officerClickupId) put(F.SHARED.loanOfficer, { add: [ctx.officerClickupId] });
+  // Processor pushes BOTH fields so they always agree for the inbound agreement gate
+  // (owner-directed 2026-07-19): the "Processor" people-field AND the "Processor
+  // Email" text field. A Pilot pick therefore round-trips cleanly (both match); the
+  // no-clear write guard still prevents either from being emptied.
   if (ctx.processorClickupId) put(F.PIPELINE.processor, { add: [ctx.processorClickupId] });
+  if (ctx.processorEmail) put(F.EXTRA.processorEmail, ctx.processorEmail);
   // co-borrower summary flags on the parent (full profile lives in a subtask, §7.7)
   if (ctx.coBorrower) {
     put(F.PIPELINE.coBorrowerFlag, T.dropdownLabelToId(options[F.PIPELINE.coBorrowerFlag] || [], 'YES'));
@@ -287,7 +292,10 @@ function readValue(f, cf, options) {
       if (label == null) return undefined;
       return f.enumKey ? X.fromClickUpLabel(f.enumKey, label) : label;   // free dropdown -> raw label
     }
-    case 'currency': case 'number': return T.parseMoney(cf.value);
+    // N-3 (round-2): an unparseable money/number value (e.g. "N/A") yields null
+    // from parseMoney — return undefined so it's OMITTED from the patch and
+    // COALESCE keeps the real portal value instead of writing a stray 0.
+    case 'currency': case 'number': { const m = T.parseMoney(cf.value); return m == null ? undefined : m; }
     case 'date': return T.fromEpochMs(cf.value);
     case 'checkbox': return cf.value === true || cf.value === 'true';
     default: return typeof cf.value === 'string' ? cf.value : String(cf.value);
@@ -343,7 +351,7 @@ function readTaskFields(task, options = {}) {
   // field always wins when present.
   if (!out.borrower.first_name && task && task.name) {
     const head = String(task.name).split(' - ')[0].trim();
-    if (head && head.length <= 60 && !/\d/.test(head) && /[a-z]/i.test(head)
+    if (head && head.length <= 60 && !/\d/.test(head) && /\p{L}/u.test(head)
         && head.split(/\s+/).length >= 2 && !T.isPlaceholderName(head)) {
       const p = T.splitName(head);
       if (p.first && p.last) { out.borrower.first_name = p.first; out.borrower.last_name = p.last; }
@@ -448,7 +456,9 @@ function resolveOnly(onlyKeys) {
       case 'officer': case 'loan_officer_id':
         cuIds.add(F.SHARED.loanOfficer); break;
       case 'processor': case 'processor_id':
-        cuIds.add(F.PIPELINE.processor); break;
+        // Push BOTH ClickUp processor fields so they agree (inbound agreement gate,
+        // owner-directed 2026-07-19): the people-field AND the Processor Email text.
+        cuIds.add(F.PIPELINE.processor); cuIds.add(F.EXTRA.processorEmail); break;
       case 'property_address':
         cuIds.add(F.PIPELINE.subjectAddress); break;
       case 'email':

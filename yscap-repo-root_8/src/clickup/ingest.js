@@ -1186,7 +1186,23 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
   const { allowCreate = false, forceCreate = false, folderId = null, loanOfficerEmail = null, processorEmail = null, coBorrowerId = null, coBorrowerTaskId = null } = ctx;
   const a = read.app || {};
   const lo = await resolveStaffByEmail(loanOfficerEmail);
-  const pr = await resolveStaffByEmail(processorEmail);
+  // PROCESSOR — two-field AGREEMENT gate (owner-directed 2026-07-19). ClickUp holds
+  // the processor in TWO places: the "Processor" people-field (the human pick) and a
+  // "Processor Email" text field an automation fills from it. Duplicating a task can
+  // leave the two DISAGREEING (e.g. the people-field cleared but the stale email left
+  // pointing at the old processor) — that stale email is exactly how Lisa Katz kept
+  // syncing in as a processor nobody chose. Rule: adopt a processor from ClickUp ONLY
+  // when BOTH fields resolve to the SAME staff person. On a conflict, adopt nobody and
+  // CLEAR any stale portal processor (see the conflict-clear after the UPDATE below).
+  // processorEmail was already translated to a staff email by routing.processorEmailFor.
+  const prByEmail = await resolveStaffByEmail(processorEmail);
+  const prByUser = await resolveStaffByClickupUserId(read.processorClickupId);
+  const processorsAgree = !!(prByUser.id && prByEmail.id && prByUser.id === prByEmail.id);
+  const agreedProcessorId = processorsAgree ? prByUser.id : null;
+  // Conflict = at least one field names someone, but they don't agree (this INCLUDES
+  // the duplicate-bug case: one field cleared, the other still populated). Both-empty
+  // is NOT a conflict (no signal) — never clobber a portal value on ClickUp silence.
+  const processorConflict = !!(prByUser.id || prByEmail.id) && !processorsAgree;
   // Underwriter comes from ClickUp's "Underwriter" users field (may hold several
   // users — take the first), matched to staff_users by clickup_user_id. Pull-only.
   const uw = await resolveStaffByClickupUserId(firstUserIdFromField(task, F.PIPELINE.underwriter));
@@ -1219,8 +1235,12 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
     property_address: a.property_address ? JSON.stringify(a.property_address) : null,
     internal_status: internal, status: external,
     clickup_extra: Object.keys(read.extra).length ? JSON.stringify(read.extra) : null,
-    // Officer assignment (COALESCE on update: reassign when resolved, keep when not).
-    loan_officer_id: lo.id, loan_officer_name: lo.name, processor_id: pr.id,
+    // Officer + processor assignment (COALESCE on update: reassign when resolved,
+    // keep when not). Bidirectional: a real, AGREED ClickUp processor flows in here
+    // (agreedProcessorId is non-null only when BOTH ClickUp fields name the same
+    // person), and an explicit portal pick flows OUT via the outbound push (which
+    // now writes BOTH ClickUp processor fields so they always agree).
+    loan_officer_id: lo.id, loan_officer_name: lo.name, processor_id: agreedProcessorId,
     // Underwriter assignment — same COALESCE semantics: set when resolved, keep when not.
     underwriter_id: uw.id,
     clickup_folder_id: folderId != null ? Number(folderId) : null,
@@ -1458,6 +1478,28 @@ async function linkOrCreateApplication(task, read, borrowerId, llcId, ctx = {}) 
               deleted_at = CASE WHEN sync_state='descoped' THEN NULL ELSE deleted_at END,
               clickup_last_synced_at=now(), updated_at=now() WHERE id=$1`,
       [targetId, ...vals, task.id]);
+    // Two-field PROCESSOR conflict → the ClickUp processor signal is untrustworthy
+    // (the stale-duplicate case). Clear any portal processor so the file returns to
+    // "no processor" per the agreement rule (owner-directed 2026-07-19). The COALESCE
+    // set above can only keep or set — never clear — so this explicit clear is what
+    // removes a stale processor (e.g. Lisa left in the Processor Email after a dup).
+    // The db/103 trigger retires her assignee ACCESS row in lock-step. Only fires on
+    // a genuine conflict (not on ClickUp silence), and only when something is set.
+    if (processorConflict) {
+      const clr = await db.query(
+        `UPDATE applications SET processor_id=NULL, updated_at=now()
+          WHERE id=$1 AND processor_id IS NOT NULL RETURNING 1`, [targetId]);
+      if (clr.rowCount) {
+        try {
+          await db.query(
+            `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+             VALUES ('system', NULL, 'clickup_processor_conflict_cleared', 'application', $1, $2)`,
+            [targetId, JSON.stringify({ taskId: task.id,
+              processorFromPeopleField: prByUser.id || null,
+              processorFromEmailField: prByEmail.id || null })]);
+        } catch (_) { /* audit best-effort */ }
+      }
+    }
     // Co-borrower: fill when the file has none yet — never clobber a link a
     // human set to a REAL person. ONE exception (root fix 2026-07-14): when the
     // current link points at a SYNC-CREATED PLACEHOLDER profile (shadow email,

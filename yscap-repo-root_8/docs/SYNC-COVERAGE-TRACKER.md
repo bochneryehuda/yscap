@@ -82,6 +82,23 @@ These are the "hidden siblings" — same bug class, other fields, not yet hit. N
 
 ---
 
+## Round-2 audit fixes (2026-07-19)
+
+The post-deploy round-2 audit (`docs/AUDIT-ROUND2-2026-07.md`) verified every
+deployed fix still holds and surfaced new confirmed bugs. This batch closed the
+ones in THIS session's own sync code:
+
+| Bug | Severity | Status | Fix |
+|-----|----------|--------|-----|
+| **N-1** — create-retry can duplicate a PII card | HIGH | ✅ DONE | `inCallRetryAllowed()` gate; non-idempotent POST never retried on network/timeout (`client.js`) |
+| **N-2** — shared-email co-borrower leaks another file | HIGH | ✅ DONE | name-conflict guard on both co-borrower paths (`borrower.js`/`staff.js`) |
+| **N-3** — "N/A"/blank money erases a real loan amount | HIGH | ✅ DONE | `parseMoney`→null on no-digit; `readValue` drops unparseable (`transforms.js`/`mapper.js`) |
+| **N-6** — non-ASCII names become "Unknown Unknown" | MEDIUM | ✅ DONE | `/\p{L}/u` Unicode letter test in title recovery (`mapper.js`) |
+| **N-7** — DOB logged in cleartext on blocked push | MEDIUM | ✅ DONE | dropped from/to from the log line (`orchestrator.js`) |
+| **N-12** — compound surnames merge on shared email | MEDIUM | ✅ DONE | full-surname compare in `nameConflict` (`identity.js`) |
+| **N-4 / N-5** — db/126 spurious reopens | HIGH/MED | ⬜ OPEN | parallel team's migration — owner Decision B (don't cross-edit) |
+| **N-8 / N-9 / N-10** — copied loan #, assignment invariant, outbound "0" | MED | ⬜ OPEN | next cycle |
+
 ## How to read progress
 
 Each ✅ is tested (its own suite in `npm test`) and CI-green in `main`. The safety net (WO-13a) runs every suite on every change, so no ✅ can silently regress. This tracker is updated with each merge; when every row is ✅, the audit is covered — not before.

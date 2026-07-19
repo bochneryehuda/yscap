@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import TermSheetStudio, { buildStudioState } from '../components/TermSheetStudio.jsx';
 import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
@@ -13,12 +13,17 @@ import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
    (showAdmin=false). */
 export default function PricingStudio() {
   const nav = useNavigate();
+  const loc = useLocation();
   const studioRef = useRef(null);
   const [prefill, setPrefill] = useState(null);
   const [ready, setReady] = useState(false);
   const [scenarios, setScenarios] = useState([]);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
+  // #119b: when the borrower taps "Reopen" on a saved scenario from their
+  // dashboard, we arrive here with the scenario id in navigation state; auto-load
+  // it into the studio once the embedded engine has finished booting.
+  const [pendingOpenId, setPendingOpenId] = useState(() => (loc.state && loc.state.openScenarioId) || null);
 
   const loadScenarios = () => api.pricingScenarios().then((r) => setScenarios(Array.isArray(r) ? r : [])).catch(() => {});
   useEffect(() => {
@@ -28,6 +33,26 @@ export default function PricingStudio() {
     }).catch(() => setPrefill(buildStudioState({}))).finally(() => setReady(true));
     loadScenarios();
   }, []);
+
+  // Auto-open the scenario the dashboard asked for. The embedded studio needs a
+  // moment to finish loading before applyState() takes, so retry a few times.
+  useEffect(() => {
+    if (!pendingOpenId || !ready || !scenarios.length) return;
+    const s = scenarios.find((x) => String(x.id) === String(pendingOpenId));
+    if (!s) { setPendingOpenId(null); return; }
+    let tries = 0, timer;
+    const attempt = () => {
+      if (studioRef.current && studioRef.current.applyState(s.inputs)) {
+        setPendingOpenId(null);
+        flash(`Reopened "${s.label}" — reprice it and save again.`);
+        return;
+      }
+      if (++tries < 20) timer = setTimeout(attempt, 400);
+      else { setPendingOpenId(null); flash('The pricer is still loading — open the scenario from the list above once it’s ready.'); }
+    };
+    attempt();
+    return () => clearTimeout(timer);
+  }, [pendingOpenId, ready, scenarios]);
 
   const flash = (m) => { setNote(m); clearTimeout(flash._t); flash._t = setTimeout(() => setNote(''), 3200); };
 

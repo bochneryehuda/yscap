@@ -142,6 +142,10 @@ async function loadPushContext(appId) {
     // returns bigint as a string, so resolveClickupUserId coerces to Number.
     officerClickupId: await resolveClickupUserId({ storedId: row.officer_cuid, staffId: row.officer_staff_id, email: row.officer_email }),
     processorClickupId: await resolveClickupUserId({ storedId: row.processor_cuid, staffId: row.processor_staff_id, email: row.processor_email }),
+    // Written to the "Processor Email" TEXT field so BOTH ClickUp processor fields
+    // (people-field + email) agree after a Pilot pick — the inbound agreement gate
+    // requires that match to adopt a processor (owner-directed 2026-07-19).
+    processorEmail: row.processor_email || null,
     officerName: row.officer_name || row.loan_officer_name || null,
     borrowerOrigin: row.b_origin || null,   // provenance for the DOB auto-resolver
     portalAppId: appId,
@@ -361,7 +365,10 @@ async function pushApplication(appId, opts = {}) {
           if (d.outcome === 'review') {
             journalStats.blocked++;
             const reason = isSuspectDobShift(c.id, old, c.value) ? 'dob_one_day_shift_blocked' : 'dob_change_blocked_pending_review';
-            console.error('[clickup] BLOCKED DOB change push', { appId, taskId: id, from: old, to: c.value, reason });
+            // N-7 (round-2): never log the DOB values themselves (epochs decode
+            // to the exact date of birth — PII in plain logs). The structured
+            // audit/journal rows below capture the change safely.
+            console.error('[clickup] BLOCKED DOB change push', { appId, taskId: id, reason });
             await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
             await logSync('dob_change_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value), reason });
             await require('../lib/sync-review').queueReview({
