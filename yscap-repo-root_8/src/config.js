@@ -267,10 +267,13 @@ module.exports = {
     // Master send switch — OFF by default. Sending real signature requests is
     // gated behind this so nothing mails a borrower until we deliberately enable it.
     sendEnabled:    process.env.DOCUSIGN_SEND_ENABLED === '1',
-    // M-13: while on DEMO creds, only these emails may actually be sent to
-    // (comma-separated allow-list). Empty + demo host = allow none. Ignored on prod host.
+    // M-13: only these emails may actually be sent to (comma-separated allow-list).
     testEmailAllowlist: (process.env.DOCUSIGN_TEST_EMAIL_ALLOWLIST || '')
                       .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+    // Test mode gates sending to the allow-list ON ANY host (incl. production), so
+    // switching to live creds can't mail a real borrower during testing. Fail-safe:
+    // defaults ON — must be EXPLICITLY set to '0' at true go-live to reach anyone.
+    testMode:       process.env.DOCUSIGN_TEST_MODE !== '0',
     httpTimeoutMs:  parseInt(process.env.DOCUSIGN_HTTP_TIMEOUT_MS || '30000', 10),
     tokenCacheSec:  parseInt(process.env.DOCUSIGN_TOKEN_CACHE_SEC || '3300', 10), // 55 min (< 1h token life)
     // DB-backed send circuit breaker: more than this many envelopes sent in a

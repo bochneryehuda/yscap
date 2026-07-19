@@ -161,6 +161,13 @@ validity is outside DocuSign's scope (confirm with the rabbinic/legal advisor)._
 - **ERSD (Electronic Record and Signature Disclosure)** — keep ENABLED (on by default); it carries the ESIGN
   consumer-consent disclosure at signing, so our website pages stay lighter.
 
+**Go-live safety (env):** the send path is double-gated. `DOCUSIGN_SEND_ENABLED` (master, off by default) must
+be on for anything to send at all; and `DOCUSIGN_TEST_MODE` (**on by default, on ANY host**) restricts sends
+to `DOCUSIGN_TEST_EMAIL_ALLOWLIST` — so even after switching to LIVE production creds, real borrowers cannot
+be mailed until `DOCUSIGN_TEST_MODE=0` is set at true go-live. The demo→production switch changes
+`DOCUSIGN_USER_ID`, `DOCUSIGN_ACCOUNT_ID`, `DOCUSIGN_OAUTH_BASE=account.docusign.com`, and the production
+RSA private key (which must match the RSA keypair added to the production app — Go-Live does NOT copy it).
+
 ---
 
 ## 5. New build tasks this research adds (folded into Phase 6)

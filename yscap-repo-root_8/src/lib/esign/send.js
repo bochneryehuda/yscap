@@ -46,16 +46,24 @@ function classify(e, attempts) {
   return { outage, permanent, dead, backoffSec };
 }
 
-/** M-13: while on the DEMO host, refuse to mail anyone not on the allow-list. */
+/**
+ * M-13: refuse to mail anyone not on the allow-list whenever we're NOT fully
+ * live. The gate is active on the DEMO host (always) AND on the PRODUCTION host
+ * while test mode is on (the default) — so pointing at live creds during testing
+ * can never mail a real borrower a watermark-free binding envelope by accident.
+ * Only an explicit DOCUSIGN_TEST_MODE=0 on the production host lifts the gate.
+ */
 function guardTestEmails(docusign, signers) {
-  if (!docusign.isDemoHost || !docusign.isDemoHost()) return;   // prod host: no gate
+  const onDemo = !!(docusign.isDemoHost && docusign.isDemoHost());
+  const gated = onDemo || cfg.testMode;
+  if (!gated) return;   // production host + test mode explicitly OFF = true go-live
   const allow = cfg.testEmailAllowlist || [];
   for (const s of (signers || [])) {
     const em = String(s.email || '').toLowerCase();
     if (!allow.includes(em)) {
-      const err = new Error(`Demo send blocked: "${s.email}" is not on DOCUSIGN_TEST_EMAIL_ALLOWLIST (a real borrower must never receive a non-binding demo envelope)`);
-      err.code = 'DOCUSIGN_DEMO_EMAIL_BLOCKED';
-      err.retryable = false;   // permanent until the allow-list / prod creds change
+      const err = new Error(`Send blocked (${onDemo ? 'demo' : 'test mode'}): "${s.email}" is not on DOCUSIGN_TEST_EMAIL_ALLOWLIST — a real recipient must never receive an envelope until go-live`);
+      err.code = 'DOCUSIGN_TEST_EMAIL_BLOCKED';
+      err.retryable = false;   // permanent until the allow-list / go-live flag changes
       throw err;
     }
   }

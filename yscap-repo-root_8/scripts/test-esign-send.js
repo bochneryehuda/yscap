@@ -33,6 +33,11 @@ async function newRow(purpose='term_sheet_package', extra={}){
 const get = async (id) => (await db.query(`SELECT * FROM esign_envelopes WHERE id=$1`,[id])).rows[0];
 
 (async () => {
+  // Send-mechanics cases run as if fully live (test-email gate OFF) — the gate
+  // itself is exercised separately in cases 6/6b/6c. (fakeDs defaults to prod host.)
+  const dcfg = require(R + '/src/config').docusign;
+  dcfg.testMode = false;
+
   // 1. happy path
   let row = await newRow();
   const ds1 = fakeDs();
@@ -87,7 +92,22 @@ const get = async (id) => (await db.query(`SELECT * FROM esign_envelopes WHERE i
   ok(r6.dead === true, 'demo gate: unlisted email → dead (blocked)');
   ok(dsDemo.calls === 0, 'demo gate: createEnvelope NEVER called for unlisted email');
   after = await get(row.id);
-  ok(/DOCUSIGN_TEST_EMAIL_ALLOWLIST|Demo send blocked/.test(after.last_error||''), 'demo gate: clear reason recorded');
+  ok(/DOCUSIGN_TEST_EMAIL_ALLOWLIST/.test(after.last_error||''), 'demo gate: clear reason recorded');
+
+  // 6b. PRODUCTION host + test mode ON (the default) → still blocked (safety net for go-live testing)
+  dcfg.testMode = true;
+  try {
+    row = await newRow();
+    const dsProdTest = fakeDs({ demo:false });
+    const r6b = await send.sendClaimedEnvelope(row.id, { db, docusign: dsProdTest, buildDefinition });
+    ok(r6b.dead === true && dsProdTest.calls === 0, 'prod host + test mode: unlisted email still blocked, createEnvelope never called');
+  } finally { dcfg.testMode = false; }
+
+  // 6c. PRODUCTION host + test mode OFF (true go-live) → send proceeds
+  row = await newRow();
+  const dsLive = fakeDs({ demo:false });
+  const r6c = await send.sendClaimedEnvelope(row.id, { db, docusign: dsLive, buildDefinition });
+  ok(r6c.sent === true && dsLive.calls === 1, 'prod host + test mode OFF: send proceeds (true go-live)');
 
   // 7. M-12 reclaim: stale claim (6 min old, no envelope) is reclaimed and sent
   row = await newRow();
