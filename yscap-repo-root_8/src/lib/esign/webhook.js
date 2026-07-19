@@ -46,13 +46,24 @@ function recipientStatus(r) {
 
 // ---- store a signed document via the standard documents chokepoint ----------
 async function storeSignedDocument(db, storage, { applicationId, checklistItemId, docKind, filename, bytes, visibility }) {
+  // Idempotent: the filename is deterministic (<kind>_<envelopeId>.pdf), so if a
+  // prior pass (e.g. one that crashed after the INSERT but before stamping
+  // completed_document_id) already stored it, reuse that row rather than writing
+  // a duplicate. Also covers a concurrent drain (L2).
+  const existing = await db.query(
+    `SELECT id FROM documents WHERE application_id=$1 AND doc_kind=$2 AND filename=$3 LIMIT 1`,
+    [applicationId, docKind, filename]);
+  if (existing.rows.length) return existing.rows[0].id;
   const { ref, provider } = await storage.save(Buffer.from(bytes), { filename });
+  // uploaded_by_kind is CHECK IN ('borrower','staff') — a system fill uses
+  // 'staff' + source_type='system' (exactly like tpr-export / track-record
+  // snapshots); 'system' would violate the constraint.
   const ins = await db.query(
     `INSERT INTO documents
        (application_id, checklist_item_id, filename, content_type, size_bytes,
         storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind,
         source_type, visibility, is_current, review_status)
-     VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'system',NULL,$7,'system',$8,true,'pending')
+     VALUES ($1,$2,$3,'application/pdf',$4,$5,$6,'staff',NULL,$7,'system',$8,true,'pending')
      RETURNING id`,
     [applicationId, checklistItemId || null, filename, Buffer.from(bytes).length, provider, ref, docKind, visibility || 'borrower']);
   return ins.rows[0].id;

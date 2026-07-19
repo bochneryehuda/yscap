@@ -50,7 +50,7 @@ function fakeDocusign() {
     eventNotification: () => ({ url: 'x' }),
     notificationSettings: () => ({}),
     isDemoHost: () => true,
-    async createEnvelope(def) { calls.created = def.__def; return { envelopeId: 'ENV-123', status: 'sent' }; },
+    async createEnvelope(def) { calls.created = def.__def; calls.n = (calls.n || 0) + 1; return { envelopeId: `ENV-${calls.n}`, status: 'sent' }; },
     async getEnvelope() {
       return {
         status: 'completed', currentRoutingOrder: 2,
@@ -133,8 +133,9 @@ function fakeStorage() {
     // Envelope row + status.
     const env = (await pool.query(`SELECT * FROM esign_envelopes WHERE application_id=$1`, [app])).rows[0];
     eq(env.status, 'sent', 'envelope marked sent');
-    eq(env.envelope_id, 'ENV-123', 'envelope_id stamped');
+    ok(env.envelope_id && /^ENV-\d+$/.test(env.envelope_id), 'envelope_id stamped');
     eq(env.countersign_required, true, 'term-sheet package requires countersign');
+    eq(Number(env.product_version), 0, 'first issue is product_version 0');
 
     // Docs map bound to the right conditions.
     const edocs = (await pool.query(`SELECT * FROM esign_envelope_docs WHERE envelope_row_id=$1 ORDER BY document_id`, [env.id])).rows;
@@ -171,7 +172,7 @@ function fakeStorage() {
     eq(envCount, 1, 'no duplicate envelope row created');
 
     // ---- COMPLETION via the webhook drainer ---------------------------------
-    await pool.query(`INSERT INTO docusign_event_inbox (body_sha256,envelope_id,event_type) VALUES ('sha-1','ENV-123','envelope-completed')`);
+    await pool.query(`INSERT INTO docusign_event_inbox (body_sha256,envelope_id,event_type) VALUES ('sha-1',$1,'envelope-completed')`, [env.envelope_id]);
     const drained = await webhook.drainInbox({ db: pool, docusign, storage });
     eq(drained.length, 1, 'one inbox event drained');
     eq(drained[0].reconciled, 'completed', 'reconciled to completed');
@@ -196,12 +197,20 @@ function fakeStorage() {
     eq(cert, 1, 'certificate of completion stored');
 
     // ---- idempotent re-drain: a duplicate completion event is a no-op --------
-    await pool.query(`INSERT INTO docusign_event_inbox (body_sha256,envelope_id,event_type) VALUES ('sha-2','ENV-123','envelope-completed')`);
+    await pool.query(`INSERT INTO docusign_event_inbox (body_sha256,envelope_id,event_type) VALUES ('sha-2',$1,'envelope-completed')`, [env.envelope_id]);
     await webhook.drainInbox({ db: pool, docusign, storage });
     const signedAfter = (await pool.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind LIKE '%_signed'`, [app])).rows[0].n;
     eq(signedAfter, 3, 'no duplicate signed docs on re-drain (idempotent)');
     const certAfter = (await pool.query(`SELECT count(*)::int n FROM documents WHERE application_id=$1 AND doc_kind='esign_certificate'`, [app])).rows[0].n;
     eq(certAfter, 1, 'no duplicate certificate on re-drain');
+
+    // ---- re-issue after completion gets a NEW row + DISTINCT version (M2) -----
+    const reissue = await orchestrate.sendPackage(app, 'term_sheet_package', { id: null }, { db: pool, docusign, storage });
+    ok(reissue.envelopeRowId !== env.id, 're-issue after completion creates a NEW envelope row');
+    const versions = (await pool.query(
+      `SELECT product_version FROM esign_envelopes WHERE application_id=$1 AND purpose='term_sheet_package' ORDER BY created_at`, [app])).rows;
+    eq(versions.length, 2, 'two envelope rows over the file life');
+    ok(String(versions[0].product_version) !== String(versions[1].product_version), 're-issue got a distinct product_version (distinct idempotency key)');
 
     // ---- gate blocks when product signed BEFORE the appraisal ----------------
     await pool.query(`UPDATE checklist_items SET signed_off_at='2026-07-05T00:00:00Z' WHERE application_id=$1 AND template_id=$2`, [app, tmpl['rtl_p1_product']]);

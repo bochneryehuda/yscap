@@ -33,6 +33,8 @@ CREATE TABLE checklist_items (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- CHECK constraints mirror the REAL schema (schema.sql + db/012/013/014) so this
+-- fixture catches constraint-violation bugs the code would hit in production.
 CREATE TABLE documents (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   application_id uuid,
@@ -40,14 +42,14 @@ CREATE TABLE documents (
   borrower_id uuid,
   filename text NOT NULL,
   content_type text,
-  size_bytes integer,
+  size_bytes bigint,
   storage_provider text,
   storage_ref text,
-  uploaded_by_kind text,
+  uploaded_by_kind text CHECK (uploaded_by_kind IN ('borrower','staff')),
   uploaded_by_id uuid,
   doc_kind text,
   source_type text,
-  visibility text,
+  visibility text NOT NULL DEFAULT 'borrower' CHECK (visibility IN ('borrower','staff_only','internal')),
   slot_label text,
   is_current boolean DEFAULT true,
   review_status text,

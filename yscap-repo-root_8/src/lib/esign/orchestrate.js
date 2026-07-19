@@ -165,17 +165,39 @@ function tabsFor(role, spec, documentIdByKind) {
  * the backstop). Returns { row, created }.
  */
 async function createOrClaimEnvelope(db, app, purpose, spec, actorId) {
-  const existing = await db.query(
+  const inflightSql =
     `SELECT * FROM esign_envelopes
       WHERE application_id = $1 AND purpose = $2 AND status IN ('not_sent','sent','delivered')
-      ORDER BY created_at DESC LIMIT 1`, [app.id, purpose]);
+      ORDER BY created_at DESC LIMIT 1`;
+  const existing = await db.query(inflightSql, [app.id, purpose]);
   if (existing.rows.length) return { row: existing.rows[0], created: false };
 
-  const ins = await db.query(
-    `INSERT INTO esign_envelopes (application_id, purpose, status, countersign_required, created_by)
-     VALUES ($1, $2, 'not_sent', $3, $4)
-     RETURNING *`, [app.id, purpose, spec.countersignRequired, actorId || null]);
-  const row = ins.rows[0];
+  // product_version = a per-issue sequence (count of prior envelopes for this
+  // app+purpose). It feeds the deterministic idempotency key so a legitimate
+  // RE-ISSUE (after a prior envelope voided/completed and freed uq_esign_inflight)
+  // gets a DISTINCT key — otherwise DocuSign would replay the original envelope
+  // within its idempotency-key TTL and the re-issue would dead-letter (M2).
+  const seq = (await db.query(
+    `SELECT count(*)::int AS n FROM esign_envelopes WHERE application_id=$1 AND purpose=$2`,
+    [app.id, purpose])).rows[0].n;
+
+  let row;
+  try {
+    const ins = await db.query(
+      `INSERT INTO esign_envelopes (application_id, purpose, status, countersign_required, created_by, product_version)
+       VALUES ($1, $2, 'not_sent', $3, $4, $5)
+       RETURNING *`, [app.id, purpose, spec.countersignRequired, actorId || null, seq]);
+    row = ins.rows[0];
+  } catch (e) {
+    // Lost a concurrent create race (double-click) — the partial unique index
+    // uq_esign_inflight rejected the second INSERT. Return the winner's row so
+    // the caller is idempotent instead of 500ing (M1).
+    if (e && e.code === '23505') {
+      const again = await db.query(inflightSql, [app.id, purpose]);
+      if (again.rows.length) return { row: again.rows[0], created: false };
+    }
+    throw e;
+  }
 
   // Bind each package document to the condition it clears (documentId 1..N in
   // package order). The webhook uses THIS map on completion — no name-matching.
