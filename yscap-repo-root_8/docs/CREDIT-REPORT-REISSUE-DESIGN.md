@@ -589,6 +589,47 @@ From the research, deliberately deferred (either legal decisions or larger capab
 
 ---
 
-_Design + Phases 1a–1e + the research-driven improvements are built and pushed to the parked PR;
-the owner has directed heavy auditing + live-endpoint testing before any implementation is trusted,
-and **no merge yet.**_
+## 14. Live testing against Xactus + MISMO 3.4 (2026-07-19)
+
+Tested end-to-end against the Xactus **test** environment (`test.ultraamps.com`, login
+`yscap.test`, ~90 synthetic personas with 9xx/000/666 test SSNs — no real people, no billing;
+responses carry `XactusTestcase=Yes`). **Both MISMO versions verified live:**
+
+**MISMO 2.3.1** (`/uaweb/mismo`): single (Andy Freddie → mid 740), joint (BORROWER SCORE 747 +
+COBORROWER SCORE 772 → representative **772**), and no-score (Ann T. Sea → **review**, not frozen,
+not locked) all correct. The middle each persona resolved to matched Xactus's own `[ ]` mid-score
+designation, validating the scoring engine against the vendor.
+
+**MISMO 3.4** (`/uaweb/mismo3`, the newest — owner-directed): built as a swappable version
+(`mismo3-request` / `mismo3-response`, `versionKit()` routing) feeding the same engine. Verified
+live: AUTO REPOS → mid 588, froze, PDF stored. `config.xactus.mismoVersion` + `endpoint3` pick the
+default; the order route takes a per-order override. `db/140` records the version per report.
+
+### 14.1 Real-world findings from the live test
+- **Frozen bureau was a real bug** — Xactus returns a freeze as
+  `CREDIT_FILE/@_ResultStatusType="NoFileReturnedCreditFreeze"` with the message NESTED under the
+  file, not at the response level, so a frozen file imported CLEAN instead of routing to review.
+  Fixed in both parsers (now reads per-bureau file status); Ann Freddie now correctly → review with
+  "file is frozen — ask the borrower to thaw it, then reissue just that bureau."
+- **Soft pull (PQx) returns NO score-factor reason codes** — even a 525-score file has zero
+  `_FACTOR` elements (they come on the hard Merge pull). Our factor extraction is correct but empty
+  on soft pulls, so adverse-action won't auto-populate reasons from a soft pull (a human fills them).
+- **Xactus dedupes identical requests server-side within 60 min** (error `E103`) — a real
+  vendor-side idempotency layer that complements our client idempotency key.
+- **`Submit` is the new-order action** (not `Reissue`, which needs a prior CreditReportIdentifier);
+  a `Submit` auto-reissues if name/address/SSN match a report pulled in the last 30 days.
+- **Rich data available but not yet parsed** (deferred backlog): tradeline summary
+  (`CREDIT_SUMMARY/_DATA_SET`: mortgage/revolving/installment counts + delinquencies), bureau
+  contact blocks (`CREDIT_CONSUMER_REFERRAL` — the CRA addresses an adverse-action notice needs),
+  and score min/max range (the FCRA §615(a) score-range disclosure).
+
+### 14.2 Security note
+The test login (`yscap.test` / the shared test password) was used ONLY for live testing and lives
+ONLY in the local test environment — it is **never** in any committed file, and it should be
+rotated at Xactus before go-live.
+
+---
+
+_Phases 1a–1e + the research-driven improvements + MISMO 3.4 are built and **verified live against
+Xactus's test environment** (both 2.3.1 and 3.4), pushed to the parked PR. Owner has directed heavy
+auditing before any production use, and **no merge yet.**_
