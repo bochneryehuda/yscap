@@ -76,7 +76,13 @@ async function pushOutboxOnce() {
   }
 }
 
+let reconciling = false;
 async function reconcileOnce() {
+  // Re-entrancy guard: reconcileAll full-scans every only-ours property, which can exceed the poll
+  // interval on a larger portfolio (or overlap during a deploy). Skip if a pass is still running so two
+  // full scans don't pile up and hammer the Sitewire rate limiter.
+  if (reconciling) return;
+  reconciling = true;
   try {
     // refresh the capital-partner directory + staff map at most hourly
     if (Date.now() - lastDirectorySync > 3600000) {
@@ -86,6 +92,7 @@ async function reconcileOnce() {
     }
     await reconcile.reconcileAll();
   } catch (e) { console.warn('[sitewire] reconcile error:', e.message); }
+  finally { reconciling = false; }
 }
 
 function start() {
@@ -98,7 +105,9 @@ function start() {
   reconcile.syncStaffUsers().catch(() => {});
   setTimeout(() => backfillStrandedBirthsOnce(), 3000);
   const drain = async (fn, name) => { try { let guard = 0; while (await fn() && guard++ < 500) {} } catch (e) { console.warn('[sitewire]', name, 'error:', e.message); } };
-  if (cfg.sitewireOutboundEnabled) setInterval(() => drain(pushOutboxOnce, 'push'), 4000);
+  // Start the push drain when OUTBOUND is on OR DRYRUN is on — so the staged step "ENABLED=1, OUTBOUND=0,
+  // DRYRUN=1" actually previews the push bodies (log-not-send) without first turning on real writes.
+  if (cfg.sitewireOutboundEnabled || cfg.sitewireDryrun) setInterval(() => drain(pushOutboxOnce, 'push'), 4000);
   setInterval(reconcileOnce, Math.max(60, cfg.sitewirePollSec) * 1000);
   setTimeout(reconcileOnce, 8000);
 }

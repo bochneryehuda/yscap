@@ -9,6 +9,9 @@
 const { zip } = require('./zip');
 
 const xmlEsc = (s) => String(s == null ? '' : s)
+  // XML 1.0 forbids these control chars entirely (they can't even be entity-encoded) — a stray one in
+  // an external inspector note / pasted address would corrupt the whole .xlsx. Strip before escaping.
+  .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 function colLetter(n) { let s = ''; n += 1; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
