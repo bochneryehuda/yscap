@@ -86,7 +86,8 @@ router.get('/:appId', async (req, res, next) => {
     // Advisory PILOT reads, recomputed live (never stored/stale): the collateral score and the
     // ARV-defensibility cross-check against the file's rehab budget.
     const rehab = (await db.query(`SELECT rehab_budget FROM applications WHERE id=$1`, [app.id])).rows[0] || {};
-    const isReno = appr.arv_value != null || /subject|hypothetical|as.?repair|as.?complet/i.test(String(appr.condition_of_appraisal || ''));
+    // Match findings.js isReno (which excludes condo 1073) so the card and the finding agree.
+    const isReno = appr.form_type !== 'FNM1073' && (appr.arv_value != null || /subject|hypothetical|as.?repair|as.?complet/i.test(String(appr.condition_of_appraisal || '')));
     const score = {
       collateral: collateralScore({ a: appr, comps: comps.rows, summary }),
       arv: arvDefensibility({ arv: appr.arv_value, asIs: appr.as_is_value, rehab: rehab.rehab_budget, isReno }),
