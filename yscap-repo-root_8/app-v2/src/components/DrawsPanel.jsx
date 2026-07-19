@@ -94,7 +94,7 @@ export default function DrawsPanel({ appId }) {
 
           {/* ---- lien waivers — OFF by default; opt in per project ---- */}
           <LienWaivers appId={appId} enabled={lien_waivers_enabled} fileOverride={data.lien_waivers_file_override}
-            waivers={waivers} draws={draws} busy={busy} act={act} onChanged={load} />
+            canSetup={can('platform_setup')} waivers={waivers} draws={draws} busy={busy} act={act} onChanged={load} />
 
           {/* ---- Scope-of-Work reallocations ---- */}
           <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
@@ -361,23 +361,26 @@ function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: pare
   );
 }
 
-function LienWaivers({ appId, enabled, fileOverride, waivers, draws, busy, act, onChanged }) {
+function LienWaivers({ appId, enabled, fileOverride, canSetup, waivers, draws, busy, act, onChanged }) {
   // Hidden entirely unless turned on for this project (or globally), or already in use — most
-  // projects don't use lien waivers, so this stays out of the workflow until a coordinator opts in.
+  // projects don't use lien waivers, so this stays out of the workflow until it's opted in.
+  // Turning the compliance gate on/off is a setup-level action.
   if (!enabled && waivers.length === 0) {
     return (
       <div className="muted small" style={{ marginTop: 14 }}>
-        Lien waivers are off for this project.{' '}
-        <button className="btn btn-sm ghost" disabled={busy === 'lwon'}
-          onClick={() => act('lwon', async () => { await api.post(`/api/sitewire/files/${appId}/lien-waivers-setting`, { enabled: true }); return { msg: 'Lien-waiver workflow turned on for this project.' }; })}>
-          Enable for this project
-        </button>
+        Lien waivers are off for this project.{canSetup ? ' ' : ' A setup admin can enable them.'}
+        {canSetup && (
+          <button className="btn btn-sm ghost" disabled={busy === 'lwon'}
+            onClick={() => act('lwon', async () => { await api.post(`/api/sitewire/files/${appId}/lien-waivers-setting`, { enabled: true }); return { msg: 'Lien-waiver workflow turned on for this project.' }; })}>
+            Enable for this project
+          </button>
+        )}
       </div>
     );
   }
   return (
     <div>
-      {fileOverride === true && (
+      {fileOverride === true && canSetup && (
         <div className="muted small" style={{ marginTop: 14, marginBottom: -6 }}>
           Lien waivers are on for this project.{' '}
           <button className="btn btn-sm ghost" disabled={busy === 'lwoff'}

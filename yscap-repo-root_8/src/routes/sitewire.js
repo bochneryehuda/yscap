@@ -26,12 +26,14 @@ const { buildXlsx } = require('../lib/xlsx');
 const { computeRelease, waiverGate } = require('../sitewire/money');
 
 // Resolve the retainage % for a file: per-file override on the link, else the global default.
+// Clamped to [0,100] so a nonsensical setting can't distort the client-side net preview either.
 async function retainagePctFor(appId) {
   try {
+    const clamp = (n) => Math.min(100, Math.max(0, Number(n) || 0));
     const link = (await db.query(`SELECT retainage_pct FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0];
-    if (link && link.retainage_pct != null) return Number(link.retainage_pct) || 0;
+    if (link && link.retainage_pct != null) return clamp(link.retainage_pct);
     const s = (await db.query(`SELECT value FROM sitewire_settings WHERE key='retainage_pct'`)).rows[0];
-    return Number(s && s.value) || 0;
+    return clamp(s && s.value);
   } catch (_) { return 0; }
 }
 // Lien waivers are OFF by default. A specific PROJECT can turn them on (per-file override on the
@@ -207,21 +209,33 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   const feeKind = ['virtual', 'physical'].includes(req.body.fee_kind) ? req.body.fee_kind : null;
   const releaseDate = req.body.release_date || null;
   const fundedStatus = ['pending', 'released', 'held'].includes(req.body.funded_status) ? req.body.funded_status : 'pending';
+  // validate the draw id: if supplied it must be numeric AND belong to THIS file (never store a
+  // draw id from another file — the lien gate reads that draw's waivers). Audit #3.
+  let drawId = null;
+  if (sitewire_draw_id != null && sitewire_draw_id !== '') {
+    if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
+    const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id]);
+    if (!own.rowCount) return res.status(400).json({ error: 'that draw is not on this file' });
+    drawId = sitewire_draw_id;
+  }
   try {
     // retainage: hold a % of the approved amount; net = approved − fee − retainage held
     const pct = await retainagePctFor(application_id);
     const split = computeRelease({ approvedCents: approved, feeCents: fee, retainagePct: pct });
     if (!split.ok) return res.status(422).json({ error: split.violation });
-    // lien-waiver gate: block a RELEASE while a required waiver is outstanding (never guessed)
-    if (fundedStatus === 'released' && sitewire_draw_id && await lienGateEnabled(application_id)) {
-      const waivers = (await db.query(`SELECT status, tier, party_name, kind FROM draw_lien_waivers WHERE sitewire_draw_id=$1`, [sitewire_draw_id])).rows;
+    // lien-waiver gate: a RELEASE must name its draw so we can check its waivers — otherwise the
+    // gate could be skipped by leaving the draw blank (audit #1). Block if any required waiver is
+    // still outstanding (never guessed).
+    if (fundedStatus === 'released' && await lienGateEnabled(application_id)) {
+      if (!drawId) return res.status(400).json({ error: 'Select which draw this release is for — lien waivers are required on this project and are checked per draw.' });
+      const waivers = (await db.query(`SELECT status, tier, party_name, kind FROM draw_lien_waivers WHERE sitewire_draw_id=$1`, [drawId])).rows;
       const gate = waiverGate(waivers, { enabled: true });
       if (!gate.ok) return res.status(409).json({ error: `Lien waivers still outstanding: ${gate.missing.join('; ')}. Mark them received or waived before releasing.`, missing: gate.missing });
     }
     const row = (await db.query(
       `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
-      [application_id, sitewire_draw_id || null, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note || null, req.actor.id])).rows[0];
+      [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note || null, req.actor.id])).rows[0];
     res.json({ ok: true, disbursement: row });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -230,17 +244,24 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
 router.post('/files/:id/retainage-release', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  // Serialize with a per-file transaction lock so two concurrent releases can't both read the
+  // same "already released" and double-pay the holdback (audit #2 — this is real money).
+  const client = await db.getClient();
   try {
-    const held = Number((await db.query(`SELECT COALESCE(sum(retainage_held_cents),0) h FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].h) || 0;
-    const already = Number((await db.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
+    await client.query('BEGIN');
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`sw-retrel:${appId}`]);
+    const held = Number((await client.query(`SELECT COALESCE(sum(retainage_held_cents),0) h FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].h) || 0;
+    const already = Number((await client.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
     const toRelease = held - already;
-    if (toRelease <= 0) return res.status(409).json({ error: 'no retainage is being held to release' });
-    const row = (await db.query(
+    if (toRelease <= 0) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'no retainage is being held to release' }); }
+    const row = (await client.query(
       `INSERT INTO draw_disbursements (application_id, approved_cents, fee_cents, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
        VALUES ($1,$2,0,0,$2,$3,'released','retainage_release',$4,$5) RETURNING *`,
       [appId, toRelease, req.body.release_date || null, req.body.note || 'Retainage released at completion', req.actor.id])).rows[0];
+    await client.query('COMMIT');
     res.json({ ok: true, disbursement: row, released_cents: toRelease });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {} res.status(500).json({ error: e.message }); }
+  finally { client.release(); }
 });
 
 // ---- lien waivers (per draw) ----
@@ -587,13 +608,16 @@ router.get('/files/:id/activity/export', requirePermission('manage_draws'), asyn
 });
 
 // ---- POST /files/:id/lien-waivers-setting — turn the lien-waiver workflow on/off for THIS project ----
-router.post('/files/:id/lien-waivers-setting', requirePermission('manage_draws'), async (req, res) => {
+// A compliance control, so it needs platform_setup (like the global setting) and is journaled —
+// a draw coordinator must not be able to quietly switch the gate off and then release (audit #4).
+router.post('/files/:id/lien-waivers-setting', requirePermission('platform_setup'), async (req, res) => {
   const appId = req.params.id;
   if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
   // true = on for this project, false = off for this project, null = inherit the global setting
   const v = req.body.enabled === null ? null : req.body.enabled === true ? true : req.body.enabled === false ? false : undefined;
   if (v === undefined) return res.status(400).json({ error: 'enabled must be true, false, or null (inherit global)' });
   await db.query(`UPDATE sitewire_property_links SET require_lien_waivers=$2, updated_at=now() WHERE application_id=$1`, [appId, v]);
+  await orchestrator.journal({ appId, entity: 'settings', field: 'require_lien_waivers', newValue: v, source: 'review_resolve', changed: true }).catch(() => {});
   res.json({ ok: true, require_lien_waivers: v });
 });
 
