@@ -1,8 +1,10 @@
 # DocuSign Integration — Error Handling & Hardening Spec
 
 _Research + design, 2026-07-19. **Nothing here is implemented yet.** Companion to
-`docs/DOCUSIGN-INTEGRATION-BLUEPRINT.md` (architecture) and `docs/DOCUSIGN-DOCUMENT-BUILD-SPEC.md`
-(per-document). This is the "harden it before go-live" pass the owner asked for: every failure mode
+`docs/DOCUSIGN-INTEGRATION-BLUEPRINT.md` (architecture), `docs/DOCUSIGN-DOCUMENT-BUILD-SPEC.md`
+(per-document), `docs/DOCUSIGN-BUG-REGISTER.md` (the bug-hunt punch-list), and
+`docs/DOCUSIGN-SECURITY-AND-COMPLIANCE.md` (threat catalog + ESIGN/UETA guardrails + the out-of-scope
+boundary). This is the "harden it before go-live" pass the owner asked for: every failure mode
 DocuSign can throw, mapped to the exact guard our existing integrations already use. Produced by a
 3-agent sweep (DocuSign failure-mode research + an audit of our own ClickUp/SharePoint guards +
 branding/redirect research), all code claims cited `file:line`. No secrets here._
@@ -30,22 +32,52 @@ if (!claim.rows[0]) return res.json({ ok:true, already:true });   // a 2nd click
 The DB is the arbiter: exactly one click wins and proceeds; every repeat/racing click gets `already:true`
 and does nothing.
 
+**Schema prerequisite (must ship before layer 1 works — see §6 item 5).** `db/037`'s `esign_envelopes`
+(`db/037:79-92`) has **no** `send_claimed_at`, `purpose`, or `idempotency_key` column, and its `status`
+CHECK allows **only** `not_sent | sent | delivered | completed | declined | voided | error` — there is
+**no `draft` or `sending` value**, so any claim that writes `status='sending'` or filters `status='draft'`
+would violate the CHECK and abort. A new numbered migration (`db/NNN_esign_send_once.sql`, idempotent)
+adds the three columns and the partial unique index below; the claim then rides `send_claimed_at`, and
+`status` only ever moves **inside the existing enum** (`not_sent` → `sent`).
+
 **The DocuSign version — four layers, use all four:**
-1. **Atomic claim on `esign_envelopes` before the API call:**
+1. **Atomic claim on `esign_envelopes` before the API call — on `send_claimed_at`, never on a fake status:**
    ```sql
-   UPDATE esign_envelopes SET status='sending', send_claimed_at=now()
-    WHERE id=$1 AND status='draft' AND envelope_id IS NULL RETURNING id
+   UPDATE esign_envelopes SET send_claimed_at=now(), updated_at=now()
+    WHERE id=$1 AND envelope_id IS NULL AND send_claimed_at IS NULL RETURNING id
    ```
-   Only the claim winner calls DocuSign; on success it stamps `envelope_id` + `status='sent'`. The queue
-   drainer (§2) checks the same guard, so a reclaimed crashed-mid-send job whose `envelope_id` is already
-   set becomes a **no-op**, never a duplicate.
+   The row sits at `status='not_sent'` (a *valid* enum value) the whole time it is in flight; only the
+   claim winner calls DocuSign; on a successful create it stamps `envelope_id` + `status='sent'`. Nothing
+   ever writes the non-existent `draft`/`sending` states. The queue drainer (§2) checks the same guard, so
+   a reclaimed job whose `envelope_id` is already set becomes a **no-op**, never a duplicate.
+   - **Crash-between-claim-and-envelope_id (M-12).** If the process dies after the claim (so
+     `send_claimed_at` is set) but before `envelope_id` is written, a plain `send_claimed_at IS NULL`
+     filter would never re-drive it — the row is stuck "claimed, no envelope." The §2 reclaimer therefore
+     re-claims a **stale** claim (`envelope_id IS NULL AND send_claimed_at < now() - interval '5 minutes'`)
+     and **re-POSTs with the SAME deterministic idempotency key** (layer 2). Because that key is
+     deterministic, the re-POST either creates the envelope (if the original POST never reached DocuSign)
+     or returns the **original** envelope (if it did) — never a second one. The reclaimer stamps
+     `envelope_id` + `status='sent'` from whichever it gets. This is why layers 1 and 2 are used together:
+     the claim serializes, the key makes the retry-after-crash safe.
 2. **`X-DocuSign-Idempotency-Key` header on every create** — a **deterministic** key per business action
    (e.g. `sha256(applicationId + ':' + envelopePurpose + ':' + productRegistrationVersion)`), NOT random
-   per attempt. Within the honored window DocuSign returns the **original** envelope instead of creating
-   a new one. _(Confirm the exact window — widely cited ~24h — and replay semantics against the live
+   per attempt, persisted on the row (`idempotency_key`) so the reclaim in layer 1 replays the *same* key.
+   Within the honored window DocuSign returns the **original** envelope instead of creating a new one.
+   _(Confirm the exact window — widely cited ~24h — and replay semantics against the live
    [createEnvelope reference](https://developers.docusign.com/docs/esign-rest-api/reference/envelopes/envelopes/create/) before relying on it; layer 1 is the primary guard and doesn't depend on it.)_
-3. **A `UNIQUE` constraint** on `esign_envelopes(application_id, purpose)` (belt-and-suspenders — even a
-   lost claim can't create two *live* envelopes for the same package).
+3. **A PARTIAL unique index — one *in-flight* envelope per package, but re-issue always allowed:**
+   ```sql
+   CREATE UNIQUE INDEX uq_esign_inflight ON esign_envelopes(application_id, purpose)
+     WHERE status IN ('not_sent','sent','delivered');
+   ```
+   A plain `UNIQUE(application_id, purpose)` is **wrong** — it would permanently forbid ever re-issuing a
+   package (the appraisal-stale reissue, a voided-then-resend, a declined-then-fix), because a completed or
+   voided row would still occupy the pair. The **partial** index constrains only the *live* states, so at
+   most one active envelope per (application, purpose) exists at a time (belt-and-suspenders: even a lost
+   claim can't create two live envelopes), while any envelope that reached a **terminal** state
+   (`completed | declined | voided | error`) frees the pair for a legitimate re-issue. The reissue flow
+   (blueprint §6.1: raise `esign_stale_needs_reissue` for a human → human voids the old envelope →
+   `status='voided'` → index frees → new row inserts) then composes cleanly with this index.
 4. **UX:** the button is disabled the instant it's clicked; after send it shows **live envelope status**
    (sent → delivered → completed) pulled from our own `esign_envelopes` row (updated by the webhook,
    §3 — never by polling DocuSign). The button becomes **"Resend"** — which calls
@@ -70,9 +102,11 @@ Never call DocuSign inline from a request — enqueue and drain, exactly like Cl
   - **Permanent class** (exponential `2^attempts` capped 3600 s, dead after **8 attempts**): DocuSign
     **4xx validation** errors (`ANCHOR_TAB_STRING_NOT_FOUND`, `INVALID_EMAIL_ADDRESS`,
     `ACCOUNT_LACKS_PERMISSIONS`, duplicate recipients, malformed base64).
-  - **Never retry a send whose failure might have created an envelope** (a timeout *after* the POST
-    reached DocuSign): the idempotency key + the layer-1 claim make the retry safe; without proof of
-    non-creation, re-read status by the idempotency key rather than blind re-POST.
+  - **A send whose failure might have created an envelope** (a timeout *after* the POST reached DocuSign)
+    is retried **only through the layer-1 reclaim path**: the same deterministic `X-DocuSign-Idempotency-Key`
+    is replayed, so DocuSign either returns the original envelope or creates the first one — never a
+    duplicate. Never re-POST with a *fresh* key or without the claim; without those two, re-read status via
+    `Envelopes:listStatusChanges`/the idempotency key rather than blind re-POST.
 - **Dead-letter → review row** (`clickup-sync.js:111-123`): a send that exhausts retries queues a
   `sync_review_queue` row (§5).
 - **DB-backed send circuit breaker** — DocuSign's in-process breaker equivalent (`orchestrator.js:479-507`,
@@ -259,9 +293,13 @@ concrete holes. These are the mandatory fixes so the system **only follows instr
    check armed (`staff.js:2428-2437`). And keep the rule-gated **tier-3 auto-satisfy OFF for every e-sign
    condition at go-live** (esp. term sheet + wire auth) so a processor eyeballs the actual signed PDF.
 5. **Ship the v2 schema the guarantees depend on** — `esign_envelope_docs` (documentId→doc_kind→condition
-   map), `purpose`, the send-claim column + `UNIQUE(application_id,purpose)`, and `docusign_event_inbox`.
-   Until these exist, "correlate by id / one-envelope-many-conditions / idempotent / send-once" are
-   aspirational — `db/037`'s `esign_envelopes` is single-doc + non-idempotent.
+   map), and on `esign_envelopes` add `purpose`, `send_claimed_at`, `idempotency_key`, plus the **partial**
+   unique index `uq_esign_inflight (application_id, purpose) WHERE status IN
+   ('not_sent','sent','delivered')` (§1 layer 3 — NOT a plain `UNIQUE(application_id,purpose)`, which would
+   block re-issue), and `docusign_event_inbox`. The migration must **not** add a `draft`/`sending` status —
+   the send-once claim rides `send_claimed_at`, leaving `db/037`'s status CHECK enum untouched. Until these
+   exist, "correlate by id / one-envelope-many-conditions / idempotent / send-once" are aspirational —
+   `db/037`'s `esign_envelopes` is single-doc + non-idempotent.
 6. **Extend the `docKind` whitelist in BOTH `staff.js:5107` and `borrower.js:1990`** for the new/signed
    kinds *before* any generator or completion handler writes — else a signed PDF is **silently dropped**.
    A signed-doc persist failure must dead-letter to review (a completed signature with no stored PDF must
@@ -431,7 +469,7 @@ document-fetch) in the same discipline as `src/clickup/client.js:104-209`:
 
 | Add | Model on | Purpose |
 |---|---|---|
-| `esign_envelopes` v2 (state machine + `send_claimed_at`, `envelope_id`, `purpose`, UNIQUE `(application_id,purpose)`) | `db/037:79-92` + `applications.sync_state` CHECK | Per-envelope lifecycle + the §1 send-once claim |
+| `esign_envelopes` v2 (`+ send_claimed_at`, `idempotency_key`, `purpose`; PARTIAL unique idx `uq_esign_inflight (application_id,purpose) WHERE status IN ('not_sent','sent','delivered')`; status enum UNCHANGED) | `db/037:79-92` (status CHECK: `not_sent\|sent\|delivered\|completed\|declined\|voided\|error`) | Per-envelope lifecycle + the §1 send-once claim (claim on `send_claimed_at`, never a `draft`/`sending` status) |
 | `esign_envelope_docs` (envelope↔doc↔condition map) | new | One envelope → several signed docs → several conditions (BLUEPRINT §7.1) |
 | `sync_queue` `target` widened to `docusign` (or `docusign_send_queue`) | `db/schema.sql:302-317` + `db/041:60-63` | Durable outbound (§2) |
 | `docusign_event_inbox` | `clickup_webhook_inbox` (`db/042:35-49`) | Idempotent Connect inbox (§3) |
