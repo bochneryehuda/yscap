@@ -263,7 +263,7 @@ async function createFromParsed(parsed, opts = {}) {
           investor_loan_number, lender, channel, source, raw_intake, status, submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
                $22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,
-               $43,$44,$45,$46,$47,'mismo_import',$48,'new',now())
+               $43,$44,$45,$46,$47,'mismo_import',$48,'file_intake',now())
        RETURNING id`,
       [borrowerId, coBorrowerId, llcId, opts.officerId || null,
        extras.program || null, fields.sanitizeLoanType(loan.loanType), loan.occupancy || property.occupancy || null,
@@ -299,11 +299,37 @@ async function createFromParsed(parsed, opts = {}) {
     const applicationId = a.rows[0].id;
     await client.query('COMMIT');
 
-    // Post-commit best-effort: generate the file's checklist/conditions, exactly
-    // like every other create path. A failure here never undoes the created file.
+    // Post-commit best-effort follow-ups — exactly like the website intake and
+    // staff new-file flows. None of these can undo the created file.
+    // 1) Generate the file's checklist / conditions.
     try {
       await require('../conditions/ensure').ensureFileConditions(applicationId, { reason: 'mismo_import' });
     } catch (e) { console.error('[mismo] post-create conditions failed:', db.describeError ? db.describeError(e) : e.message); }
+    // 2) Auto-create + link the ClickUp task (the sanctioned create-on-start
+    //    path) so an imported file starts syncing immediately. A safe no-op when
+    //    ClickUp sync is disabled. The file starts in `file_intake` (a prospect,
+    //    excluded from active KPIs) — staff complete it, then advance the status.
+    require('../../clickup/orchestrator').createForNewFile(applicationId)
+      .catch((e) => console.error('[mismo] clickup create-on-start failed', applicationId, e && e.message));
+    // 3) Route a notification (assigned officer, else admins / lead capture).
+    try {
+      const notify = require('../notify');
+      const addrText = property.address
+        ? [property.address.line1, property.address.city, property.address.state].filter(Boolean).join(', ')
+        : 'a property';
+      const name = `${(borrower.firstName || '').trim()} ${(borrower.lastName || '').trim()}`.trim() || 'A borrower';
+      if (opts.officerId) {
+        await notify.notifyStaff(opts.officerId, {
+          type: 'new_application', title: 'Loan file imported (MISMO 3.4)',
+          body: `${name} — ${addrText}`, applicationId, link: `/internal/app/${applicationId}`,
+        });
+      } else {
+        await notify.notifyAdmins({
+          type: 'unassigned_application', title: 'MISMO file imported — needs assignment',
+          body: `${name} — ${addrText}`, applicationId, link: '/internal',
+        });
+      }
+    } catch (e) { console.error('[mismo] import notify failed', e && e.message); }
 
     return { borrowerId, applicationId };
   } catch (e) {
