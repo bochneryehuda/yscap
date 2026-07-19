@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { useAuth } from '../lib/auth.jsx';
 import {
   PHASE, PURPOSE, ROLE, timeAgo, absTime as abs, recipientSteps,
   agingHours, agingLevel, agingLabel,
@@ -129,11 +130,27 @@ function StatCard({ label, value, tone, active, onClick }) {
 }
 
 export default function EsignDashboard() {
+  const { role } = useAuth();
+  const isAdmin = ['admin', 'super_admin'].includes(role);
   const [data, setData] = useState(null);   // { envelopes, counts }
   const [err, setErr] = useState('');
   const [tab, setTab] = useState('all');
   const [refreshedAt, setRefreshedAt] = useState(null);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testMsg, setTestMsg] = useState('');
   const seq = useRef(0);
+
+  // Admin self-test: send a sample envelope to my own email to confirm DocuSign
+  // renders our documents + the signing flow works, without a real loan file.
+  async function sendTest() {
+    setTestBusy(true); setTestMsg(''); setErr('');
+    try {
+      const r = await api.post('/api/staff/esign/test-send', {});
+      setTestMsg(`Test envelope sent to ${r.to} — check your email to review and sign the sample documents.`);
+    } catch (e) {
+      setErr(e.message || 'Could not send the test envelope.');
+    } finally { setTestBusy(false); }
+  }
 
   const load = useCallback(async (quiet) => {
     const mine = ++seq.current;
@@ -178,8 +195,15 @@ export default function EsignDashboard() {
           </p>
         </div>
         <div className="spacer" />
+        {isAdmin && (
+          <button className="btn ghost btn-sm" disabled={testBusy} onClick={sendTest}
+            title="Send a sample envelope to your own email to confirm signing works">
+            {testBusy ? 'Sending…' : 'Send myself a test'}
+          </button>
+        )}
         <button className="btn ghost btn-sm" onClick={() => load()} title="Refresh now">Refresh</button>
       </div>
+      {testMsg && <div className="notice ok" style={{ marginBottom: 12 }}>{testMsg}</div>}
       {refreshedAt && (
         <p className="muted small" style={{ margin: '0 0 14px' }} aria-live="polite">
           <span className="esign-live" aria-hidden="true" /> Live — updated {timeAgo(refreshedAt.toISOString())}
