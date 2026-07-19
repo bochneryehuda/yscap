@@ -37,6 +37,8 @@ const ERROR_CATALOG = {
     message: 'The request was malformed (schema error) — no charge. This is a system issue; report it.' },
   E102: { key: 'malformed_request', severity: 'block', owner: 'ops', retriable: false, billable: false,
     message: 'The request failed schema validation — no charge. This is a system issue; report it.' },
+  E103: { key: 'duplicate_recent', severity: 'review', owner: 'staff', retriable: false, billable: false,
+    message: 'Xactus already has this exact pull from the last 60 minutes and returned the duplicate at NO extra charge. Open the recent report on this file instead of re-ordering.' },
   E999: { key: 'vendor_generic', severity: 'review', owner: 'ops', retriable: true, billable: false,
     message: 'The credit service returned an unspecified error — no charge. Retry shortly.' },
 };

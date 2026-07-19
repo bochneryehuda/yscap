@@ -532,11 +532,31 @@ Proven by `scripts/test-fico-bracket-reopen.sql` (single-borrower + co-borrower 
 - **Adverse-action** is a data-model + structured-draft scaffold only — every draft is flagged
   "for compliance review, not for delivery"; final notice content/timing/rendering + send is a
   compliance decision, not built autonomously.
+  - *(2026-07-19 autonomous pass)* The scaffold is now **reachable via a safe staff API** —
+    `POST /credit/adverse-action` (materialize a draft: auto-seeds principal reasons from the bureau
+    factor codes, discloses the scores used, flags a guarantor as "notice generally not owed"),
+    `GET /credit/adverse-action?applicationId=` (list drafts for review), `PATCH
+    /credit/adverse-action/:id` (advance status to `reviewed`/`cancelled` only). All are
+    `pull_credit`-gated + per-file-scoped and **never issue/deliver** (there is deliberately no
+    `issued`/send path here). **Still deferred to compliance:** the exact letter wording, the
+    delivery/timing workflow, and any staff UI surface — those need sign-off before building, so the
+    API stays draft-only. Decision recorded here per the "record defaults, don't block" directive.
 - **V1 (`/app`) UI** not rebuilt — the credit UI is V2 (PILOT, the default) only; V1 is legacy.
 - **Verify-on-save** is off by default (`XACTUS_VERIFY_ON_SAVE`) — a no-charge probe path must be
   confirmed with Xactus before enabling, so saving a login never accidentally bills.
 - **Condition auto-advance** is intentionally conservative (evidence "received", never auto
   sign-off) — confirm the desired automation level with the owner.
+- **Partial-merge freeze (owner decision needed)** — a 2-of-3 file with two perfectly usable
+  scores currently routes to **review** and never freezes `verified_fico` (only a fully-clean
+  `imported` outcome freezes). So after a human clears the review, pricing stays on the unverified
+  estimate — there is no "freeze the partial after review" path. This may be the intended
+  conservative behavior (a human decides a partial), but confirm whether a cleared partial should
+  then lock its representative score. *(Flagged by the 2026-07-19 deep bug-hunt, item m1.)*
+- **`applications.fico_used_for_pricing` semantics (owner/eng note)** — the column is currently set
+  to the *just-verified* representative at import time, not the *pre-import estimate the term sheet
+  was built on*, and nothing reads it yet (the reopen decision uses `product_pricing.inputs->>'fico'`).
+  It's an accurate "score at verification" audit field but is **mislabeled** for its §7 intent; if a
+  term-sheet surface ever reads it, revisit. *(Flagged item m2 — no behavior change made.)*
 
 ---
 
@@ -569,6 +589,23 @@ over-sending.
 
 **Observability:** an append-only `credit_order_events` black-box log (`db/151`, immutability
 trigger) with per-phase latency/outcome, plus a `GET /credit/health` summary.
+
+**Deep bug-hunt fixes (2026-07-19, autonomous audit pass):**
+- **Double-bill race CLOSED (was a blocker):** two concurrent orders for the same file+action with
+  *different* idempotency keys (two tabs/devices) could both slip past the in-flight check and both
+  POST. Now a per-(file,action) **transaction-scoped advisory lock** serializes the
+  in-flight-recheck → journal-INSERT (released at COMMIT, *before* the billable POST); the loser
+  dedups to the winner's row. Regression test added (`test-credit-import.js`: 2 concurrent orders →
+  exactly 1 POST, 1 report row).
+- **Co-borrower PDF privacy leak CLOSED (was major):** the joint tri-merge PDF is one shared file
+  carrying *both* borrowers' full consumer files (SSN, tradelines); the borrower self-service view
+  served it to *either* borrower. Now the borrower PDF route + `hasPdf` flag only offer a report
+  that has **no other borrower's scores** (a single-borrower report); joint PDFs are staff-only.
+- **Minor hardening:** 3.4 PDF decode now enforces the `%%EOF` trailer (parity with 2.3.1);
+  Experian reject codes **9004/9005** labeled; **E103** (Xactus 60-min no-charge duplicate) mapped
+  to a clear non-billable outcome (was a generic billable error); `credit_scores.score_date` now
+  persisted; the SSN→borrower map skips a **duplicate SSN** shared by two borrowers on one file
+  (falls back to the report label) so scores can't mis-attribute.
 
 **Rate-limit / Retry-After honoring (2026-07-19, autonomous hardening pass):** the adapter now
 classifies **HTTP 429** as a distinct retriable `rate_limit` kind (previously it fell into the

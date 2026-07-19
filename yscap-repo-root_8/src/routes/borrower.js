@@ -2479,6 +2479,17 @@ router.get('/credit', async (req, res) => {
       if (!scoresByReport.has(s.credit_report_id)) scoresByReport.set(s.credit_report_id, []);
       scoresByReport.get(s.credit_report_id).push({ bureau: s.bureau, score: s.value });
     }
+    // A JOINT tri-merge PDF is one shared file carrying BOTH borrowers' full consumer
+    // files (SSN, tradelines). Withhold its download from the self-service view — a
+    // co-borrower may be an unrelated business partner. hasPdf reflects real
+    // downloadability: only a report with NO other borrower's scores is offered.
+    let jointIds = new Set();
+    if (ids.length) {
+      const jr = (await db.query(
+        `SELECT DISTINCT credit_report_id FROM credit_scores
+          WHERE credit_report_id = ANY($1) AND borrower_id IS NOT NULL AND borrower_id <> $2`, [ids, bid])).rows;
+      jointIds = new Set(jr.map((x) => x.credit_report_id));
+    }
     const b = (await db.query(`SELECT verified_fico FROM borrowers WHERE id=$1`, [bid])).rows[0] || {};
     res.json({
       verifiedFico: b.verified_fico || null,
@@ -2486,7 +2497,7 @@ router.get('/credit', async (req, res) => {
         id: r.id,
         pulledOn: r.first_issued_date,
         scores: scoresByReport.get(r.id) || [],
-        hasPdf: !!r.pdf_document_id,
+        hasPdf: !!r.pdf_document_id && !jointIds.has(r.id),
       })),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -2494,11 +2505,18 @@ router.get('/credit', async (req, res) => {
 router.get('/credit/:id/pdf', async (req, res) => {
   const bid = me(req);
   try {
+    // Serve the report PDF ONLY when it holds NO other borrower's scores — i.e. a
+    // single-borrower report for THIS borrower. A JOINT tri-merge PDF is one shared
+    // file with both borrowers' full consumer files (SSN, tradelines), so it is
+    // never released through the self-service view (staff can still view it, and the
+    // borrower still sees their own per-bureau scores via GET /credit).
     const r = await db.query(
       `SELECT d.* FROM credit_reports cr
          JOIN documents d ON d.id = cr.pdf_document_id
          JOIN applications a ON a.id = cr.application_id
-        WHERE cr.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND cr.status='imported'`,
+        WHERE cr.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND cr.status='imported'
+          AND NOT EXISTS (SELECT 1 FROM credit_scores cs
+                           WHERE cs.credit_report_id=cr.id AND cs.borrower_id IS NOT NULL AND cs.borrower_id <> $2)`,
       [req.params.id, bid]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
     return serveDocument(res, r.rows[0], { inline: true });

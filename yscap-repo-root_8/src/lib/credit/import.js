@@ -285,11 +285,11 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
       const dbBorrowerId = dbIdFor(pb);
       for (const c of pb.middle.classified) {
         await client.query(
-          `INSERT INTO credit_scores (credit_report_id, borrower_id, report_borrower_id, bureau, model, value, raw_value, exclusion_reason, usable, reason, factors)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)`,
+          `INSERT INTO credit_scores (credit_report_id, borrower_id, report_borrower_id, bureau, model, value, raw_value, exclusion_reason, usable, reason, factors, score_date)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,NULLIF($12,'')::date)`,
           [reportRowId, dbBorrowerId, pb.reportBorrowerId, c.bureau, c.model,
            c.usable ? c.value : null, c.rawValue == null ? null : String(c.rawValue), c.exclusionReason, c.usable, c.reason,
-           JSON.stringify(Array.isArray(c.factors) ? c.factors : [])]);
+           JSON.stringify(Array.isArray(c.factors) ? c.factors : []), c.date || '']);
       }
     }
 
@@ -425,13 +425,50 @@ async function orderAndImport(opts = {}) {
   });
 
   // Journal the order BEFORE the billable POST (reserves the idempotency key).
-  const journal = await db.query(
-    `INSERT INTO credit_reports
-       (application_id, provider_id, ordered_by, credential_id, action_type, report_type, request_type,
-        request_id, idempotency_key, status, ordered_at)
-     VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,'ordering',now()) RETURNING id`,
-    [applicationId, provider.id, actorId, action, product === 'prequal' ? 'Other' : 'Merge', requestType, requestId, idempotencyKey]);
-  const reportRowId = journal.rows[0].id;
+  //
+  // DOUBLE-BILL GUARD: the early in-flight check above is a fast-path only — two
+  // concurrent orders for the same file+action with DIFFERENT idempotency keys
+  // (two tabs / two devices) could both pass it and both POST (each click mints a
+  // fresh key, so the idempotency unique index doesn't catch them). We close that
+  // race with a per-(file,action) transaction-scoped ADVISORY LOCK: the loser
+  // blocks until the winner commits its 'ordering' row, then the race-free recheck
+  // inside the lock sees it and dedups instead of billing again. The lock is
+  // released at COMMIT — BEFORE the billable POST — so it is never held across the
+  // network call (no long-lived connection, no lock during the ~45s vendor call).
+  let reportRowId;
+  let dedupResult = null;
+  const jc = await db.getClient();
+  try {
+    await jc.query('BEGIN');
+    await jc.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', [String(applicationId), String(action)]);
+    const dup = (await jc.query(
+      `SELECT id FROM credit_reports
+        WHERE application_id=$1 AND action_type=$2 AND status='ordering'
+          AND ordered_at > now() - ($3 || ' seconds')::interval
+        ORDER BY ordered_at DESC LIMIT 1`, [applicationId, action, String(cfg.xactus.dedupWindowSec)])).rows[0];
+    if (dup) {
+      await jc.query('COMMIT');
+      dedupResult = { reportId: dup.id, status: 'ordering', deduped: true, inflight: true };
+    } else {
+      const journal = await jc.query(
+        `INSERT INTO credit_reports
+           (application_id, provider_id, ordered_by, credential_id, action_type, report_type, request_type,
+            request_id, idempotency_key, status, ordered_at)
+         VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,'ordering',now()) RETURNING id`,
+        [applicationId, provider.id, actorId, action, product === 'prequal' ? 'Other' : 'Merge', requestType, requestId, idempotencyKey]);
+      reportRowId = journal.rows[0].id;
+      await jc.query('COMMIT');
+    }
+  } catch (e) {
+    try { await jc.query('ROLLBACK'); } catch (_) { /* already broken */ }
+    // A same-key collision (unique idempotency index) means another request beat us
+    // with this exact key — treat as an in-progress dedup, not an error.
+    if (e && e.code === '23505') { jc.release(); throw httpError(409, 'an order with this key is already in progress'); }
+    jc.release();
+    throw e;
+  }
+  jc.release();   // ALWAYS release the client (even on the dedup return path below)
+  if (dedupResult) return dedupResult;
   const evBase = { reportId: reportRowId, applicationId, correlationId: requestId, actorId, providerId: provider.id, action };
   logEvent({ ...evBase, phase: 'journal' });
 
@@ -531,10 +568,19 @@ async function orderAndImport(opts = {}) {
   // borrower's scores to the other, regardless of the order the vendor echoes them.
   const borrowerDbIdByReportId = {};
   const borrowerDbIdBySsn = {};
+  // Count SSNs first: an SSN shared by TWO borrowers on one file (a data-entry
+  // error) can't identify a unique row, so it must NOT go in the by-SSN map —
+  // last-write-wins there would mis-attribute one borrower's scores/FICO to the
+  // other. Those fall back to the report label (B1/C1), which is always distinct.
+  const ssnCounts = {};
+  for (const b of requestBorrowers) {
+    const s = String(b.ssn || '').replace(/\D/g, '');
+    if (s.length === 9) ssnCounts[s] = (ssnCounts[s] || 0) + 1;
+  }
   for (const b of requestBorrowers) {
     borrowerDbIdByReportId[b.borrowerId] = b._dbId;
     const s = String(b.ssn || '').replace(/\D/g, '');
-    if (s.length === 9) borrowerDbIdBySsn[s] = b._dbId;
+    if (s.length === 9 && ssnCounts[s] === 1) borrowerDbIdBySsn[s] = b._dbId;
   }
 
   const persisted = await persistImport({

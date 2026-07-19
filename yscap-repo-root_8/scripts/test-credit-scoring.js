@@ -55,6 +55,13 @@ eq('classify exclusion code 9002',
    S.classifyScore({ bureau: 'Experian', model: 'ExperianFairIsaac', value: '9002' }).reason, 'excluded');
 eq('classify exclusion code 9002 reason',
    S.classifyScore({ bureau: 'Experian', model: 'ExperianFairIsaac', value: '9002' }).exclusionReason, 'no-recent-activity');
+eq('classify exclusion code 9004 (not-scoreable)',
+   S.classifyScore({ bureau: 'Experian', model: 'ExperianFairIsaac', value: '9004' }).exclusionReason, 'not-scoreable');
+eq('classify exclusion code 9005 (no-scoreable-file)',
+   S.classifyScore({ bureau: 'Equifax', model: 'EquifaxBeacon5.0', value: '9005' }).exclusionReason, 'no-scoreable-file');
+eq('classify 9004/9005 not usable', S.classifyScore({ bureau: 'Experian', model: 'ExperianFairIsaac', value: '9005' }).usable, false);
+eq('classify passes score date through', S.classifyScore({ bureau: 'Equifax', model: 'EquifaxBeacon5.0', value: '734', date: '2026-07-19' }).date, '2026-07-19');
+eq('classify empty date → null', S.classifyScore({ bureau: 'Equifax', model: 'EquifaxBeacon5.0', value: '734', date: '' }).date, null);
 eq('classify explicit exclusionReason',
    S.classifyScore({ bureau: 'TransUnion', model: 'FICORiskScoreClassic04', value: '720', exclusionReason: 'NotScoredSubjectDeceased' }).usable, false);
 eq('classify zero value out_of_range',

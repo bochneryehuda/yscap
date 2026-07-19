@@ -314,6 +314,10 @@ function decodeReportPdf(base64) {
   const { buf, sha256 } = decodeUploadBase64(String(base64));
   const head = buf.slice(0, 5).toString('latin1');
   if (head !== '%PDF-') throw badResponse('decoded content is not a PDF');
+  // Also require the %%EOF trailer (parity with the 2.3.1 decoder): a truncated PDF
+  // has a valid header but a cut body. Check the tail, not the whole buffer.
+  const tail = buf.slice(-1024).toString('latin1');
+  if (!tail.includes('%%EOF')) throw badResponse('decoded PDF is truncated (missing %%EOF trailer)');
   return { buf, sha256 };
 }
 

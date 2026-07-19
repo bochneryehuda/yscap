@@ -235,6 +235,38 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   ok('spend breaker throws', breakerThrew);
   eq('spend breaker kind', breakerKind, 'spend_limit_user');
 
+  // ---- score_date is persisted (audit completeness) ----
+  const sdRows = (await db.query(
+    `SELECT count(*)::int n FROM credit_scores WHERE credit_report_id=$1 AND score_date='2026-07-19'`, [out.reportId])).rows[0];
+  ok('score_date persisted from the report', sdRows.n >= 1);
+
+  // ---- CONCURRENCY: two orders for the SAME file+action with DIFFERENT keys must
+  // bill EXACTLY ONCE (regression for the double-bill race — advisory-lock guard). ----
+  const raceStaff = await seedStaff(`race-officer-${suffix}@t.test`);
+  await credentials.setForUser(raceStaff, { providerKey: 'xactus', operatorIdentifier: 'LO_RACE', secret: 'p@ss', verify: false });
+  const bRace = await seedBorrower(`brace-${suffix}@t.test`, 'Race', '123-00-9911');
+  const appRace = (await db.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [bRace])).rows[0].id;
+  let racePosts = 0;
+  const raceTransport = async () => { racePosts++; return { status: 200, headers: { get: () => 'text/xml' }, text: async () => responseXml() }; };
+  const raceCommon = { applicationId: appRace, actorId: raceStaff, action: 'Reissue', creditReportIdentifier: 'RPT1', transport: raceTransport };
+  const raceResults = await Promise.allSettled([
+    creditImport.orderAndImport({ ...raceCommon, idempotencyKey: `race-${suffix}-A` }),
+    creditImport.orderAndImport({ ...raceCommon, idempotencyKey: `race-${suffix}-B` }),
+  ]);
+  const raceOk = raceResults.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  eq('concurrent orders bill EXACTLY once (no double-bill)', racePosts, 1);
+  ok('one concurrent order deduped to the in-flight one', raceOk.some((r) => r.deduped));
+  eq('concurrent orders create ONE report row', (await db.query(`SELECT count(*)::int n FROM credit_reports WHERE application_id=$1`, [appRace])).rows[0].n, 1);
+  // race cleanup
+  await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id=$1)`, [appRace]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id=$1`, [appRace]);
+  await db.query(`DELETE FROM documents WHERE application_id=$1`, [appRace]);
+  await db.query(`DELETE FROM applications WHERE id=$1`, [appRace]);
+  await db.query(`DELETE FROM credit_fico_audit WHERE borrower_id=$1`, [bRace]);
+  await db.query(`DELETE FROM borrowers WHERE id=$1`, [bRace]);
+  await db.query(`DELETE FROM user_credit_credentials WHERE user_id=$1`, [raceStaff]);
+  await db.query(`DELETE FROM staff_users WHERE id=$1`, [raceStaff]);
+
   // cleanup
   await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1)`, [[appId, app2, app3]]);
   await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id = ANY($1))`, [[appId, app2, app3]]);

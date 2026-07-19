@@ -11,6 +11,8 @@ eq('E037 -> bad_password block ops', [O.outcomeForCode('E037').key, O.outcomeFor
 eq('E051 account inactive', O.outcomeForCode('E051').key, 'account_inactive');
 eq('E061 reissue mismatch', O.outcomeForCode('E061').key, 'reissue_mismatch');
 eq('E101 malformed', O.outcomeForCode('E101').key, 'malformed_request');
+eq('E103 duplicate_recent', O.outcomeForCode('E103').key, 'duplicate_recent');
+ok('E103 not billable (Xactus no-charge dedupe)', O.outcomeForCode('E103').billable === false);
 eq('E004 in data range -> bad_input', O.outcomeForCode('E004').key, 'bad_input');
 eq('E031 upper bound data', O.outcomeForCode('E031').key, 'bad_input');
 eq('E032 not data range', O.outcomeForCode('E032'), null);

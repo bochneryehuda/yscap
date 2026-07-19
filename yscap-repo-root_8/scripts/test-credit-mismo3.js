@@ -73,6 +73,8 @@ eq('3.4 three scores', r.borrowers[0].scores.length, 3);
 eq('3.4 middle 740', S.borrowerMiddle(r.borrowers[0].scores).middle, 740);
 ok('3.4 pdf present', !!r.pdf && r.pdf.base64 === MINI_PDF);
 ok('3.4 pdf decodes', P.decodeReportPdf(r.pdf.base64).buf.slice(0, 5).toString('latin1') === '%PDF-');
+// A truncated PDF (valid %PDF- header, NO %%EOF trailer) must be rejected (parity with 2.3.1).
+throws('3.4 truncated PDF (no %%EOF) rejected', () => P.decodeReportPdf(Buffer.from('%PDF-1.4\nbody with no trailer').toString('base64')));
 
 // error response (E103 shape, verified live)
 const errResp = `<?xml version="1.0"?><MESSAGE MISMOReferenceModelIdentifier="3.4" xmlns="http://www.mismo.org/residential/2009/schemas"><DEAL_SETS><DEAL_SET><DEALS><DEAL><SERVICES><SERVICE><CREDIT><CREDIT_RESPONSE><CREDIT_ERROR_MESSAGES><CREDIT_ERROR_MESSAGE><CreditErrorMessageCode>E103</CreditErrorMessageCode><CreditErrorMessageSourceType>CreditBureau</CreditErrorMessageSourceType><CreditErrorMessageText>Duplicate order.</CreditErrorMessageText></CREDIT_ERROR_MESSAGE></CREDIT_ERROR_MESSAGES></CREDIT_RESPONSE></CREDIT><STATUSES><STATUS><StatusCode>E103</StatusCode><StatusConditionDescription>Error</StatusConditionDescription><StatusDescription>Duplicate</StatusDescription></STATUS></STATUSES></SERVICE></SERVICES></DEAL></DEALS></DEAL_SET></DEAL_SETS></MESSAGE>`;

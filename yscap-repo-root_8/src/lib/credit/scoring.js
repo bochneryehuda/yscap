@@ -23,7 +23,7 @@
  * Parsing-safety (from the bug-hunt): `_Value` arrives as a STRING; we never
  * trust it until we've (1) checked for an exclusion, (2) asserted the bureau's
  * mortgage model, (3) range-guarded the integer. A "no-score" reject code
- * (9001/9002/9003) or a 0 must never become a 300-850 score.
+ * (9001–9005) or a 0 must never become a 300-850 score.
  */
 
 // Valid mortgage score band. (Read the model's own min/max from the response
@@ -47,6 +47,8 @@ const EXCLUSION_VALUE_CODES = {
   9001: 'deceased',
   9002: 'no-recent-activity',
   9003: 'insufficient-credit',
+  9004: 'not-scoreable',
+  9005: 'no-scoreable-file',
 };
 
 // Standard 20-point mortgage credit-score brackets (owner-confirmed 2026-07-19,
@@ -101,6 +103,9 @@ function classifyScore(raw, opts = {}) {
   const model = raw && raw.model != null ? String(raw.model) : null;
   const rawValue = raw ? raw.value : undefined;
   const out = { bureau, model, rawValue, value: null, usable: false, reason: 'missing', exclusionReason: null,
+    // Pass the per-score date straight through for the audit trail (persisted as
+    // credit_scores.score_date). Never affects scoring.
+    date: raw && raw.date != null && raw.date !== '' ? raw.date : null,
     // Pass the bureau reason-code factors straight through so every classified
     // score keeps its "why" (adverse-action + display). Never affects scoring.
     factors: Array.isArray(raw && raw.factors) ? raw.factors : [] };
