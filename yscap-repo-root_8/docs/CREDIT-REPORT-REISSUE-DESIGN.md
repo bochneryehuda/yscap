@@ -86,11 +86,16 @@ decisions:
 5. **Egress IP for Xactus allow-list:** the portal runs on the **same Render service**. We fetch the
    static outbound IP at test/go-live time (via a **rotated** Render key set in the environment — the
    one pasted in chat must be rotated first, §7).
-6. **Score-mismatch = bracket-based (see §8.1).** On import, **always** set the verified FICO and
-   **freeze** it. If the verified score lands in the **same pricing bracket** as the estimate the
-   loan was priced on → just update + freeze, **no re-registration**. If it **crosses a bracket** →
-   set the new FICO, freeze, and **reopen the pricing/registration condition for a HUMAN to
-   re-register** (never auto-re-register).
+6. **Score-mismatch = STANDARD CREDIT-SCORE BRACKET based (owner clarified 2026-07-19; see §8.1).**
+   On import, **always** set the verified FICO and **freeze** it. The re-registration trigger is the
+   **standard 20-point mortgage credit-score brackets** — `<620, 620–639, 640–659, 660–679, 680–699,
+   700–719, 720–739, 740–759, 760+` (the industry LLPA grid). If the verified score is in the **same
+   bracket** as the estimate → update + freeze only, **no re-registration**. If it lands in a
+   **different bracket** → set the new FICO, freeze, and **reopen the registration/pricing condition
+   for a HUMAN to re-register** — **even if YS Capital's own price wouldn't change** ("reset it up the
+   right way," owner). This is a **separate reset-trigger** from the pricing engine's own bands and
+   **changes no frozen pricing numbers**. (Owner's example fits exactly: 718 & 700 both in `700–719`
+   → no reset; 718 → 699 drops to `680–699` → reset.)
 7. **Frozen bureau / no score → manual review.** The credit condition **cannot be signed off** until
    a human clears manual review confirming the program guidelines allow it. Leave a **per-program
    config hook** ("how many frozen/no-score bureaus each program allows") for later.
@@ -103,24 +108,29 @@ decisions:
    per-bureau credit scores** (Equifax / Experian / TransUnion). Staff-only for ordering; borrower-read
    for viewing.
 
-### 0.1.1 ⚠️ One thing to confirm — what counts as a "bracket"
+### 0.1.1 The "bracket" = standard 20-point mortgage credit-score bands (owner clarified 2026-07-19)
 
-Your pricing engine's real FICO breakpoints today (frozen — see CLAUDE.md) are:
-- **Rate bands:** `≥740`, `700–739`, `<700` (Standard `fico740/fico700/ficoLt`; Gold `fico740/ficoLt700`).
-- **Eligibility floors:** Standard `<600` ineligible + below each tier's minimum = waiver/manual;
-  Gold `<660` ineligible, below the tier floor (`680`/`680`/`700`) = manual.
+The reset trigger uses the **industry-standard 20-point mortgage credit-score brackets** (the LLPA
+grid boundaries — 620/640/660/680/700/720/740/760), which is what the owner's example describes:
 
-The safest, most accurate definition of "crossed a bracket" is: **re-run the frozen pricing engine
-with the verified score and see whether the rate or eligibility RESULT changes.** Same result → same
-bracket → update+freeze only. Different result → reopen pricing. This ties the trigger to what
-actually affects the deal and **changes none of the frozen pricing numbers**.
+`<620` · `620–639` · `640–659` · `660–679` · `680–699` · `700–719` · `720–739` · `740–759` · `760+`
 
-**Please confirm this definition** — because your example ("720 estimate vs 719 back = different
-bracket") implies a breakpoint at **720**, which the current engine does **not** have (720 and 719 are
-both in the `700–739` band, so today they're the *same* bracket). If you want finer brackets (e.g. a
-720 line), that's a **pricing-guideline change** you'd need to explicitly approve (the engine is
-frozen). So: do you want (a) "re-register only if the actual price/eligibility changes" (recommended,
-no frozen-number change), or (b) specific fixed FICO brackets you'll define? (Open Item §11.)
+- Owner's example fits exactly: estimate **718** and verified **700** are **both in `700–719`** → same
+  bracket → no reset. Estimate **718** → verified **699** drops to **`680–699`** → **different bracket
+  → reset**.
+- This is a **separate reset-trigger** used only to decide whether to reopen re-registration; it is
+  **not** a pricing calculation and **changes no frozen pricing numbers**. (FICO's own 5 broad
+  categories — Poor/Fair/Good 670–739/Very Good/Exceptional — are too coarse and would put 700 and 699
+  in the same "Good" band, contradicting the owner's example, so we do **not** use those.)
+- Store the bracket set as **config** (one table/constant), so brackets can be adjusted later without
+  touching pricing. Reset fires on a **different bracket even when the price is unchanged** — the owner
+  wants the file "reset up the right way" regardless.
+
+Sources: standard mortgage LLPA credit-score bands —
+[emetropolitan LLPA tiers](https://www.emetropolitan.com/loan-programs/conventional-loan/credit-score-tiers/),
+[719 Lending](https://www.719lending.com/does-your-credit-score-affect-your-mortgage-rate/);
+FICO's 5 categories (too coarse, not used) —
+[Experian](https://www.experian.com/blogs/ask-experian/credit-education/score-basics/what-is-a-good-credit-score/).
 
 ---
 
@@ -372,37 +382,35 @@ of duties).
 **On EVERY import: set the verified FICO and freeze it (§7) — always.** Then compare to
 `fico_used_for_pricing`:
 
-### 8.1 Bracket-based trigger (owner decision, 2026-07-19)
+### 8.1 Standard-bracket reset trigger (owner decision, 2026-07-19)
 
-The re-registration trigger is **bracket-based, not any-difference**. "Same bracket" = the frozen
-pricing engine produces the **same rate and eligibility result** with the verified score as it did
-with the estimate the loan was priced on (see §0.1.1 for the actual bands: rate `≥740 / 700–739 /
-<700`, plus the eligibility floors). Implementation:
+The re-registration trigger is the **standard 20-point credit-score bracket** the score falls in —
+**not** "any difference," and **not** YS Capital's own pricing bands. Brackets (config):
+`<620 · 620–639 · 640–659 · 660–679 · 680–699 · 700–719 · 720–739 · 740–759 · 760+`. Implementation:
 
-- Recompute the frozen engine (`src/lib/pricing.js`) with `verified_fico`, compare its pricing/
-  eligibility result to the priced-on result.
-- **Same bracket** (e.g. owner's example: estimate 718 → verified 700, both in `700–739`): **update +
-  freeze only. No re-registration, no fatal.** Nothing about the price changed, so don't make anyone
-  re-do it.
-- **Crossed a bracket** (price or eligibility outcome differs):
-  1. Set + freeze the new FICO (always), then
+- Compute the bracket of the **priced-on estimate** and the bracket of the **verified score**.
+- **Same bracket** (e.g. estimate 718 → verified 700, both `700–719`): **update + freeze only. No
+  re-registration.** Nothing to redo.
+- **Different bracket** (e.g. estimate 718 → verified 699 = `680–699`), **even if the price wouldn't
+  change**:
+  1. Set + freeze the new verified FICO (always), then
   2. Raise a **fatal condition** `FICO_MISMATCH` that blocks sign-off / clearance-to-close, and
-  3. **Reopen the pricing/registration condition** exactly like the existing economics-change
-     reopener (`db/071`/`db/072` `trg_reopen_on_budget_change` → reopens `product_pricing`), setting
-     the file to "re-register required."
+  3. **Reopen the registration/pricing condition** exactly like the existing economics-change reopener
+     (`db/071`/`db/072` `trg_reopen_on_budget_change` → reopens `product_pricing`), setting the file to
+     "re-register required."
   4. A **human re-registers** the loan on the new FICO (the system does **not** auto-re-register —
-     owner directive). Only after a human re-registers does `fico_used_for_pricing` re-snapshot and
-     the fatal clear.
+     owner directive). Only after a human re-registers does `fico_used_for_pricing` re-snapshot and the
+     fatal clear.
 
 Model it as a **state machine**, so "priced-on bracket ≠ verified bracket, not yet re-registered" is
 **unrepresentable-as-approved**. A **newer** report later is a controlled **re-lock** (a dedicated
 `import_verified_fico(report_id)` routine the freeze trigger recognizes), which writes the new value +
 lineage, audits old→new, and re-runs this bracket check.
 
-> **Frozen-engine safety:** this reuses the engine's existing bands as the source of truth for
-> "bracket" — it changes **no** frozen pricing numbers (per CLAUDE.md the engine is frozen). If the
-> owner instead wants *new* fixed FICO brackets (e.g. a 720 line, per their 720/719 example), that is
-> a pricing-guideline change requiring explicit owner sign-off — see §0.1.1 / Open Item.
+> **Frozen-engine safety:** the bracket set is a **separate config** used only to decide *whether to
+> reopen re-registration* — it is **not** a pricing calculation and changes **no** frozen pricing
+> numbers (per CLAUDE.md the engine stays frozen). Adjusting brackets later = a config edit, not an
+> engine change.
 
 ---
 
@@ -454,16 +462,12 @@ extraction order, freeze-bypass hunt, Node/HTTP traps, incident lessons, and the
 
 **Resolved (2026-07-19, see §0.1):** soft-pull returns full tri-merge + PDF ✅ · credentials =
 per-user, no surrogate ✅ · products = soft-pull default + hard-pull selectable ✅ · default action =
-Reissue ✅ · testing = test environment with test personas ✅ · retention = never delete + 120-day
-reopen ✅ · borrower read-only view ✅ · adverse action built in-system ✅ · permission taken verbally
-(no capture step) ✅.
+Reissue ✅ · **reset trigger = standard 20-point credit-score brackets** ✅ (§0.1.1/§8.1) · testing =
+test environment with test personas ✅ · retention = never delete + 120-day reopen ✅ · borrower
+read-only view ✅ · adverse action built in-system ✅ · permission taken verbally (no capture step) ✅.
 
-**Still open — one design question + a few test-time confirmations:**
-1. **⚠️ Bracket definition (needs the owner):** confirm the re-registration trigger uses *"the frozen
-   engine's actual price/eligibility result changed"* (recommended, no frozen-number change) vs.
-   specific new fixed FICO brackets you'll define (a pricing-guideline change needing your sign-off).
-   Your 720/719 example doesn't match the current bands — see §0.1.1 / §8.1.
-2. **Auth transport (recommendation made; confirm at test time):** we'll use **HTTP Basic** (header)
+**Still open — a few test-time confirmations only:**
+1. **Auth transport (recommendation made; confirm at test time):** we'll use **HTTP Basic** (header)
    if the endpoint accepts it — safer than URL-param creds (which leak into logs). Verify against the
    test endpoint; fall back to URL-params with strict no-logging if Basic isn't accepted.
 3. **Reissue on the soft product:** owner says yes; confirm once against the live test endpoint.
