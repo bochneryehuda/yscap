@@ -299,6 +299,67 @@ async function enrichedRowById(id) {
   return rows[0] || null;
 }
 
+// ------------------------------------------------- never-attempted stray net
+// Root fix for "the document is stuck / last error: (not yet attempted)": a
+// document can be excluded from pendingBatch by a selection predicate (a
+// non-'local' storage_provider, a NULL/false is_current, a scope the JOINs
+// don't resolve) while it is still un-mirrored with real bytes on disk. When
+// that happens the normal drain never touches it, so recordFailure never runs,
+// so it sits at attempts=0 / error=NULL — invisible and un-attempted — until
+// the 12h SLO escalation force-attempts it. That window is too long and the
+// cause is never logged. This selector finds exactly that population — past a
+// grace window, attempts=0, error NULL, NOT a settling phantom — and does NOT
+// filter on storage_provider, so even a doc the normal batch can't see is
+// surfaced. runOnce force-attempts each one EVERY pass, so a stray gets one
+// real attempt (mirror, or a classified error) within a single poll cycle.
+const STRAY_BATCH = 15;                 // small: this is a safety net, not the main path
+function strayGraceSec() {
+  // Past the settle window + a margin: a doc this old that is STILL un-attempted
+  // was definitively skipped by the normal selector, not merely mid-settle.
+  return Math.max(snapshotSettleSec(), 300) + 60;
+}
+async function neverAttemptedStrays(limit) {
+  const { rows } = await db.query(
+    `SELECT d.id, d.filename, d.doc_kind, d.is_current, d.storage_ref,
+            COALESCE(d.storage_provider, 'local') AS storage_provider,
+            d.sharepoint_backup_attempts AS attempts,
+            round(EXTRACT(EPOCH FROM (now() - d.created_at)) / 3600.0, 1) AS age_hours,
+            (${REGEN_KIND_SQL}) AS is_regen,
+            COALESCE(d.application_id, ci.application_id)                        AS app_id,
+            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id
+       FROM documents d
+       LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+       LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
+       LEFT JOIN applications a     ON a.id = COALESCE(d.application_id, ci.application_id)
+      WHERE d.sharepoint_backed_up_at IS NULL
+        AND d.storage_ref IS NOT NULL
+        AND d.sharepoint_backup_attempts = 0
+        AND d.sharepoint_backup_error IS NULL
+        AND d.created_at < now() - make_interval(secs => $2)
+        -- A superseded regen snapshot settles WITHOUT uploading (settle pass);
+        -- never force-attempt one. Everything else is fair game.
+        AND NOT ((${REGEN_KIND_SQL}) AND COALESCE(d.is_current, true) = false)
+      ORDER BY d.created_at ASC
+      LIMIT $1`,
+    [limit, strayGraceSec()]);
+  return rows;
+}
+
+// Human/log-readable answer to "why did the document get stuck?" — names the
+// pendingBatch predicate(s) that would exclude this row, so a production log
+// line pinpoints the cause instead of leaving "(not yet attempted)".
+function explainExclusion(row) {
+  const reasons = [];
+  const prov = row.storage_provider || 'local';
+  if (prov !== 'local') reasons.push(`storage_provider='${prov}' (the normal drain only mirrors 'local' bytes)`);
+  if (row.is_regen && row.is_current === false) reasons.push('superseded auto-saved snapshot (should have settled)');
+  if (row.is_regen && row.is_current == null) reasons.push('regen snapshot with NULL is_current');
+  if (!row.app_id && !row.borrower_id) reasons.push('no application/borrower scope resolves (nothing to file it under)');
+  return reasons.length
+    ? `excluded from the normal batch by: ${reasons.join('; ')}`
+    : 'no obvious exclusion predicate — check drain/lease health (the pass may not be running)';
+}
+
 // Superseded-before-mirror regen snapshots are settled WITHOUT uploading: the
 // newer copy of the same autosave stream carries all the information. This is
 // the version-explosion root fix — an editing burst of N snapshots mirrors 1
@@ -1236,9 +1297,28 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
     await renewLease('sp-drain');
     await sleep(PACING_MS);
   }
-  _lastPass = { at: new Date().toISOString(), scanned: rows.length, mirrored, failed };
-  if (rows.length) console.log(`[sp-sync] pass: scanned ${rows.length}, mirrored ${mirrored}, failed ${failed}`);
-  return { scanned: rows.length, mirrored, failed };
+  // Safety net: after the normal batch, force ONE real attempt on any document
+  // that the normal selector silently skipped (attempts=0 / error=NULL past the
+  // grace window). Without this a stray sits "not yet attempted" — invisible —
+  // until the 12h SLO escalation. Here it either mirrors now or produces a
+  // classified, visible error within this poll cycle, and the reason it was
+  // skipped is written to the log. Force-attempt sets attempts≥1, so a stray is
+  // swept at most once (next pass it no longer matches attempts=0).
+  let strayForced = 0, strayMirrored = 0;
+  try {
+    const strays = await neverAttemptedStrays(STRAY_BATCH);
+    for (const s of strays) {
+      console.warn(`[sp-sync] never-attempted stray doc ${s.id} (${s.filename || '?'}) age ${s.age_hours}h — ${explainExclusion(s)}; forcing one attempt`);
+      const res = await forceAttemptDoc(s.id).catch((e) => ({ failed: true, error: e.message }));
+      strayForced++;
+      if (res.mirrored) { strayMirrored++; mirrored++; } else if (res.failed) { failed++; }
+      await renewLease('sp-drain');
+      await sleep(PACING_MS);
+    }
+  } catch (e) { console.warn('[sp-sync] stray sweep error:', e.message); }
+  _lastPass = { at: new Date().toISOString(), scanned: rows.length + strayForced, mirrored, failed, strays: strayForced };
+  if (rows.length || strayForced) console.log(`[sp-sync] pass: scanned ${rows.length}, mirrored ${mirrored}, failed ${failed}` + (strayForced ? `, strays force-attempted ${strayForced} (${strayMirrored} mirrored)` : ''));
+  return { scanned: rows.length + strayForced, mirrored, failed, strays: strayForced };
 }
 
 /** Drain everything pending (the first-run backfill + burst catch-up). */
@@ -1552,48 +1632,89 @@ async function escalateStuckDocs() {
   return { settled, carded, forced, forceMirrored, considered: docs.length };
 }
 
+// Persistent, restart-proof SLO-alert dedup (owner-reported 2026-07-19: "I got
+// the same email about this issue again seven minutes later"). The alert must
+// fire ONCE per distinct backlog episode and stay quiet across a process
+// restart or a second instance. The old dedup was an in-process boolean latch
+// that resets to `false` on every boot — so a redeploy WHILE the backlog is
+// still breaching re-sent the SAME email (two alerts ~7 min apart is exactly a
+// deploy landing between two 90s boot checks / two instances). The dedup now
+// lives in the DB (sync_locks, reused — no new migration): a cooldown row keyed
+// 'sp-slo-alert' whose `holder` is a signature of the exact stuck set. We alert
+// only when we can CLAIM that row — i.e. the cooldown lapsed OR the stuck set
+// changed (a genuinely new problem re-alerts at once; the same problem stays
+// quiet for the cooldown), and every process/instance shares the one row.
+function sloAlertCooldownMin() {
+  const v = Number(process.env.SHAREPOINT_SLO_ALERT_COOLDOWN_MIN || 360);
+  return Number.isFinite(v) && v >= 5 ? v : 360;
+}
+function sloSignature(stuck, exhausted) {
+  const ids = stuck.map((d) => String(d.id)).sort();
+  return sha256hex(Buffer.from(`${ids.join(',')}|x=${exhausted}`)).slice(0, 48);
+}
+// True iff THIS process wins the right to alert for `signature` right now.
+async function claimSloAlert(signature) {
+  try {
+    const r = await db.query(
+      `INSERT INTO sync_locks (lock_key, holder, expires_at)
+       VALUES ('sp-slo-alert', $1, now() + make_interval(mins => ${sloAlertCooldownMin()}))
+       ON CONFLICT (lock_key) DO UPDATE
+         SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at
+         WHERE sync_locks.expires_at < now() OR sync_locks.holder <> $1
+       RETURNING holder`,
+      [signature]);
+    return r.rows.length > 0;
+  } catch (e) {
+    // Fail CLOSED (suppress): a missed reminder beats a duplicate storm, and the
+    // review cards still carry every stuck document with its actionable reason.
+    console.warn(`[sp-sync] SLO alert dedup check failed (${e.message}) — suppressing this alert`);
+    return false;
+  }
+}
+// Backlog recovered — drop the cooldown so the NEXT episode alerts immediately.
+async function clearSloAlert() {
+  try { await db.query(`DELETE FROM sync_locks WHERE lock_key = 'sp-slo-alert'`); } catch (_) { /* best-effort */ }
+}
+
 // R4 — the SLO watchdog: on each interval sweep, if the oldest un-mirrored doc
 // is past the threshold (or anything is exhausted), ESCALATE the stuck docs
-// (settle phantoms, card the rest) and notify admins ONCE per breach episode
-// WITH the offending documents named (dedup via a simple in-process latch that
-// re-arms when the backlog recovers). Silent degradation becomes a signal you
-// can actually act on.
-let _sloBreaching = false;
+// (settle phantoms, force-attempt never-tried ones, card the rest) and notify
+// admins ONCE per breach episode WITH the offending documents named. Silent
+// degradation becomes a signal you can actually act on — without spamming.
 async function checkBacklogSlo() {
   if (!enabled()) return;
   try {
     const recon = await reconciliation();
     const breaching = recon.slo.breached || recon.slo.exhausted > 0;
-    if (breaching) {
-      // Make the stuck docs visible + actionable BEFORE alerting, so the email
-      // and the review queue agree.
-      const esc = await escalateStuckDocs().catch(() => ({ settled: 0, carded: 0 }));
-      // Re-read after self-healing phantoms so the alert reflects reality.
-      const stuck = (await stuckDocuments(8)).filter((d) => !d.phantom);
-      if (!_sloBreaching && (stuck.length > 0 || recon.exhausted > 0)) {
-        _sloBreaching = true;
-        const named = stuck.slice(0, 6).map((d) =>
-          ({ label: (d.borrower_name || 'document') + (d.filename ? ` — ${d.filename}` : ''),
-             value: `${d.age_hours}h · ${d.why}` }));
-        const notify = require('./notify');
-        await notify.notifyAdmins({
-          type: 'sharepoint_backlog_slo',
-          title: 'SharePoint sync — document(s) need attention',
-          body: `${stuck.length} document(s) have not mirrored to SharePoint within the ${recon.slo.thresholdHours}h target` +
-                (esc.carded ? ` (${esc.carded} now in Sync review with the exact reason)` : '') +
-                (esc.settled ? `; ${esc.settled} superseded copy(ies) auto-resolved` : '') +
-                '. Each is listed below with why — open Sync review to see the error and Retry. Nothing is lost; every document is safe in PILOT.',
-          meta: [
-            { label: 'Stuck documents', value: String(stuck.length) },
-            { label: 'Oldest', value: recon.oldest_pending_hours != null ? `${recon.oldest_pending_hours}h` : '—' },
-            ...named,
-          ],
-          link: '/internal/sync-reviews', ctaLabel: 'Open Sync review',
-        }).catch(() => {});
-      }
-    } else if (!breaching && _sloBreaching) {
-      _sloBreaching = false;   // recovered — re-arm for the next episode
-    }
+    if (!breaching) { await clearSloAlert(); return; }
+    // Make the stuck docs visible + actionable BEFORE alerting, so the email
+    // and the review queue agree (this also force-attempts never-tried docs, so
+    // a transient stray may resolve itself and drop out of the alert entirely).
+    const esc = await escalateStuckDocs().catch(() => ({ settled: 0, carded: 0 }));
+    // Re-read after self-healing so the alert reflects reality.
+    const stuck = (await stuckDocuments(8)).filter((d) => !d.phantom);
+    if (stuck.length === 0 && recon.exhausted === 0) return;   // escalation cleared it
+    // Persistent dedup: only alert if we can claim the cooldown row for THIS
+    // stuck set. A redeploy mid-breach no longer re-sends the same email.
+    if (!(await claimSloAlert(sloSignature(stuck, recon.exhausted)))) return;
+    const named = stuck.slice(0, 6).map((d) =>
+      ({ label: (d.borrower_name || 'document') + (d.filename ? ` — ${d.filename}` : ''),
+         value: `${d.age_hours}h · ${d.why}` }));
+    const notify = require('./notify');
+    await notify.notifyAdmins({
+      type: 'sharepoint_backlog_slo',
+      title: 'SharePoint sync — document(s) need attention',
+      body: `${stuck.length} document(s) have not mirrored to SharePoint within the ${recon.slo.thresholdHours}h target` +
+            (esc.carded ? ` (${esc.carded} now in Sync review with the exact reason)` : '') +
+            (esc.settled ? `; ${esc.settled} superseded copy(ies) auto-resolved` : '') +
+            '. Each is listed below with why — open Sync review to see the error and Retry. Nothing is lost; every document is safe in PILOT.',
+      meta: [
+        { label: 'Stuck documents', value: String(stuck.length) },
+        { label: 'Oldest', value: recon.oldest_pending_hours != null ? `${recon.oldest_pending_hours}h` : '—' },
+        ...named,
+      ],
+      link: '/internal/sync-reviews', ctaLabel: 'Open Sync review',
+    }).catch(() => {});
   } catch (e) {
     console.warn('[sp-sync] backlog SLO check error:', e.message);
   }
@@ -1603,6 +1724,8 @@ module.exports = {
   start, stop, kick, runOnce, drain, enabled, health, categoryFor, mirrorRow,
   verifyOnce, drainVerify, settleSupersededSnapshots, isRegenKind,
   reconciliation, checkBacklogSlo, stuckDocuments, escalateStuckDocs,
-  classifyMirrorError,
+  classifyMirrorError, forceAttemptDoc,
+  neverAttemptedStrays, explainExclusion,
+  sloSignature, claimSloAlert, clearSloAlert,
   MAX_ATTEMPTS, VERIFY_RECHECK_DAYS,
 };
