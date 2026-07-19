@@ -62,7 +62,9 @@ function isRegenKind(k) { return k === 'track_record_html' || k === 'tpr_export'
 // export denylist + rtl_cond_iska.tpr_exclude=true. (DOCUSIGN-DOCUMENT-BUILD-SPEC
 // Addendum A.3/A.9.)
 const NEVER_MIRROR_KINDS = new Set(['heter_iska_signed']);
-const NEVER_MIRROR_SQL = `(COALESCE(d.doc_kind,'') NOT IN ('heter_iska_signed'))`;
+// appraisal_photo: derived thumbnails auto-extracted from the appraisal PDF (which IS
+// mirrored) — up to ~24 per file, so mirroring them would flood the team site for no gain.
+const NEVER_MIRROR_SQL = `(COALESCE(d.doc_kind,'') NOT IN ('heter_iska_signed','appraisal_photo'))`;
 function snapshotSettleSec() {
   const v = parseInt(process.env.SHAREPOINT_SNAPSHOT_SETTLE_SEC || '600', 10);
   return Number.isFinite(v) && v >= 10 ? v : 600;
