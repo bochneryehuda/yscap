@@ -158,6 +158,17 @@ async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
 
   await applyRecipients(db, envelopeRow.id, envelope);
 
+  // On completion, STORE THE SIGNED DOCS FIRST and only then stamp 'completed'.
+  // If a signed-PDF download fails, handleCompletion throws BEFORE the status
+  // advances — so the envelope stays 'sent'/'delivered' and both the inbox retry
+  // and reconcileStale (which cover those states) re-drive it to completion when
+  // DocuSign recovers. Otherwise a completion whose download failed would show a
+  // green "completed" with missing signed docs + uncleared conditions that nothing
+  // ever re-drives (handleCompletion is per-doc idempotent, so re-running is safe).
+  if (status === 'completed') {
+    await handleCompletion(db, docusign, storage, envelopeRow);
+  }
+
   if (map) {
     const voidReason = status === 'voided' ? (envelope.voidedReason || null) : null;
     await db.query(
@@ -165,12 +176,6 @@ async function reconcileEnvelope(db, docusign, storage, envelopeRow) {
           SET status = $2, ${map.col} = COALESCE(${map.col}, now()),
               void_reason = COALESCE($3, void_reason), last_event_at = now(), updated_at = now()
         WHERE id = $1`, [envelopeRow.id, map.status, voidReason]);
-  }
-
-  if (status === 'completed') {
-    // Re-read the row so completed_at is set for downstream logic.
-    const fresh = (await db.query(`SELECT * FROM esign_envelopes WHERE id=$1`, [envelopeRow.id])).rows[0] || envelopeRow;
-    await handleCompletion(db, docusign, storage, fresh);
   }
   return status;
 }

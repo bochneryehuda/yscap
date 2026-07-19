@@ -31,6 +31,7 @@ const storageDefault = require('../storage');
 const sendEngine = require('./send');
 const gate = require('./gate');
 const docgen = require('./docgen');
+const onDeadLetter = require('./dead-letter');
 const { parseAddress } = require('../address');
 const cfg = require('../../config');
 
@@ -404,6 +405,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
   const result = await send.sendClaimedEnvelope(row.id, {
     db, docusign,
     buildDefinition: (r) => buildDefinition(r, { db, storage }),
+    onDeadLetter,   // a failed send notifies the file's team (in-app + email)
   });
   return { ok: !!(result && (result.sent || result.skipped)), envelopeRowId: row.id, result };
 }
