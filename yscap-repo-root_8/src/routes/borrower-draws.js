@@ -146,7 +146,11 @@ router.post('/draws/:appId/change-request', async (req, res) => {
   try {
     const a = (await db.query(`SELECT status FROM applications WHERE id=$1`, [appId])).rows[0];
     const rollup = await rollupMod.loadRollup(db, appId);
-    const ex = M.explodeSow(proposedPayload.state, {});
+    // Reconcile the proposed explosion to the frozen budget (same target the crosswalk was reconciled
+    // to at birth) so a ≤$1 rounding drift can't make a genuine net-zero move read as non-net-zero.
+    const rawEx = M.explodeSow(proposedPayload.state, {});
+    const budgetCents = Number(rollup && rollup.project && rollup.project.budget) || 0;
+    const ex = budgetCents > 0 ? M.reconcileToBudget(rawEx, budgetCents) : rawEx;
     const cells = rollupMod.buildReallocationCells(rollup, ex.items); // per-unit on multi-unit lines (audit F3)
     const phase = String(a && a.status) === 'funded' ? 'after_ctc' : 'before_ctc';
     let vpct = 10; try { const v = (await db.query(`SELECT value FROM sitewire_settings WHERE key='variance_pct'`)).rows[0]; vpct = Number(v && v.value) || 10; } catch (_) {}

@@ -540,7 +540,9 @@ router.post('/rules', requirePermission('platform_setup'), async (req, res) => {
   // (a null physical fee falls back to the virtual fee at push time) — a non-numeric value must
   // become null, never NaN (which Postgres would reject as a 500). An explicit 0 is honored.
   const vFee = Number(b.fee_cents_virtual);
-  const feeVirtual = Number.isFinite(vFee) && vFee > 0 ? Math.round(vFee) : 29900;
+  // Honor an explicit 0 (a free virtual inspection) — only blank/garbage falls back to $299,
+  // matching the physical-fee handling below. A typed 0 must never be silently reset to $299.
+  const feeVirtual = Number.isFinite(vFee) && vFee >= 0 ? Math.round(vFee) : 29900;
   const pRaw = b.fee_cents_physical;
   const pFee = Number(pRaw);
   const feePhysical = pRaw == null || pRaw === '' || !Number.isFinite(pFee) ? null : Math.round(pFee);
@@ -884,7 +886,13 @@ router.post('/files/:id/lien-waivers-setting', requirePermission('platform_setup
   // true = on for this project, false = off for this project, null = inherit the global setting
   const v = req.body.enabled === null ? null : req.body.enabled === true ? true : req.body.enabled === false ? false : undefined;
   if (v === undefined) return res.status(400).json({ error: 'enabled must be true, false, or null (inherit global)' });
-  await db.query(`UPDATE sitewire_property_links SET require_lien_waivers=$2, updated_at=now() WHERE application_id=$1`, [appId, v]);
+  // upsert so the setting persists even before the file has a link row (else a plain UPDATE is a
+  // silent no-op that still returns 200 — the "returned 200 but didn't save" class).
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, matched_by, state, require_lien_waivers)
+     VALUES ($1,'created','pending',$2)
+     ON CONFLICT (application_id) DO UPDATE SET require_lien_waivers=$2, updated_at=now()`,
+    [appId, v]);
   await orchestrator.journal({ appId, entity: 'settings', field: 'require_lien_waivers', newValue: v, source: 'review_resolve', changed: true }).catch(() => {});
   res.json({ ok: true, require_lien_waivers: v });
 });
@@ -946,7 +954,13 @@ router.post('/files/:id/coordinator', requirePermission('platform_setup'), async
   const staffId = req.body.coordinator_staff_id || null;
   if (staffId && !isUuid(staffId)) return res.status(400).json({ error: 'unknown staff user' });
   if (staffId) { const ok = (await db.query(`SELECT 1 FROM staff_users WHERE id=$1 AND is_active`, [staffId])).rowCount; if (!ok) return res.status(400).json({ error: 'unknown staff user' }); }
-  await db.query(`UPDATE sitewire_property_links SET coordinator_staff_id=$2, updated_at=now() WHERE application_id=$1`, [appId, staffId]);
+  // upsert so a coordinator can be set before the file has a link row (a plain UPDATE would be a
+  // silent 200 no-op otherwise).
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, matched_by, state, coordinator_staff_id)
+     VALUES ($1,'created','pending',$2)
+     ON CONFLICT (application_id) DO UPDATE SET coordinator_staff_id=$2, updated_at=now()`,
+    [appId, staffId]);
   res.json({ ok: true });
 });
 
@@ -1049,6 +1063,16 @@ router.get('/files/:id/change-requests', requirePermission('manage_draws'), asyn
   res.json({ change_requests: rows });
 });
 
+// Explode a proposed Scope of Work AND reconcile it to the file's frozen budget (the same target the
+// crosswalk's CURRENT budgets were reconciled to at birth), so a ≤$1 per-cell percentage-rounding
+// drift can't make a genuine net-zero reallocation read as non-net-zero and get wrongly rejected.
+// Falls back to a raw explode when the frozen budget isn't known.
+function reconciledExplode(rollup, state) {
+  const raw = M.explodeSow(state, {});
+  const budgetCents = Number(rollup && rollup.project && rollup.project.budget) || 0;
+  return budgetCents > 0 ? M.reconcileToBudget(raw, budgetCents) : raw;
+}
+
 // ---- POST /files/:id/change-requests — create + validate a SOW reallocation ----
 router.post('/files/:id/change-requests', requirePermission('manage_draws'), async (req, res) => {
   const appId = req.params.id;
@@ -1059,7 +1083,11 @@ router.post('/files/:id/change-requests', requirePermission('manage_draws'), asy
     const a = (await db.query(`SELECT status FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
     if (!a) return res.status(404).json({ error: 'file not found' });
     const rollup = await rollupMod.loadRollup(db, appId);
-    const ex = M.explodeSow(proposedPayload.state, {});
+    // Reconcile the proposed explosion to the frozen budget BEFORE building cells — the same way
+    // the birth push does (orchestrator) and the way the crosswalk's `before` budgets were set.
+    // Otherwise a ≤$1 per-cell percentage-rounding drift makes a genuine net-zero move read as
+    // non-net-zero and get wrongly rejected (esp. Gold Standard's 5% contingency).
+    const ex = reconciledExplode(rollup, proposedPayload.state);
     const cells = buildReallocationCells(rollup, ex.items);
     const phase = phaseFor(a.status);
     const plan = planReallocation(cells, { phase, variancePct: await variancePct() });
@@ -1104,7 +1132,7 @@ router.post('/change-requests/:crId/apply', requirePermission('manage_draws'), a
   try {
     // re-validate against the CURRENT rollup (drawn amounts may have moved since creation)
     const rollup = await rollupMod.loadRollup(db, appId);
-    const ex = M.explodeSow(proposedPayload.state, {});
+    const ex = reconciledExplode(rollup, proposedPayload.state);
     const cells = buildReallocationCells(rollup, ex.items);
     const plan = planReallocation(cells, { phase, variancePct: await variancePct() });
     if (!plan.ok) return res.status(422).json({ error: 'reallocation is no longer valid', plan });

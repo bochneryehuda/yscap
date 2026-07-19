@@ -87,7 +87,7 @@ export default function PortfolioInsights({ portfolio }) {
       {codeEntries.length > 0 && (
         <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
           <div className="dd-field-l" style={{ textTransform: 'uppercase', letterSpacing: '.06em', fontSize: 11, marginBottom: 10 }}>
-            Needs attention · {Number(totals.flagged) || codeEntries.reduce((s, [, n]) => s + n, 0)} file{(Number(totals.flagged) || 0) === 1 ? '' : 's'} flagged
+            {(() => { const flaggedN = Number(totals.flagged) || codeEntries.reduce((s, [, n]) => s + n, 0); return `Needs attention · ${flaggedN} file${flaggedN === 1 ? '' : 's'} flagged`; })()}
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {codeEntries.map(([code, n]) => (
