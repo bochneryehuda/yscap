@@ -62,7 +62,10 @@ function findAsIs(text) {
       // the after-repair value, never the As-Is. Precise synonyms only (NOT bare "improv", which
       // would wrongly catch "value of the improvements is $X").
       const pre = ln.slice(Math.max(0, mi - 26), mi);
-      if (/renovat|stabiliz|as[\s-]*complet|as[\s-]*improv|after\s+renovation|\barv\b/i.test(pre)) continue;
+      // ARV-specific labels only. Use `renovated` (the adjective, as in "renovated value/figure")
+      // and `after renovation`, NOT bare `renovat` — otherwise a legitimate As-Is line like
+      // "as is value BEFORE renovation is $430,000" would be wrongly skipped.
+      if (/renovated|stabiliz|as[\s-]*complet|as[\s-]*improv|after\s+renovation|\barv\b/i.test(pre)) continue;
       const dist = mi >= tokEnd ? (mi - tokEnd) : (asIdx - mEnd) + 1000;
       if (dist < bestDist) { bestDist = dist; best = { amount: n, snippet: ln.slice(0, 180) }; }
     }

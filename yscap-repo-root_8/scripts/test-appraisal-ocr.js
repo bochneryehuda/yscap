@@ -70,6 +70,15 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
   assert(hits.length === 1 && hits[0].amount === 430000, '"value of the improvements is $X" still reads the As-Is');
 }
 
+// 4f) "before/prior to renovation" is an AS-IS phrasing — the value must NOT be skipped (the
+// synonym is `renovated`, the adjective, not bare "renovation").
+{
+  assert(findAsIs('as is value before renovation is $430,000').some((h) => h.amount === 430000), '"as is value before renovation $X" still reads the As-Is');
+  assert(findAsIs('as is value prior to renovation $430,000').some((h) => h.amount === 430000), '"prior to renovation $X" still reads the As-Is');
+  // but the ARV adjective forms are still skipped
+  assert(findAsIs('as is; renovated value $575,000').length === 0, '"renovated value $X" (ARV) is still skipped');
+}
+
 // 5) Note builder: candidate present → says tried + suggestion + not applied.
 {
   const note = buildOcrNote({ attempted: true, candidate: 430000, confidence: 'single-match', snippet: "'as is' market value is $430,000" });
