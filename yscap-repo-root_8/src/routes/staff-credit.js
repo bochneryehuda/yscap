@@ -136,13 +136,14 @@ router.get('/credit/reports', requirePull, async (req, res) => {
     const reports = (await db.query(
       `SELECT id, credit_report_identifier, report_type, other_description, request_type, action_type,
               first_issued_date, last_updated_date, representative_score, representative_bracket,
-              status, review_reason, bureau_status, pdf_document_id, created_at, completed_at
+              status, review_reason, bureau_status, underwriting_finding, error_detail, mismo_version,
+              pdf_document_id, created_at, completed_at
          FROM credit_reports WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
     const ids = reports.map((r) => r.id);
     let scores = [];
     if (ids.length) {
       scores = (await db.query(
-        `SELECT credit_report_id, report_borrower_id, borrower_id, bureau, model, value, usable, reason, exclusion_reason, factors
+        `SELECT credit_report_id, report_borrower_id, borrower_id, bureau, model, value, usable, reason, exclusion_reason, factors, score_date
            FROM credit_scores WHERE credit_report_id = ANY($1) ORDER BY report_borrower_id, bureau`, [ids])).rows;
     }
     const byReport = new Map(reports.map((r) => [r.id, { ...r, scores: [] }]));

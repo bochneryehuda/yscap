@@ -38,6 +38,7 @@ function versionKit(version) {
 }
 const scoring = require('./scoring');
 const outcomes = require('./outcomes');
+const underwriting = require('./underwriting');
 const storage = require('../storage');
 
 // Xactus source type → { key for repositories flags, verified_fico_source label }.
@@ -252,22 +253,6 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
     const bureauStatus = outcomes.bureauStatus(parsed, scored);
 
     // Update the journal row into its final state.
-    await client.query(
-      `UPDATE credit_reports
-          SET credit_report_identifier=$2, report_type=$3, other_description=$4, request_type=$5, action_type=$6,
-              first_issued_date = NULLIF($7,'')::date, last_updated_date = NULLIF($8,'')::date,
-              xml_encrypted=$9, pdf_document_id=$10,
-              representative_score=$11, representative_bracket=$12,
-              status=$13, review_reason=$14, error_detail=$15::jsonb, bureau_status=$16::jsonb, mismo_version=$17, completed_at=now()
-        WHERE id=$1`,
-      [reportRowId, parsed.reportIdentifier || null, parsed.reportType || null, parsed.otherDescription || null,
-       orderMeta.requestType || null, orderMeta.action || null,
-       parsed.firstIssuedDate || '', parsed.lastUpdatedDate || '',
-       rawXml ? crypto.encryptSecret(rawXml) : null, pdfDocumentId,
-       scored.rep.score, scored.rep.bracket,
-       assessment.decision === 'imported' ? 'imported' : assessment.decision,
-       assessment.reason, JSON.stringify(parsed.errors || []), JSON.stringify(bureauStatus), orderMeta.mismoVersion || null]);
-
     // Resolve a parsed borrower to its DB row: SSN first (order-proof), then the
     // report label (B1/C1). Guarantees a JOINT file attaches each borrower's scores
     // to the correct borrowers row even if the vendor echoes them out of order.
@@ -278,6 +263,49 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
       const byLabel = orderMeta.borrowerDbIdByReportId[pb.reportBorrowerId];
       return byLabel != null ? byLabel : null;
     };
+
+    // ---- UNDERWRITING FICO-MATCH FINDING ------------------------------------
+    // "Does the file match?" — compare the VERIFIED representative FICO against the
+    // FICO the file was BUILT ON (the borrowers' claimed scores, read BEFORE the
+    // freeze overwrites them). A bracket-level mismatch is a FATAL finding: the loan
+    // was sized on a score the bureau did not confirm, so a human must reconcile
+    // (re-register on the verified score) before clear-to-close. Only computed on a
+    // clean IMPORTED verification (a review/frozen outcome is already human-routed).
+    let finding = null;
+    if (assessment.decision === 'imported') {
+      const dbIds = [...new Set(scored.perBorrower.map(dbIdFor).filter(Boolean))];
+      const claimedById = {};
+      if (dbIds.length) {
+        const rows = (await client.query(`SELECT id, first_name, fico FROM borrowers WHERE id = ANY($1)`, [dbIds])).rows;
+        for (const r of rows) claimedById[r.id] = { fico: r.fico, name: r.first_name };
+      }
+      const claimedList = Object.values(claimedById).map((x) => x.fico).filter((v) => v != null);
+      const claimedRep = claimedList.length ? Math.max(...claimedList) : null;
+      const perBorrowerDetail = scored.perBorrower.map((pb) => {
+        const id = dbIdFor(pb); const c = id ? claimedById[id] : null;
+        return { name: (pb.identity && pb.identity.firstName) || (c && c.name) || pb.reportBorrowerId,
+          claimed: c ? c.fico : null, verified: pb.middle.middle };
+      });
+      finding = underwriting.ficoMatchFinding({ verified: scored.rep.score, claimed: claimedRep, perBorrower: perBorrowerDetail });
+    }
+
+    await client.query(
+      `UPDATE credit_reports
+          SET credit_report_identifier=$2, report_type=$3, other_description=$4, request_type=$5, action_type=$6,
+              first_issued_date = NULLIF($7,'')::date, last_updated_date = NULLIF($8,'')::date,
+              xml_encrypted=$9, pdf_document_id=$10,
+              representative_score=$11, representative_bracket=$12,
+              status=$13, review_reason=$14, error_detail=$15::jsonb, bureau_status=$16::jsonb, mismo_version=$17,
+              underwriting_finding=$18::jsonb, completed_at=now()
+        WHERE id=$1`,
+      [reportRowId, parsed.reportIdentifier || null, parsed.reportType || null, parsed.otherDescription || null,
+       orderMeta.requestType || null, orderMeta.action || null,
+       parsed.firstIssuedDate || '', parsed.lastUpdatedDate || '',
+       rawXml ? crypto.encryptSecret(rawXml) : null, pdfDocumentId,
+       scored.rep.score, scored.rep.bracket,
+       assessment.decision === 'imported' ? 'imported' : assessment.decision,
+       assessment.reason, JSON.stringify(parsed.errors || []), JSON.stringify(bureauStatus), orderMeta.mismoVersion || null,
+       finding ? JSON.stringify(finding) : null]);
 
     // Per-bureau score rows (every score node, usable or not — full audit).
     await client.query(`DELETE FROM credit_scores WHERE credit_report_id=$1`, [reportRowId]);
@@ -319,14 +347,20 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
         [applicationId, scored.rep.score]);
     }
 
-    // Wire the internal credit-report condition to the outcome.
-    const condNote = assessment.decision === 'imported'
-      ? `[auto] Credit report imported from Xactus and FICO verified (representative ${scored.rep.score ?? 'n/a'}). Review and sign off.`
-      : `[auto] Credit report needs manual review: ${assessment.reason || 'see report'}. It cannot be signed off until cleared.`;
-    await wireCreditCondition(client, applicationId, assessment.decision, condNote);
+    // Wire the internal credit-report condition to the outcome. A FATAL FICO-match
+    // finding forces the condition to 'issue' (blocks sign-off) even on a clean
+    // import — the report pulled fine, but the file was built on the wrong FICO and
+    // underwriting must reconcile first.
+    const effectiveDecision = finding ? 'review' : assessment.decision;
+    const condNote = finding
+      ? `[auto] FATAL underwriting finding — ${finding.message} This credit condition cannot be signed off until it is reconciled.`
+      : assessment.decision === 'imported'
+        ? `[auto] Credit report imported from Xactus and FICO verified (representative ${scored.rep.score ?? 'n/a'}). Review and sign off.`
+        : `[auto] Credit report needs manual review: ${assessment.reason || 'see report'}. It cannot be signed off until cleared.`;
+    await wireCreditCondition(client, applicationId, effectiveDecision, condNote);
 
     await client.query('COMMIT');
-    return { pdfDocumentId, froze };
+    return { pdfDocumentId, froze, finding };
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch (_) { /* already broken */ }
     throw e;
@@ -602,6 +636,7 @@ async function orderAndImport(opts = {}) {
     representativeScore: scored.rep.score,
     representativeBracket: scored.rep.bracket,
     froze: persisted.froze,
+    underwritingFinding: persisted.finding || null,
     reviewReason: assessment.reason,
     pdfDocumentId: persisted.pdfDocumentId,
     borrowerScores: scored.perBorrower.map((pb) => ({

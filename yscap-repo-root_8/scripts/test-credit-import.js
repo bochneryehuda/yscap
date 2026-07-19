@@ -86,11 +86,16 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
        ON CONFLICT (code) DO UPDATE SET label=EXCLUDED.label RETURNING id`)).rows[0].id;
   await db.query(`INSERT INTO checklist_items (scope,label,application_id,template_id,status) VALUES ('application','Credit report',$1,$2,'outstanding')`, [appId, credTmpl]);
 
+  // Happy path: the claimed FICO matches the verified bracket (730 and 732 are both
+  // 720-739), so NO underwriting mismatch finding fires — the condition clears to
+  // 'received'. (The mismatch case is exercised separately below.)
+  await db.query(`UPDATE borrowers SET fico=730 WHERE id=$1`, [bId]);
   const out = await creditImport.orderAndImport({
     applicationId: appId, actorId, action: 'Reissue', creditReportIdentifier: 'RPT1',
     idempotencyKey: `k-${suffix}-1`, nowMs: 1000, transport: transportOf(responseXml()),
   });
   eq('imported status', out.status, 'imported');
+  ok('no underwriting finding when FICO matches', !out.underwritingFinding);
   eq('representative = middle 732', out.representativeScore, 732);   // mid of 734/732/730
   eq('representative bracket', out.representativeBracket, '720-739');
   ok('froze', out.froze === true);
@@ -266,6 +271,37 @@ async function seedBorrower(email, first, ssnRaw = '123-00-3333') {
   await db.query(`DELETE FROM borrowers WHERE id=$1`, [bRace]);
   await db.query(`DELETE FROM user_credit_credentials WHERE user_id=$1`, [raceStaff]);
   await db.query(`DELETE FROM staff_users WHERE id=$1`, [raceStaff]);
+
+  // ---- UNDERWRITING FICO-MATCH: a verified score in a DIFFERENT bracket than the
+  // FICO the file was built on raises a FATAL finding + blocks the credit condition. ----
+  const uwStaff = await seedStaff(`uw-officer-${suffix}@t.test`);
+  await credentials.setForUser(uwStaff, { providerKey: 'xactus', operatorIdentifier: 'LO_UW', secret: 'p@ss', verify: false });
+  const bUw = await seedBorrower(`buw-${suffix}@t.test`, 'Umatch', '123-00-7722');
+  await db.query(`UPDATE borrowers SET fico=650 WHERE id=$1`, [bUw]);   // claimed 650 (640-659) vs verified 732 (720-739)
+  const appUw = (await db.query(`INSERT INTO applications (borrower_id) VALUES ($1) RETURNING id`, [bUw])).rows[0].id;
+  await db.query(`INSERT INTO checklist_items (scope,label,application_id,template_id,status) VALUES ('application','Credit report',$1,$2,'outstanding')`, [appUw, credTmpl]);
+  const uwOut = await creditImport.orderAndImport({
+    applicationId: appUw, actorId: uwStaff, action: 'Reissue', creditReportIdentifier: 'RPT1',
+    idempotencyKey: `uw-${suffix}`, transport: transportOf(responseXml()),
+  });
+  ok('mismatch → underwriting finding returned', !!uwOut.underwritingFinding);
+  eq('mismatch finding is fatal', uwOut.underwritingFinding && uwOut.underwritingFinding.severity, 'fatal');
+  eq('mismatch finding type', uwOut.underwritingFinding && uwOut.underwritingFinding.type, 'fico_mismatch');
+  const uwRpt = (await db.query(`SELECT underwriting_finding FROM credit_reports WHERE id=$1`, [uwOut.reportId])).rows[0];
+  ok('mismatch finding persisted on the report', uwRpt.underwriting_finding && uwRpt.underwriting_finding.verified === 732 && uwRpt.underwriting_finding.claimed === 650);
+  const uwCond = (await db.query(`SELECT status FROM checklist_items WHERE application_id=$1 AND template_id=$2`, [appUw, credTmpl])).rows[0];
+  eq('mismatch blocks the credit condition (issue, not received)', uwCond.status, 'issue');
+  ok('mismatch still froze the verified FICO', uwOut.froze === true);
+  // uw cleanup
+  await db.query(`DELETE FROM checklist_items WHERE application_id=$1`, [appUw]);
+  await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id=$1)`, [appUw]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id=$1`, [appUw]);
+  await db.query(`DELETE FROM documents WHERE application_id=$1`, [appUw]);
+  await db.query(`DELETE FROM applications WHERE id=$1`, [appUw]);
+  await db.query(`DELETE FROM credit_fico_audit WHERE borrower_id=$1`, [bUw]);
+  await db.query(`DELETE FROM borrowers WHERE id=$1`, [bUw]);
+  await db.query(`DELETE FROM user_credit_credentials WHERE user_id=$1`, [uwStaff]);
+  await db.query(`DELETE FROM staff_users WHERE id=$1`, [uwStaff]);
 
   // cleanup
   await db.query(`DELETE FROM checklist_items WHERE application_id = ANY($1)`, [[appId, app2, app3]]);
