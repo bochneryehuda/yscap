@@ -95,6 +95,26 @@ function parseCreditResponse(xml) {
         texts: arr(em._Text).map((t) => unescapeXml(t && t.__cdata != null ? String(t.__cdata) : String(t))).filter(Boolean),
       });
     }
+    // Per-bureau CREDIT_FILE status — a security FREEZE / no-file / no-hit / deceased
+    // rides HERE (@_ResultStatusType) with its error message NESTED under the file,
+    // not at the CREDIT_RESPONSE level. Surface both so the assessment routes a
+    // frozen/blocked bureau to manual review (verified live against Xactus test:
+    // _ResultStatusType="NoFileReturnedCreditFreeze"). "FileReturned" is the normal
+    // success value and is ignored.
+    for (const cf of arr(creditResponse.CREDIT_FILE)) {
+      const bureau = A(cf, 'CreditRepositorySourceType');
+      const rst = A(cf, '_ResultStatusType');
+      if (rst && !/^filereturned$/i.test(rst) && /(freeze|frozen|nofile|no[_-]?file|nohit|no[_-]?hit|norecord|no[_-]?record|deceased|error|unavailable|blocked)/i.test(rst)) {
+        errors.push({ layer: 'file', code: rst, sourceType: bureau,
+          texts: [rst.replace(/([a-z])([A-Z])/g, '$1 $2')] });   // e.g. "No File Returned Credit Freeze" → conditionFromText → frozen
+      }
+      for (const em of arr(cf.CREDIT_ERROR_MESSAGE)) {
+        errors.push({
+          layer: 'credit', code: A(em, '_Code'), sourceType: A(em, '_SourceType') || bureau,
+          texts: arr(em._Text).map((t) => unescapeXml(t && t.__cdata != null ? String(t.__cdata) : String(t))).filter(Boolean),
+        });
+      }
+    }
   }
   if ((A(creditResponse, 'CreditReportType') || '') === 'Error') {
     if (!errors.length) errors.push({ layer: 'credit', code: null, description: 'CreditReportType=Error' });

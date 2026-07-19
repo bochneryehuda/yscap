@@ -130,6 +130,25 @@ const cls = S.classifyScore(rf.borrowers[0].scores[0]);
 eq('classified keeps factors', cls.factors.length, 2);
 eq('score node without factors -> []', succ.borrowers[0].scores[0].factors.length, 0);
 
+// per-bureau CREDIT_FILE freeze status (nested error + _ResultStatusType) — verified
+// against the live Xactus test response for a frozen persona
+const frozenXml = `<?xml version="1.0"?>
+<RESPONSE_GROUP MISMOVersionID="2.3.1"><RESPONSE><RESPONSE_DATA>
+  <CREDIT_RESPONSE MISMOVersionID="2.3.1" CreditReportIdentifier="RZ" CreditReportType="Other">
+    <BORROWER BorrowerID="B1" _FirstName="ANN" _LastName="FREDDIE" _SSN="992700027"/>
+    <CREDIT_SCORE BorrowerID="B1" CreditRepositorySourceType="TransUnion" _Value="720" _ModelNameType="FICORiskScoreClassic04"/>
+    <CREDIT_FILE CreditFileID="F1" BorrowerID="B1" CreditRepositorySourceType="TransUnion" _InfileDate="2001-10"/>
+    <CREDIT_FILE CreditFileID="F2" BorrowerID="B1" CreditRepositorySourceType="Experian" _ResultStatusType="NoFileReturnedCreditFreeze">
+      <CREDIT_ERROR_MESSAGE _Code="ERR" _SourceType="Experian"><_Text>CONSUMER REQUESTED SECURITY FREEZE - REPORT UNAVAILABLE</_Text></CREDIT_ERROR_MESSAGE>
+    </CREDIT_FILE>
+    <CREDIT_FILE CreditFileID="F3" BorrowerID="B1" CreditRepositorySourceType="Equifax" _ResultStatusType="NoFileReturnedCreditFreeze"/>
+  </CREDIT_RESPONSE>
+</RESPONSE_DATA></RESPONSE></RESPONSE_GROUP>`;
+const fz = P.parseCreditResponse(frozenXml);
+ok('frozen: file-status surfaced as error', fz.errors.some(e => /freeze/i.test((e.texts||[]).join(' ') + (e.code||''))));
+ok('frozen: nested error message picked up', fz.errors.some(e => /SECURITY FREEZE/i.test((e.texts||[]).join(' '))));
+ok('frozen: normal TU file NOT flagged', !fz.errors.some(e => e.sourceType === 'TransUnion'));
+
 // decode + verify the PDF
 const dec = P.decodeReportPdf(succ.pdf.base64);
 ok('pdf decodes to %PDF', dec.buf.slice(0, 5).toString('latin1') === '%PDF-');
