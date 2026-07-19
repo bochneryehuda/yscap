@@ -208,6 +208,13 @@ export default function SyncReviews() {
   }, [status]);
   useEffect(() => { load(); }, [load]);
 
+  async function sitewireAct(id, action) {
+    setBusyId(id); setErr('');
+    try { await api.post(`/api/sitewire/reviews/${id}/${action}`, {}); await load(); }
+    catch (e) { setErr(e?.data?.error || e.message || 'That didn\'t work.'); }
+    finally { setBusyId(null); }
+  }
+
   async function act(id, verb, body) {
     setBusyId(id); setErr('');
     try { await api.post(`/api/staff/sync-reviews/${id}/${verb}`, body || {}); await load(); }
@@ -321,6 +328,15 @@ export default function SyncReviews() {
             </p>
             {isSitewire && String(r.reason || '').includes(':') && (
               <p className="muted small" style={{ margin: '0 0 8px', fontStyle: 'italic' }}>{String(r.reason).split(':').slice(1).join(':').trim()}</p>
+            )}
+            {status === 'open' && isSitewire && (
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <button className="btn primary btn-sm" disabled={busyId === r.id}
+                  title="Re-attempt the Sitewire push for this file (after fixing the cause above)"
+                  onClick={() => sitewireAct(r.id, 'retry')}>{busyId === r.id ? '…' : 'Retry push'}</button>
+                <button className="btn btn-sm" disabled={busyId === r.id}
+                  title="Close this without action" onClick={() => sitewireAct(r.id, 'dismiss')}>Dismiss</button>
+              </div>
             )}
             {status === 'open' && canResolve && (
               <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>

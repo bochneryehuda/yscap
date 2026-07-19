@@ -172,8 +172,9 @@ router.post('/draws/:drawId/:action', requirePermission('manage_draws'), async (
 // ---- POST /api/sitewire/disbursements — record a release in OUR ledger (net = approved - fee) ----
 router.post('/disbursements', requirePermission('manage_draws'), async (req, res) => {
   const { application_id, sitewire_draw_id } = req.body;
-  // validate the money explicitly — a NaN/garbage amount must 400, never be coerced to $0 and
-  // recorded (mirrors the /approve validation; audit E-NAN-MONEY-DISB).
+  // ownership FIRST (never do work for a file the actor can't see), then validate the money —
+  // a NaN/garbage amount must 400, never be coerced to $0 and recorded (audit E-NAN-MONEY-DISB).
+  if (!application_id || !(await canSeeFile(req, application_id))) return res.status(403).json({ error: 'forbidden' });
   const approvedRaw = Number(req.body.approved_cents), feeRaw = Number(req.body.fee_cents);
   if (!Number.isFinite(approvedRaw) || approvedRaw < 0 || !Number.isFinite(feeRaw) || feeRaw < 0) {
     return res.status(400).json({ error: 'approved_cents and fee_cents must be non-negative whole numbers of cents' });
@@ -183,7 +184,6 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   const feeKind = ['virtual', 'physical'].includes(req.body.fee_kind) ? req.body.fee_kind : null;
   const releaseDate = req.body.release_date || null;
   const fundedStatus = ['pending', 'released', 'held'].includes(req.body.funded_status) ? req.body.funded_status : 'pending';
-  if (!application_id || !(await canSeeFile(req, application_id))) return res.status(403).json({ error: 'forbidden' });
   const net = approved - fee; // the money invariant: net = approved - fee
   if (net < 0) return res.status(422).json({ error: 'fee exceeds approved amount — net release would be negative' });
   try {
@@ -239,6 +239,34 @@ router.patch('/settings', requirePermission('platform_setup'), async (req, res) 
     updates.push(k);
   }
   res.json({ ok: true, updated: updates });
+});
+
+// ---- POST /reviews/:id/:action — resolve a parked Sitewire review (retry | dismiss) ----
+// Sitewire parks are "fix the file, then re-push" rows. `retry` re-queues any dead push jobs
+// for the file (or enqueues a fresh push after the human fixed the upstream cause) and marks the
+// row resolved; `dismiss` closes it without action. Guarded + scoped like every draw-desk write.
+router.post('/reviews/:id/:action', requirePermission('manage_draws'), async (req, res) => {
+  const { id, action } = req.params;
+  if (!/^\d+$/.test(id)) return res.status(404).json({ error: 'not found' });
+  if (!['retry', 'dismiss'].includes(action)) return res.status(400).json({ error: 'action must be retry or dismiss' });
+  const row = (await db.query(`SELECT id, application_id, reason FROM sync_review_queue WHERE id=$1 AND field_key='sitewire' AND status='open'`, [id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'review not found (or already resolved)' });
+  if (!row.application_id || !(await canSeeFile(req, row.application_id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    if (action === 'retry') {
+      // re-arm every dead sitewire push job for this file (they re-run through all the guards)
+      const dead = await db.query(
+        `UPDATE sync_queue SET status='queued', attempts=0, run_after=now(), updated_at=now()
+          WHERE entity_type='application' AND entity_id=$1 AND target='sitewire' AND direction='push' AND status='dead' RETURNING id`, [row.application_id]);
+      // if nothing was dead-lettered, enqueue a fresh push so a fixed upstream cause re-attempts
+      if (!dead.rows.length) await enqueueSitewirePush(row.application_id, 'push_file').catch(() => {});
+      await db.query(`UPDATE sync_review_queue SET status='resolved', resolved_by=$2, resolved_at=now(), resolution_note=$3, updated_at=now() WHERE id=$1`,
+        [id, req.actor.id, dead.rows.length ? `retried ${dead.rows.length} push job(s)` : 're-queued a fresh push']);
+      return res.json({ ok: true, retried: dead.rows.length, requeued: !dead.rows.length });
+    }
+    await db.query(`UPDATE sync_review_queue SET status='rejected', resolved_by=$2, resolved_at=now(), resolution_note='dismissed', updated_at=now() WHERE id=$1`, [id, req.actor.id]);
+    res.json({ ok: true, dismissed: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ---- health/status (setup screen) ----

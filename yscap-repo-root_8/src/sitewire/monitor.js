@@ -44,6 +44,7 @@ function assessPortfolioAlerts(files, opts = {}) {
   const bump = (code) => { byCode[code] = (byCode[code] || 0) + 1; };
 
   for (const f of files || []) {
+    if (!f) continue; // never throw on a null element (defensive; the route never passes one)
     const budget = N(f.budget_cents), drawn = N(f.drawn_cents);
     const remaining = budget - drawn;
     const drawCount = N(f.draw_count);
