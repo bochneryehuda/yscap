@@ -314,6 +314,7 @@ export default function StaffLayout({ children }) {
   const canManageConditions = can('manage_conditions');
   const canManagePricing = can('manage_pricing');
   const canManageVendors = can('manage_vendors');
+  const canManageDraws = can('manage_draws');
   const canDeleteFiles = can('delete_files');
   const canPlatformSetup = can('platform_setup');
   const canViewAudit = can('view_audit_log');
@@ -344,6 +345,7 @@ export default function StaffLayout({ children }) {
 
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
+        {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Construction draws — requested vs approved, per-draw status, and releases"><NavIcon name="pipeline" />Draws</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
         {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
         {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><NavIcon name="archived" />Archived</NavLink>}

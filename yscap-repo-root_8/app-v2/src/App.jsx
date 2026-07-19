@@ -36,6 +36,7 @@ import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
+import StaffDraws from './screens/StaffDraws.jsx';
 import StaffAuditLog from './screens/StaffAuditLog.jsx';
 import SyncReviews from './screens/SyncReviews.jsx';
 
@@ -125,6 +126,7 @@ export default function App() {
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />
+          <Route path="/internal/draws" element={<StaffPrivate><StaffDraws /></StaffPrivate>} />
           <Route path="/internal/audit" element={<StaffPrivate><StaffAuditLog /></StaffPrivate>} />
           <Route path="/internal/sync-reviews" element={<StaffPrivate><SyncReviews /></StaffPrivate>} />
 

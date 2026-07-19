@@ -2252,3 +2252,17 @@ a.checkitem:hover{transform:none;border-color:var(--primary-border)}
 /* ---- List rows are clickable ---- */
 .lead-row{cursor:pointer}
 .lead-tbl .num{font-variant-numeric:tabular-nums}
+
+/* ---- Sitewire draw desk ---- */
+.grid.cols-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:720px){.grid.cols-4{grid-template-columns:repeat(2,1fr)}}
+.row.between{justify-content:space-between;width:100%}
+.btn.btn-sm{padding:6px 12px;font-size:13px}
+.table{border-collapse:collapse}
+.table th,.table td{padding:10px 14px;border-bottom:1px solid var(--line);text-align:left;font-size:14px;vertical-align:middle}
+.table thead th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700}
+.pill.sw-approved{color:var(--ok);border-color:rgba(46,122,94,.4)}
+.pill.sw-pending{color:var(--gold);border-color:rgba(174,135,70,.45)}
+.pill.sw-insp{color:var(--teal-br,#2F7F86);border-color:rgba(47,127,134,.4)}
+.pill.sw-draft{color:var(--muted);border-color:var(--line)}
+.pill.sw-off{color:var(--danger);border-color:rgba(163,42,42,.4)}
