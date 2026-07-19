@@ -14,9 +14,16 @@
  */
 const crypto = require('crypto');
 const zlib = require('zlib');
+// Pure-JS CRC-32 (works on every Node ≥14 — zlib.crc32 only exists on Node ≥20.15/22.2, and
+// package.json declares node>=18, so a bare zlib.crc32 would throw on an older runtime and
+// silently store ZERO photos). Reuse the repo's existing implementation.
+const { crc32 } = require('../zip');
 
 // Only keep images big enough to be real photographs (drop logos, form rules, signature marks).
 const MIN_W = 200, MIN_H = 150;
+// Skip a pathologically large embedded raster BEFORE pdf.js/we fully materialize it — a giant
+// source image (decoded to w*h*channels bytes) could OOM the worker, and an OOM is not catchable.
+const MAX_SRC_AREA = 40 * 1000 * 1000;  // ~40 megapixels — far above any real appraisal photo
 // Cap the number of stored photos per appraisal — an appraisal repeats the same shots across
 // the summary + addenda; after de-duplication this is plenty and bounds storage.
 const MAX_PHOTOS = 24;
@@ -51,7 +58,7 @@ function pngChunk(type, data) {
   const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
   const typeBuf = Buffer.from(type, 'ascii');
   const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(zlib.crc32(Buffer.concat([typeBuf, data])) >>> 0, 0);
+  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])) >>> 0, 0);
   return Buffer.concat([len, typeBuf, data, crc]);
 }
 function encodePng(px, width, height, channels) {
@@ -113,9 +120,10 @@ async function extractPhotos(pdfBase64, opts = {}) {
       if (photos.length >= maxPhotos) break;
       const w = img.width | 0, h = img.height | 0;
       if (w < MIN_W || h < MIN_H) continue;
+      if (w * h > MAX_SRC_AREA) continue;                 // skip an absurdly large raster (OOM guard)
       let px, ch;
       try { ({ buf: px, ch } = toPixelBuffer(img)); } catch (_) { continue; }
-      if (!px || px.length < w * h) continue;           // malformed / too-short buffer
+      if (!px || px.length < w * h * ch) continue;        // malformed / too-short buffer (all channels)
       const sha = crypto.createHash('sha256').update(px).digest('hex');
       if (seen.has(sha)) continue;                        // the same shot repeated across pages
       seen.add(sha);
