@@ -213,6 +213,7 @@ function parseMismoXml(xml) {
   }
   const months = numOrNull(
     X.textAt(loanEl, 'AMORTIZATION', 'AMORTIZATION_RULE', 'LoanAmortizationPeriodCount')
+    || X.textAt(loanEl, 'MATURITY', 'MATURITY_RULE', 'LoanMaturityPeriodCount')
     || X.textAt(loanEl, 'LOAN_DETAIL', 'LoanMaturityPeriodCount'),
   );
   const loan = {

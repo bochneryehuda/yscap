@@ -25,8 +25,46 @@
  *    one area to re-confirm against a receiving partner's sample file; they are
  *    isolated as named constants below for exactly that reason.
  */
-const { el, leaf, render } = require('./xml');
+const { el, leaf, render, localOf } = require('./xml');
 const E = require('./enums');
+
+// ---- MISMO child-element ordering ------------------------------------------
+// MISMO's XSD enforces a strict child sequence in every container. Verified
+// against the official MISMO 3.4.0 B324 reference model schema, that sequence is
+// case-insensitive ALPHABETICAL by element name for every container we emit,
+// with EXTENSION always LAST — EXCEPT a handful of choice-based containers whose
+// order is fixed by the schema, not alphabetical. Those get an explicit override
+// here; everything else falls back to alphabetical. This is what makes our output
+// validate against the official schema (so a receiving system can't reject it).
+const CHILD_ORDER = {
+  CONTACT_POINT: ['CONTACT_POINT_EMAIL', 'CONTACT_POINT_SOCIAL_MEDIA', 'CONTACT_POINT_TELEPHONE', 'OTHER_CONTACT_POINT', 'CONTACT_POINT_DETAIL'],
+  EMPLOYER: ['INDIVIDUAL', 'LEGAL_ENTITY', 'ADDRESS', 'CREDIT_COMMENTS', 'EMPLOYMENT', 'EMPLOYMENT_DOCUMENTATIONS', 'VERIFICATION'],
+  PARTY: ['INDIVIDUAL', 'LEGAL_ENTITY', 'ADDRESSES', 'LANGUAGES', 'ROLES', 'TAXPAYER_IDENTIFIERS'],
+  COLLATERAL: ['PLEDGED_ASSET', 'SUBJECT_PROPERTY', 'COLLATERAL_DETAIL'],
+};
+// Recursively order every container's element children into MISMO's schema
+// sequence. Leaf text is untouched; our own YSCAP: extension leaves keep their
+// order (the importer reads them by name regardless).
+function sortMismoTree(node) {
+  if (!node || typeof node === 'string' || !node.kids) return node;
+  for (const k of node.kids) sortMismoTree(k);
+  const strings = node.kids.filter((k) => typeof k === 'string');
+  const elems = node.kids.filter((k) => typeof k !== 'string');
+  const override = CHILD_ORDER[localOf(node.name)];
+  const rank = (ln) => {
+    if (ln === 'EXTENSION') return 1e6;            // EXTENSION is always last
+    if (override) { const i = override.indexOf(ln); return i === -1 ? 1e5 : i; }
+    return 5e4;                                     // alphabetical bucket
+  };
+  elems.sort((a, b) => {
+    const la = localOf(a.name), lb = localOf(b.name);
+    const ra = rank(la), rb = rank(lb);
+    if (ra !== rb) return ra - rb;
+    return la.toLowerCase() < lb.toLowerCase() ? -1 : la.toLowerCase() > lb.toLowerCase() ? 1 : 0;
+  });
+  node.kids = [...strings, ...elems];
+  return node;
+}
 
 // The MISMO residential namespace + the xlink namespace every 3.x file uses.
 const NS_MISMO = 'http://www.mismo.org/residential/2009/schemas';
@@ -130,13 +168,17 @@ function residences(p) {
 
 function employers(p) {
   if (!p.employer && !p.employmentType) return null;
+  // Self-employment is an INDICATOR in MISMO, not a classification value
+  // (EmploymentClassificationType is Primary/Secondary). Schema-verified.
+  const selfEmployed = !!(p.employmentType && /self|1099|k1|c ?corp|corp/i.test(p.employmentType));
   return el('EMPLOYERS', {}, [
     el('EMPLOYER', {}, [
       p.employer ? el('LEGAL_ENTITY', {}, [
         el('LEGAL_ENTITY_DETAIL', {}, [leaf('FullName', p.employer)]),
       ]) : null,
       el('EMPLOYMENT', {}, [
-        leaf('EmploymentClassificationType', p.employmentType && /self|1099|k1|c corp|corp/i.test(p.employmentType) ? 'SelfEmployed' : null),
+        leaf('EmploymentBorrowerSelfEmployedIndicator', selfEmployed ? 'true' : null),
+        leaf('EmploymentClassificationType', 'Primary'),
         leaf('EmploymentStatusType', 'Current'),
       ]),
     ]),
@@ -153,13 +195,19 @@ function borrowerParty(p, label, roleType, seq) {
   ]);
   const borrowerDetail = el('BORROWER_DETAIL', {}, [
     leaf('BorrowerBirthDate', dateStr(p.dob)),
-    leaf('CitizenshipResidencyType', E.toMismoCitizenship(p.citizenship)),
     leaf('DependentCount', p.dependents != null && p.dependents !== '' ? Math.round(Number(p.dependents)) : null),
     leaf('MaritalStatusType', E.toMismoMarital(p.maritalStatus)),
   ]);
+  // Citizenship lives in DECLARATION > DECLARATION_DETAIL in MISMO, NOT in
+  // BORROWER_DETAIL (schema-verified).
+  const citizenship = E.toMismoCitizenship(p.citizenship);
+  const declaration = citizenship
+    ? el('DECLARATION', {}, [el('DECLARATION_DETAIL', {}, [leaf('CitizenshipResidencyType', citizenship)])])
+    : null;
   const roleKids = [
     el('BORROWER', {}, [
       borrowerDetail.kids.length ? borrowerDetail : null,
+      declaration,
       residences(p),
       employers(p),
     ]),
@@ -207,7 +255,7 @@ function subjectProperty(f, label) {
     valuations.push(el('PROPERTY_VALUATION', {}, [
       el('PROPERTY_VALUATION_DETAIL', {}, [
         leaf('PropertyValuationAmount', num(f.asIsValue)),
-        leaf('PropertyValuationMethodType', 'PriorAppraisal'),
+        leaf('PropertyValuationMethodType', 'PriorAppraisalUsed'),
       ]),
     ]));
   }
@@ -243,10 +291,12 @@ function loan(f, label) {
         leaf('LoanAmortizationPeriodType', 'Month'),
       ]),
     ]) : null,
-    el('LOAN_DETAIL', {}, [
-      leaf('LoanMaturityPeriodCount', months),
-      leaf('LoanMaturityPeriodType', months != null ? 'Month' : null),
-    ]),
+    months != null ? el('MATURITY', {}, [
+      el('MATURITY_RULE', {}, [
+        leaf('LoanMaturityPeriodCount', months),
+        leaf('LoanMaturityPeriodType', 'Month'),
+      ]),
+    ]) : null,
     f.loanNumber || f.investorLoanNumber ? el('LOAN_IDENTIFIERS', {}, [
       f.loanNumber ? el('LOAN_IDENTIFIER', {}, [
         leaf('LoanIdentifier', f.loanNumber),
@@ -375,7 +425,7 @@ function buildMismoXml(f) {
     ]),
   ]);
 
-  return render(message);
+  return render(sortMismoTree(message));
 }
 
 module.exports = { buildMismoXml, NS_MISMO, NS_YSCAP, MISMO_REFERENCE_MODEL_ID };
