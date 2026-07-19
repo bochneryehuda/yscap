@@ -252,8 +252,10 @@ async function pushFile(appId, opts = {}) {
     draw_checklist_template_id: cfg.sitewireDefaultChecklistTemplateId,
     address: addr,
   };
-  // never send a null field (guardNoUnsafeWrite rejects clearing values) — omit instead
-  if (propertyFields.default_draw_coordinator_id == null) delete propertyFields.default_draw_coordinator_id;
+  // never send a null/NaN field (guardNoUnsafeWrite rejects non-finite values and would block the WHOLE
+  // push) — omit a coordinator/checklist id that isn't a finite number (e.g. a mistyped env var).
+  if (!Number.isFinite(propertyFields.default_draw_coordinator_id)) delete propertyFields.default_draw_coordinator_id;
+  if (!Number.isFinite(propertyFields.draw_checklist_template_id)) delete propertyFields.draw_checklist_template_id;
   if (a.units) propertyFields.total_units = Number(a.units);
   if (devType) propertyFields.development_type = devType;
   if (consType) propertyFields.construction_type = consType;
@@ -265,56 +267,74 @@ async function pushFile(appId, opts = {}) {
   if (a.llc_name) propertyFields.borrower_entity_name = a.llc_name;
 
   let link = existingLink;
+  let property, propertyId, budgetId;
 
-  // G-DUPEPROP: if not linked and a Sitewire property already carries our loan number, park (never adopt/duplicate)
-  if (!link || !link.sitewire_property_id) {
-    let existing = null;
-    try {
-      const all = await client.listProperties();
-      existing = (all || []).find((p) => String(p.loan_number || '') === String(a.ys_loan_number));
-    } catch (e) {
-      if (e.retryable) throw e; // transient → the queue retries the whole push
-      // A NON-retryable failure of the dupe check must NEVER fall through to create — that
-      // would risk a duplicate property (violating only-ours). Park instead of guessing safe.
-      await park({ appId, reason: `sitewire_dupe_check_failed: could not verify loan ${a.ys_loan_number} isn't already in Sitewire (${e.message}) — not creating, to avoid a duplicate` });
-      return { parked: 'dupe_check_failed' };
-    }
-    if (existing) {
-      await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} already exists in Sitewire (property ${existing.id}) — PILOT will not duplicate or adopt it`, current: String(existing.id) });
-      return { parked: 'dupe_property' };
-    }
-  }
-
-  await circuitCheck(1);
-  let property;
+  // G-BIRTH: serialize the birth (dupe-check + create + link) per file with a per-file advisory lock on
+  // a dedicated connection, so two concurrent callers — the coordinator's inline Start push and the worker
+  // draining the borrower's queued request-a-draw, or a double-click — can't BOTH create a Sitewire
+  // property for the same loan (a duplicate would violate the only-ours rule; G-RAW can't catch it because
+  // the budget ids differ). Only the CREATE path needs it; an update of an already-linked file is idempotent.
+  let lockConn = null;
+  const lockKey = `sw-birth:${appId}`;
   try {
-    if (link && link.sitewire_property_id) {
-      property = await client.updateProperty(link.sitewire_property_id, propertyFields);
-    } else {
-      property = await client.createProperty(propertyFields);
+    if (!link || !link.sitewire_property_id) {
+      lockConn = await db.getClient();
+      await lockConn.query('SELECT pg_advisory_lock(hashtext($1))', [lockKey]);
+      link = await getLink(appId); // re-read UNDER the lock — the race loser now sees the winner's link and updates
     }
-  } catch (e) {
-    if (e.status === 422) { await park({ appId, reason: `sitewire_property_rejected: Sitewire rejected the property (likely address geocode) — ${JSON.stringify(e.body || {}).slice(0, 200)}` }); return { parked: 'property_422' }; }
-    throw e; // transient -> queue retries
-  }
-  if (property && property.__dryrun) return { dryrun: true, stage: 'property' };
-  const propertyId = property && property.id;
-  const budgetId = property && property.budget && property.budget.id;
-  // A 200 that came back without the ids we need to bind the crosswalk is NOT a success — never
-  // proceed with undefined ids or write a link row we can't reconcile (G-RAW / E-RAW-NOID).
-  if (!propertyId || !budgetId) {
-    await park({ appId, reason: `sitewire_bind_missing_property: Sitewire returned a property with no ${propertyId ? 'budget id' : 'property id'} — cannot bind. Response: ${JSON.stringify(property || {}).slice(0, 200)}` });
-    return { parked: 'no_ids' };
-  }
-  await journal({ appId, propertyId, budgetId, entity: 'property', entityId: propertyId, field: 'property', newValue: propertyFields, source: link ? 'push' : 'create' });
 
-  // upsert the link
-  await db.query(
-    `INSERT INTO sitewire_property_links (application_id, sitewire_property_id, sitewire_budget_id, capital_partner_id, matched_by, state, pushed_at, raw, updated_at)
-     VALUES ($1,$2,$3,$4,'created','live',now(),$5,now())
-     ON CONFLICT (application_id) DO UPDATE SET sitewire_property_id=EXCLUDED.sitewire_property_id, sitewire_budget_id=EXCLUDED.sitewire_budget_id, capital_partner_id=EXCLUDED.capital_partner_id, state='live', pushed_at=now(), updated_at=now()`,
-    [appId, propertyId, budgetId, cp.id, JSON.stringify({ inspectionMethod, feeCents })]);
-  link = await getLink(appId);
+    // G-DUPEPROP: if still not linked and a Sitewire property already carries our loan number, park (never adopt/duplicate)
+    if (!link || !link.sitewire_property_id) {
+      let existing = null;
+      try {
+        const all = await client.listProperties();
+        existing = (all || []).find((p) => String(p.loan_number || '') === String(a.ys_loan_number));
+      } catch (e) {
+        if (e.retryable) throw e; // transient → the queue retries the whole push
+        // A NON-retryable failure of the dupe check must NEVER fall through to create — that
+        // would risk a duplicate property (violating only-ours). Park instead of guessing safe.
+        await park({ appId, reason: `sitewire_dupe_check_failed: could not verify loan ${a.ys_loan_number} isn't already in Sitewire (${e.message}) — not creating, to avoid a duplicate` });
+        return { parked: 'dupe_check_failed' };
+      }
+      if (existing) {
+        await park({ appId, reason: `sitewire_loan_already_in_sitewire: loan ${a.ys_loan_number} already exists in Sitewire (property ${existing.id}) — PILOT will not duplicate or adopt it`, current: String(existing.id) });
+        return { parked: 'dupe_property' };
+      }
+    }
+
+    await circuitCheck(1);
+    try {
+      if (link && link.sitewire_property_id) {
+        property = await client.updateProperty(link.sitewire_property_id, propertyFields);
+      } else {
+        property = await client.createProperty(propertyFields);
+      }
+    } catch (e) {
+      // A deterministic 422/400 must PARK (never retry-loop the queue on a body Sitewire will keep rejecting).
+      if (e.status === 422 || e.status === 400) { await park({ appId, reason: `sitewire_property_rejected: Sitewire ${e.status} on the property (likely address geocode / bad field) — ${JSON.stringify(e.body || {}).slice(0, 200)}` }); return { parked: 'property_' + e.status }; }
+      throw e; // transient -> queue retries
+    }
+    if (property && property.__dryrun) return { dryrun: true, stage: 'property' };
+    propertyId = property && property.id;
+    budgetId = property && property.budget && property.budget.id;
+    // A 200 that came back without the ids we need to bind the crosswalk is NOT a success — never
+    // proceed with undefined ids or write a link row we can't reconcile (G-RAW / E-RAW-NOID).
+    if (!propertyId || !budgetId) {
+      await park({ appId, reason: `sitewire_bind_missing_property: Sitewire returned a property with no ${propertyId ? 'budget id' : 'property id'} — cannot bind. Response: ${JSON.stringify(property || {}).slice(0, 200)}` });
+      return { parked: 'no_ids' };
+    }
+    await journal({ appId, propertyId, budgetId, entity: 'property', entityId: propertyId, field: 'property', newValue: propertyFields, source: link ? 'push' : 'create' });
+
+    // upsert the link
+    await db.query(
+      `INSERT INTO sitewire_property_links (application_id, sitewire_property_id, sitewire_budget_id, capital_partner_id, matched_by, state, pushed_at, raw, updated_at)
+       VALUES ($1,$2,$3,$4,'created','live',now(),$5,now())
+       ON CONFLICT (application_id) DO UPDATE SET sitewire_property_id=EXCLUDED.sitewire_property_id, sitewire_budget_id=EXCLUDED.sitewire_budget_id, capital_partner_id=EXCLUDED.capital_partner_id, state='live', pushed_at=now(), updated_at=now()`,
+      [appId, propertyId, budgetId, cp.id, JSON.stringify({ inspectionMethod, feeCents })]);
+    link = await getLink(appId);
+  } finally {
+    if (lockConn) { try { await lockConn.query('SELECT pg_advisory_unlock(hashtext($1))', [lockKey]); } catch (_) {} lockConn.release(); }
+  }
 
   // assign borrower (best-effort; parks on 422)
   if (a.borrower_email) {
@@ -322,8 +342,11 @@ async function pushFile(appId, opts = {}) {
       const res = await client.assignBorrower(propertyId, a.borrower_email);
       if (!(res && res.__dryrun)) await journal({ appId, propertyId, entity: 'borrower', field: 'contact_email', newValue: a.borrower_email, source: 'push' });
     } catch (e) {
-      if (e.status === 422 || e.status === 400) await park({ appId, reason: `sitewire_borrower_assign_failed: could not assign borrower ${a.borrower_email}` });
-      else if (e.retryable) throw e;
+      if (e.retryable) throw e; // transient → the queue retries the whole push
+      // Any NON-retryable failure (422/400/403/404/409/…) must PARK, never be silently swallowed —
+      // Sitewire owns borrower draw submission, so an unassigned borrower can't submit and someone
+      // must be told (never-silently-drop).
+      await park({ appId, reason: `sitewire_borrower_assign_failed: could not assign borrower ${a.borrower_email} (Sitewire ${e.status || 'error'})` });
     }
   }
 
@@ -375,7 +398,8 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
   try {
     updated = await client.updateBudget(budgetId, { job_items, draw_eligible: true, funding_ratio: 100, funding_threshold_cents: 0 });
   } catch (e) {
-    if (e.status === 422) { await park({ appId, reason: `sitewire_budget_rejected: ${JSON.stringify(e.body || {}).slice(0, 220)}` }); return { parked: 'budget_422' }; }
+    // A deterministic 422/400 parks (never retry-loop a body Sitewire will keep rejecting).
+    if (e.status === 422 || e.status === 400) { await park({ appId, reason: `sitewire_budget_rejected (${e.status}): ${JSON.stringify(e.body || {}).slice(0, 220)}` }); return { parked: 'budget_' + e.status }; }
     throw e;
   }
   if (updated && updated.__dryrun) return { dryrun: true, wouldSend: job_items.length };
@@ -415,12 +439,31 @@ async function pushBudget(appId, budgetId, ex, budgetCents) {
   for (const d of diff.deletes) await db.query(`UPDATE sitewire_job_item_links SET state='deleted', updated_at=now() WHERE id=$1`, [d.id]);
   await journal({ appId, budgetId, entity: 'budget', entityId: budgetId, field: 'job_items', newValue: { creates: diff.creates.length, updates: diff.updates.length, deletes: diff.deletes.length }, source: 'push' });
 
-  // read-after-write (G-RAW): re-GET and assert the total persisted to the cent
+  // read-after-write (G-RAW): re-GET and assert the total AND each line persisted to the cent.
   try {
     const fresh = await client.getBudget(budgetId);
-    if (fresh && fresh.total_budgeted_cents != null && Number(fresh.total_budgeted_cents) !== budgetCents) {
+    // An ABSENT total is not a pass — "returned 200 but the field we verify against is missing" must
+    // never be treated as success (that's exactly the failure G-RAW exists to catch). Park as unverifiable.
+    if (!fresh || fresh.total_budgeted_cents == null) {
+      await park({ appId, reason: `sitewire_total_unverified: Sitewire budget re-read returned no total to check — cannot confirm it saved`, current: budgetId });
+      return { parked: 'verify_failed' };
+    }
+    if (Number(fresh.total_budgeted_cents) !== budgetCents) {
       await park({ appId, reason: `sitewire_total_drift: Sitewire budget total ${T.usd(fresh.total_budgeted_cents)} != expected ${T.usd(budgetCents)} after write`, current: fresh.total_budgeted_cents, proposed: budgetCents });
       return { parked: 'total_drift' };
+    }
+    // Per-line assertion by id: a coercion that preserved the TOTAL but shifted cents BETWEEN lines
+    // still corrupts the schedule of values. Compare each bound crosswalk line to the returned item by id.
+    const freshById = new Map();
+    for (const ji of (fresh.job_items || [])) if (ji && ji.id != null) freshById.set(Number(ji.id), ji);
+    if (freshById.size) {
+      for (const l of (await db.query(`SELECT sitewire_job_item_id, budgeted_cents FROM sitewire_job_item_links WHERE application_id=$1 AND sitewire_budget_id=$2 AND state='live'`, [appId, budgetId])).rows) {
+        const ji = freshById.get(Number(l.sitewire_job_item_id));
+        if (ji && ji.budgeted_cents != null && Number(ji.budgeted_cents) !== Number(l.budgeted_cents)) {
+          await park({ appId, reason: `sitewire_line_drift: job item ${l.sitewire_job_item_id} is ${T.usd(ji.budgeted_cents)} in Sitewire, expected ${T.usd(l.budgeted_cents)}`, current: ji.budgeted_cents, proposed: l.budgeted_cents });
+          return { parked: 'line_drift' };
+        }
+      }
     }
   } catch (e) {
     // If we can't confirm the write persisted, do NOT report success silently (there is no

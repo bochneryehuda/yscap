@@ -86,11 +86,11 @@ export default function DrawsPanel({ appId }) {
           )}
 
           {/* ---- rollup summary tiles (responsive: wrap instead of squishing in the narrow file column) ---- */}
-          <div style={{ marginTop: 12, gap: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+          <div style={{ marginTop: 12, gap: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gridAutoRows: '1fr' }}>
             <Tile label="Construction budget" value={usd(rollup.project.budget)} />
             <Tile label="Drawn (released)" value={usd(rollup.project.drawn)} sub={`${rollup.project.pct_complete}% complete`} />
             <Tile label="Remaining" value={usd(rollup.project.remaining)} accent />
-            <Tile label="In the pipeline" value={usd(rollup.project.approved_pending + rollup.project.requested_open)} sub="awaiting approval" />
+            <Tile label="In the pipeline" value={usd(rollup.project.requested_open)} sub="requested, not yet released" />
           </div>
 
           {/* ---- the unified per-line / per-unit rollup ---- */}
@@ -269,11 +269,13 @@ function StartDrawCard({ appId, onStarted }) {
 }
 
 function Tile({ label, value, sub, accent }) {
+  // Same container-query value tile as the portfolio, compact variant — the number scales to the box
+  // width so a large amount never spills outside it.
   return (
-    <div className="panel" style={{ padding: '12px 14px' }}>
-      <div className="muted" style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, marginTop: 3, color: accent ? 'var(--gold,#ae8746)' : 'inherit' }}>{value}</div>
-      {sub && <div className="muted small" style={{ marginTop: 2 }}>{sub}</div>}
+    <div className="panel stat-tile compact">
+      <div className="stat-tile-label">{label}</div>
+      <div className={'stat-tile-value' + (accent ? ' gold' : '')}>{value}</div>
+      {sub && <div className="muted small stat-tile-sub">{sub}</div>}
     </div>
   );
 }
@@ -364,7 +366,7 @@ function DrawCard({ appId, draw, requests, finding, busy, act, reload, writesOff
       <div className="row between" style={{ alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
         <div className="row" style={{ gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
           <b>Draw #{draw.number ?? '—'}</b>
-          <span className="pill sw-insp">{STATUS[draw.status] || draw.status}</span>
+          <span className="pill sw-insp">{STATUS[draw.status] || 'In progress'}</span>
           {risk && flags.length > 0 && <span className={'pill ' + risk.cls}>{risk.label} · {flags.length}</span>}
         </div>
         <div className="muted small">Requested {usd2(draw.requested_cents)} · Approved {usd2(draw.approved_cents)} · Net {usd2(draw.net_release_cents)}</div>
@@ -552,6 +554,9 @@ function WaiversPanel({ appId, waivers, draws, onChanged }) {
   const [f, setF] = useState({ sitewire_draw_id: '', tier: 'subcontractor', kind: 'conditional', scope: 'progress', party_name: '', amount: '' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // friendly draw number (same mapping the ledger uses) so this table reads "Draw #1", not "#8001"
+  const numByDraw = {};
+  for (const d of (draws || [])) if (d.number != null) numByDraw[String(d.sitewire_draw_id)] = d.number;
   const STA = { required: { label: 'Outstanding', cls: 'sw-pending' }, received: { label: 'Received', cls: 'sw-approved' }, waived: { label: 'Waived', cls: 'sw-approved' }, na: { label: 'N/A', cls: 'sw-draft' } };
   async function add() {
     setBusy(true); setErr('');
@@ -574,7 +579,7 @@ function WaiversPanel({ appId, waivers, draws, onChanged }) {
                 const s = STA[w.status] || { label: w.status, cls: '' };
                 return (
                   <tr key={w.id}>
-                    <td>{w.sitewire_draw_id ? '#' + w.sitewire_draw_id : '—'}</td>
+                    <td>{w.sitewire_draw_id ? 'Draw #' + (numByDraw[String(w.sitewire_draw_id)] ?? w.sitewire_draw_id) : '—'}</td>
                     <td>{w.party_name || '—'}</td>
                     <td className="muted">{w.tier}</td>
                     <td className="muted small">{w.kind} · {w.scope}</td>
@@ -631,7 +636,7 @@ function ActivityTrail({ appId }) {
         <div style={{ marginTop: 8, maxHeight: 320, overflowY: 'auto' }}>
           {rows.map((a, i) => (
             <div key={i} className="row" style={{ gap: 8, padding: '5px 0', borderTop: i ? '1px solid var(--line,#e6e0d4)' : 'none', alignItems: 'baseline' }}>
-              <span className="muted small" style={{ minWidth: 130, fontVariantNumeric: 'tabular-nums' }}>{new Date(a.at).toLocaleString('en-US')}</span>
+              <span className="muted small" style={{ minWidth: 130, fontVariantNumeric: 'tabular-nums' }}>{a.date_only ? fmtDay(a.at) : new Date(a.at).toLocaleString('en-US')}</span>
               <span className="pill sw-draft" style={{ flex: 'none' }}>{KIND[a.kind] || a.kind}</span>
               <span className="small">{a.summary}{a.actor ? <span className="muted"> · {a.actor}</span> : null}</span>
             </div>

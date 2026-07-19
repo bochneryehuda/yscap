@@ -96,9 +96,14 @@ export default function StaffDraws() {
             <div key={f.application_id} className="row between" style={{ padding: '6px 0', borderTop: '1px solid var(--line,#e6e0d4)', gap: 8, flexWrap: 'wrap' }}>
               <div>
                 <Link to={`/internal/app/${f.application_id}`} style={{ fontWeight: 600 }}>{f.address || f.ys_loan_number || 'File'}</Link>
-                <div className="small" style={{ marginTop: 2 }}>
+                {/* Alerts are whole sentences — render as callout rows (a severity dot + wrapping text),
+                    NOT pills (a pill is inline-flex + capitalize, so a sentence overflows and mis-cases). */}
+                <div className="small" style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {f.alerts.map((a, i) => (
-                    <span key={i} className={'pill ' + (a.severity === 'high' ? 'sw-pending' : 'sw-insp')} style={{ marginRight: 6 }} title={a.message}>{a.message}</span>
+                    <div key={i} className="row" style={{ gap: 6, alignItems: 'flex-start' }}>
+                      <span style={{ flex: '0 0 auto', width: 8, height: 8, borderRadius: 999, marginTop: 5, background: a.severity === 'high' ? 'var(--bad,#b04a3f)' : 'var(--gold,#ae8746)' }} />
+                      <span style={{ overflowWrap: 'anywhere' }}>{a.message}</span>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -131,11 +136,11 @@ export default function StaffDraws() {
             </tr></thead>
             <tbody>
               {shown.map((d) => {
-                const s = STATUS[d.status] || { label: d.status || '—', cls: '' };
+                const s = STATUS[d.status] || { label: 'In progress', cls: 'sw-draft' };
                 return (
                   <tr key={d.sitewire_draw_id}>
                     <td style={{ fontVariantNumeric: 'tabular-nums' }}>{d.ys_loan_number || '—'}</td>
-                    <td className="muted" style={{ maxWidth: 260 }}>{d.address || '—'}</td>
+                    <td className="muted"><div style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.address || ''}>{d.address || '—'}</div></td>
                     <td>#{d.number ?? '—'}</td>
                     <td><span className={'pill ' + s.cls}>{s.label}</span></td>
                     <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd(d.total_requested_cents)}</td>
@@ -154,13 +159,13 @@ export default function StaffDraws() {
 }
 
 function Stat({ label, value, accent, link, sub }) {
-  // Fixed height + flex column so every tile is the SAME size whether or not it has a sub-line
-  // (the value sits at a consistent position; the sub pins to the bottom).
+  // Equal-height tile whose value font scales to the tile width (.stat-tile* container query), so a
+  // large dollar amount never spills outside the box; the sub pins to the bottom for a consistent look.
   const body = (
-    <div className="panel" style={{ padding: '14px 16px', height: '100%', minHeight: 104, display: 'flex', flexDirection: 'column', boxSizing: 'border-box' }}>
-      <div className="muted" style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '.06em' }}>{label}</div>
-      <div style={{ fontSize: 26, fontWeight: 700, marginTop: 4, color: accent ? 'var(--gold, #ae8746)' : 'inherit' }}>{value ?? '—'}</div>
-      <div className="muted small" style={{ marginTop: 'auto', paddingTop: 4, minHeight: 16 }}>{sub || ''}</div>
+    <div className="panel stat-tile">
+      <div className="stat-tile-label">{label}</div>
+      <div className={'stat-tile-value' + (accent ? ' gold' : '')}>{value ?? '—'}</div>
+      <div className="muted small stat-tile-sub">{sub || ''}</div>
     </div>
   );
   return link ? <Link to={link} style={{ textDecoration: 'none', color: 'inherit', display: 'block', height: '100%' }}>{body}</Link> : body;

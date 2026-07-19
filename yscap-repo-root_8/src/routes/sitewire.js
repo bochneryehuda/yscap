@@ -326,9 +326,19 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   let drawId = null;
   if (sitewire_draw_id != null && sitewire_draw_id !== '') {
     if (!/^\d+$/.test(String(sitewire_draw_id))) return res.status(400).json({ error: 'invalid draw id' });
-    const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id]);
-    if (!own.rowCount) return res.status(400).json({ error: 'that draw is not on this file' });
+    const own = (await db.query(`SELECT total_approved_cents FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [sitewire_draw_id, application_id])).rows[0];
+    if (!own) return res.status(400).json({ error: 'that draw is not on this file' });
     drawId = sitewire_draw_id;
+    // M1: don't record a release larger than what the lender actually approved on this draw (unless overridden) —
+    // the ledger (and retainage) should never exceed the real approved figure.
+    const drawApproved = Number(own.total_approved_cents) || 0;
+    if (drawApproved > 0 && approved > drawApproved && !req.body.override) {
+      return res.status(422).json({ error: `${T.usd(approved)} is more than the ${T.usd(drawApproved)} approved on this draw — pass override:true to record it anyway.` });
+    }
+    // H1: a draw is released once — block a duplicate ledger row up front (the db/148 unique index is the
+    // belt-and-suspenders). A duplicate would double-count into the retainage pool.
+    const dup = await db.query(`SELECT 1 FROM draw_disbursements WHERE sitewire_draw_id=$1 AND kind='draw'`, [drawId]);
+    if (dup.rowCount) return res.status(409).json({ error: 'A release is already recorded for this draw — correct the existing entry instead of adding another.' });
   }
   try {
     // retainage: hold a % of the approved amount; net = approved − fee − retainage held
@@ -349,7 +359,11 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
       [application_id, drawId, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note || null, req.actor.id])).rows[0];
     res.json({ ok: true, disbursement: row });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    // db/148 unique index — a second draw release raced past the pre-check
+    if (e.code === '23505') return res.status(409).json({ error: 'A release is already recorded for this draw.' });
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ---- POST /files/:id/retainage-release — release the accumulated retainage at completion ----
@@ -654,7 +668,13 @@ router.get('/portfolio', requirePermission('manage_draws'), async (req, res) => 
 // dispute, and Scope-of-Work reallocations. Time-ordered, newest first. Read-only.
 async function buildDrawActivity(appId) {
   const ev = [];
-  const push = (at, kind, summary, actor) => { if (at) ev.push({ at: new Date(at).toISOString(), kind, summary, actor: actor || null }); };
+  // A date-only value ('YYYY-MM-DD', e.g. a release_date) must NOT be run through new Date().toISOString()
+  // — that stamps UTC midnight and the browser then renders the PREVIOUS calendar day (the repo's date
+  // rule). Keep date-only values as the calendar string and tag them so the UI formats them as a day.
+  const push = (at, kind, summary, actor, dateOnly) => {
+    if (!at) return;
+    ev.push({ at: dateOnly ? String(at).slice(0, 10) : new Date(at).toISOString(), date_only: !!dateOnly, kind, summary, actor: actor || null });
+  };
   // 1) our guarded writes to Sitewire (journal)
   for (const w of (await db.query(`SELECT entity, field, source, created_at FROM sitewire_write_log WHERE application_id=$1 ORDER BY created_at DESC LIMIT 500`, [appId])).rows) {
     push(w.created_at, 'write', `PILOT ${w.source || 'push'}: ${w.entity || 'record'}${w.field ? ' · ' + w.field : ''}`);
@@ -667,7 +687,9 @@ async function buildDrawActivity(appId) {
   }
   // 3) money released (our ledger)
   for (const l of (await db.query(`SELECT sitewire_draw_id, net_release_cents, release_date, funded_status, created_at, created_by FROM draw_disbursements WHERE application_id=$1`, [appId])).rows) {
-    push(l.release_date || l.created_at, 'money', `Release recorded: net ${T.usd(l.net_release_cents)} (${l.funded_status})${l.sitewire_draw_id ? ' · draw #' + l.sitewire_draw_id : ''}`);
+    // release_date is a date-only column → keep it a calendar day (dateOnly); fall back to the true
+    // created_at instant when no release date was recorded.
+    push(l.release_date || l.created_at, 'money', `Release recorded: net ${T.usd(l.net_release_cents)} (${l.funded_status})${l.sitewire_draw_id ? ' · draw #' + l.sitewire_draw_id : ''}`, null, !!l.release_date);
   }
   // 4) findings accept/dispute lifecycle
   for (const f of (await db.query(`SELECT sitewire_draw_id, delivered_at, accepted_at, accepted_via, disputed_at, resolved_at FROM draw_findings WHERE application_id=$1`, [appId])).rows) {
