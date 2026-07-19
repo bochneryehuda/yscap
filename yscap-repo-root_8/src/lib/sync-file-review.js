@@ -107,7 +107,7 @@ async function audit(action, entityId, actorId, detail) {
  * invalid input and lets 5xx bubbles surface as-is. Marking the row resolved
  * is the CALLER's job (shared with the other resolve endpoints).
  */
-async function applyFileReviewAction({ row, action, targetApplicationId, targetTaskId, confirmMove, actorId }) {
+async function applyFileReviewAction({ row, action, targetApplicationId, targetTaskId, confirmMove, actorId, isAdmin }) {
   if (!isActionAllowed(row.reason, action)) {
     throw httpError(400, `action '${action}' is not available for this row`);
   }
@@ -399,6 +399,15 @@ async function applyFileReviewAction({ row, action, targetApplicationId, targetT
     // off any current holder (only with confirmMove), binds it here, then
     // re-ingests (COALESCE fill) and re-stamps the card at this file. A held card
     // without confirmMove bubbles a needsConfirm 409 the route relays.
+    // ADMIN ONLY (owner-directed 2026-07-19; pre-merge audit B1). relink_task
+    // MOVES a ClickUp card between files (it can pull a card off another file),
+    // the same privileged override as the direct /clickup/relink endpoint — so
+    // it must NEVER be reachable by a processor / loan_officer / underwriter /
+    // loan_coordinator, including one granted the see_all_files capability. The
+    // review-queue route (resolve-file) is NOT role-gated (LOs resolve their own
+    // rows), so the gate lives HERE, at the action chokepoint, fed the caller's
+    // real admin role. Checked FIRST — authorization before any other work.
+    if (!isAdmin) throw httpError(403, 'Only an admin can move a ClickUp card between files.');
     if (!row.application_id) throw httpError(409, 'this row has no portal file to link');
     if (!targetTaskId) throw httpError(400, 'a ClickUp card id or link is required to relink');
     let out;

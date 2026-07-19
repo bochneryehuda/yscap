@@ -181,12 +181,18 @@ async function expectHttp(status, fn) {
   await ta('create_task without a file → 409', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
       row: { reason: 'file_unlinked_no_task', application_id: null }, action: 'create_task' })));
-  await ta('relink_task without a file → 409', () =>
+  // relink_task is ADMIN-ONLY — the authorization check fires FIRST, before any
+  // field validation (pre-merge audit B1: the review-queue route is LO-reachable,
+  // so the action layer must refuse a non-admin even with valid inputs).
+  await ta('relink_task as a NON-admin → 403 (even with valid inputs)', () =>
+    expectHttp(403, () => SFR.applyFileReviewAction({
+      row: { reason: 'file_dead_unlinked', application_id: 'a1' }, action: 'relink_task', targetTaskId: '868xyz', isAdmin: false })));
+  await ta('relink_task without a file → 409 (admin)', () =>
     expectHttp(409, () => SFR.applyFileReviewAction({
-      row: { reason: 'file_dead_unlinked', application_id: null }, action: 'relink_task', targetTaskId: '868xyz' })));
-  await ta('relink_task without a target card → 400', () =>
+      row: { reason: 'file_dead_unlinked', application_id: null }, action: 'relink_task', targetTaskId: '868xyz', isAdmin: true })));
+  await ta('relink_task without a target card → 400 (admin)', () =>
     expectHttp(400, () => SFR.applyFileReviewAction({
-      row: { reason: 'file_dead_unlinked', application_id: 'a1' }, action: 'relink_task', targetTaskId: null })));
+      row: { reason: 'file_dead_unlinked', application_id: 'a1' }, action: 'relink_task', targetTaskId: null, isAdmin: true })));
 
   // ---- custom-value resolution: validation fires BEFORE any write ----------
   const AR = require('../src/lib/sync-autoresolve');

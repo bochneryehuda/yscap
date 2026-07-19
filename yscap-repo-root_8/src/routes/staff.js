@@ -6150,9 +6150,13 @@ router.post('/sync-reviews/:id/resolve-file', async (req, res) => {
       row, action,
       targetApplicationId: (req.body && req.body.targetApplicationId) || null,
       // relink_task (dead/unlinked file → move an existing ClickUp card onto it)
-      // carries a card id/link + an explicit move confirmation.
+      // carries a card id/link + an explicit move confirmation. It is ADMIN-ONLY
+      // (moving a card is the same privileged action as the direct relink
+      // endpoint); the action layer enforces it with this flag, since this
+      // route itself is LO-reachable for the other (non-privileged) actions.
       targetTaskId: (req.body && req.body.targetTaskId) || null,
       confirmMove: !!(req.body && req.body.confirmMove),
+      isAdmin: isAdmin(req),
       actorId: req.actor.id,
     });
     await db.query(
