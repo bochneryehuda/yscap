@@ -134,6 +134,46 @@ ok('createdByThisApp requires matching app id',
   !sp.createdByThisApp({ createdBy: { application: { id: 'someone-else' } } }));
 ok('createdByThisApp false for human-created items', !sp.createdByThisApp({ createdBy: { user: { id: 'u' } } }));
 
+// ------------------------- never-attempted stray net (why a doc got "stuck")
+// explainExclusion must NAME the pendingBatch predicate that would skip a row,
+// so a production log line answers "why did the document get stuck?" instead of
+// leaving "(not yet attempted)".
+ok('neverAttemptedStrays is exported', typeof backup.neverAttemptedStrays === 'function');
+ok('explainExclusion is exported', typeof backup.explainExclusion === 'function');
+ok('forceAttemptDoc is exported (per-doc safety net)', typeof backup.forceAttemptDoc === 'function');
+{
+  const ex = backup.explainExclusion;
+  ok('explains a non-local storage_provider (invisible to the normal drain)',
+    /storage_provider='s3'/.test(ex({ storage_provider: 's3', app_id: 'a' })));
+  ok('explains a superseded regen snapshot',
+    /superseded/.test(ex({ storage_provider: 'local', is_regen: true, is_current: false, app_id: 'a' })));
+  ok('explains a NULL is_current regen snapshot',
+    /NULL is_current/.test(ex({ storage_provider: 'local', is_regen: true, is_current: null, app_id: 'a' })));
+  ok('explains a doc with no borrower/application scope',
+    /no application\/borrower scope/.test(ex({ storage_provider: 'local', app_id: null, borrower_id: null })));
+  ok('a well-formed local row with a scope has NO obvious exclusion (drain/lease health)',
+    /drain\/lease health/.test(ex({ storage_provider: 'local', is_regen: false, is_current: true, app_id: 'a', borrower_id: 'b' })));
+  ok('a stray with a scope does NOT get mislabeled no-scope',
+    !/no application\/borrower scope/.test(ex({ storage_provider: 's3', app_id: 'a', borrower_id: 'b' })));
+}
+
+// ---------------- persistent SLO-alert dedup (stop duplicate emails on restart)
+ok('sloSignature is exported', typeof backup.sloSignature === 'function');
+ok('claimSloAlert is exported', typeof backup.claimSloAlert === 'function');
+ok('clearSloAlert is exported', typeof backup.clearSloAlert === 'function');
+{
+  const sig = backup.sloSignature;
+  const set = [{ id: 'b' }, { id: 'a' }, { id: 'c' }];
+  ok('signature is stable regardless of stuck-doc order (same email → same sig)',
+    sig(set) === sig([{ id: 'a' }, { id: 'c' }, { id: 'b' }]));
+  ok('signature CHANGES when a new stuck document appears (a new problem re-alerts)',
+    sig(set) !== sig([...set, { id: 'd' }]));
+  ok('signature IGNORES attempt-counter/exhausted churn (same incident → no re-spam)',
+    sig([{ id: 'a', attempts: 0 }]) === sig([{ id: 'a', attempts: 5 }]));
+  ok('empty stuck set still yields a deterministic signature',
+    sig([]) === sig([]));
+}
+
 // -------------------------------------- the ONE sanctioned delete: guardrails
 // (Graph-free checks: refusals must fire BEFORE any network call.)
 (async () => {
