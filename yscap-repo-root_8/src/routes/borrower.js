@@ -2462,7 +2462,8 @@ router.get('/credit', async (req, res) => {
   const bid = me(req);
   try {
     const reports = (await db.query(
-      `SELECT DISTINCT cr.id, cr.first_issued_date, cr.representative_bracket, cr.pdf_document_id, cr.created_at
+      `SELECT DISTINCT cr.id, cr.first_issued_date, cr.representative_bracket, cr.pdf_document_id, cr.created_at,
+              (a.co_borrower_id IS NOT NULL) AS file_has_co
          FROM credit_reports cr
          JOIN applications a ON a.id = cr.application_id
         WHERE (a.borrower_id=$1 OR a.co_borrower_id=$1) AND cr.status='imported'
@@ -2481,8 +2482,10 @@ router.get('/credit', async (req, res) => {
     }
     // A JOINT tri-merge PDF is one shared file carrying BOTH borrowers' full consumer
     // files (SSN, tradelines). Withhold its download from the self-service view — a
-    // co-borrower may be an unrelated business partner. hasPdf reflects real
-    // downloadability: only a report with NO other borrower's scores is offered.
+    // co-borrower may be an unrelated business partner. Belt-and-suspenders: offer it
+    // ONLY when (a) the file has NO co-borrower at all AND (b) the report carries no
+    // other borrower's scores. (a) closes the edge where a co-borrower's scores could
+    // land unattributed (NULL borrower_id) and slip the score-only check.
     let jointIds = new Set();
     if (ids.length) {
       const jr = (await db.query(
@@ -2497,7 +2500,7 @@ router.get('/credit', async (req, res) => {
         id: r.id,
         pulledOn: r.first_issued_date,
         scores: scoresByReport.get(r.id) || [],
-        hasPdf: !!r.pdf_document_id && !jointIds.has(r.id),
+        hasPdf: !!r.pdf_document_id && !r.file_has_co && !jointIds.has(r.id),
       })),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
@@ -2515,6 +2518,7 @@ router.get('/credit/:id/pdf', async (req, res) => {
          JOIN documents d ON d.id = cr.pdf_document_id
          JOIN applications a ON a.id = cr.application_id
         WHERE cr.id=$1 AND (a.borrower_id=$2 OR a.co_borrower_id=$2) AND cr.status='imported'
+          AND a.co_borrower_id IS NULL
           AND NOT EXISTS (SELECT 1 FROM credit_scores cs
                            WHERE cs.credit_report_id=cr.id AND cs.borrower_id IS NOT NULL AND cs.borrower_id <> $2)`,
       [req.params.id, bid]);
