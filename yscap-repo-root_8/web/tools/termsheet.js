@@ -249,8 +249,14 @@
     // interest-only payment logic (industry standard): during construction the borrower pays
     // interest only on funds DRAWN — starts on the initial advance, grows to the full loan.
     var rFrac = (R.noteRate || 0) / 12;
-    var initialPayment = initialAdvance * rFrac;           // while only the initial advance is out
-    var fullPayment = totalLoan * rFrac;                   // after all rehab draws complete
+    // Use the engine's own payment figures (round2 of the sized loan) so the printed
+    // monthly payment / reserve / liquidity match the REGISTERED file to the penny.
+    // normalize() persists s.fullPayment/s.initialPayment; recomputing here on the
+    // floored loan drifted 1-2 cents (audit 2026-07-19). Falls back to the floored
+    // loan if the engine ever omits them. Does NOT touch the financed-reserve
+    // reconciliation (that stays on the floored totalLoan/initial/holdback residual).
+    var initialPayment = (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac);   // while only the initial advance is out
+    var fullPayment = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac);                 // after all rehab draws complete
     var monthlyInterest = s.monthlyInterest || fullPayment;
     var title = (typeof YSTitle !== "undefined" && YSTitle) ? YSTitle.estimate(inp.state, totalLoan, inp.loanType) : { total: 0 };
     var titleOvr = adminTitle();
@@ -330,7 +336,7 @@
       financedIR: financedIRr, unfinancedIR: 0,
       maxReserve: s.maxReserve || 0, reserveCapped: !!s.reserveCapped, reserveCapBy: s.reserveCapBy || "",
       maxReserveMonths: s.maxReserveMonths || 0, desiredReserve: s.desiredReserve || 0,
-      initialPayment: initialAdvance * rFrac, fullPayment: totalLoan * rFrac, monthlyInterest: totalLoan * rFrac,
+      initialPayment: (s.initialPayment != null ? Number(s.initialPayment) : initialAdvance * rFrac), fullPayment: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac), monthlyInterest: (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac),
       totalCost: basisPrice + num("construction") + financedIRr,
       downPayment: s.downPayment || 0, excessOOP: excessOOP,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
@@ -937,6 +943,18 @@
         ["Liquidity to show", gOk ? money2(gd.liquidity) : EM]
       ];
     }
+    // Extra company fees (NY settlement etc.) as their own line, inserted before
+    // "Estimated cash to close" so the Excel fee list adds up to cash-to-close just
+    // like the on-screen panel and the PDF (audit 2026-07-19 — Excel was the only
+    // surface that folded the fee into the total without naming it).
+    if (stdOk && d.extraFees && d.extraFees.length) {
+      var si = std.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      if (si > -1) Array.prototype.splice.apply(std, [si, 0].concat(d.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
+    }
+    if (gd && !gd.unavailable && gOk && gd.extraFees && gd.extraFees.length) {
+      var gi = gold.findIndex(function (r) { return r[0] === "Estimated cash to close"; });
+      if (gi > -1) Array.prototype.splice.apply(gold, [gi, 0].concat(gd.extraFees.map(function (f) { return [f.name, money2(f.amount)]; })));
+    }
     return [{ title: "Deal & property", items: deal }, { title: "Purchase & project costs", items: costs },
             { title: "Standard Program", items: std }, { title: "Gold Standard Program", items: gold }];
   }
@@ -1107,7 +1125,7 @@
       yL = cardHead(xL, colW, "Loan structure", yL);
       yL = rowIn(xL, colW, isRefi() ? "As-is value" : "Purchase price", money(isRefi() ? d.basisPrice : (num("price") || d.basisPrice)), yL);
       if (!isRefi() && isAssign()) yL = rowIn(xL, colW, "Seller price / assignment fee", money(num("origPrice")) + " / " + money(Math.max(0, num("price") - num("origPrice"))), yL);
-      if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) yL = rowIn(xL, colW, "Effective purchase price " + (d.asg.overridden ? "(admin exception)" : "(fee capped at 15%)"), money(d.asg.recognizedPrice), yL);
+      if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) yL = rowIn(xL, colW, "Effective purchase price " + (d.asg.overridden ? "(admin exception)" : d.asg.dollarCap ? "(fee capped at the program limit)" : "(fee capped at 15%)"), money(d.asg.recognizedPrice), yL);
       if (!isBridge) {
         yL = rowIn(xL, colW, "Construction / rehab budget", money(d.constr), yL);
         if (d.financedIR > 0) { var finMo = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (d.irMonths || 0); yL = rowIn(xL, colW, "Financed interest reserve (" + finMo + " mo)", money(d.financedIR), yL); }
@@ -1143,7 +1161,7 @@
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
       if (sized && d.extraFees) d.extraFees.forEach(function (f) { yR = rowIn(xR, colW, f.name, money2(f.amount), yR); });
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
-      if (d.excessOOP > 0) yR = rowIn(xR, colW, "Assignment over 15% (out of pocket)", money(d.excessOOP), yR);
+      if (d.excessOOP > 0) yR = rowIn(xR, colW, ((d.asg && d.asg.dollarCap) ? "Assignment over cap (out of pocket)" : "Assignment over 15% (out of pocket)"), money(d.excessOOP), yR);
       yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
       var liqLbl = d.gold ? ("Liquidity to show (" + Math.round((d.liquidityPct || 0.05) * 100) + "% of loan)") : ("Liquidity to show (" + d.reserveMo + " mo)");
       yR = rowIn(xR, colW, liqLbl, sized ? money2(d.liquidity) : "\u2014", yR);
@@ -1180,11 +1198,21 @@
       para("3.  Business purpose only.  This is business / investment-purpose financing secured by non-owner-occupied real property. It is not an offer to extend consumer credit and is not subject to consumer-mortgage (TILA / RESPA) disclosures. A personal guaranty and a first-lien position are required.", 7.5);
       para("4.  Interest, draws & costs.  Interest accrues interest-only on the outstanding loan balance. Rehab funds are advanced by reimbursement draw after inspection, and the borrower carries interest on drawn amounts. The title / escrow figure is a planning estimate based on the state, loan size and transaction type (transfer and mortgage taxes are separate); the settlement agent issues the binding quote at closing.", 7.5);
       var scolW = (W - 2 * M - 30) / 2, sx1 = M, sx2 = M + scolW + 30;
-      function sigBlock(x, who2, sub) {
+      function sigBlock(x, who2, sub, aSig, aDt) {
         doc.setDrawColor(120, 128, 132); doc.setLineWidth(0.8); doc.line(x, y + 28, x + scolW, y + 28);
         doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(who2), x, y + 41);
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(sub), x, y + 51);
         doc.line(x, y + 70, x + scolW - 90, y + 70); doc.text("Date", x, y + 81);
+        // Invisible DocuSign anchors: white, tiny (4pt) text placed ON the
+        // signature and date lines — a human never sees them, DocuSign finds them
+        // in the text layer and drops the recipient's tab there. Document-unique
+        // (ts_*) so a tab never accidentally lands on another doc in the envelope.
+        if (aSig || aDt) {
+          doc.setTextColor(255, 255, 255); doc.setFontSize(4);
+          if (aSig) doc.text(aSig, x + 2, y + 25);
+          if (aDt) doc.text(aDt, x + 2, y + 67);
+          doc.setFontSize(7.5); doc.setTextColor.apply(doc, GRAY);
+        }
       }
       var coBorrowerName = pdfSafe((val("coBorrowerName") || "").trim());
       if (d.status === "INELIGIBLE") {
@@ -1205,16 +1233,16 @@
         var _primarySub = _tsEntity
           ? (_tsIndiv ? ("Borrower (entity) — by " + _tsIndiv + ", authorized signatory / guarantor") : "Borrower (entity) / authorized signatory")
           : "Borrower / authorized signatory";
-        sigBlock(sx1, _primaryName, _primarySub);
+        sigBlock(sx1, _primaryName, _primarySub, "/ts_b1_sig/", "/ts_b1_dt/");
         // When the file has TWO borrowers, the term sheet carries a second
         // signature line for the co-borrower (owner-directed #137) side-by-side
         // with the borrower; the lender line drops to the next row.
         if (coBorrowerName) {
-          sigBlock(sx2, coBorrowerName, "Co-borrower / authorized signatory");
+          sigBlock(sx2, coBorrowerName, "Co-borrower / authorized signatory", "/ts_b2_sig/", "/ts_b2_dt/");
           y += 92; brk(86);
-          sigBlock(sx1, LENDER.name, "Authorized representative \u2014 required to validate");
+          sigBlock(sx1, LENDER.name, "Authorized representative \u2014 required to validate", "/ts_admin_sig/", "/ts_admin_dt/");
         } else {
-          sigBlock(sx2, LENDER.name, "Authorized representative \u2014 required to validate");
+          sigBlock(sx2, LENDER.name, "Authorized representative \u2014 required to validate", "/ts_admin_sig/", "/ts_admin_dt/");
         }
         y += 92; footer();
       }
@@ -1584,7 +1612,7 @@
       [isRefi ? "As-is value entered" : "Purchase price entered", money(isRefi ? num("asIs") : num("price"))],
       assignOn ? ["Assignment \u2014 seller's contract price", money(num("origPrice"))] : null,
       assignOn ? ["Assignment fee", money(num("assignFee"))] : null,
-      (assignOn && d.asg && d.asg.overLimit) ? ["Effective purchase price \u2014 fee counted up to 15% of the seller's price", money(d.asg.recognizedPrice)] : null,
+      (assignOn && d.asg && (d.asg.overLimit || d.asg.overridden)) ? ["Effective purchase price \u2014 " + (d.asg.overridden ? "approved exception" : d.asg.dollarCap ? "fee capped at the program limit" : "fee counted up to 15% of the seller's price"), money(d.asg.recognizedPrice)] : null,
       (!isRefi && num("asIs") > 0) ? ["As-is value entered", money(num("asIs"))] : null,
       num("arv") > 0 ? ["After-repair value (ARV)", money(num("arv"))] : null,
       num("construction") > 0 ? ["Construction / rehab budget", money(num("construction"))] : null,

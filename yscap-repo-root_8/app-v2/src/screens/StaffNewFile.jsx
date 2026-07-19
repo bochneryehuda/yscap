@@ -123,6 +123,105 @@ function CoBorrowerPicker({ value, onChange }) {
   );
 }
 
+/* Import a MISMO 3.4 file — the mortgage industry's shared format. Reads the
+   uploaded XML, shows a PREVIEW of exactly what will be imported (nothing is
+   saved yet), then creates a brand-new loan file from it on confirm. */
+function fmtMoney(n) { return n == null || n === '' ? '—' : '$' + Math.round(Number(n)).toLocaleString('en-US'); }
+function MismoImport() {
+  const nav = useNavigate();
+  const fileRef = useRef(null);
+  const [state, setState] = useState({ status: 'idle' }); // idle | reading | ready | creating
+  const [xml, setXml] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [warnings, setWarnings] = useState([]);
+  const [err, setErr] = useState('');
+
+  async function onPick(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setErr(''); setPreview(null); setWarnings([]); setState({ status: 'reading' });
+    try {
+      const text = await file.text();
+      setXml(text);
+      const r = await api.staffMismoPreview(text);
+      setPreview(r.preview || null);
+      setWarnings(r.warnings || []);
+      setState({ status: 'ready' });
+    } catch (e2) {
+      setErr(e2.message || 'This file could not be read as a MISMO 3.4 file.');
+      setState({ status: 'idle' });
+    }
+  }
+  async function create() {
+    setErr(''); setState({ status: 'creating' });
+    try {
+      const r = await api.staffMismoCreate(xml);
+      nav(`/internal/app/${r.applicationId}`);
+    } catch (e2) {
+      setErr(e2.message || 'Could not create a file from this import.');
+      setState({ status: 'ready' });
+    }
+  }
+  function reset() {
+    setState({ status: 'idle' }); setXml(''); setPreview(null); setWarnings([]); setErr('');
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  const b = preview && preview.borrower;
+  const p = preview && preview.property;
+  const l = preview && preview.loan;
+  const addr = p && p.address ? [p.address.line1, p.address.city, p.address.state, p.address.zip].filter(Boolean).join(', ') : '—';
+
+  return (
+    <div className="panel" style={{ marginBottom: 16 }}>
+      <div className="panel-h"><div className="grp-h"><span className="n">★</span><h3>Import a MISMO 3.4 file</h3></div><span className="pill mut">Industry standard</span></div>
+      <div className="panel-b">
+        <p className="sub" style={{ marginTop: 0 }}>
+          Have a loan file from another system in MISMO format? Upload it here and PILOT will read it in — you'll see
+          exactly what it contains before anything is saved.
+        </p>
+        {err && <div role="alert" className="notice err" style={{ marginBottom: 10 }}>{err}</div>}
+        <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input ref={fileRef} type="file" accept=".xml,text/xml,application/xml" onChange={onPick}
+            disabled={state.status === 'reading' || state.status === 'creating'} />
+          {state.status === 'reading' && <span className="muted small">Reading the file…</span>}
+          {(preview || err) && <button type="button" className="btn btn-ghost btn-sm" onClick={reset}>Clear</button>}
+        </div>
+
+        {preview && (
+          <div style={{ marginTop: 12 }}>
+            <div className="notice" style={{ marginBottom: 10 }}>Nothing is saved yet — this is a preview of what the file contains.</div>
+            <div className="grid cols-2" style={{ gap: 8 }}>
+              <div className="metrow"><span className="k">Borrower</span><span className="v">{b ? `${b.firstName || ''} ${b.lastName || ''}`.trim() || '—' : '—'}</span></div>
+              <div className="metrow"><span className="k">Co-borrower</span><span className="v">{preview.coBorrower ? `${preview.coBorrower.firstName || ''} ${preview.coBorrower.lastName || ''}`.trim() : '—'}</span></div>
+              <div className="metrow"><span className="k">Property</span><span className="v">{addr}</span></div>
+              <div className="metrow"><span className="k">Vesting entity</span><span className="v">{preview.llc ? preview.llc.name : '—'}</span></div>
+              <div className="metrow"><span className="k">Loan amount</span><span className="v">{fmtMoney(l && l.loanAmount)}</span></div>
+              <div className="metrow"><span className="k">Loan purpose</span><span className="v">{(l && l.loanType) || '—'}</span></div>
+              <div className="metrow"><span className="k">Purchase price</span><span className="v">{fmtMoney(p && p.purchasePrice)}</span></div>
+              <div className="metrow"><span className="k">After-repair value</span><span className="v">{fmtMoney(preview.extras && preview.extras.arv)}</span></div>
+            </div>
+            {warnings.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <span className="muted small">Notes about this file:</span>
+                <ul className="muted small" style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                  {warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </div>
+            )}
+            <div className="row" style={{ marginTop: 12 }}>
+              <div className="spacer" />
+              <button type="button" className="btn primary" onClick={create} disabled={state.status === 'creating' || !b}>
+                {state.status === 'creating' ? 'Creating…' : 'Create loan file from this import'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function StaffNewFile() {
   const nav = useNavigate();
   const { role } = useAuth();
@@ -300,6 +399,8 @@ export default function StaffNewFile() {
       </div>
 
       {err && <div role="alert" className="notice err" style={{ marginBottom: 14 }}>{err}</div>}
+
+      <MismoImport />
 
       <form onSubmit={submit}>
         <div className="form-grid">

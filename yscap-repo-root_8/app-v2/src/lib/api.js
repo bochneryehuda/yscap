@@ -161,6 +161,7 @@ async function req(method, path, body) {
 export const api = {
   get:  (p) => req('GET', p),
   post: (p, b) => req('POST', p, b),
+  patch:(p, b) => req('PATCH', p, b),
   put:  (p, b) => req('PUT', p, b),
   del:  (p) => req('DELETE', p),
 
@@ -350,8 +351,21 @@ export const api = {
   staffPostClosing: (appId) => req('GET', `/api/staff/applications/${appId}/post-closing`),
   staffSeedPostClosing: (appId) => req('POST', `/api/staff/applications/${appId}/post-closing/seed`),
   staffPatchPostClosing: (pid, b) => req('PATCH', `/api/staff/post-closing/${pid}`, b),
+  // Sitewire draw desk: authenticated Excel export of a SOW reallocation (Version 1 vs 2).
+  sitewireExportReallocation: async (crId) => { const { blob, filename } = await download(`/api/sitewire/change-requests/${crId}/export`); saveBlob(blob, filename); },
+  // Sitewire draw desk: authenticated Excel export of a file's draw audit trail.
+  sitewireExportActivity: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/activity/export`); saveBlob(blob, filename); },
+  // Sitewire draw desk: authenticated GL/accounting Excel export of the release ledger.
+  sitewireExportGl: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/gl-export`); saveBlob(blob, filename); },
+  // Sitewire draw desk: authenticated per-draw packet (schedule of values + findings + waivers).
+  sitewireExportPacket: async (appId, drawId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/draws/${drawId}/packet`); saveBlob(blob, filename); },
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
+  // MISMO 3.4 — the mortgage industry's shared file format. Export downloads the
+  // file as MISMO XML; import parses (preview, no writes) then creates a new file.
+  staffExportMismo:  (appId) => download(`/api/staff/applications/${appId}/export/mismo`),
+  staffMismoPreview: (xml) => req('POST', '/api/staff/mismo/preview', { xml }),
+  staffMismoCreate:  (xml) => req('POST', '/api/staff/mismo/create', { xml }),
   staffSaveRehabBudget: (appId, payload) => req('POST', `/api/staff/applications/${appId}/rehab-budget`, { payload }),
   // #152 — export the current pipeline VIEW (same filter params as staffApplications).
   staffExportPipeline: (params) => download(`/api/staff/applications/export${qs(params)}`),

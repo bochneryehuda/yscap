@@ -19,6 +19,7 @@ const ROLES = [
   { key: 'underwriter', label: 'Underwriter' },
   { key: 'loan_officer', label: 'Loan Officer' },
   { key: 'loan_coordinator', label: 'Loan Coordinator' },
+  { key: 'draw_coordinator', label: 'Draw Coordinator' },
   { key: 'processor', label: 'Loan Processor' },
   { key: 'software_setup', label: 'Software Setup' },
 ];
@@ -36,6 +37,7 @@ const CAPABILITIES = [
   { key: 'manage_conditions', label: 'Manage the Condition Center', hint: 'Author the global condition library and rule engine.' },
   { key: 'manage_pricing', label: 'Manage company pricing', hint: 'Set company-wide markup, origination and fee defaults for all not-yet-registered files.' },
   { key: 'pull_credit', label: 'Pull & reissue credit reports', hint: 'Order/reissue a credit report from the bureau (Xactus) and import the verified FICO. Uses the staffer\'s own vendor login.' },
+  { key: 'manage_draws', label: 'Manage construction draws', hint: 'Review draw requests, set approved amounts, approve/amend/reopen draws, and record releases (the Sitewire draw desk).' },
   { key: 'waive_conditions', label: 'Waive conditions', hint: 'Waive a condition with a reason instead of clearing it.' },
   { key: 'delete_files', label: 'Delete / restore files', hint: 'Soft-delete a loan file and restore it.' },
   { key: 'manage_vendors', label: 'Manage the vendor directory', hint: 'Title & insurance vendor list.' },
@@ -49,16 +51,19 @@ const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
   super_admin: CAP_KEYS.slice(),
-  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'manage_conditions', 'manage_pricing', 'waive_conditions', 'delete_files', 'manage_vendors', 'manage_team', 'platform_setup', 'view_audit_log', 'pull_credit'],
+  admin: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'manage_conditions', 'manage_pricing', 'manage_draws', 'waive_conditions', 'delete_files', 'manage_vendors', 'manage_team', 'platform_setup', 'view_audit_log', 'pull_credit'],
   // Underwriters run per-file conditions + sign-off + waive; the GLOBAL studio
   // (manage_conditions) is admin/software-setup by default but an admin can
   // grant it to a specific underwriter from the Team screen.
   underwriter: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'waive_conditions', 'pull_credit'],
   loan_coordinator: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit'],
-  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit'],
+  // The Draw Coordinator persona (default holder Lisa Katz): runs the Sitewire draw
+  // desk across all files. Admin-overridable per the coordinator rules.
+  draw_coordinator: ['see_all_files', 'manage_draws', 'review_conditions'],
+  processor: ['review_conditions', 'sign_off_conditions', 'manage_draws', 'pull_credit'],
   // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
-  // They pull/reissue credit (each with their own Xactus login).
-  loan_officer: ['review_conditions', 'pull_credit'],
+  // They pull/reissue credit (each with their own Xactus login) and manage draws.
+  loan_officer: ['review_conditions', 'manage_draws', 'pull_credit'],
   software_setup: ['manage_conditions', 'platform_setup'],
 };
 

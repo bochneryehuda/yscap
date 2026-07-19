@@ -13,10 +13,12 @@ import ToolModal from '../components/ToolModal.jsx';
 import LlcPicker from '../components/LlcPicker.jsx';
 import LlcManager from '../components/LlcManager.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
+import EsignBorrowerCard from '../components/EsignBorrowerCard.jsx';
 import { MoneyInput, PhoneInput, ZipInput , EmailInput} from '../components/FormattedInputs.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import FileContacts from '../components/FileContacts.jsx';
 import ChangeRequestPanel from '../components/ChangeRequestPanel.jsx';
+import BorrowerDraws from '../components/BorrowerDraws.jsx';
 import { fileToBase64 } from '../lib/files.js';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
@@ -725,6 +727,7 @@ export default function Application() {
     { id: 'sec-overview', label: 'Loan overview' },
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
+    ...(app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
     { id: 'sec-conditions', label: 'Conditions to close', badge: nOpen || '' },
     { id: 'sec-contacts', label: 'Contacts' },
     ...(uploads.length ? [{ id: 'sec-documents', label: 'Document history', badge: uploads.length }] : []),
@@ -871,10 +874,18 @@ export default function Application() {
         toolItemId={(items.find(it => it.tool_key === 'product_pricing') || {}).id} /></div>
       </Section>
 
+      {app.status === 'funded' && (
+        <Section id="sec-draws" title="Construction draws"
+          info="Your construction budget vs. what's been released, and your inspection results — accept them to start your release, or dispute a line with the amount you expect.">
+          <BorrowerDraws appId={id} />
+        </Section>
+      )}
+
       {/* ================= CONDITIONS — one list, everything the file needs ================= */}
       <Section id="sec-conditions" title="Conditions to close"
         info="Every item your loan team needs before closing, in the order it's worked. Upload to a condition and it moves to review; your team accepts, or asks for a fix — you'll be notified either way."
         badge={`${nDone}/${items.length} complete`}>
+      <EsignBorrowerCard appId={id} />
       <div className="panel" style={{ marginTop: 0 }}>
         <div className="row" style={{ marginBottom: 6, gap: 8, flexWrap: 'wrap' }}>
           <h3>Your conditions</h3>

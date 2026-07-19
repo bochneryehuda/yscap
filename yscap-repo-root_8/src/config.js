@@ -231,6 +231,27 @@ module.exports = {
   clickupInboundCreateFiles: process.env.CLICKUP_INBOUND_CREATE_FILES === '1',
   clickupRunAudit:           process.env.CLICKUP_RUN_AUDIT === '1',   // boot: log data-coverage/assignment audit
 
+  // --- Sitewire draw-management integration (server-side token only) ---
+  // Auth is a 3-header token pair (access-token + client + uid), created in the
+  // Sitewire API tab. Secrets live ONLY here (Render env), never in source. The
+  // integration manages ONLY properties PILOT created (the "only-ours" rule) and
+  // is BORN on the funded + Request-a-draw click. Staged rollout, all default off:
+  //   SITEWIRE_ENABLED         master switch  — read/reconcile loops
+  //   SITEWIRE_OUTBOUND_ENABLED separate gate — portal -> Sitewire WRITES
+  //   SITEWIRE_DRYRUN           print the exact push bodies to logs, send nothing
+  sitewireBaseUrl:      (process.env.SITEWIRE_BASE_URL || 'https://app.sitewire.co').replace(/\/+$/, ''),
+  sitewireAccessToken:  process.env.SITEWIRE_ACCESS_TOKEN,
+  sitewireClient:       process.env.SITEWIRE_CLIENT,
+  sitewireUid:          process.env.SITEWIRE_UID,
+  sitewireLenderId:     parseInt(process.env.SITEWIRE_LENDER_ID || '236', 10),
+  sitewireEnabled:      process.env.SITEWIRE_ENABLED === '1',           // master switch (default off)
+  sitewireOutboundEnabled: process.env.SITEWIRE_OUTBOUND_ENABLED === '1', // gate portal -> Sitewire writes
+  sitewireDryrun:       process.env.SITEWIRE_DRYRUN === '1',            // validate-only, no network writes
+  sitewirePollSec:      parseInt(process.env.SITEWIRE_POLL_SEC || '300', 10),
+  sitewireDefaultCoordinatorId: parseInt(process.env.SITEWIRE_DEFAULT_COORDINATOR_ID || '16146', 10), // Lisa Katz
+  sitewireDefaultChecklistTemplateId: parseInt(process.env.SITEWIRE_CHECKLIST_TEMPLATE_ID || '84', 10),
+  sitewireMaxWrites10min: parseInt(process.env.SITEWIRE_MAX_WRITES_10MIN || '300', 10), // volume circuit breaker
+
   // --- address autocomplete / verification (server-side proxy) ---
   // The frontend calls OUR /api/address/*; any real key lives only here, never
   // in the public site bundle. Provider auto-detects: Google if a key is set,
@@ -254,9 +275,35 @@ module.exports = {
     integrationKey: process.env.DOCUSIGN_INTEGRATION_KEY,   // OAuth client id
     userId:         process.env.DOCUSIGN_USER_ID,           // impersonated user GUID
     accountId:      process.env.DOCUSIGN_ACCOUNT_ID,
-    privateKey:     process.env.DOCUSIGN_PRIVATE_KEY,       // RSA private key (PEM)
+    // RSA private key (PEM). M-9: normalize literal "\n" escapes some env UIs
+    // introduce — crypto.sign() needs REAL newlines or it throws a decode error.
+    privateKey:     (process.env.DOCUSIGN_PRIVATE_KEY || '').replace(/\\n/g, '\n') || undefined,
     baseUri:        process.env.DOCUSIGN_BASE_URI  || 'https://demo.docusign.net/restapi',
     oauthBase:      process.env.DOCUSIGN_OAUTH_BASE || 'account-d.docusign.com', // account.docusign.com in prod
+    // Connect webhook HMAC key(s), base64-verified. Comma-separated to support
+    // zero-downtime key rotation (DocuSign sends X-DocuSign-Signature-1..N).
+    connectHmacKeys: (process.env.DOCUSIGN_CONNECT_HMAC_SECRET || '')
+                      .split(',').map(s => s.trim()).filter(Boolean),
+    brandId:        process.env.DOCUSIGN_BRAND_ID || null,   // PILOT sending brand (optional)
+    // Master send switch — OFF by default. Sending real signature requests is
+    // gated behind this so nothing mails a borrower until we deliberately enable it.
+    sendEnabled:    process.env.DOCUSIGN_SEND_ENABLED === '1',
+    // M-13: only these emails may actually be sent to (comma-separated allow-list).
+    testEmailAllowlist: (process.env.DOCUSIGN_TEST_EMAIL_ALLOWLIST || '')
+                      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+    // Test mode gates sending to the allow-list ON ANY host (incl. production), so
+    // switching to live creds can't mail a real borrower during testing. Fail-safe:
+    // defaults ON — must be EXPLICITLY set to '0' at true go-live to reach anyone.
+    testMode:       process.env.DOCUSIGN_TEST_MODE !== '0',
+    httpTimeoutMs:  parseInt(process.env.DOCUSIGN_HTTP_TIMEOUT_MS || '30000', 10),
+    tokenCacheSec:  parseInt(process.env.DOCUSIGN_TOKEN_CACHE_SEC || '3300', 10), // 55 min (< 1h token life)
+    // DB-backed send circuit breaker: more than this many envelopes sent in a
+    // rolling 10 min opens the breaker (a runaway loop mailing borrowers stops hard).
+    maxSends10min:  parseInt(process.env.DOCUSIGN_MAX_SENDS_10MIN || '100', 10),
+    // The admin counter-signer on the term-sheet package (routingOrder 2, signs
+    // LAST — the envelope is binding only after this signature). Owner-directed.
+    countersignEmail: (process.env.DOCUSIGN_COUNTERSIGN_EMAIL || 'yehuda@yscapgroup.com').toLowerCase(),
+    countersignName:  process.env.DOCUSIGN_COUNTERSIGN_NAME || 'YS Capital Group — Lender',
   },
   // Plaid (bank / asset verification):
   plaid: {

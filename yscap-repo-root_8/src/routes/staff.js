@@ -1098,19 +1098,33 @@ router.get('/applications/:id', async (req, res) => {
             pr.program AS registered_program, pr.product_label AS registered_product_label,
             pr.status AS registered_product_status, pr.note_rate AS registered_note_rate,
             pr.total_loan AS registered_total_loan, pr.quote AS registered_quote,
+            pr.stale AS registered_stale,
             pr.created_at AS registered_at
      FROM applications a JOIN borrowers b ON b.id=a.borrower_id
      LEFT JOIN llcs l ON l.id=a.llc_id
      LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
      LEFT JOIN LATERAL (
-       SELECT program, product_label, status, note_rate, total_loan, quote, created_at
+       SELECT program, product_label, status, note_rate, total_loan, quote, stale, created_at
          FROM product_registrations
         WHERE application_id=a.id AND is_current
         ORDER BY created_at DESC LIMIT 1
      ) pr ON true
      WHERE a.id=$1`, [req.params.id]);
   if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-  res.json(r.rows[0]);
+  const fileRow = r.rows[0];
+  // Flag the overview when the CURRENT registration is stale — the leverage %/loan
+  // amount on the snapshot are "as last registered" until a re-price, so they must
+  // not read as live numbers next to freshly-edited economics (audit 2026-07-19).
+  // Use the authoritative, trigger-maintained flag: product_registrations.stale is
+  // set true by db/096+126 whenever ANY pricing input on the file changes after it
+  // was registered (ARV/rehab/purchase/term/program/rehab-type/sq-ft/co-borrower/
+  // FICO/assignment/…), and cleared on re-register — so this covers every driver and
+  // avoids fetching the registered inputs (which carry the internal per-file markup).
+  // (The raw applications.file_markup_* columns still ride a.* here as before; keeping
+  // those off non-admin staff clients is a separate pre-existing follow-up.)
+  fileRow.pricing_stale = !!(fileRow.registered_quote && fileRow.registered_stale);
+  delete fileRow.registered_stale;
+  res.json(fileRow);
 });
 
 // Resolve-or-create a co-borrower from an identity payload and bind it to a
@@ -2158,6 +2172,81 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
     const missing = await tpr.selectTprMissing(req.params.id);
     res.json({ includedCount: included, trackDocs, missing });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// ============================ MISMO 3.4 import / export ======================
+// MISMO is the mortgage industry's shared file format. Export turns one of our
+// loan files into a MISMO v3.4 XML document any other system can read; import
+// reads such a file back into a new portal loan file. The heavy lifting lives in
+// src/lib/mismo/ (a dependency-free XML engine + field crosswalk).
+
+// EXPORT — download this loan file as a MISMO 3.4 XML document. Under the
+// /applications/:id path scope, so only assigned staff / see-all can pull it.
+// The file carries PII (incl. SSN, a core MISMO field), so the download is
+// audited exactly like the TPR export.
+router.get('/applications/:id/export/mismo', async (req, res) => {
+  try {
+    const mismo = require('../lib/mismo');
+    const xml = await mismo.exportApplicationXml(req.params.id);
+    if (!xml) return res.status(404).json({ error: 'application not found' });
+    const row = (await db.query(
+      'SELECT a.ys_loan_number, b.last_name FROM applications a JOIN borrowers b ON b.id=a.borrower_id WHERE a.id=$1',
+      [req.params.id])).rows[0] || {};
+    const filename = mismo.exportFilename(row.ys_loan_number, row.last_name);
+    await audit(req, 'export_mismo', 'application', req.params.id, { bytes: Buffer.byteLength(xml) });
+    res.set('Content-Type', 'application/xml; charset=utf-8');
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(xml);
+  } catch (e) {
+    console.error('[mismo] export failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: 'export failed' });
+  }
+});
+
+// A tiny masker so a PREVIEW never surfaces a full SSN — staff see only the
+// last four, exactly as everywhere else PII is shown before it's stored.
+function maskMismoPreview(parsed) {
+  const clone = JSON.parse(JSON.stringify(parsed || {}));
+  for (const key of ['borrower', 'coBorrower']) {
+    const p = clone[key];
+    if (p && p.ssn) p.ssn = '•••-••-' + String(p.ssn).slice(-4);
+  }
+  return clone;
+}
+
+// IMPORT — PREVIEW. Parse an uploaded MISMO file and return exactly what would be
+// imported. This NEVER writes to the database, so staff always see the contents
+// before a single row is created (the repo's "never silently apply" posture).
+router.post('/mismo/preview', async (req, res) => {
+  const xml = req.body && req.body.xml;
+  if (!xml || typeof xml !== 'string') return res.status(400).json({ error: 'no MISMO XML provided' });
+  try {
+    const parsed = require('../lib/mismo').previewImport(xml);
+    res.json({ ok: true, preview: maskMismoPreview(parsed), warnings: parsed.warnings || [] });
+  } catch (e) {
+    res.status(422).json({ error: e.userMessage || 'this file could not be read as a MISMO 3.4 file' });
+  }
+});
+
+// IMPORT — CREATE. Re-parse the SAME XML server-side (never trust a client-edited
+// object — the SSN and every field are re-read from the file here) and create a
+// new loan file from it. The importing loan officer is assigned to it; anyone
+// else leaves it in Lead Capture.
+router.post('/mismo/create', async (req, res) => {
+  const xml = req.body && req.body.xml;
+  if (!xml || typeof xml !== 'string') return res.status(400).json({ error: 'no MISMO XML provided' });
+  try {
+    const mismo = require('../lib/mismo');
+    const parsed = mismo.previewImport(xml);
+    if (!parsed.borrower) return res.status(422).json({ error: 'this file has no borrower, so a loan file can’t be created from it' });
+    const officerId = req.actor.role === 'loan_officer' ? req.actor.id : null;
+    const { borrowerId, applicationId } = await mismo.createFromParsed(parsed, { officerId });
+    await audit(req, 'import_mismo', 'application', applicationId, { borrowerId, warnings: (parsed.warnings || []).length });
+    res.status(201).json({ ok: true, applicationId, borrowerId, warnings: parsed.warnings || [] });
+  } catch (e) {
+    console.error('[mismo] import create failed:', db.describeError ? db.describeError(e) : e.message);
+    res.status(500).json({ error: e.userMessage || 'could not create a file from this MISMO import' });
+  }
 });
 
 // Full file activity feed (staff sees everything, including internal).
@@ -6291,6 +6380,134 @@ router.post('/sync-reviews/:id/reject', async (req, res) => {
       row.application_id || row.borrower_id, { reviewId: row.id, field: row.field_key, reason: row.reason });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
+// ---------------- e-signature (DocuSign) tracking — read model --------------
+// The internal "our own DocuSign" dashboard + the per-file section. Read-only
+// monitoring; management actions (send/resend/void) are added with the send
+// orchestration. Access: the cross-file dashboard is officer-scoped; the
+// per-file route rides the /applications/:id scope guard above.
+const esignTracking = require('../lib/esign/tracking');
+
+router.get('/esign/dashboard', async (req, res) => {
+  try {
+    const scope = seesAll(req)
+      ? { where: '', params: [] }
+      : { where: `AND ${VISIBLE_OFFICERS_SQL('a', '$1')}`, params: [req.actor.id] };
+    res.json(await esignTracking.dashboard(db, scope));
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
+router.get('/applications/:id/esign', async (req, res) => {
+  try {
+    res.json(await esignTracking.fileEsign(db, req.params.id));
+  } catch (e) { res.status(500).json({ error: db.describeError ? db.describeError(e) : 'server error' }); }
+});
+
+// ---------------- e-signature management actions ----------------------------
+// Send / resend / void / mint the admin counter-sign view. Every action is
+// gated (DOCUSIGN_SEND_ENABLED off => sending refused) and audited. The
+// send-engine's test-mode allow-list is the final backstop before any real
+// borrower is mailed.
+const esignOrchestrate = require('../lib/esign/orchestrate');
+const esignWebhook = require('../lib/esign/webhook');
+const docusignLib = require('../lib/integrations/docusign');
+
+// Map a thrown orchestration error to an HTTP status + safe message.
+function esignErrStatus(e) {
+  if (e && e.code === 'DOCUSIGN_SEND_DISABLED') return 409;
+  if (e && e.code === 'DOCUSIGN_GATE_NOT_READY') return 409;
+  if (e && e.retryable === false) return 400;
+  return 500;
+}
+
+// Load an envelope row and confirm the actor may see its file (the /esign/:rowId
+// routes are NOT under the /applications/:id scope guard, so we check here).
+async function loadEsignEnvelope(req, rowId) {
+  const r = await db.query(`SELECT * FROM esign_envelopes WHERE id = $1`, [rowId]);
+  const row = r.rows[0];
+  if (!row) return { status: 404, error: 'not found' };
+  if (!seesAll(req)) {
+    const vis = await db.query(
+      `SELECT 1 FROM applications a WHERE a.id = $1 AND a.deleted_at IS NULL AND ${VISIBLE_OFFICERS_SQL('a', '$2')} LIMIT 1`,
+      [row.application_id, req.actor.id]);
+    if (!vis.rows.length) return { status: 403, error: 'forbidden' };
+  }
+  return { row };
+}
+
+// Send a package for a file. Rides the /applications/:id scope guard.
+router.post('/applications/:id/esign/send', async (req, res) => {
+  const purpose = String((req.body && req.body.purpose) || '');
+  if (!esignOrchestrate.PACKAGES[purpose]) return res.status(400).json({ error: 'unknown package' });
+  try {
+    const out = await esignOrchestrate.sendPackage(req.params.id, purpose, req.actor, { db, docusign: docusignLib });
+    await audit(req, 'esign_send', 'application', req.params.id, purpose);
+    res.json({ ok: true, envelopeRowId: out.envelopeRowId, result: out.result });
+  } catch (e) {
+    res.status(esignErrStatus(e)).json({ error: e.message, outstanding: e.outstanding });
+  }
+});
+
+// Resend (nudge) the current pending recipient(s).
+router.post('/esign/:rowId/resend', async (req, res) => {
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    await docusignLib.resendEnvelope(row.envelope_id);
+    await audit(req, 'esign_resend', 'application', row.application_id, row.purpose);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Void a still-open envelope (reason required by DocuSign).
+router.post('/esign/:rowId/void', async (req, res) => {
+  const reason = String((req.body && req.body.reason) || '').trim();
+  if (!reason) return res.status(400).json({ error: 'a void reason is required' });
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    if (['completed', 'declined', 'voided'].includes(row.status)) return res.status(409).json({ error: `envelope already ${row.status}` });
+    await docusignLib.voidEnvelope(row.envelope_id, reason);
+    await db.query(
+      `UPDATE esign_envelopes SET status='voided', voided_at=now(), void_reason=$2, updated_at=now() WHERE id=$1`,
+      [row.id, reason]);
+    await audit(req, 'esign_void', 'application', row.application_id, `${row.purpose}: ${reason}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mint an embedded signing URL for the ADMIN counter-signer to sign from the
+// cockpit ("Sign now"). Admin-only; DocuSign errors if it isn't the admin's turn.
+router.post('/esign/:rowId/countersign-view', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'only an admin can counter-sign' });
+  try {
+    const { row, status, error } = await loadEsignEnvelope(req, req.params.rowId);
+    if (!row) return res.status(status).json({ error });
+    if (!row.envelope_id) return res.status(409).json({ error: 'envelope not sent yet' });
+    const rec = (await db.query(
+      `SELECT recipient_id_ds, name, email, client_user_id FROM esign_recipients
+        WHERE envelope_row_id=$1 AND role='admin' LIMIT 1`, [row.id])).rows[0];
+    if (!rec) return res.status(409).json({ error: 'this envelope has no counter-signer' });
+    const returnUrl = `${cfg.appUrl}/api/esign/return?app=${encodeURIComponent(row.application_id)}&env=${encodeURIComponent(row.envelope_id)}&dest=staff`;
+    const url = await docusignLib.createRecipientView(row.envelope_id, {
+      returnUrl, email: rec.email, userName: rec.name,
+      clientUserId: rec.client_user_id, recipientId: rec.recipient_id_ds,
+    });
+    await audit(req, 'esign_countersign_view', 'application', row.application_id, row.purpose);
+    res.json({ url });
+  } catch (e) { res.status(esignErrStatus(e)).json({ error: e.message }); }
+});
+
+// Admin: manually drain the inbound event inbox + the send queue (ops button).
+router.post('/esign/drain', async (req, res) => {
+  if (!isAdmin(req)) return res.status(403).json({ error: 'admin only' });
+  try {
+    const inbox = await esignWebhook.drainInbox({ db, docusign: docusignLib });
+    res.json({ ok: true, inbox });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ---------------- chat v3: conversations, receipts, presence ----------------

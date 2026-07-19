@@ -18,6 +18,8 @@ import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
 import FileSections, { Section, InfoTip } from '../components/FileSections.jsx';
 import CreditReportPanel from '../components/CreditReportPanel.jsx';
+import EsignFileSection from '../components/EsignFileSection.jsx';
+import DrawsPanel from '../components/DrawsPanel.jsx';
 import StaticToolFrame from '../components/StaticToolFrame.jsx';
 import AddConditionPanel from '../components/AddConditionPanel.jsx';
 import StaffChangeRequests from '../components/StaffChangeRequests.jsx';
@@ -2454,9 +2456,11 @@ export default function StaffApplication() {
     { id: 'sec-overview', label: 'File overview' },
     { id: 'sec-application', label: 'Application details' },
     { id: 'sec-pricing', label: 'Structure & pricing', badge: app.registered_program ? '✓' : '' },
+    ...(can('manage_draws') && app.status === 'funded' ? [{ id: 'sec-draws', label: 'Construction draws' }] : []),
     { id: 'sec-conditions', label: 'Conditions to close', badge: nCondOpen || '' },
     { id: 'sec-internal-conds', label: 'Internal conditions', badge: internalConds.length ? `${internalConds.filter(i => i.signed_off_at || i.status === 'satisfied').length}/${internalConds.length}` : '' },
     { id: 'sec-entity', label: 'LLC condition', badge: app.llc_id && app.llc_verified ? '✓' : '' },
+    { id: 'sec-esign', label: 'E-signatures' },
     { id: 'sec-track', label: 'Track record' },
     { id: 'sec-checklist', label: 'Internal checklist', badge: internalItems.length ? `${internalItems.filter(i => i.signed_off_at).length}/${internalItems.length}` : '' },
     { id: 'sec-documents', label: 'Documents & exports', badge: docs.length || '' },
@@ -2690,6 +2694,12 @@ export default function StaffApplication() {
         info="Pull or reissue the borrower's credit report from the bureau (Xactus) and verify the FICO. The verified score is imported from the report data and locked across the portal, term sheet, and ClickUp. A score that lands in a different pricing bracket reopens Products & Pricing for a human to re-register.">
       <CreditReportPanel appId={id} />
       </Section>
+      {can('manage_draws') && app.status === 'funded' && (
+        <Section id="sec-draws" title="Construction draws"
+          info="The draw desk for this file: the Scope-of-Work budget vs. what's been drawn per line and per unit, each draw's approvals, our fee and net release, the inspection findings the borrower accepts or disputes, and Scope-of-Work reallocations. Powered by the Sitewire integration.">
+          <DrawsPanel appId={id} />
+        </Section>
+      )}
 
       <Section id="sec-conditions" title="Conditions to close"
         info="The SAME list the borrower sees — shared both ways. Upload on their behalf, accept (signs off), accept-but-request-one-more, or reject with a reason (the file moves to the trash and the condition reopens)."
@@ -2787,6 +2797,11 @@ export default function StaffApplication() {
       <VestingLlcOwners appId={id} app={app} />
       </Section>
 
+      <Section id="sec-esign" title="E-signatures"
+        info="PILOT's own DocuSign section for this file: what's outstanding before you can send, the two Send buttons (term-sheet package + Heter Iska), and live per-signer tracking (sent / viewed / signed, who we're waiting on, the admin counter-signature) with resend, void, re-issue and downloads. The cross-file cockpit lives at E-signatures in the sidebar.">
+      <EsignFileSection appId={id} role={role} />
+      </Section>
+
       <Section id="sec-documents" title="Documents & exports"
         info="Every document on the file, titled by condition — with the working set on top, rejected/replaced versions in the trash, and the TPR clean-file export."
         badge={docs.length ? `${docs.length} files` : ''}>
@@ -2858,6 +2873,7 @@ export default function StaffApplication() {
       </div>
       {app.status === 'funded' && <PostClosing appId={id} />}
       <TprExport appId={id} />
+      <MismoExport appId={id} />
       </Section>
 
       <Section id="sec-track" title="Track record"
@@ -3093,6 +3109,33 @@ function TprExport({ appId }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/* MISMO 3.4 export — hand this loan file to any other system in the mortgage
+   industry's shared file format. Downloads a MISMO v3.4 XML document. */
+function MismoExport({ appId }) {
+  const [busy, setBusy] = useState(false);
+  async function download() {
+    setBusy(true);
+    try { const { blob, filename } = await api.staffExportMismo(appId); saveBlob(blob, filename || 'MISMO_3.4.xml'); }
+    catch (e) { alert(e.message || 'Export failed'); }
+    finally { setBusy(false); }
+  }
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <h3>MISMO 3.4 export</h3>
+        <div className="spacer" />
+        <button className="btn primary" onClick={download} disabled={busy}>
+          {busy ? 'Building…' : 'Export MISMO 3.4 (XML)'}
+        </button>
+      </div>
+      <p className="muted small">
+        The mortgage industry's standard file format. Downloads this loan file as a MISMO v3.4 XML document —
+        borrower, property, loan terms and the vesting entity — so it can be handed to any other system that reads MISMO.
+      </p>
     </div>
   );
 }
