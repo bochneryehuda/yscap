@@ -355,6 +355,8 @@ export const api = {
   sitewireExportReallocation: async (crId) => { const { blob, filename } = await download(`/api/sitewire/change-requests/${crId}/export`); saveBlob(blob, filename); },
   // Sitewire draw desk: authenticated CSV export of a file's draw audit trail.
   sitewireExportActivity: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/activity/export`); saveBlob(blob, filename); },
+  // Sitewire draw desk: authenticated GL/accounting Excel export of the release ledger.
+  sitewireExportGl: async (appId) => { const { blob, filename } = await download(`/api/sitewire/files/${appId}/gl-export`); saveBlob(blob, filename); },
   staffTprPreview:  (appId) => req('GET', `/api/staff/applications/${appId}/export/tpr/preview`),
   staffTprExport:   (appId) => download(`/api/staff/applications/${appId}/export/tpr`),
   // MISMO 3.4 — the mortgage industry's shared file format. Export downloads the

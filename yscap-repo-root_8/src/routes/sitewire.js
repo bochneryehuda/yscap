@@ -23,6 +23,20 @@ const rehab = require('../lib/rehab-budget');
 const notify = require('../lib/notify');
 const { enqueueSitewirePush } = require('../sitewire/enqueue');
 const { buildXlsx } = require('../lib/xlsx');
+const { computeRelease, waiverGate } = require('../sitewire/money');
+
+// Resolve the retainage % for a file: per-file override on the link, else the global default.
+async function retainagePctFor(appId) {
+  try {
+    const link = (await db.query(`SELECT retainage_pct FROM sitewire_property_links WHERE application_id=$1`, [appId])).rows[0];
+    if (link && link.retainage_pct != null) return Number(link.retainage_pct) || 0;
+    const s = (await db.query(`SELECT value FROM sitewire_settings WHERE key='retainage_pct'`)).rows[0];
+    return Number(s && s.value) || 0;
+  } catch (_) { return 0; }
+}
+async function lienGateEnabled() {
+  try { const s = (await db.query(`SELECT value FROM sitewire_settings WHERE key='require_lien_waivers'`)).rows[0]; return s && (s.value === true || s.value === 'true'); } catch (_) { return false; }
+}
 
 router.use(requireAuth, requireStaff);
 
@@ -184,14 +198,90 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   const feeKind = ['virtual', 'physical'].includes(req.body.fee_kind) ? req.body.fee_kind : null;
   const releaseDate = req.body.release_date || null;
   const fundedStatus = ['pending', 'released', 'held'].includes(req.body.funded_status) ? req.body.funded_status : 'pending';
-  const net = approved - fee; // the money invariant: net = approved - fee
-  if (net < 0) return res.status(422).json({ error: 'fee exceeds approved amount — net release would be negative' });
+  try {
+    // retainage: hold a % of the approved amount; net = approved − fee − retainage held
+    const pct = await retainagePctFor(application_id);
+    const split = computeRelease({ approvedCents: approved, feeCents: fee, retainagePct: pct });
+    if (!split.ok) return res.status(422).json({ error: split.violation });
+    // lien-waiver gate: block a RELEASE while a required waiver is outstanding (never guessed)
+    if (fundedStatus === 'released' && sitewire_draw_id && await lienGateEnabled()) {
+      const waivers = (await db.query(`SELECT status, tier, party_name, kind FROM draw_lien_waivers WHERE sitewire_draw_id=$1`, [sitewire_draw_id])).rows;
+      const gate = waiverGate(waivers, { enabled: true });
+      if (!gate.ok) return res.status(409).json({ error: `Lien waivers still outstanding: ${gate.missing.join('; ')}. Mark them received or waived before releasing.`, missing: gate.missing });
+    }
+    const row = (await db.query(
+      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draw',$10,$11) RETURNING *`,
+      [application_id, sitewire_draw_id || null, approved, fee, feeKind, split.retainage_held_cents, split.net_release_cents, releaseDate, fundedStatus, req.body.note || null, req.actor.id])).rows[0];
+    res.json({ ok: true, disbursement: row });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- POST /files/:id/retainage-release — release the accumulated retainage at completion ----
+router.post('/files/:id/retainage-release', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const held = Number((await db.query(`SELECT COALESCE(sum(retainage_held_cents),0) h FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].h) || 0;
+    const already = Number((await db.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
+    const toRelease = held - already;
+    if (toRelease <= 0) return res.status(409).json({ error: 'no retainage is being held to release' });
+    const row = (await db.query(
+      `INSERT INTO draw_disbursements (application_id, approved_cents, fee_cents, retainage_held_cents, net_release_cents, release_date, funded_status, kind, note, created_by)
+       VALUES ($1,$2,0,0,$2,$3,'released','retainage_release',$4,$5) RETURNING *`,
+      [appId, toRelease, req.body.release_date || null, req.body.note || 'Retainage released at completion', req.actor.id])).rows[0];
+    res.json({ ok: true, disbursement: row, released_cents: toRelease });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---- lien waivers (per draw) ----
+router.get('/files/:id/waivers', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  const rows = (await db.query(`SELECT * FROM draw_lien_waivers WHERE application_id=$1 ORDER BY created_at DESC`, [req.params.id])).rows;
+  res.json({ waivers: rows });
+});
+router.post('/files/:id/waivers', requirePermission('manage_draws'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  const kind = ['conditional', 'unconditional'].includes(b.kind) ? b.kind : 'conditional';
+  const scope = ['progress', 'final'].includes(b.scope) ? b.scope : 'progress';
+  const tier = ['gc', 'subcontractor', 'supplier'].includes(b.tier) ? b.tier : 'gc';
+  const amt = Math.max(0, Math.round(Number(b.amount_cents) || 0));
   try {
     const row = (await db.query(
-      `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents, fee_kind, net_release_cents, release_date, funded_status, note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [application_id, sitewire_draw_id || null, approved, fee, feeKind, net, releaseDate, fundedStatus, req.body.note || null, req.actor.id])).rows[0];
-    res.json({ ok: true, disbursement: row });
+      `INSERT INTO draw_lien_waivers (application_id, sitewire_draw_id, kind, scope, tier, party_name, amount_cents, status, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'required',$8,$9) RETURNING *`,
+      [appId, /^\d+$/.test(String(b.sitewire_draw_id)) ? b.sitewire_draw_id : null, kind, scope, tier, b.party_name || null, amt, b.note || null, req.actor.id])).rows[0];
+    res.json({ ok: true, waiver: row });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.patch('/waivers/:wid', requirePermission('manage_draws'), async (req, res) => {
+  if (!/^\d+$/.test(req.params.wid)) return res.status(404).json({ error: 'not found' });
+  const status = ['required', 'received', 'waived', 'na'].includes(req.body.status) ? req.body.status : null;
+  if (!status) return res.status(400).json({ error: 'status must be required, received, waived, or na' });
+  const w = (await db.query(`SELECT application_id FROM draw_lien_waivers WHERE id=$1`, [req.params.wid])).rows[0];
+  if (!w || !(await canSeeFile(req, w.application_id))) return res.status(403).json({ error: 'forbidden' });
+  await db.query(`UPDATE draw_lien_waivers SET status=$2, received_at=CASE WHEN $2 IN ('received','waived') THEN now() ELSE NULL END, note=COALESCE($3,note), updated_at=now() WHERE id=$1`, [req.params.wid, status, req.body.note || null]);
+  res.json({ ok: true, status });
+});
+
+// ---- GET /files/:id/gl-export — the release ledger as a GL/accounting Excel workbook ----
+router.get('/files/:id/gl-export', requirePermission('manage_draws'), async (req, res) => {
+  if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const rows = (await db.query(
+      `SELECT d.created_at, d.release_date, d.sitewire_draw_id, d.kind, d.approved_cents, d.fee_cents, d.retainage_held_cents, d.net_release_cents, d.funded_status,
+              a.ys_loan_number, a.property_address->>'oneLine' AS address
+         FROM draw_disbursements d JOIN applications a ON a.id=d.application_id
+        WHERE d.application_id=$1 ORDER BY d.created_at`, [req.params.id])).rows;
+    const c = (x) => Math.round(Number(x || 0)) / 100;
+    const out = [['Loan', 'Property', 'Recorded', 'Release date', 'Draw', 'Type', 'Approved', 'Fee', 'Retainage held', 'Net release', 'Status']];
+    for (const r of rows) out.push([r.ys_loan_number || '', r.address || '', new Date(r.created_at).toISOString().slice(0, 10), r.release_date || '', r.sitewire_draw_id ? '#' + r.sitewire_draw_id : '', r.kind, c(r.approved_cents), c(r.fee_cents), c(r.retainage_held_cents), c(r.net_release_cents), r.funded_status]);
+    const buf = buildXlsx(out, 'GL Export');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="draw-gl-${req.params.id}.xlsx"`);
+    res.send(buf);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -231,7 +321,7 @@ router.get('/settings', requirePermission('manage_draws'), async (req, res) => {
   res.json({ settings: Object.fromEntries(rows.map((r) => [r.key, r.value])) });
 });
 router.patch('/settings', requirePermission('platform_setup'), async (req, res) => {
-  const allowed = new Set(['wire_turnaround_hours', 'variance_pct', 'stale_days', 'no_draw_days', 'pacing_gap_pct', 'front_load_pct', 'first_draw_max_pct']);
+  const allowed = new Set(['wire_turnaround_hours', 'variance_pct', 'stale_days', 'no_draw_days', 'pacing_gap_pct', 'front_load_pct', 'first_draw_max_pct', 'retainage_pct', 'require_lien_waivers']);
   const updates = [];
   for (const k of Object.keys(req.body || {})) {
     if (!allowed.has(k)) continue;
@@ -306,7 +396,12 @@ router.get('/files/:id/rollup', requirePermission('manage_draws'), async (req, r
     // merge risk flags onto the rollup draw summaries
     const riskByDraw = new Map(draws.map((d) => [Number(d.sitewire_draw_id), { level: d.risk_level, flags: d.risk_flags, pdf_src: d.pdf_src }]));
     for (const d of rollup.draws) { const r = riskByDraw.get(d.sitewire_draw_id); if (r) { d.risk_level = r.level; d.risk_flags = r.flags; d.pdf_src = r.pdf_src; } }
-    res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests });
+    // retainage held vs released + the lien-waiver register (roadmap money model)
+    const held = Number((await db.query(`SELECT COALESCE(sum(retainage_held_cents),0) h FROM draw_disbursements WHERE application_id=$1 AND kind='draw'`, [appId])).rows[0].h) || 0;
+    const rlsd = Number((await db.query(`SELECT COALESCE(sum(net_release_cents),0) r FROM draw_disbursements WHERE application_id=$1 AND kind='retainage_release'`, [appId])).rows[0].r) || 0;
+    const waivers = (await db.query(`SELECT id, sitewire_draw_id, kind, scope, tier, party_name, amount_cents, status, received_at FROM draw_lien_waivers WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
+    const retainage = { pct: await retainagePctFor(appId), held_cents: held, released_cents: rlsd, holding_cents: Math.max(0, held - rlsd) };
+    res.json({ rollup, link, draws, requests, ledger, findings, change_requests: changeRequests, retainage, waivers });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

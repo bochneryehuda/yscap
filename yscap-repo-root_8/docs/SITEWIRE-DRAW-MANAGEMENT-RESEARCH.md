@@ -832,3 +832,29 @@ Rabbet's SLA/covenant reporting:
 Both are advisory + read-only; no new tables (assembled from existing records). The gap-analysis
 roadmap items (retainage, lien waivers, stored materials, AI photo % complete, interest reserve)
 remain explicitly deferred, never silently missing.
+
+---
+
+## 19. Retainage + lien waivers + GL export (roadmap → built 2026-07-19)
+
+Three of the deferred best-of-breed items, now built (all OFF by default; never-guessed):
+
+- **Retainage / holdback** (`src/sitewire/money.js computeRelease`): an admin-set % (global
+  `retainage_pct`, or a per-file override on the property link) is held from each approved draw —
+  `net_release = approved − fee − retainage_held`. The ledger records `retainage_held_cents` per
+  release and tracks retainage held vs. released; a **"Release retainage"** action pays out the
+  accumulated holdback at completion (a `kind='retainage_release'` ledger entry). 0% is byte-
+  identical to the pre-retainage behavior; a fee+retainage that would drive the net negative is
+  flagged, never silently recorded.
+- **Lien-waiver tracking** (`draw_lien_waivers` + `waiverGate`): a per-draw register —
+  conditional/unconditional, progress/final, GC/sub/supplier, party, amount, status
+  (required/received/waived/na), optional document link. When the admin turns the gate on
+  (`require_lien_waivers`), a draw **cannot be marked released** while a REQUIRED waiver is
+  outstanding — the missing party is named (the #1 real-world cause of draw delays). Managed on
+  the file's draw desk.
+- **GL / accounting export** (`GET /files/:id/gl-export`): the release ledger — approved, fee,
+  retainage held, net release, status, dates — as a real Excel workbook for the accounting team /
+  QuickBooks import.
+
+Still deferred (documented, never silent): AIA G702/G703 pay-app packet auto-assembly, stored
+materials, interest-reserve draw tracking, AI photo % complete, and a direct QuickBooks push.

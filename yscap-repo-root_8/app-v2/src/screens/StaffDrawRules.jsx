@@ -92,7 +92,13 @@ export default function StaffDrawRules() {
           <SettingField label="Reallocation variance %" k="variance_pct" settings={settings} onSave={saveSetting} />
           <SettingField label="Stale after (days)" k="stale_days" settings={settings} onSave={saveSetting} />
           <SettingField label="No-draw alert (days)" k="no_draw_days" settings={settings} onSave={saveSetting} />
+          <SettingField label="Retainage held %" k="retainage_pct" settings={settings} onSave={saveSetting} />
         </div>
+        <label className="small row" style={{ gap: 6, alignItems: 'center', marginTop: 8 }}>
+          <input type="checkbox" checked={settings.require_lien_waivers === true || settings.require_lien_waivers === 'true'}
+            onChange={(e) => saveSetting('require_lien_waivers', e.target.checked)} />
+          Require lien waivers before a draw can be released
+        </label>
       </div>
 
       <div className="panel" style={{ marginTop: 16 }}>

@@ -40,7 +40,7 @@ export default function DrawsPanel({ appId }) {
   if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!data) return null;
 
-  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [] } = data;
+  const { rollup, link, requests = [], ledger = [], findings = [], change_requests = [], retainage = null, waivers = [] } = data;
   // Render draw cards from rollup.draws — it carries the money (requested/approved/net_release),
   // the funded flag, and the merged risk flags + pdf_src. The top-level `draws` array has no
   // money fields, so using it would render $0.00 everywhere.
@@ -90,7 +90,10 @@ export default function DrawsPanel({ appId }) {
           ))}
 
           {/* ---- money ledger ---- */}
-          <LedgerPanel appId={appId} ledger={ledger} draws={draws} onSaved={load} />
+          <LedgerPanel appId={appId} ledger={ledger} draws={draws} retainage={retainage} onSaved={load} act={act} busy={busy} />
+
+          {/* ---- lien waivers ---- */}
+          <WaiversPanel appId={appId} waivers={waivers} draws={draws} onChanged={load} />
 
           {/* ---- Scope-of-Work reallocations ---- */}
           <ChangeRequests appId={appId} items={change_requests} busy={busy} act={act} />
@@ -279,18 +282,21 @@ function FindingStatus({ appId, finding, reload }) {
   );
 }
 
-function LedgerPanel({ appId, ledger, draws, onSaved }) {
+function LedgerPanel({ appId, ledger, draws, retainage, onSaved, act, busy: parentBusy }) {
   const [f, setF] = useState({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const net = Math.round(Number(f.approved || 0) * 100) - Math.round(Number(f.fee || 0) * 100);
+  const pct = retainage ? Number(retainage.pct) || 0 : 0;
+  const approvedC = Math.round(Number(f.approved || 0) * 100);
+  const feeC = Math.round(Number(f.fee || 0) * 100);
+  const retC = Math.round(approvedC * pct / 100);
+  const net = approvedC - feeC - retC;
   async function save() {
     setBusy(true); setErr('');
     try {
       await api.post('/api/sitewire/disbursements', {
         application_id: appId, sitewire_draw_id: f.sitewire_draw_id || null,
-        approved_cents: Math.round(Number(f.approved || 0) * 100), fee_cents: Math.round(Number(f.fee || 0) * 100),
-        fee_kind: f.fee_kind, release_date: f.release_date || null, funded_status: f.funded_status,
+        approved_cents: approvedC, fee_cents: feeC, fee_kind: f.fee_kind, release_date: f.release_date || null, funded_status: f.funded_status,
       });
       setF({ sitewire_draw_id: '', approved: '', fee: '', fee_kind: 'virtual', release_date: '', funded_status: 'released' });
       onSaved();
@@ -298,18 +304,31 @@ function LedgerPanel({ appId, ledger, draws, onSaved }) {
   }
   return (
     <div className="panel" style={{ marginTop: 18 }}>
-      <h3 style={{ marginTop: 0 }}>Money ledger</h3>
-      <div className="muted small" style={{ marginBottom: 8 }}>Record what was released after approval — our fee comes off the approved amount, the borrower nets the rest.</div>
+      <div className="row between" style={{ alignItems: 'center' }}>
+        <h3 style={{ margin: 0 }}>Money ledger</h3>
+        <button className="btn btn-sm ghost" onClick={() => api.sitewireExportGl(appId).catch(() => {})}>GL export</button>
+      </div>
+      <div className="muted small" style={{ margin: '4px 0 8px' }}>Our fee comes off the approved amount{pct > 0 ? `, ${pct}% is held as retainage,` : ''} and the borrower nets the rest.</div>
+      {retainage && (retainage.held_cents > 0 || pct > 0) && (
+        <div className="row" style={{ gap: 12, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span className="small">Retainage held: <b>{usd2(retainage.holding_cents)}</b>{retainage.released_cents > 0 ? <span className="muted"> · released {usd2(retainage.released_cents)}</span> : null}</span>
+          {retainage.holding_cents > 0 && (
+            <button className="btn btn-sm ghost" disabled={parentBusy === 'retrel'}
+              onClick={() => act('retrel', async () => { const r = await api.post(`/api/sitewire/files/${appId}/retainage-release`, {}); return { msg: `Retainage released: ${usd2(r.released_cents)}.` }; })}>Release retainage</button>
+          )}
+        </div>
+      )}
       {ledger.length > 0 && (
         <div style={{ overflowX: 'auto' }}>
-          <table className="table" style={{ width: '100%', minWidth: 560 }}>
-            <thead><tr><th>Draw</th><th style={{ textAlign: 'right' }}>Approved</th><th style={{ textAlign: 'right' }}>Fee</th><th style={{ textAlign: 'right' }}>Net release</th><th>Date</th><th>Status</th></tr></thead>
+          <table className="table" style={{ width: '100%', minWidth: 620 }}>
+            <thead><tr><th>Draw</th><th style={{ textAlign: 'right' }}>Approved</th><th style={{ textAlign: 'right' }}>Fee</th><th style={{ textAlign: 'right' }}>Retainage</th><th style={{ textAlign: 'right' }}>Net release</th><th>Date</th><th>Status</th></tr></thead>
             <tbody>
               {ledger.map((d) => (
                 <tr key={d.id}>
-                  <td>{d.sitewire_draw_id ? '#' + d.sitewire_draw_id : '—'}</td>
+                  <td>{d.kind === 'retainage_release' ? 'Retainage' : (d.sitewire_draw_id ? '#' + d.sitewire_draw_id : '—')}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.approved_cents)}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.fee_cents)}</td>
+                  <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.retainage_held_cents)}</td>
                   <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(d.net_release_cents)}</td>
                   <td className="muted">{fmtDay(d.release_date)}</td>
                   <td><span className="pill sw-approved">{d.funded_status}</span></td>
@@ -332,8 +351,71 @@ function LedgerPanel({ appId, ledger, draws, onSaved }) {
           <select className="input" value={f.fee_kind} onChange={(e) => setF({ ...f, fee_kind: e.target.value })}><option value="virtual">Virtual</option><option value="physical">Physical</option></select>
         </label>
         <label className="small">Release date<input type="date" className="input" value={f.release_date} onChange={(e) => setF({ ...f, release_date: e.target.value })} /></label>
-        <div className="small" style={{ alignSelf: 'center' }}>Net: <b>{usd2(net)}</b></div>
+        <div className="small" style={{ alignSelf: 'center' }}>{pct > 0 ? <>Retainage: <b>{usd2(retC)}</b> · </> : null}Net: <b>{usd2(net)}</b></div>
         <button className="btn btn-sm primary" disabled={busy || net < 0} onClick={save}>Record release</button>
+      </div>
+      {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
+function WaiversPanel({ appId, waivers, draws, onChanged }) {
+  const [f, setF] = useState({ sitewire_draw_id: '', tier: 'subcontractor', kind: 'conditional', scope: 'progress', party_name: '', amount: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const STA = { required: { label: 'Outstanding', cls: 'sw-pending' }, received: { label: 'Received', cls: 'sw-approved' }, waived: { label: 'Waived', cls: 'sw-approved' }, na: { label: 'N/A', cls: 'sw-draft' } };
+  async function add() {
+    setBusy(true); setErr('');
+    try {
+      await api.post(`/api/sitewire/files/${appId}/waivers`, { sitewire_draw_id: f.sitewire_draw_id || null, tier: f.tier, kind: f.kind, scope: f.scope, party_name: f.party_name || null, amount_cents: Math.round(Number(f.amount || 0) * 100) });
+      setF({ sitewire_draw_id: '', tier: 'subcontractor', kind: 'conditional', scope: 'progress', party_name: '', amount: '' }); onChanged();
+    } catch (e) { setErr(e?.data?.error || e.message || 'Could not add.'); } finally { setBusy(false); }
+  }
+  async function setStatus(id, status) { try { await api.patch(`/api/sitewire/waivers/${id}`, { status }); onChanged(); } catch (e) { setErr(e?.data?.error || e.message); } }
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <h3 style={{ marginTop: 0 }}>Lien waivers</h3>
+      <div className="muted small" style={{ marginBottom: 8 }}>Track the waivers each draw needs. When the release gate is on, a draw can’t be released until every required waiver is received or waived.</div>
+      {waivers.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table" style={{ width: '100%', minWidth: 620 }}>
+            <thead><tr><th>Draw</th><th>Party</th><th>Tier</th><th>Type</th><th style={{ textAlign: 'right' }}>Amount</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {waivers.map((w) => {
+                const s = STA[w.status] || { label: w.status, cls: '' };
+                return (
+                  <tr key={w.id}>
+                    <td>{w.sitewire_draw_id ? '#' + w.sitewire_draw_id : '—'}</td>
+                    <td>{w.party_name || '—'}</td>
+                    <td className="muted">{w.tier}</td>
+                    <td className="muted small">{w.kind} · {w.scope}</td>
+                    <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{usd2(w.amount_cents)}</td>
+                    <td><span className={'pill ' + s.cls}>{s.label}</span></td>
+                    <td>
+                      {w.status === 'required' && <span className="row" style={{ gap: 4 }}>
+                        <button className="btn btn-sm ghost" onClick={() => setStatus(w.id, 'received')}>Received</button>
+                        <button className="btn btn-sm ghost" onClick={() => setStatus(w.id, 'waived')}>Waive</button>
+                      </span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <label className="small">Draw
+          <select className="input" value={f.sitewire_draw_id} onChange={(e) => setF({ ...f, sitewire_draw_id: e.target.value })}>
+            <option value="">—</option>{draws.map((d) => <option key={d.sitewire_draw_id} value={d.sitewire_draw_id}>#{d.number}</option>)}
+          </select>
+        </label>
+        <label className="small">Party<input className="input" style={{ width: 130 }} value={f.party_name} onChange={(e) => setF({ ...f, party_name: e.target.value })} /></label>
+        <label className="small">Tier<select className="input" value={f.tier} onChange={(e) => setF({ ...f, tier: e.target.value })}><option value="gc">GC</option><option value="subcontractor">Sub</option><option value="supplier">Supplier</option></select></label>
+        <label className="small">Type<select className="input" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })}><option value="conditional">Conditional</option><option value="unconditional">Unconditional</option></select></label>
+        <label className="small">Scope<select className="input" value={f.scope} onChange={(e) => setF({ ...f, scope: e.target.value })}><option value="progress">Progress</option><option value="final">Final</option></select></label>
+        <label className="small">Amount $<input className="input" style={{ width: 90 }} value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} /></label>
+        <button className="btn btn-sm primary" disabled={busy} onClick={add}>Add waiver</button>
       </div>
       {err && <div className="small" style={{ color: 'var(--bad,#b04a3f)', marginTop: 6 }}>{err}</div>}
     </div>
