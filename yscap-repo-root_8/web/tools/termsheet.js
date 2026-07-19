@@ -26,7 +26,7 @@
   // /api/pricing-defaults so a company fee/markup change reaches every new term
   // sheet on the marketing generator AND the portal studio. The admin studio
   // fields still override per session; a per-file registration still snapshots.
-  var CO = { markupStd: 0.5, markupGold: 0.5, origStd: 1.25, origGold: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null };
+  var CO = { markupStd: 0.5, markupGold: 0.5, origStd: 1.25, origGold: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [] };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -124,6 +124,14 @@
     return miss;
   }
   function readyToPrice() { return missingFields().length === 0; }
+  // Term-sheet ISSUE policy (owner-directed 2026-07-17): a term sheet may be issued
+  // only when a real loan can be sized and the deal is not hard-ineligible. A sized
+  // MANUAL / escalation deal (exit shortfall, city review, admin manual basis) IS
+  // issuable, but the PDF prints stamped "subject to manual review \u2014 not valid without
+  // our countersignature". A hard-INELIGIBLE or unsizeable deal can NOT print one.
+  function issueDeal() { var d = calc(); if (chosenProgram === "gold") { var g = calcGold(); if (g && !g.unavailable) d = g; } return d; }
+  function canIssue(d) { return !!(d && d.totalLoan > 0 && d.status !== "INELIGIBLE"); }
+  function needsManualStamp(d) { return !!(d && (d.status === "MANUAL" || d.exitShortfall > 0 || d.cityReview)); }
 
   // Professional, state-specific overlay note shown only once a limiting state is chosen.
   var STATE_NAMES = { FL: "Florida", CA: "California", NY: "New York" };
@@ -248,8 +256,8 @@
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
-    var closing = origFee + lenderFee + creditFee + titleCost;      // fees admin-overridable; appraisal is POC (excluded)
-    var excessOOP = s.assignmentExcessOOP || 0;
+    var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();      // + company extra fees (NY settlement etc.); appraisal is POC (excluded)
+    var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = (s.downPayment || 0) + excessOOP + closing;   // reserve is never brought to the table
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
     var liquidity = cashToClose + reserves;
@@ -267,7 +275,7 @@
       initialPayment: initialPayment, fullPayment: fullPayment, monthlyInterest: monthlyInterest,
       totalCost: displayCost, downPayment: s.downPayment || 0, excessOOP: excessOOP,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
-      closing: closing, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
+      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
       binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
       exitShortfall: R.exitShortfall || 0, cityReview: R.cityReview || null,
@@ -306,8 +314,8 @@
     var titleOvr = adminTitle();
     var titleCost = (titleOvr != null) ? titleOvr : (title.total || 0);
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
-    var closing = origFee + lenderFee + creditFee + titleCost;
-    var excessOOP = s.assignmentExcessOOP || 0;
+    var closing = origFee + lenderFee + creditFee + titleCost + extraFeesTotal();
+    var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = (s.downPayment || 0) + excessOOP + closing;
     var goldReservePct = R.liquidityPct || 0.05;
     var goldReserve = totalLoan * goldReservePct;            // Gold reserve = 5% of the loan, shown ON TOP of cash to close
@@ -326,7 +334,7 @@
       totalCost: basisPrice + num("construction") + financedIRr,
       downPayment: s.downPayment || 0, excessOOP: excessOOP,
       origFee: origFee, origPct: origPct, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
-      closing: closing, cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
+      closing: closing, extraFees: extraFeeList(), cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
       liquidity: cashToClose + goldReserve, liquidityPct: goldReservePct,
       ltcPct: s.ltcPct || 0, ltvPct: s.acqLtvPct || 0, arvPct: s.arvPct || 0,
       binding: s.binding || "", caps: R.caps, status: R.status, reasons: R.reasons || [],
@@ -370,7 +378,7 @@
     YS.put("stdOrigPts", origPtStr(adminOrigPct("standard")));
     setBadge("stdBadge", d.status, ready);
     var stdWhy = stdExit ? shortMsg(exitMsg(d.reasons)) : (d.status !== "ELIGIBLE" ? shortReason(d.reasons) : "");
-    YS.put("stdSub", !ready ? "Enter price, budget &amp; ARV to begin"
+    YS.put("stdSub", !ready ? "Enter price, budget & ARV to begin"
       : (stdWhy || (d.caps ? "Max LTC " + pctLbl(d.caps.maxLTC) + " \u00b7 " + (d.tierLabel || "") : "")));
 
     // ---- Gold Standard card ----
@@ -388,9 +396,9 @@
       var gs = G.sizing || {};
       var goldExit = ready && (G.exitShortfall > 0);   // costs>ARV is INELIGIBLE (kept for the explanatory sub-line)
       var gSized = ready && (gs.totalLoan > 0) && G.status !== "INELIGIBLE" && !goldExit;
-      YS.put("goldLoanBig", gSized ? YS.fmtUSD(gs.totalLoan) : ((ready && G.status !== "INELIGIBLE") ? "$0" : EM));
+      YS.put("goldLoanBig", gSized ? YS.fmtUSD(Math.floor(gs.totalLoan)) : ((ready && G.status !== "INELIGIBLE") ? "$0" : EM));
       YS.put("goldRateBig", (gSized && G.pricingReady && G.noteRate > 0) ? (G.noteRate * 100).toFixed(2) + "%" : EM);
-      YS.put("goldOrigBig", gSized ? YS.fmtUSD((gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
+      YS.put("goldOrigBig", gSized ? YS.fmtUSD2(Math.floor(gs.totalLoan || 0) * adminOrigPct("gold")) : EM);
       YS.put("goldOrigPts", origPtStr(adminOrigPct("gold")));
       setBadge("goldBadge", G.status, ready);
       var goldWhy = goldExit ? shortMsg(exitMsg(G.reasons)) : (G.status !== "ELIGIBLE" ? shortReason(G.reasons) : "");
@@ -456,6 +464,10 @@
     var wrap = el("rLevWrap"); if (!wrap) return;
     var isGold = chosenProgram === "gold";
     if (!ready || !chosenProgram) { wrap.style.display = "none"; return; }
+    // On a manual admin exception (LTC/rate overwritten) the leverage-by-tier ladder
+    // is meaningless — the admin fixed the basis, so every "tier" would show the same
+    // overridden loan/rate. Hide the slider entirely (audit #13/#35).
+    if (manualOn() && (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMRate") != null)) { wrap.style.display = "none"; return; }
     var ladder = isGold ? goldLadder() : YSP.priceLadder(gather());
     if (!ladder.eligible || !ladder.rows.length) { wrap.style.display = "none"; return; }
     var rows = ladder.rows;
@@ -485,14 +497,14 @@
     } else {
       lv.textContent = pctLbl(row.targetLtcPct) + " LTC";
       if (isGold) {
-        hint.innerHTML = "<b>Reduced leverage.</b> At " + pctLbl(row.targetLtcPct) + " LTC the loan is <b>" + YS.fmtUSD(row.totalLoan) +
-          "</b>, cash down " + YS.fmtUSD(row.downPayment) + ". Gold's rate is unchanged across leverage. Drag right for more.";
+        hint.innerHTML = "<b>Reduced leverage.</b> At " + pctLbl(row.targetLtcPct) + " LTC the loan is <b>" + YS.fmtUSD(Math.floor(row.totalLoan)) +
+          "</b>, cash down " + YS.fmtUSD(Math.floor(row.downPayment)) + ". Gold's rate is unchanged across leverage. Drag right for more.";
       } else {
         var maxRow = rows[0], delta = (maxRow.noteRate - row.noteRate) * 100;
         hint.innerHTML = "<b>Lower leverage, lower rate.</b> At " + pctLbl(row.targetLtcPct) +
           " LTC your rate is <b>" + (row.noteRate * 100).toFixed(2) + "%</b> \u2014 " + delta.toFixed(2) +
-          "% below the maximum-leverage rate. Loan " + YS.fmtUSD(row.totalLoan) +
-          ", cash down " + YS.fmtUSD(row.downPayment) + ". Drag right for more leverage.";
+          "% below the maximum-leverage rate. Loan " + YS.fmtUSD(Math.floor(row.totalLoan)) +
+          ", cash down " + YS.fmtUSD(Math.floor(row.downPayment)) + ". Drag right for more leverage.";
       }
     }
     wrap.style.display = "";
@@ -556,6 +568,15 @@
   function adminOrigPct(prog) { return adminNum(prog === "gold" ? "tsOrigGold" : "tsOrigStd", prog === "gold" ? CO.origGold : CO.origStd) / 100; }  // fraction
   function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
   function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
+  // Company "extra fees" (e.g. the NY settlement-agent fee) that apply to this
+  // deal's state (empty state = all files). A real closing cost, so it flows into
+  // cash-to-close AND the liquidity to show (owner-directed 2026-07-17).
+  function extraFeeList() {
+    var st = (val("propState") || "").trim().toUpperCase();
+    return (CO.extraFees || []).filter(function (f) { return f && f.name && Number(f.amount) > 0 && (!f.state || String(f.state).toUpperCase() === st); })
+      .map(function (f) { return { name: String(f.name), amount: Number(f.amount) }; });
+  }
+  function extraFeesTotal() { return extraFeeList().reduce(function (a, f) { return a + f.amount; }, 0); }
   function adminFeeAppr() { return adminNum("tsFeeAppr", CO.appraisal); }
   function adminTitle() { var e = el("tsFeeTitle"); var v = e ? parseFloat(String(e.value).replace(/,/g, "")) : NaN; if (isFinite(v) && v >= 0) return v; return CO.title != null ? CO.title : null; }  // per-file field, else company flat, else estimate
   function origPctStr(frac) { var p = Math.round(frac * 100 * 1000) / 1000; return p + "%"; }
@@ -655,6 +676,9 @@
     YS.put("rCredit", sized ? YS.fmtUSD2(d.creditFee) : EM);
     YS.put("rAppr", sized ? (YS.fmtUSD2(d.apprFee) + " POC") : EM);
     YS.put("rTitle", (sized && d.titleCost > 0) ? YS.fmtUSD2(d.titleCost) : EM);
+    (function () { var xf = (sized && d.extraFees) ? d.extraFees : [], w = el("rExtraWrap");
+      if (w) { if (xf.length) { w.style.display = ""; var t = xf.reduce(function (a2, f) { return a2 + f.amount; }, 0);
+        YS.put("rExtraLbl", xf.length === 1 ? xf[0].name : "Additional fees"); YS.put("rExtra", YS.fmtUSD2(t)); } else { w.style.display = "none"; } } })();
     YS.put("rCash", sized ? YS.fmtUSD2(d.cashToClose) : EM);
     YS.put("rLiquidity", sized ? YS.fmtUSD2(d.liquidity) : EM);
     YS.put("rTier", d.tierLabel || EM);
@@ -759,11 +783,11 @@
       var notes = [];
       if (ready && d.R.reserveTermCapped) {
         if (d.R.reserveCapIsConstruction) {
-          notes.push("<strong>Construction interest reserve capped at 75% of the full term (" + Math.round(d.R.reserveTermMonths) + " months).</strong> You requested " + d.irMonths +
-            " months; a construction reserve is financed up to 75% of the term's interest, so it covers " + Math.round(d.R.reserveTermMonths) + " months.");
+          notes.push("<strong>Construction interest reserve capped at 75% of the full term (" + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months).</strong> You requested " + d.irMonths +
+            " months; a construction reserve is financed up to 75% of the term's interest, so it covers " + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months.");
         } else {
           notes.push("<strong>Interest reserve capped at the loan term (" + d.R.reserveTermMonths + " months).</strong> You requested " + d.irMonths +
-            " months, but a reserve can't finance more interest than the loan runs \u2014 so it covers " + d.R.reserveTermMonths + " months.");
+            " months, but a reserve can't finance more interest than the loan runs \u2014 so it covers " + (Math.round(d.R.reserveTermMonths * 10) / 10) + " months.");
         }
       }
       if (ready && d.reserveCapped && d.maxReserve >= 0) {
@@ -866,6 +890,12 @@
       ["Estimated FICO", num("fico") ? String(num("fico")) : EM],
       ["Experience (flips / holds / ground-up)", num("expFlips") + " / " + num("expBrrrr") + " / " + num("expGround")]
     ];
+    if (d.asg && (d.asg.overLimit || d.asg.overridden)) {
+      costs.splice(1, 0,
+        ["Assignment \u2014 seller's contract price", money(d.asg.sellerPrice)],
+        ["Assignment fee", money(d.asg.fee)],
+        ["Effective purchase price (used for all sizing)", money(d.asg.recognizedPrice)]);
+    }
     var stdExit = d.exitShortfall > 0, stdCity = !!d.cityReview, stdOk = !stdExit && !stdCity && d.pricingReady && d.status !== "INELIGIBLE" && d.totalLoan > 0;
     var std = [
       ["Status", statusLabel(d.status)],
@@ -1039,12 +1069,12 @@
       doc.setFont("helvetica", "normal"); doc.setFontSize(8.3); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(prog), W - M, y, { align: "right" });
       y += 13; doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y); y += 14;
 
-      if (d.status === "MANUAL") {
+      if (needsManualStamp(d)) {
         // Say WHY manual review is needed, right in the banner \u2014 the engine's own MANUAL
         // reason(s), shortened. (Full text still appears in the eligibility snapshot below.)
         var manualWhy = (d.reasons || []).filter(function (r) { return r.level === "MANUAL"; }).map(function (r) { return shortMsg(r.msg); }).filter(Boolean);
         var manualLead = "Manual underwriting is needed" + (manualWhy.length ? ": " + manualWhy.join("  \u00b7  ") + "." : " for this scenario.") +
-          " The figures below are indicative and subject to review \u2014 this is not a clean approval.";
+          " The figures below are indicative and subject to review \u2014 this term sheet is NOT valid without a countersignature from an authorized " + LENDER.name + " representative.";
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.4);
         var manualLines = doc.splitTextToSize(pdfSafe(manualLead), W - 2 * M - 24);
         var manualBoxH = Math.max(25, 16 + manualLines.length * 8.5);
@@ -1077,7 +1107,7 @@
       yL = cardHead(xL, colW, "Loan structure", yL);
       yL = rowIn(xL, colW, isRefi() ? "As-is value" : "Purchase price", money(isRefi() ? d.basisPrice : (num("price") || d.basisPrice)), yL);
       if (!isRefi() && isAssign()) yL = rowIn(xL, colW, "Seller price / assignment fee", money(num("origPrice")) + " / " + money(Math.max(0, num("price") - num("origPrice"))), yL);
-      if (!isRefi() && isAssign() && d.asg && d.asg.overLimit) yL = rowIn(xL, colW, "Effective purchase price (fee capped at 15%)", money(d.asg.recognizedPrice), yL);
+      if (!isRefi() && isAssign() && d.asg && (d.asg.overLimit || d.asg.overridden)) yL = rowIn(xL, colW, "Effective purchase price " + (d.asg.overridden ? "(admin exception)" : "(fee capped at 15%)"), money(d.asg.recognizedPrice), yL);
       if (!isBridge) {
         yL = rowIn(xL, colW, "Construction / rehab budget", money(d.constr), yL);
         if (d.financedIR > 0) { var finMo = (d.fullPayment > 0) ? Math.round(d.financedIR / d.fullPayment) : (d.irMonths || 0); yL = rowIn(xL, colW, "Financed interest reserve (" + finMo + " mo)", money(d.financedIR), yL); }
@@ -1111,6 +1141,7 @@
       yR = rowIn(xR, colW, "Credit report (avg)", sized ? money2(d.creditFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
+      if (sized && d.extraFees) d.extraFees.forEach(function (f) { yR = rowIn(xR, colW, f.name, money2(f.amount), yR); });
       if (!isRefi()) yR = rowIn(xR, colW, "Down payment (equity)", sized ? money(d.downPayment) : "\u2014", yR, { bold: true });
       if (d.excessOOP > 0) yR = rowIn(xR, colW, "Assignment over 15% (out of pocket)", money(d.excessOOP), yR);
       yR = rowIn(xR, colW, "Estimated cash to close", sized ? money2(d.cashToClose) : "\u2014", yR, { bold: true, accent: true });
@@ -1191,8 +1222,12 @@
       // ---------------- FINAL PAGE: leverage / pricing ladder (STANDARD PROGRAM ONLY) ----------------
       // The Gold Standard Program prices a flat rate that does NOT vary by leverage, so there is no
       // per-LTC pricing ladder and this page must never render for Gold.
-      var lad = (!d.gold) ? YSP.priceLadder(gather()) : { eligible: false, rows: [] };
-      if (!d.gold && lad.eligible && lad.rows.length) {
+      // Suppress the ladder on a manual admin exception too — the overridden basis
+      // makes every leverage step identical, so the page would print duplicate rows
+      // on a signable document (audit #13/#35).
+      var ladderOverridden = manualOn() && (adminNumRaw("tsMLtc") != null || adminNumRaw("tsMRate") != null);
+      var lad = (!d.gold && !ladderOverridden) ? YSP.priceLadder(gather()) : { eligible: false, rows: [] };
+      if (!d.gold && !ladderOverridden && lad.eligible && lad.rows.length) {
         doc.addPage(); header(); y = 92;
         doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor.apply(doc, DARK);
         doc.text("Your pricing at every leverage level", M, y); y += 16;
@@ -1221,7 +1256,7 @@
           doc.setTextColor.apply(doc, isSel ? [28, 24, 16] : DARK);
           var vals = [
             pc(r.targetLtcPct) + (r.isMax ? "  (maximum)" : ""),
-            money(r.totalLoan), money(r.downPayment), money(r.monthlyPayment) + "/mo",
+            money(Math.floor(r.totalLoan)), money(Math.floor(r.downPayment)), money(Math.floor(r.totalLoan) * (r.noteRate / 12)) + "/mo",
             (r.noteRate * 100).toFixed(2) + "%"
           ];
           var cx2 = M;
@@ -1450,6 +1485,10 @@
       if (f) { f.focus(); f.classList.add("field-flag"); setTimeout(function () { f.classList.remove("field-flag"); }, 2400); }
       return;
     }
+    // Same issue-policy gate as the download button (audit #56): never email a PDF
+    // the screen didn't show, and never a term sheet for an ineligible/unsizeable deal.
+    if (!readyToPrice()) { if (note) { note.textContent = "Add the required fields (state, FICO, price and ARV) first so we can prepare your term sheet."; note.style.color = "#b8604a"; } return; }
+    if (!canIssue(issueDeal())) { if (note) { note.textContent = "This scenario isn't eligible as entered \u2014 submit it for manual review and our team will follow up."; note.style.color = "#b8604a"; } return; }
     var d = (chosenProgram === "gold") ? (calcGold() || calc()) : calc();
     var summary = {
       email: email, borrower: (borrowerOfRecord() || "").trim(),
@@ -1536,7 +1575,7 @@
     ]);
 
     var propRow = chk("addrTBD") ? "To be determined" : ((val("propAddr") || "\u2014") + (val("propState") ? "" : ""));
-    var assignOn = !!d.asg || chk("isAssignment") || num("origPrice") > 0;
+    var assignOn = !!d.asg;   // only what actually priced (audit #48)
     section("Property & project (as entered)", [
       ["Property", propRow],
       ["State", val("propState") || inp.state || "\u2014"],
@@ -1561,7 +1600,7 @@
       derivRows.push(["Basis (as-is value)", money(d.basisPrice)]);
       derivRows.push(["Loan advanced", money(d.totalLoan), "tot"]);
     } else {
-      derivRows.push(["Cost basis \u2014 lower of " + ((d.asg && d.asg.overLimit) ? "effective purchase price" : "price") + " / as-is", money(d.basisPrice)]);
+      derivRows.push(["Cost basis \u2014 " + ((d.asg && (d.asg.overLimit || d.asg.overridden)) ? "effective purchase price" : "price / as-is basis"), money(d.basisPrice)]);
       derivRows.push(["Initial advance at closing", money(d.initialAdvance)]);
       derivRows.push(["= " + pc(d.ltvPct) + " of as-is value (initial LTV)", "", "sub"]);
       if (d.rehabHoldback > 0) derivRows.push(["Construction holdback \u2014 " + ((d.R && d.R.sizing && d.R.sizing.rehabOverCap) ? "capped below the budget" : "100% of budget"), money(d.rehabHoldback)]);
@@ -1656,6 +1695,7 @@
     });
     var pdf = el("tsPdf"); if (pdf) pdf.addEventListener("click", function () {
       if (!readyToPrice()) { flash("Add the required fields (state, FICO, price and ARV) to download your term sheet."); return; }
+      if (!canIssue(issueDeal())) { flash("This scenario isn't eligible as entered, so a term sheet can't be issued \u2014 use \u201CSubmit for manual review\u201D and our team will take a look."); return; }
       if (validateAssign()) exportPdf(pdf); else flash("The seller's contract price can't be more than the purchase price.");
     });
     var lt = el("tsLetter"); if (lt) lt.addEventListener("click", function () { exportLetter(lt); });
@@ -1689,6 +1729,7 @@
             if (d.creditFee != null) CO.credit = Number(d.creditFee);
             if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
             CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
+            CO.extraFees = Array.isArray(d.extraFees) ? d.extraFees : [];
           }
         }).catch(function(){}).then(function(){ seedAdminDefaults(); recompute(); });
       } catch (e) { recompute(); }

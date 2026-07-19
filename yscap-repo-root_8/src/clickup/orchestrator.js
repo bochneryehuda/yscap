@@ -142,6 +142,10 @@ async function loadPushContext(appId) {
     // returns bigint as a string, so resolveClickupUserId coerces to Number.
     officerClickupId: await resolveClickupUserId({ storedId: row.officer_cuid, staffId: row.officer_staff_id, email: row.officer_email }),
     processorClickupId: await resolveClickupUserId({ storedId: row.processor_cuid, staffId: row.processor_staff_id, email: row.processor_email }),
+    // Written to the "Processor Email" TEXT field so BOTH ClickUp processor fields
+    // (people-field + email) agree after a Pilot pick — the inbound agreement gate
+    // requires that match to adopt a processor (owner-directed 2026-07-19).
+    processorEmail: row.processor_email || null,
     officerName: row.officer_name || row.loan_officer_name || null,
     borrowerOrigin: row.b_origin || null,   // provenance for the DOB auto-resolver
     portalAppId: appId,
@@ -243,7 +247,13 @@ async function pushApplication(appId, opts = {}) {
   // e.g. the admin per-file "repush" button).
   const scoped = (taskId && Array.isArray(opts.only) && opts.only.length) ? mapper.resolveOnly(opts.only) : null;
   const fieldsToPush = scoped ? built.customFields.filter((c) => scoped.cuIds.has(c.id)) : built.customFields;
-  const pushStatus = scoped ? scoped.status : true;
+  // WO-16 (F-M1): the ClickUp-owned TASK status is written ONLY on a deliberate
+  // internal-status change (scoped 'internal_status') — never as a side effect of
+  // a borrower-facing status change or a full economics repush, which carry a
+  // stale internal_status mirror that would revert ClickUp's live status. The
+  // portal-owned borrower_portal_status MIRROR field still syncs normally (it's a
+  // custom field in the scoped/full field set).
+  const pushInternalStatus = scoped ? !!scoped.internalStatus : false;
   // Checklist option-writes are appended ONLY for explicitly-scoped checklist
   // keys, and NEVER on create (built.customFields alone builds a new task). This
   // is the structural guarantee that a create/full-repush can't touch a ClickUp
@@ -331,7 +341,8 @@ async function pushApplication(appId, opts = {}) {
         await journalFieldWrite(appId, id, c.id, null, c.value, source, { blocked: true });
         await logSync('dob_blind_write_blocked', appId, id, { fieldId: c.id, to: String(c.value) });
         await require('../lib/sync-review').queueReview({
-          applicationId: appId, taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
+          applicationId: appId, borrowerId: ctx._row.borrower_id, // WO-6 (F-M20): so the row can auto-close when the DOB conflict resolves
+          taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
           proposedValue: T.fromEpochMs(c.value), rawValue: String(c.value),
           reason: 'dob_change_blocked_pending_review',
           clickupValue: null, portalValue: T.fromEpochMs(c.value) });
@@ -354,11 +365,15 @@ async function pushApplication(appId, opts = {}) {
           if (d.outcome === 'review') {
             journalStats.blocked++;
             const reason = isSuspectDobShift(c.id, old, c.value) ? 'dob_one_day_shift_blocked' : 'dob_change_blocked_pending_review';
-            console.error('[clickup] BLOCKED DOB change push', { appId, taskId: id, from: old, to: c.value, reason });
+            // N-7 (round-2): never log the DOB values themselves (epochs decode
+            // to the exact date of birth — PII in plain logs). The structured
+            // audit/journal rows below capture the change safely.
+            console.error('[clickup] BLOCKED DOB change push', { appId, taskId: id, reason });
             await journalFieldWrite(appId, id, c.id, old, c.value, source, { blocked: true });
             await logSync('dob_change_blocked', appId, id, { fieldId: c.id, from: old != null ? String(old) : null, to: String(c.value), reason });
             await require('../lib/sync-review').queueReview({
-              applicationId: appId, taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
+              applicationId: appId, borrowerId: ctx._row.borrower_id, // WO-6 (F-M20): so the row can auto-close when the DOB conflict resolves
+              taskId: id, direction: 'outbound', fieldKey: 'date_of_birth',
               currentValue: oldLoose, proposedValue: newDay, rawValue: String(c.value),
               reason, clickupValue: oldLoose, portalValue: newDay });
             continue;
@@ -409,7 +424,7 @@ async function pushApplication(appId, opts = {}) {
       console.warn(`[clickup] OVERWRITE STORM: push rewrote ${overwrites} existing values on task ${id} (app ${appId})`);
       await logSync('push_overwrite_storm', appId, id, { overwrites, scoped: !!scoped });
     }
-    if (pushStatus && built.statusName && (!before || before.__status !== built.statusName)) {
+    if (pushInternalStatus && built.statusName && (!before || before.__status !== built.statusName)) {
       try {
         await clickup.updateTask(id, { status: built.statusName });
         await journalFieldWrite(appId, id, null, before ? before.__status : undefined, built.statusName, source, { fieldKey: 'status' });
@@ -506,6 +521,30 @@ function circuitCheck(appId, taskId, n = 1) {
   for (let i = 0; i < n; i++) _writeTimes.push(now);
 }
 
+/**
+ * WO-4b (F-M16): on boot, seed the in-memory breaker window from the durable
+ * write journal (clickup_write_log already timestamps every write), so a
+ * deploy/restart mid-storm no longer resets the breaker to zero and lets a
+ * runaway keep going. circuitCheck stays synchronous (it's called without await
+ * from many sites); this just primes _writeTimes once. Best-effort — a failure
+ * leaves the breaker starting empty, exactly as before. (A fully shared,
+ * multi-instance breaker would query the journal per check; single-instance —
+ * this deployment — is fully covered by seeding on boot.)
+ */
+async function seedBreakerFromDb() {
+  try {
+    const r = await db.query(
+      `SELECT extract(epoch from created_at) * 1000 AS ms
+         FROM clickup_write_log
+        WHERE blocked = false AND created_at > now() - ($1 || ' milliseconds')::interval
+        ORDER BY created_at`,
+      [String(CIRCUIT_WINDOW_MS)]);
+    const seeded = r.rows.map((x) => Number(x.ms)).filter((n) => Number.isFinite(n));
+    _writeTimes = seeded.slice(-CIRCUIT_MAX_WRITES * 2);
+    if (_writeTimes.length) console.log(`[clickup] breaker seeded from journal: ${_writeTimes.length} write(s) in the last ${Math.round(CIRCUIT_WINDOW_MS / 60000)} min`);
+  } catch (e) { console.warn('[clickup] breaker seed skipped:', e.message); }
+}
+
 /** Append-only journal of every ClickUp field write (before + after). PII rule:
  *  SSN / card values are masked before they land in the journal. Best-effort —
  *  a journal failure never blocks the push itself. */
@@ -582,5 +621,6 @@ module.exports = {
   pushApplication, createForNewFile, loadPushContext, resolveTargetList, firstListId, logSync,
   PII_OVERWRITE_SHIELD, PII_REVIEW_KEY, // exported for the write-safety tests
   circuitCheck, // the ONE shared volume breaker — every ClickUp write path counts into it (audit fix)
+  seedBreakerFromDb, // WO-4b (F-M16): prime the breaker window from the journal on boot
   recordFieldFailure, assertPushComplete, // WO-1: exported for the push-failure regression test
 };

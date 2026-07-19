@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
+import { scenarioToDraft, scenarioLabelFromState } from '../lib/scenario.js';
 
 // Files that are muted OUTSIDE the file (owner-directed): funded/terminal AND
 // ON-HOLD loans never nag in the cross-file "to complete" rollup or the per-loan
@@ -26,6 +27,8 @@ export default function Dashboard() {
   const [archived, setArchived] = useState([]);      // archived (hidden) drafts
   const [showArchived, setShowArchived] = useState(false);
   const [draftBusy, setDraftBusy] = useState(null);
+  const [scenarios, setScenarios] = useState([]);    // saved pricing scenarios
+  const [scenBusy, setScenBusy] = useState(null);
 
   const load = () => {
     // Each panel loads independently: a failing drafts/notifications call must
@@ -34,6 +37,7 @@ export default function Dashboard() {
     api.drafts().then(d => setDrafts(d || [])).catch(() => {});
     api.archivedDrafts().then(d => setArchived(d || [])).catch(() => {});
     api.notifications().then(n => setNotifs(n || [])).catch(() => {});
+    api.pricingScenarios().then(s => setScenarios(Array.isArray(s) ? s : [])).catch(() => {});
   };
 
   // Tidy in-progress applications. Delete is permanent (confirm first); archive
@@ -51,6 +55,26 @@ export default function Dashboard() {
     if (!window.confirm(`Delete "${label || 'this draft application'}"? This can't be undone.`)) return;
     setDraftBusy(id);
     try { await api.deleteDraft(id); load(); } catch (e) { setErr(e.message || 'Could not delete'); } finally { setDraftBusy(null); }
+  }
+
+  // Saved pricing scenarios (#119b): reopen one in the studio to reprice it,
+  // start a real application pre-filled from it, or delete it. Starting a loan
+  // from a scenario carries every number the borrower already priced (deal,
+  // property, economics, experience, FICO) into a new draft — the application
+  // then adds their personal profile on top, so only the missing details remain.
+  const reopenScenario = (s) => nav('/pricing', { state: { openScenarioId: s.id } });
+  async function startLoanFromScenario(s) {
+    setScenBusy(s.id);
+    try {
+      const data = scenarioToDraft(s.inputs || {});
+      const d = await api.createDraft({ label: s.label || scenarioLabelFromState(s.inputs) || 'New application', data, step: 1 });
+      nav(`/apply/${d.id}`);
+    } catch (e) { setErr(e.message || 'Could not start the loan'); setScenBusy(null); }
+  }
+  async function removeScenario(s) {
+    if (!window.confirm(`Delete the saved scenario "${s.label}"?`)) return;
+    setScenBusy(s.id);
+    try { await api.deletePricingScenario(s.id); load(); } catch (e) { setErr(e.message || 'Could not delete the scenario'); } finally { setScenBusy(null); }
   }
   useEffect(() => {
     load();
@@ -268,6 +292,36 @@ export default function Dashboard() {
             )}
           </>
         )}
+
+      {scenarios.length > 0 && (
+        <div className="panel" style={{ marginBottom: 18 }}>
+          <h3 style={{ marginBottom: 4 }}>Saved scenarios</h3>
+          <p className="muted small" style={{ marginBottom: 12 }}>
+            Term sheets you priced and saved. Reopen one to reprice it, or start an
+            application straight from it — pre-filled with everything you already entered.
+          </p>
+          {scenarios.map(s => {
+            const v = (s.inputs && s.inputs.v) || {};
+            const sub = [v.dealType, v.dealPurpose].filter(Boolean).join(' · ');
+            return (
+              <div className="item" key={s.id}>
+                <div>
+                  <div className="ttl">{s.label || 'Pricing scenario'}</div>
+                  <div className="muted small">{sub ? sub + ' · ' : ''}Saved {dstr(s.updated_at || s.created_at)}</div>
+                </div>
+                <div className="row" style={{ gap: 6 }}>
+                  <button className="btn ghost small" disabled={scenBusy === s.id} onClick={() => reopenScenario(s)}
+                    title="Reopen this scenario in the pricer to reprice it">Reopen</button>
+                  <button className="btn primary small" disabled={scenBusy === s.id} onClick={() => startLoanFromScenario(s)}
+                    title="Start a loan application pre-filled from this scenario">{scenBusy === s.id ? 'Starting…' : 'Start loan →'}</button>
+                  <button className="btn ghost small" disabled={scenBusy === s.id} onClick={() => removeScenario(s)}
+                    title="Delete this saved scenario" style={{ color: 'var(--danger)' }}>Delete</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {(drafts.length > 0 || archived.length > 0) && (
         <div className="panel" style={{ marginBottom: 18 }}>

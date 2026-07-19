@@ -158,6 +158,14 @@ async function persistProductRegistration(client, { appId, program, inputs, quot
     ]);
   await replaceProductConditions(client, { appId, registrationId, quote, registeredByStaffId });
   await syncExperienceChecklistForApplication(appId, client);
+  // The applications write-back above trips the db/096 economics trigger, which
+  // flags the CURRENT registration stale ("fatal") — but the row it flags is the
+  // one we are registering right now. Registration IS the re-verification that flag
+  // asks for, so clear it on the fresh row (do it LAST, after the experience sync,
+  // so nothing re-flags it). Leaving it set silently disabled the experience-drop
+  // fatality guard, which filters `is_current AND NOT stale` (audit #4/#9/#13).
+  await client.query(
+    `UPDATE product_registrations SET stale=false, stale_reason=NULL WHERE id=$1`, [registrationId]);
   return registrationId;
 }
 

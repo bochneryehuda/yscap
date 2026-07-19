@@ -134,6 +134,24 @@ function backoffMs(attempt, retryAfterSec) {
   return Math.min(BASE_BACKOFF_MS * 2 ** (attempt - 1), MAX_BACKOFF_MS);
 }
 
+/** N-1 (round-2): is it SAFE to re-send this request in-call after a transient
+ *  failure? A non-idempotent POST (createTask, addComment) may have ALREADY
+ *  landed before the reply/timeout, so re-issuing it makes a DUPLICATE (a second
+ *  ClickUp card carrying full SSN/DOB). So:
+ *   - network/timeout (status null): re-send ONLY if idempotent (the outcome is
+ *     unknown; a create may have succeeded).
+ *   - 429: ALWAYS safe — the request was rejected before processing, nothing was
+ *     created/changed.
+ *   - 5xx: ambiguous outcome → re-send ONLY if idempotent.
+ *  GET/PUT and the value-idempotent setField POST pass idempotent=true and retry
+ *  freely; createTask/addComment do not. Pure — unit tested. */
+function inCallRetryAllowed(idempotent, status) {
+  if (status == null) return !!idempotent;                 // network / timeout — unknown outcome
+  if (status === 429) return true;                         // rejected, never applied — always safe
+  if (status >= 500 && status <= 599) return !!idempotent; // ambiguous — only if idempotent
+  return false;                                            // other statuses are not transient
+}
+
 /** Build the thrown error for a non-OK response, tagged for the queue. The
  *  message is value-free ("ClickUp POST /task/x/field/y -> 429") — never PII. */
 function httpError(method, path, status, retryAfterSec) {
@@ -170,9 +188,13 @@ async function fetchWithTimeout(url, opts, ms) {
   }
 }
 
-async function call(path, { method = 'GET', body } = {}) {
+async function call(path, { method = 'GET', body, idempotent } = {}) {
   guardNoTaskDeletion(method, path); // never delete a ClickUp file — see guard above
   const payload = body ? JSON.stringify(body) : undefined;
+  // N-1 (round-2): default GET/PUT/DELETE to idempotent; a POST is NOT idempotent
+  // unless the caller says so (setField is value-idempotent and opts in). A
+  // non-idempotent POST that fails transiently is NOT re-sent in-call.
+  const idem = idempotent != null ? !!idempotent : method !== 'POST';
   let lastErr;
   for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
     await takeToken(); // pre-throttle: never exceed ~RPM/min, so we rarely get 429'd
@@ -184,17 +206,18 @@ async function call(path, { method = 'GET', body } = {}) {
         body: payload,
       }, TIMEOUT_MS);
     } catch (netErr) {
-      // network failure / timeout / abort — transient, retryable.
+      // network failure / timeout / abort — transient, retryable by the QUEUE,
+      // but re-send in-call ONLY if idempotent (a create may have already landed).
       netErr.retryable = true;
       lastErr = netErr;
-      if (attempt < MAX_TRIES) { await sleep(backoffMs(attempt) + Math.floor(Math.random() * 250)); continue; }
+      if (inCallRetryAllowed(idem, null) && attempt < MAX_TRIES) { await sleep(backoffMs(attempt) + Math.floor(Math.random() * 250)); continue; }
       throw netErr;
     }
     const remaining = res.headers.get('x-ratelimit-remaining');
     if (remaining != null && Number(remaining) <= 5) {
       console.warn(`[clickup] rate-limit headroom low: ${remaining} left on ${method} ${path}`);
     }
-    if (isRetryableStatus(res.status) && attempt < MAX_TRIES) {
+    if (inCallRetryAllowed(idem, res.status) && attempt < MAX_TRIES) {
       const ra = parseInt(res.headers.get('retry-after') || '0', 10);
       const wait = backoffMs(attempt, ra) + Math.floor(Math.random() * 250);
       console.warn(`[clickup] ${res.status} on ${method} ${path} — retry ${attempt}/${MAX_TRIES} in ${Math.round(wait / 1000)}s${ra ? ` (Retry-After ${ra}s)` : ''}`);
@@ -226,7 +249,9 @@ const updateTask = (taskId, payload) => {
 // structurally (see HARD STOP 2) — this sync can update values, never erase them.
 const setField = (taskId, fieldId, value) => {
   guardNoFieldClearing(fieldId, value);
-  return call(`/task/${taskId}/field/${fieldId}`, { method: 'POST', body: { value } });
+  // Value-idempotent: writing the same value twice is a no-op, so this POST is
+  // safe to re-send on a transient failure (unlike createTask/addComment — N-1).
+  return call(`/task/${taskId}/field/${fieldId}`, { method: 'POST', body: { value }, idempotent: true });
 };
 
 // Workspaces (teams) the token can see, each with its `members[].user` (id +
@@ -310,4 +335,5 @@ module.exports = {
   guardNoTaskDeletion, // exported for the safety test; the guard is enforced inside call()
   guardNoFieldClearing, guardTaskUpdatePayload, // exported for the safety tests; enforced inside setField()/updateTask()
   isRetryableStatus, backoffMs, httpError, // WO-2: exported for the retry-contract test
+  inCallRetryAllowed, // N-1 (round-2): exported for the create-idempotency test
 };

@@ -36,7 +36,16 @@ const REASON_ACTIONS = {
   // An outbound push exhausted its retry budget (dead-lettered).
   push_dead_lettered: ['retry_push'],
   // A portal file older than the auto-recovery window with no ClickUp task.
-  file_unlinked_no_task: ['create_task'],
+  // relink_task lets an admin point it at an EXISTING card (when one already
+  // exists for the deal) instead of always minting a fresh one.
+  file_unlinked_no_task: ['relink_task', 'create_task'],
+  // A file that went DEAD / orphaned and lost its ClickUp card while it is still
+  // a live file (owner-directed 2026-07-19, Pinches Lichtman: the real worked
+  // file was orphaned while its card stuck to the empty twin). The fix is
+  // usually relink_task — move the correct existing card onto this file (an
+  // admin action; moving a held card asks for confirmation). Otherwise give it
+  // a fresh card, archive it, or keep it as-is.
+  file_dead_unlinked: ['relink_task', 'create_task', 'archive_file', 'keep_file'],
   // The SharePoint mirror filed somewhere it wasn't SURE about (ambiguous
   // fuzzy match / officer-less Unfiled). Fix the folders IN SharePoint (the
   // mirror never moves or renames anything), then re-match.
@@ -98,7 +107,7 @@ async function audit(action, entityId, actorId, detail) {
  * invalid input and lets 5xx bubbles surface as-is. Marking the row resolved
  * is the CALLER's job (shared with the other resolve endpoints).
  */
-async function applyFileReviewAction({ row, action, targetApplicationId, actorId }) {
+async function applyFileReviewAction({ row, action, targetApplicationId, targetTaskId, confirmMove, actorId, isAdmin }) {
   if (!isActionAllowed(row.reason, action)) {
     throw httpError(400, `action '${action}' is not available for this row`);
   }
@@ -381,6 +390,39 @@ async function applyFileReviewAction({ row, action, targetApplicationId, actorId
     const names = both.map((x) => [x.first_name, x.last_name].filter(Boolean).join(' ')).join(' and ');
     await audit('shared_email_allowed', row.application_id, actorId, { reviewId: row.id, borrowerIds: [b1, b2] });
     return { note: `shared email allowed for ${names} — the profiles are linked; a login on either now sees both people's files (nothing was merged; each keeps their own profile and officer)`, applicationId: row.application_id };
+  }
+
+  if (action === 'relink_task') {
+    // Move an EXISTING ClickUp card onto this orphaned file — the twin-file fix
+    // (the correct card is stuck on the wrong file). Reuses the single admin
+    // relink chokepoint (src/clickup/relink.js): it validates the card, moves it
+    // off any current holder (only with confirmMove), binds it here, then
+    // re-ingests (COALESCE fill) and re-stamps the card at this file. A held card
+    // without confirmMove bubbles a needsConfirm 409 the route relays.
+    // ADMIN ONLY (owner-directed 2026-07-19; pre-merge audit B1). relink_task
+    // MOVES a ClickUp card between files (it can pull a card off another file),
+    // the same privileged override as the direct /clickup/relink endpoint — so
+    // it must NEVER be reachable by a processor / loan_officer / underwriter /
+    // loan_coordinator, including one granted the see_all_files capability. The
+    // review-queue route (resolve-file) is NOT role-gated (LOs resolve their own
+    // rows), so the gate lives HERE, at the action chokepoint, fed the caller's
+    // real admin role. Checked FIRST — authorization before any other work.
+    if (!isAdmin) throw httpError(403, 'Only an admin can move a ClickUp card between files.');
+    if (!row.application_id) throw httpError(409, 'this row has no portal file to link');
+    if (!targetTaskId) throw httpError(400, 'a ClickUp card id or link is required to relink');
+    let out;
+    try {
+      out = await require('../clickup/relink').relinkFileToTask({
+        appId: row.application_id, taskInput: targetTaskId, confirmMove: !!confirmMove, actorId });
+    } catch (e) {
+      if (e && e.needsConfirm) { const err = httpError(409, e.message); err.needsConfirm = true; err.holder = e.holder || null; throw err; }
+      throw e;
+    }
+    await audit('sync_review_relink_task', row.application_id, actorId, { taskId: out.taskId, movedFrom: out.movedFrom || null, reviewId: row.id });
+    return {
+      note: out.alreadyLinked ? `already linked to ClickUp card ${out.taskId}`
+        : `linked to ClickUp card ${out.taskId}${out.movedFrom ? ' (moved from the file that was wrongly holding it)' : ''}`,
+      applicationId: row.application_id };
   }
 
   if (action === 'create_task') {
