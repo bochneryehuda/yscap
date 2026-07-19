@@ -120,17 +120,16 @@ function summarizeOutcome(parsed, scored) {
     const d = describeError(e);
     if (d) { lines.push(d.message); bump(d.severity); if (d.owner) owners.add(d.owner); }
   }
+  // Review is driven by a borrower having NO usable middle score (all bureaus
+  // no-score / excluded), not by individual leftover score nodes: a valid file
+  // with 3 usable mortgage scores often ALSO carries extra non-mortgage-model or
+  // empty score nodes, and flagging those forced valid imports to review. Serious
+  // per-bureau conditions (freeze / deceased / fraud / OFAC / no-hit) surface via
+  // parsed.errors (CREDIT_FILE status + alert messages) above, so they still
+  // route to review without this over-firing on leftovers.
   for (const pb of (scored ? scored.perBorrower : [])) {
     const who = pb.identity && pb.identity.firstName ? pb.identity.firstName : pb.reportBorrowerId;
     if (pb.middle && pb.middle.noScore) { lines.push(`${who}: ${BUREAU_CONDITIONS.no_score.message}`); bump('review'); owners.add('staff'); }
-    for (const c of (pb.middle ? pb.middle.classified : [])) {
-      if (c.reason === 'excluded') {
-        const cond = conditionFromText(c.exclusionReason) || 'no_score';
-        lines.push(`${who} · ${c.bureau || 'a bureau'}: ${BUREAU_CONDITIONS[cond] ? BUREAU_CONDITIONS[cond].message : c.exclusionReason}`);
-        bump(BUREAU_CONDITIONS[cond] ? BUREAU_CONDITIONS[cond].severity : 'review');
-        owners.add(BUREAU_CONDITIONS[cond] ? BUREAU_CONDITIONS[cond].owner : 'staff');
-      }
-    }
   }
   return { reason: [...new Set(lines)].join(' | ').slice(0, 1000), severity, owners: [...owners] };
 }

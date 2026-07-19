@@ -48,6 +48,19 @@ ok('summary owner borrower', sum.owners.includes('borrower'));
 const scored2 = { perBorrower: [{ reportBorrowerId: 'C1', identity: { firstName: 'Bob' }, middle: { noScore: true, classified: [] } }] };
 eq('no-score -> review severity', O.summarizeOutcome({ errors: [] }, scored2).severity, 'review');
 
+// a VALID file (usable middle) with a leftover excluded/empty score node must NOT
+// review — the borrower has a real middle; leftover nodes are noise (the live 3.4
+// batch caught valid files reviewing because of duplicate/non-mortgage nodes).
+const scored3 = { perBorrower: [{ reportBorrowerId: 'B1', identity: { firstName: 'Val' }, middle: { noScore: false, middle: 689, classified: [
+  { bureau: 'Equifax', usable: true, value: 693, reason: 'ok' },
+  { bureau: 'Experian', usable: true, value: 688, reason: 'ok' },
+  { bureau: 'TransUnion', usable: true, value: 689, reason: 'ok' },
+  { bureau: 'Equifax', usable: false, value: null, reason: 'excluded', exclusionReason: '' },   // leftover empty node
+] } }] };
+const vsum = O.summarizeOutcome({ errors: [] }, scored3);
+eq('valid file w/ leftover node -> not review', vsum.severity, 'info');
+eq('valid file -> empty reason', vsum.reason, '');
+
 // bureauStatus: N of 3
 const bs = O.bureauStatus(parsed, scored);
 eq('2 of 3 scored', bs.scoredCount, 2);

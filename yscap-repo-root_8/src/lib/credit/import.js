@@ -469,8 +469,27 @@ async function orderAndImport(opts = {}) {
   // drop everything.
   const requestedSsns = new Set(requestBorrowers.map((b) => String(b.ssn || '').replace(/\D/g, '')).filter(Boolean));
   if (requestedSsns.size && Array.isArray(parsed.borrowers) && parsed.borrowers.length > 1) {
-    const kept = parsed.borrowers.filter((b) => { const s = String(b.ssn || '').replace(/\D/g, ''); return !s || requestedSsns.has(s); });
+    // Keep ONLY borrowers whose SSN matches one we requested. The response echoes
+    // non-applicant parties — authorized users, tradeline co-signers, a masked
+    // responding party — often with no SSN or a placeholder; any of those with
+    // "no score" would otherwise force a valid import to review. Fall back to all
+    // if none match (a true all-no-hit file), so we never drop everything.
+    const kept = parsed.borrowers.filter((b) => requestedSsns.has(String(b.ssn || '').replace(/\D/g, '')));
     if (kept.length) parsed.borrowers = kept;
+  }
+  // Collapse duplicate copies of the SAME borrower (same SSN echoed with and
+  // without scores) — keep the copy carrying the most scores, so a scoreless
+  // echo can't add a phantom "no score" borrower.
+  if (Array.isArray(parsed.borrowers) && parsed.borrowers.length > 1) {
+    const bySsn = new Map();
+    const noSsn = [];
+    for (const b of parsed.borrowers) {
+      const s = String(b.ssn || '').replace(/\D/g, '');
+      if (!s) { noSsn.push(b); continue; }
+      const cur = bySsn.get(s);
+      if (!cur || (b.scores || []).length > (cur.scores || []).length) bySsn.set(s, b);
+    }
+    parsed.borrowers = [...bySsn.values(), ...noSsn];
   }
 
   const scored = scoreParsed(parsed);
