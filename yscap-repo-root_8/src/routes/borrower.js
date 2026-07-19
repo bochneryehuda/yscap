@@ -796,6 +796,37 @@ router.get('/applications/:id/conditions', async (req, res) => {
   res.json(r.rows.map((row) => ({ ...row, title: scrubText(row.title), detail: scrubText(row.detail) })));
 });
 
+// ---------------- APPRAISAL (borrower READ-ONLY: the property report + findings) ----------------
+// The borrower SEES the appraisal report and the PILOT findings for transparency, but can
+// take NO action on them (the resolve endpoint is staff-only). Findings are trimmed to
+// borrower-safe fields — the staff "how to resolve" guidance is never sent, and titles are
+// scrubbed of any capital-partner name.
+router.get('/applications/:id/appraisal', async (req, res) => {
+  const own = await db.query(`SELECT id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")}) AND deleted_at IS NULL`, [req.params.id, me(req)]);
+  if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
+  const appId = own.rows[0].id;
+  const appr = (await db.query(
+    `SELECT * FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
+  if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false } });
+  const [comps, units, findings] = await Promise.all([
+    db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
+    db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
+    db.query(`SELECT id, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
+                FROM appraisal_findings WHERE application_id=$1 AND status='open'
+               ORDER BY (severity='fatal') DESC, created_at`, [appId]),
+  ]);
+  const open = findings.rows.map((f) => ({ ...f, title: scrubText(f.title) }));
+  res.json({
+    appraisal: appr, comparables: comps.rows, units: units.rows, findings: open,
+    summary: {
+      fatal: open.filter((f) => f.severity === 'fatal').length,
+      warning: open.filter((f) => f.severity === 'warning').length,
+      info: open.filter((f) => f.severity === 'info').length,
+      blocksCtc: open.some((f) => f.severity === 'fatal' && f.blocks_ctc),
+    },
+  });
+});
+
 // ---------------- CHECKLIST (borrower-visible items only) ----------------
 router.get('/applications/:id/checklist', async (req, res) => {
   const own = await db.query(`SELECT borrower_id FROM applications WHERE id=$1 AND (${OWN_FILE_SQL("", "$2")})`, [req.params.id, me(req)]);
