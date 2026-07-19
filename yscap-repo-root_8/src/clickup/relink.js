@@ -1,0 +1,251 @@
+'use strict';
+
+/**
+ * ADMIN manual link / unlink of a portal file ↔ ClickUp card (owner-directed
+ * 2026-07-19, the Pinches Lichtman / 129 Carlisle St incident: the sync bound
+ * the LIVE ClickUp card to the near-empty 3% twin while the real 73% file was
+ * left orphaned, so every update flowed into the wrong file).
+ *
+ * This is the ONE guarded chokepoint for a HUMAN admin to move the ClickUp
+ * link. It differs deliberately from the `link_existing` review action in
+ * src/lib/sync-file-review.js:
+ *   - link_existing is a CONSTRAINED review resolution — it only binds a task
+ *     to a file of the SAME borrower / a surfaced match candidate, and it never
+ *     steals the card from another file (409 if the target already holds one).
+ *   - relink.js is the DELIBERATE ADMIN OVERRIDE — an admin may point ANY card
+ *     at ANY file and, when that card is currently held by a DIFFERENT file
+ *     (exactly the twin-file situation), MOVE it: the current holder is unlinked
+ *     first (the partial unique index uq_applications_clickup_task allows only
+ *     one live file per card), then the target is linked. The move requires an
+ *     explicit confirm so it can never happen by accident.
+ *
+ * Data-safety invariants (mirroring the rest of the sync core):
+ *   - NEVER deletes or edits the ClickUp card. Unlink is a pure portal-side
+ *     detach; the card is untouched and self-heals its Portal-File-ID stamp the
+ *     next time it is linked (the restamp below).
+ *   - NEVER wipes the target file's work: the post-link re-ingest fills through
+ *     the normal COALESCE pull (a ClickUp blank can never clear a portal value).
+ *   - Every unlink/relink/move is journaled to audit_log with the admin's id.
+ *   - Gated to real admins only at the ROUTE (requireRole('admin')) — this
+ *     module assumes the caller already enforced that.
+ */
+const db = require('./../db');
+
+// OUR-OWN validation errors carry `.expose` so the route relays them verbatim;
+// ClickUp client errors carry a `.status` (ClickUp's HTTP code) that must NOT be
+// relayed as-is (a ClickUp 401 would masquerade as session-expiry and log the
+// admin out — same trap sync-file-review.js documents). The route maps
+// non-expose errors to 502.
+function httpError(status, message, extra) {
+  const e = new Error(message);
+  e.status = status; e.expose = true;
+  if (extra) Object.assign(e, extra);
+  return e;
+}
+
+async function audit(action, appId, actorId, detail) {
+  try {
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id, detail)
+       VALUES ($1,$2,$3,'application',$4,$5)`,
+      [actorId ? 'staff' : 'system', actorId || null, action, appId || null,
+       detail ? JSON.stringify(detail) : null]);
+  } catch (_) { /* audit best-effort — never blocks the operation */ }
+}
+
+/**
+ * Accept a bare ClickUp task id OR a task URL an admin pasted
+ * (https://app.clickup.com/t/<id>, https://app.clickup.com/<team>/v/.../t/<id>,
+ * optional ?... query). Returns the trimmed task id, or '' if nothing usable.
+ * ClickUp task ids are short alphanumeric (e.g. "86abc1de2"); we only strip the
+ * URL chrome and whitespace and never invent an id — the real existence check is
+ * the live getTask below.
+ */
+function parseTaskId(input) {
+  let s = String(input == null ? '' : input).trim();
+  if (!s) return '';
+  // Pull the id out of a /t/<id> path segment if a full URL was pasted.
+  const m = s.match(/\/t\/([^/?#\s]+)/i);
+  if (m) s = m[1];
+  // A lone token may still carry a trailing query/hash.
+  s = s.split(/[?#\s]/)[0].trim();
+  return s.slice(0, 64);
+}
+
+/** Look up the file a portal application row represents (for holder previews /
+ *  audit detail) — borrower name + one-line address, no PII beyond that. */
+async function fileSummary(appId) {
+  const r = await db.query(
+    `SELECT a.id, a.property_address->>'oneLine' AS address, a.status, a.sync_state,
+            (b.first_name || ' ' || b.last_name) AS borrower
+       FROM applications a LEFT JOIN borrowers b ON b.id=a.borrower_id
+      WHERE a.id=$1`, [appId]).catch(() => ({ rows: [] }));
+  return r.rows[0] || null;
+}
+
+/** The live file (if any) currently holding a given ClickUp task id. */
+async function currentHolder(taskId, exceptAppId) {
+  const r = await db.query(
+    `SELECT a.id, a.property_address->>'oneLine' AS address, a.status, a.sync_state,
+            (b.first_name || ' ' || b.last_name) AS borrower
+       FROM applications a LEFT JOIN borrowers b ON b.id=a.borrower_id
+      WHERE a.clickup_pipeline_task_id=$1 AND a.deleted_at IS NULL
+        AND ($2::uuid IS NULL OR a.id <> $2::uuid)
+      LIMIT 1`, [taskId, exceptAppId || null]).catch(() => ({ rows: [] }));
+  return r.rows[0] || null;
+}
+
+/**
+ * PREVIEW for the confirm dialog: given a target file and a pasted card id/URL,
+ * return { taskId, card:{id,name}|null, holder:{...}|null, alreadyLinkedHere }.
+ * Best-effort on the card fetch — a ClickUp hiccup returns card:null so the UI
+ * can still warn about the holder from our own DB. Never mutates anything.
+ */
+async function relinkPreview({ appId, taskInput }) {
+  const taskId = parseTaskId(taskInput);
+  if (!taskId) throw httpError(400, 'Enter a ClickUp card id or the card link.');
+  const app = await fileSummary(appId);
+  if (!app) throw httpError(404, 'This file was not found.');
+  let card = null;
+  try {
+    const t = await require('./client').getTask(taskId, { include: ['custom_fields'] });
+    if (t && t.id) card = { id: t.id, name: t.name || null };
+  } catch (e) {
+    if (e && e.status === 404) throw httpError(404, 'No ClickUp card with that id/link was found.');
+    // other errors (network/token) → leave card null; the DB-side holder check still runs
+  }
+  const holder = await currentHolder(taskId, appId);
+  const cur = (await db.query(`SELECT clickup_pipeline_task_id FROM applications WHERE id=$1`, [appId])).rows[0];
+  return {
+    taskId,
+    card,
+    holder,
+    alreadyLinkedHere: !!(cur && cur.clickup_pipeline_task_id === taskId),
+    targetCurrentTaskId: (cur && cur.clickup_pipeline_task_id) || null,
+  };
+}
+
+/**
+ * Unlink a file from its ClickUp card. Pure portal-side detach: nulls
+ * clickup_pipeline_task_id, parks the file in 'manual_review' (so it (a) stays
+ * OUT of the auto "recover unlinked file" sweep, which would otherwise mint a
+ * brand-new card for it, and (b) surfaces in the review queue for follow-up),
+ * clears the task-index back-pointer, and audits. ClickUp is untouched.
+ * Returns { previousTaskId }.
+ */
+async function unlinkFileFromTask({ appId, actorId, note }) {
+  if (!appId) throw httpError(400, 'A file is required.');
+  // Read the current link first (unambiguous), then detach — an admin unlink is
+  // not hot-path, so two small statements beat a fragile RETURNING sub-select.
+  const cur = (await db.query(
+    `SELECT clickup_pipeline_task_id FROM applications WHERE id=$1`, [appId])).rows[0];
+  if (!cur) throw httpError(404, 'This file was not found.');
+  const previousTaskId = cur.clickup_pipeline_task_id;
+  if (!previousTaskId) throw httpError(409, 'This file is not linked to a ClickUp card.');
+  await db.query(
+    `UPDATE applications
+        SET clickup_pipeline_task_id=NULL, sync_state='manual_review', updated_at=now()
+      WHERE id=$1 AND clickup_pipeline_task_id=$2`,
+    [appId, previousTaskId]);
+  // Drop the task-index back-pointer so it no longer claims this (now unlinked)
+  // file. COALESCE-safe: the next ingest re-points it to whatever links the card.
+  if (previousTaskId) {
+    await db.query(
+      `UPDATE clickup_task_index SET application_id=NULL WHERE task_id=$1 AND application_id=$2`,
+      [previousTaskId, appId]).catch(() => {});
+  }
+  await audit('clickup_manual_unlink', appId, actorId, { previousTaskId, note: note || null });
+  return { previousTaskId };
+}
+
+/**
+ * Link a file to a ClickUp card (admin override). Validates the card exists,
+ * MOVES the card off any current holder (only with confirmMove), binds it to
+ * the target, then re-ingests (COALESCE fill) and re-stamps the card's
+ * Portal-File-ID at its file. Returns { applicationId, taskId, movedFrom }.
+ *
+ * Throws httpError(409, ..., { needsConfirm:true, holder }) when the card is
+ * held by another live file and confirmMove was not set — the route relays that
+ * so the UI can show the "move it here?" confirm.
+ */
+async function relinkFileToTask({ appId, taskInput, actorId, confirmMove }) {
+  const taskId = parseTaskId(taskInput);
+  if (!appId) throw httpError(400, 'A file is required.');
+  if (!taskId) throw httpError(400, 'Enter a ClickUp card id or the card link.');
+
+  const app = (await db.query(
+    `SELECT id, clickup_pipeline_task_id FROM applications WHERE id=$1 AND deleted_at IS NULL`,
+    [appId])).rows[0];
+  if (!app) throw httpError(404, 'This file was not found (or it is archived).');
+
+  // Idempotent: already linked to exactly this card → nothing to do.
+  if (app.clickup_pipeline_task_id === taskId) {
+    return { applicationId: appId, taskId, movedFrom: null, alreadyLinked: true };
+  }
+  // The target must be free first (a file holds at most one card). Unlink it
+  // deliberately on the file screen before relinking to a different card.
+  if (app.clickup_pipeline_task_id) {
+    throw httpError(409, 'This file is already linked to a different ClickUp card — unlink it first, then link the new card.');
+  }
+
+  // Validate the card exists in ClickUp (also gives us its name for the audit).
+  let cardName = null;
+  try {
+    const t = await require('./client').getTask(taskId, { include: ['custom_fields'] });
+    if (!t || !t.id) throw httpError(404, 'No ClickUp card with that id/link was found.');
+    cardName = t.name || null;
+  } catch (e) {
+    if (e && e.expose) throw e;
+    if (e && e.status === 404) throw httpError(404, 'No ClickUp card with that id/link was found.');
+    // Network/token error — refuse rather than bind an unvalidated id.
+    throw httpError(502, 'Could not reach ClickUp to check that card. Please try again in a moment.');
+  }
+
+  // Is another live file currently holding this card? (The twin-file case.)
+  const holder = await currentHolder(taskId, appId);
+  if (holder && !confirmMove) {
+    throw httpError(409, `That ClickUp card is currently linked to ${holder.borrower || 'another file'}${holder.address ? ' — ' + holder.address : ''}. Confirm the move to hand the card to this file.`,
+      { needsConfirm: true, holder });
+  }
+
+  // Do the move atomically: unlink the holder, then link the target — inside one
+  // transaction so the partial unique index can never see two live holders.
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    if (holder) {
+      await client.query(
+        `UPDATE applications SET clickup_pipeline_task_id=NULL, sync_state='manual_review', updated_at=now()
+          WHERE id=$1 AND clickup_pipeline_task_id=$2`, [holder.id, taskId]);
+    }
+    const linked = await client.query(
+      `UPDATE applications SET clickup_pipeline_task_id=$2, sync_state='linked',
+              clickup_last_synced_at=now(), updated_at=now()
+        WHERE id=$1 AND clickup_pipeline_task_id IS NULL
+        RETURNING id`, [appId, taskId]);
+    if (!linked.rows[0]) throw httpError(409, 'The file changed while linking — reload and try again.');
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw e;
+  } finally {
+    client.release();
+  }
+
+  // Audit BOTH sides of the move.
+  if (holder) {
+    await audit('clickup_manual_unlink', holder.id, actorId, { previousTaskId: taskId, movedTo: appId, reason: 'admin_relink_move' });
+  }
+  await audit('clickup_manual_relink', appId, actorId, { taskId, cardName, movedFrom: holder ? holder.id : null, confirmed: !!confirmMove });
+
+  // Fill the newly-linked file from the card through the normal guarded pull,
+  // and re-point the card's Portal-File-ID stamp at THIS file (the re-ingest
+  // matches byTask='linked_task', which deliberately never re-enqueues the
+  // stamp — so we enqueue it here). Both best-effort: the link is already done.
+  try { await require('../sync/clickup-sync').ingestOne(taskId); } catch (e) { console.warn('[relink] post-link ingest failed:', e && e.message); }
+  try { await require('./enqueue').enqueueClickupPush(appId, ['portal_stamp']); } catch (_) { /* best-effort */ }
+
+  return { applicationId: appId, taskId, movedFrom: holder ? holder.id : null };
+}
+
+module.exports = { parseTaskId, relinkPreview, unlinkFileFromTask, relinkFileToTask, currentHolder, fileSummary };

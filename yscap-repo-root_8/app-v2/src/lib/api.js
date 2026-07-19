@@ -445,6 +445,12 @@ export const api = {
   // self-serve: pull my own ClickUp pipeline folder into the portal
   staffSyncMyClickup: () => req('POST', '/api/staff/clickup/sync-mine'),
 
+  // ---- ADMIN manual ClickUp link / unlink (admin/super_admin only; server
+  // enforces requireRole('admin')) ----
+  clickupRelinkPreview: (appId, taskId) => req('GET', `/api/staff/applications/${appId}/clickup/relink-preview?taskId=${encodeURIComponent(taskId)}`),
+  clickupUnlink:        (appId) => req('POST', `/api/staff/applications/${appId}/clickup/unlink`),
+  clickupRelink:        (appId, taskId, confirmMove) => req('POST', `/api/staff/applications/${appId}/clickup/relink`, { taskId, confirmMove: !!confirmMove }),
+
   // ---- chat v3: conversations (staff) ----
   staffConversations:      () => req('GET', '/api/staff/chat/conversations'),
   staffConversation:       (cid) => req('GET', `/api/staff/conversations/${cid}`),
