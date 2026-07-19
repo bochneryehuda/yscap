@@ -152,6 +152,46 @@ Full research in the sources; the handling column is how we react.
 
 ---
 
+## 4.5 Real-world production gotchas (field-tested — beyond the API reference)
+
+The stuff that silently bites people in production (from DocuSign community, forums, review sites,
+post-mortems). Bake each into the config/code:
+
+1. **`requireAcknowledgement` is OFF by default → webhooks fire ONCE, no retry, silent event loss.** The
+   #1 "we lost completions in prod" trap. **Must enable** `requireAcknowledgement` + logging on the
+   Connect config (per-envelope `eventNotification.requireAcknowledgment:"true"`, which we already
+   specify) so a listener blip/deploy/timeout retries instead of dropping the event forever.
+2. **Use "Send Individual Messages" (SIM), not Aggregate, and explicitly enable recipient events** — or
+   the classic "only envelope-completed fires, recipient events never arrive." We want per-recipient
+   signed events for the timeline.
+3. **Status coalescing:** on a fast open-then-sign, DocuSign skips `delivered`/`recipient-completed` and
+   jumps to `completed`. **Drive state off the payload's CURRENT status, never off assuming you saw every
+   intermediate transition** (reinforces §3's forward-only state machine).
+4. **Envelope silently stuck in `created` (draft) if `status:"sent"` is omitted** — no email, no error.
+   **Assert the create response `status === "sent"`** and alert if not.
+5. **Email deliverability — DocuSign emails land in spam.** Default sender is `dse@docusign.net`. For a
+   lender this means borrowers miss signature requests. **Recommend a Custom Email Domain (CED)** so mail
+   comes from a verified `@yscapgroup.com` address (plan-gated; org + claimed domain). Until then, our own
+   PILOT notify email (from our verified domain) that deep-links into the portal to sign (embedded, §9) is
+   the more reliable path than relying on DocuSign's email. Also: bounced/blocked → the `esign_email_bounced`
+   review row (§5).
+6. **Envelope cost awareness (design + unit economics).** *Every* envelope counts against the plan
+   allowance; overages are steep and opaque; re-sends of a *new* envelope are billable (correcting an
+   in-flight one is free); PowerForms/Bulk recipients count. **Our design is already cost-optimal** —
+   Package 1 consolidates term sheet + application + business-purpose into ONE envelope, and the Heter Iska
+   is a second; that's 2 envelopes/loan, not 5. Keep consolidating; the "Resend" button uses
+   `resend_envelope=true` (free re-notify), never a new billable envelope; monitor consumption.
+7. **Anchor edge cases:** an anchor extending **past the right page edge is silently not placed**; SignHere
+   size is set only via `scaleValue` (0.5–2.0), not width/height; font/scaling drift can move tabs. Our
+   jsPDF emits real left-aligned text anchors well inside the margins (BUILD-SPEC §3) — keep anchors away
+   from page edges and test at the real page size.
+8. **`baseUri` from `userinfo`, never hardcoded** — prod accounts live on region hosts (`na3`/`na4`/`eu`);
+   hardcoding a region is a frequent go-live failure. We already read it from userinfo.
+9. **Connect logs keep only ~last 100 entries** — don't rely on DocuSign's console for forensics; our own
+   `docusign_write_log` + `docusign_event_inbox` are the durable record.
+
+---
+
 ## 5. Dead-letter → human review ("nothing stuck is invisible")
 
 Reuse `sync_review_queue` (`db/108`/`db/110`, `src/lib/sync-review.js`, `src/lib/sync-file-review.js`) —
@@ -204,6 +244,47 @@ A `docs/DOCUSIGN-DATA-SAFETY.md` companion should encode these; they mirror the 
   staff-initiated actions; system `logSync`-style for worker/webhook transitions and circuit openings.
   Add these codes to `src/lib/audit-actions.js` under a new **`esign`** category. Detail jsonb stays
   PII-free.
+
+---
+
+## 7.5 Evidence, audit trail & timestamps (Certificate of Completion) — capture immediately
+
+DocuSign is **transient storage, not our system of record.** A document-retention setting plus a
+**~14-day purge queue** permanently deletes the signed PDFs (retention `1 day` → purged at ~15 days);
+only an envelope shell, its History, and the Certificate of Completion survive on DocuSign's side, and
+after the purge window it's unrecoverable **even by DocuSign Support**. So on the `envelope-completed`
+webhook we **atomically download and store our own copy** to durable storage (hashed, envelopeId-keyed),
+before doing anything else:
+
+1. **Sealed completed PDFs** — `GET …/envelopes/{id}/documents/archive` (ZIP: each PDF + the CoC) and/or
+   `GET …/documents/combined?certificate=true` (one PDF). Store the **sealed** copies so the tamper-evident
+   AATL seal travels with them (any post-signing byte change invalidates the signature in Acrobat).
+2. **Certificate of Completion (CoC)** — `GET …/envelopes/{id}/documents/certificate` (PDF), stored
+   standalone too. The CoC is the court-admissible record: signer name/email, **signing IP**,
+   **authentication method**, ESIGN/UETA consent capture, per-event actor+timestamp history, envelope
+   hash, tamper-evident PKI seal. **Only available once `status=completed`** — gate retrieval on the
+   completed event, and pass `certificate=true` **explicitly** (don't rely on the account default).
+3. **Machine-readable audit events** — `GET …/envelopes/{id}/audit_events` → JSON (`auditEvents[]` with
+   `logTime`/`Action`/`UserName`), stored verbatim as our queryable companion to the sealed PDFs. (This
+   call is resource-intensive — call it **once** at completion, never on a poll.)
+4. **All timestamps** into our DB (the owner's "timestamp features"). Capture on every envelope:
+   `createdDateTime, initialSentDateTime, sentDateTime, deliveredDateTime, completedDateTime,
+   declinedDateTime, voidedDateTime, statusChangedDateTime, lastModifiedDateTime`; and per recipient:
+   `recipientId, name, email, status, deliveryMethod, deliveryStatus, sentDateTime, deliveredDateTime,
+   signedDateTime, declinedDateTime`, plus `signerIP` + auth method (from the CoC/audit). Surface these
+   on the file's e-sign timeline so staff see exactly when each step happened.
+
+**Time-zone caveat:** the REST API + Connect (v2.1) return **UTC**; the **CoC PDF renders times in the
+sending account's time zone**, so a lawyer reading the CoC and our UTC DB will see different clock values
+unless normalized. Set the DocuSign account regional setting to **UTC (Monrovia/Reykjavik)** and disable
+per-user time zones so the CoC and our store agree; always display with an explicit "UTC" label.
+
+**Not needed for us:** eIDAS/RFC-3161 *qualified* timestamping is an EU-law / LTV feature — US
+business-purpose lending enforceability rests on **ESIGN + UETA**, and the standard CoC (AATL seal + IP +
+auth + timestamps) is the accepted evidence. Treat qualified timestamping as optional, not a gate.
+
+**The Heter Iska exception still applies** (BUILD-SPEC A.9): its signed copy + CoC are kept in-system +
+on DocuSign only — never in the TPR export, never synced to SharePoint.
 
 ---
 
