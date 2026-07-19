@@ -3,9 +3,10 @@
  * Claude (Anthropic) — the "brain" that UNDERSTANDS a document and pulls out the
  * facts an underwriter needs: names, dates, prices, addresses, entities, and the
  * judgment calls ("is this the same seller across three documents?"). Pairs with
- * docai.js: Document AI turns a scanned/blurry page into clean text, Claude reasons
- * over that text (and/or the original PDF/image directly — Claude reads PDFs and
- * images natively) and returns structured fields the findings engine compares.
+ * docint.js (Microsoft Document Intelligence): the reader turns a scanned/blurry
+ * page into clean text, and Claude reasons over that text — and/or reads the
+ * original PDF/image directly (Claude reads both natively) — returning structured
+ * fields the findings engine compares.
  *
  * Raw HTTPS via fetch (no @anthropic-ai/sdk), matching every other integration in
  * this repo (DocuSign, Graph, ClickUp, Sitewire are all plain fetch) and the hard
@@ -97,8 +98,8 @@ async function complete({ system, content, maxTokens, model, outputFormat, timeo
 /**
  * Build the Anthropic content blocks for a document. Prefer sending the ORIGINAL PDF/
  * image straight to Claude (it reads them natively and best) and ALSO attach any text
- * Document AI already extracted (helps on the ugliest scans). Docs/images go before
- * the instruction text, per the API's guidance.
+ * Document Intelligence already extracted (helps on the ugliest scans). Docs/images go
+ * before the instruction text, per the API's guidance.
  * @param {{ instructions:string, pdfBase64?:string, imageBase64?:string, imageMime?:string, ocrText?:string }} a
  */
 function buildContent(a = {}) {
@@ -111,8 +112,8 @@ function buildContent(a = {}) {
   }
   let text = a.instructions || '';
   if (a.ocrText) {
-    // Give the model the OCR'd text as a fallback signal for degraded scans.
-    text += `\n\n---\nText already read from this document by OCR (may be imperfect):\n"""\n${String(a.ocrText).slice(0, 120000)}\n"""`;
+    // Give the model the reader's text as a fallback signal for degraded scans.
+    text += `\n\n---\nText already read from this document by the OCR reader (may be imperfect):\n"""\n${String(a.ocrText).slice(0, 120000)}\n"""`;
   }
   content.push({ type: 'text', text });
   return content;

@@ -320,17 +320,15 @@ module.exports = {
   },
 
   // --- document underwriting: OCR reader + AI analyzer (add keys to activate) ---
-  // Google Document AI — the "reads even scanned/blurry documents" OCR engine
-  // (src/lib/ai/docai.js). The service-account key is pasted into Render as the raw
-  // JSON (GOOGLE_DOCAI_CREDENTIALS) or, easier, base64 of it (…_B64) so newlines in
-  // the PEM survive the dashboard. Auth uses built-in crypto (src/lib/ai/google-auth.js),
-  // no googleapis SDK. Everything stays dormant until a processor id is set.
-  docai: {
-    credentialsJson: process.env.GOOGLE_DOCAI_CREDENTIALS,
-    credentialsB64:  process.env.GOOGLE_DOCAI_CREDENTIALS_B64,
-    projectId:       process.env.GOOGLE_DOCAI_PROJECT_ID,
-    location:        (process.env.GOOGLE_DOCAI_LOCATION || 'us').trim().toLowerCase(), // 'us' | 'eu'
-    processorId:     process.env.GOOGLE_DOCAI_PROCESSOR_ID,
+  // Microsoft Azure AI Document Intelligence — the "reads even scanned/blurry
+  // documents" OCR engine (src/lib/ai/docint.js), running in the owner's existing
+  // Azure account. Just an endpoint + resource key (no JWT/SDK). Everything stays
+  // dormant until both are set. Default model 'prebuilt-read' = pure OCR.
+  docint: {
+    endpoint:   (process.env.AZURE_DOCINT_ENDPOINT || '').trim().replace(/\/+$/, ''),
+    key:        process.env.AZURE_DOCINT_KEY,
+    model:      (process.env.AZURE_DOCINT_MODEL || 'prebuilt-read').trim(),
+    apiVersion: (process.env.AZURE_DOCINT_API_VERSION || '2024-11-30').trim(),
   },
   // Anthropic (Claude) — the AI document analyzer / underwriting brain
   // (src/lib/ai/claude.js). Raw HTTPS via fetch (no @anthropic-ai/sdk). The model
