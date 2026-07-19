@@ -56,6 +56,13 @@ function findAsIs(text) {
       const n = Number(String(m[0]).replace(/[$,\s]/g, ''));
       if (!(n >= 10000 && n < 100000000)) continue;
       const mi = m.index, mEnd = mi + m[0].length;
+      // Skip an amount labelled by an after-repair synonym immediately before it — e.g.
+      // "stabilized value $575,000", "renovated figure is $575,000", "as-improved $575,000".
+      // These are ARV synonyms outside the whole-line drop-list; the amount right after them is
+      // the after-repair value, never the As-Is. Precise synonyms only (NOT bare "improv", which
+      // would wrongly catch "value of the improvements is $X").
+      const pre = ln.slice(Math.max(0, mi - 26), mi);
+      if (/renovat|stabiliz|as[\s-]*complet|as[\s-]*improv|after\s+renovation|\barv\b/i.test(pre)) continue;
       const dist = mi >= tokEnd ? (mi - tokEnd) : (asIdx - mEnd) + 1000;
       if (dist < bestDist) { bestDist = dist; best = { amount: n, snippet: ln.slice(0, 180) }; }
     }

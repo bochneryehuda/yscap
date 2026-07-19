@@ -55,6 +55,21 @@ const assert = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) f
   assert(hits.length === 1 && hits[0].amount === 430000, 'nearest-to-"as is" wins over the ARV on a shared line');
 }
 
+// 4d) An ARV labelled by a synonym OUTSIDE the drop-list, right after "as is", is NOT returned
+// (safe miss, never the ARV) — the residual the re-audit flagged.
+{
+  assert(findAsIs('Opinion of value as is; stabilized value $575,000.').length === 0, 'a stabilized (ARV) value after "as is" is not read as As-Is');
+  assert(findAsIs('as is, after renovation $575,000, presently $430,000').some((h) => h.amount === 430000)
+      && !findAsIs('as is, after renovation $575,000, presently $430,000').some((h) => h.amount === 575000),
+    'with "after renovation $X, presently $Y" the presently (As-Is) value wins, never the reno value');
+}
+
+// 4e) A legitimate As-Is line mentioning "improvements" is NOT wrongly skipped (precise synonyms).
+{
+  const hits = findAsIs('The as is value of the improvements is $430,000.');
+  assert(hits.length === 1 && hits[0].amount === 430000, '"value of the improvements is $X" still reads the As-Is');
+}
+
 // 5) Note builder: candidate present → says tried + suggestion + not applied.
 {
   const note = buildOcrNote({ attempted: true, candidate: 430000, confidence: 'single-match', snippet: "'as is' market value is $430,000" });
