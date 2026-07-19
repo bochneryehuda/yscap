@@ -157,6 +157,19 @@ function StartDrawCard({ appId, onStarted }) {
   if (err) return <div className="panel" style={{ marginTop: 12, color: 'var(--bad,#b04a3f)' }}>{err}</div>;
   if (!s) return null;
 
+  // Handled externally: this capital partner runs its own draw process — PILOT never pushes to
+  // Sitewire, so there's nothing for the coordinator to start here.
+  if (s.handled_externally) {
+    return (
+      <div className="panel" style={{ marginTop: 12 }}>
+        <h3 style={{ margin: 0 }}>Draws are handled externally</h3>
+        <div className="muted small" style={{ marginTop: 6 }}>
+          {(s.capital_partner && s.capital_partner.name) ? `${s.capital_partner.name} runs` : 'This capital partner runs'} its own draw process in its own system, so PILOT does not send this file to Sitewire. Nothing to start here.
+        </div>
+      </div>
+    );
+  }
+
   const insp = s.inspection || {};
   const cp = s.capital_partner || {};
   const p = s.prereqs || {};

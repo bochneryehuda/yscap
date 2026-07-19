@@ -102,11 +102,18 @@ async function resolveCapitalPartnerId(lenderLabel) {
   return { id: null, ambiguous: contains.length > 1 };
 }
 
-// ---- resolve the inspection + fee rule (partner+program -> partner -> global default) ----
-async function resolveRule(capitalPartnerId, program) {
+// ---- resolve the inspection + fee rule ----
+// Keyed by the NOTE-BUYER label first (so a partner that isn't in the Sitewire directory — e.g. one
+// handled externally — still matches), then by the resolved Sitewire capital_partner_id (legacy rules),
+// then the global default. Program-specific beats the partner-wide rule at each step.
+async function resolveRule(lenderLabel, capitalPartnerId, program) {
   const rows = (await db.query(`SELECT * FROM sitewire_inspection_rules`)).rows;
-  const pick = (cp, pg) => rows.find((r) => (r.capital_partner_id == cp) && ((r.program || null) === (pg || null)));
-  return pick(capitalPartnerId, program) || pick(capitalPartnerId, null) || pick(null, null) || null;
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const L = norm(lenderLabel);
+  const byLabel = (pg) => (L ? rows.find((r) => r.partner_label && norm(r.partner_label) === L && ((r.program || null) === (pg || null))) : null);
+  const byCp = (cp, pg) => (cp != null ? rows.find((r) => (r.capital_partner_id == cp) && ((r.program || null) === (pg || null))) : null);
+  const global = rows.find((r) => !r.partner_label && r.capital_partner_id == null && !r.program);
+  return byLabel(program) || byLabel(null) || byCp(capitalPartnerId, program) || byCp(capitalPartnerId, null) || global || null;
 }
 
 // ---- the draw coordinator's Sitewire user id (default Lisa Katz) ----
@@ -170,6 +177,16 @@ async function pushFile(appId, opts = {}) {
   if (!a) return { skipped: 'file not found/deleted' };
   if (a.status !== 'funded' && !opts.allowUnfunded) return { skipped: 'file not funded' };
 
+  // Resolve the capital partner + inspection/fee rule up front. resolveRule matches by the note-buyer
+  // LABEL first, so a "handled externally" partner is recognized even when it isn't in the Sitewire
+  // directory. A handled-externally partner runs its own draws — the file is NEVER pushed to Sitewire,
+  // so skip BEFORE any budget/SOW/units check, so a file we will never send can't queue spurious review
+  // rows. This is intentional, not an error — skip, don't park.
+  const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
+  const cp = await resolveCapitalPartnerId(a.lender);
+  const rule = await resolveRule(a.lender, cp.id, program);
+  if (rule && rule.handled_externally) return { skipped: 'handled_externally', partner: a.lender || null };
+
   // G-LOAN
   if (!a.ys_loan_number) { await park({ appId, reason: 'sitewire_missing_loan_number: file has no YS loan number to push' }); return { parked: 'missing_loan_number' }; }
 
@@ -191,7 +208,6 @@ async function pushFile(appId, opts = {}) {
   }
 
   // explode + G-RECON (must tie to the frozen budget to the cent BEFORE any write)
-  const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
   // absorb ≤$1 percentage-rounding drift into contingency/GC so a validly signed-off SOW
   // isn't wrongly parked (audit S4); a real mismatch beyond tolerance still blocks below.
   const ex = M.reconcileToBudget(M.explodeSow(a.sow_payload.state, {}), budgetCents);
@@ -201,14 +217,13 @@ async function pushFile(appId, opts = {}) {
     return { parked: 'budget_mismatch' };
   }
 
-  // resolve capital partner (G-CP) + rule + coordinator
-  const cp = await resolveCapitalPartnerId(a.lender);
+  // capital partner (G-CP) already resolved above (cp + rule). If it didn't resolve to a Sitewire id,
+  // park for review — never guess a partner.
   if (!cp.id) {
     const why = cp.candidate ? `partially matched "${cp.candidateName}" — confirm it's the right partner` : `${cp.ambiguous ? 'matched multiple' : 'matched no'} Sitewire capital partner`;
     await park({ appId, reason: `sitewire_capital_partner_unmatched: lender label "${a.lender || '(blank)'}" ${why}`, current: a.lender, proposed: cp.candidate ? String(cp.candidate) : null });
     return { parked: 'capital_partner' };
   }
-  const rule = await resolveRule(cp.id, program);
   // method = coordinator's per-file choice ?? rule default, validated against what the rule allows
   const existingLink = await getLink(appId);
   const insp = resolveInspection(existingLink, rule);

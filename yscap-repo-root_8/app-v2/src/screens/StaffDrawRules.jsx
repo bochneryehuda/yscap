@@ -27,10 +27,11 @@ function SettingField({ label, k, settings, onSave, info }) {
 /* Plain-language help for each setting, shown behind the little ⓘ. */
 const HELP = {
   wire_turnaround: 'How long, in hours, a wire should take to go out after a draw is approved. Used only to flag draws that are sitting too long — it never blocks anything.',
-  variance: 'How far one Scope-of-Work line can move in a change request before it\'s flagged for the capital partner to review.',
+  variance: 'When a borrower asks to move money between Scope-of-Work line items, this is how big a single line\'s change can be before we flag it for the capital partner to approve. Example: at 10%, a line can grow or shrink by up to 10% of its budget on its own; a bigger change gets flagged for sign-off.',
   stale: 'A draw with no update for this many days is flagged as “stale” on the portfolio, so nothing slips.',
   no_draw: 'A funded file with no draw activity for this many days is flagged, so an idle project gets a nudge.',
-  partner: 'Which capital partner (note buyer) this rule applies to. “Global default” covers every file that doesn\'t have its own rule.',
+  partner: 'Which capital partner (note buyer) this rule applies to — the list is every note buyer we use, matched to the file\'s note-buyer field. “Global default” covers every file that doesn\'t have its own rule.',
+  handled: 'Turn this on for a capital partner that runs its OWN draw process (in their system, not Sitewire). PILOT will never send those files to Sitewire — it just records them here. Use this for note buyers who don\'t want us managing their draws.',
   program: 'Optional — apply this rule only to one loan program (for example, gold). Leave blank to apply to all.',
   auto_method: 'How a new file is set up automatically: Virtual (a phone-guided inspection) or On-site (an inspector visits).',
   fee: 'What we charge the borrower per draw for each inspection method.',
@@ -38,7 +39,7 @@ const HELP = {
   inspector: 'Whether a Sitewire inspector must sign off each draw before it can be approved.',
   cp_approval: 'Whether approved draws route to the capital partner for their own sign-off before release.',
   realloc: 'Whether the borrower may move money between Scope-of-Work lines (a reallocation request).',
-  retainage: 'Holds back this percent of every approved draw until the project is finished. Off (leave 0) unless this project uses retainage.',
+  retainage: 'Retainage is money we hold back from each approved draw and release only at the end, to make sure the work is finished. Example: at 10%, a $10,000 approved draw pays out $9,000 now and holds $1,000 until the project wraps up. Most files use 0 (no hold-back).',
   lien: 'Blocks a draw from being released until every required lien waiver is received or waived. Off unless this project uses lien waivers.',
   advanced: 'These aren\'t part of the standard draw workflow, so they stay hidden on the draw desk. Turn them on here — globally, or for one specific project — and they\'ll appear on that file\'s desk.',
 };
@@ -51,7 +52,7 @@ export default function StaffDrawRules() {
   const [err, setErr] = useState('');
   const [draft, setDraft] = useState(blankDraft());
 
-  function blankDraft() { return { capital_partner_id: '', program: '', inspection_method: 'mobile', allow_virtual: true, allow_physical: true, require_sitewire_inspector: true, require_capital_partner_approval: false, allow_reallocation: false, fee_cents_virtual: '299', fee_cents_physical: '499' }; }
+  function blankDraft() { return { partner_label: '', program: '', handled_externally: false, inspection_method: 'mobile', allow_virtual: true, allow_physical: true, require_sitewire_inspector: true, require_capital_partner_approval: false, allow_reallocation: false, fee_cents_virtual: '299', fee_cents_physical: '499' }; }
 
   const [settings, setSettings] = useState({});
   const [status, setStatus] = useState(null);
@@ -79,7 +80,8 @@ export default function StaffDrawRules() {
     setMsg(''); setErr('');
     try {
       await api.post('/api/sitewire/rules', {
-        capital_partner_id: draft.capital_partner_id || null, program: draft.program || null,
+        partner_label: draft.partner_label || null, program: draft.program || null,
+        handled_externally: draft.handled_externally,
         inspection_method: draft.inspection_method, allow_virtual: draft.allow_virtual, allow_physical: draft.allow_physical,
         require_sitewire_inspector: draft.require_sitewire_inspector,
         require_capital_partner_approval: draft.require_capital_partner_approval, allow_reallocation: draft.allow_reallocation,
@@ -89,7 +91,7 @@ export default function StaffDrawRules() {
     } catch (e) { setErr(e?.data?.error || e.message || 'Could not save.'); }
   }
   function edit(r) {
-    setDraft({ capital_partner_id: r.capital_partner_id || '', program: r.program || '', inspection_method: r.inspection_method, allow_virtual: r.allow_virtual !== false, allow_physical: r.allow_physical !== false, require_sitewire_inspector: r.require_sitewire_inspector, require_capital_partner_approval: r.require_capital_partner_approval, allow_reallocation: r.allow_reallocation, fee_cents_virtual: dollars(r.fee_cents_virtual), fee_cents_physical: r.fee_cents_physical == null ? '' : dollars(r.fee_cents_physical) });
+    setDraft({ partner_label: r.partner_label || r.capital_partner_name || '', program: r.program || '', handled_externally: !!r.handled_externally, inspection_method: r.inspection_method, allow_virtual: r.allow_virtual !== false, allow_physical: r.allow_physical !== false, require_sitewire_inspector: r.require_sitewire_inspector, require_capital_partner_approval: r.require_capital_partner_approval, allow_reallocation: r.allow_reallocation, fee_cents_virtual: dollars(r.fee_cents_virtual), fee_cents_physical: r.fee_cents_physical == null ? '' : dollars(r.fee_cents_physical) });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -121,22 +123,30 @@ export default function StaffDrawRules() {
       <div className="panel" style={{ marginTop: 16 }}>
         <h3 style={{ marginTop: 0 }}>Add / update a rule</h3>
         <div className="grid cols-3" style={{ gap: 10 }}>
-          <label className="small">Capital partner<InfoTip tip={HELP.partner} />
-            <select className="input" value={draft.capital_partner_id} onChange={(e) => setDraft({ ...draft, capital_partner_id: e.target.value })}>
+          <label className="small">Capital partner (note buyer)<InfoTip tip={HELP.partner} />
+            <select className="input" value={draft.partner_label} onChange={(e) => { const v = e.target.value; setDraft({ ...draft, partner_label: v, handled_externally: v ? draft.handled_externally : false }); }}>
               <option value="">Global default (all partners)</option>
-              {partners.map((p) => <option key={p.sitewire_id} value={p.sitewire_id}>{p.name}{p.on_our_lender ? '' : ' (directory)'}</option>)}
+              {partners.map((p) => <option key={p.label} value={p.label}>{p.label}{!p.in_directory ? ' (not in Sitewire)' : ''}</option>)}
+              {draft.partner_label && !partners.some((p) => p.label === draft.partner_label) && <option value={draft.partner_label}>{draft.partner_label}</option>}
             </select>
           </label>
           <label className="small">Program (optional)<InfoTip tip={HELP.program} />
             <input className="input" placeholder="e.g. gold" value={draft.program} onChange={(e) => setDraft({ ...draft, program: e.target.value })} />
           </label>
           <label className="small">Set up automatically as<InfoTip tip={HELP.auto_method} />
-            <select className="input" value={draft.inspection_method} onChange={(e) => setDraft({ ...draft, inspection_method: e.target.value })}>
+            <select className="input" value={draft.inspection_method} onChange={(e) => setDraft({ ...draft, inspection_method: e.target.value })} disabled={draft.handled_externally}>
               <option value="mobile">Virtual (mobile)</option>
               <option value="traditional">On-site (traditional)</option>
             </select>
           </label>
-          <label className="small">Virtual fee $<InfoTip tip={HELP.fee} /><input className="input" value={draft.fee_cents_virtual} onChange={(e) => setDraft({ ...draft, fee_cents_virtual: e.target.value })} /></label>
+          <label className="small row" style={{ gridColumn: '1 / -1', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 6, background: draft.handled_externally ? 'var(--paper,#f6f3ec)' : 'transparent', border: '1px solid var(--line,#e6e0d4)', opacity: draft.partner_label ? 1 : 0.55 }}>
+            <input type="checkbox" checked={draft.handled_externally} disabled={!draft.partner_label} onChange={(e) => setDraft({ ...draft, handled_externally: e.target.checked })} />
+            <span><b>Handled externally</b> — this capital partner runs its own draws; never push these files to Sitewire<InfoTip tip={HELP.handled} />
+              {!draft.partner_label && <span className="muted"> Pick a specific capital partner above to use this.</span>}
+              {draft.handled_externally && !!draft.partner_label && <span className="muted"> The inspection &amp; fee settings below are ignored for this partner.</span>}
+            </span>
+          </label>
+          <label className="small">Virtual fee $<InfoTip tip={HELP.fee} /><input className="input" value={draft.fee_cents_virtual} onChange={(e) => setDraft({ ...draft, fee_cents_virtual: e.target.value })} disabled={draft.handled_externally} /></label>
           <label className="small">On-site fee $<input className="input" value={draft.fee_cents_physical} onChange={(e) => setDraft({ ...draft, fee_cents_physical: e.target.value })} /></label>
           <div />
           <label className="small row" style={{ gap: 6, alignItems: 'center' }}><input type="checkbox" checked={draft.allow_virtual} onChange={(e) => setDraft({ ...draft, allow_virtual: e.target.checked })} /> Virtual allowed<InfoTip tip={HELP.allowed} /></label>
@@ -160,17 +170,24 @@ export default function StaffDrawRules() {
             {rules.map((r) => {
               const av = r.allow_virtual !== false, ap = r.allow_physical !== false;
               const allowed = av && ap ? 'Both (can switch)' : av ? 'Virtual only' : ap ? 'On-site only' : '—';
+              const ext = !!r.handled_externally;
               return (
               <tr key={r.id}>
-                <td>{r.capital_partner_name || (r.capital_partner_id ? '#' + r.capital_partner_id : 'Global default')}</td>
+                <td>{r.partner_label || r.capital_partner_name || (r.capital_partner_id ? '#' + r.capital_partner_id : 'Global default')}
+                  {ext && <span className="pill sw-insp" style={{ marginLeft: 6 }}>Handled externally</span>}
+                </td>
                 <td className="muted">{r.program || '—'}</td>
-                <td>{r.inspection_method === 'mobile' ? 'Virtual' : 'On-site'}</td>
-                <td className="small">{allowed}</td>
-                <td>{r.require_sitewire_inspector ? 'Yes' : 'No'}</td>
-                <td>{r.require_capital_partner_approval ? 'Yes' : 'No'}</td>
-                <td>{r.allow_reallocation ? 'Yes' : 'No'}</td>
-                <td style={{ textAlign: 'right' }}>${dollars(r.fee_cents_virtual)}</td>
-                <td style={{ textAlign: 'right' }}>{r.fee_cents_physical == null ? '—' : '$' + dollars(r.fee_cents_physical)}</td>
+                {ext ? (
+                  <td colSpan={7} className="muted small">Runs in the partner's own system — not pushed to Sitewire.</td>
+                ) : (<>
+                  <td>{r.inspection_method === 'mobile' ? 'Virtual' : 'On-site'}</td>
+                  <td className="small">{allowed}</td>
+                  <td>{r.require_sitewire_inspector ? 'Yes' : 'No'}</td>
+                  <td>{r.require_capital_partner_approval ? 'Yes' : 'No'}</td>
+                  <td>{r.allow_reallocation ? 'Yes' : 'No'}</td>
+                  <td style={{ textAlign: 'right' }}>${dollars(r.fee_cents_virtual)}</td>
+                  <td style={{ textAlign: 'right' }}>{r.fee_cents_physical == null ? '—' : '$' + dollars(r.fee_cents_physical)}</td>
+                </>)}
                 <td><button className="btn btn-sm ghost" onClick={() => edit(r)}>Edit</button></td>
               </tr>
             ); })}

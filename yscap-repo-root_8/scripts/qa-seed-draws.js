@@ -41,9 +41,14 @@ async function main() {
   // capital partner + rules + settings
   await db.query(`INSERT INTO sitewire_capital_partners (sitewire_id,name,on_our_lender,synced_at) VALUES (19,'Fidelis',true,now())
     ON CONFLICT (sitewire_id) DO UPDATE SET name='Fidelis',on_our_lender=true`);
-  await db.query(`INSERT INTO sitewire_inspection_rules (capital_partner_id,program,inspection_method,require_sitewire_inspector,require_capital_partner_approval,allow_reallocation,fee_cents_virtual,fee_cents_physical,allow_virtual,allow_physical)
-    VALUES (19,NULL,'mobile',true,false,true,29900,49900,true,true)
-    ON CONFLICT (COALESCE(capital_partner_id,-1),COALESCE(program,'')) DO UPDATE SET allow_virtual=true,allow_physical=true,fee_cents_physical=49900`);
+  const RULE_CONFLICT = `(regexp_replace(lower(COALESCE(partner_label,'')), '[^a-z0-9]+', '', 'g'), COALESCE(program,''))`;
+  await db.query(`INSERT INTO sitewire_inspection_rules (capital_partner_id,partner_label,program,inspection_method,require_sitewire_inspector,require_capital_partner_approval,allow_reallocation,fee_cents_virtual,fee_cents_physical,allow_virtual,allow_physical,handled_externally)
+    VALUES (19,'Fidelis',NULL,'mobile',true,false,true,29900,49900,true,true,false)
+    ON CONFLICT ${RULE_CONFLICT} DO UPDATE SET capital_partner_id=19,allow_virtual=true,allow_physical=true,fee_cents_physical=49900,handled_externally=false`);
+  // a "handled externally" note buyer (NOT in the Sitewire directory) — files with this lender are never pushed
+  await db.query(`INSERT INTO sitewire_inspection_rules (capital_partner_id,partner_label,program,inspection_method,require_sitewire_inspector,fee_cents_virtual,handled_externally)
+    VALUES (NULL,'Churchill',NULL,'mobile',true,29900,true)
+    ON CONFLICT ${RULE_CONFLICT} DO UPDATE SET handled_externally=true`);
   for (const [k, v] of [['variance_pct', '10'], ['stale_days', '30'], ['no_draw_days', '45'], ['wire_turnaround_hours', '48']]) {
     await db.query(`INSERT INTO sitewire_settings (key,value) VALUES ($1,$2::jsonb) ON CONFLICT (key) DO UPDATE SET value=$2::jsonb`, [k, JSON.stringify(v)]);
   }
@@ -56,6 +61,15 @@ async function main() {
   await db.query(`INSERT INTO checklist_items (id,scope,application_id,label,tool_key,tool_payload,status)
     VALUES ($1,'application',$2,'Scope of Work','rehab_budget',$3,'received')`,
     [uuid(), appA, JSON.stringify({ state: SOW, total: 78200 })]);
+
+  // ---- File C: funded, note buyer HANDLED EXTERNALLY (Churchill) — Start card shows "handled externally" ----
+  const appC = uuid();
+  await db.query(`INSERT INTO applications (id,borrower_id,status,ys_loan_number,lender,property_address,rehab_budget,property_type,loan_type,rehab_type,units)
+    VALUES ($1,$2,'funded','YSCAP-QA-C','Churchill',$3,78200,'Multi-family 2-4','RTL','Heavy Reno',4)`,
+    [appC, bid, JSON.stringify({ line1: '5 Cedar Ln', city: 'Newark', state: 'NJ', zip: '07104' })]);
+  await db.query(`INSERT INTO checklist_items (id,scope,application_id,label,tool_key,tool_payload,status)
+    VALUES ($1,'application',$2,'Scope of Work','rehab_budget',$3,'received')`,
+    [uuid(), appC, JSON.stringify({ state: SOW, total: 78200 })]);
 
   // ---- File B: funded, LINKED with crosswalk + draws ----
   const appB = uuid();
@@ -112,7 +126,7 @@ async function main() {
   await db.query(`INSERT INTO draw_disbursements (application_id,sitewire_draw_id,approved_cents,fee_cents,fee_kind,retainage_held_cents,net_release_cents,release_date,funded_status,created_by,created_at)
     VALUES ($1,$2,1100000,29900,'virtual',0,1070100,'2026-06-15','released',$3,now())`, [appB, draw1, sid.id]);
 
-  console.log(JSON.stringify({ token, staffId: sid.id, appA, appB, budgetId, names: Object.keys(byName) }, null, 2));
+  console.log(JSON.stringify({ token, staffId: sid.id, appA, appB, appC, budgetId, names: Object.keys(byName) }, null, 2));
   await db.pool.end();
 }
 main().catch((e) => { console.error(e); process.exit(1); });
