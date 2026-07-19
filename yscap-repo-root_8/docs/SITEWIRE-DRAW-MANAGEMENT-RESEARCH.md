@@ -518,3 +518,122 @@ round-trip `explode → bind → reverse-map == identity`; `drawn ≤ budgeted`;
   already exists in Sitewire, PILOT parks it for the owner rather than duplicating or adopting.
 - This deletes an entire class of risk (fuzzy-matching hand-entered lines, reverse-mapping messy
   budgets) from the build. Every property PILOT manages is one it created.
+
+---
+
+## 13. Workflow A — Borrower Scope-of-Work change requests (owner-directed 2026-07-19)
+
+Reuses the EXISTING change-request machinery (`change_requests` table `db/086`,
+`src/lib/change-requests.js` `openRequest`/`applyRequest`, staff routes
+`POST /change-requests/:cid/{approve,reject}` `staff.js:2320/2365`, `ChangeRequestPanel.jsx` /
+`StaffChangeRequests.jsx`). Add a governed field `'scope_of_work'` whose `new_value` carries the
+proposed SOW payload and whose `applyRequest` branch reopens the SOW condition instead of writing a
+scalar column. Industry-validated: reallocation must net to zero; only undrawn balance is movable;
+later→earlier-stage moves are flagged; keep approved baseline + revised both on file
+(Rabbet/Built/Land Gorilla — see §11 sources).
+
+### 13.1 Trigger & review
+- Anytime **after the SOW condition is reviewed (LO) or signed off (processor)** — even before funding
+  — the borrower may request changes. It does **not** write the SOW; it opens a `change_requests`
+  row (`requesterKind:'borrower'`, `field:'scope_of_work'`) → **manual review**.
+- LO + processor get the **full change-request screen** (`StaffChangeRequests.jsx`) showing exact
+  old→new detail. `notify.notifyAppStaff(type:'change_request')` alerts the team.
+- **Accept** (`applyRequest`, in-txn, verify-after-write) files the revised SOW and **reopens the SOW
+  condition** (the `enforceGoldSowContingency` code pattern: `status='issue'`, clear
+  `signed_off_at/by`, `[auto]` note honoring the `notes LIKE '[auto]%'` convention). Borrower clicks
+  **done** → **processor re-signs** through the unchanged `signOffGate` (exact-cent + Gold
+  contingency gates) + `PATCH /checklist/:itemId`.
+
+### 13.2 BEFORE CTC/funding
+- A revised SOW that **also moves the total** writes `applications.rehab_budget` → the existing DB
+  trigger `trg_reopen_on_budget_change` (`db/071/072/096`) fires: reopens **product_pricing**
+  (`→received`, sign-off cleared, `product_registrations.stale=true`) and SOW (`→issue`) with FATAL
+  `[auto]` notes → the file must be **re-registered** so everything matches to the cent.
+- Folder: simple **Version 1 / Version 2** (SharePoint `shuffleRootIntoVersion1` supersede — the old
+  SOW mirror moves to `Version 1`, the revised becomes current; nothing deleted).
+
+### 13.3 AFTER CTC or after funding (the bigger logic)
+- **Before LO/processor can approve, they are WARNED it needs capital-provider approval** — a new
+  change-request status `awaiting_capital_partner` gates the apply; the file shows the requirement to
+  both LO and processor.
+- **Total must stay CONSTANT** (net-zero reallocation). The request is **refused at submit** unless
+  `Σ new lines == Σ old lines` to the cent (**G-CR-TOTAL**). A true total change after CTC is not
+  allowed (only before CTC, via re-registration §13.2).
+- **Only the UNDRAWN balance of a line is movable** (**G-CR-DRAWN**): a line's floor =
+  `drawn+pending` (rolled up from the crosswalk / Sitewire `total_approved_cents`); a reduction below
+  it is refused. If $5k of a $10k line is released, only the undrawn $5k can be moved (50%-drawn →
+  half movable). Mirrors Sitewire's own `422 budgeted_cents must be ≥ approved+pending`.
+- **Warning (soft) when money moves from later/structural stages to earlier/cosmetic stages**
+  (**G-CR-STAGE**) — higher decline risk; shown to LO/processor, not a hard block.
+- **Both versions stay LIVE** on the file: the **closed/approved** SOW (baseline) and the
+  **capital-partner-approved revised** SOW — modeled as **two `checklist_items`/slots** so both are
+  `is_current` (SharePoint keeps both mirror folders).
+- **Excel export** (LO/processor) via `buildXlsx` (`tpr-export.js:112`): old vs new **line-by-line**,
+  Δ per line, which lines reduced/increased, and the net-zero proof — to share/escalate.
+- **Push to Sitewire**: the reallocation updates only undrawn `budgeted_cents` via `PATCH /budgets`
+  job_items (Sitewire enforces the same drawn floor); guarded/journaled/read-after-write (§11).
+
+## 14. Workflow B — Inspector findings → borrower Accept/Dispute → funding (owner-directed 2026-07-19)
+
+Industry baseline: findings per line (requested / approved% / not-approved / reason / geo-photos) →
+Accept starts the wire SLA, or Dispute → per-line rebuttal with evidence → revision under a variance
+policy → lender final approval → revised amounts flow back (Built/Land Gorilla/Trinity/Northwest —
+§11 sources).
+
+### 14.1 Bring findings in (from Sitewire)
+- On draw reconcile, for each `request` pull `requested_cents`, `approved_cents`, `not_approved =
+  requested − approved`, `lender_comments`/`inspector_comments` (**why** not approved), and
+  `inspections[]` photos (geo + timestamp + thumbnail). Roll up to our SOW lines via the crosswalk.
+- **Deliver to borrower + LO + draw coordinator**: a portal **findings screen** and a **findings
+  email** (new `catalog.js` builder, registered in `builders`; new `notify` type in `CATEGORY_OF`;
+  routed through `notifyBorrower` so capital-partner names are scrubbed) with full per-line detail +
+  photos, `Reply-To: fileReplyTo(appId)`.
+
+### 14.2 Borrower ACCEPT
+- **Portal button** OR **email reply** (parsed by `topReply` in the reused `inbound-file-email.js` /
+  `file-inbox.js` path — a `findings+<token>@domain` family mirroring `chatKeyFromRecipients`; the
+  reply also routes to LO + draw coordinator via `forwardToAssignees`). Accept → findings
+  `accepted` → **submit for funding on our side** (disbursement ledger: `net_release = approved −
+  fee`, `release_date`, `funded_status`).
+- Borrower is told the **wire turnaround (default 48h, admin-configurable)** — a settings row
+  (`sitewire_settings.wire_turnaround_hours`); the message text reflects the configured number.
+
+### 14.3 Borrower DISPUTE
+- Portal per-line rebuttal: upload photos/receipts/files + notes + **desired amount** (e.g. approved
+  $5k, still need $8k or the full $10k) on each not-/partially-approved line → **sent to LO + draw
+  coordinator** (`notifyAppStaff`), who can **export to Excel** (`buildXlsx`) to escalate (capital
+  provider / GC / others). Reuses `raiseEntityIssue` to open a dispute condition + audit trail.
+- **Admin approves the dispute → push the revised amount back to Sitewire** (verified §1 capability):
+  - draw **pending** → `PATCH /requests` raise `approved_cents` (spec: "applied as pending approved")
+    → `PATCH /approve`.
+  - draw **approved/released** → `PATCH /amend` → `PATCH /requests` → `PATCH /approve`.
+  - borrower needs **more than they requested** → `PATCH /reopen` (back to borrower to resubmit
+    higher in Sitewire).
+  - **Fallback (G-FIND-PUSHBACK):** where the API can't apply it, the **processor confirms they
+    updated Sitewire and enters the new release amount**; we **re-GET** and assert our release amount
+    == Sitewire's (**G-FIND-MATCH**). Optional variance policy (5–10%/line auto; larger → escalate).
+
+### 14.4 Settlement — tie everything to the SOW
+- After findings settle (accept or resolved dispute): update **released / not-released**, the proof
+  amount, and the **release amount** on our side AND in Sitewire, and assert the invariants
+  `net_release == approved − fee` and `our release == Sitewire approved`. Nothing silent; any
+  mismatch parks (§11).
+
+### 14.5 New guards
+| # | Guard | Behavior |
+|---|---|---|
+| G-CR-TOTAL | after-CTC change doesn't net to zero | refuse at submit; total must stay constant |
+| G-CR-DRAWN | reduce a line below drawn+pending | refuse; only undrawn balance is movable |
+| G-CR-STAGE | later/structural → earlier/cosmetic move | soft warning to LO/processor |
+| G-CR-CPAPPROVAL | after-CTC change lacks capital-partner approval | gate the apply on `awaiting_capital_partner` |
+| G-CR-REG | before-CTC total change | reopen product_pricing + re-register + SOW fatal |
+| G-FIND-DISPUTE | dispute auto-applied | never; admin-approval + push-back or processor-confirm |
+| G-FIND-MATCH | our release ≠ Sitewire release | park; re-GET + reconcile before funding |
+| G-FIND-SLA | wire turnaround shown to borrower | admin-configurable; message reflects the setting |
+
+### 14.6 Data-model additions
+- `sow_change_requests` extension (reuse `change_requests` + a `scope_of_work` field; store proposed
+  payload, per-line deltas, net-zero flag, capital-partner-approval state).
+- `draw_findings` + `draw_finding_lines` (per-line requested/approved/not-approved/reason/photos,
+  accept/dispute state) and `draw_finding_disputes` (per-line desired amount, evidence, resolution).
+- `sitewire_settings` (`wire_turnaround_hours`, variance policy) — admin-editable.
