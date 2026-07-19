@@ -1203,11 +1203,21 @@
       para("3.  Business purpose only.  This is business / investment-purpose financing secured by non-owner-occupied real property. It is not an offer to extend consumer credit and is not subject to consumer-mortgage (TILA / RESPA) disclosures. A personal guaranty and a first-lien position are required.", 7.5);
       para("4.  Interest, draws & costs.  Interest accrues interest-only on the outstanding loan balance. Rehab funds are advanced by reimbursement draw after inspection, and the borrower carries interest on drawn amounts. The title / escrow figure is a planning estimate based on the state, loan size and transaction type (transfer and mortgage taxes are separate); the settlement agent issues the binding quote at closing.", 7.5);
       var scolW = (W - 2 * M - 30) / 2, sx1 = M, sx2 = M + scolW + 30;
-      function sigBlock(x, who2, sub) {
+      function sigBlock(x, who2, sub, aSig, aDt) {
         doc.setDrawColor(120, 128, 132); doc.setLineWidth(0.8); doc.line(x, y + 28, x + scolW, y + 28);
         doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor.apply(doc, DARK); doc.text(pdfSafe(who2), x, y + 41);
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(sub), x, y + 51);
         doc.line(x, y + 70, x + scolW - 90, y + 70); doc.text("Date", x, y + 81);
+        // Invisible DocuSign anchors: white, tiny (4pt) text placed ON the
+        // signature and date lines — a human never sees them, DocuSign finds them
+        // in the text layer and drops the recipient's tab there. Document-unique
+        // (ts_*) so a tab never accidentally lands on another doc in the envelope.
+        if (aSig || aDt) {
+          doc.setTextColor(255, 255, 255); doc.setFontSize(4);
+          if (aSig) doc.text(aSig, x + 2, y + 25);
+          if (aDt) doc.text(aDt, x + 2, y + 67);
+          doc.setFontSize(7.5); doc.setTextColor.apply(doc, GRAY);
+        }
       }
       var coBorrowerName = pdfSafe((val("coBorrowerName") || "").trim());
       if (d.status === "INELIGIBLE") {
@@ -1228,16 +1238,16 @@
         var _primarySub = _tsEntity
           ? (_tsIndiv ? ("Borrower (entity) — by " + _tsIndiv + ", authorized signatory / guarantor") : "Borrower (entity) / authorized signatory")
           : "Borrower / authorized signatory";
-        sigBlock(sx1, _primaryName, _primarySub);
+        sigBlock(sx1, _primaryName, _primarySub, "/ts_b1_sig/", "/ts_b1_dt/");
         // When the file has TWO borrowers, the term sheet carries a second
         // signature line for the co-borrower (owner-directed #137) side-by-side
         // with the borrower; the lender line drops to the next row.
         if (coBorrowerName) {
-          sigBlock(sx2, coBorrowerName, "Co-borrower / authorized signatory");
+          sigBlock(sx2, coBorrowerName, "Co-borrower / authorized signatory", "/ts_b2_sig/", "/ts_b2_dt/");
           y += 92; brk(86);
-          sigBlock(sx1, LENDER.name, "Authorized representative \u2014 required to validate");
+          sigBlock(sx1, LENDER.name, "Authorized representative \u2014 required to validate", "/ts_admin_sig/", "/ts_admin_dt/");
         } else {
-          sigBlock(sx2, LENDER.name, "Authorized representative \u2014 required to validate");
+          sigBlock(sx2, LENDER.name, "Authorized representative \u2014 required to validate", "/ts_admin_sig/", "/ts_admin_dt/");
         }
         y += 92; footer();
       }
