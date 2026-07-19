@@ -113,4 +113,23 @@ ok('reverse reconcile: per-unit draws roll up to one SOW line; media excluded; u
 assert.strictEqual(M.subtotalCents(unitLines), ex.subtotal_cents, 'Σ unit lines == subtotal');
 ok('invariant: Σ unit lines == parent total');
 
+// ---- audit S2: diff compares numerically even when crosswalk cents are STRINGS (pg bigint) ----
+const strLinks = desired.map((d, i) => ({ sow_line_key: d.sow_line_key, section_token: d.section_token, sitewire_job_item_id: 1000 + i, budgeted_cents: String(d.budgeted_cents), name: d.name }));
+const noopDiff = M.diffBudget(desired, strLinks);
+assert.strictEqual(noopDiff.updates.length, 0, 'unchanged lines with string cents produce NO updates (no-op suppressed)');
+assert.strictEqual(noopDiff.creates.length, 0);
+ok('audit S2: bigint-as-string no longer re-updates every line');
+
+// ---- audit S4: ≤$1 percentage rounding drift is absorbed so a valid SOW ties to budget ----
+const drifty = { total_cents: 115004, subtotal_cents: 100004, contingency_cents: 5000, gc_cents: 10000,
+  items: [{ sow_line_key: 'a:0', section_token: 'all', budgeted_cents: 100004, is_media_item: false },
+          { sow_line_key: '__contingency__', section_token: 'project', budgeted_cents: 5000 },
+          { sow_line_key: '__gc__', section_token: 'project', budgeted_cents: 10000 }] };
+const fixed = M.reconcileToBudget(drifty, 115005); // budget is 1 cent higher
+assert.strictEqual(fixed.total_cents, 115005, 'total reconciled to budget');
+assert.strictEqual(fixed.items.reduce((s, i) => s + i.budgeted_cents, 0), 115005, 'Σ items == budget exactly');
+const big = M.reconcileToBudget(drifty, 200000); // $850 off -> real mismatch, NOT fudged
+assert.strictEqual(big.total_cents, 115004, 'large drift left unchanged so G-RECON still blocks');
+ok('audit S4: small rounding drift absorbed; real mismatch still blocks');
+
 console.log(`\nAll ${n} Sitewire mapper checks passed.`);

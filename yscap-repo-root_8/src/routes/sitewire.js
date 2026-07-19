@@ -67,6 +67,10 @@ router.get('/files/:id', requirePermission('manage_draws'), async (req, res) => 
 router.get('/files/:id/findings/:drawId', requirePermission('manage_draws'), async (req, res) => {
   if (!(await canSeeFile(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
   if (!cfg.sitewireEnabled) return res.status(503).json({ error: 'Sitewire is turned off' });
+  // the draw MUST be one PILOT mirrored for THIS file (only-ours + IDOR guard) — never
+  // fetch an arbitrary Sitewire draw id the caller supplies.
+  const own = await db.query(`SELECT 1 FROM sitewire_draws WHERE sitewire_draw_id=$1 AND application_id=$2`, [req.params.drawId, req.params.id]);
+  if (!own.rowCount) return res.status(404).json({ error: 'draw not found on this file' });
   try {
     const findings = await reconcile.fetchDrawFindings(req.params.drawId);
     res.json(findings);

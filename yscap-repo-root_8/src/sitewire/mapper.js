@@ -166,7 +166,9 @@ function diffBudget(desiredItems, links) {
     const link = byKey.get(k);
     if (!link || link.sitewire_job_item_id == null) {
       creates.push(d);
-    } else if ((link.budgeted_cents || 0) !== (d.budgeted_cents || 0) || (link.name || '') !== (d.name || '')) {
+      // pg returns bigint as a STRING — coerce before comparing, or every unchanged line
+      // would look changed and re-push as an UPDATE (defeats no-op suppression).
+    } else if (Number(link.budgeted_cents || 0) !== Number(d.budgeted_cents || 0) || (link.name || '') !== (d.name || '')) {
       updates.push({ ...d, sitewire_job_item_id: link.sitewire_job_item_id, prev_name: link.name });
     }
   }
@@ -191,13 +193,14 @@ function reverseReconcile(requests, links) {
   const byLine = {};
   const unknown = [];
   // seed budgets from the crosswalk so remaining is right even with no draw yet
+  // (pg bigint -> string, so Number() before summing).
   for (const l of links) {
     if (l.is_media_item) continue;
     const line = (byLine[l.sow_line_key] = byLine[l.sow_line_key] || { budget: 0, drawn: 0, requested: 0, remaining: 0, units: {} });
-    line.budget += l.budgeted_cents || 0;
+    line.budget += Number(l.budgeted_cents || 0);
     if (l.unit_index != null) {
       const u = (line.units[l.unit_index] = line.units[l.unit_index] || { budget: 0, drawn: 0, remaining: 0 });
-      u.budget += l.budgeted_cents || 0;
+      u.budget += Number(l.budgeted_cents || 0);
     }
   }
   for (const r of requests || []) {
@@ -221,8 +224,35 @@ function reverseReconcile(requests, links) {
   return { byLine, unknown };
 }
 
+/**
+ * Reconcile the exploded total to the authoritative frozen budget to the cent, absorbing
+ * a SMALL rounding residual (research doc §11.3 / audit S4). The SOW builder computes the
+ * grand total in the dollar domain and rounds once; our per-cell cents recompute of a
+ * percentage contingency + GC can drift by a cent or two. When the drift is within
+ * `tolCents`, we add it to the Contingency line (else GC, else a new Contingency line) so
+ * Σ job items == budget EXACTLY and G-RECON passes. A drift beyond tolerance is a REAL
+ * mismatch — left unchanged so G-RECON still blocks + parks. Returns the (maybe-adjusted)
+ * explosion result.
+ */
+function reconcileToBudget(ex, budgetCents, tolCents = 100) {
+  const drift = Math.round(Number(budgetCents) || 0) - (ex.total_cents || 0);
+  if (drift === 0 || Math.abs(drift) > tolCents) return ex;
+  const items = ex.items.slice();
+  let target = items.find((i) => i.sow_line_key === SENTINEL.CONTINGENCY)
+            || items.find((i) => i.sow_line_key === SENTINEL.GC);
+  if (target) {
+    target.budgeted_cents = (target.budgeted_cents || 0) + drift;
+  } else if (drift > 0) {
+    // no contingency/GC line to absorb into — add a small Contingency line for the residual
+    items.push({ sow_line_key: SENTINEL.CONTINGENCY, section_token: 'project', unit_index: null, name: 'Contingency', budgeted_cents: drift, is_media_item: false, mandatory: false, required_image_count: 0, required_video_count: 0 });
+  } else {
+    return ex; // negative drift with no absorber — don't fudge line items; let G-RECON block
+  }
+  return { ...ex, items, contingency_cents: ex.contingency_cents + (target && target.sow_line_key === SENTINEL.CONTINGENCY ? drift : 0), total_cents: (ex.total_cents || 0) + drift };
+}
+
 module.exports = {
   CATS, SENTINEL, unitCount, isMulti, lineName, sowCells,
   subtotalCents, contingencyCents, gcCents, mediaAnchors,
-  explodeSow, diffBudget, reverseReconcile,
+  explodeSow, reconcileToBudget, diffBudget, reverseReconcile,
 };

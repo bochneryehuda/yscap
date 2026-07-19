@@ -45,7 +45,10 @@ async function park({ appId, reason, fieldKey = 'sitewire', current = null, prop
       `INSERT INTO sync_review_queue (application_id, direction, field_key, current_value, proposed_value, reason, status)
        VALUES ($1,'outbound',$2,$3,$4,$5,'open') RETURNING id`,
       [appId, fieldKey, current == null ? null : String(current), proposed == null ? null : String(proposed), reason]);
-    return r.rows[0].id;
+    const rid = r.rows[0].id;
+    // notify the file's loan officer (CLAUDE.md sync-review contract) — best-effort
+    try { await require('../lib/sync-review').notifyLoanOfficer(rid); } catch (_) {}
+    return rid;
   } catch (_) { return null; }
 }
 
@@ -95,7 +98,7 @@ async function loadFile(appId) {
   const a = (await db.query(
     `SELECT a.id, a.ys_loan_number, a.property_address, a.property_type, a.loan_type, a.rehab_type,
             a.units, a.lender, a.status, a.actual_closing, a.borrower_id,
-            b.email AS borrower_email, l.entity_name, l.llc_name,
+            b.email AS borrower_email, l.llc_name,
             pr.program AS registered_program
        FROM applications a
        LEFT JOIN borrowers b ON b.id = a.borrower_id
@@ -119,7 +122,9 @@ async function getLink(appId) {
  */
 async function pushFile(appId, opts = {}) {
   if (!cfg.sitewireEnabled && !opts.force) return { skipped: 'sitewire disabled' };
-  if (!cfg.sitewireOutboundEnabled && !opts.force) return { skipped: 'sitewire outbound disabled' };
+  // The write gate is NOT bypassable by force (staging safety) — only dry-run lets a
+  // push proceed with writes off (it validates the bodies + logs, sends nothing).
+  if (!cfg.sitewireOutboundEnabled && !cfg.sitewireDryrun) return { skipped: 'sitewire outbound disabled (set SITEWIRE_OUTBOUND_ENABLED=1 or SITEWIRE_DRYRUN=1)' };
   const a = await loadFile(appId);
   if (!a) return { skipped: 'file not found/deleted' };
   if (a.status !== 'funded' && !opts.allowUnfunded) return { skipped: 'file not funded' };
@@ -135,7 +140,9 @@ async function pushFile(appId, opts = {}) {
 
   // explode + G-RECON (must tie to the frozen budget to the cent BEFORE any write)
   const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
-  const ex = M.explodeSow(a.sow_payload.state, {});
+  // absorb ≤$1 percentage-rounding drift into contingency/GC so a validly signed-off SOW
+  // isn't wrongly parked (audit S4); a real mismatch beyond tolerance still blocks below.
+  const ex = M.reconcileToBudget(M.explodeSow(a.sow_payload.state, {}), budgetCents);
   if (ex.total_cents !== budgetCents) {
     await park({ appId, reason: `sitewire_budget_mismatch: exploded SOW total ${T.usd(ex.total_cents)} != frozen budget ${T.usd(budgetCents)}`, current: budgetCents, proposed: ex.total_cents });
     return { parked: 'budget_mismatch' };
@@ -176,7 +183,7 @@ async function pushFile(appId, opts = {}) {
   if (a.units) propertyFields.total_units = Number(a.units);
   if (devType) propertyFields.development_type = devType;
   if (consType) propertyFields.construction_type = consType;
-  if (a.entity_name || a.llc_name) propertyFields.borrower_entity_name = a.entity_name || a.llc_name;
+  if (a.llc_name) propertyFields.borrower_entity_name = a.llc_name;
 
   let link = await getLink(appId);
 

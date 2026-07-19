@@ -53,7 +53,7 @@ function deriveTimes(events) {
 
 // ---- reconcile ONE file's draws (scoped to a property WE created) ----
 async function reconcileOne(appId) {
-  const link = (await db.query(`SELECT sitewire_property_id, budget_version FROM sitewire_property_links WHERE application_id=$1 AND sitewire_property_id IS NOT NULL`, [appId])).rows[0];
+  const link = (await db.query(`SELECT sitewire_property_id, budget_version FROM sitewire_property_links WHERE application_id=$1 AND sitewire_property_id IS NOT NULL AND matched_by='created'`, [appId])).rows[0];
   if (!link) return { skipped: 'not linked' };
   let prop;
   try { prop = await client.getProperty(link.sitewire_property_id); } catch (e) { return { error: e.message }; }
