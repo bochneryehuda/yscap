@@ -15,30 +15,58 @@ const STATUS_BADGE = {
   ordering: { text: 'In progress…', cls: '' },
 };
 
-/* FATAL underwriting finding: the verified FICO landed in a different pricing
-   bracket than the FICO the file was built on. HARD-blocks completing the credit
-   condition (server-enforced) until the file is corrected + re-pulled OR an
-   underwriter reconciles the finding (a documented exception). */
-function FindingBanner({ finding, report, mayReconcile, onReconciled }) {
+// Friendly title per finding type.
+const FINDING_TITLE = {
+  fico_mismatch: 'FICO does not match the file',
+  fraud_alert: 'Fraud alert',
+  active_duty: 'Active-duty military alert',
+  deceased: 'Deceased / SSA Death Master flag',
+  ofac: 'OFAC / SDN match',
+  ssn_alert: 'SSN alert',
+  address_discrepancy: 'Address discrepancy',
+  high_risk_score: 'High-risk fraud score',
+  security_freeze: 'Security freeze',
+  consumer_statement: 'Consumer statement',
+  id_ssn_mismatch: 'SSN does not match the file',
+  id_dob_mismatch: 'Date of birth does not match the file',
+  id_name_mismatch: 'Name does not match the file',
+  other: 'Credit-file alert',
+};
+
+/* Normalize whatever is stored on the report into a findings[] list — accepts the
+   new wrapper {severity,types,message,findings[]} AND the pre-E2 single-finding
+   shape, so old reports still render. */
+function normalizeFindings(finding) {
+  if (!finding || typeof finding !== 'object') return [];
+  if (Array.isArray(finding.findings)) return finding.findings;
+  if (finding.severity || finding.type) return [finding];
+  return [];
+}
+
+/* One finding row: title + severity chip + message, the FICO per-borrower
+   breakdown when present, and (for an active fatal finding) a per-finding
+   reconcile control. OFAC / deceased are compliance-only — only an admin may
+   clear them (the server enforces this too). */
+function FindingRow({ f, report, wholeReconciled, mayReconcile, isAdmin, onReconciled }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  if (!finding) return null;
-  const reconciled = report && report.underwriting_finding_reconciled_at;
-  // Prefer the per-borrower breakdown; when it's absent, fall back to the
-  // representative-level claimed→verified so the banner ALWAYS names concrete
-  // numbers instead of only the prose message.
-  const rows = Array.isArray(finding.perBorrower) && finding.perBorrower.length > 0
-    ? finding.perBorrower
-    : ((finding.claimed != null || finding.verified != null)
-        ? [{ name: 'Representative', claimed: finding.claimed, claimedBracket: finding.claimedBracket, verified: finding.verified, verifiedBracket: finding.verifiedBracket }]
+  const fatal = f.severity === 'fatal';
+  const cleared = wholeReconciled || f.reconciled;
+  const complianceOnly = f.reconcilableBy === 'compliance';
+  const canClear = mayReconcile && (!complianceOnly || isAdmin);
+
+  const rows = Array.isArray(f.perBorrower) && f.perBorrower.length > 0
+    ? f.perBorrower
+    : (f.type === 'fico_mismatch' && (f.claimed != null || f.verified != null)
+        ? [{ name: 'Representative', claimed: f.claimed, claimedBracket: f.claimedBracket, verified: f.verified, verifiedBracket: f.verifiedBracket }]
         : []);
 
   async function reconcile(undo) {
     setErr(''); setBusy(true);
     try {
-      await api.creditReconcileFinding({ creditReportId: report.id, note: undo ? undefined : note.trim(), undo });
+      await api.creditReconcileFinding({ creditReportId: report.id, findingType: f.type, note: undo ? undefined : note.trim(), undo });
       setOpen(false); setNote('');
       if (onReconciled) await onReconciled();
     } catch (e) { setErr(e.message); }
@@ -46,11 +74,17 @@ function FindingBanner({ finding, report, mayReconcile, onReconciled }) {
   }
 
   return (
-    <div className="notice err" style={{ marginTop: 8, borderLeft: '4px solid var(--danger)' }} role="alert">
-      <strong>⚠ Fatal underwriting finding — the FICO does not match the file.</strong>
-      {finding.message && <div style={{ marginTop: 4 }}>{finding.message}</div>}
+    <div style={{ borderLeft: `3px solid var(--${fatal && !cleared ? 'danger' : cleared ? 'teal' : 'gold'})`, paddingLeft: 8 }}>
+      <div>
+        <span className="tchip" style={{ borderColor: fatal ? 'var(--danger)' : 'var(--gold)', marginRight: 6 }}>
+          {fatal ? 'FATAL' : 'Alert'}
+        </span>
+        <strong>{FINDING_TITLE[f.type] || f.type}</strong>
+        {cleared && <span className="muted small" style={{ marginLeft: 6 }}>· reconciled</span>}
+      </div>
+      {f.message && <div className="small" style={{ marginTop: 2 }}>{f.message}</div>}
       {rows.length > 0 && (
-        <ul style={{ margin: '6px 0 0 18px' }}>
+        <ul style={{ margin: '4px 0 0 18px' }} className="small">
           {rows.map((b, i) => (
             <li key={i}>
               {b.name}: file <strong>{b.claimed != null ? b.claimed : '—'}</strong> ({b.claimedBracket || 'bracket —'}) → verified <strong>{b.verified != null ? b.verified : '—'}</strong> ({b.verifiedBracket || 'bracket —'})
@@ -58,33 +92,70 @@ function FindingBanner({ finding, report, mayReconcile, onReconciled }) {
           ))}
         </ul>
       )}
-      {reconciled ? (
-        <div className="notice ok" style={{ marginTop: 6 }}>
-          Reconciled{report.underwriting_finding_reconcile_note ? ` — ${report.underwriting_finding_reconcile_note}` : ''}. The credit condition can now be signed off.
-          {mayReconcile && (
-            <button className="btn ghost small" style={{ marginLeft: 8 }} disabled={busy} onClick={() => reconcile(true)}>Undo</button>
+      {fatal && !cleared && (
+        <div style={{ marginTop: 4 }}>
+          {complianceOnly && !isAdmin && (
+            <div className="muted small">This is a compliance finding — only an admin can clear it, after a documented review.</div>
           )}
-        </div>
-      ) : (
-        <>
-          <div className="muted small" style={{ marginTop: 4 }}>
-            Re-register the product on the verified score and re-pull, or reconcile this finding (a documented exception) — either one clears the credit condition for sign-off.
-          </div>
-          {mayReconcile && !open && (
-            <button className="btn ghost small" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>Reconcile finding…</button>
+          {canClear && !open && (
+            <button className="btn ghost small" onClick={() => setOpen(true)}>Reconcile…</button>
           )}
-          {mayReconcile && open && (
-            <div style={{ marginTop: 6 }}>
+          {canClear && open && (
+            <div style={{ marginTop: 4 }}>
               <input className="input" value={note} onChange={e => setNote(e.target.value)}
-                placeholder="Reason (required) — e.g. score confirmed with underwriting" />
-              <div className="row" style={{ marginTop: 6, gap: 6 }}>
+                placeholder="Reason (required) — how this finding was resolved" />
+              <div className="row" style={{ marginTop: 4, gap: 6 }}>
                 <button className="btn primary small" disabled={busy || !note.trim()} onClick={() => reconcile(false)}>{busy ? 'Saving…' : 'Confirm reconcile'}</button>
                 <button className="btn ghost small" disabled={busy} onClick={() => { setOpen(false); setErr(''); }}>Cancel</button>
               </div>
             </div>
           )}
-          {err && <div className="notice err small" style={{ marginTop: 6 }}>{err}</div>}
-        </>
+          {err && <div className="notice err small" style={{ marginTop: 4 }}>{err}</div>}
+        </div>
+      )}
+      {f.reconciled && !wholeReconciled && canClear && (
+        <button className="btn ghost small" style={{ marginTop: 4 }} disabled={busy} onClick={() => reconcile(true)}>Undo</button>
+      )}
+    </div>
+  );
+}
+
+/* Underwriting findings: a LIST of things a human must look at on this report — a
+   FICO that doesn't match the file, and/or the bureau's own fraud / OFAC /
+   deceased / SSN / address alerts. Any active FATAL finding HARD-blocks completing
+   the credit condition (server-enforced) until the file is corrected + re-pulled
+   OR the finding is reconciled (a documented exception). */
+function FindingBanner({ finding, report, mayReconcile, onReconciled }) {
+  const { role } = useAuth();
+  const isAdmin = role === 'admin' || role === 'super_admin';
+  const list = normalizeFindings(finding);
+  if (!list.length) return null;
+  const wholeReconciled = report && report.underwriting_finding_reconciled_at;
+  const activeFatal = list.filter((f) => f.severity === 'fatal' && !f.reconciled && !wholeReconciled);
+  const anyFatal = list.some((f) => f.severity === 'fatal');
+  const tone = activeFatal.length ? 'err' : (anyFatal ? 'ok' : '');   // '' = base notice (no .warn class exists)
+  const header = activeFatal.length
+    ? `⚠ ${activeFatal.length} underwriting finding${activeFatal.length > 1 ? 's' : ''} must be reviewed — the credit condition is blocked`
+    : (anyFatal ? '✓ Underwriting findings reconciled — the credit condition can be signed off' : 'ⓘ Credit-file alerts');
+
+  return (
+    <div className={`notice ${tone}`} style={{ marginTop: 8, borderLeft: `4px solid var(--${activeFatal.length ? 'danger' : anyFatal ? 'teal' : 'gold'})` }} role="alert">
+      <strong>{header}</strong>
+      <div style={{ marginTop: 6, display: 'grid', gap: 8 }}>
+        {list.map((f, i) => (
+          <FindingRow key={i} f={f} report={report} wholeReconciled={wholeReconciled}
+            mayReconcile={mayReconcile} isAdmin={isAdmin} onReconciled={onReconciled} />
+        ))}
+      </div>
+      {wholeReconciled && (
+        <div className="muted small" style={{ marginTop: 6 }}>
+          All findings on this report were reconciled together{report.underwriting_finding_reconcile_note ? ` — ${report.underwriting_finding_reconcile_note}` : ''}.
+        </div>
+      )}
+      {activeFatal.length > 0 && (
+        <div className="muted small" style={{ marginTop: 6 }}>
+          Fix the file and re-pull the report, or reconcile each finding above — either clears the credit condition for sign-off.
+        </div>
       )}
     </div>
   );

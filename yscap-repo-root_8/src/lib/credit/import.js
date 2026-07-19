@@ -821,6 +821,30 @@ async function orderAndImport(opts = {}) {
     try { await require('../../clickup/enqueue').enqueueClickupPush(applicationId, ['fico']); } catch (_) { /* sync reconciles anyway */ }
   }
 
+  // Alert the file's team when the report raised an underwriting concern (E2). A
+  // FATAL finding (fraud / OFAC / deceased / SSN / address / FICO mismatch) blocks
+  // sign-off and needs review; a WARNING finding (high-risk score / freeze) is a
+  // heads-up. Best-effort — a failed notify never breaks the import. Fires once
+  // per pull (a deliberate human action), not on rest.
+  try {
+    const fatal = persisted.fatalFindings || [];
+    const warnings = persisted.warningFindings || [];
+    if (fatal.length || warnings.length) {
+      const notify = require('../notify');
+      const lead = fatal.length
+        ? `The credit report raised ${fatal.length} issue${fatal.length > 1 ? 's' : ''} underwriting must review before this file can move forward`
+        : `The credit report has ${warnings.length} alert${warnings.length > 1 ? 's' : ''} to be aware of`;
+      const body = (fatal.length ? fatal : warnings).map((f) => `• ${f.message}`).join('\n');
+      await notify.notifyAppStaff(applicationId, {
+        type: 'status_change',
+        title: fatal.length ? 'Credit report needs underwriting review' : 'Credit report alert',
+        body: `${lead}:\n${body}`,
+        applicationId,
+        link: `/internal/app/${applicationId}`,
+      });
+    }
+  } catch (_) { /* notify is best-effort */ }
+
   return {
     reportId: reportRowId,
     status: assessment.decision === 'imported' ? 'imported' : assessment.decision,
