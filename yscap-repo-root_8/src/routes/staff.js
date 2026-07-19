@@ -1585,7 +1585,11 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
     const quote = pricing.quoteProgram(program, inputs);
     // Gold Standard renovation cannot finance an interest reserve — never persist a
     // requested reserve on the registered scenario for that program.
-    if (program === 'gold' && quote.kind === 'reno') inputs.irMonths = 0;
+    // Gold renovation finances NO interest reserve — zero BOTH request forms so a
+    // leftover amount can't silently finance a reserve if the file later moves to the
+    // Standard program, and the registered scenario never carries a phantom request
+    // (audit findings #14/#34/#40/#49, 2026-07-17).
+    if (program === 'gold' && quote.kind === 'reno') { inputs.irMonths = 0; inputs.irAmount = 0; }
     if (quote.status === 'INELIGIBLE' && !overrides.forcePrice) {
       return refuse(422, { error: 'ineligible', reasons: quote.reasons, quote }, 'ineligible', { program });
     }
@@ -4980,12 +4984,34 @@ router.post('/leads/:id/convert', async (req, res) => {
     const exConflict = await emailAdoptionConflict(email, firstName, lastName);
     if (exConflict) return emailAdoptionError(res, exConflict, email);
 
+    // Carry the economics the applicant actually entered on the public loan
+    // application (payload = collectState() → { v:{by input id}, c:{checkboxes} }),
+    // so the created file's Term Sheet Studio opens PREFILLED instead of empty and
+    // staff never re-key from memory (and never miss the assignment flag, which
+    // would mis-price on the fee-inclusive total). loan_amount is intentionally
+    // excluded — it's set by the pricing engine on registration (audit #23).
+    // collectState() (web/*/suite.js) buckets inputs by kind: text/select in .v,
+    // checkboxes in .c, RADIOS in .rad. Read each field from the right bucket under
+    // its REAL loan-application id (verified against the tool): the rehab budget is
+    // `rehab` (not "construction"), and loan purpose is the `purpose` radio.
+    const pl = (lead.tool === 'loan_application' && lead.payload) ? lead.payload : {};
+    const pv = (pl && pl.v) || {}, pc = (pl && pl.c) || {}, pr = (pl && pl.rad) || {};
+    const numv = (x) => { const n = Number(String(x == null ? '' : x).replace(/,/g, '')); return isFinite(n) && n > 0 ? n : null; };
+    const econIsAssign = !!pc.isAssign;
+    const econPrice = numv(pv.price);
+    const econSeller = econIsAssign ? numv(pv.origPrice) : null;
+    const econFee = (econIsAssign && econPrice && econSeller) ? Math.max(0, econPrice - econSeller) : null;
+    const econReserveOn = !!pc.finReserve;
+    const econFico = (() => { const n = Number(pv.fico); return isFinite(n) && n >= 300 && n <= 850 ? Math.round(n) : null; })();
+    const econLoanType = /refi/i.test(String(pr.purpose || '')) ? 'Refinance' : 'Purchase';
+
     const br = await db.query(
-      `INSERT INTO borrowers (first_name,last_name,email,cell_phone)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (email) DO UPDATE SET cell_phone=COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone), updated_at=now()
+      `INSERT INTO borrowers (first_name,last_name,email,cell_phone,fico)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (email) DO UPDATE SET cell_phone=COALESCE(borrowers.cell_phone, EXCLUDED.cell_phone),
+                                         fico=COALESCE(borrowers.fico, EXCLUDED.fico), updated_at=now()
        RETURNING id`,
-      [firstName, lastName || '', email, lead.phone || null]);
+      [firstName, lastName || '', email, lead.phone || null, econFico]);
     const borrowerId = br.rows[0].id;
 
     // Owner: the lead's officer, else the acting officer, else unassigned.
@@ -4998,11 +5024,24 @@ router.post('/leads/:id/convert', async (req, res) => {
     // product registration, exactly like a normal new staff file. The lead's
     // estimate stays on the lead; it must not seed the priced pipeline amount.
     const ins = await db.query(
-      `INSERT INTO applications (borrower_id,property_address,property_type,program,loan_officer_id,loan_officer_name,source,status,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,'staff','new',now())
+      `INSERT INTO applications
+         (borrower_id,property_address,property_type,program,loan_officer_id,loan_officer_name,source,status,submitted_at,
+          loan_type,purchase_price,as_is_value,arv,rehab_budget,term,
+          requested_ir_months,requested_ir_amount,is_assignment,underlying_contract_price,assignment_fee,
+          requested_exp_flips,requested_exp_holds,requested_exp_ground)
+       VALUES ($1,$2,$3,$4,$5,$6,'staff','new',now(),
+          $7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
        RETURNING id, ys_loan_number`,
-      [borrowerId, JSON.stringify(addr), b.propertyType || lead.property_type || null,
-        b.program || lead.program || null, officerId, officerName]);
+      [borrowerId, JSON.stringify(addr),
+        b.propertyType || pv.propType || lead.property_type || null,
+        b.program || pv.dealType || lead.program || null, officerId, officerName,
+        econLoanType,
+        econPrice, numv(pv.asIs), numv(pv.arv), numv(pv.rehab),
+        pv.termMonths ? String(parseInt(pv.termMonths, 10) || '') || null : null,
+        (econReserveOn ? (parseInt(pv.resMonths, 10) || null) : null),
+        (econReserveOn ? numv(pv.resAmount) : null),
+        econIsAssign, econSeller, econFee,
+        (parseInt(pv.expFlips, 10) || null), (parseInt(pv.expBrrrr, 10) || null), (parseInt(pv.expGround, 10) || null)]);
     const appId = ins.rows[0].id;
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'lead_convert' }); }
