@@ -807,13 +807,18 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   const appId = own.rows[0].id;
   const appr = (await db.query(
     `SELECT * FROM appraisals WHERE application_id=$1 AND superseded=false ORDER BY imported_at DESC LIMIT 1`, [appId])).rows[0];
-  if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false } });
-  const [comps, units, findings] = await Promise.all([
+  if (!appr) return res.json({ appraisal: null, comparables: [], units: [], findings: [], photos: [], summary: { fatal: 0, warning: 0, info: 0, blocksCtc: false } });
+  const [comps, units, findings, photos] = await Promise.all([
     db.query(`SELECT * FROM appraisal_comparables WHERE appraisal_id=$1 ORDER BY seq`, [appr.id]),
     db.query(`SELECT * FROM appraisal_units WHERE appraisal_id=$1 ORDER BY unit_seq`, [appr.id]),
     db.query(`SELECT id, code, severity, field, appraisal_value, file_value, title, blocks_ctc, created_at
                 FROM appraisal_findings WHERE application_id=$1 AND status='open'
                ORDER BY (severity='fatal') DESC, created_at`, [appId]),
+    db.query(
+      `SELECT ap.id, ap.document_id, ap.category, ap.caption, ap.sequence, ap.width, ap.height
+         FROM appraisal_photos ap JOIN documents d ON d.id=ap.document_id
+        WHERE ap.appraisal_id=$1 AND d.is_current AND ap.document_id IS NOT NULL
+        ORDER BY ap.sequence`, [appr.id]),
   ]);
   const open = findings.rows.map((f) => ({ ...f, title: scrubText(f.title) }));
   // Borrower-safe appraisal object: drop staff-only bookkeeping (who imported it, the
@@ -825,7 +830,7 @@ router.get('/applications/:id/appraisal', async (req, res) => {
     return { ...rest, lender_name: scrubText(rest.lender_name), amc_name: scrubText(rest.amc_name) };
   })();
   res.json({
-    appraisal: safeAppr, comparables: comps.rows, units: units.rows, findings: open,
+    appraisal: safeAppr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows,
     summary: {
       fatal: open.filter((f) => f.severity === 'fatal').length,
       warning: open.filter((f) => f.severity === 'warning').length,
