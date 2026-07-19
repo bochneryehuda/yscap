@@ -296,12 +296,14 @@ function computeFindings(appraisal, file, opts = {}) {
   }
 
   // 16b. Independent value cross-check — even WITHIN the comp range, a value well above what the
-  //   comps imply (their median adjusted price) is worth a second look. Fires only when the
-  //   value is inside the bracket (so it never double-flags with value_not_bracketed above) and
-  //   materially above the comp median. Advisory.
-  if (subjVal != null) {
+  //   comps imply (their median adjusted price) is worth a second look. Fires only when the value
+  //   is inside the CLOSED-comp bracket (the same `adj`/`hi` value_not_bracketed uses, so the two
+  //   can never double-flag — even when a listing comp with no sale price lifts the implied high)
+  //   and materially above the comp median. Advisory.
+  if (subjVal != null && adj.length >= o.minClosedComps) {
     const implied = compImpliedValue({ comps: A.comparables, subjectGla: A.subject.gla });
-    if (implied && subjVal <= implied.high && subjVal > implied.median * (1 + o.valueVsCompsPct / 100)) {
+    const hiClosed = Math.max(...adj);
+    if (implied && subjVal <= hiClosed && subjVal > implied.median * (1 + o.valueVsCompsPct / 100)) {
       const overPct = Math.round(((subjVal - implied.median) / implied.median) * 100);
       out.push(finding({ code: 'value_vs_comps', severity: 'warning', field: 'value',
         appraisalValue: money(subjVal), fileValue: `comps imply ${money(implied.median)}`,
