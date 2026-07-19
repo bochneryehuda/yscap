@@ -7,7 +7,7 @@ strict rule says we know it (see `field-validation-rules.md`).
 
 ## 1. Storage — every field lands somewhere
 
-New idempotent migration `db/130_appraisals.sql`. Core row + child tables + a JSONB catch-all so
+New idempotent migration `db/131_appraisals.sql`. Core row + child tables + a JSONB catch-all so
 even long-tail fields are persisted.
 
 ### `appraisals` (one row per imported appraisal; re-import supersedes)
