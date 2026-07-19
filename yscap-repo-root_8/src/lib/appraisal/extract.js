@@ -25,6 +25,10 @@ function toNum(v) {
 // money must be a positive amount after comma-strip; reject meaningless 0 / decoys and an
 // absurd magnitude (defensive: keeps a corrupt value from overflowing numeric(14,2) on insert).
 function money(v) { const n = toNum(v); return n != null && n > 0 && n < 1e12 ? n : null; }
+// Magnitude-bounded number for a narrower fixed-precision column — gla/pricePerGla are
+// numeric(12,2) (max ~1e10) and grm is numeric(10,2) (max ~1e8). money()'s 1e12 ceiling would
+// overflow those and sink the whole import on one corrupt field; bound to a sane ceiling instead.
+function bounded(v, max) { const n = toNum(v); return n != null && n > 0 && n < max ? n : null; }
 function clean(v) {
   if (v == null) return null;
   const s = String(v).trim();
@@ -74,8 +78,11 @@ function narrativeTexts(root) {
 }
 // Bound the comma-less run so a longer digit string is rejected, not truncated (audit #4).
 const MONEY_RE = '\\$?\\s*(\\d{1,3}(?:,\\d{3})+|\\d{4,8}(?!\\d))(?:\\.\\d{2})?';
-const ASIS_RE = new RegExp('as[\\s\\-]*is\\b(?:\\s*(?:value|market\\s*value|opinion|amount))?[^$\\d]{0,30}' + MONEY_RE, 'i');
-const ARV_RE = new RegExp('(?:as[\\s\\-]*repaired|after[\\s\\-]*repair|as[\\s\\-]*complete[d]?|subject[\\s\\-]*to[\\s\\-]*completion)\\b(?:\\s*value)?[^$\\d]{0,30}' + MONEY_RE, 'i');
+// Leading (?<![a-z]) so the token is a real word start — otherwise "as is" false-matches inside
+// "basis"/"gas is" and "as complete" inside "gas complete", which could mine a FABRICATED value
+// and store it as `definite` (a never-guess violation — audit MAJOR).
+const ASIS_RE = new RegExp('(?<![a-z])as[\\s\\-]*is\\b(?:\\s*(?:value|market\\s*value|opinion|amount))?[^$\\d]{0,30}' + MONEY_RE, 'i');
+const ARV_RE = new RegExp('(?<![a-z])(?:as[\\s\\-]*repaired|after[\\s\\-]*repair|as[\\s\\-]*complete[d]?|subject[\\s\\-]*to[\\s\\-]*completion)\\b(?:\\s*value)?[^$\\d]{0,30}' + MONEY_RE, 'i');
 const HYPO_RE = /hypothetical condition.{0,80}(?:repair|budget|complet|renovat)|(?:repair|budget|renovat).{0,40}(?:have been |been )?complet/i;
 
 function mineMoney(re, texts, ceil) {
@@ -130,7 +137,7 @@ function valuation(root) {
   out.siteValue = money(X.attr(cost, 'SiteEstimatedValueAmount'));
   const inc = X.find(root, 'INCOME_ANALYSIS');
   out.valueIncomeApproach = money(X.attr(inc, 'ValueIndicatedByIncomeApproachAmount'));
-  out.grm = toNum(X.attr(inc, 'GrossRentMultiplierFactor'));
+  out.grm = bounded(X.attr(inc, 'GrossRentMultiplierFactor'), 1e6);
   const sc = X.find(root, 'SALES_CONTRACT');
   out.contractPrice = money(X.attr(sc, '_Amount'));
   out.contractDate = normDate(X.attr(sc, '_Date'));
@@ -148,19 +155,30 @@ function isoDate(v) {
   if (m && +m[1] >= 1 && +m[1] <= 12 && +m[2] >= 1 && +m[2] <= 31) return `${m[3]}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
   return null;
 }
-// A comp's "s03/25;c07/25" DateOfSale → the SETTLED month as YYYY-MM-01 (s=settled, c=contract).
+// A comp's DateOfSale → the SETTLED month as YYYY-MM-01. Two real forms:
+//   * UAD abbreviated "s03/25;c07/25"  (s=settled MM/YY, c=contract MM/YY)
+//   * a full calendar date "06/20/2025" (MM/DD/YYYY) — the settled date.
+// The full-date form MUST be parsed FIRST: the loose MM/YY regex would otherwise read a
+// MM/DD/YYYY date's DAY as the year (06/20/2025 → month 06, year 20 → 2020) — corrupting the
+// sale year and firing false staleness findings (audit BLOCKER).
 function settledMonth(desc) {
   const s = String(desc || '');
-  const m = /s\s*(\d{1,2})\/(\d{2,4})/i.exec(s) || /(\d{1,2})\/(\d{2,4})/.exec(s);
-  if (!m) return null;
-  let mo = parseInt(m[1], 10), yr = parseInt(m[2], 10);
-  if (yr < 100) yr = 2000 + yr;
+  let mo, yr;
+  const full = /(\d{1,2})\/\d{1,2}\/(\d{4})(?!\d)/.exec(s);   // MM/DD/YYYY (settled)
+  if (full) { mo = parseInt(full[1], 10); yr = parseInt(full[2], 10); }
+  else {
+    // Prefer the settled 's MM/YY'; else any MM/YY (contract-only) as a fallback.
+    const m = /s\s*(\d{1,2})\/(\d{2,4})/i.exec(s) || /(\d{1,2})\/(\d{2,4})/.exec(s);
+    if (!m) return null;
+    mo = parseInt(m[1], 10); yr = parseInt(m[2], 10);
+    if (yr < 100) yr = 2000 + yr;
+  }
   if (mo < 1 || mo > 12 || yr < 2000 || yr > CUR_YEAR + 1) return null;
   return `${yr}-${String(mo).padStart(2, '0')}-01`;
 }
 // Comp-level grid data mined from a comp's SALE_PRICE_ADJUSTMENT rows + its COMPARISON_DETAIL.
 function compGrid(c) {
-  const out = { gla: null, saleDate: null, conditionUad: null, qualityUad: null, dom: null, pricePerGla: money(X.attr(c, 'SalesPricePerGrossLivingAreaAmount')), adjustments: [] };
+  const out = { gla: null, saleDate: null, conditionUad: null, qualityUad: null, dom: null, pricePerGla: bounded(X.attr(c, 'SalesPricePerGrossLivingAreaAmount'), 1e8), adjustments: [] };
   for (const spa of X.findAll(c, 'SALE_PRICE_ADJUSTMENT')) {
     const t = clean(X.attr(spa, '_Type'));
     const d = clean(X.attr(spa, '_Description'));
@@ -307,7 +325,7 @@ function extract(xml) {
     propertyType: clean(X.attr(st, 'AttachmentType')),
     units: toNum(X.attr(st, 'LivingUnitCount')),
     yearBuilt: year(X.attr(st, 'PropertyStructureBuiltYear')),
-    gla: money(X.attr(st, 'GrossLivingAreaSquareFeetCount')),
+    gla: bounded(X.attr(st, 'GrossLivingAreaSquareFeetCount'), 1e8),
     beds: toNum(X.attr(st, 'TotalBedroomCount')),
     baths: bathsParsed.text, bathsFull: bathsParsed.full, bathsHalf: bathsParsed.half,
     rooms: toNum(X.attr(st, 'TotalRoomCount')),
