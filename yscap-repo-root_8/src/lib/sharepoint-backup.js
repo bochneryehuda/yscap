@@ -1724,7 +1724,12 @@ async function checkBacklogSlo() {
     const esc = await escalateStuckDocs().catch(() => ({ settled: 0, carded: 0 }));
     // Re-read after self-healing so the alert reflects reality.
     const stuck = (await stuckDocuments(8)).filter((d) => !d.phantom);
-    if (stuck.length === 0 && recon.exhausted === 0) return;   // escalation cleared it
+    // Only alert when there are named, past-SLO documents to show. If nothing is
+    // nameable (escalation cleared it, or the only breach is a still-young
+    // exhausted doc / a non-'local' doc that stuckDocuments can't list), skip the
+    // email — a vague "0 document(s)…" alert helps no one, and those docs surface
+    // through their own Sync-review cards (stray-sweep / permanent-error carding).
+    if (stuck.length === 0) return;
     // Persistent dedup: only alert if we can claim the cooldown row for THIS
     // stuck set. A redeploy mid-breach no longer re-sends the same email.
     if (!(await claimSloAlert(sloSignature(stuck)))) return;
