@@ -247,7 +247,15 @@ Fannie Mae Selling Guide **B3-5.1-02** is explicit and matches the owner exactly
 Scores are never averaged and the highest is never cherry-picked *at the individual-borrower level*.
 So "use the middle score of each borrower" is right.
 
-### 5.2 Cross-borrower (loan) representative score — the owner's rule is BACKWARDS ⚠️
+### 5.2 Cross-borrower (loan) representative score — ✅ CONFIRMED: highest (2026-07-19)
+
+> **RESOLVED.** The owner confirmed **highest** is intentional, and it matches the portal's existing
+> pricing, which already uses `GREATEST(borrower.fico, co_borrower.fico)` — the highest score across
+> the file's borrowers (`src/routes/borrower.js`, `#99`). Because RTL loans are **business-purpose**
+> (not sold to Fannie/Freddie), the GSE "lowest representative score" convention below **does not
+> bind** — highest-across-borrowers is YS Capital's established credit-box rule. The paragraphs below
+> are kept as the reasoning/FYI; they no longer represent an open question. See
+> `CREDIT-REPORT-REISSUE-DESIGN.md` for the build design.
 
 The owner's rule says: take the **highest** of the two borrowers' middle scores.
 The GSE standard (Fannie B3-5.1-02) is the **opposite**: the loan's representative score is the
