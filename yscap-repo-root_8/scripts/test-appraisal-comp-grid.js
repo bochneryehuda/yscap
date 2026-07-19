@@ -93,6 +93,34 @@ const comp = (seq, sale, adj) => ({ seq: String(seq), salePrice: sale, adjustedP
     'bimodal prices on a NON-reno file never manufacture an As-Is/ARV split (single grid)');
 }
 
+// ---- a condition/quality description must NOT bind (audit T2 — bare label + soft verb) ----
+{
+  const texts = ["Comparable 3 best reflects the subject's as-is condition and quality."];
+  const r = splitComps({ basis: 'ARV', asIsValue: 200000, arvValue: 300000, texts,
+    comps: [1, 2, 3, 4].map((s) => comp(s, 290000, 295000)) });
+  ok(!r.comps.some((c) => c.comp_set === 'as_is'),
+    '"reflects the as-is condition" (a condition description) never fabricates an As-Is comp');
+}
+
+// ---- proximity needs a REAL two-grid: a lonely low comp is not an As-Is grid (audit #1) ----
+{
+  // ARV 530k; five comps mostly near ARV, one lonely low comp at 401k that does NOT bracket As-Is 475k.
+  const r = splitComps({ basis: 'ARV', asIsValue: 475000, arvValue: 530000, texts: [],
+    comps: [comp(1, 520000, 525000), comp(2, 528000, 531000), comp(3, 515000, 524000), comp(4, 519000, 527000), comp(5, 401000, 401000)] });
+  ok(!r.comps.some((c) => c.comp_set === 'as_is') && r.needsReview,
+    'a single low comp does not form a phantom As-Is grid (proximity validity gate) → review');
+}
+
+// ---- a comp named on BOTH sides → unknown + review, never defaulted into a grid (audit #4) ----
+{
+  const texts = ['Comparables 1 and 2 are used for the as-repaired value. Comparable 2 is used for the as-is value.'];
+  const r = splitComps({ basis: 'ARV', asIsValue: 300000, arvValue: 450000, texts,
+    comps: [1, 2, 3].map((s) => comp(s, 400000, 420000)) });
+  const set = Object.fromEntries(r.comps.map((c) => [c.seq, c.comp_set]));
+  ok(set['2'] === 'unknown' && r.needsReview,
+    'a comp named on BOTH sides is left unknown + review, never defaulted into a grid');
+}
+
 // ---- stale narrative (names a comp seq not in the grid) → rejected, not trusted ----
 {
   const texts = ['Comparable 7, 8 & 9 reflect the As-Is Value.'];

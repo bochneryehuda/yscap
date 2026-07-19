@@ -35,8 +35,11 @@ const ANCHOR = /(?:comp(?:arable)?s?\.?|sales?)\s*#?\s*(\d{1,2}(?:\s*[,&]?\s*(?:
 // The VALUE-ROLE label a comp list is tied to. Leading (?<![a-z]) so "as is" never matches inside
 // "basis"/"gas is". A trailing optional "value" is common but not required (bracketed "[as-is]" /
 // quoted "'As Repaired'" forms occur). Global — we scan for all labels in a text.
-const LABEL_ASIS = /(?<![a-z])as[\s\-]*is\b(?:\s+(?:market\s+)?value)?/gi;
-const LABEL_ARV = /(?<![a-z])(?:arv\b|as[\s\-]*repair(?:ed)?|after[\s\-]*repair|as[\s\-]*complet(?:e|ed)?|subject[\s\-]*to|as[\s\-]*improv(?:ed)?|as[\s\-]*renovat(?:ed)?)(?:\s+(?:market\s+)?value)?/gi;
+// The negative lookahead is critical: "as-is CONDITION" / "as-repaired QUALITY" describe a comp's
+// physical state, NOT a value grid — binding a comp off a condition description is a false split.
+const NOT_A_VALUE = '(?!\\s+(?:condition|quality|rating|appearance|nature|basis|standard|state|feature))';
+const LABEL_ASIS = new RegExp('(?<![a-z])as[\\s\\-]*is\\b' + NOT_A_VALUE + '(?:\\s+(?:market\\s+)?value)?', 'gi');
+const LABEL_ARV = new RegExp('(?<![a-z])(?:arv\\b|as[\\s\\-]*repair(?:ed)?|after[\\s\\-]*repair|as[\\s\\-]*complet(?:e|ed)?|subject[\\s\\-]*to|as[\\s\\-]*improv(?:ed)?|as[\\s\\-]*renovat(?:ed)?)' + NOT_A_VALUE + '(?:\\s+(?:market\\s+)?value)?', 'gi');
 // A genuine grid-assignment reads "comps X ARE USED FOR / REFLECT / REPRESENT / SUPPORT the <value>"
 // (or "<value> BASED ON comps X"). Requiring one of these role verbs between the comp list and the
 // label is what separates a real grid naming from an incidental "comparable 1 is most similar".
@@ -116,7 +119,7 @@ function parseSplitNarrative(texts) {
     }
   }
   for (const n of both) { asIs.delete(n); arv.delete(n); }
-  return { asIs, arv };
+  return { asIs, arv, contradicted: both };
 }
 
 // ---- price proximity -------------------------------------------------------
@@ -134,6 +137,15 @@ function proximitySide(c, asIs, arv) {
   const aAdj = nearer(c.adjustedPrice, asIs, arv);
   const aRaw = nearer(c.salePrice, asIs, arv);
   return (aAdj && aRaw && aAdj === aRaw) ? aAdj : null;
+}
+// Does a side's comp cluster actually BRACKET its anchor value (anchor within the adjusted-price
+// range, ±5%)? A real grid's comps straddle the value they support; a lonely comp that sits off to
+// one side of the anchor is not a grid. Needs ≥2 comps to form a range.
+function clusterBrackets(comps, anchor) {
+  const adj = comps.map((c) => num(c.adjustedPrice)).filter((n) => n != null && n > 0);
+  if (adj.length < 2 || !(anchor > 0)) return false;
+  const lo = Math.min(...adj), hi = Math.max(...adj);
+  return anchor >= lo * 0.95 && anchor <= hi * 1.05;
 }
 // Do the comps show a genuine two-cluster (some near As-Is, some near ARV) on raw OR adjusted price?
 function bimodal(comps, asIs, arv) {
@@ -189,7 +201,8 @@ function splitComps({ basis, asIsValue, arvValue, texts = [], comps = [] } = {})
   if (hasNaming) {
     out.forEach((c) => {
       const n = parseInt(c.seq, 10);
-      if (named.asIs.has(n)) c.comp_set = 'as_is';
+      if (named.contradicted && named.contradicted.has(n)) c.comp_set = 'unknown';        // named on BOTH sides → never guess
+      else if (named.asIs.has(n)) c.comp_set = 'as_is';
       else if (named.arv.has(n)) c.comp_set = 'arv';
       else if (named.asIs.size > 0) c.comp_set = 'arv';                                  // As-Is carved out → rest is ARV
       else c.comp_set = canProximity ? (proximitySide(c, asIsV, arvV) || 'unknown') : 'unknown';
@@ -213,14 +226,22 @@ function splitComps({ basis, asIsValue, arvValue, texts = [], comps = [] } = {})
   }
 
   // ---- Step 2: price proximity (needs both anchors + a real gap; raw & adjusted must agree) ----
+  // A price spread is NOT proof of two grids — a single low ARV comp looks exactly like an As-Is
+  // comp. So a proximity split is only ACCEPTED when it forms a real two-grid shape: EACH side has
+  // ≥2 comps AND each cluster actually brackets its own anchor value. A lonely low comp (or a wide
+  // single-grid spread) fails this and falls through to `undetermined` — never a phantom As-Is grid.
   if (canProximity) {
-    let anyUnknown = false, nAsIs = 0, nArv = 0;
+    let anyUnknown = false;
     out.forEach((c) => {
       const side = proximitySide(c, asIsV, arvV);
       c.comp_set = side || 'unknown';
-      if (side === 'as_is') nAsIs++; else if (side === 'arv') nArv++; else anyUnknown = true;
+      if (!side) anyUnknown = true;
     });
-    if (nAsIs > 0 && nArv > 0) {
+    const asIsComps = out.filter((c) => c.comp_set === 'as_is');
+    const arvComps = out.filter((c) => c.comp_set === 'arv');
+    const valid = asIsComps.length >= 2 && arvComps.length >= 2
+      && clusterBrackets(asIsComps, asIsV) && clusterBrackets(arvComps, arvV);
+    if (valid) {
       result.confidence = 'proximity';
       result.needsReview = anyUnknown;
       result.note = 'Split by clustering each comparable’s price to the As-Is vs ARV value (raw and adjusted must agree).';

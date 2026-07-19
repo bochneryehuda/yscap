@@ -865,10 +865,15 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   };
   // Borrowers see the collateral read (a neutral quality summary of THEIR property) but NOT the
   // ARV-defensibility cross-check — that's an underwriting-scrutiny signal, staff-only.
+  // Implied-value cross-check over the operative grid's comps only (never a mix of As-Is + ARV).
+  // Pre-split appraisals (no comp_set) keep the old all-comps behavior.
+  const gridKey = safeAppr.arv_value != null ? 'arv' : 'as_is';
+  const hasSplit = comps.rows.some((c) => c.comp_set);
+  const impliedComps = hasSplit ? comps.rows.filter((c) => c.comp_set === gridKey) : comps.rows;
   const score = {
     collateral: apprScore.collateralScore({ a: safeAppr, comps: comps.rows, summary: bSummary }),
     arv: null,
-    impliedValue: apprScore.compImpliedValue({ comps: comps.rows, subjectGla: safeAppr.gla }),
+    impliedValue: apprScore.compImpliedValue({ comps: impliedComps, subjectGla: safeAppr.gla }),
   };
   res.json({
     appraisal: safeAppr, comparables: comps.rows, units: units.rows, findings: open, photos: photos.rows,
