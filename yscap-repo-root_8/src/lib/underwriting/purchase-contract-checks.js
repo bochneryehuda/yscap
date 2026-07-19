@@ -21,7 +21,7 @@
  *   { property_address, purchase_price, entity_name, is_assignment,
  *     assignment_fee, underlying_contract_price }
  */
-const { norm, addrMatches, addrLine, withinMoney, namesMatch, num } = require('./compare');
+const { norm, addrMatches, addrLine, withinMoney, entityMatch, num } = require('./compare');
 
 function finding(f) {
   return Object.assign(
@@ -64,7 +64,9 @@ function computeContractFindings(contract, file, opts = {}) {
   }
 
   // ---- 3. Buyer entity (must be the borrowing entity on the file) ----
-  if (contract.buyerName && f.entity_name && namesMatch(contract.buyerName, f.entity_name) === false) {
+  // Entity-aware match so "L.L.C." vs "LLC" (or Inc./Corp. punctuation) is not a false
+  // fatal (audit fix), while a genuinely different buyer still fires.
+  if (contract.buyerName && f.entity_name && entityMatch(contract.buyerName, f.entity_name) === false) {
     out.push(finding({ code: 'contract_buyer_mismatch', severity: 'fatal', field: 'buyer_entity',
       docValue: contract.buyerName, fileValue: f.entity_name,
       title: 'Buyer on the contract is not the borrowing entity on the file',
@@ -95,6 +97,29 @@ function computeContractFindings(contract, file, opts = {}) {
       title: 'The contract looks like an assignment, but the file is not marked as one',
       howTo: 'Confirm whether this is a wholesale/assignment deal. If it is, mark the file and capture the assignment fee + original price so the leverage caps price correctly.',
       actions: ['fix_file', 'acknowledge', 'dismiss'] }));
+  }
+
+  // ---- 4b. Assignment internal consistency + the frozen 15% cap (audit fix) ----
+  // Validate the CONTRACT's own numbers, independent of the file: the total should be
+  // the seller's original price plus the fee, and the financeable fee is capped at 15%
+  // of the seller's ORIGINAL price (owner's hard-frozen rule).
+  if (contract.isAssignment === true || f.is_assignment) {
+    const pp = num(contract.purchasePrice), under = num(contract.underlyingPrice), fee = num(contract.assignmentFee);
+    if (pp != null && under != null && fee != null && Math.abs(pp - (under + fee)) > 1) {
+      out.push(finding({ code: 'assignment_math_inconsistent', severity: 'warning', field: 'assignment_fee',
+        docValue: `${money(pp)} vs ${money(under)} + ${money(fee)}`, fileValue: null,
+        title: 'Assignment math on the contract does not add up',
+        howTo: `The total price ${money(pp)} should equal the seller's original price ${money(under)} plus the assignment fee ${money(fee)}. Reconcile the figures before pricing.`,
+        actions: ['request_revision', 'acknowledge', 'custom', 'dismiss'] }));
+    }
+    if (under != null && fee != null && under > 0 && fee > 0.15 * under + 1) {
+      const cap = 0.15 * under;
+      out.push(finding({ code: 'assignment_fee_over_cap', severity: 'warning', field: 'assignment_fee',
+        docValue: money(fee), fileValue: money(cap),
+        title: 'Assignment fee exceeds the 15% financeable cap',
+        howTo: `The financeable fee is capped at 15% of the seller's original price (${money(cap)}); the contract shows ${money(fee)}. The excess is out-of-pocket unless an approved exception is on file.`,
+        actions: ['grant_exception', 'acknowledge', 'custom', 'dismiss'] }));
+    }
   }
 
   // ---- 5. Seller name(s) — extracted for the cross-document match (title/appraisal) ----

@@ -17,19 +17,19 @@
  * prior_address). `opts.today` ('YYYY-MM-DD') is injected — no `new Date()` in date
  * paths, matching the appraisal engine. Returns findings in the document_findings shape.
  */
-const { norm, addrMatches, addrLine, daysBetween } = require('./compare');
+const { norm, addrMatches, addrLine, daysBetween, namesMatchLoose, toISODate } = require('./compare');
 
-// The borrower's name from the file, and the ID's name (prefer first/last, fall back to
-// splitting fullName). Returns normalized "first last" strings, or null when unknown.
+// Raw-ish name strings (NOT normalized here — namesMatchLoose needs the comma/order to
+// detect "LAST, FIRST"). Prefer first+last; fall back to fullName.
 function fileName(b) {
-  const fn = norm(b && b.first_name), ln = norm(b && b.last_name);
-  return (fn || ln) ? `${fn} ${ln}`.trim() : null;
+  const fn = (b && b.first_name) || '', ln = (b && b.last_name) || '';
+  return (norm(fn) || norm(ln)) ? `${fn} ${ln}`.trim() : null;
 }
 function idName(id) {
-  const fn = norm(id && id.firstName), ln = norm(id && id.lastName);
-  if (fn || ln) return `${fn} ${ln}`.trim();
-  const full = norm(id && id.fullName);
-  return full || null;
+  const fn = (id && id.firstName) || '', ln = (id && id.lastName) || '';
+  if (norm(fn) || norm(ln)) return `${fn} ${ln}`.trim();
+  const full = (id && id.fullName) || '';
+  return norm(full) ? full : null;
 }
 
 function finding(f) {
@@ -63,8 +63,10 @@ function computeIdFindings(id, borrower, opts = {}) {
   }
 
   // ---- 1. Name spelling (identity) ----
+  // Tolerant match: middle names/initials, "LAST, FIRST" order, and Jr/Sr suffixes do
+  // NOT fire (audit fix); a real spelling difference still does.
   const idN = idName(id), fileN = fileName(borrower);
-  if (idN && fileN && idN !== fileN) {
+  if (idN && fileN && namesMatchLoose(idN, fileN) === false) {
     out.push(finding({ code: 'id_name_mismatch', severity: 'fatal', field: 'name',
       docValue: id.fullName || `${id.firstName || ''} ${id.lastName || ''}`.trim(),
       fileValue: `${borrower.first_name || ''} ${borrower.last_name || ''}`.trim(),
@@ -74,8 +76,11 @@ function computeIdFindings(id, borrower, opts = {}) {
   }
 
   // ---- 2. Date of birth (identity) ----
-  const fileDob = borrower && borrower.date_of_birth ? String(borrower.date_of_birth).slice(0, 10) : null;
-  if (gotDob && fileDob && id.dateOfBirth !== fileDob) {
+  // Normalize both to YYYY-MM-DD before comparing so a format difference (05/15/1980 vs
+  // 1980-05-15) is not a false fatal (audit fix). Only compare when both parse.
+  const idDob = toISODate(id.dateOfBirth);
+  const fileDob = borrower && borrower.date_of_birth ? toISODate(String(borrower.date_of_birth).slice(0, 10)) : null;
+  if (idDob && fileDob && idDob !== fileDob) {
     out.push(finding({ code: 'id_dob_mismatch', severity: 'fatal', field: 'date_of_birth',
       docValue: id.dateOfBirth, fileValue: fileDob,
       title: 'Date of birth on the ID does not match the file',
