@@ -54,4 +54,14 @@ async function sweepAgedCreditConditions({ days = REOPEN_DAYS } = {}) {
   return { reopenedItems: rows.length, reopenedApplications: apps.size };
 }
 
-module.exports = { sweepAgedCreditConditions, REOPEN_DAYS, AGED_REOPEN_CODES };
+// Daily scheduler (started from server.js). Runs once shortly after boot, then
+// every 24h. .unref() so it never keeps the process alive on its own.
+function startSweep({ intervalMs = 24 * 60 * 60 * 1000, firstDelayMs = 30000 } = {}) {
+  const run = () => sweepAgedCreditConditions()
+    .then((r) => { if (r.reopenedItems) console.log(`[credit] reopened ${r.reopenedItems} aged credit condition(s) on ${r.reopenedApplications} file(s)`); })
+    .catch((e) => console.error('[credit] reopen sweep failed:', e.message));
+  setTimeout(run, firstDelayMs).unref();
+  return setInterval(run, intervalMs).unref();
+}
+
+module.exports = { sweepAgedCreditConditions, startSweep, REOPEN_DAYS, AGED_REOPEN_CODES };
