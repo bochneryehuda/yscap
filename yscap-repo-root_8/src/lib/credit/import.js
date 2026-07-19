@@ -73,10 +73,17 @@ function breakerCheck(pid, nowMs) {
     throw httpError(503, 'The credit provider is temporarily unavailable — please try again shortly.', { kind: 'breaker_open' });
   }
 }
-function breakerFail(pid, nowMs) {
+function breakerFail(pid, nowMs, retryAfterMs) {
   const b = BREAKER.get(pid) || { fails: 0, openUntil: 0 };
   b.fails += 1;
-  if (b.fails >= BREAKER_THRESHOLD) { b.openUntil = nowMs + BREAKER_COOLDOWN_MS; b.fails = 0; }
+  if (retryAfterMs != null && retryAfterMs >= 0) {
+    // The vendor explicitly told us to back off (Retry-After) — honor it now
+    // instead of waiting for the failure threshold, and never shorten an
+    // already-longer cooldown.
+    b.openUntil = Math.max(b.openUntil, nowMs + Math.max(retryAfterMs, 1000));
+  } else if (b.fails >= BREAKER_THRESHOLD) {
+    b.openUntil = nowMs + BREAKER_COOLDOWN_MS; b.fails = 0;
+  }
   BREAKER.set(pid, b);
 }
 function breakerOk(pid) { BREAKER.delete(pid); }
@@ -446,23 +453,28 @@ async function orderAndImport(opts = {}) {
   } catch (e) {
     // Mark the credential invalid on an auth failure so the officer is told to fix it.
     if (e.kind === 'auth') { try { await credentials.markStatus(actorId, provider.id, 'invalid'); } catch (_) {} }
-    if (e.retriable) breakerFail(provider.id, clock);
+    if (e.retriable) breakerFail(provider.id, clock, e.retryAfterMs);
     // A timeout/network failure is an UNKNOWN OUTCOME, not an error: the vendor may
     // have generated and BILLED the report. Mark it 'in_doubt' (completed_at stays
     // NULL) so it goes to reconciliation, NOT 'error' (which reads as "nothing
     // happened" and would invite a blind, double-billing re-order). Only a real
     // HTTP 4xx / auth / parse failure — where the vendor definitively did not
-    // produce a billable report — is a terminal 'error'.
-    const inDoubt = e.kind === 'timeout' || e.kind === 'network' || e.kind === 'http' && e.httpStatus >= 500;
+    // produce a billable report — is a terminal 'error'. A 429 rate-limit is a
+    // definitive NOT-billed rejection (vendor refused the request), so it's a
+    // terminal 'error' the staffer retries — never in-doubt.
+    const inDoubt = e.kind === 'timeout' || e.kind === 'network' || (e.kind === 'http' && e.httpStatus >= 500);
     const finalStatus = inDoubt ? 'in_doubt' : 'error';
+    const retryHint = e.retryAfterMs != null ? ` The vendor asked us to wait about ${Math.ceil(e.retryAfterMs / 1000)}s before retrying.` : '';
     const reason = inDoubt
-      ? `unknown outcome (${e.kind}) — the vendor may have processed and billed this. Verify in Xactus before re-ordering.`
-      : `order failed: ${e.message}`;
+      ? `unknown outcome (${e.kind}) — the vendor may have processed and billed this. Verify in Xactus before re-ordering.${retryHint}`
+      : e.kind === 'rate_limit'
+        ? `rate-limited by the credit provider — this was NOT billed. Please retry shortly.${retryHint}`
+        : `order failed: ${e.message}`;
     await db.query(
       `UPDATE credit_reports SET status=$4, review_reason=$2, error_detail=$3::jsonb,
               completed_at = CASE WHEN $4='in_doubt' THEN NULL ELSE now() END
         WHERE id=$1`,
-      [reportRowId, reason, JSON.stringify({ kind: e.kind || 'error', httpStatus: e.httpStatus || null, retriable: !!e.retriable }), finalStatus]);
+      [reportRowId, reason, JSON.stringify({ kind: e.kind || 'error', httpStatus: e.httpStatus || null, retriable: !!e.retriable, retryAfterMs: e.retryAfterMs != null ? e.retryAfterMs : null }), finalStatus]);
     logEvent({ ...evBase, phase: finalStatus, outcome: e.kind || 'error', httpStatus: e.httpStatus, latencyMs: (typeof opts.nowMs === 'number' ? 0 : Date.now() - postStart) });
     throw httpError(e.kind === 'auth' ? 401 : 502, `credit order failed: ${e.message}`,
       { kind: e.kind, retriable: !!e.retriable, inDoubt, reportId: reportRowId });

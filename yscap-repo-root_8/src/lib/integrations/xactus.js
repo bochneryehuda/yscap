@@ -33,14 +33,31 @@ function basicAuth(operatorIdentifier, secret) {
 }
 
 class XactusError extends Error {
-  constructor(message, { kind, httpStatus, body, retriable } = {}) {
+  constructor(message, { kind, httpStatus, body, retriable, retryAfterMs } = {}) {
     super(message);
     this.name = 'XactusError';
-    this.kind = kind || 'error';         // 'network' | 'timeout' | 'http' | 'auth' | 'empty' | 'config'
+    this.kind = kind || 'error';         // 'network'|'timeout'|'http'|'auth'|'rate_limit'|'empty'|'config'
     this.httpStatus = httpStatus || null;
     this.body = body || null;            // raw response text (may be XML with an error layer)
-    this.retriable = !!retriable;        // network/timeout only; caller still decides given the action
+    this.retriable = !!retriable;        // network/timeout/rate_limit/5xx; caller still decides given the action
+    this.retryAfterMs = retryAfterMs != null ? retryAfterMs : null;  // honored Retry-After (ms), when the vendor sent one
   }
+}
+
+/**
+ * Parse an HTTP Retry-After header into milliseconds. Accepts delta-seconds
+ * ("120") or an HTTP-date ("Wed, 21 Oct 2026 07:28:00 GMT"). Returns null when
+ * absent/unparseable, 0 for a past date, and caps at 1 hour so a bogus far-future
+ * value can't wedge the breaker open.
+ */
+function parseRetryAfter(v) {
+  if (v == null || v === '') return null;
+  const s = String(v).trim();
+  const CAP = 3600 * 1000;
+  if (/^\d+$/.test(s)) return Math.min(parseInt(s, 10) * 1000, CAP);
+  const t = Date.parse(s);
+  if (!Number.isNaN(t)) { const d = t - Date.now(); return d > 0 ? Math.min(d, CAP) : 0; }
+  return null;
 }
 
 /**
@@ -103,11 +120,19 @@ async function orderReport(o = {}) {
   // (bad login), distinct from a valid-login-but-data-error which returns 200
   // with an in-XML error. Surface auth explicitly so the caller can flag the
   // credential invalid instead of blaming the borrower's data.
+  const retryAfterMs = parseRetryAfter(r.headers && typeof r.headers.get === 'function' ? r.headers.get('retry-after') : null);
   if (r.status === 401 || r.status === 403) {
     throw new XactusError(`Xactus authentication failed (HTTP ${r.status})`, { kind: 'auth', httpStatus: r.status, body });
   }
+  // 429 = rate-limited: the vendor REJECTED the request (nothing billed) and asks
+  // us to back off. Retriable, and carries Retry-After so the caller can wait the
+  // requested time instead of hammering. It is NOT a generic 4xx (must be caught
+  // before the >=400 bucket, which would mark it non-retriable).
+  if (r.status === 429) {
+    throw new XactusError('Xactus rate-limited the request (HTTP 429) — not billed; retry later.', { kind: 'rate_limit', httpStatus: 429, body, retriable: true, retryAfterMs });
+  }
   if (r.status >= 500) {
-    throw new XactusError(`Xactus server error (HTTP ${r.status})`, { kind: 'http', httpStatus: r.status, body, retriable: true });
+    throw new XactusError(`Xactus server error (HTTP ${r.status})`, { kind: 'http', httpStatus: r.status, body, retriable: true, retryAfterMs });
   }
   if (r.status >= 400) {
     throw new XactusError(`Xactus rejected the request (HTTP ${r.status})`, { kind: 'http', httpStatus: r.status, body });
@@ -149,6 +174,7 @@ async function verifyCredential(o = {}) {
       signal: ac.signal,
     });
     if (r.status === 401 || r.status === 403) return { ok: false, status: 'invalid', message: 'The login was rejected by Xactus.', httpStatus: r.status };
+    if (r.status === 429) return { ok: null, status: 'unverified', message: 'Xactus was rate-limited; credential saved unverified.', httpStatus: r.status };
     if (r.status >= 500) return { ok: null, status: 'unverified', message: 'Xactus was unreachable; credential saved unverified.', httpStatus: r.status };
     return { ok: true, status: 'ok', message: 'Login verified with Xactus.', httpStatus: r.status };
   } catch (e) {
@@ -158,4 +184,4 @@ async function verifyCredential(o = {}) {
   }
 }
 
-module.exports = { name: 'xactus', configured, orderReport, verifyCredential, basicAuth, XactusError, MISMO_CONTENT_TYPE };
+module.exports = { name: 'xactus', configured, orderReport, verifyCredential, basicAuth, parseRetryAfter, XactusError, MISMO_CONTENT_TYPE };

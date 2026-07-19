@@ -106,7 +106,39 @@ function transportOf(status, body, ct) {
   eq('order sends basic auth', spyT.calls[0].opts.headers.Authorization, xactus.basicAuth('u', 'p'));
   ok('order sends xml content-type', /text\/xml/.test(spyT.calls[0].opts.headers['Content-Type']));
 
+  // ===== Retry-After honoring (429 rate-limit + 503) =====
+  // A transport whose response carries arbitrary headers (for Retry-After).
+  const transportH = (status, body, headers = {}) => {
+    const h = Object.assign({ 'content-type': 'text/xml' }, headers);
+    return async () => ({ status, headers: { get: (k) => (h[String(k).toLowerCase()] != null ? h[String(k).toLowerCase()] : null) }, text: async () => body });
+  };
+  eq('parseRetryAfter seconds→ms', xactus.parseRetryAfter('120'), 120000);
+  eq('parseRetryAfter null', xactus.parseRetryAfter(null), null);
+  eq('parseRetryAfter garbage', xactus.parseRetryAfter('soon'), null);
+  ok('parseRetryAfter caps at 1h', xactus.parseRetryAfter('999999') === 3600000);
+  ok('parseRetryAfter past date → 0', xactus.parseRetryAfter('Wed, 21 Oct 2015 07:28:00 GMT') === 0);
+  // 429 → rate_limit, retriable, Retry-After captured (must NOT be a generic non-retriable 4xx)
+  let e429 = null;
+  try { await xactus.orderReport({ endpoint: 'https://x.test', operatorIdentifier: 'u', secret: 'p', requestXml: '<R/>', transport: transportH(429, 'slow down', { 'retry-after': '30' }) }); }
+  catch (e) { e429 = e; }
+  ok('429 threw', !!e429);
+  eq('429 kind rate_limit', e429 && e429.kind, 'rate_limit');
+  ok('429 retriable', e429 && e429.retriable === true);
+  eq('429 retryAfterMs captured', e429 && e429.retryAfterMs, 30000);
+  // 503 with Retry-After also surfaces the wait
+  let e503 = null;
+  try { await xactus.orderReport({ endpoint: 'https://x.test', operatorIdentifier: 'u', secret: 'p', requestXml: '<R/>', transport: transportH(503, 'x', { 'retry-after': '5' }) }); }
+  catch (e) { e503 = e; }
+  eq('503 retryAfterMs captured', e503 && e503.retryAfterMs, 5000);
+  // 429 without a header → still retriable, retryAfterMs null
+  let e429b = null;
+  try { await xactus.orderReport({ endpoint: 'https://x.test', operatorIdentifier: 'u', secret: 'p', requestXml: '<R/>', transport: transportH(429, 'x') }); }
+  catch (e) { e429b = e; }
+  ok('429 no-header still retriable', e429b && e429b.retriable === true);
+  eq('429 no-header retryAfterMs null', e429b && e429b.retryAfterMs, null);
+
   // ===== xactus.verifyCredential =====
+  eq('verify 429 → unverified', (await xactus.verifyCredential({ operatorIdentifier: 'u', secret: 'p', endpoint: 'https://x.test', verifyPath: '/ping', transport: transportH(429, '') })).status, 'unverified');
   eq('verify missing → invalid', (await xactus.verifyCredential({ operatorIdentifier: '', secret: '' })).status, 'invalid');
   eq('verify no endpoint → unverified', (await xactus.verifyCredential({ operatorIdentifier: 'u', secret: 'p', endpoint: '' })).status, 'unverified');
   eq('verify 401 → invalid', (await xactus.verifyCredential({ operatorIdentifier: 'u', secret: 'p', endpoint: 'https://x.test', verifyPath: '/ping', transport: transportOf(401, '') })).status, 'invalid');

@@ -570,6 +570,15 @@ over-sending.
 **Observability:** an append-only `credit_order_events` black-box log (`db/151`, immutability
 trigger) with per-phase latency/outcome, plus a `GET /credit/health` summary.
 
+**Rate-limit / Retry-After honoring (2026-07-19, autonomous hardening pass):** the adapter now
+classifies **HTTP 429** as a distinct retriable `rate_limit` kind (previously it fell into the
+generic non-retriable 4xx bucket) and parses the **`Retry-After`** header (delta-seconds or
+HTTP-date, capped at 1h) on 429/503. A 429 is a definitive *not-billed* rejection, so it becomes a
+terminal `error` the staffer retries — never `in_doubt`. When the vendor sends `Retry-After`, the
+import feeds it into the circuit-breaker cooldown (back off exactly as asked, never shortening a
+longer cooldown) and surfaces "wait ~Ns before retrying" in the staff message + `error_detail`
+(`{kind, httpStatus, retriable, retryAfterMs}`). Covered by DB-free adapter unit tests.
+
 ### 13.1 Backlog captured for owner/compliance decision (not yet built)
 From the research, deliberately deferred (either legal decisions or larger capabilities):
 - **Tradeline/liability + derogatory-event + public-record parsing** — the substrate for automated
