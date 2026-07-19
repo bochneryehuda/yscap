@@ -741,6 +741,55 @@ router.post('/files/:id/lien-waivers-setting', requirePermission('platform_setup
   res.json({ ok: true, require_lien_waivers: v });
 });
 
+// ---- GET /project?loan=<ys_loan_number> — look up a funded file to enable advanced features on ----
+// Powers the admin "turn on retainage / lien waivers for a specific project" form. Returns the file
+// plus its CURRENT per-project overrides (null = inherits the global default / off).
+router.get('/project', requirePermission('platform_setup'), async (req, res) => {
+  const loan = String(req.query.loan || '').trim();
+  if (!loan) return res.status(400).json({ error: 'enter a loan number' });
+  const a = (await db.query(
+    `SELECT a.id, a.ys_loan_number, a.property_address->>'oneLine' AS address, a.status,
+            l.retainage_pct, l.require_lien_waivers
+       FROM applications a LEFT JOIN sitewire_property_links l ON l.application_id=a.id
+      WHERE upper(a.ys_loan_number)=upper($1) AND a.deleted_at IS NULL LIMIT 1`, [loan])).rows[0];
+  if (!a) return res.status(404).json({ error: `no file found for loan number "${loan}"` });
+  if (!(await canSeeFile(req, a.id))) return res.status(403).json({ error: 'forbidden' });
+  res.json({ application_id: a.id, ys_loan_number: a.ys_loan_number, address: a.address, status: a.status,
+    retainage_pct: a.retainage_pct != null ? Number(a.retainage_pct) : null, require_lien_waivers: a.require_lien_waivers });
+});
+
+// ---- POST /files/:id/advanced-settings — enable/adjust the OPT-IN features for ONE project ----
+// Retainage % and the lien-waiver gate are off by default and not in the standard workflow; this is
+// how an admin turns them on for a specific file. Upserts the link row so it works even before the
+// file is pushed to Sitewire. platform_setup + journaled (a coordinator can't quietly change these).
+router.post('/files/:id/advanced-settings', requirePermission('platform_setup'), async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const b = req.body || {};
+  // retainage_pct: a number 0..100, or null to inherit the global default
+  let ret; // undefined = don't touch
+  if ('retainage_pct' in b) {
+    if (b.retainage_pct === null || b.retainage_pct === '') ret = null;
+    else { const n = Number(b.retainage_pct); if (!Number.isFinite(n) || n < 0 || n > 100) return res.status(400).json({ error: 'retainage % must be a number between 0 and 100 (or blank to inherit)' }); ret = n; }
+  }
+  // require_lien_waivers: true/false/null(inherit)
+  let lw;
+  if ('require_lien_waivers' in b) lw = b.require_lien_waivers === null ? null : b.require_lien_waivers === true ? true : b.require_lien_waivers === false ? false : undefined;
+  if (ret === undefined && lw === undefined) return res.status(400).json({ error: 'nothing to change' });
+  // upsert the link row so this works before the file is pushed (matched_by/state satisfy the CHECKs)
+  await db.query(
+    `INSERT INTO sitewire_property_links (application_id, matched_by, state, retainage_pct, require_lien_waivers)
+     VALUES ($1,'created','pending',$2,$3)
+     ON CONFLICT (application_id) DO UPDATE SET
+       retainage_pct = ${ret === undefined ? 'sitewire_property_links.retainage_pct' : '$2'},
+       require_lien_waivers = ${lw === undefined ? 'sitewire_property_links.require_lien_waivers' : '$3'},
+       updated_at=now()`,
+    [appId, ret === undefined ? null : ret, lw === undefined ? null : lw]);
+  if (ret !== undefined) await orchestrator.journal({ appId, entity: 'settings', field: 'retainage_pct', newValue: ret, source: 'review_resolve', changed: true }).catch(() => {});
+  if (lw !== undefined) await orchestrator.journal({ appId, entity: 'settings', field: 'require_lien_waivers', newValue: lw, source: 'review_resolve', changed: true }).catch(() => {});
+  res.json({ ok: true, retainage_pct: ret, require_lien_waivers: lw });
+});
+
 // ---- POST /files/:id/coordinator — set the per-file draw-coordinator (admin override) ----
 router.post('/files/:id/coordinator', requirePermission('platform_setup'), async (req, res) => {
   const appId = req.params.id;

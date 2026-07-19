@@ -44,7 +44,7 @@ async function main() {
   await db.query(`INSERT INTO sitewire_inspection_rules (capital_partner_id,program,inspection_method,require_sitewire_inspector,require_capital_partner_approval,allow_reallocation,fee_cents_virtual,fee_cents_physical,allow_virtual,allow_physical)
     VALUES (19,NULL,'mobile',true,false,true,29900,49900,true,true)
     ON CONFLICT (COALESCE(capital_partner_id,-1),COALESCE(program,'')) DO UPDATE SET allow_virtual=true,allow_physical=true,fee_cents_physical=49900`);
-  for (const [k, v] of [['retainage_pct', '10'], ['variance_pct', '10'], ['stale_days', '30'], ['no_draw_days', '45'], ['wire_turnaround_hours', '48']]) {
+  for (const [k, v] of [['variance_pct', '10'], ['stale_days', '30'], ['no_draw_days', '45'], ['wire_turnaround_hours', '48']]) {
     await db.query(`INSERT INTO sitewire_settings (key,value) VALUES ($1,$2::jsonb) ON CONFLICT (key) DO UPDATE SET value=$2::jsonb`, [k, JSON.stringify(v)]);
   }
 
@@ -67,8 +67,8 @@ async function main() {
     [uuid(), appB, JSON.stringify({ state: SOW, total: 78200 })]);
 
   const propId = 5000, budgetId = 6000;
-  await db.query(`INSERT INTO sitewire_property_links (application_id,sitewire_property_id,sitewire_budget_id,capital_partner_id,matched_by,state,inspection_method,retainage_pct,pushed_at,updated_at)
-    VALUES ($1,$2,$3,19,'created','live','mobile',10,now(),now())
+  await db.query(`INSERT INTO sitewire_property_links (application_id,sitewire_property_id,sitewire_budget_id,capital_partner_id,matched_by,state,inspection_method,pushed_at,updated_at)
+    VALUES ($1,$2,$3,19,'created','live','mobile',now(),now())
     ON CONFLICT (application_id) DO UPDATE SET sitewire_property_id=$2,sitewire_budget_id=$3,state='live'`, [appB, propId, budgetId]);
 
   // crosswalk from a real explosion
@@ -110,7 +110,7 @@ async function main() {
 
   // a disbursement for the approved draw 1 (net = approved - fee - retainage)
   await db.query(`INSERT INTO draw_disbursements (application_id,sitewire_draw_id,approved_cents,fee_cents,fee_kind,retainage_held_cents,net_release_cents,release_date,funded_status,created_by,created_at)
-    VALUES ($1,$2,1100000,29900,'virtual',110000,960100,'2026-06-15','released',$3,now())`, [appB, draw1, sid.id]);
+    VALUES ($1,$2,1100000,29900,'virtual',0,1070100,'2026-06-15','released',$3,now())`, [appB, draw1, sid.id]);
 
   console.log(JSON.stringify({ token, staffId: sid.id, appA, appB, budgetId, names: Object.keys(byName) }, null, 2));
   await db.pool.end();
