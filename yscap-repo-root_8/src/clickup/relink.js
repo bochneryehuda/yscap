@@ -78,6 +78,11 @@ function parseTaskRef(input) {
   // A custom id looks like LETTERS-DIGITS (e.g. FILLE-1911); an internal id is
   // alphanumeric with no dash. A two-segment URL is always a custom-id URL.
   const custom = !!teamId || /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(s);
+  // Custom ids are stored UPPERCASE by ClickUp (the prefix is defined uppercase),
+  // and the lookup is case-sensitive — so a typed "fille-1911" must be folded to
+  // "FILLE-1911". NEVER uppercase an internal id: those are case-sensitive
+  // lowercase alphanumerics (e.g. 86c5v9c20) and folding would break the lookup.
+  if (custom) s = s.toUpperCase();
   if (custom && !teamId) { try { teamId = require('./../config').clickupTeamId || null; } catch (_) { /* config optional */ } }
   return { token: s, custom, teamId };
 }

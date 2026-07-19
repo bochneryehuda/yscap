@@ -120,6 +120,8 @@ async function expectHttp(status, fn) {
     assert.strictEqual(parseTaskId('https://app.clickup.com/t/9011888435/FILLE-1911'), 'FILLE-1911', 'custom-id URL → custom id, not workspace');
     assert.strictEqual(parseTaskId('https://app.clickup.com/t/9011888435/FILLE-1911?comment=5'), 'FILLE-1911', 'custom-id URL + query');
     assert.strictEqual(parseTaskId('FILLE-1911'), 'FILLE-1911', 'bare custom id passes through');
+    assert.strictEqual(parseTaskId('fille-1911'), 'FILLE-1911', 'custom id folded to uppercase (case-sensitive lookup)');
+    assert.strictEqual(parseTaskId('86c5v9c20'), '86c5v9c20', 'internal id is NOT uppercased (case-sensitive)');
     assert.strictEqual(parseTaskId('868abc123?comment=42'), '868abc123', 'strips trailing query on a bare id');
     assert.strictEqual(parseTaskId(''), '', 'empty → empty');
     assert.strictEqual(parseTaskId(null), '', 'null → empty (no invented id)');
