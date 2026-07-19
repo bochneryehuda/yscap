@@ -7,8 +7,8 @@ allow-listed test emails), NOT merged until working + audited. Companions: the D
 the branch (blueprint, hardening, bug-register, security-compliance, redirect-and-account-setup)._
 
 ## 0. Status of the foundation (already built + verified)
-- `db/129_esign_v2.sql` (envelopes v2: purpose, send-once claim, partial unique index, `esign_envelope_docs`,
-  `docusign_event_inbox`), `db/130_esign_send_bookkeeping.sql` (retry columns).
+- `db/132_esign_v2.sql` (envelopes v2: purpose, send-once claim, partial unique index, `esign_envelope_docs`,
+  `docusign_event_inbox`), `db/133_esign_send_bookkeeping.sql` (retry columns).
 - `src/lib/integrations/docusign.js` — hardened connector. **Live production account VERIFIED** (a real
   test envelope was sent to the owner; sends as "PILOT by YS Capital Group", na4 data center).
 - `src/lib/esign/send.js` — send-EXACTLY-once engine (23 DB tests).

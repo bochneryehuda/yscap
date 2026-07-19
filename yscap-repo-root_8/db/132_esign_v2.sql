@@ -1,5 +1,5 @@
 -- ============================================================================
--- 129_esign_v2.sql — DocuSign eSignature v2 schema
+-- 132_esign_v2.sql — DocuSign eSignature v2 schema
 --
 -- Grows the db/037 `esign_envelopes` STUB into the production shape the DocuSign
 -- integration needs. Implements the send-EXACTLY-once model, the envelope→doc→
