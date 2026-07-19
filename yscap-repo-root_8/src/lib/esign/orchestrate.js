@@ -31,6 +31,7 @@ const storageDefault = require('../storage');
 const sendEngine = require('./send');
 const gate = require('./gate');
 const docgen = require('./docgen');
+const { parseAddress } = require('../address');
 const cfg = require('../../config');
 
 // ---- package definitions ----------------------------------------------------
@@ -112,6 +113,8 @@ async function loadDocGenData(db, applicationId) {
             a.property_address->>'city'   AS addr_city,
             a.property_address->>'state'  AS addr_state,
             a.property_address->>'zip'    AS addr_zip,
+            a.property_address->>'oneLine'           AS addr_oneline,
+            a.property_address->>'formatted_address' AS addr_formatted,
             b.first_name AS b_first, b.last_name AS b_last,
             cb.first_name AS cb_first, cb.last_name AS cb_last,
             a.co_borrower_id
@@ -121,16 +124,31 @@ async function loadDocGenData(db, applicationId) {
       WHERE a.id = $1 AND a.deleted_at IS NULL`, [applicationId]);
   if (!r.rows.length) { const e = new Error('Application not found for document generation'); e.retryable = false; throw e; }
   const a = r.rows[0];
-  const street = [a.addr_line1 || a.addr_street, a.addr_unit].filter(Boolean).join(' ');
+
+  // Subject property — the disclosure needs street/city/state/zip SEPARATELY. Many
+  // files (ClickUp-synced especially) store only a `oneLine`/`formatted_address`
+  // string and no structured keys, which would render the whole property block
+  // blank on a legal disclosure. Prefer the structured keys; when they're missing,
+  // parse the one-line form into parts so the property is never blank.
+  let street = [a.addr_line1 || a.addr_street, a.addr_unit].filter(Boolean).join(' ').trim();
+  let city = a.addr_city || '', state = a.addr_state || '', zip = a.addr_zip || '';
+  if (!street && !city && !state && !zip) {
+    const oneLine = a.addr_oneline || a.addr_formatted || '';
+    if (oneLine) {
+      const p = parseAddress(oneLine);
+      street = [p.line1, p.unit].filter(Boolean).join(' ').trim() || oneLine;
+      city = p.city || ''; state = p.state || ''; zip = p.zip || '';
+    }
+  }
   return {
     loanNumber: a.ys_loan_number || '',
     applicationDate: a.application_date,
     executionDate: new Date(),                          // "as of the date below" — prepared today
     loanAmount: a.loan_amount != null ? a.loan_amount : a.purchase_price,
     propStreet: street,
-    propCity: a.addr_city || '',
-    propState: a.addr_state || '',
-    propZip: a.addr_zip || '',
+    propCity: city,
+    propState: state,
+    propZip: zip,
     bFirst: a.b_first || '', bLast: a.b_last || '',
     hasCoBorrower: !!a.co_borrower_id,
     cbFirst: a.cb_first || '', cbLast: a.cb_last || '',

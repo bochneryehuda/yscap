@@ -105,6 +105,32 @@ function removeParaAndPrecedingLabel(xml, marker) {
   return xml.slice(0, removeStart) + xml.slice(r.end);
 }
 
+/**
+ * Remove the entire one-cell <w:tbl>…</w:tbl> that contains `marker`. The
+ * signature "Sign Here" images live inside single-cell tables; removing only the
+ * inner <w:p> would leave an EMPTY <w:tc> (invalid OOXML — a cell must hold a
+ * paragraph) and, on the disclosure, a stray blank bordered line. These signature
+ * tables never nest, so a balanced <w:tbl>/</w:tbl> scan from the nearest opener
+ * before the marker is exact.
+ */
+function removeTableContaining(xml, marker) {
+  const at = xml.indexOf(marker);
+  if (at === -1) return xml;
+  const tblStart = xml.lastIndexOf('<w:tbl>', at);
+  if (tblStart === -1) return xml;
+  // Balanced scan forward to the matching </w:tbl> (guards against any nesting).
+  let depth = 0, i = tblStart;
+  const OPEN = '<w:tbl>', CLOSE = '</w:tbl>';
+  while (i < xml.length) {
+    const nOpen = xml.indexOf(OPEN, i);
+    const nClose = xml.indexOf(CLOSE, i);
+    if (nClose === -1) return xml;
+    if (nOpen !== -1 && nOpen < nClose) { depth++; i = nOpen + OPEN.length; }
+    else { depth--; i = nClose + CLOSE.length; if (depth === 0) return xml.slice(0, tblStart) + xml.slice(i); }
+  }
+  return xml;
+}
+
 /** Replace the whole <w:r>…marker…</w:r> RUN that contains `marker` with `replacementXml`. */
 function replaceRunContaining(xml, marker, replacementXml) {
   const at = xml.indexOf(marker);
@@ -177,9 +203,15 @@ function fmtDate(d) {
 // tab. We swap that image RUN for an invisible functional anchor + a clean rule,
 // landing the signature exactly where the document designer intended.
 //
-// `withDate` appends an inline DateSigned anchor (used on the Iska, which has no
-// «date» merge field of its own; the disclosure stamps its date inline instead).
-function sigRuleRuns(prefix, suffix, withDate) {
+// The signature tag image sits inside a one-cell TABLE. The DISCLOSURE cell already
+// has a bottom border — THAT is the signature line — so there we drop only the
+// invisible anchor (adding underscores would double the line). The ISKA cell has
+// NO border, so there we draw the line ourselves (underscores) and, since the Iska
+// has no «date» merge field, ride a DateSigned anchor on the same line.
+function sigAnchorOnly(prefix, suffix) {          // disclosure: the cell border is the line
+  return invisibleRun(`/${prefix}_${suffix}_sig/`);
+}
+function sigRuleWithLine(prefix, suffix, withDate) {   // iska: we draw the line + date
   let runs = invisibleRun(`/${prefix}_${suffix}_sig/`)
            + visibleRun('__________________________________________');
   if (withDate) runs += visibleRun('     Date: ') + invisibleRun(`/${prefix}_${suffix}_dt/`);
@@ -216,13 +248,14 @@ function buildDisclosure(data = {}) {
   const co = !!data.hasCoBorrower;
 
   // 1. Structural surgery FIRST (keyed on stable markers, before blanks are filled).
-  // Swap the borrower "Sign Here" tag image for our anchored signature rule.
-  xml = replaceRunContaining(xml, 'descr="BorrowerSignature"', sigRuleRuns('bpd', 'b1'));
+  // Swap the borrower "Sign Here" tag image for our invisible anchor — the cell's
+  // own bottom border is the signature line.
+  xml = replaceRunContaining(xml, 'descr="BorrowerSignature"', sigAnchorOnly('bpd', 'b1'));
   if (co) {
-    xml = replaceRunContaining(xml, 'descr="CoborrowerSignature"', sigRuleRuns('bpd', 'b2'));
+    xml = replaceRunContaining(xml, 'descr="CoborrowerSignature"', sigAnchorOnly('bpd', 'b2'));
   } else {
-    // No co-borrower: drop the co "Sign Here" line AND the "Co-Borrower: …" line.
-    xml = removeParaContaining(xml, 'descr="CoborrowerSignature"');
+    // No co-borrower: drop the co signature TABLE (whole cell) AND the "Co-Borrower: …" line.
+    xml = removeTableContaining(xml, 'descr="CoborrowerSignature"');
     xml = removeParaContaining(xml, `${AB}Co_Borrower_Last_Name_4006${BB}`);
   }
 
@@ -260,14 +293,14 @@ function buildIska(data = {}) {
   const co = !!data.hasCoBorrower;
 
   // Swap each leftover "Sign Here" tag image (it sits just above the "נאום …
-  // Borrower:" block) for our anchored signature + date rule. The Iska has no
-  // date merge field, so the date anchor rides the rule (withDate = true).
-  xml = replaceRunContaining(xml, 'descr="BorrowerSignature"', sigRuleRuns('iska', 'b1', true));
+  // Borrower:" block) for our anchored signature + date rule. The Iska cell has no
+  // border, so we draw the line, and (no «date» merge field) ride the date anchor.
+  xml = replaceRunContaining(xml, 'descr="BorrowerSignature"', sigRuleWithLine('iska', 'b1', true));
   if (co) {
-    xml = replaceRunContaining(xml, 'descr="CoborrowerSignature"', sigRuleRuns('iska', 'b2', true));
+    xml = replaceRunContaining(xml, 'descr="CoborrowerSignature"', sigRuleWithLine('iska', 'b2', true));
   } else {
-    // No co-borrower: drop the co "Sign Here" line, its "נאום" label, and the name line.
-    xml = removeParaContaining(xml, 'descr="CoborrowerSignature"');
+    // No co-borrower: drop the co signature TABLE (whole cell), its "נאום" label, and the name line.
+    xml = removeTableContaining(xml, 'descr="CoborrowerSignature"');
     xml = removeParaAndPrecedingLabel(xml, `${AB}Co_Borrower_Last_Name_4006${BB}`);
   }
 
@@ -292,6 +325,7 @@ function generate(docKind, data) {
 module.exports = {
   generate, buildDisclosure, buildIska,
   // exported for tests
-  fillField, replaceNthTokenRun, replaceRunContaining, insertParaBefore, insertParaAfter,
-  removeParaContaining, removeParaAndPrecedingLabel, fmtMoney, fmtDate, escapeXml,
+  fillField, replaceNthTokenRun, replaceRunContaining, removeTableContaining,
+  insertParaBefore, insertParaAfter, removeParaContaining, removeParaAndPrecedingLabel,
+  fmtMoney, fmtDate, escapeXml,
 };
