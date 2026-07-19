@@ -85,13 +85,29 @@ const ok = (name, cond) => { if (cond) pass++; else { fail++; console.log(`FAIL 
   const strays2 = await backup.neverAttemptedStrays(50);
   ok('the forced doc is no longer in the never-attempted set', !strays2.map((s) => String(s.id)).includes(String(strayLocal)));
 
+  // A real runOnce sweep must make the invisible non-local doc VISIBLE: its
+  // forced attempt fails (no local bytes to read → no Graph touched), and
+  // because it's non-'local' the stray sweep cards it in Sync review rather than
+  // leaving it buried at attempts=1. (All local docs here also fail their read,
+  // but that's fine — we only assert the non-local doc gets a card.)
+  await backup.runOnce({ limit: 50 });
+  const cardRows = (await db.query(
+    `SELECT count(*)::int AS n FROM sync_review_queue WHERE task_id = $1`,
+    [`spdoc:${strayS3}`])).rows[0].n;
+  ok('a non-local stray becomes VISIBLE — a Sync review card is created for it', cardRows >= 1);
+  const s3after = (await db.query(
+    `SELECT sharepoint_backup_attempts AS a, sharepoint_backup_error AS e FROM documents WHERE id=$1`,
+    [strayS3])).rows[0];
+  ok('the non-local stray was actually attempted (attempts>=1, real error recorded)',
+    Number(s3after.a) >= 1 && !!s3after.e);
+
   // === TEST 2: persistent SLO-alert dedup ===================================
   await backup.clearSloAlert();
-  const sig = backup.sloSignature([{ id: strayS3 }, { id: phantom }], 0);
+  const sig = backup.sloSignature([{ id: strayS3 }, { id: phantom }]);
   ok('first claim for a fresh episode WINS (alert is sent)', (await backup.claimSloAlert(sig)) === true);
   ok('second claim for the SAME episode LOSES (no duplicate email on restart)', (await backup.claimSloAlert(sig)) === false);
   ok('a THIRD claim (another restart/instance) still LOSES within the cooldown', (await backup.claimSloAlert(sig)) === false);
-  const sig2 = backup.sloSignature([{ id: strayS3 }, { id: phantom }, { id: strayLocal }], 0);
+  const sig2 = backup.sloSignature([{ id: strayS3 }, { id: phantom }, { id: strayLocal }]);
   ok('a DIFFERENT stuck set (new problem) WINS immediately — a real new alert', (await backup.claimSloAlert(sig2)) === true);
   ok('the new set then LOSES on repeat (deduped too)', (await backup.claimSloAlert(sig2)) === false);
   // Recovery clears the cooldown so the next breach alerts at once.

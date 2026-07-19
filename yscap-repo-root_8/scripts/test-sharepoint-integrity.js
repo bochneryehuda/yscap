@@ -165,13 +165,13 @@ ok('clearSloAlert is exported', typeof backup.clearSloAlert === 'function');
   const sig = backup.sloSignature;
   const set = [{ id: 'b' }, { id: 'a' }, { id: 'c' }];
   ok('signature is stable regardless of stuck-doc order (same email → same sig)',
-    sig(set, 0) === sig([{ id: 'a' }, { id: 'c' }, { id: 'b' }], 0));
+    sig(set) === sig([{ id: 'a' }, { id: 'c' }, { id: 'b' }]));
   ok('signature CHANGES when a new stuck document appears (a new problem re-alerts)',
-    sig(set, 0) !== sig([...set, { id: 'd' }], 0));
-  ok('signature CHANGES when the exhausted count changes',
-    sig(set, 0) !== sig(set, 1));
+    sig(set) !== sig([...set, { id: 'd' }]));
+  ok('signature IGNORES attempt-counter/exhausted churn (same incident → no re-spam)',
+    sig([{ id: 'a', attempts: 0 }]) === sig([{ id: 'a', attempts: 5 }]));
   ok('empty stuck set still yields a deterministic signature',
-    sig([], 0) === sig([], 0));
+    sig([]) === sig([]));
 }
 
 // -------------------------------------- the ONE sanctioned delete: guardrails

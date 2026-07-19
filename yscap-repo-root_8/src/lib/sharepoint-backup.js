@@ -1311,7 +1311,21 @@ async function runOnce({ limit = DEFAULT_BATCH } = {}) {
       console.warn(`[sp-sync] never-attempted stray doc ${s.id} (${s.filename || '?'}) age ${s.age_hours}h — ${explainExclusion(s)}; forcing one attempt`);
       const res = await forceAttemptDoc(s.id).catch((e) => ({ failed: true, error: e.message }));
       strayForced++;
-      if (res.mirrored) { strayMirrored++; mirrored++; } else if (res.failed) { failed++; }
+      if (res.mirrored) { strayMirrored++; mirrored++; }
+      else if (res.failed) {
+        failed++;
+        // A non-'local' stray won't be retried by the normal drain and is
+        // invisible to stuckDocuments/SLO (both filter to 'local'): after its one
+        // forced attempt it would sit at attempts=1 with no card. Card it NOW so
+        // it's visible in Sync review, not buried after a single log line.
+        if (s.storage_provider !== 'local') {
+          try {
+            await cardStuckDoc({ docId: s.id, appId: s.app_id, borrowerId: s.borrower_id,
+              filename: s.filename, ageHours: s.age_hours, attempts: 1,
+              rawErr: res.error || `the document is stored on '${s.storage_provider}', which the sync cannot read` });
+          } catch (_) { /* visibility best-effort */ }
+        }
+      }
       await renewLease('sp-drain');
       await sleep(PACING_MS);
     }
@@ -1572,6 +1586,28 @@ async function forceAttemptDoc(id) {
   }
 }
 
+// Ensure a Sync-review card exists for a stuck, human-actionable document,
+// showing the FRIENDLY cause (e.g. "the document's own saved copy could not be
+// read…" instead of a raw ENOENT). Idempotent — queueReview dedups per doc.
+// Shared by escalateStuckDocs AND the never-attempted stray sweep, so a stray
+// that fails a forced attempt and will NOT be retried by the normal drain
+// (a non-'local' provider the mirror can't read is invisible to both
+// pendingBatch and stuckDocuments) is made VISIBLE immediately — not surfaced
+// for a single log line and then buried at attempts=1.
+async function cardStuckDoc({ docId, appId, borrowerId, filename, ageHours, attempts, rawErr }) {
+  const verdict = classifyMirrorError(rawErr);
+  const shown = verdict.class === 'permanent' ? verdict.cause : String(rawErr);
+  const agePart = ageHours != null ? `stuck ${ageHours}h: ` : '';
+  await require('./sync-review').queueReview({
+    applicationId: appId || null, borrowerId: borrowerId || null,
+    taskId: `spdoc:${docId}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
+    reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
+    clickupValue: null,
+    portalValue: `${filename || 'document'} — ${agePart}${shown}`.slice(0, 300),
+    rawValue: JSON.stringify({ docId, attempts, stuckHours: ageHours,
+      errorClass: verdict.class, error: String(rawErr).slice(0, 280), escalated: true }).slice(0, 500) });
+}
+
 async function escalateStuckDocs() {
   const escalateHrs = stuckEscalateHours();
   const docs = (await stuckDocuments(50)).filter((d) => Number(d.age_hours) >= escalateHrs);
@@ -1612,19 +1648,8 @@ async function escalateStuckDocs() {
       const fresh = await enrichedRowById(d.id);
       if (!fresh || fresh.sharepoint_backed_up_at) continue;   // gone, or force-attempt mirrored it
       const rawErr = fresh.sharepoint_backup_error || realError || d.why;
-      // Show the FRIENDLY cause on the card when the error is classifiable
-      // (e.g. "the document's own saved copy could not be read…" instead of a
-      // raw ENOENT), falling back to the raw error otherwise.
-      const verdict = classifyMirrorError(rawErr);
-      const shown = verdict.class === 'permanent' ? verdict.cause : String(rawErr);
-      await require('./sync-review').queueReview({
-        applicationId: d.app_id || null, borrowerId: d.borrower_id || null,
-        taskId: `spdoc:${d.id}`, direction: 'outbound', fieldKey: 'sharepoint_doc',
-        reason: 'sharepoint_mirror_failed', suppressIfRejected: true,
-        clickupValue: null,
-        portalValue: `${d.filename || 'document'} — stuck ${d.age_hours}h: ${shown}`.slice(0, 300),
-        rawValue: JSON.stringify({ docId: d.id, attempts: d.attempts, stuckHours: d.age_hours,
-          errorClass: verdict.class, error: String(rawErr).slice(0, 280), escalated: true }).slice(0, 500) });
+      await cardStuckDoc({ docId: d.id, appId: d.app_id, borrowerId: d.borrower_id,
+        filename: d.filename, ageHours: d.age_hours, attempts: d.attempts, rawErr });
       carded++;
     } catch (_) { /* visibility best-effort */ }
   }
@@ -1648,9 +1673,15 @@ function sloAlertCooldownMin() {
   const v = Number(process.env.SHAREPOINT_SLO_ALERT_COOLDOWN_MIN || 360);
   return Number.isFinite(v) && v >= 5 ? v : 360;
 }
-function sloSignature(stuck, exhausted) {
+// Signature = the SET of stuck documents named in the email, nothing else. It
+// deliberately excludes the exhausted COUNT and per-doc attempt counters: those
+// tick upward during one ongoing incident, and folding them in would re-alert
+// the SAME incident every poll as counters advanced (a residual of the very
+// duplicate-email complaint this targets). The alert re-fires only when the set
+// of stuck documents actually changes — i.e. a genuinely new/different problem.
+function sloSignature(stuck) {
   const ids = stuck.map((d) => String(d.id)).sort();
-  return sha256hex(Buffer.from(`${ids.join(',')}|x=${exhausted}`)).slice(0, 48);
+  return sha256hex(Buffer.from(ids.join(','))).slice(0, 48);
 }
 // True iff THIS process wins the right to alert for `signature` right now.
 async function claimSloAlert(signature) {
@@ -1696,7 +1727,7 @@ async function checkBacklogSlo() {
     if (stuck.length === 0 && recon.exhausted === 0) return;   // escalation cleared it
     // Persistent dedup: only alert if we can claim the cooldown row for THIS
     // stuck set. A redeploy mid-breach no longer re-sends the same email.
-    if (!(await claimSloAlert(sloSignature(stuck, recon.exhausted)))) return;
+    if (!(await claimSloAlert(sloSignature(stuck)))) return;
     const named = stuck.slice(0, 6).map((d) =>
       ({ label: (d.borrower_name || 'document') + (d.filename ? ` — ${d.filename}` : ''),
          value: `${d.age_hours}h · ${d.why}` }));
