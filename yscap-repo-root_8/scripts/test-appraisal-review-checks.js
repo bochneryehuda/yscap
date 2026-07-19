@@ -18,12 +18,16 @@ function baseAppraisal(over = {}) {
     values: { arv: null, arvConfidence: 'missing', asIs: 300000, asIsConfidence: 'definite', appraisedValue: 300000, valueSalesApproach: 300000, contractPrice: 300000, effectiveDate: '2026-06-01', conditionOfAppraisal: 'AsIs' },
     appraiser: { licenseState: 'CT', licenseExp: '2027-01-01' },
     comparables: [], units: [], warnings: [],
+    compSplit: { confidence: 'single_grid', needsReview: false, counts: { as_is: 0, arv: 0, unknown: 0 } },
   }, over);
 }
 function baseFile(over = {}) {
   return Object.assign({ property_address: { line1: '10 Main St', city: 'New Haven', state: 'CT', zip: '06511' }, property_type: 'SFR (1 unit)', units: 1, as_is_value: 300000, arv: null, purchase_price: 300000 }, over);
 }
-const comp = (o) => Object.assign({ seq: '1', salePrice: 300000, adjustedPrice: 300000, gla: 2000, saleDate: '2026-05-01', conditionUad: 'C3', qualityUad: 'Q3', proximity: '0.3 miles', netAdjPct: 5, grossAdjPct: 10, dom: 20 }, o);
+// comp_set defaults to 'as_is' — these fixtures are AsIs single-grid appraisals (extract() would
+// assign every comp to the As-Is grid), so the per-grid value bracketing checks the As-Is value
+// against these comps.
+const comp = (o) => Object.assign({ seq: '1', salePrice: 300000, adjustedPrice: 300000, gla: 2000, saleDate: '2026-05-01', conditionUad: 'C3', qualityUad: 'Q3', proximity: '0.3 miles', netAdjPct: 5, grossAdjPct: 10, dom: 20, comp_set: 'as_is' }, o);
 const TODAY = '2026-07-19';
 
 // 0) num()-null FALSE-mismatch guard — a file with NO arv/asis/price must NOT fire a "$0" mismatch.

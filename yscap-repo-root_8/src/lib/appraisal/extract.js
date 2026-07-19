@@ -11,6 +11,7 @@
  * Pure + dependency-free. Input is the raw XML string. Output is a plain object.
  */
 const X = require('./xml');
+const { splitComps } = require('./comp-grid');
 
 const CUR_YEAR = 2026; // NOTE: injected constant — the codebase forbids new Date() in date-only paths.
 
@@ -115,6 +116,7 @@ function valuation(root) {
   else { basis = hasHypo ? 'ARV' : 'ASIS'; basisNote = 'inferred'; }
 
   const out = { appraisedValue: structured, effectiveDate: effDate, conditionOfAppraisal: cond,
+    basis, // 'ARV' | 'ASIS' — which value the structured PropertyAppraisedValueAmount represents
     arv: null, arvConfidence: 'missing', arvSource: null,
     asIs: null, asIsConfidence: 'missing', asIsSource: null };
 
@@ -309,6 +311,12 @@ function extract(xml) {
   const site = X.find(root, 'SITE');
   const val = valuation(root);
   const { comps, subject0 } = comparables(root);
+  // Split the comps into the As-Is grid vs the ARV grid (a renovation appraisal supports two
+  // values off two separate comp sets). NEVER guessed: prefers the appraiser's narrative naming,
+  // falls back to price-clustering only when both anchors are known and raw+adjusted agree, else
+  // marks the comp `unknown` and flags for review. Each comp gets a `comp_set`.
+  const gridSplit = splitComps({ basis: val.basis, asIsValue: val.asIs, arvValue: val.arv, texts: narrativeTexts(root), comps });
+  gridSplit.comps.forEach((gc, i) => { if (comps[i]) comps[i].comp_set = gc.comp_set; });
   const cq = subjectCQ(subject0);
   const bathsParsed = parseBaths(X.attr(st, 'TotalBathroomCount'));
 
@@ -413,11 +421,19 @@ function extract(xml) {
   const ver = X.attr(X.find(root, 'VALUATION_RESPONSE'), 'MISMOVersionID');
   if (ver && !/^2\./.test(String(ver))) warnings.push({ code: 'mismo_version', msg: `unexpected MISMO version ${ver} — parser targets 2.6; verify before trusting` });
 
+  // Surface the two-grid split summary so the underwriter (and the report) know which value each
+  // comp set supports, and whether the split needs a human eye. `compSplit.needsReview` on a
+  // reno file drives a review finding rather than a corrupt one-grid value check.
+  if (gridSplit.needsReview) warnings.push({ code: 'comp_split_review', msg: 'As-Is vs ARV comp split needs review — some comps could not be assigned to a grid with certainty' });
+
   return {
     ok: true, formType,
     subject, values: val, appraiser,
     borrower: { name: borrower, isLlc, hasPartyName: !!borrower },
     comparables: comps, units, income, condo, photos,
+    compSplit: { confidence: gridSplit.confidence, needsReview: gridSplit.needsReview, note: gridSplit.note,
+      asIsValue: gridSplit.asIsValue, arvValue: gridSplit.arvValue,
+      counts: { as_is: comps.filter((c) => c.comp_set === 'as_is').length, arv: comps.filter((c) => c.comp_set === 'arv').length, unknown: comps.filter((c) => c.comp_set === 'unknown').length } },
     warnings,
   };
 }

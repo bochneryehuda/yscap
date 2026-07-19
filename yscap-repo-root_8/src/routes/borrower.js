@@ -830,7 +830,7 @@ router.get('/applications/:id/appraisal', async (req, res) => {
   // scrutinizing the deal (inflated-ARV signal, value not carried by the comps, over-paying vs
   // as-is). A borrower must never see the lender's internal skepticism, so these codes are
   // dropped from the borrower set entirely (they stay open + visible on the staff desk).
-  const SCRUTINY_CODES = new Set(['arv_defensibility', 'value_vs_comps', 'value_not_bracketed', 'asis_below_price']);
+  const SCRUTINY_CODES = new Set(['arv_defensibility', 'value_vs_comps', 'value_not_bracketed', 'asis_below_price', 'comp_split_review']);
   const open = findings.rows
     .filter((f) => !SCRUTINY_CODES.has(f.code))
     .map((f) => ({ ...f, title: scrubText(f.title) }));

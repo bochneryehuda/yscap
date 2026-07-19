@@ -98,6 +98,10 @@ async function importAppraisalTx(db, {
     condo_project_name: condo.projectName, condo_project_type: condo.projectType,
     condo_unit_identifier: condo.unitIdentifier, condo_floor: condo.floor,
     hoa_fee_amount: condo.hoaFeeAmount, hoa_fee_period: condo.hoaFeePeriod,
+    // As-Is vs ARV comp-grid split provenance (db/156). as_is_value/arv_value above already carry
+    // the two values; these say how the per-comp split was determined and whether it needs review.
+    comp_split_confidence: (A.compSplit && A.compSplit.confidence) || null,
+    comp_split_needs_review: A.compSplit ? !!A.compSplit.needsReview : null,
     fields: JSON.stringify(fieldsJson), warnings: JSON.stringify(A.warnings || []),
     imported_by: importedBy,
   };
@@ -117,11 +121,11 @@ async function importAppraisalTx(db, {
         `INSERT INTO appraisal_comparables
            (appraisal_id, seq, is_subject, address, city, state, zip, proximity, sale_price, adjusted_price,
             gla, sale_date, condition_uad, quality_uad, days_on_market, price_per_gla,
-            net_adjustment, net_adj_pct, gross_adj_pct, adjustments)
-         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+            net_adjustment, net_adj_pct, gross_adj_pct, adjustments, comp_set)
+         VALUES ($1,$2,false,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
         [appraisalId, c.seq, c.address, c.city, c.state, c.zip, c.proximity, c.salePrice, c.adjustedPrice,
          c.gla, c.saleDate, c.conditionUad, c.qualityUad, c.dom == null ? null : String(c.dom), c.pricePerGla,
-         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || [])]);
+         c.netAdjustment, c.netAdjPct, c.grossAdjPct, JSON.stringify(c.adjustments || []), c.comp_set || 'unknown']);
     }
   }
 
