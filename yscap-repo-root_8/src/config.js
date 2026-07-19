@@ -254,9 +254,25 @@ module.exports = {
     integrationKey: process.env.DOCUSIGN_INTEGRATION_KEY,   // OAuth client id
     userId:         process.env.DOCUSIGN_USER_ID,           // impersonated user GUID
     accountId:      process.env.DOCUSIGN_ACCOUNT_ID,
-    privateKey:     process.env.DOCUSIGN_PRIVATE_KEY,       // RSA private key (PEM)
+    // RSA private key (PEM). M-9: normalize literal "\n" escapes some env UIs
+    // introduce — crypto.sign() needs REAL newlines or it throws a decode error.
+    privateKey:     (process.env.DOCUSIGN_PRIVATE_KEY || '').replace(/\\n/g, '\n') || undefined,
     baseUri:        process.env.DOCUSIGN_BASE_URI  || 'https://demo.docusign.net/restapi',
     oauthBase:      process.env.DOCUSIGN_OAUTH_BASE || 'account-d.docusign.com', // account.docusign.com in prod
+    // Connect webhook HMAC key(s), base64-verified. Comma-separated to support
+    // zero-downtime key rotation (DocuSign sends X-DocuSign-Signature-1..N).
+    connectHmacKeys: (process.env.DOCUSIGN_CONNECT_HMAC_SECRET || '')
+                      .split(',').map(s => s.trim()).filter(Boolean),
+    brandId:        process.env.DOCUSIGN_BRAND_ID || null,   // PILOT sending brand (optional)
+    // Master send switch — OFF by default. Sending real signature requests is
+    // gated behind this so nothing mails a borrower until we deliberately enable it.
+    sendEnabled:    process.env.DOCUSIGN_SEND_ENABLED === '1',
+    // M-13: while on DEMO creds, only these emails may actually be sent to
+    // (comma-separated allow-list). Empty + demo host = allow none. Ignored on prod host.
+    testEmailAllowlist: (process.env.DOCUSIGN_TEST_EMAIL_ALLOWLIST || '')
+                      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+    httpTimeoutMs:  parseInt(process.env.DOCUSIGN_HTTP_TIMEOUT_MS || '30000', 10),
+    tokenCacheSec:  parseInt(process.env.DOCUSIGN_TOKEN_CACHE_SEC || '3300', 10), // 55 min (< 1h token life)
   },
   // Plaid (bank / asset verification):
   plaid: {

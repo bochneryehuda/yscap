@@ -1,71 +1,449 @@
 /**
- * DocuSign eSignature — server-to-server via JWT Grant (OAuth 2.0).
- * Framework only until keys are added; every method throws a clear
- * "not configured" until then, so callers degrade gracefully.
+ * DocuSign eSignature — hardened server-to-server client (JWT Grant, OAuth 2.0).
  *
- * To activate (env): DOCUSIGN_INTEGRATION_KEY, DOCUSIGN_USER_ID,
- * DOCUSIGN_ACCOUNT_ID, DOCUSIGN_PRIVATE_KEY (RSA PEM), DOCUSIGN_BASE_URI,
- * DOCUSIGN_OAUTH_BASE. Also grant the integration key JWT "impersonation"
- * consent once. Status is delivered back via DocuSign Connect webhooks
- * (envelope-completed etc.) — see src/routes/webhooks.js.
+ * This is the low-level transport + protocol layer only. It knows how to:
+ *   - mint & cache an impersonation access token (JWT RS256 grant),
+ *   - discover the account's real REST base URI (userinfo),
+ *   - create an envelope (with idempotency + PILOT branding + Connect webhook),
+ *   - read envelope/recipient status, download signed PDFs + the Certificate of
+ *     Completion, list the audit trail,
+ *   - mint an embedded (in-portal) recipient-view URL,
+ *   - void / resend an envelope,
+ *   - verify an inbound Connect webhook's HMAC (fail-closed, multi-key, base64).
+ *
+ * It does NOT decide WHEN to send, own the send-once claim, or clear conditions
+ * — that orchestration lives above (the send queue + webhook receiver). Every
+ * method throws a clear, classified error (`.code`, `.status`, `.retryable`,
+ * `.dsErrorCode`) so the queue can pick the right retry class.
+ *
+ * Hardening (see docs/DOCUSIGN-BUG-REGISTER.md):
+ *   H-3  read the body BEFORE branching on r.ok (a non-JSON 5xx never masks status)
+ *   M-6  access-token cache (~55min), one JWT per window, not per call
+ *   M-7  X-DocuSign-Idempotency-Key on create (deterministic, replay-safe)
+ *   M-8  AbortController timeout on every fetch
+ *   M-9  PEM \n normalization (done in config.js)
+ *   L-2  userinfo base_uri discovery, arg validation, iat backdated for clock skew
+ *
+ * Config: DOCUSIGN_INTEGRATION_KEY, DOCUSIGN_USER_ID, DOCUSIGN_ACCOUNT_ID,
+ * DOCUSIGN_PRIVATE_KEY, DOCUSIGN_BASE_URI, DOCUSIGN_OAUTH_BASE,
+ * DOCUSIGN_CONNECT_HMAC_SECRET, DOCUSIGN_BRAND_ID. One-time JWT impersonation
+ * consent must be granted to the integration key. Status arrives via Connect
+ * webhooks — see src/routes/webhooks.js.
  */
 const crypto = require('crypto');
 const cfg = require('../../config').docusign;
 
+// ---- error helper: classify for the send queue's retry taxonomy -------------
+function dsError(message, { code, status, retryable, dsErrorCode } = {}) {
+  const e = new Error(message);
+  if (code) e.code = code;
+  if (status != null) e.status = status;
+  if (retryable != null) e.retryable = retryable;
+  if (dsErrorCode) e.dsErrorCode = dsErrorCode;
+  return e;
+}
+
 function configured() {
   return !!(cfg.integrationKey && cfg.userId && cfg.accountId && cfg.privateKey);
 }
-function ensure() { if (!configured()) throw new Error('DocuSign not configured — add DOCUSIGN_* env vars'); }
+function ensure() {
+  if (!configured()) throw dsError('DocuSign not configured — add DOCUSIGN_* env vars', { code: 'DOCUSIGN_NOT_CONFIGURED' });
+}
+/** Are we pointed at the DEMO (sandbox) world? Used by the M-13 test gate above us. */
+function isDemoHost() {
+  return /account-d\.docusign\.com|demo\.docusign\.net/i.test(`${cfg.oauthBase} ${cfg.baseUri}`);
+}
 
-// JWT assertion signed with the app's RSA private key, exchanged for an
-// access token that impersonates the configured user.
-async function accessToken() {
+// ---- fetch with timeout + H-3 read-before-ok --------------------------------
+// Returns parsed JSON on 2xx. On failure throws a classified dsError. NEVER lets
+// a non-JSON error body throw a bare SyntaxError that hides the HTTP status.
+async function httpJson(url, opts) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), cfg.httpTimeoutMs);
+  let r;
+  try {
+    r = await fetch(url, { ...opts, signal: ctrl.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    const aborted = e && e.name === 'AbortError';
+    throw dsError(aborted ? `DocuSign request timed out after ${cfg.httpTimeoutMs}ms` : `DocuSign network error: ${e.message}`,
+      { code: aborted ? 'DOCUSIGN_TIMEOUT' : 'DOCUSIGN_NETWORK', retryable: true });
+  }
+  clearTimeout(timer);
+  const text = await r.text();                       // H-3: body first, always
+  if (!r.ok) {
+    let parsed = null;
+    try { parsed = text ? JSON.parse(text) : null; } catch (_) { /* non-JSON error body */ }
+    const dsCode = parsed && (parsed.errorCode || parsed.error);
+    const msg = (parsed && (parsed.message || parsed.error_description || parsed.error)) || text.slice(0, 300) || `HTTP ${r.status}`;
+    // 429 + 5xx + network → outage (patient) retry; 4xx validation → permanent.
+    const retryable = r.status === 429 || r.status >= 500;
+    throw dsError(`DocuSign ${r.status}: ${msg}`, { code: 'DOCUSIGN_HTTP', status: r.status, retryable, dsErrorCode: dsCode });
+  }
+  if (!text) return {};
+  try { return JSON.parse(text); }
+  catch (_) { throw dsError('DocuSign returned a non-JSON success body', { code: 'DOCUSIGN_BAD_RESPONSE', retryable: false }); }
+}
+
+// ---- fetch binary (signed PDF / certificate) --------------------------------
+async function httpBinary(url, opts) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), cfg.httpTimeoutMs);
+  let r;
+  try {
+    r = await fetch(url, { ...opts, signal: ctrl.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    const aborted = e && e.name === 'AbortError';
+    throw dsError(aborted ? 'DocuSign download timed out' : `DocuSign network error: ${e.message}`,
+      { code: aborted ? 'DOCUSIGN_TIMEOUT' : 'DOCUSIGN_NETWORK', retryable: true });
+  }
+  clearTimeout(timer);
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    const retryable = r.status === 429 || r.status >= 500;
+    throw dsError(`DocuSign download ${r.status}: ${text.slice(0, 200)}`, { code: 'DOCUSIGN_HTTP', status: r.status, retryable });
+  }
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (!buf.length) throw dsError('DocuSign returned an empty document', { code: 'DOCUSIGN_EMPTY_DOC', retryable: true });
+  return buf;
+}
+
+// ---- access-token cache (M-6) -----------------------------------------------
+let _token = { value: null, expiresAt: 0 };
+let _apiBase = null;   // discovered REST base (L-2)
+
+function b64url(obj) { return Buffer.from(JSON.stringify(obj)).toString('base64url'); }
+
+async function mintToken() {
   ensure();
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: 'RS256', typ: 'JWT' };
   const claims = {
-    iss: cfg.integrationKey, sub: cfg.userId, aud: cfg.oauthBase,
-    iat: now, exp: now + 3600, scope: 'signature impersonation',
+    iss: cfg.integrationKey,
+    sub: cfg.userId,
+    aud: cfg.oauthBase,
+    iat: now - 60,                 // L-2: backdate for clock skew (avoids invalid_grant on a fast clock)
+    exp: now + 3600,
+    scope: 'signature impersonation',
   };
-  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
-  const signingInput = `${b64(header)}.${b64(claims)}`;
-  const sig = crypto.createSign('RSA-SHA256').update(signingInput).sign(cfg.privateKey).toString('base64url');
+  const signingInput = `${b64url(header)}.${b64url(claims)}`;
+  let sig;
+  try {
+    sig = crypto.createSign('RSA-SHA256').update(signingInput).sign(cfg.privateKey).toString('base64url');
+  } catch (e) {
+    // Almost always a malformed PEM (M-9) — fail closed with a clear message.
+    throw dsError(`DocuSign private key failed to sign the JWT (check the PEM): ${e.message}`, { code: 'DOCUSIGN_BAD_KEY', retryable: false });
+  }
   const assertion = `${signingInput}.${sig}`;
-  const r = await fetch(`https://${cfg.oauthBase}/oauth/token`, {
-    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  const j = await httpJson(`https://${cfg.oauthBase}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }),
+  }).catch((e) => {
+    // The one-time human consent hasn't been granted → surface a distinct, actionable code.
+    if (/consent_required/i.test(e.message)) throw dsError('DocuSign consent_required — grant JWT impersonation consent once (see DEMO-SETUP-STEPS Part A step 7)', { code: 'DOCUSIGN_CONSENT_REQUIRED', retryable: false });
+    throw e;
   });
-  const j = await r.json();
-  if (!r.ok) throw new Error(`DocuSign auth: ${j.error_description || j.error || r.status}`);
-  return j.access_token;
+  return { value: j.access_token, ttl: j.expires_in || 3600 };
+}
+
+/** Cached impersonation access token. Refreshes ~55min (tokenCacheSec). */
+async function accessToken() {
+  const now = Date.now();
+  if (_token.value && now < _token.expiresAt) return _token.value;
+  const { value, ttl } = await mintToken();
+  const cacheFor = Math.min(cfg.tokenCacheSec, Math.max(60, ttl - 300)) * 1000;   // never past token life; small safety margin
+  _token = { value, expiresAt: now + cacheFor };
+  return value;
+}
+
+/** Force the next call to re-mint (used after a 401). */
+function invalidateToken() { _token = { value: null, expiresAt: 0 }; }
+
+// ---- account REST base discovery (L-2) --------------------------------------
+// The hardcoded baseUri breaks if DocuSign routes this account to another data
+// center. Ask userinfo once for the account's real base_uri; cache it. Falls
+// back to the configured baseUri if discovery fails (never blocks a send).
+async function apiBase() {
+  if (_apiBase) return _apiBase;
+  try {
+    const token = await accessToken();
+    const j = await httpJson(`https://${cfg.oauthBase}/oauth/userinfo`, { headers: { Authorization: `Bearer ${token}` } });
+    const acct = (j.accounts || []).find((a) => String(a.account_id) === String(cfg.accountId))
+              || (j.accounts || []).find((a) => a.is_default);
+    if (acct && acct.base_uri) { _apiBase = `${acct.base_uri.replace(/\/+$/, '')}/restapi`; return _apiBase; }
+  } catch (e) {
+    console.warn(`[docusign] base_uri discovery failed, using configured baseUri: ${e.message}`);
+  }
+  _apiBase = cfg.baseUri.replace(/\/+$/, '');
+  return _apiBase;
+}
+
+function acctUrl(base, path) { return `${base}/v2.1/accounts/${encodeURIComponent(cfg.accountId)}${path}`; }
+
+// ---- deterministic idempotency key (M-7) ------------------------------------
+// Same (application, purpose, economics version) => same key => DocuSign returns
+// the ORIGINAL envelope on a replay/reclaim instead of creating a second one.
+function idempotencyKey(applicationId, purpose, productVersion) {
+  return crypto.createHash('sha256')
+    .update(`${applicationId}:${purpose}:${productVersion == null ? 0 : productVersion}`)
+    .digest('hex');
+}
+
+// ---- tab / recipient builders -----------------------------------------------
+// An invisible anchor string (e.g. "/app_b1_sig/") is drawn white-on-white in
+// the generated PDF; DocuSign places the tab where the anchor appears, scoped to
+// THIS recipient. anchorIgnoreIfNotPresent => a missing anchor is skipped, never
+// an error (e.g. the co-borrower signature block only exists when there IS one).
+function signHereAnchor(anchor) {
+  return {
+    anchorString: anchor,
+    anchorUnits: 'pixels',
+    anchorXOffset: '0',
+    anchorYOffset: '0',
+    anchorIgnoreIfNotPresent: 'true',
+    anchorCaseSensitive: 'false',
+  };
+}
+function dateSignedAnchor(anchor) {
+  return { anchorString: anchor, anchorUnits: 'pixels', anchorXOffset: '0', anchorYOffset: '0', anchorIgnoreIfNotPresent: 'true' };
 }
 
 /**
- * Send a document out for signature. `document` = { base64, name }, `signer` =
- * { name, email }. Returns { envelopeId }. Uses a single "sign here" tab; extend
- * with anchor strings / additional recipients as needed.
+ * Build a validated EnvelopeDefinition.
+ *  documents: [{ base64, name, documentId }]  (documentId is a string number)
+ *  signers:   [{ recipientId, name, email, routingOrder, clientUserId?,
+ *               tabsByDoc:{ [documentId]: { sign:['/anchor/'], date:['/anchor/'] } } }]
+ *  eventNotification: the per-envelope Connect config (webhook + HMAC) — optional
  */
-async function sendForSignature({ document, signer, subject } = {}) {
-  ensure();
-  const token = await accessToken();
-  const envelope = {
-    emailSubject: subject || 'Please sign your YS Capital documents',
-    status: 'sent',
-    documents: [{ documentBase64: document.base64, name: document.name || 'Document', fileExtension: 'pdf', documentId: '1' }],
+function buildEnvelopeDefinition({ documents, signers, subject, status = 'sent', emailBlurb, brandId, customFields, eventNotification: evtNotif }) {
+  if (!Array.isArray(documents) || !documents.length) throw dsError('buildEnvelope: at least one document required', { code: 'DOCUSIGN_ARG', retryable: false });
+  if (!Array.isArray(signers) || !signers.length) throw dsError('buildEnvelope: at least one signer required', { code: 'DOCUSIGN_ARG', retryable: false });
+  for (const s of signers) {
+    if (!s.email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s.email)) throw dsError(`buildEnvelope: invalid signer email "${s.email}"`, { code: 'DOCUSIGN_ARG', retryable: false });
+    if (!s.name) throw dsError('buildEnvelope: signer name required', { code: 'DOCUSIGN_ARG', retryable: false });
+  }
+  const def = {
+    emailSubject: subject || 'Please sign your documents',
+    status,
+    documents: documents.map((d, i) => ({
+      documentBase64: d.base64,
+      name: d.name || `Document ${i + 1}`,
+      fileExtension: d.fileExtension || 'pdf',
+      documentId: String(d.documentId || i + 1),
+    })),
     recipients: {
-      signers: [{
-        email: signer.email, name: signer.name, recipientId: '1', routingOrder: '1',
-        tabs: { signHereTabs: [{ anchorString: '/sig1/', anchorUnits: 'pixels', anchorXOffset: '0', anchorYOffset: '0' }] },
-      }],
+      signers: signers.map((s) => {
+        const signHereTabs = [];
+        const dateSignedTabs = [];
+        const byDoc = s.tabsByDoc || {};
+        for (const [documentId, tabs] of Object.entries(byDoc)) {
+          for (const a of (tabs.sign || [])) signHereTabs.push({ ...signHereAnchor(a), documentId: String(documentId) });
+          for (const a of (tabs.date || [])) dateSignedTabs.push({ ...dateSignedAnchor(a), documentId: String(documentId) });
+        }
+        const signer = {
+          email: s.email,
+          name: s.name,
+          recipientId: String(s.recipientId),
+          routingOrder: String(s.routingOrder || s.recipientId || 1),
+          tabs: { signHereTabs, dateSignedTabs },
+        };
+        if (s.clientUserId) signer.clientUserId = String(s.clientUserId);   // embedded (in-portal) signer
+        return signer;
+      }),
     },
   };
-  const r = await fetch(`${cfg.baseUri}/v2.1/accounts/${cfg.accountId}/envelopes`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(envelope),
-  });
-  const j = await r.json();
-  if (!r.ok) throw new Error(`DocuSign envelope: ${j.message || r.status}`);
-  return { envelopeId: j.envelopeId, status: j.status };
+  if (emailBlurb) def.emailBlurb = emailBlurb;
+  if (brandId) def.brandId = brandId;
+  if (customFields) def.customFields = customFields;                 // { textCustomFields:[{name,value,show:'false'}] } — correlation only, NO PII
+  if (evtNotif) def.eventNotification = evtNotif;                    // per-envelope Connect (webhook + HMAC)
+  return def;
 }
 
-module.exports = { name: 'docusign', configured, accessToken, sendForSignature };
+/**
+ * Per-envelope Connect (webhook) config so status flows back even if the
+ * account-level Connect config is absent. requireAcknowledgment=true so DocuSign
+ * retries until our endpoint 200s (no silent event loss).
+ */
+function eventNotification(webhookUrl, { includeCertificate = true } = {}) {
+  return {
+    url: webhookUrl,
+    loggingEnabled: 'true',
+    requireAcknowledgment: 'true',
+    includeDocuments: 'false',
+    includeCertificateOfCompletion: String(includeCertificate),
+    envelopeEvents: [
+      { envelopeEventStatusCode: 'sent' },
+      { envelopeEventStatusCode: 'delivered' },
+      { envelopeEventStatusCode: 'completed' },
+      { envelopeEventStatusCode: 'declined' },
+      { envelopeEventStatusCode: 'voided' },
+    ],
+    recipientEvents: [
+      { recipientEventStatusCode: 'Completed' },
+      { recipientEventStatusCode: 'Declined' },
+    ],
+    eventData: { version: 'restv2.1', format: 'json', includeData: ['recipients', 'custom_fields'] },
+  };
+}
+
+// ---- envelope operations ----------------------------------------------------
+/** Create an envelope. Pass idempotencyKey to make retries/reclaims replay-safe (M-7). */
+async function createEnvelope(envelopeDefinition, { idempotencyKey: idem } = {}) {
+  ensure();
+  const token = await accessToken();
+  const base = await apiBase();
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  if (idem) headers['X-DocuSign-Idempotency-Key'] = idem;
+  const j = await httpJson(acctUrl(base, '/envelopes'), { method: 'POST', headers, body: JSON.stringify(envelopeDefinition) });
+  return { envelopeId: j.envelopeId, status: j.status, statusDateTime: j.statusDateTime, uri: j.uri };
+}
+
+async function getEnvelope(envelopeId) {
+  ensure();
+  const token = await accessToken();
+  const base = await apiBase();
+  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}`), { headers: { Authorization: `Bearer ${token}` } });
+}
+
+async function listRecipients(envelopeId) {
+  ensure();
+  const token = await accessToken();
+  const base = await apiBase();
+  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/recipients`), { headers: { Authorization: `Bearer ${token}` } });
+}
+
+/** Download one document's signed PDF. documentId: a numeric id, 'combined', or 'certificate'. Returns a Buffer. */
+async function getDocument(envelopeId, documentId) {
+  ensure();
+  const token = await accessToken();
+  const base = await apiBase();
+  return httpBinary(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/documents/${encodeURIComponent(documentId)}`),
+    { headers: { Authorization: `Bearer ${token}`, Accept: 'application/pdf' } });
+}
+
+/** The Certificate of Completion (the AATL-sealed audit trail) as a PDF Buffer. */
+async function getCertificate(envelopeId) { return getDocument(envelopeId, 'certificate'); }
+
+/** The envelope's audit-event trail (who/what/when). */
+async function listAuditEvents(envelopeId) {
+  ensure();
+  const token = await accessToken();
+  const base = await apiBase();
+  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/audit_events`), { headers: { Authorization: `Bearer ${token}` } });
+}
+
+/** Void a still-open envelope (reason is required by DocuSign). */
+async function voidEnvelope(envelopeId, reason) {
+  ensure();
+  const token = await accessToken();
+  const base = await apiBase();
+  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}`), {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'voided', voidedReason: reason || 'Voided by PILOT' }),
+  });
+}
+
+/** Re-notify existing recipients of the SAME envelope (never creates a new one). */
+async function resendEnvelope(envelopeId) {
+  ensure();
+  const token = await accessToken();
+  const base = await apiBase();
+  // PUT recipients with resend_envelope=true re-sends the notification email.
+  return httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/recipients?resend_envelope=true`), {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signers: [] }),
+  });
+}
+
+/**
+ * Mint a short-lived embedded (in-portal) signing URL for one recipient.
+ * The recipient MUST have been created with a clientUserId. returnUrl is where
+ * DocuSign bounces the browser after signing — always our own origin.
+ * The URL is single-use and ~5 minutes; never store or log it.
+ */
+async function createRecipientView(envelopeId, { returnUrl, email, userName, clientUserId, recipientId }) {
+  ensure();
+  if (!returnUrl || !/^https?:\/\//i.test(returnUrl)) throw dsError('createRecipientView: absolute returnUrl required', { code: 'DOCUSIGN_ARG', retryable: false });
+  if (!clientUserId) throw dsError('createRecipientView: clientUserId required (embedded signer)', { code: 'DOCUSIGN_ARG', retryable: false });
+  const token = await accessToken();
+  const base = await apiBase();
+  const j = await httpJson(acctUrl(base, `/envelopes/${encodeURIComponent(envelopeId)}/views/recipient`), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ returnUrl, authenticationMethod: 'none', email, userName, clientUserId: String(clientUserId), recipientId: String(recipientId) }),
+  });
+  return j.url;
+}
+
+// ---- inbound Connect HMAC verify (fail-closed, multi-key, base64) -----------
+// DocuSign signs the raw request body with each configured HMAC key and sends
+// X-DocuSign-Signature-1..N (base64). We accept iff one of OUR keys reproduces
+// one of the provided signatures. Constant-time; length-guarded.
+function verifyConnectHmac(rawBody, signatureHeaders) {
+  const keys = cfg.connectHmacKeys || [];
+  if (!keys.length) return false;                                   // fail closed: no key configured => reject
+  const sigs = (Array.isArray(signatureHeaders) ? signatureHeaders : [signatureHeaders]).filter(Boolean).map(String);
+  if (!sigs.length) return false;
+  const body = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ''), 'utf8');
+  for (const key of keys) {
+    const expected = crypto.createHmac('sha256', Buffer.from(key, 'utf8')).update(body).digest('base64');
+    const expBuf = Buffer.from(expected);
+    for (const sig of sigs) {
+      const sigBuf = Buffer.from(sig);
+      if (sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf)) return true;
+    }
+  }
+  return false;
+}
+
+/** Collect every X-DocuSign-Signature-N header off an Express req. */
+function connectSignatureHeaders(req) {
+  const out = [];
+  for (let i = 1; i <= 10; i++) {
+    const h = req.headers[`x-docusign-signature-${i}`];
+    if (h) out.push(h);
+  }
+  return out;
+}
+
+// ---- connectivity self-test (the "test connection" in DEMO-SETUP Part C) ----
+async function ping() {
+  ensure();
+  const token = await accessToken();
+  const j = await httpJson(`https://${cfg.oauthBase}/oauth/userinfo`, { headers: { Authorization: `Bearer ${token}` } });
+  const acct = (j.accounts || []).find((a) => String(a.account_id) === String(cfg.accountId)) || (j.accounts || [])[0] || {};
+  return { ok: true, demo: isDemoHost(), accountName: acct.account_name, accountId: acct.account_id, baseUri: acct.base_uri, name: j.name, email: j.email };
+}
+
+module.exports = {
+  name: 'docusign',
+  configured,
+  isDemoHost,
+  // auth
+  accessToken,
+  invalidateToken,
+  apiBase,
+  ping,
+  // create + read
+  idempotencyKey,
+  buildEnvelopeDefinition,
+  eventNotification,
+  signHereAnchor,
+  dateSignedAnchor,
+  createEnvelope,
+  getEnvelope,
+  listRecipients,
+  getDocument,
+  getCertificate,
+  listAuditEvents,
+  voidEnvelope,
+  resendEnvelope,
+  createRecipientView,
+  // inbound webhook
+  verifyConnectHmac,
+  connectSignatureHeaders,
+};
