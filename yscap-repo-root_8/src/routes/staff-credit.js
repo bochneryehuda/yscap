@@ -199,10 +199,16 @@ router.get('/credit/health', requirePull, async (req, res) => {
 // Serve a report PDF (staff, inline). The PDF is stored staff_only; staff view it here.
 router.get('/credit/reports/:id/pdf', requirePull, async (req, res) => {
   try {
-    const r = await db.query(
-      `SELECT d.*, cr.application_id FROM credit_reports cr JOIN documents d ON d.id = cr.pdf_document_id WHERE cr.id=$1`, [req.params.id]);
+    // Resolve the report and check per-file access BEFORE revealing anything about
+    // the PDF, so an actor who can't see the file always gets 403 — consistent with
+    // every other credit endpoint (404 = report doesn't exist, 403 = exists but no
+    // access), never a 404-vs-403 that differs by whether a PDF happens to exist.
+    const cr = (await db.query(`SELECT application_id, pdf_document_id FROM credit_reports WHERE id=$1`, [req.params.id])).rows[0];
+    if (!cr) return res.status(404).json({ error: 'report not found' });
+    if (!(await canSeeApp(req, cr.application_id))) return res.status(403).json({ error: 'forbidden' });
+    if (!cr.pdf_document_id) return res.status(404).json({ error: 'no PDF for this report' });
+    const r = await db.query(`SELECT * FROM documents WHERE id=$1`, [cr.pdf_document_id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'no PDF for this report' });
-    if (!(await canSeeApp(req, r.rows[0].application_id))) return res.status(403).json({ error: 'forbidden' });
     await audit(req, 'credit_report_pdf_view', { reportId: req.params.id });
     return serveDocument(res, r.rows[0], { inline: true });
   } catch (e) { res.status(500).json({ error: e.message }); }

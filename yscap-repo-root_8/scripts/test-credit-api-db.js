@@ -1,0 +1,126 @@
+/**
+ * DB-level API matrix for the credit endpoints (src/routes/staff-credit.js +
+ * borrower credit routes), through the real route stack. Exercises every endpoint
+ * with valid inputs, bad inputs, and permission edges — the guard/error paths a
+ * happy-path test misses: 400 (missing/invalid input), 403 (off-file IDOR + no
+ * pull_credit capability), 404 (unknown), 422 (never-issue adverse action), the
+ * pull_credit gate on credential routes, and the joint-PDF withholding for a
+ * single borrower. Also imports ONE real report (with a PDF) to prove the PDF
+ * serve happy path (200) alongside the off-file 403.
+ *
+ * Requires DATABASE_URL with migrations applied. Skips cleanly otherwise. Boots
+ * the server on an ephemeral port; no network to Xactus (injected transport).
+ */
+if (!process.env.DATABASE_URL) { console.log('SKIP test-credit-api-db (no DATABASE_URL)'); process.exit(0); }
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'apidb-secret-00000000000000000000000000';
+process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef';
+process.env.XACTUS_ENDPOINT = process.env.XACTUS_ENDPOINT || 'http://x';
+process.env.STORAGE_DIR = process.env.STORAGE_DIR || '/tmp/credit-api-db-storage';
+process.env.RUN_SYNC = '0';
+
+const db = require('../src/db');
+const C = require('../src/lib/crypto');
+const credentials = require('../src/lib/credit/credentials');
+const creditImport = require('../src/lib/credit/import');
+
+let pass = 0, fail = 0;
+const ok = (n, c) => { console.log(`${c ? 'PASS' : 'FAIL'} - ${n}`); if (c) pass++; else fail++; };
+
+// Minimal valid MISMO 2.3.1 with an embedded PDF, so the import stores a real PDF.
+const PDF = Buffer.from('%PDF-1.4\n1 0 obj<< /Type /Catalog >>endobj\ntrailer<< /Root 1 0 R >>\n%%EOF').toString('base64');
+const sc = (id, bur, v, m) => `<CREDIT_SCORE CreditScoreID="${id}" BorrowerID="B1" CreditFileID="F${id}" CreditReportIdentifier="RPT1" CreditRepositorySourceType="${bur}" _Date="2026-07-19" _Value="${v}" _ModelNameType="${m}"></CREDIT_SCORE>`;
+const IMPORT_XML = `<?xml version="1.0"?><RESPONSE_GROUP MISMOVersionID="2.3.1"><RESPONSE ResponseDateTime="2026-07-19T12:00:00"><RESPONSE_DATA><CREDIT_RESPONSE MISMOVersionID="2.3.1" CreditReportIdentifier="RPT1" CreditResponseID="CR1" CreditReportFirstIssuedDate="2026-07-19" CreditReportType="Other" CreditReportTypeOtherDescription="SoftCheck"><CREDIT_REPOSITORY_INCLUDED _EquifaxIndicator="Y" _ExperianIndicator="Y" _TransUnionIndicator="Y"/><BORROWER BorrowerID="B1" _FirstName="Pdf" _LastName="Test" _SSN="123003333"/>${sc('1', 'Equifax', '734', 'EquifaxBeacon5.0')}${sc('2', 'Experian', '732', 'ExperianFairIsaac')}${sc('3', 'TransUnion', '730', 'FICORiskScoreClassic04')}<EMBEDDED_FILE _Type="PDF" _Name="r.pdf" _Extension="pdf" MIMEType="application/pdf" _EncodingType="base64"><DOCUMENT><![CDATA[${PDF}]]></DOCUMENT></EMBEDDED_FILE></CREDIT_RESPONSE></RESPONSE_DATA><STATUS _Condition="Success" _Code="0" _Description="Success"/></RESPONSE></RESPONSE_GROUP>`;
+const importTransport = async () => ({ status: 200, headers: { get: () => 'text/xml' }, text: async () => IMPORT_XML });
+
+(async () => {
+  await require('../src/migrate-boot').ensureSchema();
+  const app = require('../src/server');
+  const sfx = `${process.pid}-${Math.round(process.hrtime()[1] / 1000)}`;
+
+  const admin = (await db.query(`INSERT INTO staff_users (email,full_name,role,token_version) VALUES ($1,'API Admin','admin',0) RETURNING id`, [`apidb.admin.${sfx}@t.test`])).rows[0].id;
+  await credentials.setForUser(admin, { providerKey: 'xactus', operatorIdentifier: 'LO', secret: 'p', verify: false });
+  const offLo = (await db.query(`INSERT INTO staff_users (email,full_name,role,token_version) VALUES ($1,'Off LO','loan_officer',0) RETURNING id`, [`apidb.off.${sfx}@t.test`])).rows[0].id;
+  const noPull = (await db.query(`INSERT INTO staff_users (email,full_name,role,token_version) VALUES ($1,'No Pull','software_setup',0) RETURNING id`, [`apidb.nopull.${sfx}@t.test`])).rows[0].id;
+  const prov = (await db.query(`SELECT id FROM credit_providers WHERE key='xactus'`)).rows[0].id;
+
+  const ssn = C.ssnForStorage('123-00-3333');
+  const bor = (await db.query(`INSERT INTO borrowers (first_name,last_name,email,fico,ssn_encrypted,ssn_last4,current_address) VALUES ('Pdf','Test',$1,730,$2,$3,$4::jsonb) RETURNING id`,
+    [`apidb.b.${sfx}@t.test`, ssn.encrypted, ssn.last4, JSON.stringify({ line1: '10 Main St', city: 'New Haven', state: 'CT', zip: '06511' })])).rows[0].id;
+  const appId = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id) VALUES ($1,$2) RETURNING id`, [bor, admin])).rows[0].id;
+
+  // A real imported report WITH a PDF. Mark it request_type='Joint' so the borrower
+  // self-service joint-PDF belt (report-level) is exercised — staff still serve it,
+  // the single borrower is withheld.
+  const out = await creditImport.orderAndImport({ applicationId: appId, actorId: admin, action: 'Reissue', creditReportIdentifier: 'RPT1', idempotencyKey: `k-${sfx}`, transport: importTransport });
+  const rep = out.reportId;
+  await db.query(`UPDATE credit_reports SET request_type='Joint' WHERE id=$1`, [rep]);
+  // A separate report carrying a fatal finding for the reconcile checks.
+  const finding = { type: 'fico_mismatch', severity: 'fatal', verified: 732, claimed: 650, verifiedBracket: '720-739', claimedBracket: '640-659', message: 'm' };
+  const repF = (await db.query(`INSERT INTO credit_reports (application_id,provider_id,ordered_by,status,request_type,underwriting_finding,completed_at) VALUES ($1,$2,$3,'imported','Individual',$4::jsonb,now()) RETURNING id`, [appId, prov, admin, JSON.stringify(finding)])).rows[0].id;
+
+  const tok = (id, role) => C.signJwt({ sub: id, kind: 'staff', role, tv: 0 });
+  const A = tok(admin, 'admin'), OFF = tok(offLo, 'loan_officer'), NP = tok(noPull, 'software_setup');
+  const server = app.listen(0);
+  await new Promise((r) => server.once('listening', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, path, token, body) => {
+    const r = await fetch(`${base}/api/staff${path}`, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body != null ? JSON.stringify(body) : undefined });
+    let j = null; try { j = await r.json(); } catch (e) {}
+    return { status: r.status, j };
+  };
+
+  ok('GET /credit/providers 200', (await call('GET', '/credit/providers', A)).status === 200);
+  ok('GET /credit/credentials 403 (no pull_credit)', (await call('GET', '/credit/credentials', NP)).status === 403);
+  ok('PUT /credit/credentials 403 (no pull_credit)', (await call('PUT', '/credit/credentials', NP, { providerKey: 'xactus', operatorIdentifier: 'x', password: 'y' })).status === 403);
+  ok('DELETE /credit/credentials 403 (no pull_credit)', (await call('DELETE', `/credit/credentials/${prov}`, NP)).status === 403);
+  ok('GET /credit/reports 200 (own file)', (await call('GET', `/credit/reports?applicationId=${appId}`, A)).status === 200);
+  ok('GET /credit/reports 400 (missing appId)', (await call('GET', '/credit/reports', A)).status === 400);
+  ok('GET /credit/reports 403 (off-file LO)', (await call('GET', `/credit/reports?applicationId=${appId}`, OFF)).status === 403);
+  ok('GET /credit/reports non-uuid fails closed', (await call('GET', '/credit/reports?applicationId=not-a-uuid', A)).status >= 400);
+  ok('GET /credit/review-queue 200', (await call('GET', '/credit/review-queue', A)).status === 200);
+  ok('GET /credit/health 200', (await call('GET', '/credit/health', A)).status === 200);
+  ok('POST /credit/order 400 (missing appId)', (await call('POST', '/credit/order', A, {})).status === 400);
+  ok('POST /credit/order 403 (off-file LO)', (await call('POST', '/credit/order', OFF, { applicationId: appId, action: 'Reissue', creditReportIdentifier: 'X' })).status === 403);
+
+  // PDF: access is checked BEFORE PDF existence — off-file always 403, unknown 404, owner serves 200.
+  ok('GET reports/:id/pdf 200 (admin, real PDF)', (await fetch(`${base}/api/staff/credit/reports/${rep}/pdf`, { headers: { authorization: `Bearer ${A}` } })).status === 200);
+  ok('GET reports/:id/pdf 403 (off-file LO)', (await call('GET', `/credit/reports/${rep}/pdf`, OFF)).status === 403);
+  ok('GET reports/:id/pdf 404 (unknown report)', (await call('GET', '/credit/reports/00000000-0000-0000-0000-000000000000/pdf', A)).status === 404);
+
+  const aa = await call('POST', '/credit/adverse-action', A, { applicationId: appId, borrowerId: bor, creditReportId: repF, decision: 'declined' });
+  ok('POST /credit/adverse-action 200 (draft)', aa.status === 200 && aa.j && aa.j.draft);
+  ok('POST /credit/adverse-action 400 (bad decision)', (await call('POST', '/credit/adverse-action', A, { applicationId: appId, decision: 'bogus' })).status === 400);
+  ok('POST /credit/adverse-action 403 (off-file)', (await call('POST', '/credit/adverse-action', OFF, { applicationId: appId, decision: 'declined' })).status === 403);
+  ok('GET /credit/adverse-action 200', (await call('GET', `/credit/adverse-action?applicationId=${appId}`, A)).status === 200);
+  const aaId = aa.j && aa.j.draft && aa.j.draft.id;
+  ok('PATCH adverse-action reviewed 200', aaId && (await call('PATCH', `/credit/adverse-action/${aaId}`, A, { status: 'reviewed' })).status === 200);
+  ok('PATCH adverse-action 400 (never issue/send)', aaId && (await call('PATCH', `/credit/adverse-action/${aaId}`, A, { status: 'issued' })).status === 400);
+
+  ok('POST reconcile 400 (no note)', (await call('POST', '/credit/reconcile-finding', A, { creditReportId: repF })).status === 400);
+  ok('POST reconcile 403 (off-file LO)', (await call('POST', '/credit/reconcile-finding', OFF, { creditReportId: repF, note: 'x' })).status === 403);
+  ok('POST reconcile 404 (unknown report)', (await call('POST', '/credit/reconcile-finding', A, { creditReportId: '00000000-0000-0000-0000-000000000000', note: 'x' })).status === 404);
+  ok('POST reconcile 200 (admin, note)', (await call('POST', '/credit/reconcile-finding', A, { creditReportId: repF, note: 'confirmed with UW' })).status === 200);
+  ok('POST reconcile undo 200', (await call('POST', '/credit/reconcile-finding', A, { creditReportId: repF, undo: true })).status === 200);
+
+  // borrower self-service: joint PDF withheld from a single borrower; cross-token rejected.
+  await db.query(`INSERT INTO borrower_auth (borrower_id,password_hash,token_version) VALUES ($1,'x',0) ON CONFLICT (borrower_id) DO NOTHING`, [bor]);
+  const bTok = C.signJwt({ sub: bor, kind: 'borrower', role: 'borrower', tv: 0 });
+  ok('borrower GET /credit 200', (await fetch(`${base}/api/borrower/credit`, { headers: { authorization: `Bearer ${bTok}` } })).status === 200);
+  ok('borrower joint PDF withheld (404)', (await fetch(`${base}/api/borrower/credit/${rep}/pdf`, { headers: { authorization: `Bearer ${bTok}` } })).status === 404);
+  ok('borrower token rejected on staff route', [401, 403].includes((await call('GET', '/credit/providers', bTok)).status));
+
+  // cleanup
+  await db.query(`DELETE FROM adverse_action_letters WHERE application_id=$1`, [appId]).catch(() => {});
+  await db.query(`DELETE FROM credit_scores WHERE credit_report_id IN (SELECT id FROM credit_reports WHERE application_id=$1)`, [appId]);
+  await db.query(`DELETE FROM credit_reports WHERE application_id=$1`, [appId]);
+  await db.query(`DELETE FROM documents WHERE application_id=$1`, [appId]).catch(() => {});
+  await db.query(`DELETE FROM applications WHERE id=$1`, [appId]);
+  await db.query(`DELETE FROM borrower_auth WHERE borrower_id=$1`, [bor]);
+  await db.query(`DELETE FROM borrowers WHERE id = ANY($1::uuid[])`, [[bor]]);
+  await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[admin, offLo, noPull]]);
+
+  await new Promise((r) => server.close(r));
+  await db.pool.end();
+  console.log(`\ncredit-api-db: ${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})().catch((e) => { console.error('CRASH', e && e.stack || e); process.exit(1); });
