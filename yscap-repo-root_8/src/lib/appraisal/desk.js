@@ -128,7 +128,8 @@ function fireFloodCheck(appraisalId, appId) {
       await db.query(
         `INSERT INTO appraisal_findings (appraisal_id, application_id, source, code, severity, field, appraisal_value, file_value, title, how_to, blocks_ctc)
          SELECT $1,$2,'appraisal','flood_zone_mismatch','warning','flood_zone',$3,$4,$5,$6,false
-          WHERE NOT EXISTS (SELECT 1 FROM appraisal_findings WHERE appraisal_id=$1 AND code='flood_zone_mismatch' AND status='open')`,
+          WHERE NOT EXISTS (SELECT 1 FROM appraisal_findings WHERE appraisal_id=$1 AND code='flood_zone_mismatch' AND status='open')
+            AND EXISTS (SELECT 1 FROM appraisals WHERE id=$1 AND superseded=false)`,
         [appraisalId, appId, `FEMA zone ${r.femaZone}`, row.flood_zone ? `Appraisal zone ${row.flood_zone}` : null,
          'Flood zone disagrees with the FEMA flood map', cmp.note]);
     }
