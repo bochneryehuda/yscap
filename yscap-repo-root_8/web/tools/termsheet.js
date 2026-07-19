@@ -124,6 +124,14 @@
     return miss;
   }
   function readyToPrice() { return missingFields().length === 0; }
+  // Term-sheet ISSUE policy (owner-directed 2026-07-17): a term sheet may be issued
+  // only when a real loan can be sized and the deal is not hard-ineligible. A sized
+  // MANUAL / escalation deal (exit shortfall, city review, admin manual basis) IS
+  // issuable, but the PDF prints stamped "subject to manual review \u2014 not valid without
+  // our countersignature". A hard-INELIGIBLE or unsizeable deal can NOT print one.
+  function issueDeal() { var d = calc(); if (chosenProgram === "gold") { var g = calcGold(); if (g && !g.unavailable) d = g; } return d; }
+  function canIssue(d) { return !!(d && d.totalLoan > 0 && d.status !== "INELIGIBLE"); }
+  function needsManualStamp(d) { return !!(d && (d.status === "MANUAL" || d.exitShortfall > 0 || d.cityReview)); }
 
   // Professional, state-specific overlay note shown only once a limiting state is chosen.
   var STATE_NAMES = { FL: "Florida", CA: "California", NY: "New York" };
@@ -1061,12 +1069,12 @@
       doc.setFont("helvetica", "normal"); doc.setFontSize(8.3); doc.setTextColor.apply(doc, GRAY); doc.text(pdfSafe(prog), W - M, y, { align: "right" });
       y += 13; doc.text(pdfSafe(where + "   \u00b7   Valid through " + fmtD(exp)), M, y); y += 14;
 
-      if (d.status === "MANUAL") {
+      if (needsManualStamp(d)) {
         // Say WHY manual review is needed, right in the banner \u2014 the engine's own MANUAL
         // reason(s), shortened. (Full text still appears in the eligibility snapshot below.)
         var manualWhy = (d.reasons || []).filter(function (r) { return r.level === "MANUAL"; }).map(function (r) { return shortMsg(r.msg); }).filter(Boolean);
         var manualLead = "Manual underwriting is needed" + (manualWhy.length ? ": " + manualWhy.join("  \u00b7  ") + "." : " for this scenario.") +
-          " The figures below are indicative and subject to review \u2014 this is not a clean approval.";
+          " The figures below are indicative and subject to review \u2014 this term sheet is NOT valid without a countersignature from an authorized " + LENDER.name + " representative.";
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.4);
         var manualLines = doc.splitTextToSize(pdfSafe(manualLead), W - 2 * M - 24);
         var manualBoxH = Math.max(25, 16 + manualLines.length * 8.5);
@@ -1477,6 +1485,10 @@
       if (f) { f.focus(); f.classList.add("field-flag"); setTimeout(function () { f.classList.remove("field-flag"); }, 2400); }
       return;
     }
+    // Same issue-policy gate as the download button (audit #56): never email a PDF
+    // the screen didn't show, and never a term sheet for an ineligible/unsizeable deal.
+    if (!readyToPrice()) { if (note) { note.textContent = "Add the required fields (state, FICO, price and ARV) first so we can prepare your term sheet."; note.style.color = "#b8604a"; } return; }
+    if (!canIssue(issueDeal())) { if (note) { note.textContent = "This scenario isn't eligible as entered \u2014 submit it for manual review and our team will follow up."; note.style.color = "#b8604a"; } return; }
     var d = (chosenProgram === "gold") ? (calcGold() || calc()) : calc();
     var summary = {
       email: email, borrower: (borrowerOfRecord() || "").trim(),
@@ -1683,6 +1695,7 @@
     });
     var pdf = el("tsPdf"); if (pdf) pdf.addEventListener("click", function () {
       if (!readyToPrice()) { flash("Add the required fields (state, FICO, price and ARV) to download your term sheet."); return; }
+      if (!canIssue(issueDeal())) { flash("This scenario isn't eligible as entered, so a term sheet can't be issued \u2014 use \u201CSubmit for manual review\u201D and our team will take a look."); return; }
       if (validateAssign()) exportPdf(pdf); else flash("The seller's contract price can't be more than the purchase price.");
     });
     var lt = el("tsLetter"); if (lt) lt.addEventListener("click", function () { exportLetter(lt); });
