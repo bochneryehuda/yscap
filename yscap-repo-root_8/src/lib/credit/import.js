@@ -28,8 +28,14 @@ const cfg = require('../../config');
 const providers = require('./providers');
 const credentials = require('./credentials');
 const xactus = require('../integrations/xactus');
-const { buildCreditRequest } = require('./mismo2-request');
-const { parseCreditResponse, decodeReportPdf } = require('./mismo2-response');
+const mismo2 = { req: require('./mismo2-request'), res: require('./mismo2-response') };
+const mismo3 = { req: require('./mismo3-request'), res: require('./mismo3-response') };
+// Select the request builder + response parser + endpoint by MISMO version.
+function versionKit(version) {
+  const v = String(version || '').trim();
+  if (v === '3.4' || v === '3') return { version: '3.4', build: mismo3.req.buildCreditRequest, parse: mismo3.res.parseCreditResponse, decodePdf: mismo3.res.decodeReportPdf, endpoint: cfg.xactus.endpoint3 || cfg.xactus.endpoint };
+  return { version: '2.3.1', build: mismo2.req.buildCreditRequest, parse: mismo2.res.parseCreditResponse, decodePdf: mismo2.res.decodeReportPdf, endpoint: cfg.xactus.endpoint };
+}
 const scoring = require('./scoring');
 const outcomes = require('./outcomes');
 const storage = require('../storage');
@@ -201,7 +207,8 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
   let pdfSaved = null, pdfBytes = 0, pdfFilename = null;
   if (parsed.pdf && parsed.pdf.base64) {
     try {
-      const { buf } = decodeReportPdf(parsed.pdf.base64);
+      const decodePdf = orderMeta.decodePdf || mismo2.res.decodeReportPdf;
+      const { buf } = decodePdf(parsed.pdf.base64);
       pdfFilename = `credit-report-${orderMeta.reportIdentifier || reportRowId}.pdf`;
       pdfSaved = await storage.save(buf, { filename: pdfFilename });
       pdfBytes = buf.length;
@@ -237,7 +244,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
               first_issued_date = NULLIF($7,'')::date, last_updated_date = NULLIF($8,'')::date,
               xml_encrypted=$9, pdf_document_id=$10,
               representative_score=$11, representative_bracket=$12,
-              status=$13, review_reason=$14, error_detail=$15::jsonb, bureau_status=$16::jsonb, completed_at=now()
+              status=$13, review_reason=$14, error_detail=$15::jsonb, bureau_status=$16::jsonb, mismo_version=$17, completed_at=now()
         WHERE id=$1`,
       [reportRowId, parsed.reportIdentifier || null, parsed.reportType || null, parsed.otherDescription || null,
        orderMeta.requestType || null, orderMeta.action || null,
@@ -245,7 +252,7 @@ async function persistImport({ reportRowId, applicationId, actorId, providerId, 
        rawXml ? crypto.encryptSecret(rawXml) : null, pdfDocumentId,
        scored.rep.score, scored.rep.bracket,
        assessment.decision === 'imported' ? 'imported' : assessment.decision,
-       assessment.reason, JSON.stringify(parsed.errors || []), JSON.stringify(bureauStatus)]);
+       assessment.reason, JSON.stringify(parsed.errors || []), JSON.stringify(bureauStatus), orderMeta.mismoVersion || null]);
 
     // Per-bureau score rows (every score node, usable or not — full audit).
     await client.query(`DELETE FROM credit_scores WHERE credit_report_id=$1`, [reportRowId]);
@@ -351,6 +358,8 @@ async function orderAndImport(opts = {}) {
 
   const product = opts.product || 'prequal';
   const action = opts.action || 'Reissue';
+  const kit = versionKit(opts.mismoVersion || cfg.xactus.mismoVersion);
+  if (!kit.endpoint) throw httpError(400, `Xactus ${kit.version} endpoint is not configured`);
 
   // In-flight dedup window: a double-click that DIDN'T reuse the key must not place
   // two billable orders for the same file + action. Return the in-flight one.
@@ -379,7 +388,7 @@ async function orderAndImport(opts = {}) {
   const requestId = `ys-${applicationId}-${idempotencyKey}`.slice(0, 80);
   const requestType = requestBorrowers.length > 1 ? 'Joint' : 'Individual';
 
-  const requestXml = buildCreditRequest({
+  const requestXml = kit.build({
     requestingPartyName: cfg.xactus.requestingPartyName,
     submittingPartyName: cfg.xactus.submittingPartyName,
     lenderCaseIdentifier: String(applicationId),
@@ -408,6 +417,7 @@ async function orderAndImport(opts = {}) {
   try {
     resp = await xactus.orderReport({
       requestXml,
+      endpoint: kit.endpoint,
       operatorIdentifier: credential.operatorIdentifier,
       secret: credential.secret,
       timeoutMs: cfg.xactus.timeoutMs,
@@ -442,7 +452,7 @@ async function orderAndImport(opts = {}) {
 
   // Parse + score + assess.
   let parsed;
-  try { parsed = parseCreditResponse(resp.body); }
+  try { parsed = kit.parse(resp.body); }
   catch (e) {
     await db.query(
       `UPDATE credit_reports SET status='error', review_reason=$2, error_detail=$3::jsonb, xml_encrypted=$4, completed_at=now() WHERE id=$1`,
@@ -459,7 +469,7 @@ async function orderAndImport(opts = {}) {
   const persisted = await persistImport({
     reportRowId, applicationId, actorId, providerId: provider.id,
     parsed, scored, assessment, rawXml: resp.body,
-    orderMeta: { reportIdentifier: parsed.reportIdentifier, requestType, action, borrowerDbIdByReportId },
+    orderMeta: { reportIdentifier: parsed.reportIdentifier, requestType, action, borrowerDbIdByReportId, decodePdf: kit.decodePdf, mismoVersion: kit.version },
   });
   logEvent({ ...evBase, phase: 'persist', outcome: assessment.decision });
 

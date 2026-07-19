@@ -106,6 +106,7 @@ router.post('/credit/order', requirePull, async (req, res) => {
       actorId: req.actor.id,
       product: b.product,
       action: b.action,
+      mismoVersion: b.mismoVersion,   // '2.3.1' | '3.4'; defaults to config
       creditReportIdentifier: b.creditReportIdentifier,
       repositories: b.repositories,
       providerKey: b.providerKey,

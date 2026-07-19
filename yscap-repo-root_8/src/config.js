@@ -274,7 +274,11 @@ module.exports = {
   xactus: {
     // Assigned Xactus360 API base URL (e.g. https://<host>/...). No default —
     // the integration stays dormant until this is set in the environment.
+    // endpoint = MISMO 2.3.1 URL; endpoint3 = MISMO 3.4 URL (Xactus test:
+    // .../uaweb/mismo and .../uaweb/mismo3). mismoVersion picks the default.
     endpoint:            (process.env.XACTUS_ENDPOINT || '').trim().replace(/\/+$/, '') || null,
+    endpoint3:           (process.env.XACTUS_ENDPOINT_MISMO3 || '').trim().replace(/\/+$/, '') || null,
+    mismoVersion:        (process.env.XACTUS_MISMO_VERSION || '2.3.1').trim(),
     // Names echoed into the MISMO REQUEST envelope.
     requestingPartyName: process.env.XACTUS_REQUESTING_PARTY || 'YS Capital Group',
     submittingPartyName: process.env.XACTUS_SUBMITTING_PARTY || 'YS Capital Group LOS',
