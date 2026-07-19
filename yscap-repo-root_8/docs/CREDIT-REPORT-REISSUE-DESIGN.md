@@ -89,7 +89,8 @@ decisions:
 6. **Score-mismatch = STANDARD CREDIT-SCORE BRACKET based (owner clarified 2026-07-19; see §8.1).**
    On import, **always** set the verified FICO and **freeze** it. The re-registration trigger is the
    **standard 20-point mortgage credit-score brackets** — `<620, 620–639, 640–659, 660–679, 680–699,
-   700–719, 720–739, 740–759, 760+` (the industry LLPA grid). If the verified score is in the **same
+   700–719, 720–739, 740–759, 760–779, 780+` (the industry LLPA grid + a 780 line). If the verified
+   score is in the **same
    bracket** as the estimate → update + freeze only, **no re-registration**. If it lands in a
    **different bracket** → set the new FICO, freeze, and **reopen the registration/pricing condition
    for a HUMAN to re-register** — **even if YS Capital's own price wouldn't change** ("reset it up the
@@ -113,7 +114,7 @@ decisions:
 The reset trigger uses the **industry-standard 20-point mortgage credit-score brackets** (the LLPA
 grid boundaries — 620/640/660/680/700/720/740/760), which is what the owner's example describes:
 
-`<620` · `620–639` · `640–659` · `660–679` · `680–699` · `700–719` · `720–739` · `740–759` · `760+`
+`<620` · `620–639` · `640–659` · `660–679` · `680–699` · `700–719` · `720–739` · `740–759` · `760–779` · `780+`
 
 - Owner's example fits exactly: estimate **718** and verified **700** are **both in `700–719`** → same
   bracket → no reset. Estimate **718** → verified **699** drops to **`680–699`** → **different bracket
@@ -386,7 +387,7 @@ of duties).
 
 The re-registration trigger is the **standard 20-point credit-score bracket** the score falls in —
 **not** "any difference," and **not** YS Capital's own pricing bands. Brackets (config):
-`<620 · 620–639 · 640–659 · 660–679 · 680–699 · 700–719 · 720–739 · 740–759 · 760+`. Implementation:
+`<620 · 620–639 · 640–659 · 660–679 · 680–699 · 700–719 · 720–739 · 740–759 · 760–779 · 780+`. Implementation:
 
 - Compute the bracket of the **priced-on estimate** and the bracket of the **verified score**.
 - **Same bracket** (e.g. estimate 718 → verified 700, both `700–719`): **update + freeze only. No
