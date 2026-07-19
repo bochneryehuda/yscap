@@ -25,8 +25,7 @@ const { requireAuth, requireStaff, requirePermission } = require('../auth');
 const { can, assigneeExistsSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
-const { importAppraisal } = require('../lib/appraisal/import');
-const { ocrAsIsCandidate, buildOcrNote } = require('../lib/appraisal/ocr');
+const { runAppraisalImport } = require('../lib/appraisal/desk');
 const X = require('../lib/appraisal/xml');
 
 // Upload cap: aligned to the per-file limit the JSON body-parser actually allows,
@@ -36,12 +35,6 @@ const MAX_UPLOAD_BYTES = Math.max(1, cfg.maxUploadMb) * 1024 * 1024;
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
 
 router.use(requireAuth, requireStaff);
-
-// Today's date as a 'YYYY-MM-DD' string from the DB (NY) — never new Date() in a date path.
-async function today() {
-  try { return (await db.query(`SELECT to_char(now() AT TIME ZONE 'America/New_York','YYYY-MM-DD') d`)).rows[0].d; }
-  catch (_) { return null; }
-}
 
 // Authorization: the file must exist AND the staffer must see it (see_all or assigned).
 async function fileFor(req, appId) {
@@ -61,26 +54,6 @@ async function audit(actorId, action, entityId, detail) {
        VALUES ('staff',$1,$2,'application',$3,$4)`,
       [actorId, action, entityId, JSON.stringify(detail || {})]);
   } catch (_) { /* audit is best-effort; never block the action */ }
-}
-
-// Materialize an internal condition from its template (auto_apply='manual' templates don't
-// self-attach). Mirrors src/lib/vesting.js ensureLlcCondition — items reference the template
-// by template_id, and the guard dedups on template_id. Idempotent.
-async function ensureCondition(appId, code) {
-  await db.query(
-    `INSERT INTO checklist_items
-       (template_id, scope, label, borrower_label, audience, item_kind, role_scope,
-        phase, hint, borrower_hint, is_gate, is_milestone, sort_order, tool_key,
-        clickup_field_id, tpr_exclude, created_by_kind, is_required, application_id)
-     SELECT t.id, t.scope, t.label, t.borrower_label, t.audience, t.item_kind,
-            COALESCE(t.role_scope,'any'), t.phase, t.hint, t.borrower_hint,
-            COALESCE(t.is_gate,false), COALESCE(t.is_milestone,false),
-            COALESCE(t.sort_order,455), t.tool_key, t.clickup_field_id,
-            COALESCE(t.tpr_exclude,false), 'system', COALESCE(t.is_required,true), $1
-       FROM checklist_templates t
-      WHERE t.code=$2 AND t.is_active=true
-        AND NOT EXISTS (SELECT 1 FROM checklist_items ci WHERE ci.application_id=$1 AND ci.template_id=t.id)`,
-    [appId, code]);
 }
 
 // ---- GET: the stored appraisal for the file --------------------------------
@@ -152,39 +125,18 @@ router.post('/:appId/import', async (req, res, next) => {
       }
     } catch (e) { console.error('[appraisal] document storage failed (import continues):', e && e.message); }
 
-    const out = await importAppraisal(db, {
-      applicationId: app.id, xml, importedBy: req.actor.id,
-      sourceXmlDocumentId: xmlDocId, pdfDocumentId: pdfDocId, today: await today(),
+    // Shared desk flow: import + reconcile + materialize the two internal conditions +
+    // fire the advisory OCR. Identical to the auto-import from the appraisal-docs condition.
+    const out = await runAppraisalImport({
+      appId: app.id, xml, importedBy: req.actor.id,
+      xmlDocumentId: xmlDocId, pdfDocumentId: pdfDocId, pdfBase64: pdfB64,
     });
     if (!out.ok) return res.status(422).json({ error: out.error });
 
-    // Materialize the review gate; open the verify-As-Is task only when needed.
-    await ensureCondition(app.id, 'appraisal_review_cleared');
-    if (out.needsAsIsCondition) await ensureCondition(app.id, 'appraisal_as_is_verify');
     await audit(req.actor.id, 'appraisal_import', app.id,
       { appraisalId: out.appraisalId, findings: out.summary, warnings: (out.warnings || []).map((w) => w.code) });
 
     res.json({ ok: true, appraisalId: out.appraisalId, summary: out.summary, needsAsIsCondition: out.needsAsIsCondition, warnings: out.warnings });
-
-    // Advisory OCR runs AFTER the response (fire-and-forget) so a slow OCR call never delays
-    // the import. It only ever attaches a note to the verify-As-Is condition — NEVER writes
-    // the loan file — and the note-write is guarded so it can never clobber an officer's own
-    // typed note ([auto]-prefixed system notes only). Best-effort + audited.
-    if (out.needsAsIsCondition && pdfB64) {
-      const actorId = req.actor.id;
-      ocrAsIsCandidate({ pdfBase64: pdfB64 })
-        .then(async (adv) => {
-          await db.query(
-            `UPDATE checklist_items ci
-                SET notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%' THEN $2 ELSE ci.notes END
-               FROM checklist_templates t
-              WHERE ci.template_id = t.id AND t.code = 'appraisal_as_is_verify' AND ci.application_id = $1`,
-            [app.id, buildOcrNote(adv)]);
-          await audit(actorId, 'appraisal_ocr_advisory', app.id,
-            { attempted: !!adv.attempted, candidate: adv.candidate != null ? adv.candidate : null, confidence: adv.confidence || null });
-        })
-        .catch((e) => console.error('[appraisal] OCR advisory failed (non-fatal):', e && e.message));
-    }
   } catch (e) { next(e); }
 });
 
