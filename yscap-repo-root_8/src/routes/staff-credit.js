@@ -20,6 +20,8 @@ const db = require('../db');
 const { can } = require('../lib/permissions');
 const providers = require('../lib/credit/providers');
 const credentials = require('../lib/credit/credentials');
+const creditImport = require('../lib/credit/import');
+const { serveDocument } = require('../lib/serve-document');
 
 // Best-effort audit trail (never blocks the request).
 async function audit(req, action, detail) {
@@ -69,6 +71,84 @@ router.delete('/credit/credentials/:pid', async (req, res) => {
     await audit(req, 'credit_credential_removed', { providerId: Number(req.params.pid) });
     res.json({ ok: true });
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// ---- order / reissue (BILLABLE — pull_credit only) -------------------------
+// Body: { applicationId, product?, action?, creditReportIdentifier?,
+//         repositories?, providerKey?, idempotencyKey }. The idempotency key
+// makes a double-click / retry bill at most once. Data is imported from the XML;
+// the response never includes an SSN or the raw report.
+router.post('/credit/order', requirePull, async (req, res) => {
+  const b = req.body || {};
+  if (!b.applicationId) return res.status(400).json({ error: 'applicationId is required' });
+  try {
+    const out = await creditImport.orderAndImport({
+      applicationId: b.applicationId,
+      actorId: req.actor.id,
+      product: b.product,
+      action: b.action,
+      creditReportIdentifier: b.creditReportIdentifier,
+      repositories: b.repositories,
+      providerKey: b.providerKey,
+      providerId: b.providerId,
+      idempotencyKey: b.idempotencyKey || `${b.applicationId}:${b.action || 'Reissue'}:${b.creditReportIdentifier || 'new'}`,
+    });
+    await audit(req, 'credit_order', { applicationId: b.applicationId, reportId: out.reportId, status: out.status,
+      representativeScore: out.representativeScore, froze: out.froze, deduped: !!out.deduped });
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, kind: e.kind, retriable: !!e.retriable, reportId: e.reportId || null });
+  }
+});
+
+// ---- report views (staff) --------------------------------------------------
+// Reports for one file (most recent first), each with its per-bureau scores.
+router.get('/credit/reports', requirePull, async (req, res) => {
+  const appId = req.query.applicationId;
+  if (!appId) return res.status(400).json({ error: 'applicationId is required' });
+  try {
+    const reports = (await db.query(
+      `SELECT id, credit_report_identifier, report_type, other_description, request_type, action_type,
+              first_issued_date, last_updated_date, representative_score, representative_bracket,
+              status, review_reason, pdf_document_id, created_at, completed_at
+         FROM credit_reports WHERE application_id=$1 ORDER BY created_at DESC`, [appId])).rows;
+    const ids = reports.map((r) => r.id);
+    let scores = [];
+    if (ids.length) {
+      scores = (await db.query(
+        `SELECT credit_report_id, report_borrower_id, borrower_id, bureau, model, value, usable, reason, exclusion_reason
+           FROM credit_scores WHERE credit_report_id = ANY($1) ORDER BY report_borrower_id, bureau`, [ids])).rows;
+    }
+    const byReport = new Map(reports.map((r) => [r.id, { ...r, scores: [] }]));
+    for (const s of scores) { const r = byReport.get(s.credit_report_id); if (r) r.scores.push(s); }
+    res.json({ reports: [...byReport.values()] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// The manual-review queue: reports needing a human (frozen bureau / no score /
+// vendor error). Company-wide for staff who pull credit.
+router.get('/credit/review-queue', requirePull, async (req, res) => {
+  try {
+    const rows = (await db.query(
+      `SELECT cr.id, cr.application_id, cr.representative_score, cr.review_reason, cr.status, cr.created_at,
+              b.first_name, b.last_name
+         FROM credit_reports cr
+         LEFT JOIN applications a ON a.id = cr.application_id
+         LEFT JOIN borrowers b ON b.id = a.borrower_id
+        WHERE cr.status = 'review' ORDER BY cr.created_at DESC LIMIT 200`)).rows;
+    res.json({ queue: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Serve a report PDF (staff, inline). The PDF is stored staff_only; staff view it here.
+router.get('/credit/reports/:id/pdf', requirePull, async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT d.* FROM credit_reports cr JOIN documents d ON d.id = cr.pdf_document_id WHERE cr.id=$1`, [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'no PDF for this report' });
+    await audit(req, 'credit_report_pdf_view', { reportId: req.params.id });
+    return serveDocument(res, r.rows[0], { inline: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 module.exports = router;
