@@ -90,7 +90,7 @@ export default function EsignFileSection({ appId, role }) {
   const resend = (rowId) => act(`resend:${rowId}`, () => api.post(`/api/staff/esign/${rowId}/resend`), 'Reminder resent.');
   const voidEnv = (rowId) => {
     const reason = window.prompt('Void this envelope — reason (required):');
-    if (!reason) return;
+    if (!reason || !reason.trim()) return;
     return act(`void:${rowId}`, () => api.post(`/api/staff/esign/${rowId}/void`, { reason }), 'Envelope voided.');
   };
   const countersign = (rowId) => act(`cs:${rowId}`, async () => {
