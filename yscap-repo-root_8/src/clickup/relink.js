@@ -100,8 +100,23 @@ async function resolveTask(ref) {
     t = await require('./client').getTask(ref.token, opts);
   } catch (e) {
     if (e && e.expose) throw e;
-    if (e && e.status === 404) throw httpError(404, 'No ClickUp card with that id/link was found.');
-    throw httpError(502, 'Could not reach ClickUp to check that card. Please try again in a moment.');
+    // Diagnostic, admin-facing messages (this path is admin-only) — a generic
+    // "could not reach ClickUp" hid the real cause (bad id vs token vs custom-id
+    // not enabled). Surface the upstream status + ClickUp's own reason string.
+    const st = e && e.status;
+    const reason = (e && e.body && (e.body.err || e.body.error || e.body.ECODE)) || null;
+    if (st === 404) {
+      throw httpError(404, ref.custom
+        ? `No ClickUp card with the custom id "${ref.token}" was found in this workspace. Check the id (it is case-sensitive) and that Custom Task IDs are enabled.`
+        : `No ClickUp card "${ref.token}" was found. If this is a custom id like "FILLE-1911", paste that (or the full card link) instead.`);
+    }
+    if (st === 401 || st === 403) {
+      throw httpError(502, `ClickUp rejected the lookup (${st}${reason ? ': ' + reason : ''}). The sync token may be missing, expired, or lack access to this workspace.`);
+    }
+    if (st === 400) {
+      throw httpError(400, `ClickUp could not read that card id (400${reason ? ': ' + reason : ''}). Paste the card link, or the custom id like "FILLE-1911".`);
+    }
+    throw httpError(502, `Could not verify that card with ClickUp${st ? ` (it returned ${st}${reason ? ': ' + reason : ''})` : ' (network error)'}. Please try again in a moment.`);
   }
   if (!t || !t.id) throw httpError(404, 'No ClickUp card with that id/link was found.');
   return t;
