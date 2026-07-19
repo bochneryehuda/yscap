@@ -40,9 +40,9 @@ async function main() {
   const app = (await db.query(
     `INSERT INTO applications (borrower_id,co_borrower_id,llc_id,ys_loan_number,investor_loan_number,program,loan_type,
                               occupancy,property_address,property_type,units,purchase_price,as_is_value,arv,rehab_budget,
-                              rehab_type,loan_amount,ltv,dscr_ratio,rate_pct,term,requested_exp_flips)
-     VALUES ($1,$2,$3,$4,$5,'Fix & Flip','Refi Cash-Out','Investment',$6,'Multi 2-4',3,
-             420000,400000,560000,85000,'Heavy',375000,0.75,1.15,10.75,'12 months',5) RETURNING id`,
+                              rehab_type,loan_amount,ltv,dscr_ratio,rate_pct,term,ppp,requested_exp_flips,sqft_pre,sqft_post)
+     VALUES ($1,$2,$3,$4,$5,'Fix & Flip','Refinance — Cash-Out','Investment',$6,'Multi 2-4',3,
+             420000,400000,560000,85000,'Heavy',375000,0.75,1.15,10.75,'12 months','3-2-1',5,1800,2400) RETURNING id`,
     [borrower.id, co.id, llc.id, loanNo, invNo,
      JSON.stringify({ line1: '392 Columbia Ave', city: 'Brooklyn', state: 'NY', zip: '11223' })])).rows[0];
 
@@ -57,6 +57,7 @@ async function main() {
   const parsed = mismo.previewImport(xml);
   assert.strictEqual(parsed.borrower.firstName, 'Yuda', 'preview borrower');
   assert.strictEqual(parsed.borrower.ssn, '123456789', 'preview borrower ssn digits');
+  assert.strictEqual(parsed.loan.loanType, 'Refinance — Cash-Out', 'preview real refi loan type');
   assert.strictEqual(parsed.coBorrower.firstName, 'Sara', 'preview co-borrower');
   assert.strictEqual(parsed.llc.name, llcName, 'preview llc');
   assert.strictEqual(parsed.extras.arv, 560000, 'preview arv from extension');
@@ -69,16 +70,21 @@ async function main() {
   // ---- verify the new application columns ----
   const na = (await db.query('SELECT * FROM applications WHERE id=$1', [applicationId])).rows[0];
   assert.strictEqual(Number(na.loan_amount), 375000, 'new file loan amount');
-  assert.strictEqual(na.loan_type, 'Refi Cash-Out', 'new file loan type');
+  assert.strictEqual(na.loan_type, 'Refinance — Cash-Out', 'new file loan type (real vocab)');
   assert.strictEqual(Number(na.purchase_price), 420000, 'new file purchase price');
   assert.strictEqual(Number(na.arv), 560000, 'new file ARV (from extension)');
   assert.strictEqual(Number(na.rehab_budget), 85000, 'new file rehab budget');
   assert.strictEqual(na.occupancy, 'Investment', 'new file occupancy');
   assert.strictEqual(na.property_address.line1, '392 Columbia Ave', 'new file property street');
+  assert.strictEqual(na.property_type, 'Multi 2-4', 'new file property type (from extension)');
+  assert.strictEqual(na.ppp, '3-2-1', 'new file prepayment penalty');
+  assert.strictEqual(na.requested_exp_flips, 5, 'new file experience (drives sizing) preserved');
+  assert.strictEqual(na.sqft_pre, 1800, 'new file sqft pre');
+  assert.strictEqual(na.sqft_post, 2400, 'new file sqft post');
   assert.strictEqual(na.source, 'mismo_import', 'new file source tag');
   assert(na.co_borrower_id, 'new file has a co-borrower');
   assert(na.llc_id, 'new file has a vesting entity');
-  console.log('  ✓ createFromParsed created a fully-populated new application');
+  console.log('  ✓ createFromParsed created a fully-populated new application (incl. experience, PPP, sqft, property type)');
 
   // ---- verify the new borrower (SSN re-encrypted, dob validated) ----
   const nb = (await db.query('SELECT * FROM borrowers WHERE id=$1', [borrowerId])).rows[0];

@@ -4,17 +4,25 @@
  * import maps MISMO -> ours). Kept in one file so the two directions can never
  * drift apart (the same lesson the ClickUp `crosswalk.js` encodes).
  *
+ * The portal's ACTUAL stored vocabularies (verified against the app, not guessed):
+ *   loan_type      : 'Purchase' | 'Refinance — Rate & Term' | 'Refinance — Cash-Out'
+ *                    (em-dash; Ground-Up is a PROGRAM, never a loan_type —
+ *                     fields.sanitizeLoanType strips anything starting "ground")
+ *   property_type  : 'SFR (1 unit)' | 'Multi 2–4' | 'Multi 5+' | 'Condo' |
+ *                    'Townhouse' | 'Mixed use'  (plus legacy 'SFR'/'Multi 2-4')
+ *   occupancy      : 'Primary' | 'Investment' | 'Secondary'
+ *   citizenship    : 'US Citizen' | 'Permanent Resident' | 'Foreign National'
+ *   marital_status : 'Single' | 'Married' | 'Separated' | 'Divorced' | 'Widowed'
+ *
  * Where a portal value has no exact MISMO home the mapping picks the closest
  * standard bucket and the ORIGINAL value is additionally preserved verbatim in
- * the lender EXTENSION block (see build.js) so nothing is ever silently lost.
- *
- * Source of truth for the MISMO enum spellings: the MISMO v3.4 Logical Data
- * Dictionary as surfaced through the Fannie DU / Freddie LPA (ULAD) specs.
+ * the lender EXTENSION (see build.js) so nothing is ever silently lost.
  */
 
-// A case-insensitive, whitespace/punctuation-tolerant reverse lookup so an
-// inbound value spelled slightly differently ("US citizen", "U.S. Citizen")
-// still resolves.
+// A case-insensitive, whitespace/punctuation/dash-tolerant key. Critically this
+// folds every dash variant (hyphen -, en-dash –, em-dash —) to nothing, so
+// 'Refinance — Cash-Out', 'Refinance - Cash Out' and 'refinancecashout' all
+// normalize identically.
 function norm(s) {
   return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -33,7 +41,6 @@ function makeReverse(forwardMap, fallback) {
     return hit != null ? hit : (fallback === undefined ? null : fallback);
   };
 }
-// Forward lookup tolerant of legacy casings ("INVESTMENT") stored in old rows.
 function makeForward(forwardMap, fallback) {
   const byNorm = {};
   for (const [ours, mismo] of Object.entries(forwardMap)) byNorm[norm(ours)] = mismo;
@@ -45,18 +52,17 @@ function makeForward(forwardMap, fallback) {
 }
 
 // ---- LoanPurposeType ---------------------------------------------------------
-// Our loan_type values (see db/schema.sql + fields.sanitizeLoanType).
 const LOAN_PURPOSE = {
   'Purchase': 'Purchase',
-  'Refi R&T': 'Refinance',
-  'Refi Cash-Out': 'Refinance',
-  'Ground up': 'Construction',
-  'Ground-up': 'Construction',
-  'HELOC': 'Other',
+  'Refinance — Rate & Term': 'Refinance',
+  'Refinance — Cash-Out': 'Refinance',
 };
-// Cash-out vs rate/term is carried separately in MISMO; we remember which of the
-// two refinance flavors produced "Refinance" so import can restore the detail.
-const REFI_CASHOUT = { 'Refi Cash-Out': 'CashOut', 'Refi R&T': 'NoCashOut' };
+// Cash-out vs rate/term is carried separately in MISMO (RefinanceCashOutDetermination-
+// Type); remember which refinance flavor produced "Refinance" so import restores it.
+const REFI_CASHOUT = {
+  'Refinance — Cash-Out': 'CashOut',
+  'Refinance — Rate & Term': 'NoCashOut',
+};
 
 // ---- PropertyUsageType (from occupancy) -------------------------------------
 const OCCUPANCY = {
@@ -75,6 +81,9 @@ const CITIZENSHIP = {
 };
 
 // ---- MaritalStatusType -------------------------------------------------------
+// MISMO only has Married / Separated / Unmarried. Single/Divorced/Widowed all
+// collapse to Unmarried — so the exact original is ALSO written to the lender
+// EXTENSION (build.js) and preferred on import, keeping the round-trip lossless.
 const MARITAL = {
   'Married': 'Married',
   'Separated': 'Separated',
@@ -83,50 +92,52 @@ const MARITAL = {
   'Widowed': 'Unmarried',
 };
 
-// ---- MortgageType ------------------------------------------------------------
-// Business-purpose / private-money loans have no dedicated MISMO type; the
-// broadly-accepted, importer-friendly value is Conventional. Overridable later.
 const DEFAULT_MORTGAGE_TYPE = 'Conventional';
-
-// ---- AmortizationType --------------------------------------------------------
 const DEFAULT_AMORTIZATION_TYPE = 'Fixed';
 
-// Attachment hint from our dwelling type — best-effort, non-authoritative.
-const ATTACHMENT = {
-  'SFR': 'Detached',
-  'Townhouse': 'Attached',
-  'Condo': 'Attached',
-  'Multi 2-4': 'Attached',
-  'Multi 5+': 'Attached',
-  'Mixed Use': 'Attached',
-};
-// Rough financed-unit-count inference when the application didn't capture units.
-const UNITS_HINT = { 'SFR': 1, 'Condo': 1, 'Townhouse': 1, 'Multi 2-4': 2, 'Multi 5+': 5, 'Mixed Use': 1 };
+// Dwelling-type inference by pattern (tolerant of the unit-annotated and
+// dash-variant spellings the app actually stores). Returns null when unknown.
+function unitsHint(propertyType) {
+  const s = norm(propertyType);
+  if (!s) return null;
+  if (s.startsWith('sfr') || s.includes('singlefamily')) return 1;
+  if (s.includes('multi54') || s.includes('multi5')) return 5;
+  if (s.includes('multi24') || s.includes('multi2')) return 2;
+  if (s.includes('condo')) return 1;
+  if (s.includes('town')) return 1;
+  if (s.includes('mixed')) return 1;
+  return null;
+}
+function toMismoAttachment(propertyType) {
+  const s = norm(propertyType);
+  if (!s) return null;
+  if (s.startsWith('sfr') || s.includes('singlefamily')) return 'Detached';
+  if (s.includes('condo') || s.includes('town') || s.includes('multi') || s.includes('mixed')) return 'Attached';
+  return null;
+}
 
 module.exports = {
   norm,
   // forward (ours -> MISMO), used by the exporter
-  toMismoLoanPurpose: makeForward(LOAN_PURPOSE, 'Other'),
+  toMismoLoanPurpose: makeForward(LOAN_PURPOSE), // null when unknown (never a wrong 'Other')
   toMismoRefiCashOut: makeForward(REFI_CASHOUT),
   toMismoOccupancy: makeForward(OCCUPANCY),
   toMismoCitizenship: makeForward(CITIZENSHIP),
   toMismoMarital: makeForward(MARITAL),
-  toMismoAttachment: makeForward(ATTACHMENT),
-  unitsHint: (propertyType) => UNITS_HINT[propertyType] || null,
+  toMismoAttachment,
+  unitsHint,
   DEFAULT_MORTGAGE_TYPE,
   DEFAULT_AMORTIZATION_TYPE,
   // reverse (MISMO -> ours), used by the importer
   fromMismoLoanPurpose: (mismoPurpose, cashOut) => {
-    // Rebuild our finer loan_type using the cash-out detail when present.
-    const base = makeReverse(LOAN_PURPOSE)(mismoPurpose);
-    if (base === 'Refinance' || norm(mismoPurpose) === norm('Refinance')) {
-      if (norm(cashOut) === norm('CashOut')) return 'Refi Cash-Out';
-      if (norm(cashOut) === norm('NoCashOut')) return 'Refi R&T';
-      return 'Refi R&T';
+    const n = norm(mismoPurpose);
+    if (n === norm('Purchase')) return 'Purchase';
+    if (n === norm('Refinance')) {
+      return norm(cashOut) === norm('CashOut') ? 'Refinance — Cash-Out' : 'Refinance — Rate & Term';
     }
-    if (norm(mismoPurpose) === norm('Purchase')) return 'Purchase';
-    if (norm(mismoPurpose) === norm('Construction') || norm(mismoPurpose) === norm('ConstructionToPermanent')) return 'Ground up';
-    return base; // may be null -> caller leaves loan_type unset
+    // Construction/ConstructionToPermanent/Other/unknown: not a portal loan_type
+    // (Ground-Up is a program), so leave loan_type unset rather than invent one.
+    return null;
   },
   fromMismoOccupancy: makeReverse(OCCUPANCY),
   fromMismoCitizenship: makeReverse(CITIZENSHIP),

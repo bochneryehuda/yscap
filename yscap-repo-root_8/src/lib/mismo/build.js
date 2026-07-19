@@ -34,10 +34,10 @@ const NS_XLINK = 'http://www.w3.org/1999/xlink';
 // Our own lender-extension namespace (extensions must live in a NON-MISMO
 // namespace so a standard parser can ignore them cleanly).
 const NS_YSCAP = 'http://www.yscapgroup.com/mismo/extension/1.0';
-// The reference-model build identifier. "3.4.0" is the major/minor the whole
-// URLA/AUS ecosystem targets; a receiving partner that pins an exact build
-// (e.g. a DU wrapper id) can have this tuned to their expected value.
-const MISMO_REFERENCE_MODEL_ID = '3.4.0';
+// The reference-model build identifier real GSE/AUS iLAD files carry (verified
+// against production iLAD exports). A receiving partner that pins a different
+// build can have this tuned to their expected value.
+const MISMO_REFERENCE_MODEL_ID = '3.4.032420160128';
 
 // Relationship arcrole URIs (MISMO URN form). Isolated so they can be aligned
 // to a partner's sample without touching the tree-building logic.
@@ -143,7 +143,7 @@ function employers(p) {
   ]);
 }
 
-function borrowerParty(p, label, roleType) {
+function borrowerParty(p, label, roleType, seq) {
   if (!p) return null;
   const nameEl = el('NAME', {}, [
     leaf('FirstName', p.firstName),
@@ -174,17 +174,17 @@ function borrowerParty(p, label, roleType) {
       ]),
     ])
     : null;
-  return el('PARTY', { 'xlink:label': label }, [
+  return el('PARTY', { SequenceNumber: seq || 1, 'xlink:label': label }, [
     el('INDIVIDUAL', {}, [contactPoints(p), nameEl]),
     el('ROLES', {}, [el('ROLE', { 'xlink:label': `${label}_ROLE` }, roleKids)]),
     taxIds,
   ]);
 }
 
-function entityParty(llc, label) {
+function entityParty(llc, label, seq) {
   if (!llc || !llc.name) return null;
   const einDigits = llc.ein ? String(llc.ein).replace(/[^0-9]/g, '') : null;
-  return el('PARTY', { 'xlink:label': label }, [
+  return el('PARTY', { SequenceNumber: seq || 3, 'xlink:label': label }, [
     el('LEGAL_ENTITY', {}, [
       el('LEGAL_ENTITY_DETAIL', {}, [leaf('FullName', llc.name)]),
     ]),
@@ -217,7 +217,7 @@ function subjectProperty(f, label) {
     leaf('PropertyUsageType', E.toMismoOccupancy(f.occupancy)),
     leaf('AttachmentType', E.toMismoAttachment(f.propertyType)),
   ].filter(Boolean);
-  return el('COLLATERAL', { 'xlink:label': label }, [
+  return el('COLLATERAL', { SequenceNumber: 1, 'xlink:label': label }, [
     el('SUBJECT_PROPERTY', {}, [
       addressEl(f.property),
       detailKids.length ? el('PROPERTY_DETAIL', {}, detailKids) : null,
@@ -235,7 +235,7 @@ function loan(f, label) {
   const months = termMonths(f.term);
   const purpose = E.toMismoLoanPurpose(f.loanType);
   const cashOut = E.toMismoRefiCashOut(f.loanType);
-  return el('LOAN', { 'xlink:label': label, LoanRoleType: 'SubjectLoan' }, [
+  return el('LOAN', { SequenceNumber: 1, 'xlink:label': label, LoanRoleType: 'SubjectLoan' }, [
     months != null ? el('AMORTIZATION', {}, [
       el('AMORTIZATION_RULE', {}, [
         leaf('AmortizationType', E.DEFAULT_AMORTIZATION_TYPE),
@@ -276,6 +276,7 @@ function lenderExtension(f) {
   const x = f.extras || {};
   const fields = [
     ['Program', f.program],
+    ['PropertyType', f.propertyType],
     ['AfterRepairValue', num(f.arv)],
     ['RehabBudget', num(f.rehabBudget)],
     ['RehabType', f.rehabType],
@@ -288,6 +289,9 @@ function lenderExtension(f) {
     ['RequestedExperienceHolds', x.expHolds],
     ['RequestedExperienceGroundUp', x.expGround],
     ['FicoScore', f.borrower && f.borrower.fico],
+    // Exact marital status (MISMO's Unmarried bucket loses Single/Divorced/Widowed).
+    ['BorrowerMaritalStatus', f.borrower && f.borrower.maritalStatus],
+    ['CoBorrowerMaritalStatus', f.coBorrower && f.coBorrower.maritalStatus],
     ['Lender', f.lender],
     ['Channel', f.channel],
   ].filter(([, v]) => v != null && v !== '');
@@ -331,9 +335,9 @@ function buildMismoXml(f) {
   };
 
   const parties = [
-    borrowerParty(f.borrower, LBL.borrower, 'Borrower'),
-    borrowerParty(f.coBorrower, LBL.coBorrower, 'Borrower'),
-    entityParty(f.llc, LBL.entity),
+    borrowerParty(f.borrower, LBL.borrower, 'Borrower', 1),
+    borrowerParty(f.coBorrower, LBL.coBorrower, 'Borrower', 2),
+    entityParty(f.llc, LBL.entity, 3),
   ].filter(Boolean);
 
   const borrowerParties = [];

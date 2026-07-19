@@ -16,7 +16,11 @@ const { NS_YSCAP } = require('./build');
 
 const numOrNull = (s) => {
   if (s == null || s === '') return null;
-  const n = Number(String(s).replace(/[^0-9.\-]/g, ''));
+  const cleaned = String(s).replace(/[^0-9.\-]/g, '');
+  // A value with no digit ("N/A", "TBD", "ten") must become null, NOT 0 — a
+  // phantom 0 loan amount / value would mis-price a file.
+  if (!/[0-9]/.test(cleaned)) return null;
+  const n = Number(cleaned);
   return isFinite(n) ? n : null;
 };
 
@@ -47,11 +51,27 @@ function readContact(individual) {
 
 function isBorrowerParty(party) {
   // A PARTY is a borrower if any of its ROLEs carries a BORROWER container or a
-  // PartyRoleType of Borrower.
+  // PartyRoleType of Borrower. It is NEVER inferred merely from being an
+  // individual — real MISMO files list loan originators, agents and settlement
+  // parties as individuals too, and grabbing one of those as the borrower would
+  // mis-attribute their identity (and SSN) to the loan.
   for (const role of X.allDeep(X.kid(party, 'ROLES'), 'ROLE')) {
     if (X.kid(role, 'BORROWER')) return true;
     const rt = X.textAt(role, 'ROLE_DETAIL', 'PartyRoleType');
     if (E.norm(rt) === E.norm('Borrower')) return true;
+  }
+  return false;
+}
+
+// A LEGAL_ENTITY party is the borrower's VESTING entity only when it plays a
+// borrowing/owning role — never the lender (LoanOriginationCompany), servicer,
+// or any other business party a MISMO file routinely carries.
+const VESTING_ENTITY_ROLES = ['Borrower', 'TitleHolder', 'PropertyOwner'];
+function entityIsVesting(party) {
+  for (const role of X.allDeep(X.kid(party, 'ROLES'), 'ROLE')) {
+    if (X.kid(role, 'BORROWER')) return true;
+    const rt = X.textAt(role, 'ROLE_DETAIL', 'PartyRoleType');
+    if (VESTING_ENTITY_ROLES.some((r) => E.norm(r) === E.norm(rt))) return true;
   }
   return false;
 }
@@ -61,7 +81,10 @@ function readBorrower(party) {
   const name = X.kid(individual, 'NAME');
   const contact = readContact(individual);
   const borrower = X.firstDeep(X.kid(party, 'ROLES'), 'BORROWER');
-  const detail = borrower ? X.kid(borrower, 'BORROWER_DETAIL') : null;
+  // Read a borrower data point anywhere within the BORROWER subtree — real iLAD
+  // files nest some points (e.g. CitizenshipResidencyType) below BORROWER_DETAIL
+  // rather than directly under it, so an exact-path read would miss them.
+  const bText = (local) => { const n = X.firstDeep(borrower, local); return n ? n.text : ''; };
 
   // SSN from TAXPAYER_IDENTIFIERS (type SocialSecurityNumber).
   let ssn = null;
@@ -95,10 +118,10 @@ function readBorrower(party) {
     email: contact.email,
     phone: contact.phone,
     ssn: ssn && ssn.length === 9 ? ssn : null,
-    dob: detail ? (X.textAt(detail, 'BorrowerBirthDate') || null) : null,
-    citizenship: detail ? E.fromMismoCitizenship(X.textAt(detail, 'CitizenshipResidencyType')) : null,
-    maritalStatus: detail ? E.fromMismoMarital(X.textAt(detail, 'MaritalStatusType')) : null,
-    dependents: detail ? numOrNull(X.textAt(detail, 'DependentCount')) : null,
+    dob: bText('BorrowerBirthDate') || null,
+    citizenship: E.fromMismoCitizenship(bText('CitizenshipResidencyType')),
+    maritalStatus: E.fromMismoMarital(bText('MaritalStatusType')),
+    dependents: numOrNull(bText('DependentCount')),
     currentAddress,
     priorAddress,
     yearsAtResidence,
@@ -202,24 +225,22 @@ function parseMismoXml(xml) {
     occupancy: property.occupancy,
   };
 
-  // --- parties ---
+  // --- parties (role-based; non-borrower individuals + the lender are skipped) ---
   let borrower = null, coBorrower = null, llc = null;
   for (const party of X.allDeep(X.kid(deal, 'PARTIES'), 'PARTY')) {
     if (X.kid(party, 'LEGAL_ENTITY')) {
-      const e = readEntity(party);
-      if (e && !llc) llc = e;
-      continue;
+      if (entityIsVesting(party)) { const e = readEntity(party); if (e && !llc) llc = e; }
+      continue; // lender / originator company / servicer entities are not imported
     }
-    if (isBorrowerParty(party) || X.kid(party, 'INDIVIDUAL')) {
-      const b = readBorrower(party);
-      if (!borrower) borrower = b;
-      else if (!coBorrower) coBorrower = b;
-      else warnings.push(`Extra borrower "${[b.firstName, b.lastName].filter(Boolean).join(' ')}" was found but the portal file holds at most two borrowers — it was not imported.`);
-    }
+    if (!isBorrowerParty(party)) continue; // loan originator, agent, settlement, etc.
+    const b = readBorrower(party);
+    if (!borrower) borrower = b;
+    else if (!coBorrower) coBorrower = b;
+    else warnings.push(`Extra borrower "${[b.firstName, b.lastName].filter(Boolean).join(' ')}" was found but the portal file holds at most two borrowers — it was not imported.`);
   }
   if (!borrower) warnings.push('No borrower was found in the file.');
 
-  // --- lender extension (RTL extras) ---
+  // --- lender extension (RTL extras + values with no exact MISMO home) ---
   const ext = readExtension(deal);
   const extras = {
     program: ext.Program || null,
@@ -232,12 +253,20 @@ function parseMismoXml(xml) {
     fico: numOrNull(ext.FicoScore),
     lender: ext.Lender || null,
     channel: ext.Channel || null,
+    propertyType: ext.PropertyType || null,
     sqftPre: numOrNull(ext.SquareFeetPre),
     sqftPost: numOrNull(ext.SquareFeetPost),
     expFlips: numOrNull(ext.RequestedExperienceFlips),
     expHolds: numOrNull(ext.RequestedExperienceHolds),
     expGround: numOrNull(ext.RequestedExperienceGroundUp),
   };
+  // Prefer the exact original marital status the extension preserved (MISMO's
+  // Unmarried bucket loses Single/Divorced/Widowed) so the round-trip is lossless.
+  if (borrower && ext.BorrowerMaritalStatus) borrower.maritalStatus = ext.BorrowerMaritalStatus;
+  if (coBorrower && ext.CoBorrowerMaritalStatus) coBorrower.maritalStatus = ext.CoBorrowerMaritalStatus;
+  // The portal keeps the dwelling type as its own vocabulary; the extension
+  // carries it verbatim so import restores it exactly.
+  property.propertyType = extras.propertyType;
 
   return { ok: true, loan, property, borrower, coBorrower, llc, extras, warnings };
 }

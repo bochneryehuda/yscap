@@ -118,12 +118,26 @@ function previewImport(xml) {
   return parseMismoXml(xml);
 }
 
+// A DETERMINISTIC placeholder email for a borrower a MISMO file did not carry
+// an email for — derived from the SSN (preferred) or name+DOB — so re-importing
+// the SAME file reuses the SAME borrower row instead of minting a duplicate.
+// It stores a one-way hash slice, never the SSN itself.
+function syntheticEmail(p) {
+  const nodeCrypto = require('crypto');
+  const seed = (p.ssn && String(p.ssn).length === 9)
+    ? 'ssn:' + p.ssn
+    : 'nm:' + [p.firstName, p.lastName, p.dob].map((x) => String(x || '').toLowerCase().trim()).join('|');
+  const h = nodeCrypto.createHash('sha256').update(seed).digest('hex').slice(0, 12);
+  return `noemail+mismo-${h}@import.local`;
+}
+
 // Create/adopt a borrower row from a parsed party, filling only blanks on an
 // existing same-email row (never overwriting a real value — the same posture as
-// intake.js). Returns the borrower id.
-async function upsertBorrower(client, p) {
+// intake.js). Returns the borrower id. `opts.fico` sets the credit score (it
+// lives on the borrower, not the parsed party object).
+async function upsertBorrower(client, p, opts = {}) {
   if (!p) return null;
-  const email = p.email || `noemail+mismo-${require('crypto').randomBytes(6).toString('hex')}@import.local`;
+  const email = p.email || syntheticEmail(p);
   const b = await client.query(
     `INSERT INTO borrowers (first_name, last_name, email, cell_phone, citizenship, marital_status,
                             dependents_count, current_address, prior_address, years_at_residence, employer)
@@ -162,6 +176,11 @@ async function upsertBorrower(client, p) {
     const dob = fields.sanitizeDob(p.dob);
     if (dob) await client.query('UPDATE borrowers SET date_of_birth=$2 WHERE id=$1 AND date_of_birth IS NULL', [id, dob]);
   }
+  // FICO (fill blank only) — validated to the 300–850 band via sanitizeFico.
+  if (opts.fico != null) {
+    const fico = fields.sanitizeFico(opts.fico);
+    if (fico != null) await client.query('UPDATE borrowers SET fico=$2 WHERE id=$1 AND fico IS NULL', [id, fico]);
+  }
   return id;
 }
 
@@ -181,7 +200,8 @@ async function createFromParsed(parsed, opts = {}) {
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
-    const borrowerId = await upsertBorrower(client, borrower);
+    // FICO from the extension belongs to the PRIMARY borrower.
+    const borrowerId = await upsertBorrower(client, borrower, { fico: extras.fico });
     const coBorrowerId = coBorrower ? await upsertBorrower(client, coBorrower) : null;
 
     let llcId = null;
@@ -206,13 +226,16 @@ async function createFromParsed(parsed, opts = {}) {
          (borrower_id, co_borrower_id, llc_id, loan_officer_id,
           program, loan_type, occupancy, property_address, property_type, units,
           purchase_price, as_is_value, arv, rehab_budget, rehab_type,
-          loan_amount, ltv, dscr_ratio, rate_pct, term,
+          loan_amount, ltv, dscr_ratio, rate_pct, term, ppp,
+          requested_exp_flips, requested_exp_holds, requested_exp_ground, sqft_pre, sqft_post,
           investor_loan_number, lender, channel, source, raw_intake, status, submitted_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,'mismo_import',$24,'new',now())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+               $22,$23,$24,$25,$26,$27,$28,$29,'mismo_import',$30,'new',now())
        RETURNING id`,
       [borrowerId, coBorrowerId, llcId, opts.officerId || null,
        extras.program || null, fields.sanitizeLoanType(loan.loanType), loan.occupancy || property.occupancy || null,
-       addr ? JSON.stringify(addr) : null, null, property.units != null ? int(property.units) : null,
+       addr ? JSON.stringify(addr) : null, property.propertyType || extras.propertyType || null,
+       property.units != null ? int(property.units) : null,
        property.purchasePrice != null ? num(property.purchasePrice) : null,
        property.asIsValue != null ? num(property.asIsValue) : null,
        extras.arv != null ? num(extras.arv) : null,
@@ -220,7 +243,11 @@ async function createFromParsed(parsed, opts = {}) {
        loan.loanAmount != null ? num(loan.loanAmount) : null,
        extras.ltv != null ? num(extras.ltv) : null,
        extras.dscr != null ? num(extras.dscr) : null,
-       loan.rate != null ? num(loan.rate) : null, loan.term || null,
+       loan.rate != null ? num(loan.rate) : null, loan.term || null, extras.ppp || null,
+       // requested experience columns are NOT NULL DEFAULT 0 — coerce to integers.
+       int(extras.expFlips) || 0, int(extras.expHolds) || 0, int(extras.expGround) || 0,
+       extras.sqftPre != null ? int(extras.sqftPre) : null,
+       extras.sqftPost != null ? int(extras.sqftPost) : null,
        loan.investorLoanNumber || null, extras.lender || null, extras.channel || null,
        JSON.stringify({ source: 'mismo_import', imported_at: new Date().toISOString(), warnings: parsed.warnings || [] })]);
     const applicationId = a.rows[0].id;
