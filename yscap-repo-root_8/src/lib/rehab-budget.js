@@ -41,8 +41,12 @@ function firstPageBudget(payload) {
 // The authoritative required rehab budget for a file, or null if none set yet.
 async function requiredRehabBudget(appId, client = db) {
   const reg = (await client.query(
-    `SELECT inputs FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
-  if (reg && reg.inputs && reg.inputs.rehabBudget != null && Number(reg.inputs.rehabBudget) > 0) {
+    `SELECT inputs, stale FROM product_registrations WHERE application_id=$1 AND is_current LIMIT 1`, [appId])).rows[0];
+  // A STALE registration was priced off a budget the file no longer carries (the
+  // db/096 trigger flags it the moment rehab_budget changes). Ignore it and fall
+  // back to the current file budget, so the SOW gate demands the NEW budget and its
+  // [auto] note names the right number — not the superseded registered one (#30).
+  if (reg && !reg.stale && reg.inputs && reg.inputs.rehabBudget != null && Number(reg.inputs.rehabBudget) > 0) {
     return Number(reg.inputs.rehabBudget);
   }
   const a = (await client.query(`SELECT rehab_budget FROM applications WHERE id=$1`, [appId])).rows[0];

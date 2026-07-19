@@ -719,11 +719,17 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         liquidity: (quote.liquidity ?? quote.liquidityRequired) != null ? (quote.liquidity ?? quote.liquidityRequired) : undefined,
         previous: prev ? { program: prev.program, totalLoan: Number(prev.total_loan), noteRate: Number(prev.note_rate), productLabel: prev.product_label } : undefined });
 
-    // Registering the product satisfies the "Products & pricing" condition.
+    // (Re-)registering resets the "Products & pricing" condition to received and
+    // CLEARS any prior sign-off — a borrower re-register can change term/program/
+    // structure that no trigger-watched column reflects (e.g. same loan amount,
+    // only rate moved), so staff must re-verify the new structure. Unconditional,
+    // mirroring the db/096 trigger's reopen semantics (audit #26/#58).
     try {
       await db.query(
-        `UPDATE checklist_items SET status='received', updated_at=now()
-          WHERE application_id=$1 AND tool_key='product_pricing' AND status <> 'satisfied'`, [appId]);
+        `UPDATE checklist_items
+            SET status='received', signed_off_at=NULL, signed_off_by=NULL,
+                reviewed_at=NULL, reviewed_by=NULL, updated_at=now()
+          WHERE application_id=$1 AND tool_key='product_pricing'`, [appId]);
     } catch (_) { /* condition may not exist on older files */ }
 
     try {
