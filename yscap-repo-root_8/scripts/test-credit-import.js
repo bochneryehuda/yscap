@@ -1,6 +1,9 @@
 /* End-to-end credit order+import integration test (Phase 1e).
  * Requires a Postgres with the migrations applied (NOT in `npm test`). Run:
- *   DATABASE_URL=postgres://postgres@127.0.0.1:5442/yscap node scripts/test-credit-import.js
+ *   DATABASE_URL=postgres://postgres@127.0.0.1:5442/yscap XACTUS_ENDPOINT=http://x \
+ *     node scripts/test-credit-import.js
+ * XACTUS_ENDPOINT must be set (any dummy URL) — orderAndImport requires the endpoint
+ * to be configured even though this test injects a no-network transport.
  * Uses an INJECTED transport (no network). Proves: imported path freezes the
  * verified FICO + representative, stores scores + PDF; review path (no score)
  * stores but does not freeze; idempotency returns the prior report. */
