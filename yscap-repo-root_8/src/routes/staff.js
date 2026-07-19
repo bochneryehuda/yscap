@@ -855,16 +855,13 @@ router.post('/applications', async (req, res) => {
       const p = await db.query(`SELECT id FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [b.processorId]);
       if (p.rows[0]) processorId = p.rows[0].id;
     }
-    // NO automatic processor assignment (owner-directed 2026-07-14; tightened
-    // 2026-07-19): a file's processor is set ONLY by an explicit pick — the
-    // dropdown above at creation, or the /assign endpoint. It is PORTAL-OWNED.
+    // NO automatic processor assignment (owner-directed 2026-07-14): a file's
+    // processor is set ONLY by an explicit pick (the dropdown above) or by the
+    // ClickUp Processor Email field mirroring in (the sync stays bidirectional).
     // The old "a processor who opens a file is assigned to it" default is exactly
     // how Lisa Katz (role processor, but the DRAW coordinator) ended up
-    // auto-assigned on a file she merely created — that must never happen. The
-    // ClickUp Processor Email field NO LONGER mirrors in either (it was populated
-    // by ClickUp defaults/automations/duplication, not a real pick, and its
-    // COALESCE-overwrite kept re-asserting Lisa on every sync — "popping up again
-    // and again"). Inbound processor assignment is severed in clickup/ingest.js.
+    // auto-assigned on a file she merely created — that must never happen. This
+    // create path never sets a default processor; assignment is explicit only.
 
     // Assignment purchases: capture the underlying price + fee (like the
     // borrower path) so leverage/pricing size off seller price + fee and the

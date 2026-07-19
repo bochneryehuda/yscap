@@ -142,6 +142,10 @@ async function loadPushContext(appId) {
     // returns bigint as a string, so resolveClickupUserId coerces to Number.
     officerClickupId: await resolveClickupUserId({ storedId: row.officer_cuid, staffId: row.officer_staff_id, email: row.officer_email }),
     processorClickupId: await resolveClickupUserId({ storedId: row.processor_cuid, staffId: row.processor_staff_id, email: row.processor_email }),
+    // Written to the "Processor Email" TEXT field so BOTH ClickUp processor fields
+    // (people-field + email) agree after a Pilot pick — the inbound agreement gate
+    // requires that match to adopt a processor (owner-directed 2026-07-19).
+    processorEmail: row.processor_email || null,
     officerName: row.officer_name || row.loan_officer_name || null,
     borrowerOrigin: row.b_origin || null,   // provenance for the DOB auto-resolver
     portalAppId: appId,
