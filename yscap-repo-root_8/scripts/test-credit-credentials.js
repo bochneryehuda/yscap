@@ -113,6 +113,18 @@ function transportOf(status, body, ct) {
   eq('verify 200 → ok', (await xactus.verifyCredential({ operatorIdentifier: 'u', secret: 'p', endpoint: 'https://x.test', verifyPath: '/ping', transport: transportOf(200, '') })).status, 'ok');
   eq('verify 500 → unverified', (await xactus.verifyCredential({ operatorIdentifier: 'u', secret: 'p', endpoint: 'https://x.test', verifyPath: '/ping', transport: transportOf(503, '') })).status, 'unverified');
 
+  // ===== adverse-action draft assembler (pure) =====
+  const aa = require('../src/lib/credit/adverse-action');
+  const body = aa.draftBody({ borrowerName: 'Ann Freddie', decision: 'declined',
+    principalReasons: ['Insufficient credit history', 'Delinquent past obligations'],
+    scoresDisclosed: [{ bureau: 'Equifax', score: 640 }, { bureau: 'Experian', score: 655 }] });
+  ok('aa marks DRAFT / review-required', /DRAFT — for compliance review/.test(body));
+  ok('aa lists principal reasons', /Insufficient credit history/.test(body) && /Delinquent past obligations/.test(body));
+  ok('aa discloses scores', /Equifax: 640/.test(body) && /Experian: 655/.test(body));
+  ok('aa includes ECOA notice', /Equal Credit Opportunity Act/.test(body));
+  ok('aa counteroffer wording', /different terms/.test(aa.draftBody({ decision: 'counteroffer' })));
+  ok('aa no-scores omits disclosure', !/Credit scores used/.test(aa.draftBody({ decision: 'declined' })));
+
   console.log(`\ncredit-credentials: ${pass} passed, ${fail} failed`);
   if (fail) process.exit(1);
 })();
